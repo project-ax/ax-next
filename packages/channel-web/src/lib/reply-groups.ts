@@ -78,7 +78,15 @@ function fold(run: AgentLike[]): ReplyGroup {
   const last = run[run.length - 1]!;
   let answerAt = -1;
   if (last.at === '') {
-    if (last.kind === 'agent' && last.text.length > 0) answerAt = run.length - 1;
+    // After the last `steps` message: the trailing words, if any. A live
+    // card or visual rides on a text-less `agent` message after them.
+    let lastSteps = -1;
+    run.forEach((m, i) => {
+      if (m.kind === 'steps') lastSteps = i;
+    });
+    run.forEach((m, i) => {
+      if (i > lastSteps && m.kind === 'agent' && m.text.length > 0) answerAt = i;
+    });
   } else {
     run.forEach((m, i) => {
       if (m.text.length > 0) answerAt = i;

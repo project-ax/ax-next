@@ -70,6 +70,7 @@ import {
 } from '@/lib/workspace-steps';
 import { isOpenDecision } from '@/lib/workspace-types';
 import { connectorNamesFromRows } from '@/lib/connector-tool-label';
+import { fenceLine } from '@/lib/fence-line';
 import { appendLiveCall, appendLiveText, liveReplyMessages, type LiveSegment } from '@/lib/live-segments';
 import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
@@ -95,6 +96,7 @@ import type {
   ThreadMessage,
   ThreadVisual,
 } from '@/lib/workspace-api';
+import type { ThreadArtifact } from '@/lib/workspace-types';
 import {
   workspaceGrantActions,
   type WorkspaceGrant,
@@ -611,6 +613,12 @@ export function AgentView({
   const [liveVisuals, setLiveVisuals] = useState<{
     conversationId: string;
     visuals: readonly ThreadVisual[];
+    /**
+     * Artifact cards the turn published, read back from the store as the
+     * viewer (see `onArtifactClaim`). Same lifetime as the visuals: a card
+     * that vanished between `done` and the re-read would blink.
+     */
+    artifacts: readonly ThreadArtifact[];
   } | null>(null);
   /*
     Bumped at the start of every turn. A re-read that lands after the NEXT turn
@@ -1090,10 +1098,43 @@ export function AgentView({
           // No conversation, no way to fetch the artifact: the re-read draws it.
           if (conversationId === null) return;
           setLiveVisuals((prev) => {
-            const kept = prev !== null && prev.conversationId === conversationId ? prev.visuals : [];
+            const mine = prev !== null && prev.conversationId === conversationId ? prev : null;
+            const kept = mine?.visuals ?? [];
             if (kept.some((v) => v.artifactId === visual.artifactId)) return prev;
-            return { conversationId, visuals: [...kept, visual] };
+            return { conversationId, visuals: [...kept, visual], artifacts: mine?.artifacts ?? [] };
           });
+        },
+        /*
+          The card as soon as the file is made, the way Claude shows it. The
+          result only CLAIMS an id (agent-controlled); the card is what the
+          store says, read as the viewer, and only if the store says it is
+          this agent's — the reload path's rule. A failed read draws nothing:
+          the re-read brings the card if it is real.
+        */
+        onArtifactClaim: (artifactId) => {
+          const conversationId = turnConversation;
+          if (conversationId === null) return;
+          const turn = visualsTurnRef.current;
+          void workspaceApi.artifact(artifactId).then(
+            (a) => {
+              if (visualsTurnRef.current !== turn || a.agentId !== agentId) return;
+              const title = fenceLine(a.title, 200);
+              if (title === null) return;
+              const card: ThreadArtifact = {
+                artifactId: a.artifactId,
+                version: a.currentVersion,
+                title,
+                kind: a.kind,
+                extension: fenceLine(a.extension, 16) ?? '',
+              };
+              setLiveVisuals((prev) => {
+                const mine = prev !== null && prev.conversationId === conversationId ? prev : null;
+                const others = (mine?.artifacts ?? []).filter((c) => c.artifactId !== card.artifactId);
+                return { conversationId, visuals: mine?.visuals ?? [], artifacts: [...others, card] };
+              });
+            },
+            () => undefined,
+          );
         },
         /*
           Pre-content only, and the gate is structural: the status row below
@@ -1683,9 +1724,22 @@ export function AgentView({
         m.kind === 'agent' ? (m.visuals ?? []).map((v) => v.artifactId) : [],
       ),
     );
+    const durableCards = new Set(
+      detail.thread.flatMap((m) =>
+        m.kind === 'agent' ? (m.artifacts ?? []).map((a) => `${a.artifactId}@${a.version}`) : [],
+      ),
+    );
     const pending = liveVisuals.visuals.filter((v) => !durable.has(v.artifactId));
-    if (pending.length > 0) {
-      liveThread.push({ kind: 'agent', id: 'pending-visuals', text: '', at: '', visuals: pending });
+    const cards = liveVisuals.artifacts.filter((a) => !durableCards.has(`${a.artifactId}@${a.version}`));
+    if (pending.length > 0 || cards.length > 0) {
+      liveThread.push({
+        kind: 'agent',
+        id: 'pending-visuals',
+        text: '',
+        at: '',
+        ...(pending.length > 0 ? { visuals: pending } : {}),
+        ...(cards.length > 0 ? { artifacts: cards } : {}),
+      });
     }
   }
 

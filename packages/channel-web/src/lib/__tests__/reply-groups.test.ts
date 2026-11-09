@@ -153,3 +153,21 @@ describe('liveNote', () => {
     expect(liveNote([step])).toBeUndefined();
   });
 });
+
+describe('live reply with a card', () => {
+  it('keeps the trailing words as the reply when a live card follows them', () => {
+    const reply = groupReplies([
+      { ...(steps('pending-agent-0', 'Drawing.', [{ text: 'Ran a command', status: 'done' }]) as object), at: '' } as ThreadMessage,
+      { kind: 'agent', id: 'pending-agent', text: 'Here it is.', at: '' },
+      {
+        kind: 'agent',
+        id: 'pending-visuals',
+        text: '',
+        at: '',
+        artifacts: [{ artifactId: 'a', version: 1, title: 'pelican', kind: 'image', extension: 'SVG' }],
+      },
+    ])[0] as ReplyGroup;
+    expect(reply.text).toBe('Here it is.');
+    expect(reply.artifacts.map((a) => a.title)).toEqual(['pelican']);
+  });
+});

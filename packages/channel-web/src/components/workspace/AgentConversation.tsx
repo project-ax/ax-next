@@ -63,7 +63,7 @@ import {
   useWorkspaceAttachments,
   type SendableAttachment,
 } from '@/lib/workspace-attachments';
-import { isOpenDecision } from '@/lib/workspace-types';
+import { isOpenDecision, type ThreadArtifact } from '@/lib/workspace-types';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import type {
   Decision,
@@ -87,6 +87,7 @@ import {
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
 import { ArtifactCard } from './ArtifactCard';
+import { KIND_ICONS } from './AgentArtifacts';
 import { Markdown } from '@/components/Markdown';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
@@ -1153,7 +1154,7 @@ function Message({
       // "Thinking…" is replaced in place rather than jumping.
       <div className="mb-2.5 inline-flex items-center gap-1.5 py-0.5 text-[13.5px] text-muted-foreground">
         <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
-        {m.text}
+        <span className="shimmer">{m.text}</span>
       </div>
     );
   }
@@ -1352,7 +1353,7 @@ function AgentReply({
           Persisted attachments supply the download chips below.
         */}
         {/* `at` is '' only on the reply still streaming in (see `ThreadMessage`). */}
-        {r.activity.length > 0 && <Activity entries={r.activity} live={r.at === ''} />}
+        {r.activity.length > 0 && <Activity entries={r.activity} live={r.at === ''} published={r.artifacts} />}
         {r.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
             <Markdown text={r.text} hideFileDownloadLinks />
@@ -1600,7 +1601,22 @@ function GroupRow({ row }: { row: Extract<ActivityRow, { kind: 'group' }> }) {
   );
 }
 
-function Activity({ entries, live }: { entries: readonly ActivityEntry[]; live: boolean }) {
+/** The finished title's file icon: the kind of the last card the reply published. */
+function PublishedMark({ artifacts }: { artifacts: readonly ThreadArtifact[] }) {
+  const Icon = KIND_ICONS[artifacts[artifacts.length - 1]!.kind];
+  return <Icon size={13} aria-hidden="true" className="shrink-0" />;
+}
+
+function Activity({
+  entries,
+  live,
+  published = [],
+}: {
+  entries: readonly ActivityEntry[];
+  live: boolean;
+  /** Cards the reply published: the finished title ends with the kind's icon, as Claude's does. */
+  published?: readonly ThreadArtifact[];
+}) {
   const steps = entries.flatMap((e) => (e.kind === 'step' ? [e.step] : []));
   const rows = activityRows(entries);
   const waiting = steps.some((s) => s.status === 'waiting');
@@ -1625,9 +1641,15 @@ function Activity({ entries, live }: { entries: readonly ActivityEntry[]; live: 
         {TitleMark !== null && (
           <TitleMark.Icon size={13} aria-hidden="true" className={cn('shrink-0', TitleMark.tone)} />
         )}
-        <span className="min-w-0 truncate" title={title}>
-          {title}
+        {/*
+          Keyed on the words, so each new title fades in rather than
+          snapping; the shimmer says "still going" without a spinner.
+        */}
+        {/* Two spans: the fade and the shimmer are both CSS animations. */}
+        <span key={title} className="min-w-0 truncate animate-in fade-in duration-300" title={title}>
+          <span className={cn(live && !waiting && 'shimmer')}>{title}</span>
         </span>
+        {!live && published.length > 0 && <PublishedMark artifacts={published} />}
         <Chevron />
       </CollapsibleTrigger>
       <CollapsibleContent>

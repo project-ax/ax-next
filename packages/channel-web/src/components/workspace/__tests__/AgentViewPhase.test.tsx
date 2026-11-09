@@ -27,6 +27,7 @@ vi.mock('@/lib/workspace-api', async () => {
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
+      artifact: vi.fn(),
     },
   };
 });
@@ -187,6 +188,49 @@ describe('the phase status line', () => {
     await waitFor(() => expect(screen.getByText('Here is the pelican.')).toBeTruthy());
     expect(within(panel).queryByText('Here is the pelican.')).toBeNull();
     expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
+  });
+
+  it('draws an artifact card as soon as the file is published, from the store', async () => {
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      artifactId: 'art1',
+      agentId: 'a1',
+      title: 'pelican bike',
+      kind: 'image',
+      extension: 'SVG',
+      currentVersion: 1,
+    } as never);
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'p1', toolName: 'artifact_publish' });
+    });
+    act(() => handlers.onToolResult?.({ toolCallId: 'p1' }));
+    act(() => handlers.onArtifactClaim?.('art1'));
+    // Mid-turn, before any `done`: the card is already there.
+    await waitFor(() => expect(screen.getByText('pelican bike')).toBeTruthy());
+    expect(workspaceApi.artifact).toHaveBeenCalledWith('art1');
+  });
+
+  it("never draws a claimed card the store says is another agent's", async () => {
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      artifactId: 'art2',
+      agentId: 'someone-else',
+      title: 'not yours',
+      kind: 'image',
+      extension: 'SVG',
+      currentVersion: 1,
+    } as never);
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onText('Working.');
+    });
+    act(() => handlers.onArtifactClaim?.('art2'));
+    await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledWith('art2'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('not yours')).toBeNull();
   });
 
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {
