@@ -11,6 +11,7 @@ import {
   isOwnerOnlyChange,
   OWNER_ONLY_CHANGE_MESSAGE,
   isConnectorIdTaken,
+  CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE,
   CONNECTOR_ID_TAKEN_MESSAGE,
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
@@ -132,6 +133,7 @@ export function RemoteMcpConnectorForm({
   const formRef = useRef<HTMLFormElement>(null);
   // Slice 2c — "Set it up" on a connector request. Only ever for a new one.
   const prefill = connector ? undefined : prefillProp;
+  const fromDirectory = prefill?.fromDirectory !== undefined;
   const [draft, setDraft] = useState(() =>
     prefill
       ? remoteDraftFromProposal(prefill.name, prefill.capabilities)
@@ -660,9 +662,11 @@ export function RemoteMcpConnectorForm({
             : isOwnerOnlyChange(err)
               ? OWNER_ONLY_CHANGE_MESSAGE
               : isConnectorIdTaken(err)
-                ? prefill
-                  ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
-                  : CONNECTOR_ID_TAKEN_MESSAGE
+                ? fromDirectory
+                  ? CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE
+                  : prefill
+                    ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                    : CONNECTOR_ID_TAKEN_MESSAGE
                 : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
@@ -766,7 +770,9 @@ export function RemoteMcpConnectorForm({
               : created
                 ? `${created.name} is added. Now choose what agents may do with its tools.`
                 : prefill
-                  ? 'Filled in from the request. Check each field before you add it.'
+                  ? fromDirectory
+                    ? 'Filled in from the directory. Check it over before you add it.'
+                    : 'Filled in from the request. Check each field before you add it.'
                   : 'Connect AX to a remote MCP server.'}
           </DialogDescription>
         </DialogHeader>
@@ -797,7 +803,9 @@ export function RemoteMcpConnectorForm({
                         onChange={(event) => setUsageNote(event.target.value)}
                       />
                       <FieldDescription>
-                        Every assistant that uses this connector reads this note.
+                        {fromDirectory
+                          ? 'Every assistant that uses this connector reads this note. The listing’s publisher wrote it, so rewrite it in your own words.'
+                          : 'Every assistant that uses this connector reads this note.'}
                       </FieldDescription>
                     </Field>
                   )}

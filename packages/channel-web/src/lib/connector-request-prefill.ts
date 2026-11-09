@@ -10,7 +10,10 @@
  *
  * Two editors, two answers:
  *   - the remote-server form (`RemoteMcpConnectorForm`) shows ONE MCP server:
- *     its URL, its request headers (by name) and its OAuth sign-in;
+ *     its URL, its request headers (by name) and its OAuth sign-in. It
+ *     carries a key or sign-in only from the TOP-LEVEL
+ *     `capabilities.credentials` whose `server` names that server. A server's
+ *     own `allowedHosts` / `credentials` are listed in `leftOut`, not carried;
  *   - the general editor (`LegacyConnectorEditDialog`) shows allowed hosts,
  *     each key / sign-in row (name, label, server, scopes, client id), the
  *     LEADING package and the services.

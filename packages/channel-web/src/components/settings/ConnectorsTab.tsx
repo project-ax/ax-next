@@ -25,6 +25,16 @@
  * from the request, and the server clears the request when the
  * connector is created. "Dismiss" clears it without creating anything.
  *
+ * FIND IN DIRECTORY (TASK-1101): "Find in directory" swaps this list for the
+ * directory subview (`ConnectorDirectory`), which searches the host's copy of
+ * the public MCP registry. Its "Set it up" opens the same create editor as a
+ * request does, prefilled from the listing; nothing is saved until the admin
+ * presses Add. The editor opens OVER the subview, so Cancel returns to the
+ * search as it was. The button hides when the directory is turned off. Listing
+ * text is written by strangers: it renders as text only. Full connector
+ * records are read only while the subview is open, so the list view still
+ * reads none.
+ *
  * Untrusted text (connector name / description, and everything in a request,
  * which an agent wrote) renders through React text nodes (auto-escaped) —
  * never raw HTML. shadcn primitives + semantic tokens
@@ -46,7 +56,10 @@ import {
   type ConnectorWriteBase,
 } from '@/lib/connectors';
 import { relativeDay } from '@/lib/workspace-time';
+import { searchDirectory, prefillFromDirectoryEntry } from '@/lib/connector-directory';
+import { logRequestFailure } from '@/lib/http';
 import { ConnectorEditDialog } from './ConnectorEditDialog';
+import { ConnectorDirectory } from './ConnectorDirectory';
 import { RoleCard } from '@/components/admin/RoleCard';
 import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import { Button } from '@/components/ui/button';
@@ -132,6 +145,12 @@ export function ConnectorsTab() {
   const [editing, setEditing] = useState<ConnectorSummary | 'new' | null>(null);
   // "Set it up": the request the create editor starts from (null = blank).
   const [prefill, setPrefill] = useState<ConnectorPrefill | null>(null);
+  // The list, or the directory subview that replaces it.
+  const [view, setView] = useState<'list' | 'directory'>('list');
+  // Whether to offer "Find in directory": null until the first answer, then
+  // the directory's own `enabled`. A failed check offers it anyway; the
+  // subview says plainly if it can't load.
+  const [directoryOffered, setDirectoryOffered] = useState<boolean | null>(null);
   // Authoring: the connector awaiting delete confirmation (null = none).
   const [pendingDelete, setPendingDelete] = useState<ConnectorSummary | null>(
     null,
@@ -190,6 +209,16 @@ export function ConnectorsTab() {
       })
       .catch(() => {
         if (!cancelled) setRequestsFailed(true);
+      });
+    searchDirectory('')
+      .then((page) => {
+        if (!cancelled) setDirectoryOffered(page.enabled);
+      })
+      .catch((e: unknown) => {
+        // Fail open: offer the button, and let the subview say what's wrong.
+        if (cancelled) return;
+        logRequestFailure(e, 'connector-directory');
+        setDirectoryOffered(true);
       });
     return () => {
       cancelled = true;
@@ -264,101 +293,125 @@ export function ConnectorsTab() {
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingsActions><Button onClick={() => { setPrefill(null); setEditing('new'); }}>New connector</Button></SettingsActions>
+      {view === 'directory' ? (
+        <ConnectorDirectory
+          connectors={connectors ?? []}
+          onBack={() => setView('list')}
+          onSetUp={(entry) => {
+            setPrefill(prefillFromDirectoryEntry(entry));
+            setEditing('new');
+          }}
+          onNewConnector={() => {
+            setPrefill(null);
+            setEditing('new');
+          }}
+        />
+      ) : (
+        <>
+          <SettingsActions>
+            {directoryOffered && (
+              <Button variant="outline" onClick={() => setView('directory')}>
+                Find in directory
+              </Button>
+            )}
+            <Button onClick={() => { setPrefill(null); setEditing('new'); }}>New connector</Button>
+          </SettingsActions>
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
 
-      {connectors === null && !error && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      )}
+          {connectors === null && !error && (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          )}
 
-      {connectors !== null && list.length === 0 && !error && (
-        <p className="text-sm text-muted-foreground">
-          No connectors yet. Add one to make it available to the workspace.
-        </p>
-      )}
+          {connectors !== null && list.length === 0 && !error && (
+            <p className="text-sm text-muted-foreground">
+              No connectors yet. Add one to make it available to the workspace.
+            </p>
+          )}
 
-      {requestsFailed && (
-        <Alert data-testid="connector-requests-failed">
-          <AlertDescription className="flex flex-col items-start gap-2">
-            <span>Couldn’t load requests waiting for approval.</span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void refreshRequests()}
-            >
-              Retry
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {/* Awaiting approval — every person's connector requests. Rendered only
-          when there is at least one. */}
-      {groups.length > 0 && (
-        <section className="flex flex-col gap-3.5">
-          <h2 className="text-sm font-medium">
-            Awaiting approval ({groups.length})
-          </h2>
-          {groups.map((g) => {
-            const r = g.newest;
-            const reach = proposalReach(r.proposal);
-            return (
-              <div
-                key={g.connectorId}
-                data-testid={`connector-request-${g.connectorId}`}
-              >
-                <RoleCard
-                  pill="request"
-                  title={r.name}
-                  caption={askedByCaption(g)}
+          {requestsFailed && (
+            <Alert data-testid="connector-requests-failed">
+              <AlertDescription className="flex flex-col items-start gap-2">
+                <span>Couldn’t load requests waiting for approval.</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refreshRequests()}
                 >
-                  <div className="flex flex-col gap-3">
-                    {/* Requests from before an upgrade surface too, so the
-                        age helps an admin spot (and Dismiss) a stale one. */}
-                    <p className="text-xs text-muted-foreground">
-                      {`Requested ${relativeDay(r.updatedAt)}`}
-                    </p>
-                    {reach.length > 0 && (
-                      <p className="break-words text-sm text-muted-foreground">
-                        {`Would reach ${reach.join(', ')}`}
-                      </p>
-                    )}
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDismissing(g)}
-                      >
-                        Dismiss
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          setPrefill(prefillFromProposal(r));
-                          setEditing('new');
-                        }}
-                      >
-                        Set it up
-                      </Button>
-                    </div>
-                  </div>
-                </RoleCard>
-              </div>
-            );
-          })}
-        </section>
-      )}
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
 
-      {connectors !== null && list.length > 0 && (
-        <section className="flex flex-col gap-3.5">
-          {list.map((c) => renderTile(c))}
-        </section>
+          {/* Awaiting approval — every person's connector requests. Rendered only
+              when there is at least one. */}
+          {groups.length > 0 && (
+            <section className="flex flex-col gap-3.5">
+              <h2 className="text-sm font-medium">
+                Awaiting approval ({groups.length})
+              </h2>
+              {groups.map((g) => {
+                const r = g.newest;
+                const reach = proposalReach(r.proposal);
+                return (
+                  <div
+                    key={g.connectorId}
+                    data-testid={`connector-request-${g.connectorId}`}
+                  >
+                    <RoleCard
+                      pill="request"
+                      title={r.name}
+                      caption={askedByCaption(g)}
+                    >
+                      <div className="flex flex-col gap-3">
+                        {/* Requests from before an upgrade surface too, so the
+                            age helps an admin spot (and Dismiss) a stale one. */}
+                        <p className="text-xs text-muted-foreground">
+                          {`Requested ${relativeDay(r.updatedAt)}`}
+                        </p>
+                        {reach.length > 0 && (
+                          <p className="break-words text-sm text-muted-foreground">
+                            {`Would reach ${reach.join(', ')}`}
+                          </p>
+                        )}
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDismissing(g)}
+                          >
+                            Dismiss
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setPrefill(prefillFromProposal(r));
+                              setEditing('new');
+                            }}
+                          >
+                            Set it up
+                          </Button>
+                        </div>
+                      </div>
+                    </RoleCard>
+                  </div>
+                );
+              })}
+            </section>
+          )}
+
+          {connectors !== null && list.length > 0 && (
+            <section className="flex flex-col gap-3.5">
+              {list.map((c) => renderTile(c))}
+            </section>
+          )}
+        </>
       )}
 
       {/* Admin curation: create / edit the connector definition. "Set it up"
@@ -374,6 +427,7 @@ export function ConnectorsTab() {
           }}
           onSaved={() => {
             setEditing(null);
+            setView('list');
             void refreshConnectors();
             void refreshRequests();
           }}

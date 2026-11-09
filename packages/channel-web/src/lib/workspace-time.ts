@@ -169,6 +169,19 @@ export function monthDay(iso: string, locale?: string): string {
 }
 
 /**
+ * `monthDay`, plus the year when it isn't the reader's current one: "Nov 3"
+ * this year, "May 1, 2023" otherwise. For a date that can be years old (a
+ * directory listing's last update), where "May 1" alone would read as this
+ * spring. Empty on an instant it can't read. `locale` is for tests.
+ */
+export function monthDayYear(iso: string, now: Date = new Date(), locale?: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  if (d.getFullYear() === now.getFullYear()) return monthDay(iso, locale);
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+}
+
+/**
  * A compact row's time (the task page's check-ins and runs, 2026-10-29):
  * "7:13 PM" today, "Fri 7:13 PM" within the six days before, and "Oct 23"
  * otherwise (older, or a stamp ahead of today). Days are the reader's calendar

@@ -169,6 +169,13 @@ describe('what it shows', () => {
     warn.mockRestore();
   });
 
+  it('never offers the directory, even to an admin', async () => {
+    renderAdd('admin');
+    await ready();
+    expect(screen.queryByRole('button', { name: /find in directory/i })).toBeNull();
+    expect(screen.queryByText('Find a connector')).toBeNull();
+  });
+
   it("reads nobody's saved keys or sign-ins to decide what Add does", async () => {
     renderAdd('admin');
     await ready();

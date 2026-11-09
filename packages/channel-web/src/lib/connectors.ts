@@ -315,6 +315,14 @@ export const CONNECTOR_ID_TAKEN_MESSAGE = 'A connector with this id already exis
 export const CONNECTOR_ID_TAKEN_REQUEST_MESSAGE =
   'A connector with this id already exists. Dismiss this request if it’s no longer needed.';
 
+/**
+ * The same, on an editor opened by "Set it up" from a directory listing. The
+ * editor has no id field, and each Set it up picks a fresh id, so starting
+ * over is the way out.
+ */
+export const CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE =
+  'A connector with this id already exists. Close this and choose Set it up again.';
+
 /** True when a {@link createConnector} failure is the id-taken refusal. */
 export function isConnectorIdTaken(err: unknown): boolean {
   return err instanceof Error && err.message === CONNECTOR_ID_TAKEN;
@@ -492,6 +500,13 @@ export interface ConnectorPrefill {
    * as text in the editor's "This request also asked for" note.
    */
   leftOut?: string[];
+  /**
+   * Set only by `prefillFromDirectoryEntry`: the directory listing this
+   * editor was filled from. Its presence switches the editor's copy from a
+   * request's to the directory's. Opaque: never shown or edited, and not part
+   * of the connector, so the create body doesn't carry it.
+   */
+  fromDirectory?: { directoryId: string; version: string };
 }
 
 export function prefillFromProposal(p: AuthoredProposal): ConnectorPrefill {

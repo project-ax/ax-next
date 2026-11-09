@@ -44,8 +44,11 @@ of servers.
    they proved control of a domain (DNS/HTTP challenge). An `io.github.<user>/…`
    name means they proved control of a GitHub account. Every `io.github…`
    namespace counts as `account`, whatever follows it. Domain-verified entries rank
-   first and show a shield plus the domain. GitHub-namespace entries say "Community ·
-   GitHub user X" and, in detail, "It isn't checked against any company." This is
+   first and show a shield plus the domain. Account-proven entries (every
+   `io.github…` namespace, and any namespace that isn't a clean domain) say
+   "Community · X" and, in detail, "It isn't checked against any company." The UI
+   never says "GitHub": `account` doesn't promise a GitHub account, and a
+   subregistry or curated list can have other kinds. This is
    the defense against a lookalike ("Notion Tasks" by a random user ranks below
    Notion's own). A listing whose verified domain contains the query as a whole
    label also ranks first, because Notion's, Stripe's and PayPal's listings have
