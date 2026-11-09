@@ -167,8 +167,9 @@ describe('the step panel', () => {
     const text = container.textContent ?? '';
     const at = (s: string) => text.indexOf(s);
     expect(at('Making a report')).toBeGreaterThan(-1);
-    expect(at('Making a report')).toBeLessThan(at('Your report is ready.'));
-    expect(at('Your report is ready.')).toBeLessThan(at('Q3 report'));
+    // Work, then the file it made, then what it says about the file.
+    expect(at('Making a report')).toBeLessThan(at('Q3 report'));
+    expect(at('Q3 report')).toBeLessThan(at('Your report is ready.'));
   });
 
   it('keeps narration from between the steps inside the panel, not in the reply', () => {

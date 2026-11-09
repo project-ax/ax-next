@@ -1354,6 +1354,18 @@ function AgentReply({
         */}
         {/* `at` is '' only on the reply still streaming in (see `ThreadMessage`). */}
         {r.activity.length > 0 && <Activity entries={r.activity} live={r.at === ''} published={r.artifacts} />}
+        {/*
+          The file it made, right under the work that made it and ABOVE what
+          it says about it, as Claude draws it: the answer usually talks about
+          the card ("I made the animated SVG…"), so the card comes first.
+        */}
+        {r.artifacts.length > 0 && (
+          <div className="mb-3 flex max-w-[604px] flex-col gap-2">
+            {r.artifacts.map((a) => (
+              <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
+            ))}
+          </div>
+        )}
         {r.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
             <Markdown text={r.text} hideFileDownloadLinks />
@@ -1379,13 +1391,6 @@ function AgentReply({
               >
                 <VisualFrame conversationId={conversationId} visual={v} />
               </Suspense>
-            ))}
-          </div>
-        )}
-        {r.artifacts.length > 0 && (
-          <div className="mt-3 flex max-w-[604px] flex-col gap-2">
-            {r.artifacts.map((a) => (
-              <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
             ))}
           </div>
         )}

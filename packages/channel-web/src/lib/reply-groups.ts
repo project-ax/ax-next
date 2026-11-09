@@ -18,7 +18,8 @@
  *     that comes after its last tool call; when it went quiet after (it
  *     answered, then saved a note to memory), its last words still are.
  *   * the deliverables — visuals, artifact cards, files — from every message
- *     in the run, under the answer.
+ *     in the run. Artifact cards sit between the panel and the answer; the
+ *     rest under it.
  *
  * A run with no steps is left exactly as it was.
  *
