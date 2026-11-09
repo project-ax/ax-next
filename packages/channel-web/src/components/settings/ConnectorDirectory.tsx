@@ -18,12 +18,12 @@
  * after either.
  *
  * ALREADY ADDED. Connector summaries carry no addresses, so while this view
- * is mounted it reads each connector's full record (as the agent rail's Add
- * view does) and marks a listing whose server address one of them already
- * uses (`serverAddressKey`: the same host and path, however it's written). A
- * record that won't load is skipped. The worst case is an unmarked listing,
- * and a duplicate connector is harmless. The list view itself still reads no
- * full records.
+ * is mounted and the directory is searchable it reads each connector's full
+ * record (as the agent rail's Add view does) and marks a listing whose server
+ * address one of them already uses (`serverAddressKey`: the same host and
+ * path, however it's written). A record that won't load is skipped. The worst
+ * case is an unmarked listing, and a duplicate connector is harmless. The
+ * list view itself still reads no full records.
  *
  * UNTRUSTED. Every listing field is third-party registry text, and it renders
  * only through `DirectoryListingRow`: text nodes, the address as its host,
@@ -248,9 +248,13 @@ export function ConnectorDirectory({
   };
 
   // Keyed on each connector's id and last edit rather than on the array, so a
-  // parent that passes an equal new list doesn't re-read every record.
+  // parent that passes an equal new list doesn't re-read every record. Only
+  // while there's a list to mark: turned off, never synced, or not loaded
+  // reads nothing.
+  const searchable = load.kind === 'ready' && load.page.enabled && load.page.syncedAt !== null;
   const connectorsKey = connectors.map((c) => `${c.id}@${c.updatedAt}`).join('|');
   useEffect(() => {
+    if (!searchable) return;
     let cancelled = false;
     void Promise.allSettled(connectors.map((c) => getConnector(c.id, '/admin/connectors'))).then((settled) => {
       if (cancelled) return;
@@ -264,7 +268,7 @@ export function ConnectorDirectory({
     return () => {
       cancelled = true;
     };
-  }, [connectorsKey]);
+  }, [connectorsKey, searchable]);
 
   const isAdded = (entry: DirectoryEntry): boolean => {
     const key = serverAddressKey(entry.url);

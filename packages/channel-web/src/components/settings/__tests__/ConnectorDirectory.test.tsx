@@ -715,14 +715,49 @@ describe('ConnectorDirectory', () => {
       expect(getConnector).toHaveBeenCalledTimes(2);
     });
 
+    it('reads no connector while there is nothing to search', async () => {
+      // Turned off, never synced, couldn't load: no list will ever be marked.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      search.mockImplementation(async () => directoryLib.directoryOffPage());
+      const off = renderDirectory([SUMMARY]);
+      await screen.findByText(OFF_TITLE);
+      await pass(0);
+      off.unmount();
+
+      search.mockImplementation(async () => directoryPage({ syncedAt: null }));
+      const notYet = renderDirectory([SUMMARY]);
+      await screen.findByText(NOT_YET_TITLE);
+      await pass(0);
+      notYet.unmount();
+
+      search.mockRejectedValue(new Error('search directory: 500'));
+      renderDirectory([SUMMARY]);
+      await screen.findByRole('alert');
+      await pass(0);
+      expect(warn).toHaveBeenCalled();
+      expect(getConnector).not.toHaveBeenCalled();
+    });
+
+    it('reads the connectors once the directory turns out searchable', async () => {
+      // Never synced at first, then Try again finds a synced list.
+      search.mockResolvedValueOnce(directoryPage({ syncedAt: null }));
+      renderDirectory([SUMMARY]);
+      fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+      await searchBox();
+      await waitFor(() => expect(getConnector).toHaveBeenCalledTimes(1));
+      expect(getConnector).toHaveBeenCalledWith(SUMMARY.id, '/admin/connectors');
+    });
+
     it('an older read that answers late never overwrites a newer one', async () => {
       const firstRead = deferred<Connector>();
       getConnector.mockImplementationOnce(() => firstRead.promise);
       getConnector.mockImplementation(async () => fullConnector(SUMMARY, [linear.url]));
       const { setConnectors } = renderDirectory([SUMMARY]);
+      const box = await searchBox();
+      await waitFor(() => expect(getConnector).toHaveBeenCalledTimes(1));
       // The connector was edited to Linear's address before its first read answered.
       setConnectors([{ ...SUMMARY, updatedAt: '2026-11-02T00:00:00.000Z' }]);
-      typeQuery(await searchBox(), 'linear');
+      typeQuery(box, 'linear');
       await screen.findByRole('button', { name: 'Details for Linear' });
       expect(await within(row('Linear')).findByText('Added')).toBeInTheDocument();
 
