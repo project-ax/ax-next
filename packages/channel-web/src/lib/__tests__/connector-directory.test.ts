@@ -104,6 +104,20 @@ describe('normalizeDirectoryPage', () => {
       ['a/missing', 'account'],
     ]);
 
+    // A shield that names no one proves nothing: no publisher, no domain proof.
+    const unnamed = entriesOf([
+      wire({ id: 'a/empty', publisherProof: 'domain', publisher: '' }),
+      wire({ id: 'a/spaces', publisherProof: 'domain', publisher: '   ' }),
+      wire({ id: 'a/absent', publisherProof: 'domain' }, ['publisher']),
+      wire({ id: 'a/number', publisherProof: 'domain', publisher: 7 }),
+    ]).map((e) => [e.id, e.publisherProof]);
+    expect(unnamed).toEqual([
+      ['a/empty', 'account'],
+      ['a/spaces', 'account'],
+      ['a/absent', 'account'],
+      ['a/number', 'account'],
+    ]);
+
     const auths = entriesOf([
       wire({ id: 'b/key', auth: 'key' }),
       wire({ id: 'b/signin', auth: 'signin' }),

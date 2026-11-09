@@ -16,12 +16,13 @@
  * host cleans it at sync and shapes it at the route, and this module still
  * reads it defensively, because a host bug must not be able to put a
  * verified shield on a listing. `normalizeDirectoryPage` NEVER UPGRADES
- * TRUST: only an exact `'domain'` is a proven publisher, only an exact
- * `'key'` or `'signin'` claims a way to connect, a listing without an id or
- * an address the editor can save (`serverHost`) is dropped, and `keyHeader` and `nextCursor` survive only
- * when they fit the rules the editor and the route apply. Callers render
- * every string as a React text node and show the address only as its host
- * (`directoryHost`), never as a link.
+ * TRUST: only an exact `'domain'` with a publisher named is a proven
+ * publisher, only an exact `'key'` or `'signin'` claims a way to connect, a
+ * listing without an id or an address the editor can save (`serverHost`) is
+ * dropped, and `keyHeader` and `nextCursor` survive only when they fit the
+ * rules the editor and the route apply. Callers render every string as a
+ * React text node and show the address only as its host (`directoryHost`),
+ * never as a link.
  */
 import { newHeaderSlot } from './connector-credential-slots';
 import type { Connector, ConnectorCredentialSlot, ConnectorPrefill } from './connectors';
@@ -119,12 +120,14 @@ function normalizeEntry(raw: unknown): DirectoryEntry | null {
   const title = text(raw.title);
   const auth: DirectoryAuth = raw.auth === 'key' || raw.auth === 'signin' ? raw.auth : 'none';
   const keyHeader = text(raw.keyHeader);
+  const publisher = text(raw.publisher);
   return {
     id,
     title: title.trim() ? title : id,
     description: text(raw.description),
-    publisher: text(raw.publisher),
-    publisherProof: raw.publisherProof === 'domain' ? 'domain' : 'account',
+    publisher,
+    // A verified shield must name who it verifies.
+    publisherProof: raw.publisherProof === 'domain' && publisher.trim() !== '' ? 'domain' : 'account',
     url,
     auth,
     ...(auth === 'key' && headerNamePattern.test(keyHeader) && { keyHeader }),
