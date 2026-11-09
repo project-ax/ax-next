@@ -601,6 +601,8 @@ export function AgentView({
    * agent's in-between words in the panel title instead of the reply body.
    */
   const [liveSegments, setLiveSegments] = useState<readonly LiveSegment[]>([]);
+  /** Call id → the host's summary of what the agent meant it to do. */
+  const [liveIntents, setLiveIntents] = useState<ReadonlyMap<string, string>>(new Map());
   /*
     Visuals the in-flight (or just-ended) turn showed, with the conversation
     they were shown in. Unlike the rest of the live turn this OUTLIVES `done`:
@@ -1004,6 +1006,7 @@ export function AgentView({
     setSent(null);
     setLiveCalls([]);
     setLiveSegments([]);
+    setLiveIntents(new Map());
     setWitnessed(new Set());
     setStreamConversation(null);
     setPhase(null);
@@ -1014,6 +1017,7 @@ export function AgentView({
     setSent(null);
     setLiveCalls([]);
     setLiveSegments([]);
+    setLiveIntents(new Map());
     setLiveVisuals(null);
     setWitnessed(new Set());
     setStreamConversation(null);
@@ -1067,6 +1071,7 @@ export function AgentView({
       setStreaming(true);
         setLiveCalls([]);
     setLiveSegments([]);
+    setLiveIntents(new Map());
       visualsTurnRef.current += 1;
       setLiveVisuals(null);
       setWitnessed(new Set());
@@ -1111,6 +1116,8 @@ export function AgentView({
           this agent's — the reload path's rule. A failed read draws nothing:
           the re-read brings the card if it is real.
         */
+        onStepSummary: ({ toolCallId, text }) =>
+          setLiveIntents((prev) => new Map(prev).set(toolCallId, text)),
         onArtifactClaim: (artifactId) => {
           const conversationId = turnConversation;
           if (conversationId === null) return;
@@ -1692,7 +1699,10 @@ export function AgentView({
   const connectorNames = connectorNamesFromRows(detail.connectorTools);
   const liveReply = liveReplyMessages(
     liveSegments,
-    settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)),
+    settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)).map((c) => {
+      const intent = liveIntents.get(c.id);
+      return intent === undefined ? c : { ...c, intent };
+    }),
     connectorNames,
   );
   const hasLiveContent = liveReply.length > 0;

@@ -110,6 +110,13 @@ export interface WorkspaceToolCall {
    * `workspace-api.ts` exactly as it did before.
    */
   detail?: string | undefined;
+  /**
+   * What the agent was setting out to do with this call, in one plain line
+   * ("Working out the leg motion with a script."): the host's summary of the
+   * reasoning that came before it (`@ax/step-summaries`). Never the reasoning
+   * itself. Untrusted model text, fenced again by `shapeSteps`.
+   */
+  intent?: string | undefined;
   status: WorkspaceStepStatus;
 }
 
@@ -154,6 +161,8 @@ export interface WorkspaceStep {
    * line a collapsed panel shows while the step is still going.
    */
   doing?: string;
+  /** See {@link WorkspaceToolCall.intent}: what the agent meant this step to do. */
+  intent?: string;
 }
 
 /**
@@ -520,6 +529,9 @@ export function stepDetail(input: unknown): string | undefined {
   return undefined;
 }
 
+/** A summary is one short line; anything longer is not the summary we asked for. */
+export const STEP_INTENT_MAX_CHARS = 120;
+
 /** Suffixes that make a row say what state it is in, rather than implying one. */
 const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
   // "in progress", not "running": a program runs, a person's errand is in
@@ -699,12 +711,14 @@ export function shapeSteps(
     // reader who cannot see the difference between two greys still has to be
     // told what happened.
     const text = call.status === 'done' ? name : `${name} — ${STATUS_SUFFIX[call.status]}`;
+    const intent = fenceLine(call.intent ?? null, STEP_INTENT_MAX_CHARS);
     steps.push({
       text,
       status: call.status,
       kind,
       doing,
       ...(detail !== undefined ? { detail } : {}),
+      ...(intent !== null && intent.length > 0 ? { intent } : {}),
     });
   }
   return { label: stepsTitle(steps), steps };

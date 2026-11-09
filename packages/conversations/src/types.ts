@@ -221,7 +221,13 @@ export interface GetOutput {
 export type ConversationEventKind =
   | 'turn'
   | 'permission-card'
-  | 'turn-error';
+  | 'turn-error'
+  /**
+   * The host's one-line summary of what the agent set out to do with one tool
+   * call (`@ax/step-summaries`). Fold key = the call id; payload `{ text }`.
+   * Model output, untrusted: the renderer fences it and draws plain text.
+   */
+  | 'step-summary';
 
 /**
  * One host-only display event (a `permission-card` or a `turn-error`),

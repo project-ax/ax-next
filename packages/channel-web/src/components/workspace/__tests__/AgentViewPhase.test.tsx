@@ -233,6 +233,24 @@ describe('the phase status line', () => {
     expect(screen.queryByText('not yours')).toBeNull();
   });
 
+  it('titles the running step with its summary, and lists it above the step', async () => {
+    // The host's line for what the agent set out to do (Claude's
+    // "Working out the leg motion with a script.") replaces the bare step name.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'node legs.js' });
+    });
+    await waitFor(() => expect(screen.getByText('Running a command…')).toBeTruthy());
+    act(() => handlers.onStepSummary?.({ toolCallId: 'tu1', text: 'Working out the leg motion with a script.' }));
+    const panel = await screen.findByTestId('workspace-steps');
+    await waitFor(() => expect(within(panel).getByText('Working out the leg motion with a script.')).toBeTruthy());
+    fireEvent.click(within(panel).getByText('Working out the leg motion with a script.'));
+    const items = within(panel).getAllByRole('listitem').map((li) => li.textContent ?? '');
+    expect(items[0]).toBe('Working out the leg motion with a script.');
+    expect(items[1]).toContain('Ran a command');
+  });
+
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {
     await startTurn((h) => {
       h.onText('Here we go.');

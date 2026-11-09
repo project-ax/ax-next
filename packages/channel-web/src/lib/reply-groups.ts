@@ -39,7 +39,12 @@ import type { WorkspaceStep } from './workspace-steps';
 
 /** One line of a reply's activity, in the order it happened. */
 export type ActivityEntry =
-  | { kind: 'note'; turnId: string; text: string }
+  /**
+   * `intent` marks the host's one-line summary of what a step set out to do,
+   * drawn as plain text: it is a model's words about a model's reasoning, and
+   * it never gets markdown (a link in it would be a link nobody wrote).
+   */
+  | { kind: 'note'; turnId: string; text: string; intent?: true }
   | { kind: 'step'; step: WorkspaceStep };
 
 /** A reply that ran tools, folded out of its turns. */
@@ -98,7 +103,12 @@ function fold(run: AgentLike[]): ReplyGroup {
   const activity: ActivityEntry[] = [];
   run.forEach((m, i) => {
     if (m.text.length > 0 && i !== answerAt) activity.push({ kind: 'note', turnId: m.id, text: m.text });
-    if (m.kind === 'steps') for (const step of m.steps) activity.push({ kind: 'step', step });
+    if (m.kind === 'steps') {
+      for (const step of m.steps) {
+        if (step.intent !== undefined) activity.push({ kind: 'note', turnId: m.id, text: step.intent, intent: true });
+        activity.push({ kind: 'step', step });
+      }
+    }
   });
 
   const visuals = new Map<string, ThreadVisual>();

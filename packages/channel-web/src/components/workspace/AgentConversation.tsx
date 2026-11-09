@@ -1466,7 +1466,7 @@ const STEP_MARK: Record<
 };
 
 type ActivityRow =
-  | { kind: 'note'; turnId: string; text: string }
+  | Extract<ActivityEntry, { kind: 'note' }>
   | { kind: 'step'; step: WorkspaceStep }
   | { kind: 'group'; stepKind: Exclude<StepKind, 'other'>; steps: WorkspaceStep[] };
 
@@ -1660,6 +1660,13 @@ function Activity({
       <CollapsibleContent>
         <ul className="mt-2 ml-[5px] flex flex-col gap-2 border-l border-border pl-4 text-[13px]">
           {rows.map((row, i) => {
+            if (row.kind === 'note' && row.intent === true) {
+              return (
+                <li key={`${i}-intent`} className="text-muted-foreground">
+                  {row.text}
+                </li>
+              );
+            }
             if (row.kind === 'note') {
               return (
                 <li key={`${i}-note`} className="text-muted-foreground [&_p]:my-0">

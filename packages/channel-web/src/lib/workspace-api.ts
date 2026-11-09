@@ -82,7 +82,8 @@ import {
 import { readSseFrames, type FrameVerdict, type SeqCursor } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
-import { stepDetail } from './workspace-steps';
+import { STEP_INTENT_MAX_CHARS, stepDetail } from './workspace-steps';
+import { fenceLine } from './fence-line';
 import { isShowVisualToolName, visualFromToolResult } from './visual-result';
 import { claimedArtifactId, isArtifactPublishToolName } from './published-artifact';
 // The store owns "can this build draw it?", because `grantKey` is the function
@@ -1103,6 +1104,11 @@ export interface StreamHandlers {
    * reads the card from the store before drawing it (lib/published-artifact).
    */
   onArtifactClaim?: (artifactId: string) => void;
+  /**
+   * The host's one-line summary of what the agent set out to do with a call
+   * (`step-summary` frame). Never the reasoning it was written from.
+   */
+  onStepSummary?: (summary: { toolCallId: string; text: string }) => void;
   /**
    * Sandbox provisioning changed phase (`sandbox-starting` / `sandbox-ready`).
    *
@@ -2329,6 +2335,7 @@ async function streamReply(
     onToolResult,
     onVisual,
     onArtifactClaim,
+    onStepSummary,
     onPhase,
     onDecisionRaised,
     onPermissionRequest,
@@ -2447,6 +2454,13 @@ async function streamReply(
           activityPhrase: frame.activityPhrase,
           detail: stepDetail(frame.input),
         });
+      }
+      return 'continue';
+    }
+    if ('kind' in frame && frame.kind === 'step-summary') {
+      if (onStepSummary && typeof frame.toolCallId === 'string' && typeof frame.text === 'string') {
+        const text = fenceLine(frame.text, STEP_INTENT_MAX_CHARS);
+        if (text !== null && text.length > 0) onStepSummary({ toolCallId: frame.toolCallId, text });
       }
       return 'continue';
     }

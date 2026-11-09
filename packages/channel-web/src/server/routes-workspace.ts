@@ -331,6 +331,7 @@ import {
 import {
   settleHolds,
   shapeSteps,
+  STEP_INTENT_MAX_CHARS,
   stepDetail,
   type LiveHolds,
   type WorkspaceStepStatus,
@@ -729,7 +730,7 @@ interface ConversationsGetInput {
  * before it leaves here, never spread.
  */
 interface DisplayEventRow {
-  kind: 'permission-card' | 'turn-error';
+  kind: 'permission-card' | 'turn-error' | 'step-summary';
   key: string;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -3762,10 +3763,27 @@ function toolOutcomes(
  * call waiting on a person has not failed, and the runners publish held
  * results with `is_error` omitted.
  */
+/**
+ * Call id → the host's one-line summary of what the agent set out to do with
+ * it (`step-summary` display events, written by `@ax/step-summaries`). The
+ * event's fold key is the call id; the text is model output, fenced here and
+ * again by `shapeSteps`, and drawn as plain text.
+ */
+function stepIntents(events: readonly DisplayEventRow[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const ev of events) {
+    if (ev.kind !== 'step-summary') continue;
+    const text = typeof ev.payload.text === 'string' ? fenceLine(ev.payload.text, STEP_INTENT_MAX_CHARS) : null;
+    if (ev.key.length > 0 && text !== null && text.length > 0) out.set(ev.key, text);
+  }
+  return out;
+}
+
 function turnToolCalls(
   blocks: TurnBlock[],
   outcomes: ReadonlyMap<string, { isError: boolean; held: boolean }>,
   live: LiveHolds | null,
+  intents: ReadonlyMap<string, string> = new Map(),
 ): WorkspaceToolCall[] {
   const calls: WorkspaceToolCall[] = [];
   for (const block of blocks) {
@@ -3785,6 +3803,7 @@ function turnToolCalls(
       name: block.name,
       phrase: block.activityPhrase,
       detail: stepDetail(block.input),
+      intent: intents.get(block.id),
       status,
     });
   }
@@ -4036,6 +4055,7 @@ function buildThread(
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
+  const intents = stepIntents(displayEvents);
   const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
     block.type === 'tool_use' && typeof block.id === 'string' &&
     PUBLISH_TOOL_NAMES.has(block.name ?? '')
@@ -4155,7 +4175,7 @@ function buildThread(
       });
       continue;
     }
-    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live), connectors);
+    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live, intents), connectors);
     if (text.length === 0 && panel === null) continue;
     dated.push({
       at: turn.createdAt,

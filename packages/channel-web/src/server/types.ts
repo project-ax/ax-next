@@ -7,7 +7,7 @@
 // import path into channel-web's react bundle.
 // ---------------------------------------------------------------------------
 
-export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result';
+export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result' | 'step-summary';
 
 /**
  * One streaming chunk observation. Matches `EventStreamChunkSchema`'s
@@ -31,6 +31,14 @@ export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result';
  */
 export type StreamChunk =
   | { reqId: string; kind: 'text'; text: string; seq?: number }
+  /**
+   * HOST-produced, never from the runner: `@ax/step-summaries`' one-line
+   * account of what the agent set out to do with `toolCallId`, written by a
+   * small model from the reasoning before the call. The reasoning itself
+   * never rides this frame. `text` is still model output (J2): fenced again
+   * at the buffer and drawn as plain text.
+   */
+  | { reqId: string; kind: 'step-summary'; toolCallId: string; text: string; seq?: number }
   | { reqId: string; kind: 'thinking'; text: string; seq?: number }
   | {
       reqId: string;
