@@ -184,6 +184,13 @@ export function deriveAuth(headers: unknown): { auth: DirectoryAuth; keyHeader?:
  * with an alphabetic or `xn--` top-level label is a proven domain, written the
  * usual way round. Anything else is an account named as written: proof never
  * upgrades on a guess.
+ *
+ * `'domain'` is read from the namespace's SHAPE, so it is proof only because
+ * the source registry verifies namespace ownership before it accepts a
+ * publish (the official one does: a DNS or HTTP challenge for a reverse-DNS
+ * namespace, a GitHub sign-in for `io.github.*`). Against a subregistry that
+ * does not verify namespaces, every reverse-DNS name would read as a proven
+ * domain; the chart's `connectorDirectory.registryUrl` comment says so.
  */
 export function derivePublisher(namespace: string): {
   publisher: string;

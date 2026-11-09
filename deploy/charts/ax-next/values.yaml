@@ -811,6 +811,11 @@ webTools:
 # registryUrl: empty means https://registry.modelcontextprotocol.io. A
 # subregistry must be https and, under the default network policy, on port 443.
 # Changing it clears the old copy and crawls the new source in full.
+# Heads up: "verified domain" is read from each listing's name (com.example/...
+# means example.com). That only counts as proof because the official registry
+# checks that a publisher owns the domain before it accepts the name. Point
+# this at a subregistry that doesn't check, and every reverse-DNS name looks
+# verified.
 #
 # verifiedPublishersOnly: hides listings whose publisher proved only a GitHub
 # account (domain-verified publishers stay). Admins can still add any server
