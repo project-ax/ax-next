@@ -24,12 +24,12 @@ const recent = new Date().toISOString();
 function chats(over: Partial<SidebarChatList> = {}): SidebarChatList {
   return {
     agentId: 'a1',
-    conversationId: 'c-live',
-    past: [
+    chats: [
+      { id: 'c-live', title: 'Plan the offsite', lastActivityAt: recent },
       { id: 'c-launch', title: 'Launch checklist', lastActivityAt: recent },
       { id: 'c-vendor', title: 'Vendor review', lastActivityAt: recent },
     ],
-    openPastId: null,
+    openId: 'c-live',
     busy: false,
     ...over,
   };
@@ -42,7 +42,7 @@ function renderChats(over: Partial<React.ComponentProps<typeof SidebarChats>> = 
     error: false,
     showSelection: true,
     onOpen: vi.fn(),
-    onNew: vi.fn(async () => {}),
+    onNew: vi.fn(),
     onChanged: vi.fn(),
     ...over,
   };
@@ -61,10 +61,13 @@ beforeEach(() => {
 });
 
 describe('SidebarChats — the list', () => {
-  it('draws the live conversation first, then past chats, and opens them', () => {
+  it('names every chat by its title — the latest one too — and opens them', () => {
     const { props } = renderChats();
-    fireEvent.click(screen.getByRole('button', { name: /^Current conversation/ }));
-    expect(props.onOpen).toHaveBeenLastCalledWith(null);
+    expect(screen.queryByText(/Current conversation/)).toBeNull();
+    const names = screen.getAllByRole('listitem').map((li) => li.querySelector('button')?.textContent);
+    expect(names).toEqual(['Plan the offsite', 'Launch checklist', 'Vendor review']);
+    fireEvent.click(screen.getByRole('button', { name: 'Plan the offsite' }));
+    expect(props.onOpen).toHaveBeenLastCalledWith('c-live');
     fireEvent.click(screen.getByRole('button', { name: 'Vendor review' }));
     expect(props.onOpen).toHaveBeenLastCalledWith('c-vendor');
   });
@@ -81,12 +84,13 @@ describe('SidebarChats — the list', () => {
   });
 
   it('marks the open chat only when asked to show the selection', () => {
-    const { unmount } = renderChats({ chats: chats({ openPastId: 'c-vendor' }) });
+    const { unmount } = renderChats({ chats: chats({ openId: 'c-vendor' }) });
     expect(screen.getByRole('button', { name: 'Vendor review' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Plan the offsite' })).not.toHaveAttribute('aria-current');
     unmount();
-    renderChats({ chats: chats({ openPastId: 'c-vendor' }), showSelection: false });
+    renderChats({ chats: chats({ openId: 'c-vendor' }), showSelection: false });
     expect(screen.getByRole('button', { name: 'Vendor review' })).not.toHaveAttribute('aria-current');
-    expect(screen.getByRole('button', { name: /^Current conversation/ })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('button', { name: 'Plan the offsite' })).not.toHaveAttribute('aria-current');
   });
 
   it('says so when the chats could not be read', () => {
@@ -107,16 +111,10 @@ describe('SidebarChats — New chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     await waitFor(() => expect(props.onNew).toHaveBeenCalledTimes(1));
   });
-
-  it('reports a failed start in place', async () => {
-    renderChats({ onNew: vi.fn(async () => { throw new Error('boom'); }) });
-    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
-    expect(await screen.findByText('We couldn’t finish that just now. Please try again.')).toBeTruthy();
-  });
 });
 
 describe('SidebarChats — Search (titles only)', () => {
-  it('filters by title and hides the live conversation while filtering', () => {
+  it('filters every chat by title, the latest one included', () => {
     renderChats();
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     const box = screen.getByRole('searchbox', { name: 'Search chats by title' });
@@ -124,7 +122,9 @@ describe('SidebarChats — Search (titles only)', () => {
     fireEvent.change(box, { target: { value: 'VENDOR' } });
     expect(screen.getByRole('button', { name: 'Vendor review' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Launch checklist' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Current conversation/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Plan the offsite' })).toBeNull();
+    fireEvent.change(box, { target: { value: 'offsite' } });
+    expect(screen.getByRole('button', { name: 'Plan the offsite' })).toBeTruthy();
   });
 
   it('says so when no title matches', () => {
@@ -194,8 +194,8 @@ describe('SidebarChats — each chat’s ⋮ menu', () => {
     await waitFor(() => expect(props.onChanged).toHaveBeenCalledTimes(1));
   });
 
-  it('deleting the open chat sends the view back to the live one', async () => {
-    const { props } = renderChats({ chats: chats({ openPastId: 'c-vendor' }) });
+  it('deleting the open chat sends the view to the latest one left', async () => {
+    const { props } = renderChats({ chats: chats({ openId: 'c-vendor' }) });
     openRowMenu('Vendor review');
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
@@ -205,7 +205,7 @@ describe('SidebarChats — each chat’s ⋮ menu', () => {
   });
 
   it('deleting another chat leaves the open one alone', async () => {
-    const { props } = renderChats({ chats: chats({ openPastId: 'c-vendor' }) });
+    const { props } = renderChats({ chats: chats({ openId: 'c-vendor' }) });
     openRowMenu('Launch checklist');
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));

@@ -410,8 +410,9 @@ describe('the never-stuck fallback', () => {
     expect(sendBtn()).not.toBeNull();
     expect(field()).not.toBeDisabled();
     expect(note()).toHaveTextContent(STOPPED_NOTICE);
-    // The half-reply was a transient copy: the durable thread is re-read.
-    expect(agentMock).toHaveBeenCalledWith('a1');
+    // The half-reply was a transient copy: the durable thread is re-read —
+    // the chat on screen, by name.
+    expect(agentMock).toHaveBeenCalledWith('a1', 'c1');
     expect(onChanged).toHaveBeenCalled();
   });
 

@@ -64,8 +64,14 @@ export interface Conversation {
   userId: string;
   /** Frozen at create (Invariant I10). Never updated. */
   agentId: string;
-  /** Nullable; MVP doesn't auto-generate. */
+  /** Nullable until the first message (or the title model) names it. */
   title: string | null;
+  /**
+   * The title is a stand-in taken from the person's first message, waiting
+   * for the title model's summary. `false` for a model- or user-written title
+   * and for no title.
+   */
+  titleProvisional: boolean;
   /** Nullable; cleared in Task 14. */
   activeSessionId: string | null;
   /** Nullable; the in-flight reqId, if any (Invariant J7). */
@@ -143,8 +149,13 @@ export interface Conversation {
 export interface CreateInput {
   userId: string;
   agentId: string;
-  /** Optional title — MVP leaves it null. */
+  /** Optional title. */
   title?: string | null;
+  /**
+   * Mark `title` as a stand-in the title model may replace (see
+   * `Conversation.titleProvisional`). Ignored without a title.
+   */
+  titleProvisional?: boolean;
   /**
    * Phase D (2026-05-17). Routine per-fire conversations create with
    * `hidden: true` so they don't appear in the chat sidebar. Defaults
@@ -614,6 +625,12 @@ export interface SetTitleInput {
    * single-statement compare-and-set). Defaults to false.
    */
   ifNull?: boolean;
+  /**
+   * When true, only writes if the existing title is NULL OR still a
+   * provisional stand-in — how the title model replaces the first-message
+   * title without ever replacing a rename. Atomic, like `ifNull`.
+   */
+  ifProvisional?: boolean;
 }
 export interface SetTitleOutput {
   /**

@@ -443,6 +443,7 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.conversationId).toBeNull();
     expect(body.thread).toEqual([]);
     expect(body.past).toEqual([]);
+    expect(body.latest).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -1881,8 +1882,11 @@ describe('channel-web agent-workspace BFF', () => {
     const body = captured.body as {
       conversationId: string | null;
       past: Array<{ id: string; title: string; lastActivityAt: string }>;
+      latest: { id: string; title: string; lastActivityAt: string } | null;
     };
     expect(body.conversationId).toBe('newest');
+    // The current chat travels as a row too, so the sidebar can name it.
+    expect(body.latest).toMatchObject({ id: 'newest', title: 'Right now' });
     expect(body.past.map((p) => p.id)).toEqual(['middle', 'old']);
     expect(body.past[0]!.title).toBe('Untitled conversation');
     // TASK-435: `meta` (a server-formatted "3 days ago") is gone — the wire
@@ -1894,6 +1898,35 @@ describe('channel-web agent-workspace BFF', () => {
     // "0 messages were summarised". The excerpt now comes from a real re-read
     // through `?conversationId=`.
     expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'lastActivityAt']);
+  });
+
+  it('names the newest chat as `latest` even when an older one is opened', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [
+      conv({ conversationId: 'old', agentId: 'a1', title: 'Last month', createdAt: '2026-07-01T10:00:00.000Z' }),
+      conv({
+        conversationId: 'newest',
+        agentId: 'a1',
+        title: 'Right now',
+        createdAt: '2026-07-02T10:00:00.000Z',
+        lastActivityAt: new Date().toISOString(),
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    const req = { ...mkReq({ agentId: 'a1' }), query: { [CONVERSATION_ID_QUERY_KEY]: 'old' } };
+    await h.agentDetail(req, res);
+    const body = captured.body as {
+      conversationId: string | null;
+      past: Array<{ id: string }>;
+      latest: { id: string; title: string } | null;
+    };
+    // The thread is the one asked for; the list around it is unchanged, so
+    // the sidebar draws the same rows whichever chat is open.
+    expect(body.conversationId).toBe('old');
+    expect(body.latest).toMatchObject({ id: 'newest', title: 'Right now' });
+    expect(body.past.map((p) => p.id)).toEqual(['old']);
   });
 
   it('fences a past conversation title like every other label out of this file', async () => {

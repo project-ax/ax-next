@@ -58,8 +58,7 @@ import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { grantResumedTitle } from '@/lib/grant-copy';
-import { conversationControls } from '@/lib/conversation-controls';
-import type { SidebarChatCommand, SidebarChatList } from '@/lib/sidebar-chats';
+import { chatsFromDetail, type SidebarChatCommand, type SidebarChatList } from '@/lib/sidebar-chats';
 import {
   DEFAULT_SETTINGS_SECTION,
   parseWorkspaceRoute,
@@ -564,9 +563,8 @@ function Inner({
         if (cancelled) return;
         setReadChats({
           agentId: selectedAgentId,
-          conversationId: d.conversationId,
-          past: d.past,
-          openPastId: null,
+          chats: chatsFromDetail(d),
+          openId: null,
           busy: false,
         });
       } catch (e) {
@@ -592,8 +590,8 @@ function Inner({
   const commandNonce = useRef(0);
   const sendChatCommand = (
     command:
-      | { kind: 'open'; agentId: string; pastId: string | null }
-      | { kind: 'new'; agentId: string; conversationId: string },
+      | { kind: 'open'; agentId: string; conversationId: string | null }
+      | { kind: 'new'; agentId: string },
   ) => {
     commandNonce.current += 1;
     setChatCommand({ ...command, nonce: commandNonce.current });
@@ -602,16 +600,18 @@ function Inner({
     if (now.kind !== 'agent' || now.id !== command.agentId)
       navigate({ kind: 'agent', id: command.agentId, tab: 'chat' });
   };
-  const onOpenChat = (pastId: string | null) => {
+  const onOpenChat = (conversationId: string | null) => {
     if (selectedAgentId === null) return;
-    sendChatCommand({ kind: 'open', agentId: selectedAgentId, pastId });
+    sendChatCommand({ kind: 'open', agentId: selectedAgentId, conversationId });
   };
-  // Rejects on a failed create — the sidebar's button reports it in place.
-  const onNewChat = async () => {
+  /*
+    An empty chat to type into. Nothing is created until the first message is
+    sent (the message route creates the chat then, named after that message),
+    so the list never fills with chats nobody wrote in.
+  */
+  const onNewChat = () => {
     if (selectedAgentId === null) return;
-    const agentId = selectedAgentId;
-    const created = await conversationControls.create(agentId);
-    sendChatCommand({ kind: 'new', agentId, conversationId: created.conversationId });
+    sendChatCommand({ kind: 'new', agentId: selectedAgentId });
   };
   /*
     Generic "Agent settings" from the sidebar opens the phone section list,

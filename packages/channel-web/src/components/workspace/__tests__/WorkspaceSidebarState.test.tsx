@@ -182,9 +182,11 @@ describe('the Tasks row (TASK-909)', () => {
 describe('the sidebar chat list', () => {
   const chats = {
     agentId: 'a1',
-    conversationId: 'c-live',
-    past: [{ id: 'c-old', title: 'Old plans', lastActivityAt: new Date().toISOString() }],
-    openPastId: 'c-old',
+    chats: [
+      { id: 'c-live', title: 'New plans', lastActivityAt: new Date().toISOString() },
+      { id: 'c-old', title: 'Old plans', lastActivityAt: new Date().toISOString() },
+    ],
+    openId: 'c-old',
     busy: false,
   };
 

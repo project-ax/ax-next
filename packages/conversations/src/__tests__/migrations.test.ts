@@ -252,6 +252,28 @@ describe('Phase B migration', () => {
     expect(row.hidden).toBe(false);
   });
 
+  it('adds title_provisional defaulting to false, so every existing title stays final', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    await db
+      .insertInto('conversations_v1_conversations')
+      .values({
+        conversation_id: 'c-provisional-default',
+        user_id: 'u1',
+        agent_id: 'a1',
+        title: 'Named before the column existed',
+      })
+      .execute();
+    // Idempotent: a second boot re-runs the ADD COLUMN IF NOT EXISTS.
+    await runConversationsMigration(db);
+    const row = await db
+      .selectFrom('conversations_v1_conversations')
+      .select(['title_provisional'])
+      .where('conversation_id', '=', 'c-provisional-default')
+      .executeTakeFirstOrThrow();
+    expect(row.title_provisional).toBe(false);
+  });
+
   it('existing rows survive the migration with NULL Phase B columns (no backfill)', async () => {
     const db = makeKysely();
     // Simulate a pre-Phase-B row by running the original CREATE TABLE,

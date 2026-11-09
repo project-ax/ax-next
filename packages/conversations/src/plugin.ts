@@ -1455,10 +1455,13 @@ async function createConversation(
   // "the caller said nothing" and "the caller said undefined" stay the same
   // thing all the way to the INSERT.
   const origin = validateOptionalOrigin(input.origin, 'origin');
+  const titleProvisional =
+    validateOptionalBoolean(input.titleProvisional, 'titleProvisional') ?? false;
   const conv = await store.create({
     userId: input.userId,
     agentId: input.agentId,
     title,
+    titleProvisional,
     runnerType: validateRunnerType(agent.runner ?? null),
     hidden,
     ...(origin === undefined ? {} : { origin }),
@@ -1487,6 +1490,7 @@ async function setConversationTitle(
       message: 'title must be a non-empty string',
     });
   }
+  const ifProvisional = validateOptionalBoolean(input.ifProvisional, 'ifProvisional');
   // Load the row first with the user_id pre-filter. A foreign or
   // tombstoned row collapses to 'not-found' identically — the
   // agents:resolve gate runs ONLY after we've confirmed the row
@@ -1512,6 +1516,7 @@ async function setConversationTitle(
     // explicitly set it. Spreading the property absent-when-undefined
     // matches the store's optional-property contract.
     ...(input.ifNull === undefined ? {} : { ifNull: input.ifNull }),
+    ...(ifProvisional === undefined ? {} : { ifProvisional }),
   });
 
   // Live-title push (invariant #4 — single source of truth): the only

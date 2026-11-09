@@ -5,10 +5,10 @@
  *
  * Three regressions are pinned here:
  *
- *   1. A past conversation used to render a lone divider reading "Earlier turns
+ *   1. An older conversation used to render a lone divider reading "Earlier turns
  *      were summarised into memory · 0 messages folded" over an empty
  *      transcript. Three claims, none of them true: nothing was summarised, the
- *      zero was a fixture, and the excerpt was never fetched.
+ *      zero was a fixture, and the chat was never fetched.
  *   2. The agent-load error printed a raw code inside the sentence and told the
  *      reader to try again with no way to do it.
  *   3. The dropped-stream error said "send it again" twice and meant RETYPE —
@@ -156,9 +156,9 @@ function SidebarStandIn(props: ComponentProps<typeof AgentView>) {
   const [chats, setChats] = useState<SidebarChatList | null>(null);
   const [command, setCommand] = useState<SidebarChatCommand | null>(null);
   const nonce = useRef(0);
-  const open = (pastId: string | null) => {
+  const open = (conversationId: string | null) => {
     nonce.current += 1;
-    setCommand({ nonce: nonce.current, agentId: props.agentId, kind: 'open', pastId });
+    setCommand({ nonce: nonce.current, agentId: props.agentId, kind: 'open', conversationId });
   };
   // Stable, like the shell's state setter: the view re-publishes on a new
   // callback identity, so an inline arrow here would loop.
@@ -180,7 +180,7 @@ function SidebarStandIn(props: ComponentProps<typeof AgentView>) {
             <button type="button" onClick={() => open(null)}>
               Current conversation
             </button>
-            {chats.past.map((c) => (
+            {chats.chats.map((c) => (
               <button key={c.id} type="button" onClick={() => open(c.id)}>
                 {c.title}
               </button>
@@ -233,8 +233,8 @@ beforeEach(() => {
   connectorsMock.mockResolvedValue(connectorsRead([]));
 });
 
-describe('past conversations', () => {
-  it('fetches the real excerpt and invents no fold marker', async () => {
+describe('older chats', () => {
+  it('fetches the real chat and invents no fold marker', async () => {
     withPast();
 
     renderView();
@@ -250,50 +250,64 @@ describe('past conversations', () => {
     expect(screen.queryByText(/0 messages/)).toBeNull();
   });
 
-  it('keeps a past conversation read-only', async () => {
+  /*
+    An older chat is carried on, not just read: no read-only banner, no
+    "Back to current", and the composer sends into the chat on screen. The
+    re-read after the turn stays on that chat too, rather than snapping back
+    to whichever one is most recent.
+  */
+  it('carries an older chat on in place: composer shown, sends land in it, and it stays on screen', async () => {
     withPast();
+    sendMock.mockResolvedValue({ conversationId: 'c-old', reqId: 'r1' });
+    streamMock.mockImplementation(async (_reqId: string, h: { onDone: () => void }) => {
+      h.onDone();
+    });
 
     renderView();
-    // The current conversation has a composer…
-    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'March' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
     await screen.findByText('the March question');
 
-    // …and the past one does not.
-    expect(screen.queryByPlaceholderText('Message Quill')).toBeNull();
-    const banner = screen.getByText(/read-only/);
-    expect(banner).toBeTruthy();
-    /*
-      TASK-436 — the banner is one CSS-clamped line, and a long conversation
-      title is what eats it. jsdom has no CSS, so this asserts the recoverable
-      half: the whole line is in `title`, punctuation and all.
-    */
-    expect(banner.getAttribute('title')).toBe('March · last week · read-only');
-    /*
-      TASK-435 — and the tooltip has to be the line it is recovering, not
-      another rendering of the same idea. The relative day is now computed in
-      the browser rather than read off a server-supplied field, so the two
-      slots are an expression rather than a field access and can be edited
-      apart.
+    expect(screen.queryByText(/read-only/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Back to current/ })).toBeNull();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'one more thing' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
 
-      BE PRECISE ABOUT WHAT THIS CATCHES. It catches the two slots drifting
-      into different sentences — someone changing the visible line and not the
-      tooltip, or vice versa — and it is the ONLY assertion here that catches
-      the visible-line direction, since the literal above pins `title` alone.
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'c-old' }),
+      ),
+    );
+    // The re-read after the turn names the chat on screen, not "the latest":
+    // one read to open it, one after the reply.
+    await waitFor(() =>
+      expect(agentMock.mock.calls.filter(([, c]) => c === 'c-old').length).toBeGreaterThanOrEqual(2),
+    );
+    expect(agentMock.mock.calls.at(-1)).toEqual(['a-quill', 'c-old']);
+    expect(await screen.findByText('the March question')).toBeTruthy();
+    expect(screen.queryByText('what is on today')).toBeNull();
+  });
 
-      It does NOT catch the reason the production code binds the string once:
-      `relativeDay`'s `now` defaults to `new Date()`, so two calls are two clock
-      reads that can straddle a local midnight and land in different buckets.
-      Two REAL calls in a test return the same string, so the unfixed two-call
-      code passes this. Stated carefully, because the obvious next sentence is
-      wrong: the midnight window itself cannot be provoked (you cannot advance
-      the wall clock between two synchronous reads in one render), but its
-      observable consequence can — mocking `relativeDay` to answer differently
-      on consecutive calls makes the unfixed code fail this very assertion.
-      That is a test of the binding rather than of the clock, which is why the
-      production fix is to make the divergence unrepresentable instead.
-    */
-    expect(banner.getAttribute('title')).toBe(banner.textContent);
+  it('falls back to the latest chat when the one on screen was deleted elsewhere', async () => {
+    let deleted = false;
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
+      if (conversationId === 'c-old') {
+        if (deleted) throw new WorkspaceApiError('/agents/a-quill', 404);
+        return detail({
+          conversationId: 'c-old',
+          thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
+        });
+      }
+      return detail({ past: deleted ? [] : [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] });
+    });
+    const view = renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    await screen.findByText('the March question');
+
+    deleted = true;
+    view.rerender(<SidebarStandIn {...viewProps({ version: 1 })} />);
+    expect(await screen.findByText('what is on today')).toBeTruthy();
+    expect(screen.queryByText(/could not load this agent/i)).toBeNull();
   });
 
   it('says so when the excerpt will not open, instead of showing a blank one', async () => {
@@ -308,6 +322,11 @@ describe('past conversations', () => {
     expect(
       await screen.findByText(/could not open that conversation/i),
     ).toBeTruthy();
+    // The chat that was on screen stays, still usable, and the note can go.
+    expect(screen.getByText('what is on today')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Message Quill')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(/could not open that conversation/i)).toBeNull();
   });
 });
 
@@ -392,17 +411,16 @@ describe('the agent will not load', () => {
 });
 
 /*
-  The read-only excerpt's alert.
+  A chat picked from the sidebar that will not open.
 
-  It was the only alert on this surface with NO WAY OUT AT ALL — no retry, no
-  sign-in, not even a dismiss — over a pane deliberately blanked while the error
-  is set. And its one sentence claimed a deletion on every failure mode.
+  Its one sentence must not claim a deletion on every failure mode, and it
+  needs a way out: a retry where one can work, and a dismiss.
 
   The 401 test here is the one the card called for by name: the pre-existing
   excerpt test threw a plain `Error`, which classifies as `failed` no matter how
   the status branch is written, so it could not have caught a broken one.
 */
-describe('AgentView — an excerpt that will not open', () => {
+describe('AgentView — a chat that will not open', () => {
   function withFailingExcerpt(err: unknown) {
     agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
       if (conversationId === 'c-old') throw err;
@@ -445,13 +463,7 @@ describe('AgentView — an excerpt that will not open', () => {
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
-  /*
-    The alert's missing action. `retryApprovals` was already bumping
-    `pastReload` — the exact re-read this needs — but it was wired only to
-    `AgentConversation`'s approval notice, so a reader whose excerpt failed on a
-    blip was stranded until they happened to click a different rail row.
-  */
-  it('offers a Try again that actually re-opens the excerpt', async () => {
+  it('offers a Try again that actually re-opens the chat', async () => {
     let failing = true;
     agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
       if (conversationId === 'c-old') {
@@ -477,28 +489,14 @@ describe('AgentView — an excerpt that will not open', () => {
     expect(screen.queryByText(/could not open that conversation/)).toBeNull();
   });
 
-  /*
-    THE NULL-GATE PIN the card asked for.
-
-    `pastError` moved from `string` to `ReadOutcome`, and every gate on it is an
-    explicit `!== null` / `=== null` check rather than a truthiness test — so the
-    swap is behaviour-preserving. That is worth one test rather than a reading,
-    because the failure mode is silent: `'expired'` and `'gone'` are both truthy,
-    but so was every string, and a future `if (pastError)` would keep working
-    right up until somebody introduced a falsy member. What must hold is that a
-    failed excerpt renders NEITHER a transcript nor the "Opening…" placeholder —
-    an empty thread is a claim about the content, and the placeholder is a claim
-    that a fetch is still running.
-  */
-  it('blanks the pane rather than claiming the conversation was empty or is still opening', async () => {
+  it('keeps the chat that was on screen rather than blanking the pane', async () => {
     withFailingExcerpt(new WorkspaceApiError('/agents/ag_x', 500));
 
     await openMarch();
 
     expect(await screen.findByText(/could not open that conversation/)).toBeTruthy();
     expect(screen.queryByText('Opening…')).toBeNull();
-    // The CURRENT conversation's turn must not leak into the excerpt pane.
-    expect(screen.queryByText('what is on today')).toBeNull();
+    expect(screen.getByText('what is on today')).toBeTruthy();
   });
 });
 
@@ -725,11 +723,9 @@ describe('AgentView — the approval read', () => {
     expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
   });
 
-  it('describes the EXCERPT on screen, not the conversation behind it', async () => {
-    // The current conversation read fine; the past one we are looking at did
-    // not. A notice taken off the current conversation would call this excerpt
-    // trustworthy, and a reader deciding whether anything is waiting in it
-    // would be reading an answer about a different thread.
+  it('describes the chat on screen, not the most recent one', async () => {
+    // The most recent chat read fine; the older one we are looking at did
+    // not. A notice taken off the other chat would call this one trustworthy.
     agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
       conversationId === 'c-old'
         ? detail({
@@ -748,37 +744,34 @@ describe('AgentView — the approval read', () => {
     expect(screen.getByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
   });
 
-  it('retries the EXCERPT too, not just the current conversation', async () => {
-    let excerptFails = true;
+  it('retries the chat on screen, not the most recent one', async () => {
+    let openFails = true;
     agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
       conversationId === 'c-old'
         ? detail({
             conversationId: 'c-old',
             thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
-            decisions: { status: excerptFails ? 'failed' : 'ok' },
+            decisions: { status: openFails ? 'failed' : 'ok' },
           })
         : detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] }),
     );
-
-    renderView();
+    const onChanged = vi.fn();
+    const view = renderView({ onChanged });
     fireEvent.click(await screen.findByRole('button', { name: 'March' }));
     expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
 
     // The read recovers, and the reader presses the button we gave them.
-    excerptFails = false;
+    openFails = false;
+    onChanged.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-
-    /*
-      The excerpt has its OWN read, and the shell's `version` bump does not
-      reach it — that effect keys on `[agentId, pastId, pastReload]` so a stray
-      approval elsewhere cannot blank an open excerpt back to "Opening…". So a
-      retry wired only to `onChanged` re-read everything EXCEPT the read the
-      notice was reporting, and the notice could never clear: the only way out
-      was "Back to current" and reopening.
-    */
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    // The shell answers `onChanged` by bumping `version`; the re-read that
+    // follows must be of the chat on screen.
+    view.rerender(<SidebarStandIn {...viewProps({ onChanged, version: 1 })} />);
     await waitFor(() =>
       expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull(),
     );
+    expect(screen.getByText('the March question')).toBeTruthy();
   });
 
   it('offers a sign-in, not a retry, when the session ran out', async () => {
@@ -1710,7 +1703,7 @@ describe('the connectors-off notice in the chat (TASK-806)', () => {
     await waitFor(() => expect(sendMock).toHaveBeenCalled());
   });
 
-  it('hides it while a past conversation is open, without dismissing it', async () => {
+  it('stays up over an older chat, which can be sent from too', async () => {
     withPast();
     connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
     renderView();
@@ -1718,25 +1711,7 @@ describe('the connectors-off notice in the chat (TASK-806)', () => {
     await screen.findByText(SENTENCE);
     fireEvent.click(await screen.findByRole('button', { name: 'March' }));
     await screen.findByText('the March question');
-    expect(screen.queryByText(SENTENCE)).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /Back to current/ }));
-    expect(await screen.findByText(SENTENCE)).toBeTruthy();
-  });
-
-  it('a dismissal survives a trip to a past conversation and back', async () => {
-    withPast();
-    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
-    renderView();
-
-    await screen.findByText(SENTENCE);
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
-    await screen.findByText('the March question');
-
-    fireEvent.click(screen.getByRole('button', { name: /Back to current/ }));
-    await screen.findByPlaceholderText('Message Quill');
-    expect(screen.queryByText(SENTENCE)).toBeNull();
+    expect(screen.getByText(SENTENCE)).toBeTruthy();
   });
 
   it('reads the list again when a reply finishes, so a sign-in made meanwhile clears it', async () => {
@@ -1982,22 +1957,26 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
       r.rerender(<AgentView {...props} {...more} />) };
   }
 
-  it('publishes the chats it holds once the detail loads', async () => {
-    withPast();
+  it('publishes the chats it holds once the detail loads, the latest one by its title', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        past: [PAST],
+        latest: { id: 'c-now', title: 'Today’s plan', lastActivityAt: TEN_DAYS_AGO },
+      }),
+    );
     const onChats = vi.fn();
     renderBare({ onChats });
     await waitFor(() =>
       expect(onChats).toHaveBeenLastCalledWith({
         agentId: 'a-quill',
-        conversationId: 'c-now',
-        past: [PAST],
-        openPastId: null,
+        chats: [{ id: 'c-now', title: 'Today’s plan', lastActivityAt: TEN_DAYS_AGO }, PAST],
+        openId: 'c-now',
         busy: false,
       }),
     );
   });
 
-  it('re-publishes the open row when a command opens a past chat, and clears on unmount', async () => {
+  it('re-publishes the open row when a command opens an older chat, and clears on unmount', async () => {
     withPast();
     const onChats = vi.fn();
     const onChatCommandConsumed = vi.fn();
@@ -2006,10 +1985,10 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     view.rerenderWith({
       onChats,
       onChatCommandConsumed,
-      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', pastId: 'c-old' },
+      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', conversationId: 'c-old' },
     });
     await waitFor(() =>
-      expect(onChats).toHaveBeenLastCalledWith(expect.objectContaining({ openPastId: 'c-old' })),
+      expect(onChats).toHaveBeenLastCalledWith(expect.objectContaining({ openId: 'c-old' })),
     );
     expect(await screen.findByText('the March question')).toBeTruthy();
     expect(onChatCommandConsumed).toHaveBeenCalledWith(1);
@@ -2017,34 +1996,214 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     expect(onChats).toHaveBeenLastCalledWith(null);
   });
 
-  it('a "new" command reads that conversation, leaves the excerpt, and is consumed once', async () => {
-    agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
-      if (conversationId === 'c-old')
-        return detail({ conversationId: 'c-old', thread: [{ kind: 'user', id: 'o1', text: 'the March question' }] });
-      if (conversationId === 'c-fresh') return detail({ conversationId: 'c-fresh', thread: [] });
-      return detail({ past: [PAST] });
-    });
+  it('a "new" command empties the pane without reading or creating anything, and is consumed once', async () => {
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-old'
+        ? detail({ conversationId: 'c-old', thread: [{ kind: 'user', id: 'o1', text: 'the March question' }] })
+        : detail({ past: [PAST] }),
+    );
+    const onChats = vi.fn();
     const onChatCommandConsumed = vi.fn();
-    const onChanged = vi.fn();
-    const view = renderBare({ onChatCommandConsumed, onChanged });
+    const view = renderBare({ onChats, onChatCommandConsumed });
     await screen.findByText('what is on today');
     view.rerenderWith({
+      onChats,
       onChatCommandConsumed,
-      onChanged,
-      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', pastId: 'c-old' },
+      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', conversationId: 'c-old' },
     });
     await screen.findByText('the March question');
+    const reads = agentMock.mock.calls.length;
 
-    const fresh = { nonce: 2, agentId: 'a-quill', kind: 'new', conversationId: 'c-fresh' } as const;
-    view.rerenderWith({ onChatCommandConsumed, onChanged, chatCommand: fresh });
-    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a-quill', 'c-fresh'));
+    const fresh = { nonce: 2, agentId: 'a-quill', kind: 'new' } as const;
+    view.rerenderWith({ onChats, onChatCommandConsumed, chatCommand: fresh });
     await waitFor(() => expect(screen.queryByText('the March question')).toBeNull());
     expect(screen.queryByText('what is on today')).toBeNull();
-    // Re-rendered with the same request still in hand: no second read.
-    view.rerenderWith({ onChatCommandConsumed, onChanged, chatCommand: fresh });
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(screen.getByPlaceholderText('Message Quill')).toBeTruthy();
+    // Nothing on screen is a chat yet, so no row is open.
+    await waitFor(() =>
+      expect(onChats).toHaveBeenLastCalledWith(expect.objectContaining({ openId: null })),
+    );
+    // Re-rendered with the same request still in hand: consumed once.
+    view.rerenderWith({ onChats, onChatCommandConsumed, chatCommand: fresh });
     expect(onChatCommandConsumed.mock.calls.filter(([n]) => n === 2)).toHaveLength(1);
-    expect(agentMock.mock.calls.filter(([, c]) => c === 'c-fresh')).toHaveLength(1);
+    expect(agentMock.mock.calls.length).toBe(reads);
+  });
+
+  it('a re-read keeps the new chat empty until its first message is sent', async () => {
+    agentMock.mockResolvedValue(detail({ past: [PAST] }));
+    const view = renderBare({});
+    await screen.findByText('what is on today');
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+    // Something elsewhere bumps `version` (an approval, a rename): the agent
+    // is re-read, and the empty chat stays empty.
+    view.rerenderWith({ chatCommand: null, version: 1 });
+    await waitFor(() => expect(agentMock.mock.calls.at(-1)).toEqual(['a-quill']));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText('what is on today')).toBeNull();
+  });
+
+  it('the first message from a new chat creates it, and the view reads it straight away', async () => {
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-new'
+        ? detail({ conversationId: 'c-new', thread: [{ kind: 'user', id: 'x1', text: 'Plan the offsite' }] })
+        : detail({ past: [PAST] }),
+    );
+    sendMock.mockResolvedValue({ conversationId: 'c-new', reqId: 'r1' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const view = renderBare({});
+    await screen.findByText('what is on today');
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+
+    const box = screen.getByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Plan the offsite' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ conversationId: null })),
+    );
+    // Read while the reply is still running, so the sidebar can list it.
+    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a-quill', 'c-new'));
+  });
+
+  /*
+    Review of the "carry on any chat" change: the in-flight reply belonged to
+    no chat in particular, so a reply that failed part-way in one chat was
+    drawn under the next chat opened.
+  */
+  it('never draws a reply that failed part-way in one chat under another chat', async () => {
+    withPast();
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (_reqId: string, h: { onText: (t: string) => void; onError: (m: string) => void }) => {
+        h.onText('PARTIAL reply text');
+        h.onError('the stream dropped');
+      },
+    );
+    const onChatCommandConsumed = vi.fn();
+    const view = renderBare({ onChatCommandConsumed });
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(await screen.findByText(/PARTIAL reply text/)).toBeTruthy();
+
+    view.rerenderWith({
+      onChatCommandConsumed,
+      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', conversationId: 'c-old' },
+    });
+    await screen.findByText('the March question');
+    expect(screen.queryByText(/PARTIAL reply text/)).toBeNull();
+  });
+
+  it('keeps a reply still streaming in its own chat when a new chat opens over it', async () => {
+    agentMock.mockResolvedValue(detail({ past: [PAST] }));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(async (_reqId: string, h: { onText: (t: string) => void }) => {
+      h.onText('STILL STREAMING');
+      await new Promise(() => {});
+    });
+    const view = renderBare({});
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(await screen.findByText(/STILL STREAMING/)).toBeTruthy();
+
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+    expect(screen.queryByText(/STILL STREAMING/)).toBeNull();
+    expect(screen.queryByText('Thinking…')).toBeNull();
+  });
+
+  it('a send that was still posting when New chat was pressed does not pull the view back', async () => {
+    agentMock.mockResolvedValue(detail({ past: [PAST] }));
+    let land!: (v: { conversationId: string; reqId: string }) => void;
+    sendMock.mockReturnValueOnce(new Promise((r) => { land = r; }));
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const onChats = vi.fn();
+    const view = renderBare({ onChats });
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'first' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    // While it posts, the sidebar holds chat switches.
+    await waitFor(() =>
+      expect(onChats).toHaveBeenLastCalledWith(expect.objectContaining({ busy: true })),
+    );
+
+    // A New chat lands anyway (from the collapsed rail before the fix).
+    view.rerenderWith({ onChats, chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+    const reads = agentMock.mock.calls.length;
+    await act(async () => land({ conversationId: 'c-now', reqId: 'r1' }));
+
+    // Still the empty new chat: the old send's chat is not adopted or read.
+    expect(screen.queryByText('what is on today')).toBeNull();
+    expect(screen.queryByText('first')).toBeNull();
+    expect(agentMock.mock.calls.length).toBe(reads);
+    expect(streamMock).not.toHaveBeenCalled();
+    sendMock.mockResolvedValue({ conversationId: 'c-new', reqId: 'r2' });
+    const box2 = screen.getByPlaceholderText('Message Quill');
+    fireEvent.change(box2, { target: { value: 'second' } });
+    fireEvent.keyDown(box2, { key: 'Enter' });
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenLastCalledWith(expect.objectContaining({ conversationId: null })),
+    );
+  });
+
+  /*
+    A re-read that was already out when the first message of a new chat
+    created it must not land on top: it is an answer about "the latest chat"
+    from before this one existed, and applying it would point the next
+    message at that older chat.
+  */
+  it('a re-read issued before the first send cannot put the old chat back', async () => {
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-new'
+        ? detail({ conversationId: 'c-new', thread: [{ kind: 'user', id: 'x1', text: 'Plan the offsite' }] })
+        : detail({ past: [PAST] }),
+    );
+    const view = renderBare({});
+    await screen.findByText('what is on today');
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+
+    // A version bump starts a read that is held…
+    let release!: (d: AgentDetail) => void;
+    agentMock.mockImplementationOnce(() => new Promise<AgentDetail>((r) => { release = r; }));
+    view.rerenderWith({ chatCommand: null, version: 1 });
+    await waitFor(() => expect(release).toBeDefined());
+
+    // …the first message creates c-new and its own read lands…
+    sendMock.mockResolvedValue({ conversationId: 'c-new', reqId: 'r1' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const box = screen.getByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Plan the offsite' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a-quill', 'c-new'));
+
+    // …and only then does the stale "latest chat" answer arrive.
+    await act(async () => release(detail({ past: [PAST] })));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText('what is on today')).toBeNull();
+    expect(screen.getAllByText('Plan the offsite').length).toBeGreaterThan(0);
+  });
+
+  it('opening the chat already on screen keeps a failed send’s Resend', async () => {
+    agentMock.mockResolvedValue(detail({ past: [PAST] }));
+    sendMock.mockRejectedValueOnce(new WorkspaceApiError('/chat/messages', 503));
+    const onChatCommandConsumed = vi.fn();
+    const view = renderBare({ onChatCommandConsumed });
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'try this' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(await screen.findByRole('button', { name: 'Resend' })).toBeTruthy();
+
+    view.rerenderWith({
+      onChatCommandConsumed,
+      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', conversationId: 'c-now' },
+    });
+    await waitFor(() => expect(onChatCommandConsumed).toHaveBeenCalledWith(1));
+    expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
   });
 
   it('ignores a command addressed to another agent', async () => {
@@ -2054,7 +2213,7 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     await screen.findByText('what is on today');
     view.rerenderWith({
       onChatCommandConsumed,
-      chatCommand: { nonce: 1, agentId: 'a-other', kind: 'open', pastId: 'c-old' },
+      chatCommand: { nonce: 1, agentId: 'a-other', kind: 'open', conversationId: 'c-old' },
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(onChatCommandConsumed).not.toHaveBeenCalled();

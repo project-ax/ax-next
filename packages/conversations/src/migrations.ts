@@ -100,6 +100,16 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE
   `.execute(db);
 
+  // A title the system filled in from the person's first message so a new
+  // chat is named the moment it appears, until the title model's summary
+  // replaces it. TRUE = still that stand-in; a model or user title clears it,
+  // so a rename is never overwritten. Default FALSE: every existing title was
+  // written by the model or the person.
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS title_provisional BOOLEAN NOT NULL DEFAULT FALSE
+  `.execute(db);
+
   // AW-6 (2026-08-21). Which CHANNEL opened this conversation. Attendance —
   // whether a held tool call can expect a person to answer while the agent is
   // still warm — is a property of that channel, not of the turn.
@@ -383,6 +393,8 @@ export interface ConversationsRow {
   user_id: string;
   agent_id: string;
   title: string | null;
+  /** The title is the first-message stand-in, not a model or user title. */
+  title_provisional: boolean;
   active_session_id: string | null;
   active_req_id: string | null;
   // Phase B (2026-04-29) — runner-owned-sessions metadata. All nullable,

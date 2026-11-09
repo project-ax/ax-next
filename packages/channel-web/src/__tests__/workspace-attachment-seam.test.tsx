@@ -544,7 +544,7 @@ describe('a message the person attached a file to', () => {
     await screen.findByRole('region', { name: /Conversation with/ });
     // The chat list lives in the sidebar now; picking a row there reaches this
     // view as an open request.
-    view.rerender(liveView({ nonce: 1, agentId: 'a1', kind: 'open', pastId: 'c-old' }));
+    view.rerender(liveView({ nonce: 1, agentId: 'a1', kind: 'open', conversationId: 'c-old' }));
     await screen.findByText('the March question');
 
     const src = view.container.querySelector('img')?.getAttribute('src') ?? '';
