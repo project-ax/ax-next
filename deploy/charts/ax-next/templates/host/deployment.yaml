@@ -411,6 +411,21 @@ spec:
               value: "true"
             {{- end }}
 
+            # Connector directory (TASK-1100): hourly copy of the public MCP
+            # Registry. Absent env = the preset leaves the sync OFF.
+            {{- if (include "ax-next.bool" .Values.connectorDirectory.enabled) }}
+            - name: AX_CONNECTOR_DIRECTORY_ENABLED
+              value: "true"
+            {{- end }}
+            {{- with .Values.connectorDirectory.registryUrl }}
+            - name: AX_CONNECTOR_DIRECTORY_REGISTRY_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if (include "ax-next.bool" .Values.connectorDirectory.verifiedPublishersOnly) }}
+            - name: AX_CONNECTOR_DIRECTORY_VERIFIED_ONLY
+              value: "true"
+            {{- end }}
+
             # Anthropic API key — optional. The first-run wizard collects
             # one and stores it in the credentials table; this env-var is
             # only the bottom-of-precedence fallback (and the gate that

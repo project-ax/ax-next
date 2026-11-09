@@ -323,6 +323,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/branding',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
+        '@ax/connector-directory',
         '@ax/connectors',
         '@ax/conversation-titles',
         '@ax/conversations',
@@ -1238,6 +1239,35 @@ describe('@ax/preset-k8s wiring', () => {
       'auth:require-user',
       'credentials:list',
     ]);
+  });
+
+  it('loads the connector directory disabled when the config says nothing (TASK-1100)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const dir = plugins.find((p) => p.manifest.name === '@ax/connector-directory');
+    expect(dir).toBeDefined();
+    expect(dir!.manifest.registers).toEqual(['connectors:directory-search']);
+    // Off: no database, no network.
+    expect(dir!.manifest.calls).toEqual([]);
+    // The admin route reaches it through the connectors plugin's optional call.
+    const connectors = plugins.find((p) => p.manifest.name === '@ax/connectors');
+    expect(connectors!.manifest.optionalCalls?.map((c) => c.hook)).toContain(
+      'connectors:directory-search',
+    );
+  });
+
+  it('connectorDirectory.enabled turns the sync on (TASK-1100)', () => {
+    const plugins = createK8sPlugins({ ...stubConfig, connectorDirectory: { enabled: true } });
+    const dir = plugins.find((p) => p.manifest.name === '@ax/connector-directory');
+    expect(dir!.manifest.calls).toEqual(['database:get-instance']);
+  });
+
+  it('an enabled directory with an http registry URL fails the preset build (TASK-1100)', () => {
+    expect(() =>
+      createK8sPlugins({
+        ...stubConfig,
+        connectorDirectory: { enabled: true, registryUrl: 'http://registry.test' },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
   });
 
   it('names the OAuth client after the branding: @ax/branding registers branding:get for @ax/mcp-oauth', () => {
@@ -2315,6 +2345,46 @@ describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => 
   it('accepts case-insensitive "TRUE"', () => {
     const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_ALLOW_USER_INSTALLED_SKILLS: 'TRUE' });
     expect(cfg.allowUserInstalledSkills).toBe(true);
+  });
+
+  // TASK-1100 -- chart connectorDirectory.* -> AX_CONNECTOR_DIRECTORY_*.
+  it('reads AX_CONNECTOR_DIRECTORY_ENABLED=true into config.connectorDirectory', () => {
+    const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_CONNECTOR_DIRECTORY_ENABLED: 'true' });
+    expect(cfg.connectorDirectory).toEqual({ enabled: true, verifiedPublishersOnly: false });
+  });
+
+  it('leaves connectorDirectory unset when none of the three is set', () => {
+    expect(loadK8sConfigFromEnv(baseEnv()).connectorDirectory).toBeUndefined();
+  });
+
+  it.each(['false', '0', '', 'TRUE-ish', 'yes'])(
+    'leaves connectorDirectory unset for a non-"true" ENABLED value %j',
+    (val) => {
+      const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_CONNECTOR_DIRECTORY_ENABLED: val });
+      expect(cfg.connectorDirectory).toBeUndefined();
+    },
+  );
+
+  it('accepts a case-insensitive "TRUE" for the directory', () => {
+    const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_CONNECTOR_DIRECTORY_ENABLED: 'TRUE' });
+    expect(cfg.connectorDirectory?.enabled).toBe(true);
+  });
+
+  it('reads VERIFIED_ONLY alone as enabled:false, verifiedPublishersOnly:true', () => {
+    const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_CONNECTOR_DIRECTORY_VERIFIED_ONLY: 'true' });
+    expect(cfg.connectorDirectory).toEqual({ enabled: false, verifiedPublishersOnly: true });
+  });
+
+  it('passes REGISTRY_URL through verbatim with enabled:false', () => {
+    const cfg = loadK8sConfigFromEnv({
+      ...baseEnv(),
+      AX_CONNECTOR_DIRECTORY_REGISTRY_URL: 'https://sub.example/registry',
+    });
+    expect(cfg.connectorDirectory).toEqual({
+      enabled: false,
+      verifiedPublishersOnly: false,
+      registryUrl: 'https://sub.example/registry',
+    });
   });
 });
 

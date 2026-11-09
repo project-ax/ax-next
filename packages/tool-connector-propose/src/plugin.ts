@@ -28,7 +28,7 @@ const KEY_MODES = new Set(['personal', 'workspace']);
  * structural rejects all collapse to the generic "draft is invalid" (I9), so
  * the model would not learn that only the id needs to change.
  */
-const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored']);
+const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored', 'directory']);
 
 /** Model-visible reject for a reserved id. Fixed text; never echoes input. */
 const RESERVED_ID_REJECT_MESSAGE = 'That id is reserved — pick a different connectorId.';
