@@ -66,12 +66,15 @@ of servers.
    it's on, the view says "Only listings from verified publishers are shown in this
    workspace." Admins can still set up any server by hand.
 8. **We remember where a connector came from.** Saving from the directory records
-   `{ directoryId, version }` against the new connector's id (where it lives: see
-   Open questions). This is opaque provenance owned by the directory plugin, not
+   `{ directoryId, version }` against the new connector's id (where it lives:
+   Resolved question 4). This is opaque provenance owned by the directory plugin, not
    registry vocabulary. It lets a
    later change say "a newer version is listed". Editing the address by hand keeps
-   the provenance but marks it edited, so we never claim a hand-edited connector
-   matches its listing.
+   the provenance but marks it edited. An address changed in the editor before the
+   first save counts too. The mark is best-effort: an address changed while the
+   directory is off, or a mark that fails, leaves it unmarked, so whatever reads
+   it re-checks the live connector's address before claiming it matches its
+   listing.
 9. **Honest freshness.** The list shows "List updated N min ago". If sync fails
    while we hold a copy, a warning says how old it is. If no sync has ever
    succeeded (air-gapped install), we show an empty state and point to "New
@@ -143,8 +146,9 @@ of servers.
    directory plugin learns about a save through the admin route passing the
    `directoryId` it was prefilled with. When a connector is deleted, its
    provenance row goes with it, because the directory plugin subscribes to the
-   connectors' existing delete/purge path. Exactly which subscriber hook to use
-   gets settled when the card is planned.
+   connectors' existing delete/purge path. It subscribes to `connectors:deleted`
+   and drops the row only when no live connector still carries the id
+   (`idStillLive: false`): connector ids are unique per owner, not across owners.
 
 ## Open questions
 

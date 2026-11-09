@@ -49,6 +49,12 @@ import {
   type DirectorySearchInputLike,
   type DirectorySearchOutputLike,
 } from './directory-route.js';
+import {
+  markDirectoryProvenanceEdited,
+  parseFromDirectory,
+  recordDirectoryProvenance,
+  serverAddressesChanged,
+} from './directory-provenance.js';
 
 // Structural mirror of `auth:get-user` (registered by the auth plugin; I2 — no
 // import). Only the display fields are read, to label who asked for a proposal.
@@ -85,6 +91,11 @@ interface AuthoredProposalView {
 // appears as a first-class route field. The backing-mechanism vocabulary rides
 // ONLY inside the opaque `capabilities` object in request/response bodies — the
 // same posture the bus hooks keep.
+//
+// TASK-1102: a create (POST) may carry `fromDirectory` beside the connector's
+// fields, naming the directory listing the editor was filled from. It never
+// becomes part of the connector: the route strips it before the write and hands
+// it to the optional directory after a successful create (directory-provenance.ts).
 //
 // All endpoints require auth:require-user (401 on miss). The `/admin/connectors*`
 // bundle (mode 'admin') is ADMIN-ONLY: a signed-in non-admin gets 403 on every one
@@ -669,6 +680,15 @@ export function createConnectorRouteHandlers(
         return;
       }
       const raw = parsed.value as Record<string, unknown>;
+      // TASK-1102 — the listing the editor was filled from rides beside the
+      // connector's fields, never inside the write. A malformed value is
+      // ignored, never a 400: the admin can't see or fix it. The line carries
+      // no client strings.
+      const fromDirectory = parseFromDirectory(raw.fromDirectory);
+      delete raw.fromDirectory;
+      if (fromDirectory === 'malformed') {
+        ctx.logger.info('connectors_directory_provenance_malformed');
+      }
       // The route decides uniqueness, never the body.
       delete raw.requireUniqueId;
       // Likewise `updateOnly` (PATCH only) and `createOnly` (set below).
@@ -701,18 +721,26 @@ export function createConnectorRouteHandlers(
         requireUniqueId: true,
         createOnly: true,
       } as unknown as UpsertInput;
+      let out: UpsertOutput;
       try {
-        const out = await deps.bus.call<UpsertInput, UpsertOutput>(
+        out = await deps.bus.call<UpsertInput, UpsertOutput>(
           'connectors:upsert',
           ctx,
           input,
         );
-        res
-          .status(out.created ? 201 : 200)
-          .json({ connector: out.connector, created: out.created });
       } catch (err) {
         handleHookError(err, res, ctx.logger);
+        return;
       }
+      // After the write committed, outside the error mapping above: recording
+      // can't fail or change the create (it logs and swallows). The id and
+      // address come from the stored connector, never the body.
+      if (out.created && typeof fromDirectory === 'object') {
+        await recordDirectoryProvenance(deps.bus, ctx, out.connector, fromDirectory);
+      }
+      res
+        .status(out.created ? 201 : 200)
+        .json({ connector: out.connector, created: out.created });
     },
 
     /** PATCH /admin/connectors/:id — the owner, or (admin bundle) any admin. */
@@ -761,6 +789,9 @@ export function createConnectorRouteHandlers(
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;
+      // TASK-1102 — only a create records a listing; keep directory vocabulary
+      // out of every `connectors:upsert` payload.
+      delete patchRaw.fromDirectory;
       const crossOwner = owner !== actor.id;
       // `changesOwnerOnlyFields` only picks the ANSWER (a humane 403 for a body
       // that really tries to retarget). It is not what keeps reach safe: a
@@ -803,20 +834,30 @@ export function createConnectorRouteHandlers(
         userId: owner,
         connectorId: existing.id,
       } as UpsertInput;
+      let out: UpsertOutput;
       try {
-        const out = await deps.bus.call<UpsertInput, UpsertOutput>(
+        out = await deps.bus.call<UpsertInput, UpsertOutput>(
           'connectors:upsert',
           ctx,
           input,
         );
-        logCuration('update', actor.id, owner, existing.id);
-        res.status(200).json({
-          connector: presentCanEdit(out.connector, mode),
-          created: out.created,
-        });
       } catch (err) {
         handleHookError(err, res, ctx.logger);
+        return;
       }
+      logCuration('update', actor.id, owner, existing.id);
+      // TASK-1102 — a committed edit that moved a server address no longer
+      // matches the listing it came from. Never fails the edit; never un-marks.
+      // It lives here, not in `connectors:upsert`, because these routes are the
+      // only edit path today; a new caller of the upsert hook that can change
+      // an address must call mark-edited too.
+      if (serverAddressesChanged(existing.capabilities, out.connector.capabilities)) {
+        await markDirectoryProvenanceEdited(deps.bus, ctx, existing.id);
+      }
+      res.status(200).json({
+        connector: presentCanEdit(out.connector, mode),
+        created: out.created,
+      });
     },
 
     /** DELETE /admin/connectors/:id — the owner, or (admin bundle) any admin. */

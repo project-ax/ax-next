@@ -5,6 +5,12 @@ import {
   DirectoryEntrySchema,
   DirectorySearchInputSchema,
   DirectorySearchOutputSchema,
+  DIRECTORY_PROVENANCE_MARK_EDITED_HOOK,
+  DIRECTORY_PROVENANCE_RECORD_HOOK,
+  ProvenanceMarkEditedInputSchema,
+  ProvenanceMarkEditedOutputSchema,
+  ProvenanceRecordInputSchema,
+  ProvenanceRecordOutputSchema,
   QUERY_MAX,
   SEARCH_LIMIT_DEFAULT,
   SEARCH_LIMIT_MAX,
@@ -42,6 +48,22 @@ describe('connector-directory contract', () => {
       'version',
     ]);
     for (const key of [...input, ...output, ...entry]) {
+      expect(key).not.toMatch(/remote|package|_meta|github|latest/i);
+    }
+  });
+
+  it('the provenance hooks and their field names are exactly the contract (TASK-1102)', () => {
+    expect(DIRECTORY_PROVENANCE_RECORD_HOOK).toBe('connectors:directory-provenance-record');
+    expect(DIRECTORY_PROVENANCE_MARK_EDITED_HOOK).toBe('connectors:directory-provenance-mark-edited');
+    const recordIn = Object.keys(ProvenanceRecordInputSchema.shape).sort();
+    const recordOut = Object.keys(ProvenanceRecordOutputSchema.shape).sort();
+    const markIn = Object.keys(ProvenanceMarkEditedInputSchema.shape).sort();
+    const markOut = Object.keys(ProvenanceMarkEditedOutputSchema.shape).sort();
+    expect(recordIn).toEqual(['connectorId', 'directoryId', 'serverUrl', 'version']);
+    expect(recordOut).toEqual(['recorded']);
+    expect(markIn).toEqual(['connectorId']);
+    expect(markOut).toEqual(['marked']);
+    for (const key of [...recordIn, ...recordOut, ...markIn, ...markOut]) {
       expect(key).not.toMatch(/remote|package|_meta|github|latest/i);
     }
   });

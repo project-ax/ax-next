@@ -7,7 +7,14 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import type { z } from 'zod';
-import { DIRECTORY_SEARCH_HOOK, DirectorySearchOutputSchema } from './contract.js';
+import {
+  DIRECTORY_PROVENANCE_MARK_EDITED_HOOK,
+  DIRECTORY_PROVENANCE_RECORD_HOOK,
+  DIRECTORY_SEARCH_HOOK,
+  DirectorySearchOutputSchema,
+  ProvenanceMarkEditedOutputSchema,
+  ProvenanceRecordOutputSchema,
+} from './contract.js';
 import {
   DEFAULT_REGISTRY_URL,
   DEFAULT_SYNC_INITIAL_DELAY_MS,
@@ -15,6 +22,13 @@ import {
   SYNC_BUDGET_MS,
 } from './limits.js';
 import { runConnectorDirectoryMigration, type ConnectorDirectoryDatabase } from './migrations.js';
+import {
+  CONNECTORS_DELETED_EVENT,
+  createProvenanceStore,
+  markProvenanceEdited,
+  onConnectorDeleted,
+  recordProvenance,
+} from './provenance.js';
 import {
   fetchRegistryPageWithRetry,
   parseRegistryUrl,
@@ -38,9 +52,14 @@ import { runSync, type SyncResult } from './sync.js';
 //     network, 429, 5xx) is asked for again, twice at most; shutdown aborts
 //     the request in flight (or the wait) and waits for the run to end.
 //   - ANSWERS `connectors:directory-search` from that copy (search.ts).
-//   - OFF (`enabled: false`): no database, no timers, no fetch; the hook
-//     still validates its input and answers the fixed off body, so the route
-//     and the UI have one shape in every case.
+//   - REMEMBERS which listing a connector was saved from, and whether its
+//     address was changed by hand since (`connectors:directory-provenance-
+//     record` / `-mark-edited`), and forgets it on `connectors:deleted`
+//     (provenance.ts, TASK-1102).
+//   - OFF (`enabled: false`): no database, no timers, no fetch, and nothing
+//     remembered (no provenance hooks, no subscriber); the search hook still
+//     validates its input and answers the fixed off body, so the route and
+//     the UI have one shape in every case.
 //
 // No lock across replicas: the chart runs one host (decisions shard). The
 // full-crawl reset in sync.ts relies on that single writer too: a second
@@ -84,6 +103,8 @@ export interface ConnectorDirectoryPlugin extends Plugin {
  * schema's own output type types the `returns` option.
  */
 type SearchAnswer = z.output<typeof DirectorySearchOutputSchema>;
+type RecordAnswer = z.output<typeof ProvenanceRecordOutputSchema>;
+type MarkEditedAnswer = z.output<typeof ProvenanceMarkEditedOutputSchema>;
 
 /** Node runs a timer longer than this after 1 ms: a typo would sync back to back. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -100,13 +121,20 @@ function timerDelay(name: string, value: number | undefined, fallback: number): 
   return ms;
 }
 
-function manifest(calls: string[]): Plugin['manifest'] {
+/** Off: the search hook alone, which needs nothing. On: the database and provenance too. */
+function manifest(enabled: boolean): Plugin['manifest'] {
   return {
     name: PLUGIN_NAME,
     version: '0.0.0',
-    registers: [DIRECTORY_SEARCH_HOOK],
-    calls,
-    subscribes: [],
+    registers: enabled
+      ? [
+          DIRECTORY_SEARCH_HOOK,
+          DIRECTORY_PROVENANCE_RECORD_HOOK,
+          DIRECTORY_PROVENANCE_MARK_EDITED_HOOK,
+        ]
+      : [DIRECTORY_SEARCH_HOOK],
+    calls: enabled ? ['database:get-instance'] : [],
+    subscribes: enabled ? [CONNECTORS_DELETED_EVENT] : [],
   };
 }
 
@@ -114,7 +142,7 @@ const disabled = (): Promise<SyncResult> => Promise.resolve({ outcome: 'disabled
 
 function createDisabledPlugin(verifiedOnly: boolean): ConnectorDirectoryPlugin {
   return {
-    manifest: manifest([]),
+    manifest: manifest(false),
     init({ bus }) {
       bus.registerService<unknown, SearchAnswer>(
         DIRECTORY_SEARCH_HOOK,
@@ -203,7 +231,7 @@ export function createConnectorDirectoryPlugin(
   }
 
   return {
-    manifest: manifest(['database:get-instance']),
+    manifest: manifest(true),
 
     async init({ bus }) {
       const initCtx = makeAgentContext({
@@ -226,6 +254,20 @@ export function createConnectorDirectoryPlugin(
           (_ctx, input) => searchDirectory(db, input, { verifiedOnly }),
           { returns: DirectorySearchOutputSchema },
         );
+        const provenance = createProvenanceStore(db);
+        bus.registerService<unknown, RecordAnswer>(
+          DIRECTORY_PROVENANCE_RECORD_HOOK,
+          PLUGIN_NAME,
+          (ctx, input) => recordProvenance(provenance, ctx, input),
+          { returns: ProvenanceRecordOutputSchema },
+        );
+        bus.registerService<unknown, MarkEditedAnswer>(
+          DIRECTORY_PROVENANCE_MARK_EDITED_HOOK,
+          PLUGIN_NAME,
+          (_ctx, input) => markProvenanceEdited(provenance, input),
+          { returns: ProvenanceMarkEditedOutputSchema },
+        );
+        bus.subscribe<unknown>(CONNECTORS_DELETED_EVENT, PLUGIN_NAME, onConnectorDeleted(provenance));
         running = { store: createDirectoryStore(db), logger: initCtx.logger };
 
         if (syncIntervalMs > 0) {

@@ -1,10 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
+import {
+  DIRECTORY_PROVENANCE_MARK_EDITED_HOOK,
+  DIRECTORY_PROVENANCE_RECORD_HOOK,
+} from '../contract.js';
 import { createConnectorDirectoryPlugin, type ConnectorDirectoryConfig } from '../plugin.js';
 
 const HOUR = 3_600_000;
 const OFF = { enabled: false, entries: [], syncedAt: null, stale: false, verifiedOnly: false };
+const ENABLED_MANIFEST = {
+  name: '@ax/connector-directory',
+  version: '0.0.0',
+  registers: [
+    'connectors:directory-search',
+    'connectors:directory-provenance-record',
+    'connectors:directory-provenance-mark-edited',
+  ],
+  calls: ['database:get-instance'],
+  subscribes: ['connectors:deleted'],
+};
 
 beforeEach(() => {
   vi.stubGlobal('fetch', () => {
@@ -49,6 +64,11 @@ describe('@ax/connector-directory: config and the off switch', () => {
     // No services at all: a database call would fail the boot or the hook.
     const harness = await createTestHarness({ plugins: [p] });
     try {
+      // Off remembers nothing: no provenance hooks, no delete subscriber (the
+      // bus lists no subscribers; `unsubscribe` counts what it removed).
+      expect(harness.bus.hasService(DIRECTORY_PROVENANCE_RECORD_HOOK)).toBe(false);
+      expect(harness.bus.hasService(DIRECTORY_PROVENANCE_MARK_EDITED_HOOK)).toBe(false);
+      expect(harness.bus.unsubscribe('connectors:deleted', '@ax/connector-directory')).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
       expect(
         await harness.bus.call('connectors:directory-search', harness.ctx(), { query: 'x' }),
@@ -118,13 +138,13 @@ describe('@ax/connector-directory: config and the off switch', () => {
 
   it('the factory default is enabled against the official registry', () => {
     const p = createConnectorDirectoryPlugin();
-    expect(p.manifest).toEqual({
-      name: '@ax/connector-directory',
-      version: '0.0.0',
-      registers: ['connectors:directory-search'],
-      calls: ['database:get-instance'],
-      subscribes: [],
-    });
+    expect(p.manifest).toEqual(ENABLED_MANIFEST);
+  });
+
+  it('enabled: registers the provenance hooks and hears connector deletes', () => {
+    expect(createConnectorDirectoryPlugin({ syncIntervalMs: 0 }).manifest).toEqual(
+      ENABLED_MANIFEST,
+    );
   });
 
   it('enabled, before init: sync() is disabled and drain() resolves', async () => {

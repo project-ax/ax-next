@@ -47,8 +47,11 @@ export type EntryPlan =
   | { kind: 'delete'; id: string; reason: 'deleted' | 'no-usable-remote' | 'invalid-fields' }
   | { kind: 'skip'; reason: 'malformed' | 'not-latest' };
 
-/** The registry's server-name pattern (namespace/name). */
-const SERVER_NAME = /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/;
+/**
+ * The registry's server-name pattern (namespace/name). The mirror stores no
+ * other id. Not global: `.test()` carries no `lastIndex`, so it is safe to share.
+ */
+export const SERVER_NAME = /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/;
 
 const OFFICIAL_META = 'io.modelcontextprotocol.registry/official';
 
@@ -215,7 +218,7 @@ export function derivePublisher(namespace: string): {
  * A version is provenance material (compared verbatim later), so it is never
  * rewritten: one that would need cleaning drops the listing instead.
  */
-function isUsableVersion(version: unknown): version is string {
+export function isUsableVersion(version: unknown): version is string {
   return (
     typeof version === 'string' &&
     version.length >= 1 &&

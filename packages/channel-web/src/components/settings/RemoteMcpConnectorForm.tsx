@@ -574,6 +574,7 @@ export function RemoteMcpConnectorForm({
       capabilities,
       keyMode,
       ...(prefill ? { usageNote } : {}),
+      ...(prefill?.fromDirectory ? { fromDirectory: prefill.fromDirectory } : {}),
     };
     try {
       let added: Connector | undefined;

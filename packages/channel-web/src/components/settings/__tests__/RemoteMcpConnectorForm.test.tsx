@@ -544,6 +544,7 @@ describe('remote connector editor', () => {
       expect(saved).not.toContain(leak);
     expect(create.body).toMatchObject({ connectorId: 'notion' });
     expect(create.body).not.toHaveProperty('visibility');
+    expect(create.body).not.toHaveProperty('fromDirectory');
   });
   it('Set it up says so plainly when that id is already taken', async () => {
     discovery = { hosts: ['mcp.notion.example.com'], auth: 'none' };
@@ -623,14 +624,18 @@ describe('remote connector editor', () => {
           ],
         },
       });
-      // TASK-1102 adds `fromDirectory` to the create body and changes this line.
       expect(Object.keys(create.body).sort()).toEqual([
         'capabilities',
         'connectorId',
+        'fromDirectory',
         'keyMode',
         'name',
         'usageNote',
       ]);
+      expect(create.body.fromDirectory).toEqual({
+        directoryId: key.id,
+        version: key.version,
+      });
     });
     it('an id clash on a directory prefill says to set it up again', async () => {
       discovery = { hosts: ['mcp.linear.app'], auth: 'none' };
@@ -689,6 +694,7 @@ describe('remote connector editor', () => {
       },
     });
     expect(writes[0]!.body).not.toHaveProperty('defaultAttached');
+    expect(writes[0]!.body).not.toHaveProperty('fromDirectory');
   });
   it('creates an admin connector shared without workspace controls', async () => {
     discovery = { hosts: ['public.example.com'], auth: 'none' };

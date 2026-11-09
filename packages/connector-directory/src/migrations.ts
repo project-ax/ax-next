@@ -13,6 +13,11 @@ import type { DirectoryAuth, PublisherProof } from './contract.js';
  *     the mirror was copied from, the checkpoint the next incremental sync
  *     asks from (OUR clock's start time of the last complete sync), when the
  *     copy was last complete, and how the last attempt went.
+ *   connector_directory_v1_provenance — which listing, at which version, each
+ *     connector was saved from, and whether its server address has been
+ *     changed by hand since (provenance.ts). Keyed by connector id alone: the
+ *     connectors-deleted event names no owner. Written only by the provenance
+ *     hooks: a source change or a full crawl leaves it alone.
  *
  * Additive-only, idempotent: every boot runs it.
  */
@@ -39,9 +44,17 @@ export interface ConnectorDirectorySyncStateTable {
   last_attempt_failed: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
+export interface ConnectorDirectoryProvenanceTable {
+  connector_id: string;
+  directory_id: string;
+  version: string;
+  edited: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
 export interface ConnectorDirectoryDatabase {
   connector_directory_v1_entries: ConnectorDirectoryEntriesTable;
   connector_directory_v1_sync_state: ConnectorDirectorySyncStateTable;
+  connector_directory_v1_provenance: ConnectorDirectoryProvenanceTable;
 }
 
 export async function runConnectorDirectoryMigration<DB>(db: Kysely<DB>): Promise<void> {
@@ -68,6 +81,14 @@ export async function runConnectorDirectoryMigration<DB>(db: Kysely<DB>): Promis
       synced_at           TIMESTAMPTZ NULL,
       last_attempt_at     TIMESTAMPTZ NULL,
       last_attempt_failed BOOLEAN NOT NULL DEFAULT false
+    )
+  `.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS connector_directory_v1_provenance (
+      connector_id TEXT PRIMARY KEY,
+      directory_id TEXT NOT NULL,
+      version      TEXT NOT NULL,
+      edited       BOOLEAN NOT NULL DEFAULT false
     )
   `.execute(db);
 }

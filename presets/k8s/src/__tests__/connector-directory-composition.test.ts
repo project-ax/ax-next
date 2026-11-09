@@ -5,6 +5,8 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 
+import pg from 'pg';
+
 import { HookBus, PluginError, bootstrap, type Plugin } from '@ax/core';
 import type { ConnectorDirectoryPlugin } from '@ax/connector-directory';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
@@ -20,6 +22,11 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // call), the real @ax/connector-directory (sync + search on real Postgres) and
 // @ax/database-postgres. The registry is a fake behind `fetchImpl`, and the
 // global `fetch` throws, so the test cannot reach the network by accident.
+//
+// TASK-1102 adds the provenance leg: a connector created from a listing leaves
+// a row in the directory's own table, a name-only edit keeps it unedited, an
+// address edit marks it, and a delete drops it (the directory's
+// `connectors:deleted` subscriber). A hand-entered connector records nothing.
 //
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor) and
@@ -123,9 +130,15 @@ interface Captured {
   body: unknown;
 }
 
-async function callRoute(query: Record<string, string>): Promise<Captured> {
-  const route = routes.find((r) => r.method === 'GET' && r.path === '/admin/connectors/directory');
-  if (route === undefined) throw new Error('directory route was not registered');
+interface RouteArgs {
+  query?: Record<string, string>;
+  params?: Record<string, string>;
+  body?: unknown;
+}
+
+async function callRoute(method: string, path: string, args: RouteArgs = {}): Promise<Captured> {
+  const route = routes.find((r) => r.method === method && r.path === path);
+  if (route === undefined) throw new Error(`route ${method} ${path} was not registered`);
   const captured: Captured = { status: 0, body: undefined };
   const res = {
     status(n: number) {
@@ -141,16 +154,56 @@ async function callRoute(query: Record<string, string>): Promise<Captured> {
     end() {},
   };
   await route.handler(
-    { headers: {}, body: Buffer.alloc(0), cookies: {}, query, params: {}, signedCookie: () => null },
+    {
+      headers: {},
+      body: args.body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(args.body)),
+      cookies: {},
+      query: args.query ?? {},
+      params: args.params ?? {},
+      signedCookie: () => null,
+    },
     res,
   );
   return captured;
+}
+
+function connectorBody(connectorId: string, url: string): Record<string, unknown> {
+  return {
+    connectorId,
+    name: 'Linear',
+    keyMode: 'personal',
+    capabilities: {
+      allowedHosts: [],
+      credentials: [],
+      mcpServers: [
+        { name: connectorId, transport: 'http', url, allowedHosts: [], credentials: [] },
+      ],
+      packages: { npm: [], pypi: [] },
+    },
+  };
 }
 
 describe('@ax/preset-k8s connector directory composition (TASK-1100)', () => {
   let pgContainer: StartedPostgreSqlContainer | null = null;
   let shutdown: (() => Promise<void>) | null = null;
   let directory: ConnectorDirectoryPlugin | null = null;
+
+  async function query(text: string, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+    const client = new pg.Client({ connectionString: pgContainer!.getConnectionUri() });
+    await client.connect();
+    try {
+      return (await client.query(text, params)).rows;
+    } finally {
+      await client.end().catch(() => {});
+    }
+  }
+
+  function provenanceRows(connectorId: string): Promise<Array<Record<string, unknown>>> {
+    return query(
+      'SELECT connector_id, directory_id, version, edited FROM connector_directory_v1_provenance WHERE connector_id = $1',
+      [connectorId],
+    );
+  }
 
   function presetConfig(connectionString: string): K8sPresetConfig {
     return {
@@ -202,7 +255,7 @@ describe('@ax/preset-k8s connector directory composition (TASK-1100)', () => {
       expect(url.pathname).toBe('/v0.1/servers');
     }
 
-    const out = await callRoute({ q: 'linear' });
+    const out = await callRoute('GET', '/admin/connectors/directory', { query: { q: 'linear' } });
     expect(out.status).toBe(200);
     const body = out.body as {
       enabled: boolean;
@@ -225,7 +278,69 @@ describe('@ax/preset-k8s connector directory composition (TASK-1100)', () => {
 
   it('a non-admin is refused', async () => {
     actor = { id: 'user-1', isAdmin: false };
-    const out = await callRoute({ q: 'linear' });
+    const out = await callRoute('GET', '/admin/connectors/directory', { query: { q: 'linear' } });
     expect(out.status).toBe(403);
+  });
+
+  it('create from the directory records provenance; an address edit marks it; delete removes it (TASK-1102)', async () => {
+    actor = { id: 'admin-1', isAdmin: true };
+    await directory!.sync();
+    const id = 'linear-0a1b2c3d';
+
+    const created = await callRoute('POST', '/admin/connectors', {
+      body: {
+        ...connectorBody(id, 'https://mcp.linear.app/mcp'),
+        fromDirectory: { directoryId: 'app.linear/linear', version: '1.0.0' },
+      },
+    });
+    expect(created.status).toBe(201);
+    // The listing rides beside the connector, never inside it.
+    expect((created.body as { connector: Record<string, unknown> }).connector).not.toHaveProperty(
+      'fromDirectory',
+    );
+    expect(await provenanceRows(id)).toEqual([
+      { connector_id: id, directory_id: 'app.linear/linear', version: '1.0.0', edited: false },
+    ]);
+    const stored = await query(
+      'SELECT capabilities::text AS caps FROM connectors_v1_connectors WHERE connector_id = $1',
+      [id],
+    );
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!['caps']).not.toContain('app.linear/linear');
+
+    // A label edit leaves the address alone: still matches its listing.
+    const renamed = await callRoute('PATCH', '/admin/connectors/:id', {
+      params: { id },
+      body: { name: 'Linear (renamed)' },
+    });
+    expect(renamed.status).toBe(200);
+    expect(await provenanceRows(id)).toEqual([
+      expect.objectContaining({ connector_id: id, edited: false }),
+    ]);
+
+    // A moved address no longer matches it.
+    const moved = await callRoute('PATCH', '/admin/connectors/:id', {
+      params: { id },
+      body: connectorBody(id, 'https://mcp.linear.app/v2'),
+    });
+    expect(moved.status).toBe(200);
+    expect(await provenanceRows(id)).toEqual([
+      expect.objectContaining({ connector_id: id, directory_id: 'app.linear/linear', edited: true }),
+    ]);
+
+    const removed = await callRoute('DELETE', '/admin/connectors/:id', { params: { id } });
+    expect(removed.status).toBe(204);
+    expect(await provenanceRows(id)).toEqual([]);
+  });
+
+  it('a hand-entered connector records no provenance (TASK-1102)', async () => {
+    actor = { id: 'admin-1', isAdmin: true };
+    await directory!.sync();
+    const id = 'hand-1a2b3c4d';
+    const created = await callRoute('POST', '/admin/connectors', {
+      body: connectorBody(id, 'https://mcp.example.com/mcp'),
+    });
+    expect(created.status).toBe(201);
+    expect(await provenanceRows(id)).toEqual([]);
   });
 });

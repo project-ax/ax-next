@@ -294,6 +294,20 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           degradation:
             'the admin connector directory answers as turned off (no @ax/connector-directory loaded)',
         },
+        // TASK-1102 — directory provenance (directory-provenance.ts). A create
+        // from a listing tells the directory which listing it was; an edit that
+        // changes a server address marks that record edited. Same provider,
+        // which registers neither hook when turned off. Never fails a write.
+        {
+          hook: 'connectors:directory-provenance-record',
+          degradation:
+            'a connector set up from the directory saves normally, but nothing remembers which listing it came from (no @ax/connector-directory loaded, or it is turned off)',
+        },
+        {
+          hook: 'connectors:directory-provenance-mark-edited',
+          degradation:
+            'a connector whose address is changed by hand saves normally, but its directory listing record is not marked as edited (no @ax/connector-directory loaded, or it is turned off)',
+        },
       ],
       // TASK-718 — `@ax/agents` fires `agents:deleted` after the agent row is
       // gone. `connectors_v1_authored` has no FK to it, so this plugin deletes
