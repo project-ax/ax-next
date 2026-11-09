@@ -29,6 +29,9 @@ part, so most of this file is about where it does and doesn't go.
 - At most 30 summaries per request. Reasoning under 40 characters is skipped.
 - A call id longer than 256 characters is ignored, because it becomes a stored
   key.
+- Per-step state is keyed by the host-stamped session as well as the
+  runner-supplied reqId. One session's reasoning can never be summarized onto
+  another session's call.
 - A runner cannot send a `step-summary` chunk itself, because the IPC schema
   has no such kind. Only this host plugin produces them.
 

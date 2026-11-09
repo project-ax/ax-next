@@ -79,11 +79,18 @@ export function createStepSummariesPlugin(cfg: StepSummariesConfig = {}): Plugin
   const fallbackHook = `llm:call:${fallbackParsed.provider}`;
   const turns = new Map<string, TurnState>();
 
-  const stateFor = (reqId: string): TurnState => {
-    let s = turns.get(reqId);
+  /*
+    `reqId` rides in the chunk the RUNNER sent, so it is the runner's word.
+    The state is keyed by the host-stamped session as well: one session's
+    reasoning can never be summarized onto another session's call, whatever
+    reqId a runner claims.
+  */
+  const keyOf = (ctx: AgentContext, reqId: string): string => `${ctx.sessionId}\u0000${reqId}`;
+  const stateFor = (key: string): TurnState => {
+    let s = turns.get(key);
     if (s === undefined) {
       s = { reasoning: '', summaries: 0 };
-      turns.set(reqId, s);
+      turns.set(key, s);
       // Oldest first (Map insertion order): a turn whose end never arrived.
       if (turns.size > MAX_TRACKED_TURNS) {
         const oldest = turns.keys().next().value;
@@ -105,13 +112,14 @@ export function createStepSummariesPlugin(cfg: StepSummariesConfig = {}): Plugin
       bus.subscribe<ChunkPayload>('chat:stream-chunk', PLUGIN_NAME, async (ctx, payload) => {
         const reqId = payload?.reqId;
         if (typeof reqId !== 'string') return undefined;
+        const key = keyOf(ctx, reqId);
         if (payload.kind === 'thinking' && typeof payload.text === 'string') {
-          const s = stateFor(reqId);
+          const s = stateFor(key);
           // Bounded: only the tail is ever summarized (see prompt.ts).
           s.reasoning = (s.reasoning + payload.text).slice(-12_000);
         } else if (payload.kind === 'text') {
           // The reasoning led to words, not a tool: it is the reply's, not a step's.
-          const s = turns.get(reqId);
+          const s = turns.get(key);
           if (s !== undefined) s.reasoning = '';
         } else if (
           payload.kind === 'tool-use' &&
@@ -120,7 +128,7 @@ export function createStepSummariesPlugin(cfg: StepSummariesConfig = {}): Plugin
           payload.toolCallId.length > 0 &&
           payload.toolCallId.length <= MAX_TOOL_CALL_ID_CHARS
         ) {
-          const s = turns.get(reqId);
+          const s = turns.get(key);
           if (s === undefined) return undefined;
           const reasoning = s.reasoning.trim();
           s.reasoning = '';
@@ -144,7 +152,8 @@ export function createStepSummariesPlugin(cfg: StepSummariesConfig = {}): Plugin
       // the reply, not the reply, so it is not the moment.) A request whose
       // end never arrives ages out of the bounded map instead.
       const forget = async (ctx: AgentContext): Promise<undefined> => {
-        turns.delete(ctx.reqId);
+        const prefix = `${ctx.sessionId}\u0000`;
+        for (const key of [...turns.keys()]) if (key.startsWith(prefix)) turns.delete(key);
         return undefined;
       };
       bus.subscribe<unknown>('chat:end', PLUGIN_NAME, forget);

@@ -106,4 +106,18 @@ describe('@ax/step-summaries', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(t.llmCalls).toHaveLength(0);
   });
+
+  it("never summarizes one session's reasoning onto another session's call", async () => {
+    const t = await setup();
+    const other = makeAgentContext({ sessionId: 's2', agentId: 'agt_b', userId: 'u2', conversationId: 'c2' });
+    // Session s1 thinks; a different session claims the same reqId and calls a tool.
+    await t.chunk({ kind: 'thinking', text: REASONING });
+    await t.bus.fire('chat:stream-chunk', other, { reqId: 'r1', kind: 'tool-use', toolCallId: 'tu9', toolName: 'Bash', input: {} });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.llmCalls).toHaveLength(0);
+    // Its own call still gets its own summary.
+    await t.chunk({ kind: 'tool-use', toolCallId: 'tu1', toolName: 'Bash', input: {} });
+    await vi.waitFor(() => expect(t.appended).toHaveLength(1));
+    expect(t.appended[0]).toMatchObject({ conversationId: 'c1', key: 'tu1' });
+  });
 });
