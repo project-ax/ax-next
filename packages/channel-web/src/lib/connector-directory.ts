@@ -8,7 +8,9 @@
  * `packages/connectors/src/directory-route.ts`. It is mirrored here, not
  * imported (invariant 2: channel-web imports no plugin at runtime), so
  * `DIRECTORY_QUERY_MAX` and the cursor rule below copy that file's
- * `DIRECTORY_QUERY_MAX` and `DIRECTORY_CURSOR_RE`. Change them together.
+ * `DIRECTORY_QUERY_MAX` and `DIRECTORY_CURSOR_RE`. Change them together:
+ * `src/__tests__/connector-directory-contract.test.ts` compares both, and
+ * runs a body the route's own shaper built through `normalizeDirectoryPage`.
  *
  * UNTRUSTED. Every field of every listing is third-party registry text. The
  * host cleans it at sync and shapes it at the route, and this module still
@@ -70,7 +72,7 @@ export interface DirectoryPage {
 export const DIRECTORY_QUERY_MAX = 200;
 
 /** The cursor alphabet and length the route accepts. */
-const DIRECTORY_CURSOR_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const DIRECTORY_CURSOR_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** What a workspace without a directory answers. A fresh object on every call. */
 export function directoryOffPage(): DirectoryPage {

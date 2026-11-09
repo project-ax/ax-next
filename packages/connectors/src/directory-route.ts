@@ -4,6 +4,11 @@
 // Invariant 2: no import, so the shapes are copied here and kept in step by the
 // wire test). The hook is an OPTIONAL call: without the plugin the route
 // answers 200 with the "turned off" body.
+//
+// The admin client in channel-web (lib/connector-directory.ts) mirrors the cap,
+// the cursor rule and the body's field names in turn. Its test-only
+// connector-directory-contract.test.ts imports them from this package's index
+// and fails when the two drift.
 // ---------------------------------------------------------------------------
 
 export const DIRECTORY_SEARCH_HOOK = 'connectors:directory-search';
