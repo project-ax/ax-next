@@ -1729,6 +1729,71 @@ describe('channel-web agent-workspace BFF', () => {
     });
   });
 
+  it('names the turn still in flight, so a page reloaded mid-turn can reattach', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1', activeReqId: 'req-live' })];
+    turnsByConversation.set('c1', []);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { liveReqId: unknown }).liveReqId).toBe('req-live');
+  });
+
+  it('names no turn when none is in flight', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', []);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { liveReqId: unknown }).liveReqId).toBeNull();
+  });
+
+  it('puts each stored step summary on its own step, and nowhere else', async () => {
+    // @ax/step-summaries' lines come back on a reload exactly where they were
+    // live: on the step whose call id they are keyed by. Fenced to one line.
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'node draw.js' } },
+          { type: 'tool_use', id: 'tu2', name: 'Read', input: { file_path: '/w/p.png' } },
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'tool',
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: 'tu1', content: 'ok' },
+          { type: 'tool_result', tool_use_id: 'tu2', content: 'ok' },
+        ],
+        createdAt: '2026-08-01T10:00:01.000Z',
+      },
+    ]);
+    eventsByConversation.set('c1', [
+      {
+        kind: 'step-summary',
+        key: 'tu1',
+        payload: { toolCallId: 'tu1', text: 'Working out the leg motion\nwith a script.' },
+        createdAt: '2026-08-01T10:00:00.500Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<{ kind: string; steps?: Array<Record<string, unknown>> }> };
+    const steps = body.thread.find((m) => m.kind === 'steps')!.steps!;
+    expect(steps[0]).toMatchObject({ intent: 'Working out the leg motion with a script.' });
+    expect(steps[1]).not.toHaveProperty('intent');
+  });
+
   it('tells two calls to the same tool apart on the reload path too', async () => {
     /*
       TASK-419's other half. The live path is

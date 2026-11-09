@@ -14,18 +14,15 @@ import type { PermissionRequest, PhaseKind, StreamChunk } from './types.js';
 //
 // Capacity / TTL constants are deliberately conservative:
 //
-//   MAX_CHUNKS_PER_REQ_ID — 256
-//     A single turn streaming at 64 byte chunks fits 16 KiB of model
-//     output before the oldest is dropped. Above that, the SSE consumer
-//     will lose the very start of the turn on reconnect — acceptable
-//     because the client is reading live anyway and only "tail since
-//     reconnect" is a soft guarantee.
+//   MAX_CHUNKS_PER_REQ_ID — 20,000, and MAX_BYTES_PER_REQ_ID — 4 MiB
+//     A whole turn, because a page reloaded mid-turn replays it from here
+//     (the runner stores a reply only when it ends). Past either cap the
+//     oldest frames drop and a reattaching client sees the gap banner.
 //
-//   IDLE_TTL_MS — 60 s
+//   IDLE_TTL_MS — 15 min
 //     Time since last write before the entry is evictable. Long enough
-//     to span a quick browser reconnect (refresh, tab-focus); short
-//     enough that finished turns release memory promptly. The chat:
-//     turn-end subscriber explicitly evicts on success so this TTL is
+//     that a long, quiet command does not cost a reload its history. The
+//     chat:turn-end subscriber explicitly evicts on success so this TTL is
 //     mostly the "browser closed mid-stream" path.
 //
 //   SWEEP_INTERVAL_MS — 30 s
@@ -34,9 +31,23 @@ import type { PermissionRequest, PhaseKind, StreamChunk } from './types.js';
 //     a process that's otherwise idle doesn't keep the event loop alive.
 // ---------------------------------------------------------------------------
 
-const MAX_CHUNKS_PER_REQ_ID = 256;
-const IDLE_TTL_MS = 60_000;
-const SWEEP_INTERVAL_MS = 30_000;
+/*
+  A page reloaded mid-turn reattaches and replays the WHOLE turn from this
+  buffer (`liveReqId` on the agent detail), because the runner stores a reply
+  only when it ends. So a turn has to fit: generous on count, bounded on
+  bytes, and not reclaimed while a long command runs quietly. Past either cap
+  the oldest frames drop and a reattaching page sees the gap banner rather
+  than a silently short reply (TASK-23).
+*/
+export const MAX_CHUNKS_PER_REQ_ID = 20_000;
+export const MAX_BYTES_PER_REQ_ID = 4 * 1024 * 1024;
+export const IDLE_TTL_MS = 15 * 60_000;
+
+/** What a frame costs to hold: its serialized length (what the replay writes). */
+function frameBytes(chunk: StreamChunk): number {
+  return JSON.stringify(chunk).length;
+}
+export const SWEEP_INTERVAL_MS = 30_000;
 
 // Ceiling on how many distinct pending approval cards we retain per
 // conversation. A turn proposes at most a handful of cap-bearing skills; this
@@ -63,6 +74,8 @@ const SHELL_MAX_AGE_MS = 15 * 60_000;
 
 interface BufferEntry {
   chunks: StreamChunk[];
+  /** Serialized size of `chunks`, kept under MAX_BYTES_PER_REQ_ID. */
+  bytes: number;
   /**
    * Next per-reqId monotonic sequence number to mint (1-based). Incremented on
    * every `append` and stamped onto the buffered frame (TASK-23). Keeps
@@ -380,6 +393,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         // the monotonic cursor so a revival (e.g. a tool-result after a long
         // quiet tool call) continues the sequence instead of resetting to 1.
         entry.chunks = [];
+        entry.bytes = 0;
         entry.phase = null;
         entry.reclaimed = true;
         entry.reclaimedAtMs = now();
@@ -399,6 +413,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         const stamped: StreamChunk = { ...chunk, seq: 1 };
         map.set(chunk.reqId, {
           chunks: [stamped],
+          bytes: frameBytes(stamped),
           nextSeq: 2,
           reclaimed: false,
           reclaimedAtMs: null,
@@ -418,17 +433,18 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       existing.reclaimedAtMs = null;
       const stamped: StreamChunk = { ...chunk, seq };
       existing.chunks.push(stamped);
+      existing.bytes += frameBytes(stamped);
       // Hard cap — drop the oldest. Array.shift() is O(n) but n ≤ 256
       // and we only shift on overflow; not worth a circular-buffer
       // structure for this slice. NOTE: nextSeq keeps climbing across the
       // drop, so the retained tail's first seq sits ABOVE a reconnecting
       // client's last-seen seq → the client detects the hole and surfaces
       // the banner instead of silently rendering a truncated reply (TASK-23).
-      if (existing.chunks.length > MAX_CHUNKS_PER_REQ_ID) {
-        existing.chunks.splice(
-          0,
-          existing.chunks.length - MAX_CHUNKS_PER_REQ_ID,
-        );
+      while (
+        existing.chunks.length > 1 &&
+        (existing.chunks.length > MAX_CHUNKS_PER_REQ_ID || existing.bytes > MAX_BYTES_PER_REQ_ID)
+      ) {
+        existing.bytes -= frameBytes(existing.chunks.shift()!);
       }
       // Once content starts streaming, the phase ("Starting sandbox…")
       // is no longer the truth. Evict so reconnects don't briefly
@@ -443,6 +459,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(reqId, {
           chunks: [],
+          bytes: 0,
           nextSeq: 1,
           reclaimed: false,
           reclaimedAtMs: null,
@@ -468,6 +485,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(reqId, {
           chunks: [],
+          bytes: 0,
           nextSeq: 1,
           reclaimed: false,
           reclaimedAtMs: null,

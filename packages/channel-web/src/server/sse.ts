@@ -15,6 +15,7 @@ import type { ChunkBuffer } from './chunk-buffer.js';
 import { filterDeclinedGrants, readGrantDeclines } from './grant-declines.js';
 import type { StoredDecline } from './grant-declines.js';
 import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
+import { STEP_INTENT_MAX_CHARS } from '../lib/workspace-steps.js';
 
 // ---------------------------------------------------------------------------
 // SSE handler factory.
@@ -818,6 +819,19 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
         return undefined;
       }
       return buffer.append(payload as StreamChunk);
+    }
+    if (payload.kind === 'step-summary') {
+      const p = payload as { toolCallId?: unknown; text?: unknown };
+      if (typeof p.toolCallId !== 'string' || typeof p.text !== 'string') return undefined;
+      const text = fenceLine(p.text, STEP_INTENT_MAX_CHARS);
+      if (text === null || text.length === 0) return undefined;
+      // Rebuilt field by field: nothing else on the payload reaches a client.
+      return buffer.append({
+        reqId: payload.reqId,
+        kind: 'step-summary',
+        toolCallId: p.toolCallId,
+        text,
+      });
     }
     return undefined;
   };

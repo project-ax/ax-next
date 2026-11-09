@@ -167,27 +167,27 @@ describe('the phase status line', () => {
     expect(screen.getByText('Running a command…')).toBeTruthy();
   });
 
-  it('puts what the agent says between calls in the title, not the reply', async () => {
-    // Claude-style: "Sketching the frame first." is narration the moment a
-    // call follows it. It used to stream in as the reply body and then jump
-    // into the panel when the turn ended.
+  it('keeps what the agent says as a message, and starts a new step block under it', async () => {
+    // Claude-style: a message stays where it was written. Calls after it get
+    // their own collapsed title BELOW it; nothing jumps when they arrive.
     let handlers!: StreamHandlers;
     await startTurn((h) => {
       handlers = h;
-      h.onText('Sketching the frame first.');
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'ls' });
     });
-    await waitFor(() => expect(screen.getByText('Sketching the frame first.')).toBeTruthy());
-    act(() => handlers.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'node draw.js' }));
-    const panel = await screen.findByTestId('workspace-steps');
-    // The words are the panel's title now, and nothing else on the page says them.
-    expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
-    expect(screen.getAllByText('Sketching the frame first.')).toHaveLength(1);
+    await screen.findByTestId('workspace-steps');
     act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
-    act(() => handlers.onText('Here is the pelican.'));
-    // Text after the last call IS the reply, under the panel.
-    await waitFor(() => expect(screen.getByText('Here is the pelican.')).toBeTruthy());
-    expect(within(panel).queryByText('Here is the pelican.')).toBeNull();
-    expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
+    act(() => handlers.onText('That failed, so I will try another way.'));
+    const said = await screen.findByText('That failed, so I will try another way.');
+    // Once it has said something after the block, that block is finished.
+    await waitFor(() => expect(screen.getByText('Ran a command')).toBeTruthy());
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu2', toolName: 'Read', detail: 'src/a.ts' }));
+    await waitFor(() => expect(screen.getAllByTestId('workspace-steps')).toHaveLength(2));
+    const [first, second] = screen.getAllByTestId('workspace-steps');
+    // The message did not move: still between the two blocks, not in either.
+    expect(first!.compareDocumentPosition(said) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(said.compareDocumentPosition(second!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(second!).getByText('Reading a.ts…')).toBeTruthy();
   });
 
   it('draws an artifact card as soon as the file is published, from the store', async () => {
@@ -231,6 +231,79 @@ describe('the phase status line', () => {
       await Promise.resolve();
     });
     expect(screen.queryByText('not yours')).toBeNull();
+  });
+
+  it('titles the running step with its summary, and lists it above the step', async () => {
+    // The host's line for what the agent set out to do (Claude's
+    // "Working out the leg motion with a script.") replaces the bare step name.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'node legs.js' });
+    });
+    await waitFor(() => expect(screen.getByText('Running a command…')).toBeTruthy());
+    act(() => handlers.onStepSummary?.({ toolCallId: 'tu1', text: 'Working out the leg motion with a script.' }));
+    const panel = await screen.findByTestId('workspace-steps');
+    await waitFor(() => expect(within(panel).getByText('Working out the leg motion with a script.')).toBeTruthy());
+    // Open the panel: the summary is ONE row, standing in for its step
+    // rather than sitting on top of a "Ran a command" row.
+    fireEvent.click(within(panel).getAllByText('Working out the leg motion with a script.')[0]!);
+    const rows = () => within(panel).getAllByRole('listitem').map((li) => li.textContent ?? '');
+    expect(rows()).toEqual(['Working out the leg motion with a script.']);
+    // Open the row: the step it stands for is inside.
+    const row = within(panel).getAllByRole('listitem')[0]!;
+    fireEvent.click(within(row).getByText('Working out the leg motion with a script.'));
+    expect(within(row).getByText('node legs.js')).toBeTruthy();
+  });
+
+  it('always shows the turn is still going, even after a finished message', async () => {
+    // The gap the reader saw: a message done, the next call not started, and
+    // nothing but the Stop button saying the agent was still at it.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'ls' });
+    });
+    await screen.findByTestId('workspace-steps');
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
+    act(() => handlers.onText('Found it. Now drawing the pelican.'));
+    await screen.findByText('Found it. Now drawing the pelican.');
+    // Not under words that are still arriving...
+    expect(screen.queryByTestId('still-working')).toBeNull();
+    // ...but once they stop, the turn says it is still working.
+    await waitFor(() => expect(screen.getByTestId('still-working')).toBeTruthy(), { timeout: 3000 });
+    // The next call has its own live title; the extra line goes.
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu2', toolName: 'Read', detail: 'src/a.ts' }));
+    await waitFor(() => expect(screen.queryByTestId('still-working')).toBeNull());
+    expect(screen.getByText('Reading a.ts…')).toBeTruthy();
+  });
+
+  it('a page loaded mid-turn reattaches to it once and replays the work so far', async () => {
+    // The runner stores a reply only when it ends; a reload used to show the
+    // person's message and nothing else, with nothing listening for the rest.
+    vi.mocked(workspaceApi.agent).mockResolvedValue({ ...detail(), liveReqId: 'req-live' } as AgentDetail);
+    let handlers!: StreamHandlers;
+    vi.mocked(workspaceApi.streamReply).mockImplementation(async (_reqId, h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'ls' });
+      h.onToolResult?.({ toolCallId: 'tu1' });
+      h.onText('Found the files.');
+      await new Promise<void>(() => {});
+    });
+    renderView();
+    await waitFor(() => expect(workspaceApi.streamReply).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(workspaceApi.streamReply).mock.calls[0]![0]).toBe('req-live');
+    expect(vi.mocked(workspaceApi.streamReply).mock.calls[0]![1]).toMatchObject({ resume: true });
+    // The replayed work is on screen.
+    expect(await screen.findByText('Found the files.')).toBeTruthy();
+    expect(screen.getByTestId('workspace-steps')).toBeTruthy();
+    // The turn ends; the re-read still names it (the clear can trail): no second attach.
+    act(() => handlers.onDone());
+    await waitFor(() => expect(vi.mocked(workspaceApi.agent).mock.calls.length).toBeGreaterThan(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(workspaceApi.streamReply).toHaveBeenCalledTimes(1);
   });
 
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {

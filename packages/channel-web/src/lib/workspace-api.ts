@@ -82,7 +82,8 @@ import {
 import { readSseFrames, type FrameVerdict, type SeqCursor } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
-import { stepDetail } from './workspace-steps';
+import { STEP_INTENT_MAX_CHARS, stepDetail } from './workspace-steps';
+import { fenceLine } from './fence-line';
 import { isShowVisualToolName, visualFromToolResult } from './visual-result';
 import { claimedArtifactId, isArtifactPublishToolName } from './published-artifact';
 // The store owns "can this build draw it?", because `grantKey` is the function
@@ -280,6 +281,13 @@ export interface AgentDetail {
    * the list and the read.
    */
   conversationId: string | null;
+  /**
+   * The reply still being written in that conversation, if any: what a page
+   * opened (or reloaded) mid-turn reattaches to, so the work it missed is
+   * replayed and the rest streams in. `null` when nothing is in flight.
+   * Optional: an older host omits it, which reads as nothing in flight.
+   */
+  liveReqId?: string | null;
   /** Reconstructed from the real turns of that conversation. */
   thread: ThreadMessage[];
   /**
@@ -1052,6 +1060,13 @@ export interface SendMessageInput {
 }
 
 export interface StreamHandlers {
+  /**
+   * Reattaching to a turn this page did not start (it was reloaded mid-turn,
+   * see `AgentDetail.liveReqId`). The turn may have ended between the read
+   * that named it and this open, so a 404 on the FIRST open is "it finished",
+   * not a failure: `onDone`, and the re-read draws the stored answer.
+   */
+  resume?: boolean;
   /** One text delta. Called many times; concatenate in order. */
   onText: (chunk: string) => void;
   /** The turn ended normally. */
@@ -1103,6 +1118,11 @@ export interface StreamHandlers {
    * reads the card from the store before drawing it (lib/published-artifact).
    */
   onArtifactClaim?: (artifactId: string) => void;
+  /**
+   * The host's one-line summary of what the agent set out to do with a call
+   * (`step-summary` frame). Never the reasoning it was written from.
+   */
+  onStepSummary?: (summary: { toolCallId: string; text: string }) => void;
   /**
    * Sandbox provisioning changed phase (`sandbox-starting` / `sandbox-ready`).
    *
@@ -2329,11 +2349,13 @@ async function streamReply(
     onToolResult,
     onVisual,
     onArtifactClaim,
+    onStepSummary,
     onPhase,
     onDecisionRaised,
     onPermissionRequest,
     signal,
     reconnectDelaysMs = STREAM_RECONNECT_DELAYS_MS,
+    resume = false,
   }: StreamHandlers,
 ): Promise<void> {
   /**
@@ -2447,6 +2469,13 @@ async function streamReply(
           activityPhrase: frame.activityPhrase,
           detail: stepDetail(frame.input),
         });
+      }
+      return 'continue';
+    }
+    if ('kind' in frame && frame.kind === 'step-summary') {
+      if (onStepSummary && typeof frame.toolCallId === 'string' && typeof frame.text === 'string') {
+        const text = fenceLine(frame.text, STEP_INTENT_MAX_CHARS);
+        if (text !== null && text.length > 0) onStepSummary({ toolCallId: frame.toolCallId, text });
       }
       return 'continue';
     }
@@ -2573,7 +2602,7 @@ async function streamReply(
     }
 
     if (res !== null) {
-      if (opened && res.status === 404) {
+      if ((opened || resume) && res.status === 404) {
         // The turn ended while we were disconnected. Not a failure: the answer
         // is in the transcript, and `onDone` is what re-reads it.
         onDone();

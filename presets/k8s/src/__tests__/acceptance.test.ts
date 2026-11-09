@@ -48,6 +48,7 @@ import type {
 } from '@ax/conversations';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createConversationTitlesPlugin } from '@ax/conversation-titles';
+import { createStepSummariesPlugin } from '@ax/step-summaries';
 import type Anthropic from '@anthropic-ai/sdk';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -255,6 +256,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   // preset.test.ts; runtime behavior in @ax/conversation-titles' own suite.
   '@ax/llm-anthropic',
   '@ax/conversation-titles',
+  // Same story as titles: it hard-`calls` conversations:append-event and the
+  // fast model's llm:call. The Phase F canary re-adds its own copy on the stub.
+  '@ax/step-summaries',
   // Memory facts engine (TASK-423): postgres-backed — it `calls`
   // database:get-instance, and the postgres trio comes off at the top of this
   // list, so leaving it in would fail the kernel's verifyCalls before a single
@@ -1047,6 +1051,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           createConversationTitlesPlugin({
             model: 'anthropic/claude-haiku-4-5-20251001',
           }),
+          // step-summaries — reasoning before a tool call → one stored line.
+          createStepSummariesPlugin({ model: 'anthropic/claude-haiku-4-5-20251001' }),
           createStorageSqlitePlugin({ databasePath: sqlitePath }),
           createSessionInmemoryPlugin(),
           createSandboxSubprocessPlugin(),
@@ -1149,6 +1155,39 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(title).toBe('Test Conversation Title');
         // Single LLM call — guards against duplicate subscriber delivery.
         expect(llmCallCounter.count).toBe(1);
+
+        // 7. Step summaries: reasoning, then a tool call, on the stream →
+        // the summary model is asked (the same stub answers) and the line is
+        // stored as a `step-summary` display event keyed by the call id,
+        // which is what a reload draws.
+        await bus.fire('chat:stream-chunk', turnCtx, {
+          reqId: 'r-canary',
+          kind: 'thinking',
+          text: 'I should render the drawing to check the legs before answering the person.',
+        });
+        await bus.fire('chat:stream-chunk', turnCtx, {
+          reqId: 'r-canary',
+          kind: 'tool-use',
+          toolCallId: 'tu-canary',
+          toolName: 'Bash',
+          input: {},
+        });
+        let summary: unknown = undefined;
+        const summaryDeadline = Date.now() + 5_000;
+        while (Date.now() < summaryDeadline && summary === undefined) {
+          const got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+            'conversations:get',
+            turnCtx,
+            { conversationId: conv.conversationId, userId },
+          );
+          summary = got.displayEvents.find((e) => e.kind === 'step-summary' && e.key === 'tu-canary');
+          if (summary === undefined) await new Promise((r) => setTimeout(r, 100));
+        }
+        expect(summary).toMatchObject({
+          kind: 'step-summary',
+          key: 'tu-canary',
+          payload: { toolCallId: 'tu-canary', text: 'Test Conversation Title' },
+        });
       } finally {
         if (handle !== null) await handle.shutdown();
       }

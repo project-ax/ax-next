@@ -54,7 +54,7 @@ function script(steps: Step[]): { opens: () => number } {
 }
 
 async function run(
-  opts: { reconnectDelaysMs?: number[]; signal?: AbortSignal } = {},
+  opts: { reconnectDelaysMs?: number[]; signal?: AbortSignal; resume?: boolean } = {},
 ): Promise<{ text: string; error: string | null; done: boolean }> {
   let text = '';
   let error: string | null = null;
@@ -62,6 +62,7 @@ async function run(
   await workspaceApi.streamReply('r1', {
     reconnectDelaysMs: opts.reconnectDelaysMs ?? [0, 0, 0],
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.resume === true ? { resume: true } : {}),
     onText: (t) => {
       text += t;
     },
@@ -122,6 +123,23 @@ describe('streamReply — same-reqId reconnect (TASK-27)', () => {
 
     expect(error).toBeNull();
     expect(done).toBe(true);
+  });
+
+  it('a reattach after a reload whose turn already ended: done on the FIRST open, not an error', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The read named the turn, then it ended before this open.
+    script([404]);
+    const { error, done } = await run({ resume: true });
+    expect(error).toBeNull();
+    expect(done).toBe(true);
+  });
+
+  it('a first open that 404s is still an error when it is not a reattach', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    script([404]);
+    const { error, done } = await run();
+    expect(error).not.toBeNull();
+    expect(done).toBe(false);
   });
 
   it('keeps trying through failed reopens, then shows the banner once they are all spent', async () => {

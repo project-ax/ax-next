@@ -225,7 +225,7 @@ export async function runConversationsMigration<DB>(
       conversation_id TEXT NOT NULL,
       seq BIGINT NOT NULL,
       event_kind TEXT NOT NULL
-        CHECK (event_kind IN ('turn', 'permission-card', 'turn-error', 'save-refused')),
+        CHECK (event_kind IN ('turn', 'permission-card', 'turn-error', 'save-refused', 'step-summary')),
       role TEXT,
       fold_key TEXT NOT NULL DEFAULT '',
       payload JSONB NOT NULL,
@@ -269,6 +269,30 @@ export async function runConversationsMigration<DB>(
           DROP CONSTRAINT IF EXISTS conversations_v1_events_event_kind_check,
           ADD CONSTRAINT conversations_v1_events_event_kind_check
             CHECK (event_kind IN ('turn', 'permission-card', 'turn-error', 'save-refused'));
+      END IF;
+    END $$
+  `.execute(db);
+
+  // Step summaries (`@ax/step-summaries`): widen the same CHECK once more, by
+  // the same recipe as TASK-731 above: same constraint name, advisory lock,
+  // re-read under the lock, drop + add in ONE ALTER TABLE. ADDITIVE: every
+  // existing row already passes, and an older image that never writes the
+  // kind is unaffected (its own widen step looks for 'save-refused', which
+  // this definition still contains, so it leaves the wider check alone).
+  await sql`
+    DO $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('conversations_v1_events_event_kind_check'));
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'conversations_v1_events'::regclass
+           AND conname = 'conversations_v1_events_event_kind_check'
+           AND pg_get_constraintdef(oid) LIKE '%step-summary%'
+      ) THEN
+        ALTER TABLE conversations_v1_events
+          DROP CONSTRAINT IF EXISTS conversations_v1_events_event_kind_check,
+          ADD CONSTRAINT conversations_v1_events_event_kind_check
+            CHECK (event_kind IN ('turn', 'permission-card', 'turn-error', 'save-refused', 'step-summary'));
       END IF;
     END $$
   `.execute(db);

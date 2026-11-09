@@ -480,6 +480,31 @@ describe('TASK-995 retired save-refused display events', () => {
     }
   });
 
+  it('stores a step summary keyed by its call and reads it back on displayEvents', async () => {
+    // @ax/step-summaries writes one line per tool call; a reload draws it.
+    // Folded per call id, so a re-delivered summary replaces, never doubles.
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+    for (const text of ['Planning the drawing.', 'Planning the pelican drawing.']) {
+      await h.bus.call<AppendEventInput, AppendEventOutput>(
+        'conversations:append-event',
+        h.ctx({ conversationId }),
+        { conversationId, kind: 'step-summary', key: 'tu1', payload: { toolCallId: 'tu1', text } },
+      );
+    }
+    const got = await h.bus.call<GetInput, GetOutput>('conversations:get', h.ctx({ conversationId }), {
+      conversationId,
+      userId,
+    });
+    const summaries = got.displayEvents.filter((e) => e.kind === 'step-summary');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      key: 'tu1',
+      payload: { toolCallId: 'tu1', text: 'Planning the pelican drawing.' },
+    });
+  });
+
   it('conversations registers no drain-save-refusals hook', async () => {
     // TASK-749's drain told the model about refused saves; with nothing left
     // to refuse, the hook is gone — from the manifest (plugin.test.ts) AND

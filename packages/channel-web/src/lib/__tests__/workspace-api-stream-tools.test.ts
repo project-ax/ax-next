@@ -245,6 +245,22 @@ describe('the workspace reply stream', () => {
     expect(JSON.stringify(seen)).not.toContain('secret-markup');
   });
 
+  it('forwards a step summary as one fenced line, and nothing else from the frame', async () => {
+    stubStream([
+      { kind: 'step-summary', toolCallId: 'tu1', text: 'Working out\nthe legs.', extra: 'leak' },
+      { kind: 'step-summary', toolCallId: 'tu2', text: '   ' },
+      { done: true },
+    ]);
+    const seen: unknown[] = [];
+    await workspaceApi.streamReply('r1', {
+      onText() {},
+      onDone() {},
+      onError() {},
+      onStepSummary: (s) => seen.push(s),
+    });
+    expect(seen).toEqual([{ toolCallId: 'tu1', text: 'Working out the legs.' }]);
+  });
+
   it('claims a published artifact id only from a successful publish result', async () => {
     stubStream([
       { kind: 'tool-use', toolCallId: 'p1', toolName: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
