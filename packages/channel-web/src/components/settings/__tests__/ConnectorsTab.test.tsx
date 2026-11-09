@@ -746,10 +746,14 @@ describe('ConnectorsTab', () => {
       expect(screen.getByRole('button', { name: 'New connector' })).toBeInTheDocument();
     });
 
-    it('still offers it when the check fails', async () => {
-      vi.spyOn(directoryLib, 'searchDirectory').mockRejectedValue(new Error('blip'));
+    it('still offers it when the check fails, and logs the failure', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const blip = new Error('blip');
+      vi.spyOn(directoryLib, 'searchDirectory').mockRejectedValue(blip);
       render(<ConnectorsTab />);
       expect(await screen.findByRole('button', FIND)).toBeInTheDocument();
+      // Failing open is right, but failing silently leaves nothing to debug.
+      expect(warn).toHaveBeenCalledWith('[connector-directory] unexpected failure', blip);
     });
 
     it('opens the directory in place of the list, and Back returns', async () => {

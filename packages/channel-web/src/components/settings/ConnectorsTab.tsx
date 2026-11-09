@@ -57,6 +57,7 @@ import {
 } from '@/lib/connectors';
 import { relativeDay } from '@/lib/workspace-time';
 import { searchDirectory, prefillFromDirectoryEntry } from '@/lib/connector-directory';
+import { logRequestFailure } from '@/lib/http';
 import { ConnectorEditDialog } from './ConnectorEditDialog';
 import { ConnectorDirectory } from './ConnectorDirectory';
 import { RoleCard } from '@/components/admin/RoleCard';
@@ -213,8 +214,11 @@ export function ConnectorsTab() {
       .then((page) => {
         if (!cancelled) setDirectoryOffered(page.enabled);
       })
-      .catch(() => {
-        if (!cancelled) setDirectoryOffered(true);
+      .catch((e: unknown) => {
+        // Fail open: offer the button, and let the subview say what's wrong.
+        if (cancelled) return;
+        logRequestFailure(e, 'connector-directory');
+        setDirectoryOffered(true);
       });
     return () => {
       cancelled = true;
