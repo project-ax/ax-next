@@ -446,7 +446,13 @@ describe('ConnectorDirectory', () => {
       const { onNewConnector } = renderDirectory();
       // The box's own spaces are not part of the search.
       typeQuery(await searchBox(), '  zzz ');
-      expect(await screen.findByText('Nothing matches “zzz”')).toBeInTheDocument();
+      const status = screen.getByRole('status');
+      expect(status).toHaveTextContent('Searching…');
+      expect(await screen.findByText('Nothing matches “zzz”', { selector: '[data-slot="empty-title"]' })).toBeVisible();
+      // The live region that said "Searching…" stays put and says there's no
+      // match, so a screen reader hears the answer arrive.
+      expect(screen.getByRole('status')).toBe(status);
+      expect(status).toHaveTextContent(/^Nothing matches “zzz”$/);
       expect(screen.getByText(NO_MATCH_DESCRIPTION)).toBeInTheDocument();
       expect(queries()).toEqual(['', 'zzz']);
       expect(screen.queryByText(/servers? match/)).toBeNull();

@@ -349,16 +349,41 @@ export function ConnectorDirectory({
           </AlertDescription>
         </Alert>
       );
-    } else if (searching || (shown !== null && shown.entries.length > 0)) {
-      // One status line for "Searching…" and then the count, so a screen
-      // reader hears the count arrive in the same live region.
+    } else if (searching || shown !== null) {
+      const noMatch = shown !== null && shown.entries.length === 0;
+      // One status line, mounted from "Searching…" through the answer, so a
+      // screen reader hears the count or the no-match arrive in the same live
+      // region. On no match it is visually hidden: the Empty's title says it
+      // on screen, and is hidden from screen readers so it isn't heard twice.
+      let statusText = 'Searching…';
+      if (noMatch) statusText = `Nothing matches “${shown.query}”`;
+      else if (shown !== null) statusText = countLine(shown);
       resultsArea = (
         <div className="flex flex-col gap-3">
-          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+          <p
+            role="status"
+            className={noMatch ? 'sr-only' : 'flex items-center gap-2 text-sm text-muted-foreground'}
+          >
             {searching && <Spinner aria-hidden="true" />}
-            {shown === null ? 'Searching…' : countLine(shown)}
+            {statusText}
           </p>
-          {shown !== null && (
+          {noMatch && (
+            <Empty>
+              <EmptyHeader>
+                <EmptyTitle aria-hidden="true">{statusText}</EmptyTitle>
+                <EmptyDescription>
+                  Try the service’s name rather than what it does. Not every service is listed yet. If you know its
+                  address, you can set it up by hand.
+                </EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent>
+                <Button type="button" onClick={onNewConnector}>
+                  New connector
+                </Button>
+              </EmptyContent>
+            </Empty>
+          )}
+          {shown !== null && !noMatch && (
             <>
               <div className="flex flex-col">
                 {shown.entries.map((entry) => (
@@ -385,23 +410,6 @@ export function ConnectorDirectory({
             </>
           )}
         </div>
-      );
-    } else if (shown !== null) {
-      resultsArea = (
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>{`Nothing matches “${shown.query}”`}</EmptyTitle>
-            <EmptyDescription>
-              Try the service’s name rather than what it does. Not every service is listed yet. If you know its
-              address, you can set it up by hand.
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button type="button" onClick={onNewConnector}>
-              New connector
-            </Button>
-          </EmptyContent>
-        </Empty>
       );
     }
 
