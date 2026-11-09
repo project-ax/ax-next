@@ -74,7 +74,7 @@
 | `howKeyHeader` | 〃 | `` `Needs an API key, sent in the ${keyHeader} header. You choose whether each agent brings its own key or everyone shares one.` `` |
 | `howKey` | 〃 (key, no `keyHeader`) | `Needs an API key. You’ll add the request header it goes in when you set it up.` |
 | `howNone` | 〃 | `The listing doesn’t mention a key. When you set it up, we’ll check whether people need to sign in.` |
-| `listing` | Listing | `` `Version ${version}` ``, plus `` ` · updated ${monthDay(updatedAt)}` `` when `monthDay` (`@/lib/workspace-time`) returns non-empty |
+| `listing` | Listing | `` `Version ${version}` ``, plus `` ` · updated ${monthDayYear(updatedAt)}` `` when `monthDayYear` (`@/lib/workspace-time`) returns non-empty ("Nov 3" this year, "May 1, 2023" in another) |
 | `deprecatedNote` | sheet, muted | `This listing is marked deprecated, so it may stop working.` |
 | `trust` | sheet `Alert role="note"` with `Info` icon | `The directory checks who published a server, not what it does. An agent with this connector can send it whatever the agent is working on, so only add servers you’d trust with that.` |
 | sheet buttons | sheet footer | `Set it up`, or a disabled `Already in your connectors` |
@@ -320,13 +320,13 @@
 - Consumes:
   - `DirectoryEntry` and `directoryHost` (Task 1)
   - `SettingsDetailRow` from `./SettingsLayout`. It takes `label: string`, `detail`, `value` and `description`, and `children` as `(close) => ReactNode`. The row's accessible name is `Details for ${label}`.
-  - `monthDay` from `@/lib/workspace-time`
+  - `monthDayYear` from `@/lib/workspace-time`
 - Produces: `export function DirectoryListingRow(props: { entry: DirectoryEntry; added: boolean; onSetUp: (entry: DirectoryEntry) => void }): JSX.Element`
 
 - [ ] **Step 1: Write the failing tests.** Render the row standalone, then open the sheet with `fireEvent.click(screen.getByRole('button', { name: 'Details for Linear' }))` and `await screen.findByRole('dialog', { name: 'Linear' })`.
   - `a verified listing shows its domain with a shield, and the sheet says what was proved`:
     - `getByTestId('directory-proof-domain')` has text containing `Published by linear.app`.
-    - The sheet shows `Published by`, `The publisher proved they control linear.app.`, `Connects to` with `mcp.linear.app`, and `` `Version 1.4.0 · updated ${monthDay('2026-11-03T12:00:00.000Z')}` ``. Compute the date with `monthDay` itself, so the test doesn't depend on locale.
+    - The sheet shows `Published by`, `The publisher proved they control linear.app.`, `Connects to` with `mcp.linear.app`, and `` `Version 1.4.0 · updated ${monthDayYear('2026-11-03T12:00:00.000Z')}` ``. Compute the date with `monthDayYear` itself, so the test doesn't depend on locale.
     - The sheet shows the `trust` string.
   - `a community listing never claims a company or GitHub`. Use `publisherProof: 'account'` and `publisher: 'quickmcp-dev'`.
     - The row: `getByTestId('directory-proof-account')` has text `Community · quickmcp-dev`, and there is no `directory-proof-domain`.

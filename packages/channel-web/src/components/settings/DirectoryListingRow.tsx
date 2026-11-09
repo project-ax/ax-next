@@ -29,7 +29,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { badgeVariants } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
-import { monthDay } from '@/lib/workspace-time';
+import { monthDayYear } from '@/lib/workspace-time';
 import { SettingsDetailRow } from './SettingsLayout';
 
 const NO_DESCRIPTION = 'The publisher didn’t add a description.';
@@ -58,9 +58,12 @@ function howPeopleConnect(entry: DirectoryEntry): string {
   }
 }
 
-/** "Version 1.4.0 · updated Nov 3", or only the version when the date can't be read. */
+/**
+ * "Version 1.4.0 · updated Nov 3" ("Nov 3, 2024" in another year), or only the
+ * version when the date can't be read.
+ */
 function listingLine(entry: DirectoryEntry): string {
-  const updated = monthDay(entry.updatedAt);
+  const updated = monthDayYear(entry.updatedAt);
   return updated ? `Version ${entry.version} · updated ${updated}` : `Version ${entry.version}`;
 }
 

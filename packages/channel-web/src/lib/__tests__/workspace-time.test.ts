@@ -23,6 +23,7 @@ import {
   localDayLabel,
   localTime,
   monthDay,
+  monthDayYear,
   relativeDay,
   timeAgo,
   updateStamp,
@@ -299,9 +300,21 @@ describe('compactStamp, fullStamp and monthDay', () => {
     });
   });
 
+  it('monthDayYear adds the year only when it isn’t the reader’s current year', () => {
+    inZone('America/New_York', () => {
+      const now = new Date(2026, 10, 9, 12, 0);
+      expect(monthDayYear('2026-01-02T15:00:00.000Z', now, 'en-US')).toBe('Jan 2');
+      expect(monthDayYear('2025-12-30T15:00:00.000Z', now, 'en-US')).toBe('Dec 30, 2025');
+      expect(monthDayYear('2027-03-04T15:00:00.000Z', now, 'en-US')).toBe('Mar 4, 2027');
+      // The reader's calendar decides the year: still Dec 31 in New York.
+      expect(monthDayYear('2026-01-01T03:00:00.000Z', now, 'en-US')).toBe('Dec 31, 2025');
+    });
+  });
+
   it('an instant it can’t read gives no stamp, never Invalid Date', () => {
     expect(compactStamp('nope', new Date())).toBeNull();
     expect(fullStamp('nope')).toBeNull();
     expect(monthDay('nope')).toBe('');
+    expect(monthDayYear('nope')).toBe('');
   });
 });

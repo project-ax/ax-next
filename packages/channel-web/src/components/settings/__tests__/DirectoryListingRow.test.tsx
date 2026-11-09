@@ -12,7 +12,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { DirectoryListingRow } from '../DirectoryListingRow';
 import type { DirectoryEntry } from '@/lib/connector-directory';
 import { directoryEntry } from '@/lib/__tests__/directory-fixtures';
-import { monthDay } from '@/lib/workspace-time';
+import { monthDayYear } from '@/lib/workspace-time';
 
 const TRUST =
   'The directory checks who published a server, not what it does. An agent with this connector can send it whatever the agent is working on, so only add servers you’d trust with that.';
@@ -57,10 +57,20 @@ describe('DirectoryListingRow', () => {
     ).toBeInTheDocument();
     expect(detailFor(sheet, 'Connects to').textContent).toBe('mcp.linear.app');
     expect(detailFor(sheet, 'Listing').textContent).toBe(
-      `Version 1.4.0 · updated ${monthDay('2026-11-03T12:00:00.000Z')}`,
+      `Version 1.4.0 · updated ${monthDayYear('2026-11-03T12:00:00.000Z')}`,
     );
     // A note beside the decision, not an alert: `role="alert"` means something broke.
     expect(within(sheet).getByRole('note')).toHaveTextContent(TRUST);
+  });
+
+  it('a listing last updated in another year says which year', async () => {
+    // A server untouched since 2023 must not read as updated this spring.
+    const updatedAt = '2023-05-01T12:00:00.000Z';
+    renderRow(directoryEntry({ updatedAt }));
+    const sheet = await openSheet('Linear');
+    const listing = detailFor(sheet, 'Listing').textContent;
+    expect(listing).toBe(`Version 1.4.0 · updated ${monthDayYear(updatedAt)}`);
+    expect(listing).toContain('2023');
   });
 
   it('a community listing never claims a company or GitHub', async () => {
