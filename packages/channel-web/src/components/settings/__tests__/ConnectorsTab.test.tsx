@@ -5,6 +5,9 @@ import * as connectorsLib from '@/lib/connectors';
 import * as agentsLib from '@/lib/agents';
 import * as connLib from '@/lib/connections';
 import * as credLib from '@/lib/credentials';
+import * as directoryLib from '@/lib/connector-directory';
+import * as oauthLib from '@/lib/connectors-oauth';
+import { directoryEntry, directoryPage } from '@/lib/__tests__/directory-fixtures';
 import type { ConnectorSummary, Connector } from '@/lib/connectors';
 import {
   headingOutline,
@@ -66,6 +69,8 @@ describe('ConnectorsTab', () => {
     // can assert this tab never reads them.
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([]);
     vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([]);
+    // The directory is on and synced, with nothing listed until the admin types.
+    vi.spyOn(directoryLib, 'searchDirectory').mockResolvedValue(directoryPage());
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -698,5 +703,129 @@ describe('ConnectorsTab', () => {
     expect(headingOutline()).toEqual([
             'h2: Awaiting approval (1)',
     ]);
+  });
+
+  // TASK-1101 — Find in directory. The directory subview replaces the list;
+  // the editor opens over it, so Cancel keeps the search.
+  describe('Find in directory (TASK-1101)', () => {
+    const FIND = { name: 'Find in directory' };
+
+    /** The directory answers `linear` with one listing, and nothing otherwise. */
+    function directoryAnswers(entry = directoryEntry({ auth: 'key', keyHeader: 'X-API-Key' })) {
+      return vi
+        .spyOn(directoryLib, 'searchDirectory')
+        .mockImplementation(async (q: string) =>
+          directoryPage({ entries: q === 'linear' ? [entry] : [] }),
+        );
+    }
+
+    /** Open the directory, search `linear`, open the listing's sheet and Set it up. */
+    async function setUpLinear() {
+      fireEvent.click(await screen.findByRole('button', FIND));
+      const box = await screen.findByLabelText('Search the directory');
+      fireEvent.change(box, { target: { value: 'linear' } });
+      fireEvent.click(await screen.findByRole('button', { name: 'Details for Linear' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Set it up' }));
+      return screen.findByRole('dialog', { name: 'Add connector' });
+    }
+
+    it('offers Find in directory beside New connector', async () => {
+      render(<ConnectorsTab />);
+      expect(await screen.findByRole('button', FIND)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'New connector' })).toBeInTheDocument();
+    });
+
+    it('hides it when the directory is turned off', async () => {
+      const search = vi
+        .spyOn(directoryLib, 'searchDirectory')
+        .mockResolvedValue(directoryPage({ enabled: false, syncedAt: null }));
+      render(<ConnectorsTab />);
+      await screen.findByText('My Notion');
+      await waitFor(() => expect(search).toHaveBeenCalledWith(''));
+      expect(screen.queryByRole('button', FIND)).toBeNull();
+      expect(screen.getByRole('button', { name: 'New connector' })).toBeInTheDocument();
+    });
+
+    it('still offers it when the check fails', async () => {
+      vi.spyOn(directoryLib, 'searchDirectory').mockRejectedValue(new Error('blip'));
+      render(<ConnectorsTab />);
+      expect(await screen.findByRole('button', FIND)).toBeInTheDocument();
+    });
+
+    it('opens the directory in place of the list, and Back returns', async () => {
+      render(<ConnectorsTab />);
+      await screen.findByTestId('connector-tile-my-notion');
+      fireEvent.click(await screen.findByRole('button', FIND));
+      expect(await screen.findByRole('heading', { name: 'Find a connector' })).toBeInTheDocument();
+      expect(screen.queryByTestId('connector-tile-my-notion')).toBeNull();
+      // The synced directory has no shortcut to a blank editor.
+      expect(screen.queryByRole('button', { name: 'New connector' })).toBeNull();
+      expect(screen.queryByRole('button', FIND)).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Back to connectors' }));
+      expect(await screen.findByTestId('connector-tile-my-notion')).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Find a connector' })).toBeNull();
+    });
+
+    it('Set it up from a listing opens the create editor prefilled, and nothing is saved before Add', async () => {
+      directoryAnswers();
+      vi.spyOn(oauthLib, 'discoverOAuthHosts').mockResolvedValue({
+        hosts: ['mcp.linear.app'],
+        auth: 'other',
+      });
+      const create = vi.spyOn(connectorsLib, 'createConnector');
+      render(<ConnectorsTab />);
+      const dialog = await setUpLinear();
+
+      expect(
+        within(dialog).getByText('Filled in from the directory. Check it over before you add it.'),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(within(dialog).getByLabelText('Name')).toHaveValue('Linear'));
+      expect(within(dialog).getByLabelText('Server URL')).toHaveValue('https://mcp.linear.app/mcp');
+      expect(within(dialog).getByLabelText(/how to use it/i)).toHaveValue(
+        'Find, create and update Linear issues.',
+      );
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('cancelling the editor returns to the directory with the search intact', async () => {
+      directoryAnswers();
+      vi.spyOn(oauthLib, 'discoverOAuthHosts').mockResolvedValue({
+        hosts: ['mcp.linear.app'],
+        auth: 'other',
+      });
+      render(<ConnectorsTab />);
+      const dialog = await setUpLinear();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add connector' })).toBeNull());
+      expect(screen.getByLabelText('Search the directory')).toHaveValue('linear');
+      expect(screen.getByRole('button', { name: 'Details for Linear' })).toBeInTheDocument();
+      expect(screen.queryByTestId('connector-tile-my-notion')).toBeNull();
+    });
+
+    it('saving from the directory returns to the connectors list', async () => {
+      directoryAnswers(directoryEntry());
+      vi.spyOn(oauthLib, 'discoverOAuthHosts').mockResolvedValue({
+        hosts: ['mcp.linear.app'],
+        auth: 'oauth',
+        clientRegistration: { cimd: false, dcr: true },
+      });
+      const create = vi
+        .spyOn(connectorsLib, 'createConnector')
+        .mockResolvedValue({ ...fullOf(SHARED_CONN), id: 'linear-1a2b3c4d' });
+      const list = vi.mocked(connectorsLib.listConnectors);
+      render(<ConnectorsTab />);
+      const dialog = await setUpLinear();
+
+      const add = within(dialog).getByRole('button', { name: 'Add connector' });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+
+      expect(await screen.findByRole('button', FIND)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Find a connector' })).toBeNull();
+      expect(create).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(list.mock.calls.length).toBeGreaterThanOrEqual(2));
+    });
   });
 });
