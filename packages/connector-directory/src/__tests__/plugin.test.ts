@@ -158,6 +158,10 @@ describe('@ax/connector-directory plugin', () => {
     expect(fake.requests[1]!.searchParams.has('updated_since')).toBe(true);
 
     await harness.close();
+    // Shutdown cleared the hourly timer. The request count below cannot see
+    // that: a stopped plugin's timer would fire into a sync() that starts
+    // nothing.
+    expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(2 * HOUR);
     await plugin.drain();
     expect(fake.requests).toHaveLength(2);
