@@ -16,14 +16,14 @@
  * verified shield on a listing. `normalizeDirectoryPage` NEVER UPGRADES
  * TRUST: only an exact `'domain'` is a proven publisher, only an exact
  * `'key'` or `'signin'` claims a way to connect, a listing without an id or
- * an https address is dropped, and `keyHeader` and `nextCursor` survive only
+ * an address the editor can save (`serverHost`) is dropped, and `keyHeader` and `nextCursor` survive only
  * when they fit the rules the editor and the route apply. Callers render
  * every string as a React text node and show the address only as its host
  * (`directoryHost`), never as a link.
  */
 import { newHeaderSlot } from './connector-credential-slots';
 import type { Connector, ConnectorCredentialSlot, ConnectorPrefill } from './connectors';
-import { headerNamePattern } from './remote-mcp-form';
+import { headerNamePattern, serverHost } from './remote-mcp-form';
 
 /**
  * `'key'`: the listing says a key is required. `'signin'`: the source says
@@ -105,20 +105,15 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function isHttpsUrl(url: string): boolean {
-  try {
-    return new URL(url).protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 /** One listing, or null when it can't be used. Never throws. */
 function normalizeEntry(raw: unknown): DirectoryEntry | null {
   if (!isRecord(raw)) return null;
   const id = text(raw.id);
   const url = text(raw.url);
-  if (!id || !isHttpsUrl(url)) return null;
+  // One client rule: an address the editor's `serverHost` refuses (not https,
+  // a port, a fragment, credentials, over 2048) would open an editor that can
+  // never save, so the listing is dropped here instead.
+  if (!id || serverHost(url) === undefined) return null;
   const title = text(raw.title);
   const auth: DirectoryAuth = raw.auth === 'key' || raw.auth === 'signin' ? raw.auth : 'none';
   const keyHeader = text(raw.keyHeader);

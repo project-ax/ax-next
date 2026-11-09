@@ -128,6 +128,11 @@ describe('normalizeDirectoryPage', () => {
       wire({ id: 'c/no-url' }, ['url']),
       wire({ id: 'c/http', url: 'http://mcp.example.com/mcp' }),
       wire({ id: 'c/junk', url: 'not a url' }),
+      // The editor's `serverHost` refuses these, so the listing could never save.
+      wire({ id: 'c/port', url: 'https://mcp.example.com:8443/mcp' }),
+      wire({ id: 'c/fragment', url: 'https://mcp.example.com/mcp#x' }),
+      wire({ id: 'c/long', url: `https://mcp.example.com/${'a'.repeat(2048)}` }),
+      wire({ id: 'c/userinfo', url: 'https://user:pw@mcp.example.com/mcp' }),
       null,
       'a listing',
       wire({ id: 'c/good' }),
