@@ -632,7 +632,7 @@ describe('remote connector editor', () => {
         'usageNote',
       ]);
     });
-    it('an id clash on a directory prefill gets the plain message', async () => {
+    it('an id clash on a directory prefill says to set it up again', async () => {
       discovery = { hosts: ['mcp.linear.app'], auth: 'none' };
       writeResponse = () =>
         new Response(JSON.stringify({ error: 'connector-id-taken' }), { status: 409 });
@@ -641,8 +641,11 @@ describe('remote connector editor', () => {
         expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
       );
       fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      // The editor has no id field, so the way out is a fresh Set it up (a new id).
       expect(
-        await screen.findByText('A connector with this id already exists.'),
+        await screen.findByText(
+          'A connector with this id already exists. Close this and choose Set it up again.',
+        ),
       ).toBeInTheDocument();
       expect(screen.queryByText(/Dismiss this request/)).toBeNull();
     });

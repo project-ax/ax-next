@@ -80,6 +80,7 @@
 | sheet buttons | sheet footer | `Set it up`, or a disabled `Already in your connectors` |
 | `editorDescription` | `RemoteMcpConnectorForm` DialogDescription (directory prefill) | `Filled in from the directory. Check it over before you add it.` |
 | `usageNoteHelp` | "How to use it" FieldDescription (directory prefill) | `Every assistant that uses this connector reads this note. The listing’s publisher wrote it, so rewrite it in your own words.` |
+| `idTaken` | editor save error on a 409 id clash (directory prefill) | `A connector with this id already exists. Close this and choose Set it up again.` |
 
 ## Review Focus
 
@@ -285,11 +286,11 @@
     3. Find `create = writes.find((w) => w.url === '/admin/connectors')!`.
     4. `create.body` `toMatchObject` `{ connectorId: expect.stringMatching(/^linear-[0-9a-f]{8}$/), name: 'Linear', usageNote: key.description, keyMode: 'personal', capabilities: { mcpServers: [expect.objectContaining({ url: 'https://mcp.linear.app/mcp' })], credentials: [expect.objectContaining({ kind: 'api-key', headerName: 'X-API-Key' })] } }`.
     5. `Object.keys(create.body).sort()` equals `['capabilities', 'connectorId', 'keyMode', 'name', 'usageNote']`. This pins "no `fromDirectory` on the wire"; TASK-1102 changes this line on purpose.
-  - `an id clash on a directory prefill gets the plain message`:
+  - `an id clash on a directory prefill says to set it up again`:
     1. Set `discovery = { hosts: ['mcp.linear.app'], auth: 'none' }` and `writeResponse` → 409 `{ error: 'connector-id-taken' }`.
     2. Use the prefill from `directoryEntry()` (no key).
     3. Click `Add connector`.
-    4. Expect `await findByText('A connector with this id already exists.')`, and `queryByText(/Dismiss this request/)` to be null.
+    4. Expect `await findByText('A connector with this id already exists. Close this and choose Set it up again.')` (`CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE` in `lib/connectors.ts`: the editor has no id field, so a fresh Set it up, which picks a new id, is the way out), and `queryByText(/Dismiss this request/)` to be null.
   - In the existing test `Set it up starts from the request and creates it shared, under the requested id`, add `expect(screen.getByText('Filled in from the request. Check each field before you add it.')).toBeInTheDocument()`. It pins the request branch the new condition sits beside.
 
 - [ ] **Step 2: Run the tests and confirm they fail.** Run `pnpm --filter @ax/channel-web exec vitest run src/components/settings/__tests__/RemoteMcpConnectorForm.test.tsx`. Expected: the four new tests FAIL; the request-copy assertion passes.
@@ -297,7 +298,7 @@
 - [ ] **Step 3: Implement.** Add `const fromDirectory = prefill?.fromDirectory !== undefined;`. Then:
   - When `prefill` is set, the description is `fromDirectory ? editorDescription : <existing request copy>`.
   - The "How to use it" FieldDescription is `fromDirectory ? usageNoteHelp : <existing sentence>`.
-  - In the id-taken branch, `prefill` becomes `prefill && !fromDirectory`.
+  - In the id-taken branch, a directory prefill gets `CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE` (`idTaken` in the Copy table); a request prefill keeps `CONNECTOR_ID_TAKEN_REQUEST_MESSAGE`.
 
   Change nothing else (the save body stays as it is).
 

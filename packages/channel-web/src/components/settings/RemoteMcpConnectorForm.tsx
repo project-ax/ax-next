@@ -11,6 +11,7 @@ import {
   isOwnerOnlyChange,
   OWNER_ONLY_CHANGE_MESSAGE,
   isConnectorIdTaken,
+  CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE,
   CONNECTOR_ID_TAKEN_MESSAGE,
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
@@ -661,9 +662,11 @@ export function RemoteMcpConnectorForm({
             : isOwnerOnlyChange(err)
               ? OWNER_ONLY_CHANGE_MESSAGE
               : isConnectorIdTaken(err)
-                ? prefill && !fromDirectory
-                  ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
-                  : CONNECTOR_ID_TAKEN_MESSAGE
+                ? fromDirectory
+                  ? CONNECTOR_ID_TAKEN_DIRECTORY_MESSAGE
+                  : prefill
+                    ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                    : CONNECTOR_ID_TAKEN_MESSAGE
                 : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
