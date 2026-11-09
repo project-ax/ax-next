@@ -492,6 +492,13 @@ export interface ConnectorPrefill {
    * as text in the editor's "This request also asked for" note.
    */
   leftOut?: string[];
+  /**
+   * Set only by `prefillFromDirectoryEntry`: the directory listing this
+   * editor was filled from. Its presence switches the editor's copy from a
+   * request's to the directory's. Opaque: never shown or edited, and not part
+   * of the connector, so the create body doesn't carry it.
+   */
+  fromDirectory?: { directoryId: string; version: string };
 }
 
 export function prefillFromProposal(p: AuthoredProposal): ConnectorPrefill {
