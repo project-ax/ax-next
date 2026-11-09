@@ -1,6 +1,15 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createChunkBuffer } from '../../server/chunk-buffer';
+import {
+  createChunkBuffer,
+  IDLE_TTL_MS,
+  MAX_BYTES_PER_REQ_ID,
+  MAX_CHUNKS_PER_REQ_ID,
+  SWEEP_INTERVAL_MS,
+} from '../../server/chunk-buffer';
+
+/** Past the idle TTL plus one sweep tick: the sweep has run on anything idle that long. */
+const PAST_TTL = IDLE_TTL_MS + SWEEP_INTERVAL_MS + 1_000;
 import type { PermissionRequest, StreamChunk } from '../../server/types';
 
 // Type-narrow accessor — these tests only push text/thinking variants.
@@ -52,16 +61,46 @@ describe('@ax/channel-web ChunkBuffer', () => {
   });
 
   it('hard-caps at MAX_CHUNKS_PER_REQ_ID per reqId; oldest evicted first', () => {
-    // 256 cap; insert 260 → tail returns the LAST 256 in order.
+    // Insert cap + 4 → tail returns the LAST `cap` in order.
     const buf = createChunkBuffer();
+    const N = MAX_CHUNKS_PER_REQ_ID + 4;
     try {
-      for (let i = 0; i < 260; i += 1) {
+      for (let i = 0; i < N; i += 1) {
         buf.append({ reqId: 'r1', text: String(i), kind: 'text' });
       }
       const tail = buf.tail('r1');
-      expect(tail).toHaveLength(256);
+      expect(tail).toHaveLength(MAX_CHUNKS_PER_REQ_ID);
       expect(textOf(tail[0]!)).toBe('4');
-      expect(textOf(tail[255]!)).toBe('259');
+      expect(textOf(tail[MAX_CHUNKS_PER_REQ_ID - 1]!)).toBe(String(N - 1));
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('drops the oldest frames once a turn passes the byte cap, keeping the seq climbing', () => {
+    // A page reloaded mid-turn replays the whole turn from here, so the cap is
+    // generous, but it IS a cap: big tool inputs cannot grow it without limit.
+    const buf = createChunkBuffer();
+    const big = 'x'.repeat(256 * 1024);
+    const n = Math.ceil(MAX_BYTES_PER_REQ_ID / big.length) + 3;
+    try {
+      for (let i = 0; i < n; i += 1) buf.append({ reqId: 'r1', text: big, kind: 'text' });
+      const tail = buf.tail('r1');
+      const bytes = tail.reduce((sum, c) => sum + JSON.stringify(c).length, 0);
+      expect(bytes).toBeLessThanOrEqual(MAX_BYTES_PER_REQ_ID);
+      expect(tail.length).toBeLessThan(n);
+      expect(tail[tail.length - 1]!.seq).toBe(n);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('keeps a whole turn of ordinary chunks for a reload to replay', () => {
+    const buf = createChunkBuffer();
+    try {
+      for (let i = 0; i < 3_000; i += 1) buf.append({ reqId: 'r1', text: `word ${i} `, kind: 'text' });
+      expect(buf.tail('r1')).toHaveLength(3_000);
+      expect(buf.tail('r1')[0]!.seq).toBe(1);
     } finally {
       buf.dispose();
     }
@@ -95,12 +134,11 @@ describe('@ax/channel-web ChunkBuffer', () => {
     const buf = createChunkBuffer();
     try {
       buf.append({ reqId: 'r-old', text: 'aged', kind: 'text' });
-      // Advance past TTL (60s) and let one sweep tick (every 30s) run.
-      vi.advanceTimersByTime(31_000);
+      vi.advanceTimersByTime(IDLE_TTL_MS / 2);
       buf.append({ reqId: 'r-fresh', text: 'fresh', kind: 'text' });
-      vi.advanceTimersByTime(31_000);
-      // r-old was last written at t=0; now t≈62s → evicted.
-      // r-fresh was written at t=31s; now t≈62s → still alive.
+      vi.advanceTimersByTime(IDLE_TTL_MS / 2 + SWEEP_INTERVAL_MS + 1_000);
+      // r-old has sat idle past the TTL and a sweep has run → evicted.
+      // r-fresh has sat idle for about half the TTL → still alive.
       expect(buf.tail('r-old')).toEqual([]);
       expect(buf.tail('r-fresh').map(textOf)).toEqual(['fresh']);
     } finally {
@@ -303,7 +341,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.appendTurnError('r1', 'proxy-open-failed');
       expect(buf.tailTurnError('r1')).toEqual({ reason: 'proxy-open-failed' });
       // Past IDLE_TTL_MS (60s) + a sweep interval (30s) → entry reaped.
-      vi.advanceTimersByTime(91_000);
+      vi.advanceTimersByTime(PAST_TTL);
       expect(buf.tailTurnError('r1')).toBeNull();
     } finally {
       buf.dispose();
@@ -362,16 +400,17 @@ describe('@ax/channel-web ChunkBuffer', () => {
     // last is seq 260 — so a reconnecting client sees a HOLE (its last-seen seq
     // is below 5) and falls back to the banner (the loss-detection contract).
     const buf = createChunkBuffer();
+    const N = MAX_CHUNKS_PER_REQ_ID + 4;
     try {
       let last: number | undefined;
-      for (let i = 0; i < 260; i += 1) {
+      for (let i = 0; i < N; i += 1) {
         last = buf.append({ reqId: 'r1', text: String(i), kind: 'text' }).seq;
       }
-      expect(last).toBe(260);
+      expect(last).toBe(N);
       const tail = buf.tail('r1');
-      expect(tail).toHaveLength(256);
+      expect(tail).toHaveLength(MAX_CHUNKS_PER_REQ_ID);
       expect(tail[0]!.seq).toBe(5);
-      expect(tail[255]!.seq).toBe(260);
+      expect(tail[MAX_CHUNKS_PER_REQ_ID - 1]!.seq).toBe(N);
     } finally {
       buf.dispose();
     }
@@ -404,7 +443,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
       // A long-quiet tool call: no append for >IDLE_TTL while the SSE
       // connection is still open. The sweep runs and reclaims the chunks.
-      vi.advanceTimersByTime(91_000);
+      vi.advanceTimersByTime(PAST_TTL);
       expect(buf.tail('r1')).toEqual([]); // chunk memory reclaimed
       // The next live chunk MUST continue the cursor (seq 3), NOT reset to 1 —
       // otherwise a connected client silently dedups it.
@@ -418,7 +457,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     const buf = createChunkBuffer();
     try {
       buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
-      vi.advanceTimersByTime(91_000); // TTL sweep keeps the cursor
+      vi.advanceTimersByTime(PAST_TTL); // TTL sweep keeps the cursor
       buf.append({ reqId: 'r1', text: 'b', kind: 'text' }); // seq 2 (continued)
       buf.evictReqId('r1'); // real turn-end → full reset
       expect(buf.append({ reqId: 'r1', text: 'fresh', kind: 'text' }).seq).toBe(1);
@@ -439,7 +478,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.appendTurnError('r1', 'sandbox-terminated'); // terminal error, no listener
       expect(buf.tailTurnError('r1')).toEqual({ reason: 'sandbox-terminated' });
       // Past TTL + a sweep → the terminated entry is GONE, not a lingering shell.
-      vi.advanceTimersByTime(91_000);
+      vi.advanceTimersByTime(PAST_TTL);
       expect(buf.tailTurnError('r1')).toBeNull();
       expect(buf.tail('r1')).toEqual([]);
       // Proof it was a FULL delete (not a kept cursor shell): a recycled reqId
@@ -458,7 +497,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     try {
       buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1 → cursor exists
       // First sweep past IDLE_TTL converts it to a cursor-only shell (kept).
-      vi.advanceTimersByTime(91_000);
+      vi.advanceTimersByTime(PAST_TTL);
       // Still a live cursor: a revival continues monotonically.
       // (We don't revive it here — we let it age out as an orphan instead.)
       // Advance well past the 15-min default shell ceiling with no revival/evict.
@@ -479,7 +518,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     const buf = createChunkBuffer({ shellMaxAgeMs: 30 * 60_000 });
     try {
       buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
-      vi.advanceTimersByTime(91_000); // → cursor-only shell
+      vi.advanceTimersByTime(PAST_TTL); // → cursor-only shell
       // 20 min later (past the 15-min default, but UNDER the 30-min config):
       // the cursor MUST survive, so a revival continues at seq 2 — not reset to 1.
       vi.advanceTimersByTime(20 * 60_000);

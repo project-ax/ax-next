@@ -281,6 +281,13 @@ export interface AgentDetail {
    * the list and the read.
    */
   conversationId: string | null;
+  /**
+   * The reply still being written in that conversation, if any: what a page
+   * opened (or reloaded) mid-turn reattaches to, so the work it missed is
+   * replayed and the rest streams in. `null` when nothing is in flight.
+   * Optional: an older host omits it, which reads as nothing in flight.
+   */
+  liveReqId?: string | null;
   /** Reconstructed from the real turns of that conversation. */
   thread: ThreadMessage[];
   /**
@@ -1053,6 +1060,13 @@ export interface SendMessageInput {
 }
 
 export interface StreamHandlers {
+  /**
+   * Reattaching to a turn this page did not start (it was reloaded mid-turn,
+   * see `AgentDetail.liveReqId`). The turn may have ended between the read
+   * that named it and this open, so a 404 on the FIRST open is "it finished",
+   * not a failure: `onDone`, and the re-read draws the stored answer.
+   */
+  resume?: boolean;
   /** One text delta. Called many times; concatenate in order. */
   onText: (chunk: string) => void;
   /** The turn ended normally. */
@@ -2341,6 +2355,7 @@ async function streamReply(
     onPermissionRequest,
     signal,
     reconnectDelaysMs = STREAM_RECONNECT_DELAYS_MS,
+    resume = false,
   }: StreamHandlers,
 ): Promise<void> {
   /**
@@ -2587,7 +2602,7 @@ async function streamReply(
     }
 
     if (res !== null) {
-      if (opened && res.status === 404) {
+      if ((opened || resume) && res.status === 404) {
         // The turn ended while we were disconnected. Not a failure: the answer
         // is in the transcript, and `onDone` is what re-reads it.
         onDone();

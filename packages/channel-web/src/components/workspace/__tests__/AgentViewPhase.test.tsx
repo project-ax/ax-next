@@ -278,6 +278,34 @@ describe('the phase status line', () => {
     expect(screen.getByText('Reading a.ts…')).toBeTruthy();
   });
 
+  it('a page loaded mid-turn reattaches to it once and replays the work so far', async () => {
+    // The runner stores a reply only when it ends; a reload used to show the
+    // person's message and nothing else, with nothing listening for the rest.
+    vi.mocked(workspaceApi.agent).mockResolvedValue({ ...detail(), liveReqId: 'req-live' } as AgentDetail);
+    let handlers!: StreamHandlers;
+    vi.mocked(workspaceApi.streamReply).mockImplementation(async (_reqId, h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'ls' });
+      h.onToolResult?.({ toolCallId: 'tu1' });
+      h.onText('Found the files.');
+      await new Promise<void>(() => {});
+    });
+    renderView();
+    await waitFor(() => expect(workspaceApi.streamReply).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(workspaceApi.streamReply).mock.calls[0]![0]).toBe('req-live');
+    expect(vi.mocked(workspaceApi.streamReply).mock.calls[0]![1]).toMatchObject({ resume: true });
+    // The replayed work is on screen.
+    expect(await screen.findByText('Found the files.')).toBeTruthy();
+    expect(screen.getByTestId('workspace-steps')).toBeTruthy();
+    // The turn ends; the re-read still names it (the clear can trail): no second attach.
+    act(() => handlers.onDone());
+    await waitFor(() => expect(vi.mocked(workspaceApi.agent).mock.calls.length).toBeGreaterThan(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(workspaceApi.streamReply).toHaveBeenCalledTimes(1);
+  });
+
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {
     await startTurn((h) => {
       h.onText('Here we go.');

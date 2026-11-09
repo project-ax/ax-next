@@ -1729,6 +1729,26 @@ describe('channel-web agent-workspace BFF', () => {
     });
   });
 
+  it('names the turn still in flight, so a page reloaded mid-turn can reattach', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1', activeReqId: 'req-live' })];
+    turnsByConversation.set('c1', []);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { liveReqId: unknown }).liveReqId).toBe('req-live');
+  });
+
+  it('names no turn when none is in flight', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', []);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { liveReqId: unknown }).liveReqId).toBeNull();
+  });
+
   it('puts each stored step summary on its own step, and nowhere else', async () => {
     // @ax/step-summaries' lines come back on a reload exactly where they were
     // live: on the step whose call id they are keyed by. Fenced to one line.

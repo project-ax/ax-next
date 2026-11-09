@@ -646,6 +646,8 @@ interface ConversationRow {
   agentId: string;
   title: string | null;
   activeSessionId: string | null;
+  /** The turn in flight in this conversation, if any (cleared at its turn-end). */
+  activeReqId?: string | null;
   lastActivityAt?: string | null;
   createdAt: string;
 }
@@ -1281,6 +1283,14 @@ export interface AgentDetail {
    * read (a benign race — see `agentDetail`).
    */
   conversationId: string | null;
+  /**
+   * The reply still being written in that conversation (its `active_req_id`),
+   * or `null`. A page opened or reloaded mid-turn reattaches to it: the runner
+   * stores a reply only when it ends, so without this the turn so far, and
+   * everything after, was invisible until then. The stream route re-checks
+   * ownership of the id itself (`conversations:get-by-req-id`).
+   */
+  liveReqId: string | null;
   /** Reconstructed from that conversation's turns. */
   thread: ThreadMessage[];
   /**
@@ -8125,6 +8135,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
+      let liveReqId: string | null = null;
       let decisionsRead: WorkspaceReadStatus = 'ok';
       // Read whether or not there is a thread yet: the live panel needs it for
       // the first turn too (TASK-744).
@@ -8174,6 +8185,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             return;
           }
           threadConversationId = got.conversation.conversationId;
+          liveReqId = got.conversation.activeReqId ?? null;
           /*
             The still-open decisions raised in THIS conversation, as cards at
             the end of the thread. They go last because that is where they
@@ -8229,6 +8241,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // separately from the panel it hangs off is a claim nobody can reload
         // when it looks wrong.
         conversationId: threadConversationId,
+        liveReqId,
         thread,
         decisions: { status: decisionsRead },
         past,

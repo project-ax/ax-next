@@ -1059,8 +1059,12 @@ export function AgentView({
     };
   }, [agentId, cancelStop]);
 
+  /** Every turn this view has streamed, so a reattach happens once per turn. */
+  const attachedReqIds = useRef(new Set<string>());
+
   const streamFrom = useCallback(
-    async (reqId: string) => {
+    async (reqId: string, opts: { resume?: boolean } = {}) => {
+      attachedReqIds.current.add(reqId);
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -1082,6 +1086,7 @@ export function AgentView({
       setPhase(null);
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
+        ...(opts.resume === true ? { resume: true } : {}),
         signal: ac.signal,
         onText: (chunk) => {
           setLiveSegments((prev) => appendLiveText(prev, chunk));
@@ -1425,6 +1430,23 @@ export function AgentView({
     onPendingReplyConsumed?.();
     void streamFrom(pendingReply.reqId);
   }, [pendingReply, streamFrom, onPendingReplyConsumed]);
+
+  /*
+    A page opened or reloaded mid-turn. The runner stores a reply only when it
+    ends, so the thread just read stops at the person's message, and nothing
+    on this page was listening for the rest. The server names the turn still
+    in flight (`liveReqId`); reattach to it once, and the host's buffer replays
+    the turn so far before the rest streams in. Never while this view is
+    already streaming (its own turn reads back as live too), and never twice
+    for one turn: a re-read that still names a turn that just ended must not
+    loop.
+  */
+  useEffect(() => {
+    const liveReqId = detail?.liveReqId ?? null;
+    if (liveReqId === null || streaming) return;
+    if (attachedReqIds.current.has(liveReqId)) return;
+    void streamFrom(liveReqId, { resume: true });
+  }, [detail, streaming, streamFrom]);
 
   const send = useCallback(
     async (text: string, attachments?: readonly SendableAttachment[]) => {
