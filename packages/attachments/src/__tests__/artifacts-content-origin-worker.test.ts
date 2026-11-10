@@ -232,20 +232,31 @@ describe('the content origin on its real worker process', () => {
   });
 
   it('turns a page away when the worker is taken, and does not remember it: the next view is prepared', async () => {
-    // The pool's busy window is kept on this clock, and the test moves it on by six seconds while the first page is
-    // on the worker: the first page is then one that kept the worker past the window's 5 s budget, which is what a
-    // runner busy with other packages' tests makes of it (TASK-1108: in CI it took over five seconds, and the retry
-    // below was turned away by the budget, not by the line). Here it does every time, not on a slow runner only.
+    // The pool's busy window is kept on this clock, and the test moves it on by six seconds once the first page is
+    // on the worker: the first page is then one that kept the worker past the pool's default 5 s budget, which is what
+    // a runner busy with other packages' tests makes of it (TASK-1108: in CI the retry below was turned away by the
+    // budget, not by the line). This file's mock gives the budget a minute, so the retry is served; without that, it
+    // is turned away here every time, not on a slow runner only.
     let skewMs = 0;
     const preparer = createHtmlPreparer({ maxQueued: 0, now: () => performance.now() + skewMs });
     closers.push(() => preparer.close());
+    // Told when the pool has the first page, so its start is read on the clock before the skew (a fixed sleep could
+    // end before the page got there, on a slow runner, and the skew would then not count as the page's time).
+    let entered!: () => void;
+    const inPool = new Promise<void>((resolve) => (entered = resolve));
+    const realPrepare = preparer.prepare.bind(preparer);
+    preparer.prepare = (html) => {
+      const page = realPrepare(html);
+      entered();
+      return page;
+    };
     const base = await start({ htmlPreparer: preparer });
     put('one', enc(`<!doctype html><script>${'a=1;'.repeat(CAP / 4 - 64)}</script>`));
     put('two', enc('<!doctype html><p>two</p>'));
-    // The first holds the worker for a few hundred milliseconds; the second arrives while it does (a moment after
-    // it was sent, not at the same time: two requests sent together reach the server in either order).
+    // The first holds the worker for a few hundred milliseconds; the second arrives while it does (after the pool has
+    // the first, not at the same time: two requests sent together reach the server in either order).
     const firstView = fetch(tokenUrl(base, 'one'));
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await inPool;
     skewMs = 6000;
     const two = await fetch(tokenUrl(base, 'two'));
     const one = await firstView;
