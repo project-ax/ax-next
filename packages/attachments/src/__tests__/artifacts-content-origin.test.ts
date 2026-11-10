@@ -128,6 +128,7 @@ describe('content origin', () => {
     const r = await fetch(url);
     expect(r.status).toBe(200);
     expect(r.headers.get('content-security-policy')).toBe(HTML_CSP);
+    expect(r.headers.get('permissions-policy')).toBe('camera=(), microphone=(), display-capture=(), geolocation=()');
     // Ruling R8: opened top-level, the page still gets an opaque origin, with no allow-same-origin.
     const directives = (r.headers.get('content-security-policy') ?? '').split('; ');
     expect(directives).toContain('sandbox allow-scripts allow-downloads');

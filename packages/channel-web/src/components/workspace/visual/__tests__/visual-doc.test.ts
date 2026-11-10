@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   VISUAL_FRAME_CSP,
+  UNTRUSTED_FRAME_ALLOW,
   VISUAL_IFRAME_SANDBOX,
   VISUAL_MAX_HEIGHT,
   VISUAL_TOKEN_NAMES,
@@ -155,6 +156,7 @@ describe('buildVisualDocument standalone', () => {
     const frames = outer.querySelectorAll('iframe');
     expect(frames).toHaveLength(1);
     expect(frames[0]!.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(frames[0]!.getAttribute('allow')).toBe(UNTRUSTED_FRAME_ALLOW);
     expect(frames[0]!.getAttribute('title')).toBe('Issues');
     expect(outer.title).toBe('Issues');
 
@@ -162,6 +164,7 @@ describe('buildVisualDocument standalone', () => {
     expect(inner.head.firstElementChild!.getAttribute('content')).toBe(VISUAL_FRAME_CSP);
     expect(inner.querySelector('body .k')?.textContent).toBe('x');
     expect(inner.body.querySelector('script')?.textContent).toBe('window.agent=1');
+    expect([inner.body.getAttribute('spellcheck'), inner.body.getAttribute('data-gramm')]).toEqual(['false', 'false']);
     expect(inner.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(inner.getElementById('ax-base')?.textContent).toContain('html{overflow:auto');
   });

@@ -141,14 +141,14 @@ describe('axFrameGuard: locks', () => {
     expect(guard.isLocked()).toBe(true);
     for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'RTCSessionDescription', 'RTCIceCandidate', 'XSLTProcessor']) {
       expect(win.eval(`typeof ${name}`), name).toBe('undefined');
+      // Writable (an extension's wrapper must not throw), never configurable.
       expect(win.eval(`JSON.stringify(Object.getOwnPropertyDescriptor(window, ${JSON.stringify(name)}))`), name).toBe(
-        JSON.stringify({ writable: false, enumerable: false, configurable: false }),
+        JSON.stringify({ writable: true, enumerable: false, configurable: false }),
       );
     }
-    // Agent code can't put one back, by assignment, delete or redefinition.
-    win.eval('window.RTCPeerConnection = function () {}; delete window.RTCPeerConnection;');
-    expect(() => win.eval('"use strict"; window.RTCPeerConnection = function () {};')).toThrow();
-    expect(() => win.eval('Object.defineProperty(window, "RTCPeerConnection", { value: function () {} })')).toThrow();
+    // Agent code can't delete one or turn it into an accessor.
+    expect(win.eval('Reflect.deleteProperty(window, "RTCPeerConnection")')).toBe(false);
+    expect(() => win.eval('Object.defineProperty(window, "RTCPeerConnection", { get() { return 1; } })')).toThrow();
     expect(win.eval('typeof RTCPeerConnection')).toBe('undefined');
   });
 
@@ -160,9 +160,34 @@ describe('axFrameGuard: locks', () => {
     expect(() => win.eval('document.write("<iframe></iframe>")')).toThrow();
     expect(() => win.eval('document.writeln("x")')).toThrow();
     expect(() => win.eval('document.open()')).toThrow();
-    // Put back by agent code? No: non-writable, non-configurable.
-    win.eval('try { Element.prototype.attachShadow = HTMLElement.prototype.click; } catch {}');
-    expect(() => win.eval('document.body.attachShadow({ mode: "open" })')).toThrow();
+    // Writing something else over a lock gets nothing back: the original is
+    // gone from the realm, and what's written isn't it.
+    win.eval('Element.prototype.attachShadow = HTMLElement.prototype.click;');
+    expect(win.eval('document.body.attachShadow({ mode: "open" }) === undefined && document.body.shadowRoot')).toBeNull();
+  });
+
+  // Noir, a Safari dark-mode extension, loads a script into every frame that
+  // wraps attachShadow like this (measured 2026-11-09: its noirhelper.js). With
+  // read-only locks the redefinition threw, and that failed every chat visual
+  // for anyone running it.
+  it("lets an extension wrap a locked API without throwing, and the API stays refused", () => {
+    const { win, guard } = started();
+    expect(() =>
+      win.eval(
+        'var d = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");' +
+          'Object.defineProperty(Element.prototype, "attachShadow", Object.assign({}, d, {' +
+          '  value: function (o) { return d.value.call(this, o); },' +
+          '}));' +
+          'var w = Object.getOwnPropertyDescriptor(Document.prototype, "write");' +
+          'Object.defineProperty(Document.prototype, "write", Object.assign({}, w, { value: function () { return w.value.apply(this, arguments); } }));' +
+          'var r = Object.getOwnPropertyDescriptor(window, "RTCPeerConnection");' +
+          'Object.defineProperty(window, "RTCPeerConnection", Object.assign({}, r, { value: r.value }));',
+      ),
+    ).not.toThrow();
+    expect(() => win.eval('document.body.attachShadow({ mode: "closed" })')).toThrow('Not available in this frame.');
+    expect(() => win.eval('document.write("<iframe></iframe>")')).toThrow('Not available in this frame.');
+    expect(win.eval('typeof RTCPeerConnection')).toBe('undefined');
+    expect(guard.isLocked()).toBe(true);
   });
 
   it('says what it refused with a neutral message unless the caller gives its own', () => {

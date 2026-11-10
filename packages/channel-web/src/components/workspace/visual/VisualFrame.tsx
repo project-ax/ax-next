@@ -31,6 +31,7 @@ import type { ThreadVisual } from '@/lib/workspace-types';
 import { isPngBlob, parseFrameMessage } from './frame-messages';
 import { DEFAULT_VISUAL_ASSETS } from './visual-assets';
 import {
+  UNTRUSTED_FRAME_ALLOW,
   VISUAL_DEFAULT_HEIGHT,
   VISUAL_IFRAME_SANDBOX,
   buildVisualDocument,
@@ -257,6 +258,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
               <iframe
                 ref={iframeRef}
                 sandbox={VISUAL_IFRAME_SANDBOX}
+                allow={UNTRUSTED_FRAME_ALLOW}
                 srcDoc={loaded.srcdoc}
                 onLoad={() => {
                   loads.current += 1;

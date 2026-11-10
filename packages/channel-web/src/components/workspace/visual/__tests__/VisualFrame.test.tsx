@@ -90,6 +90,7 @@ describe('VisualFrame', () => {
     mount('0123456789abcdef0123456789abcdef');
     const f = await screen.findByTitle('Issues per cycle');
     expect(f.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(f.getAttribute('allow')).toBe("camera 'none'; microphone 'none'; display-capture 'none'; geolocation 'none'");
     expect(f.getAttribute('srcdoc')).toContain('<p>chart</p>');
     expect(document.getElementById(f.getAttribute('aria-describedby')!)?.textContent).toBe('Down 12%.');
     expect(httpFetch).toHaveBeenCalledWith('/api/files?conversationId=c1&id=0123456789abcdef0123456789abcdef', {

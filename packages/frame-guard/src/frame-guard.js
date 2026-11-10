@@ -86,14 +86,23 @@ window.axFrameGuard = function axFrameGuard(win, opts) {
   var locked = true;
   var killed = false;
 
-  // Non-writable and non-configurable, so agent code can't put the original
-  // back. A failure is recorded, never swallowed: the consumer hears about it.
+  // Once replaced, the original is gone from this realm: no other property
+  // holds it, and the only way to get another copy is a child frame, which is
+  // what the rest of this file prevents. So nothing can put it back, and the
+  // lock doesn't have to be read-only. It is writable on purpose. Browser
+  // extensions run their own scripts in this page (a dark-mode extension
+  // wraps attachShadow with Object.defineProperty, copying our descriptor),
+  // and redefining a read-only property throws. That TypeError used to fail
+  // every visual for anyone running one. A wrapper still calls our function,
+  // so the API stays refused. It stays non-configurable, so it can't be
+  // deleted or turned into an accessor. A failure is recorded, never
+  // swallowed: the consumer hears about it.
   function lock(target, name, value) {
     if (!target) return;
     try {
       Object.defineProperty(target, name, {
         value: value,
-        writable: false,
+        writable: true,
         configurable: false,
         enumerable: false,
       });

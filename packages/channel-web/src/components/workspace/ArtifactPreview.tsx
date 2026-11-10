@@ -33,6 +33,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '
 import { Skeleton } from '@/components/ui/skeleton';
 import { checkContentOriginUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
+import { UNTRUSTED_FRAME_ALLOW } from './visual/visual-doc';
 import type { ArtifactPreviewKind } from '@/lib/workspace-types';
 
 /** Exactly these two, nothing more (§6.5). Pinned by the "iframe sandbox and referrer policy" test. */
@@ -134,6 +135,7 @@ function FromContentOrigin({
     <iframe
       src={token.value.url}
       sandbox={IFRAME_SANDBOX}
+      allow={UNTRUSTED_FRAME_ALLOW}
       referrerPolicy="no-referrer"
       title={title}
       className="min-h-[480px] w-full flex-1 rounded-md border border-border bg-background"

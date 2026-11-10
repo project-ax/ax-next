@@ -103,6 +103,12 @@ export interface ContentOriginHandle {
 const PLUGIN_NAME = '@ax/attachments';
 
 const IMAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+/**
+ * Sent with HTML. The app's iframe already says the same in its `allow`
+ * attribute. This covers a page opened on its own, where only the header can.
+ * Chromium enforces it; other engines ignore it quietly.
+ */
+const HTML_PERMISSIONS_POLICY = 'camera=(), microphone=(), display-capture=(), geolocation=()';
 const DOWNLOAD_CSP = "default-src 'none'; sandbox";
 
 function htmlCsp(frameAncestors: readonly string[]): string {
@@ -486,7 +492,12 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       // guarded page, after the rewrite: the page cache keys on the page's own bytes, so a theme must not
       // change what is cached, and the rewrite sees the page exactly as the author wrote it.
       const body = claims.theme === undefined || claims.theme === null ? prepared.html : injectTheme(prepared.html, claims.theme);
-      send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, body);
+      send(
+        res,
+        200,
+        { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp, 'permissions-policy': HTML_PERMISSIONS_POLICY },
+        body,
+      );
       return;
     }
     if (served.preview === 'image') {

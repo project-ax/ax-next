@@ -172,8 +172,34 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
 
   // Only a broken render matters, and only until it's shown. The error text
   // stays in here: it's the agent's, and the parent has no use for it.
-  function onError() {
-    if (ready || errorSent) return;
+  //
+  // And only the visual's own errors count. Browser extensions run scripts in
+  // this page too, and a bug in one of those mustn't fail the card. A visual
+  // can only run inline scripts (its CSP refuses every src, and extension
+  // scripts are exempt from it), so an error thrown while a script loaded
+  // from a URL is running isn't ours. document.currentScript names that
+  // script in Chromium, Firefox and WebKit, even though WebKit hides
+  // everything else about an error in this frame ("Script error.", no
+  // filename). Measured 2026-11-09. An extension's error from a timer or
+  // callback has no current script. Chromium and Firefox name its file. A
+  // rejection names it in its stack. WebKit gives neither, so those still
+  // count there.
+  var EXTENSION_URL = /[a-z]-extension:\/\//i;
+  function notOurs(event) {
+    try {
+      if (event.type === 'unhandledrejection') {
+        var stack = event.reason && event.reason.stack;
+        return typeof stack === 'string' && EXTENSION_URL.test(stack) && stack.indexOf(doc.URL) === -1;
+      }
+      var script = doc.currentScript;
+      if (script && typeof script.src === 'string' && script.src !== '') return true;
+      return typeof event.filename === 'string' && EXTENSION_URL.test(event.filename);
+    } catch {
+      return false;
+    }
+  }
+  function onError(event) {
+    if (ready || errorSent || notOurs(event)) return;
     errorSent = true;
     post({ type: 'ax-visual:error' });
   }
