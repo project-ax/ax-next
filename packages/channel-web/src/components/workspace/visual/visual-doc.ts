@@ -54,6 +54,14 @@ export const APP_FRAME_CSP = "frame-src 'none'";
 /** Scripts only. Never add allow-same-origin: with it, the frame could reach the app. */
 export const VISUAL_IFRAME_SANDBOX = 'allow-scripts';
 
+/**
+ * The `allow` attribute for every frame that holds agent HTML (visuals and
+ * artifacts). Browsers already deny these to a cross-origin frame unless the
+ * embedder delegates them. This says so explicitly, so a later `allow` added
+ * for some other reason can't hand one over by accident.
+ */
+export const UNTRUSTED_FRAME_ALLOW = "camera 'none'; microphone 'none'; display-capture 'none'; geolocation 'none'";
+
 export const VISUAL_MIN_HEIGHT = 48;
 export const VISUAL_DEFAULT_HEIGHT = 280;
 export const VISUAL_MAX_HEIGHT = 1200;
@@ -191,7 +199,7 @@ export function buildVisualDocument(input: VisualDocInput, assets: VisualAssets)
     `<title>${title}</title>` +
     `<style>${STANDALONE_PAGE_CSS}</style>` +
     '</head><body>' +
-    `<iframe sandbox="${VISUAL_IFRAME_SANDBOX}" title="${title}" srcdoc="${escapeAttr(frame)}"></iframe>` +
+    `<iframe sandbox="${VISUAL_IFRAME_SANDBOX}" allow="${UNTRUSTED_FRAME_ALLOW}" title="${title}" srcdoc="${escapeAttr(frame)}"></iframe>` +
     '</body></html>'
   );
 }
@@ -223,7 +231,9 @@ function buildFrameDocument(input: VisualDocInput, assets: VisualAssets, extraCs
     `<style id="ax-base">${baseCss}</style>` +
     libraries +
     runtime +
-    `</head><body>${stripChildFrames(input.html)}</body></html>`
+    // Visuals aren't for editing: no spellcheck squiggles, and Grammarly
+    // leaves the page alone.
+    `</head><body spellcheck="false" data-gramm="false">${stripChildFrames(input.html)}</body></html>`
   );
 }
 

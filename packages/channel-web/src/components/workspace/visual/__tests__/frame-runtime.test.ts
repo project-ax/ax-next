@@ -146,6 +146,63 @@ describe('frame runtime', () => {
     expect(posted(host, 'ax-visual:error')).toEqual([{ type: 'ax-visual:error' }]);
   });
 
+  describe("only the visual's own errors count", () => {
+    // What the browser says is running when the error is reported. jsdom runs
+    // no page scripts, so the test stands it up.
+    function running(win: FrameWindow, script: { src: string } | null): void {
+      Object.defineProperty(win.document, 'currentScript', { configurable: true, get: () => script });
+    }
+    function rejection(win: FrameWindow, reason: unknown): Event {
+      const event = new win.Event('unhandledrejection');
+      Object.defineProperty(event, 'reason', { value: reason });
+      return event;
+    }
+
+    // Noir (a Safari dark-mode extension) loads its own script into every
+    // frame. A throw from it failed every visual for anyone running it. WebKit
+    // reports that throw as a bare "Script error." with no filename, so the
+    // running script is what tells it apart.
+    it("ignores an error thrown while an extension's script (one with a src) runs", () => {
+      const { win, host } = setup();
+      running(win, { src: 'safari-web-extension://abc/dist/noirhelper.js' });
+      win.dispatchEvent(new win.ErrorEvent('error', { message: 'Script error.' }));
+      expect(posted(host, 'ax-visual:error')).toEqual([]);
+      // The visual's own inline script failing still fails the card.
+      running(win, { src: '' });
+      win.dispatchEvent(new win.ErrorEvent('error', { message: 'Script error.' }));
+      expect(posted(host, 'ax-visual:error')).toEqual([{ type: 'ax-visual:error' }]);
+    });
+
+    it("ignores an error a browser names as an extension's file, and counts one from a timer", () => {
+      const { win, host } = setup();
+      running(win, null);
+      win.dispatchEvent(new win.ErrorEvent('error', { message: 'x', filename: 'chrome-extension://abc/content.js' }));
+      win.dispatchEvent(new win.ErrorEvent('error', { message: 'x', filename: 'moz-extension://abc/content.js' }));
+      expect(posted(host, 'ax-visual:error')).toEqual([]);
+      // No current script and no file: what WebKit says for an agent's timer callback. Counted.
+      win.dispatchEvent(new win.ErrorEvent('error', { message: 'Script error.' }));
+      expect(posted(host, 'ax-visual:error')).toEqual([{ type: 'ax-visual:error' }]);
+    });
+
+    it("ignores a rejection whose stack is only an extension's, and counts the rest", () => {
+      const { win, host } = setup();
+      const here = win.document.URL;
+      win.dispatchEvent(rejection(win, { stack: 'global code@safari-web-extension://abc/dist/x.js:1:25' }));
+      expect(posted(host, 'ax-visual:error')).toEqual([]);
+      // The visual's own code is on the stack: it called into the extension. Counted.
+      win.dispatchEvent(
+        rejection(win, { stack: `wrap@chrome-extension://abc/x.js:1:2\nrun@${here}:8:77` }),
+      );
+      expect(posted(host, 'ax-visual:error')).toHaveLength(1);
+    });
+
+    it('counts a rejection with no stack to go on', () => {
+      const { win, host } = setup();
+      win.dispatchEvent(rejection(win, 'just a string'));
+      expect(posted(host, 'ax-visual:error')).toEqual([{ type: 'ax-visual:error' }]);
+    });
+  });
+
   it('ignores errors after ready', async () => {
     const { win, host } = setup();
     win.dispatchEvent(new win.Event('load'));
@@ -621,8 +678,7 @@ describe('frame runtime', () => {
       (w as unknown as Record<string, unknown>).RTCPeerConnection = function RTCPeerConnection() {};
     });
     expect(win.RTCPeerConnection).toBeUndefined();
-    win.eval('window.RTCPeerConnection = function () {}; delete window.RTCPeerConnection;');
-    expect(() => win.eval('"use strict"; window.RTCPeerConnection = function () {};')).toThrow();
+    expect(win.eval('Reflect.deleteProperty(window, "RTCPeerConnection")')).toBe(false);
     for (const name of [
       'RTCPeerConnection',
       'webkitRTCPeerConnection',
@@ -632,7 +688,8 @@ describe('frame runtime', () => {
     ]) {
       expect(Object.getOwnPropertyDescriptor(win, name)).toMatchObject({
         value: undefined,
-        writable: false,
+        // Writable so an extension's wrapper doesn't throw; see frame-guard.js.
+        writable: true,
         configurable: false,
       });
     }
@@ -679,12 +736,15 @@ describe('frame runtime: no child frames', () => {
     expect(() => win.eval('Document.parseHTMLUnsafe("<p>")')).toThrow();
     expect(() => win.document.write('<iframe></iframe>')).toThrow();
     expect(() => win.eval('Document.prototype.writeln.call(document, "x")')).toThrow();
-    win.eval('try { Element.prototype.attachShadow = HTMLElement.prototype.click; } catch {}');
-    expect(() => div.attachShadow({ mode: 'closed' })).toThrow();
     expect(Object.getOwnPropertyDescriptor(win.Element.prototype, 'attachShadow')).toMatchObject({
-      writable: false,
+      writable: true,
       configurable: false,
     });
+    // Writing over it gets nothing back: the original is gone from the realm.
+    win.eval('Element.prototype.attachShadow = HTMLElement.prototype.click;');
+    div.attachShadow({ mode: 'closed' });
+    expect(div.shadowRoot).toBeNull();
+    expect(() => win.eval('Element.prototype.attachShadow = undefined; document.body.attachShadow({ mode: "open" })')).toThrow();
   });
 });
 

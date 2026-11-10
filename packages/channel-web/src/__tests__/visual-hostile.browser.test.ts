@@ -45,6 +45,20 @@ const TOKENS: Record<string, string> = {
 // How Playwright reports a request Chromium's CSP refused before it left.
 const CSP_REFUSED = new Set(['csp', 'net::ERR_BLOCKED_BY_CSP']);
 
+/**
+ * Stand-ins for a browser extension's page script, served from the app
+ * server. `noir.js` wraps attachShadow the way Noir's noirhelper.js does
+ * (measured 2026-11-09). `throws.js` is an extension with a bug.
+ */
+const EXTENSION_SCRIPTS: Record<string, string> = {
+  '/ext/noir.js':
+    'var d = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");' +
+    'Object.defineProperty(Element.prototype, "attachShadow", Object.assign({}, d, { value: function (o) {' +
+    '  var root = d.value.call(this, o); return root; } }));' +
+    'window.__extensionRan = true;',
+  '/ext/throws.js': 'window.__extensionRan = true; throw new Error("an extension bug");',
+};
+
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 interface Hit {
@@ -99,9 +113,15 @@ const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
  * visual with buildVisualDocument and mounts it the way VisualFrame does.
  * Every message any frame posts to this window lands in window.__results.
  */
-function appPage(visuals: Record<string, string>, spacerPx = 0, frameSrc?: string): string {
+function appPage(visuals: Record<string, string>, spacerPx = 0, frameSrc?: string, extension?: string): string {
   // `frameSrc`: the shell as a deploy with a content origin serves it, its
   // meta widened by @ax/static-files to `frame-src <content>/v/`.
+  // `extension`: the URL of a script that stands in for a browser
+  // extension's. Extensions load scripts into every frame, and the page's CSP
+  // doesn't apply to them. A test can't install one, so it adds the script to
+  // the built document right after the runtime, the way Noir's lands, and
+  // widens script-src to its origin. That's the one difference from what
+  // production builds.
   const meta = frameSrc === undefined ? appCspMeta() : appCspMeta().replace("frame-src 'none'", () => `frame-src ${frameSrc}`);
   return `<!doctype html><html lang="en"><head>${meta}<meta charset="utf-8"><title>visual box probe</title></head><body>
 <script type="module">
@@ -146,7 +166,15 @@ for (const [name, html] of Object.entries(visuals)) {
   f.setAttribute('sandbox', VISUAL_IFRAME_SANDBOX);
   f.style.width = '640px';
   f.style.height = '400px';
-  f.srcdoc = buildVisualDocument({ html, mode: 'light', tokens }, assets);
+  let doc = buildVisualDocument({ html, mode: 'light', tokens }, assets);
+  const extension = ${json(extension ?? null)};
+  if (extension !== null) {
+    doc = doc.replace("script-src 'unsafe-inline'", "script-src 'unsafe-inline' " + new URL(extension).origin);
+    const close = '<' + '/script>'; // spelled apart: this page is itself inside a script element
+    const at = doc.indexOf(close, doc.indexOf('axVisualRuntime(window, parent);')) + close.length;
+    doc = doc.slice(0, at) + '<script src="' + extension + '">' + close + doc.slice(at);
+  }
+  f.srcdoc = doc;
   frames.set(name, f);
   document.body.appendChild(f);
 }
@@ -210,6 +238,12 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
 
     app = createServer((req, res) => {
       const url = req.url ?? '/';
+      const ext = EXTENSION_SCRIPTS[url];
+      if (ext !== undefined) {
+        res.writeHead(200, { 'content-type': 'text/javascript' });
+        res.end(ext);
+        return;
+      }
       if (url === '/visual-doc.js') {
         res.writeHead(200, { 'content-type': 'text/javascript' });
         res.end(visualDocJs);
@@ -275,9 +309,10 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
       settleTimeoutMs = 20_000,
       isolate = false,
       frameSrc,
-    }: { spacerPx?: number; settleTimeoutMs?: number; isolate?: boolean; frameSrc?: string } = {},
+      extension,
+    }: { spacerPx?: number; settleTimeoutMs?: number; isolate?: boolean; frameSrc?: string; extension?: string } = {},
   ): Promise<Run> {
-    pages.set(path, appPage(visuals, spacerPx, frameSrc));
+    pages.set(path, appPage(visuals, spacerPx, frameSrc, extension === undefined ? undefined : `http://127.0.0.1:${appPort}${extension}`));
     const hitsBefore = canaryHits.length;
     const connectionsBefore = tcpConnections;
     const page = await (isolate ? await isolated() : browser).newPage();
@@ -737,6 +772,44 @@ window.__chart = new Chart(document.getElementById('c'), {
         });
         const ready = from(results, 'below').find((m) => m.type === 'ax-visual:ready')!;
         expect(ready.height as number).toBeGreaterThanOrEqual(120);
+      } finally {
+        await page.close();
+      }
+    });
+
+    // Noir, a Safari dark-mode extension, failed every visual: its script
+    // redefined attachShadow, which the guard had locked read-only, and the
+    // TypeError reached the runtime before ready.
+    it("(NOIR) an extension that wraps a locked API doesn't fail the visual, and the API stays refused", async () => {
+      const { page, results } = await run(`/${mode}/noir`, { noir: '<p>hello</p>' }, ['noir'], 0, { isolate, extension: '/ext/noir.js' });
+      try {
+        const said = from(results, 'noir');
+        expect(said).toContainEqual(expect.objectContaining({ type: 'ax-visual:ready', rendered: true }));
+        expect(said).not.toContainEqual({ type: 'ax-visual:error' });
+        const f = await visualFrame(page);
+        expect(await f.evaluate(() => (window as unknown as { __extensionRan?: boolean }).__extensionRan)).toBe(true);
+        expect(
+          await f.evaluate(() => {
+            try {
+              document.body.attachShadow({ mode: 'open' });
+              return 'attached';
+            } catch {
+              return 'refused';
+            }
+          }),
+        ).toBe('refused');
+      } finally {
+        await page.close();
+      }
+    });
+
+    it("(NOIR) an extension script that throws doesn't fail the visual; the visual's own throw still does", async () => {
+      const visuals = { quiet: '<p>hello</p>', own: '<p>hello</p><script>throw new Error("the agent\'s bug")</script>' };
+      const { page, results } = await run(`/${mode}/ext-throws`, visuals, ['quiet', 'own'], 0, { isolate, extension: '/ext/throws.js' });
+      try {
+        expect(from(results, 'quiet')).toContainEqual(expect.objectContaining({ type: 'ax-visual:ready', rendered: true }));
+        expect(from(results, 'quiet')).not.toContainEqual({ type: 'ax-visual:error' });
+        expect(from(results, 'own')).toContainEqual({ type: 'ax-visual:error' });
       } finally {
         await page.close();
       }

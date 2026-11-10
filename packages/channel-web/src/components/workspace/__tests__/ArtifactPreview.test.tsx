@@ -27,6 +27,7 @@ describe('ArtifactPreview', () => {
     expect(f.tagName).toBe('IFRAME');
     expect(f.getAttribute('sandbox')).toBe('allow-scripts allow-downloads');
     expect(f.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(f.getAttribute('allow')).toBe("camera 'none'; microphone 'none'; display-capture 'none'; geolocation 'none'");
     expect(f.getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok');
     expect(props.loadToken).toHaveBeenCalledWith('view');
   });
