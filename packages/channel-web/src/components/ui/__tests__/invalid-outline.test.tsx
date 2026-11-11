@@ -43,6 +43,31 @@ describe('Input and Textarea draw aria-invalid', () => {
   });
 });
 
+/**
+ * A focused search box with three borders.
+ *
+ * `InputGroupInput` wraps our `Input`, which is `h-10` with a 2px ring offset.
+ * The group was `h-9`, so the input stuck out of its own frame; the input's
+ * `ring-0` left the 2px offset painted in the ring colour; and the group's ring
+ * offset had no colour, so it drew white. Focusing "Search the directory" in
+ * the dark theme showed all three at once.
+ */
+describe('InputGroup draws one focus ring', () => {
+  it('the inner input fills the group and draws no ring or offset of its own', () => {
+    render(<InputGroup><InputGroupInput aria-label="Find" /></InputGroup>);
+    const control = screen.getByLabelText('Find');
+    expect(control).toHaveClass('h-full', 'ring-offset-0', 'focus-visible:ring-0', 'focus-visible:ring-offset-0');
+    expect(control).not.toHaveClass('h-10');
+    expect(control).not.toHaveClass('focus-visible:ring-offset-2');
+  });
+
+  it('the group is as tall as a plain Input and its ring offset is the background', () => {
+    render(<><InputGroup data-testid="group"><InputGroupInput aria-label="Find" /></InputGroup><Input aria-label="Plain" /></>);
+    expect(screen.getByLabelText('Plain')).toHaveClass('h-10');
+    expect(screen.getByTestId('group')).toHaveClass('h-10', 'ring-offset-background');
+  });
+});
+
 describe('the aria-invalid variant is one Tailwind 3 builds', () => {
   it('no source file uses the bare aria-invalid: variant (write aria-[invalid=true]: instead)', () => {
     const SRC = join(__dirname, '..', '..', '..');
