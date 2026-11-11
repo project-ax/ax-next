@@ -662,6 +662,40 @@ describe('turning pages away', () => {
       expect(refusal(await running)).toBe('answered');
     });
 
+    // The defaults, pinned by what the pool does and not by reading its constants: 5 s of work in a window of 10 s. Every other
+    // test in this describe passes BUSY, so without this the defaults could change silently (TASK-1108's flake came from them). Each limit is
+    // pinned from both sides: 4999 ms is let through and 5000 is not; a page's time still counts 10 000 ms after it ended, and
+    // not 10 001.
+    describe('by default (nothing passed for maxBusyMs or busyWindowMs)', () => {
+      it('turns pages away at 5000 ms of work, not at 4999', async () => {
+        const under = clock();
+        const p = preparer({ now: under.now });
+        const first = p.prepare('echo:a');
+        under.set(4999);
+        expect(refusal(await first)).toBe('answered');
+        expect(refusal(await p.prepare('echo:b'))).toBe('answered');
+
+        const at = clock();
+        const q = preparer({ now: at.now });
+        const held = q.prepare('echo:a');
+        at.set(5000);
+        expect(refusal(await held)).toBe('answered');
+        expect(await q.prepare('echo:b')).toEqual({ ok: false, reason: 'busy' });
+      });
+
+      it('keeps a page counted until 10 000 ms after it ended, and lets it go after', async () => {
+        const c = clock();
+        const p = preparer({ now: c.now });
+        const first = p.prepare('echo:a');
+        c.set(5000); // 5 s of work, ending at 5 s
+        expect(refusal(await first)).toBe('answered');
+        c.set(15_000); // 10 000 ms after it ended: still in the window
+        expect(await p.prepare('echo:b')).toEqual({ ok: false, reason: 'busy' });
+        c.set(15_001); // and now out of it
+        expect(said(await p.prepare('echo:c'))).toMatch(/:c$/);
+      });
+    });
+
     it('is not tripped by pages that are quick', async () => {
       const c = clock();
       const p = preparer({ ...BUSY, now: c.now });
