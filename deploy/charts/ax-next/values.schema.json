@@ -244,6 +244,11 @@
           ],
           "description": "Which memory the host boots. 'memory' (the default) renders the facts PVC and env; memory.exports is optional (both-or-neither) and adds the /memory NFS export. 'k8s' (the legacy Strata memory) is kept in this enum ONLY so `helm template` reaches the chart's own fail message instead of a generic schema-validation error \u2014 it always fails render with a pointer to deploy/README.md's 'Switching an existing deployment to facts memory' runbook (TASK-608)."
         },
+        "mcpClientName": {
+          "type": "string",
+          "pattern": "^([\\x21-\\x7e]{1,64})?$",
+          "description": "The MCP clientInfo.name AX sends to connector servers (host-side listing and approved calls, and aisdk-runner agents). Empty keeps the defaults. 1-64 printable ASCII characters, no spaces."
+        },
         "ports": {
           "type": "object",
           "properties": {

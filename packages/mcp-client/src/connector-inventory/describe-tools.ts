@@ -29,6 +29,7 @@
 import { createHash } from 'node:crypto';
 import { PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { connectorHeaders, noUsableCredential, type ResolvedConnector, type ResolvedServer } from './connector-headers.js';
+import type { McpClientInfo } from './client-info.js';
 import { listServerTools, type ListOutcome, type ListServerToolsOptions } from './list-tools.js';
 import type { InventoryKey, InventoryRow, InventoryStore } from './store.js';
 import {
@@ -144,6 +145,8 @@ export interface DescribeToolsDeps {
   now?: () => Date;
   /** Test seam: replace the network listing. */
   listTools?: (opts: ListServerToolsOptions) => Promise<ListOutcome>;
+  /** Sent as `clientInfo` in `initialize`. Default `DEFAULT_CLIENT_INFO`. */
+  clientInfo?: McpClientInfo;
 }
 
 /** Same shape the claude-sdk runner lifts and @ax/connectors mints. */
@@ -159,6 +162,7 @@ const SEVERITY: Record<InventoryStatus, number> = { ok: 0, unknown: 0, unreachab
 export function createDescribeTools(deps: DescribeToolsDeps) {
   const now = deps.now ?? (() => new Date());
   const list = deps.listTools ?? listServerTools;
+  const withClientInfo = deps.clientInfo !== undefined ? { clientInfo: deps.clientInfo } : {};
   const inFlight = new Map<string, Promise<DescribeToolsOutput>>();
   /**
    * (user, connector) → its current window (TASK-756): when a check of its
@@ -303,7 +307,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     // Pass 2 — the listings.
     for (const p of planned) {
       const ns = p.ns;
-      let outcome: ListOutcome = 'outcome' in p ? p.outcome : await list({ url: p.url, headers: p.headers });
+      let outcome: ListOutcome = 'outcome' in p ? p.outcome : await list({ url: p.url, headers: p.headers, ...withClientInfo });
       if (
         !('outcome' in p) &&
         outcome.kind === 'needs-auth' &&
@@ -316,7 +320,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           connectorId: connector.id,
           renewed: renewed !== null,
         });
-        if (renewed !== null) outcome = await list({ url: p.url, headers: renewed });
+        if (renewed !== null) outcome = await list({ url: p.url, headers: renewed, ...withClientInfo });
       }
       const serverStatus: InventoryStatus = outcome.kind;
       if (outcome.kind === 'ok') {

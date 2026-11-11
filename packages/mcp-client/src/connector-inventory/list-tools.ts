@@ -19,6 +19,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ListToolsResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { stripSurfaceRewritersFromDocument } from '@ax/core/surface-text';
+import { DEFAULT_CLIENT_INFO, type McpClientInfo } from './client-info.js';
 import { createGuardedFetch, type AllAddressesResolver, type FetchLike } from './safe-fetch.js';
 
 /** Hard caps on what one server may hand us. */
@@ -139,6 +140,8 @@ export type ListOutcome =
 export interface ListServerToolsOptions {
   url: string;
   headers: Record<string, string>;
+  /** Sent as `clientInfo` in `initialize`. Default `DEFAULT_CLIENT_INFO`. */
+  clientInfo?: McpClientInfo;
   /** Test seams. */
   resolver?: AllAddressesResolver;
   baseFetch?: (url: string, init: Record<string, unknown>) => Promise<Response>;
@@ -196,7 +199,7 @@ export async function listServerTools(opts: ListServerToolsOptions): Promise<Lis
       maxRetries: 0,
     },
   });
-  const client = new Client({ name: '@ax/mcp-client', version: '0.0.0' }, { capabilities: {} });
+  const client = new Client(opts.clientInfo ?? DEFAULT_CLIENT_INFO, { capabilities: {} });
   // The SDK reports background-stream errors (e.g. a 405 on the optional GET
   // stream) via onerror; they don't affect the request/response we need.
   client.onerror = () => {};

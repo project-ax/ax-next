@@ -90,6 +90,20 @@ function hasUserFilesMount(mounts: unknown): boolean {
 // shared schema enforces exactly-one + non-empty. The production caller
 // (orchestrator's endpointToProxyConfig) always sends exactly one, so this is
 // a tightening of a latent gap, not a behavior regression.
+
+/**
+ * The host env vars a runner pod inherits, each opt-in and non-secret:
+ * AX_COMMIT_TRACE (debug trace flag) and AX_MCP_CLIENT_NAME (MCP client name).
+ * Undefined when neither is set.
+ */
+function forwardedRunnerEnv(): Record<string, string> | undefined {
+  const env: Record<string, string> = {};
+  if (process.env.AX_COMMIT_TRACE !== undefined) env.AX_COMMIT_TRACE = process.env.AX_COMMIT_TRACE;
+  const clientName = process.env.AX_MCP_CLIENT_NAME;
+  if (clientName !== undefined && clientName !== '') env.AX_MCP_CLIENT_NAME = clientName;
+  return Object.keys(env).length > 0 ? env : undefined;
+}
+
 export {
   OpenSessionInputSchema,
   type OpenSessionInput,
@@ -357,6 +371,7 @@ export function createOpenSession(deps: OpenSessionDeps) {
     //    with no pod. Mirror the createNamespacedPod failure handler
     //    below — best-effort terminate, then re-throw.
     let podSpec;
+    const runnerExtraEnv = forwardedRunnerEnv();
     try {
       // `input.workspaceRoot` (the host's cwd) went to session:create above
       // and stops there: it names nothing inside the runner pod.
@@ -405,11 +420,12 @@ export function createOpenSession(deps: OpenSessionDeps) {
         // from the host env (set AX_COMMIT_TRACE=1 on the host deployment) into
         // the runner pod, so commit-trace.ts's decision trace is reachable in
         // k8s — the path was otherwise observable only on failure (the TASK-11
-        // diagnosis blocker). Forwards ONLY this one debug boolean, nothing
-        // else from the host env; off (absent) by default.
-        ...(process.env.AX_COMMIT_TRACE !== undefined
-          ? { extraEnv: { AX_COMMIT_TRACE: process.env.AX_COMMIT_TRACE } }
-          : {}),
+        // diagnosis blocker). Plus AX_MCP_CLIENT_NAME (the chart's
+        // host.mcpClientName), the deployment's MCP client name, which the
+        // aisdk runner sends in `initialize`; the runner re-checks its shape.
+        // Forwards ONLY these two non-secret values (see forwardedRunnerEnv),
+        // nothing else from the host env; both absent by default.
+        ...(runnerExtraEnv !== undefined ? { extraEnv: runnerExtraEnv } : {}),
       }, deps.config);
     } catch (err) {
       podLog.error('pod_spec_build_failed', {

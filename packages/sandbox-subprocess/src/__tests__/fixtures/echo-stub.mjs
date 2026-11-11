@@ -33,6 +33,8 @@ const env = {
   // in the IPC socket dir). Echoed so open-session.test.ts can assert the
   // child saw it and that it points at a real on-disk directory.
   AX_EPHEMERAL_ROOT: process.env.AX_EPHEMERAL_ROOT ?? null,
+  // The deployment's MCP client name, forwarded from the host only when set.
+  AX_MCP_CLIENT_NAME: process.env.AX_MCP_CLIENT_NAME ?? null,
   // credential-proxy env (set only when proxyConfig was passed to
   // sandbox:open-session).
   AX_PROXY_ENDPOINT: process.env.AX_PROXY_ENDPOINT ?? null,

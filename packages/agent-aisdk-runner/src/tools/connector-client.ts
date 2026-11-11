@@ -44,11 +44,30 @@ class BoundedClient extends Client {
   }
 }
 
+/** What `initialize` carries as `clientInfo` unless the deployment renames it. */
+export const DEFAULT_CONNECTOR_CLIENT_INFO = { name: 'ax-aisdk-runner', version: '0.0.0' } as const;
+
+/** 1-64 printable ASCII characters, no spaces: the host's rule for AX_MCP_CLIENT_NAME. */
+const CLIENT_NAME_RE = /^[\x21-\x7e]{1,64}$/;
+
+/**
+ * The `clientInfo` for connector sessions. AX_MCP_CLIENT_NAME (forwarded by
+ * the sandbox from the host deployment) replaces the name; unset, empty or
+ * malformed keeps the default. The host fails boot on a malformed value, so
+ * reaching the fallback here means the sandbox env was set some other way.
+ */
+export function connectorClientInfo(env: NodeJS.ProcessEnv = process.env): { name: string; version: string } {
+  const raw = env['AX_MCP_CLIENT_NAME'];
+  return raw !== undefined && CLIENT_NAME_RE.test(raw)
+    ? { ...DEFAULT_CONNECTOR_CLIENT_INFO, name: raw }
+    : { ...DEFAULT_CONNECTOR_CLIENT_INFO };
+}
+
 export function createConnectorClient(): Client {
   const ajv = new Ajv({ strict: false, validateFormats: true, validateSchema: false, allErrors: false });
   // ajv-formats is CommonJS; its runtime default is the callable plugin.
   (formatsModule as unknown as FormatsPlugin)(ajv);
-  return new BoundedClient({ name: 'ax-aisdk-runner', version: '0.0.0' }, {
+  return new BoundedClient(connectorClientInfo(), {
     jsonSchemaValidator: new AjvJsonSchemaValidator(ajv),
   });
 }

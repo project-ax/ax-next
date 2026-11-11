@@ -263,6 +263,36 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('forwards AX_MCP_CLIENT_NAME into the child only when set (non-empty) on the host', async () => {
+    const ws = await mkWorkspace();
+    const prior = process.env.AX_MCP_CLIENT_NAME;
+    const childValue = async (id: string): Promise<string | null> => {
+      const h = await makeHarness();
+      const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: id,
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
+      });
+      const parsed = JSON.parse(await readFirstStdoutLine(result)) as Record<string, string | null>;
+      await result.handle.kill();
+      await result.handle.exited;
+      return parsed.AX_MCP_CLIENT_NAME ?? null;
+    };
+    try {
+      process.env.AX_MCP_CLIENT_NAME = 'acme-agents';
+      expect(await childValue('env-mcp-1')).toBe('acme-agents');
+      process.env.AX_MCP_CLIENT_NAME = '';
+      expect(await childValue('env-mcp-2')).toBeNull();
+      delete process.env.AX_MCP_CLIENT_NAME;
+      expect(await childValue('env-mcp-3')).toBeNull();
+    } finally {
+      if (prior === undefined) delete process.env.AX_MCP_CLIENT_NAME;
+      else process.env.AX_MCP_CLIENT_NAME = prior;
+    }
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('does NOT leak non-allowlist parent env (FOO stays undefined in child)', async () => {
     const ws = await mkWorkspace();
     const prior = process.env.FOO;

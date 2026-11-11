@@ -126,6 +126,7 @@ interface Setup {
   onHook?: (hook: string) => void;
   /** Leave the handler's own default clock in place (no `now` seam). */
   defaultClock?: boolean;
+  clientInfo?: { name: string; version: string };
 }
 
 function setup(s: Setup = {}) {
@@ -160,7 +161,12 @@ function setup(s: Setup = {}) {
   });
   const logs: Array<Record<string, unknown>> = [];
   const logger = createLogger({ reqId: 'r', writer: (line) => logs.push(JSON.parse(line) as Record<string, unknown>) });
-  const callTool = createCallTool({ bus, callServer, ...(s.defaultClock === true ? {} : { now: () => clock }) });
+  const callTool = createCallTool({
+    bus,
+    callServer,
+    ...(s.defaultClock === true ? {} : { now: () => clock }),
+    ...(s.clientInfo !== undefined ? { clientInfo: s.clientInfo } : {}),
+  });
   const ctx = (over: Partial<{ userId: string; agentId: string }> = {}) =>
     makeAgentContext({ sessionId: 'decision-replay', userId: USER, agentId: AGENT, logger, ...over });
   const run = (input: unknown, callerCtx: AgentContext = ctx()) => callTool(callerCtx, input);
@@ -209,6 +215,12 @@ describe('connectors:call-tool', () => {
     });
     expect(t.calls[2]!.input).toStrictEqual({ userId: USER, connectorId: 'linear' });
     expect(t.calls[3]!.input).toStrictEqual({ ref: 'account:linear:token', userId: USER });
+  });
+
+  it("passes the deployment's clientInfo to the send", async () => {
+    const t = setup({ clientInfo: { name: 'acme-agents', version: '0.0.0' } });
+    expect(await t.run(payload())).toStrictEqual({ outcome: 'succeeded' });
+    expect(t.sent[0]!.clientInfo).toStrictEqual({ name: 'acme-agents', version: '0.0.0' });
   });
 
   it('a tool name with dots is everything after the namespace', async () => {

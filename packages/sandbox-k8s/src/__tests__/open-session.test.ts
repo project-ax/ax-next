@@ -216,6 +216,46 @@ describe('sandbox:open-session (k8s)', () => {
     }
   });
 
+  it('forwards AX_MCP_CLIENT_NAME into the runner pod env only when set (non-empty) on the host', async () => {
+    const prior = { name: process.env.AX_MCP_CLIENT_NAME, trace: process.env.AX_COMMIT_TRACE };
+    const envFor = async (): Promise<Record<string, string>> => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api);
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-1',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
+      });
+      const body = api.creates[0]!.body as {
+        spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      };
+      return Object.fromEntries(body.spec.containers[0]!.env.map((e) => [e.name, e.value]));
+    };
+    try {
+      delete process.env.AX_COMMIT_TRACE;
+      process.env.AX_MCP_CLIENT_NAME = 'acme-agents';
+      expect((await envFor()).AX_MCP_CLIENT_NAME).toBe('acme-agents');
+
+      // Both together: neither crowds the other out of extraEnv.
+      process.env.AX_COMMIT_TRACE = '1';
+      const both = await envFor();
+      expect([both.AX_MCP_CLIENT_NAME, both.AX_COMMIT_TRACE]).toEqual(['acme-agents', '1']);
+      delete process.env.AX_COMMIT_TRACE;
+
+      process.env.AX_MCP_CLIENT_NAME = '';
+      expect((await envFor()).AX_MCP_CLIENT_NAME).toBeUndefined();
+      delete process.env.AX_MCP_CLIENT_NAME;
+      expect((await envFor()).AX_MCP_CLIENT_NAME).toBeUndefined();
+    } finally {
+      if (prior.name === undefined) delete process.env.AX_MCP_CLIENT_NAME;
+      else process.env.AX_MCP_CLIENT_NAME = prior.name;
+      if (prior.trace === undefined) delete process.env.AX_COMMIT_TRACE;
+      else process.env.AX_COMMIT_TRACE = prior.trace;
+    }
+  });
+
   it('per-pod child logger is constructed with podName + pid bindings before createNamespacedPod fires', async () => {
     // We assert the binding shape by tapping ctx.logger.child via a
     // wrapping logger that records calls. The mock api throws on create,

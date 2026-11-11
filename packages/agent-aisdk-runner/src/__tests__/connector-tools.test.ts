@@ -297,6 +297,35 @@ describe('connectConnectorTools', () => {
     expect(s.seenHeaders.every((h) => h.authorization === `Bearer ${PH}`)).toBe(true);
   });
 
+  it('names itself in initialize from AX_MCP_CLIENT_NAME, else ax-aisdk-runner', async () => {
+    const s = await testServer([{ name: 'ping', handler: () => ({ content: [{ type: 'text', text: 'pong' }] }) }]);
+    const clientInfos: unknown[] = [];
+    const recordingFetch: typeof fetch = async (input, init) => {
+      if (typeof init?.body === 'string') {
+        const msg = JSON.parse(init.body) as { method?: string; params?: { clientInfo?: unknown } };
+        if (msg.method === 'initialize') clientInfos.push(msg.params?.clientInfo);
+      }
+      return fetch(input, init);
+    };
+    const servers = { [NS]: { url: s.url, bundle: 'b' } };
+    vi.stubEnv('AX_MCP_CLIENT_NAME', 'acme-agents');
+    try {
+      await connect(servers, { fetch: recordingFetch });
+      // Malformed (has a space): the default, never the raw value.
+      vi.stubEnv('AX_MCP_CLIENT_NAME', 'acme agents');
+      await connect(servers, { fetch: recordingFetch });
+      vi.stubEnv('AX_MCP_CLIENT_NAME', '');
+      await connect(servers, { fetch: recordingFetch });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(clientInfos).toStrictEqual([
+      { name: 'acme-agents', version: '0.0.0' },
+      { name: 'ax-aisdk-runner', version: '0.0.0' },
+      { name: 'ax-aisdk-runner', version: '0.0.0' },
+    ]);
+  });
+
   it('close() resolves and is safe to call twice', async () => {
     const stub = await echoCrashServer();
     const ct = await connect({ [NS]: { url: stub.url, bundle: 'b' } });

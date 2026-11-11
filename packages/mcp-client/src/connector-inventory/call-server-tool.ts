@@ -40,6 +40,7 @@ import {
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { DEFAULT_CLIENT_INFO, type McpClientInfo } from './client-info.js';
 import { createGuardedFetch, type AllAddressesResolver, type FetchLike, type GuardedFetch } from './safe-fetch.js';
 
 /** Hard bounds on one approved call. */
@@ -62,6 +63,8 @@ export type ServerCallOutcome =
 export interface CallServerToolOptions {
   url: string;
   headers: Record<string, string>;
+  /** Sent as `clientInfo` in `initialize`. Default `DEFAULT_CLIENT_INFO`. */
+  clientInfo?: McpClientInfo;
   /** The tool's name as the server knows it (no `mcp.<ns>.` prefix). */
   tool: string;
   /** The tool's arguments, sent exactly as given. */
@@ -181,7 +184,7 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
       maxRetries: 0,
     },
   });
-  const client = new Client({ name: '@ax/mcp-client', version: '0.0.0' }, { capabilities: {} });
+  const client = new Client(opts.clientInfo ?? DEFAULT_CLIENT_INFO, { capabilities: {} });
   // The SDK reports background-stream errors (e.g. a 405 on the optional GET
   // stream, a dropped SSE reply) via onerror. The request's own promise is
   // the only answer we use.

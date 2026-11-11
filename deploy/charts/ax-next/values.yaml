@@ -66,6 +66,14 @@ host:
   # Production values files should pin `preset` explicitly rather than
   # inherit this default.
   preset: memory
+  # The name AX gives itself to connector MCP servers (`clientInfo.name` in the
+  # MCP `initialize` handshake). Empty keeps the defaults: `@ax/mcp-client` for
+  # the host's own tool listing and approved calls, `ax-aisdk-runner` for aisdk
+  # agents. Set it and both send this instead. 1-64 printable ASCII characters,
+  # no spaces; anything else fails the render. Agents on the claude-sdk runner
+  # always send `claude-code`: that name is built into the Claude Code CLI and
+  # has no setting.
+  mcpClientName: ""
   ports:
     # @ax/ipc-http listener — runner pods reach back to the host here.
     # NOT public traffic. NetworkPolicy + the runner pod's own egress

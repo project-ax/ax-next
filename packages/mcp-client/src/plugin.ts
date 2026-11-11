@@ -38,6 +38,7 @@ import {
 } from './connector-inventory/describe-tools.js';
 import { createAuthFailureRecheck } from './connector-inventory/auth-failure-recheck.js';
 import { createCallTool } from './connector-inventory/call-tool.js';
+import { readMcpClientInfo, type McpClientInfo } from './connector-inventory/client-info.js';
 import type { CallServerToolOptions, ServerCallOutcome } from './connector-inventory/call-server-tool.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
 import {
@@ -72,6 +73,12 @@ export interface CreateMcpClientPluginOptions {
    * `connectors:call-tool`. Production leaves this undefined.
    */
   connectorCallServerTool?: (opts: CallServerToolOptions) => Promise<ServerCallOutcome>;
+  /**
+   * The `clientInfo` sent to connector servers by `connectors:describe-tools`
+   * and `connectors:call-tool`. Default: `readMcpClientInfo()` (the
+   * AX_MCP_CLIENT_NAME env var, else `@ax/mcp-client`).
+   */
+  clientInfo?: McpClientInfo;
 }
 
 /**
@@ -129,6 +136,8 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           initCtx,
           {},
         );
+        // Read before any work, so a malformed AX_MCP_CLIENT_NAME fails boot.
+        const clientInfo = opts.clientInfo ?? readMcpClientInfo();
         const typed = db as Kysely<McpClientDatabase>;
         await runMcpClientMigration(typed);
         const store = createInventoryStore(typed);
@@ -160,6 +169,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           bus,
           store,
           unstored,
+          clientInfo,
           ...(opts.connectorInventoryListTools !== undefined
             ? { listTools: opts.connectorInventoryListTools }
             : {}),
@@ -195,6 +205,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           PLUGIN_NAME,
           createCallTool({
             bus,
+            clientInfo,
             ...(opts.connectorCallServerTool !== undefined ? { callServer: opts.connectorCallServerTool } : {}),
           }),
           { returns: ConnectorCallToolOutputSchema },

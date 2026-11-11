@@ -52,6 +52,7 @@ import {
   type CallServerToolOptions,
   type ServerCallOutcome,
 } from './call-server-tool.js';
+import type { McpClientInfo } from './client-info.js';
 import { connectorHeaders, type ResolvedConnector } from './connector-headers.js';
 import { loggableCode } from './loggable-code.js';
 import { assertAllowedServerUrl } from './safe-fetch.js';
@@ -72,6 +73,8 @@ export interface CallToolDeps {
   };
   /** Test seam: the one-shot transport. Default `callServerTool`. */
   callServer?: (opts: CallServerToolOptions) => Promise<ServerCallOutcome>;
+  /** Sent as `clientInfo` in `initialize`. Default `DEFAULT_CLIENT_INFO`. */
+  clientInfo?: McpClientInfo;
   /**
    * Test seam: the clock, in whole ms. Default `Math.floor(performance.now())`:
    * monotonic, so a wall clock that steps cannot stretch or shrink the budget,
@@ -211,7 +214,14 @@ export function createCallTool(deps: CallToolDeps) {
     if (!Number.isFinite(remaining) || remaining < MIN_SEND_BUDGET_MS) return failed('unavailable');
     const left = Math.min(remaining, CALL_LIMITS.budgetMs);
     state.sent = true;
-    return callServer({ url, headers: auth.headers, tool, input, limits: { budgetMs: left } });
+    return callServer({
+      url,
+      headers: auth.headers,
+      tool,
+      input,
+      limits: { budgetMs: left },
+      ...(deps.clientInfo !== undefined ? { clientInfo: deps.clientInfo } : {}),
+    });
   }
 
   return async function callTool(callerCtx: AgentContext, rawInput: unknown): Promise<ConnectorCallToolOutput> {

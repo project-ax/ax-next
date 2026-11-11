@@ -161,6 +161,25 @@ describe('listServerTools', () => {
     expect(posts.filter((r) => (r.body as { method: string }).method === 'tools/list')).toHaveLength(2);
   });
 
+  it('names itself @ax/mcp-client in initialize unless clientInfo says otherwise', async () => {
+    const clientInfoOf = (server: ReturnType<typeof fakeMcpServer>) =>
+      (server.requests.find((r) => (r.body as { method?: string } | undefined)?.method === 'initialize')!.body as {
+        params: { clientInfo: unknown };
+      }).params.clientInfo;
+    const plain = fakeMcpServer({ pages: [[]] });
+    expect((await listServerTools({ url: URL_OK, headers: {}, baseFetch: plain.baseFetch })).kind).toBe('ok');
+    expect(clientInfoOf(plain)).toStrictEqual({ name: '@ax/mcp-client', version: '0.0.0' });
+    const named = fakeMcpServer({ pages: [[]] });
+    const out = await listServerTools({
+      url: URL_OK,
+      headers: {},
+      baseFetch: named.baseFetch,
+      clientInfo: { name: 'my-test-client', version: '1.2.3' },
+    });
+    expect(out.kind).toBe('ok');
+    expect(clientInfoOf(named)).toStrictEqual({ name: 'my-test-client', version: '1.2.3' });
+  });
+
   it('stops at the page cap even if the server keeps handing out cursors', async () => {
     const server = fakeMcpServer({
       pages: Array.from({ length: 50 }, (_, i) => [{ name: `t${i}`, inputSchema: { type: 'object' } }]),

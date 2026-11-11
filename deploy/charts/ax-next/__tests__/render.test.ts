@@ -318,6 +318,27 @@ describeIfHelm('ax-next chart: titles.model wiring', () => {
   });
 });
 
+describeIfHelm('ax-next chart: host.mcpClientName wiring', () => {
+  it('default (empty): no AX_MCP_CLIENT_NAME, so the built-in names stay', () => {
+    const env = findHostEnv(helmTemplate([]));
+    expect(env.find((e) => e.name === 'AX_MCP_CLIENT_NAME')).toBeUndefined();
+  });
+
+  it('set: stamps AX_MCP_CLIENT_NAME on the host', () => {
+    const env = findHostEnv(helmTemplate(['--set-string', 'host.mcpClientName=@acme/agents']));
+    expect(env.find((e) => e.name === 'AX_MCP_CLIENT_NAME')?.value).toBe('@acme/agents');
+  });
+
+  it.each([
+    ['a space', 'acme agents'],
+    ['65 characters', 'x'.repeat(65)],
+  ])('%s fails the render (schema)', (_label, value) => {
+    const r = helmTemplateExpectFailure(['--set-string', `host.mcpClientName=${value}`]);
+    expect(r.status, 'helm template should fail').not.toBe(0);
+    expect(r.stderr).toMatch(/host\.mcpClientName/);
+  });
+});
+
 describeIfHelm('ax-next chart: single-replica chat guard (ARCH-1)', () => {
   // The web chat surface is single-replica-only: @ax/channel-web buffers SSE
   // chunks in an in-process per-reqId ring (chunk-buffer.ts) and the

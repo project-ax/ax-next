@@ -550,6 +550,12 @@ export async function openSessionImpl(
     // the fixed `/tmp` mount) the same way HOME does — each provider picks a
     // path that exists and is writable for it.
     AX_EPHEMERAL_ROOT: ephemeralDir,
+    // The deployment's MCP client name (AX_MCP_CLIENT_NAME), forwarded so the
+    // aisdk runner sends it in `initialize`. Not a secret; the runner re-checks
+    // its shape before using it.
+    ...(process.env.AX_MCP_CLIENT_NAME !== undefined && process.env.AX_MCP_CLIENT_NAME !== ''
+      ? { AX_MCP_CLIENT_NAME: process.env.AX_MCP_CLIENT_NAME }
+      : {}),
     // Durable per-agent user-files root (filestore-user-files Phase 1), the
     // `role:'user-files'` mount realized + mkdir'd at step 3b above: the
     // agent's home. Every owned session has one (3b refuses an owned session

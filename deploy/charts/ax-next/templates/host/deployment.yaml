@@ -156,6 +156,13 @@ spec:
             - name: AX_HTTP_ALLOW_NO_ORIGINS
               value: "1"
             {{- end }}
+            {{- with .Values.host.mcpClientName }}
+            # The MCP client name (host.mcpClientName; values.schema.json checks
+            # its shape). The host reads it, and the sandbox forwards it to
+            # runner pods for the aisdk runner.
+            - name: AX_MCP_CLIENT_NAME
+              value: {{ . | quote }}
+            {{- end }}
 
             {{- if .Values.serve.existingSecret }}
             # `serve` subcommand — bearer token gating POST /chat. When set,

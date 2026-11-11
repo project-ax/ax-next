@@ -129,6 +129,21 @@ describe('callServerTool', () => {
     expect(server.rpcMethods()).toStrictEqual(['initialize', 'notifications/initialized', 'tools/call']);
   });
 
+  it('names itself @ax/mcp-client in initialize unless clientInfo says otherwise', async () => {
+    const clientInfoOf = (server: ReturnType<typeof fakeMcpServer>) =>
+      (server.requests.find((r) => (r.body as RpcMessage | undefined)?.method === 'initialize')!.body as {
+        params: { clientInfo: unknown };
+      }).params.clientInfo;
+    const plain = fakeMcpServer();
+    expect(await call(plain)).toStrictEqual({ outcome: 'succeeded' });
+    expect(clientInfoOf(plain)).toStrictEqual({ name: '@ax/mcp-client', version: '0.0.0' });
+    const named = fakeMcpServer();
+    expect(await call(named, { clientInfo: { name: 'my-test-client', version: '1.2.3' } })).toStrictEqual({
+      outcome: 'succeeded',
+    });
+    expect(clientInfoOf(named)).toStrictEqual({ name: 'my-test-client', version: '1.2.3' });
+  });
+
   // `client.request` with a local schema, never `client.callTool()`. Its
   // default `CallToolResultSchema` validates every content block, so it would
   // turn this successful but malformed reply into a failure. (Passing

@@ -69,6 +69,7 @@ interface Setup {
   list?: (opts: ListServerToolsOptions) => Promise<ListOutcome>;
   /** TASK-773 — make `store.put` reject while this returns true. */
   putFails?: () => boolean;
+  clientInfo?: { name: string; version: string };
 }
 
 function setup(s: Setup = {}) {
@@ -112,7 +113,14 @@ function setup(s: Setup = {}) {
   // TASK-787 — one holder for answers the store refused, shared the way
   // plugin.ts shares it between describe-tools and the status batch.
   const unstored = createUnstoredInventory();
-  const describeTools = createDescribeTools({ bus, store, unstored, listTools: list, now: () => clock });
+  const describeTools = createDescribeTools({
+    bus,
+    store,
+    unstored,
+    listTools: list,
+    now: () => clock,
+    ...(s.clientInfo !== undefined ? { clientInfo: s.clientInfo } : {}),
+  });
   const statusBatch = createInventoryStatusBatch(store, unstored);
   const ctx = makeAgentContext({
     sessionId: 's',
@@ -1062,6 +1070,17 @@ describe('connectors:describe-tools', () => {
         url: 'https://mcp.linear.app/mcp',
         headers: { Authorization: 'Bearer tok-renewed' },
       });
+    });
+
+    it("lists both times with the deployment's clientInfo", async () => {
+      const clientInfo = { name: 'acme-agents', version: '0.0.0' };
+      const t = setup({
+        clientInfo,
+        credential: (input) => ((input as { rejected?: boolean }).rejected === true ? 'tok-renewed' : 'tok-refused'),
+        list: async ({ headers }) => (headers.Authorization === 'Bearer tok-renewed' ? ok : refused),
+      });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('ok');
+      expect(t.list.mock.calls.map((c) => c[0].clientInfo)).toEqual([clientInfo, clientInfo]);
     });
 
     it('a renewal the authorization server refuses (reconnect error) answers needs-auth and lists no more', async () => {
