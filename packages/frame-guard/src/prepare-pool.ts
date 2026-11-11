@@ -52,8 +52,8 @@ import { WORKER_ARG } from './prepare-worker.js';
 // holds the worker 5 s or more (it can, up to the 6 s wall deadline), or a burst of shorter ones
 // that add up to 5 s, turns away EVERY user's next page at once, and keeps doing so until the
 // count is back under 5 s: for one 6 s page with nothing behind it, from 5 s into it until 10 s
-// after it ended; with pages waiting behind it, longer. The pool keeps no cache and remembers
-// nothing of a busy refusal. A page still in its caller's cache (the content origin keeps the
+// after it ended; with pages waiting behind it, possibly longer (until their time, too, leaves
+// the count under 5 s). The pool keeps no cache and remembers nothing of a busy refusal. A page still in its caller's cache (the content origin keeps the
 // 16 most recently viewed prepared pages, up to 32 MiB, for the whole host, in memory) is
 // answered from there without asking the pool, and so is not turned away; one that has dropped
 // out of it is asked of the pool like any other. A page that was turned away is tried again the
