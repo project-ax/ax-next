@@ -335,7 +335,8 @@ describeIfHelm('ax-next chart: host.mcpClientName wiring', () => {
   ])('%s fails the render (schema)', (_label, value) => {
     const r = helmTemplateExpectFailure(['--set-string', `host.mcpClientName=${value}`]);
     expect(r.status, 'helm template should fail').not.toBe(0);
-    expect(r.stderr).toMatch(/host\.mcpClientName/);
+    // Helm versions word the path differently: `host.mcpClientName` or `'/host/mcpClientName'`.
+    expect(r.stderr).toMatch(/host[./]mcpClientName/);
   });
 });
 
