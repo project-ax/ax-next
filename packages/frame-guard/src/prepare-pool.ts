@@ -44,20 +44,25 @@ import { WORKER_ARG } from './prepare-worker.js';
 // The busy limit (`maxBusyMs` of work in `busyWindowMs`, by default 5 s of the last 10 s) is
 // HOST-WIDE, and that is on purpose. There is one pool per host process (the content origin in
 // @ax/attachments makes it), so one worker and one busy count are shared by every user. What
-// counts: every page that finished, for its whole time, until `busyWindowMs` after it ENDED
-// (`busyTime`); and the page in hand, from when it was taken off the line, starting a worker
-// included. So one page that holds the worker 5 s or more (it can, up to the 6 s wall deadline),
-// or a burst of shorter ones that add up to 5 s, turns away EVERY user's next page at once,
-// from the moment the count reaches 5 s until the time that took it there is out of the window:
-// for one 6 s page, from 5 s into it until 10 s after it ended. The pool keeps no cache and
-// remembers nothing of a busy refusal: a page its caller has prepared before is answered from
-// the caller's cache without asking the pool, and so is not turned away, and a page that was
-// turned away is tried again the next time it is asked for.
+// counts: each page that finished (the last 1024), for its whole time, until `busyWindowMs`
+// after it ENDED (`busyTime`); and the page in hand, from when the pool had a worker for it (a
+// new worker's start-up, until it says it is ready, included). The limit is checked when a page
+// is ASKED for (`prepare`), not when a waiting one is taken off the line: pages already waiting
+// when the count reaches 5 s are still prepared, and their time counts too. So one page that
+// holds the worker 5 s or more (it can, up to the 6 s wall deadline), or a burst of shorter ones
+// that add up to 5 s, turns away EVERY user's next page at once, and keeps doing so until the
+// count is back under 5 s: for one 6 s page with nothing behind it, from 5 s into it until 10 s
+// after it ended; with pages waiting behind it, longer. The pool keeps no cache and remembers
+// nothing of a busy refusal. A page still in its caller's cache (the content origin keeps the
+// 16 most recently viewed prepared pages, up to 32 MiB, for the whole host, in memory) is
+// answered from there without asking the pool, and so is not turned away; one that has dropped
+// out of it is asked of the pool like any other. A page that was turned away is tried again the
+// next time it is asked for.
 //
 // Why shared and not per person: it is load shedding. The transform's own CPU budget is
-// 1.5 s a page, so a worker that has been held 5 of the last 10 s is a sign that the host is
-// starved (by hostile pages, or by a machine too busy to run the worker at speed), and turning
-// new pages away then is the right answer for everyone. A limit per person was considered and
+// 1.5 s a page, so a worker that has been held 5 of the last 10 s is saturated (by hostile
+// pages, by a run of heavy ordinary ones at up to 0.35 s each, or by a machine too busy to run
+// the worker at speed), and turning new pages away then is the right answer for everyone. A limit per person was considered and
 // declined for now (2026-11-10): it would have `prepare()` take a key for who is asking, and it
 // earns its keep only once hosts with many users report being locked out by someone else's pages.
 //
@@ -89,10 +94,11 @@ export type PoolRefusal =
   /** The worker could not start, or was not there for the page, for a reason the page does not explain. Not the page's fault. */
   | 'worker_failed'
   /**
-   * Not tried, and answered at once: too many pages (or too much text) are waiting; or the worker has been busy for
-   * `maxBusyMs` of the last `busyWindowMs`, counted for the whole host and not per person (see the header); or workers have
-   * failed `failureLimit` times in a row and the pool is cooling down. About the moment, not the page: the same page may be
-   * served when it is asked for again.
+   * Not tried: too many pages (or too much text) are waiting; or the worker's busy time in the window has reached
+   * `maxBusyMs`, counted for the whole host and not per person (see the header); or workers have failed `failureLimit` times
+   * in a row and the pool is cooling down. Answered at once when the page is asked for, except for pages already waiting
+   * when a cool-down begins, which are answered then. About the moment, not the page: the same page may be served when it
+   * is asked for again.
    */
   | 'busy';
 
@@ -142,10 +148,10 @@ export interface HtmlPreparerOptions {
    */
   busyWindowMs?: number;
   /**
-   * Milliseconds of work in the window at which every new page is turned away as busy. Default 5000. Counted for the pool,
-   * which is the whole host, and not per person: deliberate load shedding (see the header). It counts the pages that finished
-   * in the window and the one in hand, starting a worker for it included, so one page that holds the worker this long turns
-   * everyone's next page away until its time is out of the window.
+   * Milliseconds of work in the window at which every newly asked-for page is turned away as busy. Default 5000. Counted for
+   * the pool, which is the whole host, and not per person: deliberate load shedding (see the header). It counts the pages that
+   * finished in the window and the one in hand (a new worker's start-up included), so one page that holds the worker this long
+   * turns everyone's next page away until the count is back under it. Pages already waiting are still prepared.
    */
   maxBusyMs?: number;
   /**
@@ -516,9 +522,9 @@ class WorkerPreparer implements HtmlPreparer {
   }
 
   /**
-   * How long the worker has been busy in the window, for every user at once: the pages it finished, each for its whole time
-   * until `busyWindowMs` after it ended, and the one it is on, from when it was taken off the line (a worker being started for
-   * it included).
+   * How long the worker has been busy in the window, for every user at once: the pages it finished (the last
+   * `MAX_REMEMBERED`), each for its whole time until `busyWindowMs` after it ended, and the one it is on, from when the pool
+   * had a worker for it (a new worker's start-up, until it says it is ready, included).
    */
   private busyTime(): number {
     const t = this.now();

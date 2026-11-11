@@ -662,8 +662,8 @@ describe('turning pages away', () => {
       expect(refusal(await running)).toBe('answered');
     });
 
-    // The defaults, pinned by what the pool does and not by reading its constants: 5 s of work in a window of 10 s. Every test
-    // above passes BUSY, so without this the defaults could change silently (TASK-1108's flake came from them). Each limit is
+    // The defaults, pinned by what the pool does and not by reading its constants: 5 s of work in a window of 10 s. Every other
+    // test in this describe passes BUSY, so without this the defaults could change silently (TASK-1108's flake came from them). Each limit is
     // pinned from both sides: 4999 ms is let through and 5000 is not; a page's time still counts 10 000 ms after it ended, and
     // not 10 001.
     describe('by default (nothing passed for maxBusyMs or busyWindowMs)', () => {
