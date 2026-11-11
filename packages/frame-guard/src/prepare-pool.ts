@@ -41,6 +41,26 @@ import { WORKER_ARG } from './prepare-worker.js';
 //     seconds, is turned away at once (`busy`) instead of queueing behind work nobody is
 //     waiting for.
 //
+// The busy limit (`maxBusyMs` of work in `busyWindowMs`, by default 5 s of the last 10 s) is
+// HOST-WIDE, and that is on purpose. There is one pool per host process (the content origin in
+// @ax/attachments makes it), so one worker and one busy count are shared by every user. What
+// counts: every page that finished, for its whole time, until `busyWindowMs` after it ENDED
+// (`busyTime`); and the page in hand, from when it was taken off the line, starting a worker
+// included. So one page that holds the worker 5 s or more (it can, up to the 6 s wall deadline),
+// or a burst of shorter ones that add up to 5 s, turns away EVERY user's next page at once,
+// from the moment the count reaches 5 s until the time that took it there is out of the window:
+// for one 6 s page, from 5 s into it until 10 s after it ended. The pool keeps no cache and
+// remembers nothing of a busy refusal: a page its caller has prepared before is answered from
+// the caller's cache without asking the pool, and so is not turned away, and a page that was
+// turned away is tried again the next time it is asked for.
+//
+// Why shared and not per person: it is load shedding. The transform's own CPU budget is
+// 1.5 s a page, so a worker that has been held 5 of the last 10 s is a sign that the host is
+// starved (by hostile pages, or by a machine too busy to run the worker at speed), and turning
+// new pages away then is the right answer for everyone. A limit per person was considered and
+// declined for now (2026-11-10): it would have `prepare()` take a key for who is asking, and it
+// earns its keep only once hosts with many users report being locked out by someone else's pages.
+//
 // A worker that was ended is started again for the next page. The transform's own limits (and
 // its CPU-time budget) still apply inside the worker: they are what refuses most hostile pages
 // in milliseconds, and the process is what is left when they don't.
@@ -68,7 +88,12 @@ export type PoolRefusal =
   | 'worker_crashed'
   /** The worker could not start, or was not there for the page, for a reason the page does not explain. Not the page's fault. */
   | 'worker_failed'
-  /** Not tried: too many pages are waiting, or the worker has been busy for too much of the last few seconds. Not the page's fault. */
+  /**
+   * Not tried, and answered at once: too many pages (or too much text) are waiting; or the worker has been busy for
+   * `maxBusyMs` of the last `busyWindowMs`, counted for the whole host and not per person (see the header); or workers have
+   * failed `failureLimit` times in a row and the pool is cooling down. About the moment, not the page: the same page may be
+   * served when it is asked for again.
+   */
   | 'busy';
 
 /** A page prepared, as UTF-8 bytes, or the code for why it was not. */
@@ -111,9 +136,17 @@ export interface HtmlPreparerOptions {
    * Default 32 Mi: eight 4 MiB pages.
    */
   maxQueuedChars?: number;
-  /** The window, in milliseconds, over which the worker's busy time is added up. Default 10000. */
+  /**
+   * The window, in milliseconds, over which the worker's busy time is added up. Default 10000. A finished page counts for its
+   * whole time until this long after it ended.
+   */
   busyWindowMs?: number;
-  /** Milliseconds of work the worker may do in a window before new pages are turned away as busy. Default 5000. */
+  /**
+   * Milliseconds of work in the window at which every new page is turned away as busy. Default 5000. Counted for the pool,
+   * which is the whole host, and not per person: deliberate load shedding (see the header). It counts the pages that finished
+   * in the window and the one in hand, starting a worker for it included, so one page that holds the worker this long turns
+   * everyone's next page away until its time is out of the window.
+   */
   maxBusyMs?: number;
   /**
    * Milliseconds with no page to prepare after which the worker is ended, so that the memory it holds is given
@@ -482,7 +515,11 @@ class WorkerPreparer implements HtmlPreparer {
     if (this.failures >= this.failureLimit) this.coolUntil = this.now() + this.coolDownMs;
   }
 
-  /** How long the worker has been busy in the window: the pages it finished, and the one it is on. */
+  /**
+   * How long the worker has been busy in the window, for every user at once: the pages it finished, each for its whole time
+   * until `busyWindowMs` after it ended, and the one it is on, from when it was taken off the line (a worker being started for
+   * it included).
+   */
   private busyTime(): number {
     const t = this.now();
     while (this.spent.length > 0 && this.spent[0]!.endedAt < t - this.busyWindowMs) this.spent.shift();
