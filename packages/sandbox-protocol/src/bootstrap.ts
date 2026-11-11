@@ -38,10 +38,20 @@ const fixedPaths: Record<string, string> = {
   DENO_CERT: '/home/runner/.ax/proxy-ca/ca.crt',
 };
 
+/**
+ * The deployment's MCP client name (the chart's host.mcpClientName), sent by
+ * the aisdk runner in `initialize`. sandbox-k8s forwards it on every runner
+ * pod, and a pooled runner takes its env only from this assignment, so it must
+ * be listed. It reaches third-party servers, so only the host's own shape
+ * passes: 1-64 printable ASCII characters, no spaces.
+ */
+const MCP_CLIENT_NAME = /^[\x21-\x7e]{1,64}$/;
+
 /** Environment is a process capability, not an arbitrary settings dictionary. */
 export function allowedBootstrapEnv(name: string, value: string): boolean {
   if (value.includes('\0') || value.length > 256 * 1024) return false;
   if (fixedPaths[name] !== undefined && value !== fixedPaths[name]) return false;
+  if (name === 'AX_MCP_CLIENT_NAME') return MCP_CLIENT_NAME.test(value);
   if (controlNames.has(name)) return true;
   if (/^GIT_CONFIG_(?:KEY|VALUE)_(?:[0-9]|[1-5][0-9]|6[0-3])$/.test(name)) return true;
   // Only proxy placeholders can add provider-specific names. No loader/control vars.

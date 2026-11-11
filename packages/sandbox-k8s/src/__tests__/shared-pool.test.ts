@@ -49,9 +49,10 @@ function fixture() {
   return { pods, direct, custom, storage, changePod: () => { podUid = randomUUID(); },
     changeSandbox: () => { sandboxUid = randomUUID(); }, deleteClaim: () => { deleting = true; } };
 }
-function sessionPod(agent = 'agent-a', memory = false) {
+function sessionPod(agent = 'agent-a', memory = false, extraEnv?: Record<string, string>) {
   const pod = buildPodSpec('session', { sessionId: 'session-a', runnerBinary: '/runner.js',
     authToken: 'secret-session-token', runnerEndpoint: config.hostIpcUrl,
+    ...(extraEnv !== undefined ? { extraEnv } : {}),
     proxyConfig: { endpoint: 'http://proxy:8888', caCertPem: 'public-ca', envMap: { API_KEY: 'ax-cred:test' }, proxyAuthToken: 'e'.repeat(32) },
     mounts: [{ kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: agent,
       mountPath: '/files', readOnly: false }, ...(memory ? [{ kind: 'nfs' as const, role: 'memory' as const,
@@ -131,6 +132,19 @@ describe('shared Agent Sandbox pool', () => {
     expect(spec.volumes.find(v => v.name === 'tmp')).toEqual({ name: 'tmp', emptyDir: { sizeLimit: '10Gi' } });
     expect(spec.volumes.map(v => v.name)).not.toContain('agent');
     expect(spec.volumes.map(v => v.name)).not.toContain('ephemeral');
+  });
+  // open-session forwards AX_MCP_CLIENT_NAME (and AX_COMMIT_TRACE) as extraEnv.
+  // A pooled runner gets them only through the bootstrap, so the assignment
+  // must carry them AND still pass the allowlist: before the allowlist named
+  // AX_MCP_CLIENT_NAME, setting host.mcpClientName failed every pooled session.
+  it('delivers the forwarded host env (AX_MCP_CLIENT_NAME, AX_COMMIT_TRACE) through an accepted bootstrap', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace,
+      body: sessionPod('agent-a', false, { AX_MCP_CLIENT_NAME: 'opencode', AX_COMMIT_TRACE: '1' }) });
+    const { bootstrap } = vi.mocked(f.storage.assign).mock.calls[0]![1] as { bootstrap: BootstrapAssignment };
+    expect(BootstrapAssignmentSchema.safeParse(bootstrap).success).toBe(true);
+    expect(bootstrap.env.AX_MCP_CLIENT_NAME).toBe('opencode');
+    expect(bootstrap.env.AX_COMMIT_TRACE).toBe('1');
   });
   it.each(['pod', 'sandbox', 'claim'])('fails closed when the assigned %s changes', async kind => {
     const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);

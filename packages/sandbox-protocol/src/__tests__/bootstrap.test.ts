@@ -32,6 +32,21 @@ describe('bootstrap process capabilities', () => {
       expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_PROXY_TOKEN: token })).success).toBe(false);
     },
   );
+  // sandbox-k8s forwards AX_MCP_CLIENT_NAME on every runner pod when the host
+  // has it, and a pooled runner takes its env only from this assignment: left
+  // off the list, every pooled session failed with "shared bootstrap
+  // configuration invalid" as soon as an operator set host.mcpClientName.
+  it('accepts AX_MCP_CLIENT_NAME in the host shape', () => {
+    expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_MCP_CLIENT_NAME: 'opencode' })).success).toBe(true);
+    expect(allowedBootstrapEnv('AX_MCP_CLIENT_NAME', '@ax/mcp-client')).toBe(true);
+    expect(allowedBootstrapEnv('AX_MCP_CLIENT_NAME', 'x'.repeat(64))).toBe(true);
+  });
+  it.each(['', 'open code', 'open\ncode', 'opencodé', 'x'.repeat(65)])(
+    'rejects AX_MCP_CLIENT_NAME %j',
+    (value) => {
+      expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_MCP_CLIENT_NAME: value })).success).toBe(false);
+    },
+  );
   // TASK-994 — sandbox-k8s stamps AX_TRANSCRIPTS_ROOT on every runner pod, and a
   // pooled runner takes its env only from this assignment, so the name must be
   // listed. Only its one pod-private value is accepted: anything else could put
