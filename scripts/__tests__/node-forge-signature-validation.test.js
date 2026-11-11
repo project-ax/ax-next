@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 // Keep the CVE-2026-85393 regression after replacing our local backport with
-// node-forge 1.4.1. Test both consumers, including the preset's test tools,
-// in the unconditional scripts suite so a dependency regression fails CI.
+// node-forge 1.4.1 (now 1.4.3, which also fixes GHSA-w4xr-hqv8-ch44,
+// GHSA-6cv4-p8m7-4r25 and GHSA-j8rw-jp99-435v). Test both consumers,
+// including the preset's test tools, in the unconditional scripts suite so a
+// dependency regression fails CI.
 for (const consumer of ['packages/credential-proxy', 'presets/k8s']) {
   describe(`${consumer}: node-forge PKCS#1 signature validation`, () => {
     const require = createRequire(new URL(`../../${consumer}/package.json`, import.meta.url));
@@ -53,8 +55,8 @@ it('uses the pinned upstream node-forge fix without a local patch or audit excep
   const manifest = JSON.parse(readFileSync(`${root}/package.json`, 'utf8'));
   const proxy = JSON.parse(readFileSync(`${root}/packages/credential-proxy/package.json`, 'utf8'));
   const preset = JSON.parse(readFileSync(`${root}/presets/k8s/package.json`, 'utf8'));
-  expect(proxy.dependencies['node-forge']).toBe('1.4.1');
-  expect(preset.devDependencies['node-forge']).toBe('1.4.1');
+  expect(proxy.dependencies['node-forge']).toBe('1.4.3');
+  expect(preset.devDependencies['node-forge']).toBe('1.4.3');
   expect(manifest.pnpm.patchedDependencies).not.toHaveProperty('node-forge@1.4.0');
   // The braces exception (GHSA-vfj7-8cjw-p6xm, TASK-750) has its own guard in
   // braces-dev-only-audit-exception.test.js. The zod one (GHSA-mrhx-c7xc-m3w5) is
