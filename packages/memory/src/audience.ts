@@ -96,7 +96,15 @@ function requireSharedRows(out: unknown, hookName: string): void {
 /**
  * Whether `about` names a person: the speaker as the extractor writes it
  * (`user`), or anyone's per-person subject (`user:<id>`), however a model
- * cased or padded it. Trimmed and lowercased, it is `user` or starts `user:`.
+ * cased or padded it. Normalized (NFKC, so fullwidth lookalikes fold to ASCII;
+ * format characters such as zero-width space/joiner and BOM stripped;
+ * lowercased; trimmed), it is `user`, or `user` then optional whitespace then
+ * `:` (so `user :x` counts).
+ *
+ * Accepted residuals, deliberately NOT matched: other words for the speaker
+ * (`users`, `the user`, `me`, `I`), and the speaker named inside an object or
+ * value field, or by their real name. A false match loses a fact; a miss on
+ * those is a best-effort gap this check does not try to close.
  *
  * Deliberately BROAD, where `rewriteSpeaker` (`subject.ts`) is deliberately
  * narrow, because the two fail in opposite directions. A rewrite that matches
@@ -109,8 +117,8 @@ function requireSharedRows(out: unknown, hookName: string): void {
  * be shared, so every private turn would read it too.
  */
 export function isPersonSubject(about: string): boolean {
-  const subject = about.trim().toLowerCase();
-  return subject === SPEAKER_SUBJECT || subject.startsWith(`${SPEAKER_SUBJECT}:`);
+  const subject = about.normalize('NFKC').replace(/\p{Cf}/gu, '').toLowerCase().trim();
+  return subject === SPEAKER_SUBJECT || new RegExp(`^${SPEAKER_SUBJECT}\\s*:`).test(subject);
 }
 
 /**

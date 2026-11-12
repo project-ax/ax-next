@@ -519,6 +519,13 @@ const PERSON_SUBJECTS = [
   'User:Bob',
   `  user:${ALICE}  `,
   'user:',
+  // Lookalikes and invisibles a bare trim() keeps (NFKC + format-char strip).
+  '\uFF55\uFF53\uFF45\uFF52', // fullwidth "user"
+  'u\u200Bser', // zero-width space inside
+  '\uFEFFuser', // BOM prefix
+  'user\u2060:abc', // word joiner before the colon
+  'user :abc',
+  'USER\t:abc',
 ];
 /** Subjects that only look like one. A false match costs a fact, so these stay. */
 const NOT_PERSON_SUBJECTS = [
