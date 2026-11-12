@@ -201,6 +201,7 @@ describe('no brief, no check-in (TASK-908)', () => {
     const strangers: AgentContext[] = [
       makeAgentContext({ reqId: 'rA', sessionId: 's', agentId: 'agent', userId: 'owner', conversationId: 'conv-1' }),
       runCtx({ source: 'user' }),
+      runCtx({ source: 'external' }),
       runCtx({ agentId: 'other-agent' }),
       runCtx({ userId: 'teammate' }),
       runCtx({ conversationId: 'conv-other' }),
