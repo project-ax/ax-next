@@ -204,6 +204,15 @@ function validateStatement(input: unknown): FactStatementInput {
       message: "statement.sourceRole must be 'user' or 'assistant' when set",
     });
   }
+  // TASK-1091. A parity copy of the sqlite twin's check: the two spellings or
+  // nothing, never coerced — see there.
+  if (s.audience !== undefined && s.audience !== 'private' && s.audience !== 'shared') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: "statement.audience must be 'private' or 'shared' when set",
+    });
+  }
   if (s.kind !== undefined && !KINDS.includes(s.kind as FactKind)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -324,6 +333,7 @@ function validateConversationIdFilter(input: RecallInput): void {
 function validateRecallInput(input: RecallInput): {
   about?: string;
   ownerUserId?: string;
+  audience?: 'shared';
   slots?: string[];
   conversationId?: string;
   limit: number;
@@ -378,6 +388,16 @@ function validateRecallInput(input: RecallInput): {
       message: 'ownerUserId must be a non-empty string when set',
     });
   }
+  // Audience scope (TASK-1091) — a parity copy of the sqlite twin's check:
+  // `'shared'` is the only value, and anything else read as absent would widen
+  // a read the caller believed it had narrowed.
+  if (input.audience !== undefined && input.audience !== 'shared') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: "audience must be 'shared' when set",
+    });
+  }
   if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
     throw new PluginError({
       code: 'invalid-payload',
@@ -390,6 +410,7 @@ function validateRecallInput(input: RecallInput): {
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
     ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+    ...(input.audience !== undefined ? { audience: input.audience } : {}),
     ...(input.slots !== undefined ? { slots: [...input.slots] } : {}),
     ...(input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
@@ -543,6 +564,8 @@ function rowToFactRecord(row: FactRow): FactRecord {
     ...(row.source_turn_id !== null ? { sourceTurnId: row.source_turn_id } : {}),
     // TASK-648 — who spoke that turn; provenance only, echoed as stored.
     ...(row.source_role !== null ? { sourceRole: row.source_role } : {}),
+    // TASK-1091 — who could see that turn; echoed as stored, absent on NULL.
+    ...(row.audience !== null ? { audience: row.audience } : {}),
     ...(row.kind !== null ? { kind: row.kind } : {}),
   };
 }
@@ -826,6 +849,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
                     ? { sourceTurnId: statement.sourceTurnId }
                     : {}),
                   ...(statement.sourceRole !== undefined ? { sourceRole: statement.sourceRole } : {}),
+                  ...(statement.audience !== undefined ? { audience: statement.audience } : {}),
                   ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
                 });
 
@@ -844,6 +868,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
                     ? { sourceTurnId: statement.sourceTurnId }
                     : {}),
                   ...(statement.sourceRole !== undefined ? { sourceRole: statement.sourceRole } : {}),
+                  ...(statement.audience !== undefined ? { audience: statement.audience } : {}),
                 });
               }
               return written;
@@ -859,7 +884,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, ownerUserId, slots, conversationId, limit, activeOnly } =
+          const { about, ownerUserId, audience, slots, conversationId, limit, activeOnly } =
             validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
@@ -896,6 +921,12 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
             // behaviour we want: unowned is not provably yours, and a scope may
             // only ever fail closed (Invariant 5).
             if (ownerUserId !== undefined) query = query.where('owner_user_id', '=', ownerUserId);
+            // Audience scope (TASK-1091), in the WHERE for the owner scope's
+            // exact reason: `.limit()` has to count rows a shared reply may
+            // see, not a page of newer private rows cut before the filter ran.
+            // `=` is strict, so an unstamped row (`audience IS NULL`, which is
+            // every row older than the column) never answers a shared read.
+            if (audience !== undefined) query = query.where('audience', '=', audience);
             // Slot filter in the WHERE for the same reason the owner scope is:
             // a profile is ≤ ~10 rows out of a tenant that may hold thousands
             // of slot-less ones, so cutting the page first and filtering after

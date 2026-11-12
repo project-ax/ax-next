@@ -301,6 +301,83 @@ describe('@ax/memory-facts-sqlite — additive batch-column migration', () => {
     }
   });
 
+  // TASK-1091. The ALTER is not optional: `record` writes the column and every
+  // shared recall filters on it, so a pre-1091 file would fail both with "no
+  // such column: audience" — in production only.
+  it('a legacy database gains the audience column on open, and a second open is a no-op', () => {
+    seedLegacyDatabase();
+
+    const first = openDatabase(databasePath);
+    toClose.push(first.driver);
+    expect(columnsOf(first.driver).has('audience')).toBe(true);
+    // Additive, no backfill: the legacy row keeps NULL, which no shared read
+    // matches (see the next case).
+    const row = first.driver
+      .prepare(`SELECT audience FROM ${TABLE} WHERE id = ?`)
+      .get('legacy-1') as { audience: string | null };
+    expect(row.audience).toBeNull();
+    first.driver.close();
+
+    expect(() => {
+      const second = openDatabase(databasePath);
+      toClose.push(second.driver);
+    }).not.toThrow();
+  });
+
+  // Review focus: rows stored before the stamp existed must never answer a
+  // shared read. The contract pins "unstamped never matches" for rows this
+  // version wrote without a stamp; this pins it for a row a migrated FILE
+  // already held.
+  it("a migrated db's legacy rows never match a shared recall", async () => {
+    seedLegacyDatabase();
+    {
+      const driver = new BetterSqlite3(databasePath);
+      driver
+        .prepare(`UPDATE ${TABLE} SET agent_key = ? WHERE id = 'legacy-1'`)
+        .run(agentScopeKey({ agentId: 'a' }));
+      driver.close();
+    }
+
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    try {
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+        workspace: { rootPath: '/tmp' },
+      });
+      const out = await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+        statements: [
+          {
+            about: 'user',
+            relation: 'uses_tool',
+            value: 'Jira',
+            when: '2023-01-02T00:00:00.000Z',
+            audience: 'shared',
+          },
+        ],
+      });
+
+      const shared = await bus.call<
+        { about: string; limit: number; audience: 'shared' },
+        { statements: Array<{ id: string; audience?: string }> }
+      >('memory:facts:recall', ctx, { about: 'user', limit: 10, audience: 'shared' });
+      expect(shared.statements.map((s) => s.id)).toEqual([out.records[0]!.id]);
+
+      const unscoped = await bus.call<
+        { about: string; limit: number },
+        { statements: Array<{ id: string; audience?: string }> }
+      >('memory:facts:recall', ctx, { about: 'user', limit: 10 });
+      const legacy = unscoped.statements.find((s) => s.id === 'legacy-1');
+      expect(legacy).toBeDefined();
+      expect(legacy).not.toHaveProperty('audience');
+    } finally {
+      await plugin.shutdown?.();
+    }
+  });
+
   it('is idempotent — a second open does not throw "duplicate column name"', () => {
     seedLegacyDatabase();
 

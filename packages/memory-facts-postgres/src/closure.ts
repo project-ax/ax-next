@@ -31,6 +31,7 @@ export interface StatementToInsert {
   conversationId?: string;
   sourceTurnId?: string;
   sourceRole?: 'user' | 'assistant';
+  audience?: 'private' | 'shared';
   kind?: FactKind;
   transactionTime: string;
   /** The batch's idempotency key, or absent when the caller passed none. */
@@ -180,6 +181,7 @@ export async function insertWithSlotClosure(
       conversation_id: statement.conversationId ?? null,
       source_turn_id: statement.sourceTurnId ?? null,
       source_role: statement.sourceRole ?? null,
+      audience: statement.audience ?? null,
       kind: statement.kind ?? null,
       valid_start: statement.when,
       valid_end: INFINITY_SENTINEL,
