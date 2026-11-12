@@ -19,6 +19,7 @@ import { createChatOrchestratorPlugin } from '../index.js';
 import {
   withBrokerDefaults,
   identityToolScope,
+  proposalToolScope,
   sessionNeedsCredentialRotation,
   CHAT_START_SUBSCRIBER_TIMEOUT_MS,
   CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
@@ -1714,10 +1715,11 @@ describe('chat-orchestrator', () => {
     });
   }
 
-  async function invokeAndReadAllowedTools(
+  /** The tool scope frozen onto the session: what it lists, and what it hides. */
+  async function invokeAndReadToolScope(
     agent: { allowedTools: string[]; mcpConfigIds: string[] },
     ctx: ReturnType<typeof sourcedCtx>,
-  ): Promise<string[]> {
+  ): Promise<{ allowedTools: string[]; disallowedTools?: string[] }> {
     const mocks = buildMocks({
       agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved', ...agent } }),
     });
@@ -1732,7 +1734,14 @@ describe('chat-orchestrator', () => {
       message: { role: 'user', content: 'hi' },
     });
     expect(outcome.kind).toBe('complete');
-    return getConfig().allowedTools;
+    return getConfig() as { allowedTools: string[]; disallowedTools?: string[] };
+  }
+
+  async function invokeAndReadAllowedTools(
+    agent: { allowedTools: string[]; mcpConfigIds: string[] },
+    ctx: ReturnType<typeof sourcedCtx>,
+  ): Promise<string[]> {
+    return (await invokeAndReadToolScope(agent, ctx)).allowedTools;
   }
 
   it('TASK-983: a routine run of a non-wildcard agent sees reporting and full-update read tools', async () => {
@@ -1777,19 +1786,69 @@ describe('chat-orchestrator', () => {
 
   // TASK-1091 — an external turn is unattended, but it is not a routine run:
   // the routine-only tools stay a routine's (`=== 'routine'`, not "unattended").
+  // Nor is it offered the two proposal tools (the tests just below).
   it('TASK-1091: an external turn of a non-wildcard agent does not see routine_report', async () => {
     const allowedTools = await invokeAndReadAllowedTools(
       { allowedTools: ['file.read'], mcpConfigIds: [] },
       sourcedCtx('s4', 'external'),
     );
-    expect(allowedTools).toEqual([
-      'file.read',
-      'search_catalog',
-      'request_capability',
-      'skill_propose',
-      'connector_propose',
-    ]);
+    expect(allowedTools).toEqual(['file.read', 'search_catalog', 'request_capability']);
   });
+
+  // TASK-1091 — skill_propose and connector_propose act for the agent's people
+  // (a clean authored skill goes live with no human; a connector request lands
+  // in the admins' queue in the owner's name). An external turn, where the
+  // person present has no access to the agent, is offered neither: left out of
+  // a listed scope, hidden from a wildcard one. The host refuses both anyway;
+  // this is the catalog side. `=== 'external'` only: a routine keeps both,
+  // because the skill-reflection routine's whole job is proposing skills.
+  it('TASK-1091: an external turn of a non-wildcard agent is not offered either proposal tool, and needs nothing hidden', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s5', 'external'),
+    );
+    expect(scope.allowedTools).not.toContain('skill_propose');
+    expect(scope.allowedTools).not.toContain('connector_propose');
+    expect('disallowedTools' in scope).toBe(false);
+  });
+
+  it('TASK-1091: an external turn of a wildcard agent has both proposal tools in disallowedTools', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s6', 'external'),
+    );
+    expect(scope.allowedTools).toEqual([]); // still the wildcard
+    expect(scope.disallowedTools).toEqual(['skill_propose', 'connector_propose']);
+  });
+
+  it('TASK-1091: an external turn of an agent that lists a proposal tool itself has it hidden', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: ['file.read', 'skill_propose'], mcpConfigIds: [] },
+      sourcedCtx('s7', 'external'),
+    );
+    // Never by shrinking allowedTools (that could empty it into the wildcard).
+    expect(scope.allowedTools).toEqual(['file.read', 'skill_propose', 'search_catalog', 'request_capability']);
+    expect(scope.disallowedTools).toEqual(['skill_propose']);
+  });
+
+  it.each(['routine', 'user'] as const)(
+    'TASK-1091: a %s turn still sees both proposal tools, listed or wildcard',
+    async (source) => {
+      const listed = await invokeAndReadToolScope(
+        { allowedTools: ['file.read'], mcpConfigIds: [] },
+        sourcedCtx('s8', source),
+      );
+      expect(listed.allowedTools).toEqual(expect.arrayContaining(['skill_propose', 'connector_propose']));
+      expect('disallowedTools' in listed).toBe(false);
+
+      const wildcard = await invokeAndReadToolScope(
+        { allowedTools: [], mcpConfigIds: [] },
+        sourcedCtx('s9', source),
+      );
+      expect(wildcard.allowedTools).toEqual([]);
+      expect('disallowedTools' in wildcard).toBe(false);
+    },
+  );
 
   it('agents:resolve throwing a non-PluginError → terminated outcome with the bus-wrapped code', async () => {
     // The bus wraps non-PluginError throws as PluginError(code='unknown').
@@ -7149,6 +7208,108 @@ describe('withBrokerDefaults', () => {
       ...BROKER,
     ]);
   });
+
+  // TASK-1091 — an external turn (a person with no access to the agent is
+  // present) gets the read-only broker tools but neither proposal tool.
+  it('an external turn of a non-wildcard agent gets no skill_propose or connector_propose', () => {
+    expect(withBrokerDefaults(['file.read'], [], { external: true })).toEqual([
+      'file.read',
+      'search_catalog',
+      'request_capability',
+    ]);
+    expect(withBrokerDefaults([], ['mcp-1'], { external: true })).toEqual([
+      'search_catalog',
+      'request_capability',
+    ]);
+  });
+
+  it('an external turn of a wildcard agent is unchanged (proposalToolScope hides them there)', () => {
+    expect(withBrokerDefaults([], [], { external: true })).toEqual([]);
+  });
+
+  it('an external turn keeps a proposal tool the agent lists itself (it is hidden, never removed)', () => {
+    expect(withBrokerDefaults(['skill_propose'], [], { external: true })).toEqual([
+      'skill_propose',
+      'search_catalog',
+      'request_capability',
+    ]);
+  });
+
+  it('external: false, and a routine run, keep both proposal tools', () => {
+    expect(withBrokerDefaults(['file.read'], [], { external: false })).toEqual(['file.read', ...BROKER]);
+    expect(withBrokerDefaults(['file.read'], [], { routineRun: true, external: false })).toEqual([
+      'file.read',
+      ...BROKER,
+      'routine_report',
+      'routine_read_update',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposalToolScope — TASK-1091. An external turn is not offered skill_propose
+// or connector_propose. withBrokerDefaults leaves them out of a listed scope;
+// this hides them where they would otherwise still show — a wildcard agent's
+// whole catalog, or an agent that lists one itself — through disallowedTools,
+// never by shrinking allowedTools. Any other turn is untouched. The
+// integration tests next to 'TASK-908' prove it is wired into session-open.
+// ---------------------------------------------------------------------------
+describe('proposalToolScope (TASK-1091)', () => {
+  const WILDCARD = { allowedTools: [] as string[], mcpConfigIds: [] as string[] };
+  const BASH_ONLY = { allowedTools: ['Bash'], mcpConfigIds: [] as string[] };
+  const EXTERNAL = { external: true };
+  const NOT_EXTERNAL = { external: false };
+
+  it('an external turn of a wildcard agent hides both', () => {
+    expect(proposalToolScope(WILDCARD, [], undefined, EXTERNAL)).toEqual([
+      'skill_propose',
+      'connector_propose',
+    ]);
+  });
+
+  it('any other turn of a wildcard agent hides nothing', () => {
+    expect(proposalToolScope(WILDCARD, [], undefined, NOT_EXTERNAL)).toBeUndefined();
+  });
+
+  it('an external turn of a listed agent that names neither needs nothing hidden', () => {
+    expect(
+      proposalToolScope(BASH_ONLY, ['Bash', 'search_catalog', 'request_capability'], undefined, EXTERNAL),
+    ).toBeUndefined();
+  });
+
+  it('an external turn hides a proposal tool the agent lists itself', () => {
+    const agent = { allowedTools: ['Bash', 'connector_propose'], mcpConfigIds: [] as string[] };
+    expect(proposalToolScope(agent, ['Bash', 'connector_propose'], undefined, EXTERNAL)).toEqual([
+      'connector_propose',
+    ]);
+  });
+
+  it('keeps an existing disallowedTools first and adds no duplicate', () => {
+    expect(proposalToolScope(WILDCARD, [], ['Bash', 'skill_propose'], EXTERNAL)).toEqual([
+      'Bash',
+      'skill_propose',
+      'connector_propose',
+    ]);
+  });
+
+  it('returns disallowedTools unchanged when it hides nothing', () => {
+    expect(proposalToolScope(WILDCARD, [], ['x'], NOT_EXTERNAL)).toEqual(['x']);
+    expect(proposalToolScope(BASH_ONLY, ['Bash'], ['x'], EXTERNAL)).toEqual(['x']);
+  });
+
+  it('treats an mcpConfigIds-only agent as non-wildcard', () => {
+    const agent = { allowedTools: [] as string[], mcpConfigIds: ['mcp-1'] };
+    expect(proposalToolScope(agent, ['search_catalog'], undefined, EXTERNAL)).toBeUndefined();
+  });
+
+  it('does not mutate its inputs', () => {
+    const allowed = ['Bash', 'skill_propose'];
+    const denied = ['x'];
+    proposalToolScope(BASH_ONLY, allowed, denied, EXTERNAL);
+    proposalToolScope(WILDCARD, [], denied, EXTERNAL);
+    expect(allowed).toEqual(['Bash', 'skill_propose']);
+    expect(denied).toEqual(['x']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -8445,7 +8606,15 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 
       const cfg = counters.openInputs[0]!.owner.agentConfig;
       expect(cfg.allowedTools).toEqual([]); // still the wildcard
-      expect(cfg.disallowedTools).toEqual(['update_identity', 'complete_bootstrap']);
+      // The identity tools, then the two proposal tools an external turn is
+      // not offered either (proposalToolScope). A routine's wildcard catalog,
+      // above, hides only the identity tools.
+      expect(cfg.disallowedTools).toEqual([
+        'update_identity',
+        'complete_bootstrap',
+        'skill_propose',
+        'connector_propose',
+      ]);
     });
 
     it('a wildcard agent keeps its catalog and hides complete_bootstrap after the tool-policy denies', async () => {
