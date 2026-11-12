@@ -1,4 +1,10 @@
-import { PluginError, type AgentContext, type HookBus, type ToolDescriptor } from '@ax/core';
+import {
+  PluginError,
+  isAttendedTurn,
+  type AgentContext,
+  type HookBus,
+  type ToolDescriptor,
+} from '@ax/core';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
@@ -18,9 +24,12 @@ import {
 //
 // Both act on `ctx.agentId` — the session's agent, stamped by the host from
 // the session record — and never on an id from the tool input (an extra input
-// key is refused). Both refuse an unattended run (`ctx.source === 'routine'`:
-// a routine or a task check-in, no person present); the orchestrator also
-// keeps them out of such a session's catalog, so this is defence in depth.
+// key is refused). Both refuse any turn that isn't attended
+// (`!isAttendedTurn(ctx)`): a routine or a task check-in, where no person is
+// present, and an external turn (TASK-1091), where the person present has no
+// access to the agent and so doesn't get to change who it is. The
+// orchestrator also keeps them out of such a session's catalog, so this is
+// defence in depth.
 //
 // They call the `agents:identity:*` hooks on the bus — the same registered
 // surface, checks and `returns` schemas a person's editor goes through — so
@@ -238,7 +247,7 @@ async function runUpdateIdentity(
   ctx: AgentContext,
   call: ToolCallInput | undefined,
 ): Promise<UpdateIdentityResult> {
-  if (ctx.source === 'routine') return notSaved('not-available');
+  if (!isAttendedTurn(ctx)) return notSaved('not-available');
   const request = parseUpdateInput(call?.input);
   if (typeof request === 'string') return notSaved(request);
   const { section } = request;
@@ -332,7 +341,7 @@ async function runCompleteBootstrap(
   ctx: AgentContext,
   call: ToolCallInput | undefined,
 ): Promise<CompleteBootstrapResult> {
-  if (ctx.source === 'routine') return completeFailure('not-available');
+  if (!isAttendedTurn(ctx)) return completeFailure('not-available');
   const input = call?.input;
   // No input is the only input: absent, null or {}.
   if (!(input === undefined || input === null || (isPlainObject(input) && Object.keys(input).length === 0))) {

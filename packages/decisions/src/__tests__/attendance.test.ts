@@ -178,6 +178,32 @@ describe('attendanceFor', () => {
     expect(await attendanceFor(bus, ctx(), 'conv-a')).toBe('unattended');
     expect(await attendanceFor(bus, ctx(), 'conv-b')).toBe('unattended');
   });
+
+  it('an external turn is unattended even in a web conversation', async () => {
+    // TASK-1091. The person in an external turn has no access to the agent,
+    // so they can't approve anything: the hold waits in Today for the turn's
+    // user, and the host replays the call once they say yes. That is a fact
+    // about the TURN. One conversation can mix it with the owner's own turns,
+    // so no origin can express it.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-web': { origin: 'web' } });
+    // The channel alone would say someone is watching.
+    expect(await attendanceFor(bus, ctx(), 'conv-web')).toBe('attended');
+    expect(await attendanceFor(bus, ctx({ source: 'external' }), 'conv-web')).toBe('unattended');
+  });
+
+  it("a routine turn in a web conversation stays attended: routine attendance is the channel's (AW-6)", async () => {
+    // Pins the deliberate `=== 'external'` (not `!isAttendedTurn(ctx)`): a
+    // scheduled fire into a thread somebody is watching is still watched.
+    const bus = new HookBus();
+    withConversations(bus, {
+      'conv-web': { origin: 'web' },
+      'conv-tick': { origin: 'routine' },
+    });
+    expect(await attendanceFor(bus, ctx({ source: 'routine' }), 'conv-web')).toBe('attended');
+    expect(await attendanceFor(bus, ctx({ source: 'routine' }), 'conv-tick')).toBe('unattended');
+    expect(await attendanceFor(bus, ctx({ source: 'user' }), 'conv-web')).toBe('attended');
+  });
 });
 
 describe('conversationChannel', () => {

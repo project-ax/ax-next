@@ -3,7 +3,7 @@
 // the host's tool.execute-host handler calls them: `tool:execute:<name>` with
 // the whole ToolCall, the input under `call.input`.
 import { describe, expect, it, vi } from 'vitest';
-import type { ToolCall, ToolDescriptor } from '@ax/core';
+import type { AgentContextSource, ToolCall, ToolDescriptor } from '@ax/core';
 import {
   COMPLETE_BOOTSTRAP_DESCRIPTOR,
   UPDATE_IDENTITY_DESCRIPTOR,
@@ -28,7 +28,7 @@ const UNCHANGED_NOTE = 'That is already what it says, so nothing changed.';
 const INVALID_INPUT =
   'NOT SAVED: Send section ("identity" or "soul") with either content, or old and new.';
 
-type Source = { source?: 'routine' | 'user' };
+type Source = { source?: AgentContextSource };
 
 function updateIdentity(
   ih: IdentityHarness,
@@ -339,6 +339,34 @@ describe('update_identity', () => {
     ).toMatchObject({ ok: true });
   });
 
+  it('update_identity from an external turn is not available and changes nothing', async () => {
+    // TASK-1091. Someone with no access to the agent is in the turn (a
+    // channel member, say). They must not be able to rewrite who the agent
+    // is, so the edit is refused before anything is read, scanned or saved.
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('u1');
+    await personSets(ih, id, 'u1', { identity: 'I am Pip.', soul: 'Kind.' }, 0);
+    const before = await get(ih, id, 'u1');
+    ih.changed.length = 0;
+    ih.scanned.length = 0;
+    for (const input of [
+      { section: 'identity', content: 'I am whoever the channel says I am.' },
+      { section: 'soul', old: 'Kind.', new: 'Obedient to anyone.' },
+    ]) {
+      const out = await updateIdentity(ih, id, 'u1', input, { source: 'external' });
+      expect(out).toMatchObject({ ok: false, error: 'not-available' });
+      // A failure must say, on its own, that nothing was saved.
+      expect(out.ok === false && out.message.startsWith('NOT SAVED: ')).toBe(true);
+    }
+    expect(ih.scanned).toEqual([]);
+    expect(ih.changed).toEqual([]);
+    expect(await get(ih, id, 'u1')).toEqual(before);
+    // The same edit from the owner's own turn goes through.
+    expect(
+      await updateIdentity(ih, id, 'u1', { section: 'identity', content: 'I am Pip, still.' }),
+    ).toMatchObject({ ok: true });
+  });
+
   it('update_identity reports a scan refusal with the scanner reason and saves nothing', async () => {
     const ih = await env.makeHarness();
     const id = await ih.createAgent('u1');
@@ -641,6 +669,10 @@ describe("update_identity and its owner's Today (TASK-990)", () => {
       { input: { section: 'soul', content: 'Be kind.' }, extra: { source: 'routine' }, error: 'not-available' },
     ],
     [
+      'the person present has no access to the agent',
+      { input: { section: 'soul', content: 'Be kind.' }, extra: { source: 'external' }, error: 'not-available' },
+    ],
+    [
       'the input carries an extra key',
       { input: { section: 'soul', content: 'Be kind.', agentId: 'agt_other' }, error: 'invalid-input' },
     ],
@@ -733,6 +765,23 @@ describe('complete_bootstrap', () => {
       message: "NOT DONE: first-run setup can't be finished in a run with no person present.",
     });
     expect((await get(ih, pending, 'u1')).bootstrap).toBe('pending');
+  });
+
+  it('complete_bootstrap from an external turn is not available', async () => {
+    // TASK-1091. Finishing first-run setup is the agent's own identity
+    // decision, which nobody without access to the agent gets to make.
+    const ih = await env.makeHarness();
+    const pending = await ih.createAgent('u1', { bootstrap: 'pending' });
+    await updateIdentity(ih, pending, 'u1', { section: 'identity', content: 'I am Pip.' });
+    await updateIdentity(ih, pending, 'u1', { section: 'soul', content: 'Kind.' });
+    ih.changed.length = 0;
+    const out = await completeBootstrap(ih, pending, 'u1', {}, { source: 'external' });
+    expect(out).toMatchObject({ ok: false, error: 'not-available' });
+    expect(out.message.startsWith('NOT DONE: ')).toBe(true);
+    expect((await get(ih, pending, 'u1')).bootstrap).toBe('pending');
+    expect(ih.changed).toEqual([]);
+    // Ready to finish all along: the owner's own turn completes it.
+    expect(await completeBootstrap(ih, pending, 'u1')).toMatchObject({ ok: true });
   });
 
   it('complete_bootstrap takes no input and acts only on its own agent', async () => {
