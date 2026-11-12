@@ -3,6 +3,8 @@ import {
   makeReqId,
   createLogger,
   makeAgentContext,
+  isAttendedTurn,
+  audienceOf,
   isOwnerlessId,
   ownerlessIdFor,
   OWNERLESS_ID_PREFIX,
@@ -437,5 +439,35 @@ describe('owner-less ids', () => {
     // must not be locked out of its own workspace.
     expect(isOwnerlessId(`agt_x-${OWNERLESS_ID_PREFIX}suffix`)).toBe(false);
     expect(isOwnerlessId(` ${OWNERLESS_ID_PREFIX}s-1`)).toBe(false);
+  });
+});
+
+describe('external source + audience (TASK-1091)', () => {
+  const base = { sessionId: 's', agentId: 'a', userId: 'u' };
+
+  it('makeAgentContext round-trips source "external" and audience "shared"', () => {
+    const ctx = makeAgentContext({ ...base, source: 'external', audience: 'shared' });
+    expect(ctx.source).toBe('external');
+    expect(ctx.audience).toBe('shared');
+  });
+
+  it('omitting audience leaves the key absent', () => {
+    const ctx = makeAgentContext(base);
+    expect('audience' in ctx).toBe(false);
+  });
+
+  it('isAttendedTurn fails closed', () => {
+    expect(isAttendedTurn({})).toBe(true);
+    expect(isAttendedTurn({ source: 'user' })).toBe(true);
+    expect(isAttendedTurn({ source: 'routine' })).toBe(false);
+    expect(isAttendedTurn({ source: 'external' })).toBe(false);
+    expect(isAttendedTurn({ source: 'bogus' as never })).toBe(false);
+  });
+
+  it('audienceOf fails closed', () => {
+    expect(audienceOf({})).toBe('private');
+    expect(audienceOf({ audience: 'private' })).toBe('private');
+    expect(audienceOf({ audience: 'shared' })).toBe('shared');
+    expect(audienceOf({ audience: 'public' as never })).toBe('shared');
   });
 });

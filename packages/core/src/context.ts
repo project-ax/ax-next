@@ -192,6 +192,36 @@ export interface WorkspaceContext {
   readonly rootPath: string;
 }
 
+export type AgentContextSource = 'routine' | 'user' | 'external';
+export type AgentContextAudience = 'private' | 'shared';
+
+/** True only when a present owner is driving the turn. Fails closed. */
+export function isAttendedTurn(ctx: Pick<AgentContext, 'source'>): boolean {
+  const source: AgentContextSource | undefined = ctx.source;
+  switch (source) {
+    case undefined:
+    case 'user':
+      return true;
+    case 'routine':
+    case 'external':
+      return false;
+    default: {
+      const _exhaustive: never = source;
+      void _exhaustive;
+      return false;
+    }
+  }
+}
+
+/** `'private'` only when absent or exactly `'private'`; else `'shared'`. */
+export function audienceOf(
+  ctx: Pick<AgentContext, 'audience'>,
+): AgentContextAudience {
+  return ctx.audience === undefined || ctx.audience === 'private'
+    ? 'private'
+    : 'shared';
+}
+
 export interface AgentContext {
   readonly reqId: string;
   readonly sessionId: string;
@@ -220,10 +250,26 @@ export interface AgentContext {
    * `memory:pre-capture` subscriber refuses (a task check-in's conversation,
    * which @ax/routines refuses whatever the pass's source, TASK-908).
    *
+   * `'external'`: a person is present who has no access to the agent. The
+   * turn runs as a real user who answers for it (for a channel agent,
+   * whoever connected the channel). It is unattended (see
+   * `isAttendedTurn`), and may make no identity or skill edits.
+   *
    * Origin label only — no transport/storage vocabulary, so it stays
    * transport-agnostic per Invariant 1.
    */
-  readonly source?: 'routine' | 'user';
+  readonly source?: AgentContextSource;
+  /**
+   * Whose memory this turn may read and write. `'private'` (or absent) is
+   * the owner's own conversation. `'shared'` is a turn other people are
+   * part of (e.g. a channel): it recalls only shared statements and stores
+   * no speaker facts. Host-stamped only: never taken from an IPC payload.
+   * It decides memory, not approvals; instructions and files are not
+   * governed by it. Must stay constant for a conversation, because memory
+   * extracts a conversation in batches under the latest turn's audience.
+   * An unknown value is treated as `'shared'` (see `audienceOf`).
+   */
+  readonly audience?: AgentContextAudience;
   /**
    * A short, human-authored label naming what initiated this work — a
    * scheduled @ax/routines fire's own `name` (e.g. "Morning email pass"),
@@ -251,7 +297,9 @@ export interface MakeAgentContextOptions {
   /** Optional. See `AgentContext.conversationId`. */
   conversationId?: string;
   /** Optional. See `AgentContext.source`. */
-  source?: 'routine' | 'user';
+  source?: AgentContextSource;
+  /** Optional. See `AgentContext.audience`. */
+  audience?: AgentContextAudience;
   /** Optional. See `AgentContext.triggerLabel`. */
   triggerLabel?: string;
   logger?: Logger;
@@ -273,6 +321,7 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
       ? { conversationId: opts.conversationId }
       : {}),
     ...(opts.source !== undefined ? { source: opts.source } : {}),
+    ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
     ...(opts.triggerLabel !== undefined ? { triggerLabel: opts.triggerLabel } : {}),
     logger,
     state: new Map(),
