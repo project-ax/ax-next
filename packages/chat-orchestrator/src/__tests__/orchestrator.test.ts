@@ -6,6 +6,7 @@ import {
   createLogger,
   reject,
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+  type AgentContextAudience,
   type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
@@ -7340,6 +7341,8 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
      * `'external'` (TASK-1091) one whose person present has no access.
      */
     source?: AgentContextSource;
+    /** Host-set: who sees the replies (TASK-1091). Absent means private. */
+    audience?: AgentContextAudience;
     /** When given, every log line the turn writes is pushed here. */
     lines?: string[];
   }) {
@@ -7350,6 +7353,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       userId: 'test-user',
       ...(o.conversationId !== undefined ? { conversationId: o.conversationId } : {}),
       ...(o.source !== undefined ? { source: o.source } : {}),
+      ...(o.audience !== undefined ? { audience: o.audience } : {}),
       reqId: o.reqId,
       logger: createLogger({
         reqId: o.reqId,
@@ -7376,9 +7380,15 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
   }
 
   // What the orchestrator handed `sandbox:open-session` — the part these tests
-  // read (the frozen config and the conversation the runner resumes).
+  // read (the frozen config, the conversation the runner resumes, and the
+  // turn mode the session record is written with — TASK-1091).
   interface KeepaliveOpenInput {
-    owner: { agentConfig: AgentConfig; conversationId?: string };
+    owner: {
+      agentConfig: AgentConfig;
+      conversationId?: string;
+      source?: AgentContextSource;
+      audience?: AgentContextAudience;
+    };
   }
 
   // A keepalive harness: one conversation, one warm sandbox handle, a
@@ -8618,6 +8628,161 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       );
       expect('disallowedTools' in cfg).toBe(false);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1091 — a warm session serves only turns of its own mode. The runner's
+  // rebuilt ctx reads `source` and `audience` from the session record, which
+  // is written once at spawn, so a turn queued into a session spawned for
+  // another mode runs in THAT mode: an external turn would get the owner's
+  // identity tools and attended approvals, and a private turn's words would be
+  // captured as shared. An idle session of another mode is retired
+  // (`turn-mode-changed`) and the turn spawns fresh; a busy one refuses the
+  // turn (`conversation:busy`), and nothing is queued, spawned or terminated.
+  // -------------------------------------------------------------------------
+  describe('TASK-1091: a warm session serves only turns of its own mode', () => {
+    type Mode = { source?: AgentContextSource; audience?: AgentContextAudience };
+
+    /** One turn on conv-1 in `mode`, ended by its runner turn-end. */
+    async function modeTurn(
+      h: { bus: HookBus },
+      sessionId: string,
+      reqId: string,
+      mode: Mode,
+      lines?: string[],
+    ) {
+      fireTurnEnd(h.bus, sessionId, reqId);
+      return h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({
+          sessionId,
+          conversationId: 'conv-1',
+          reqId,
+          ...mode,
+          ...(lines !== undefined ? { lines } : {}),
+        }),
+        { message: { role: 'user', content: reqId } },
+      );
+    }
+
+    /** The `stale_session_respawn` reason the turn logged, if any. */
+    function respawnReason(lines: string[]): unknown {
+      return lines
+        .map((l) => JSON.parse(l) as { msg: string; reason?: unknown })
+        .find((r) => r.msg === 'stale_session_respawn')?.reason;
+    }
+
+    /** A `session:queue-work` stub recording each queued user message. */
+    function queueRecorder() {
+      const queued: Array<{ sessionId: string; reqId: string }> = [];
+      const service: ServiceHandler = async (_c, input: unknown) => {
+        const i = input as { sessionId: string; entry: { type: string; reqId?: string } };
+        if (i.entry.type === 'user-message') {
+          queued.push({ sessionId: i.sessionId, reqId: i.entry.reqId ?? '?' });
+        }
+        return { cursor: 0 };
+      };
+      return { queued, service };
+    }
+
+    it('an external turn on a conversation whose warm session was spawned for its owner retires it and spawns fresh', async () => {
+      const { h, counters } = await makeKeepaliveHarness();
+      const lines: string[] = [];
+
+      await modeTurn(h, 's-1', 'req-1', {});
+      const outcome = await modeTurn(h, 's-2', 'req-2', { source: 'external' }, lines);
+
+      expect(outcome.kind).toBe('complete');
+      expect(counters.opens).toBe(2);
+      expect(counters.terminates).toContain('s-1');
+      expect('source' in counters.openInputs[0]!.owner).toBe(false);
+      // The fresh session's record is written for the external turn.
+      expect(counters.openInputs[1]!.owner.source).toBe('external');
+      expect(respawnReason(lines)).toBe('turn-mode-changed');
+    });
+
+    it('a shared turn on a conversation whose warm session is private retires it', async () => {
+      const { h, counters } = await makeKeepaliveHarness();
+      const lines: string[] = [];
+
+      await modeTurn(h, 's-1', 'req-1', {});
+      const outcome = await modeTurn(h, 's-2', 'req-2', { audience: 'shared' }, lines);
+
+      expect(outcome.kind).toBe('complete');
+      expect(counters.opens).toBe(2);
+      expect(counters.terminates).toContain('s-1');
+      expect(counters.openInputs[1]!.owner.audience).toBe('shared');
+      expect('source' in counters.openInputs[1]!.owner).toBe(false);
+      expect(respawnReason(lines)).toBe('turn-mode-changed');
+    });
+
+    it('a second external turn routes into the external warm session', async () => {
+      const q = queueRecorder();
+      const { h, counters } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
+      const lines: string[] = [];
+      const external: Mode = { source: 'external', audience: 'shared' };
+
+      await modeTurn(h, 's-1', 'req-1', external);
+      const outcome = await modeTurn(h, 's-2', 'req-2', external, lines);
+
+      expect(outcome.kind).toBe('complete');
+      expect(counters.opens).toBe(1);
+      expect(counters.terminates).toEqual([]);
+      expect(q.queued).toEqual([
+        { sessionId: 's-1', reqId: 'req-1' },
+        { sessionId: 's-1', reqId: 'req-2' },
+      ]);
+      expect(respawnReason(lines)).toBeUndefined();
+    });
+
+    it.each([
+      ['an external turn while the owner’s turn runs', {}, { source: 'external' }],
+      ['the owner’s turn while an external, shared turn runs', { source: 'external', audience: 'shared' }, {}],
+      ['a shared turn while a private turn runs', {}, { audience: 'shared' }],
+    ] as ReadonlyArray<readonly [string, Mode, Mode]>)(
+      'a different-mode turn while the session is busy ends terminated conversation:busy and queues nothing: %s',
+      async (_label, first, second) => {
+        const q = queueRecorder();
+        const { h, counters } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
+        const turnErrors: unknown[] = [];
+        const ends: unknown[] = [];
+        h.bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
+          turnErrors.push(p);
+          return undefined;
+        });
+        h.bus.subscribe('chat:end', 'obs', async (_c, p: unknown) => {
+          ends.push(p);
+          return undefined;
+        });
+
+        // The first turn spawns s-1 and stays in flight (no turn-end yet).
+        const firstTurn = h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1', ...first }),
+          { message: { role: 'user', content: 'first' } },
+        );
+        await vi.waitFor(() => expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]));
+
+        const outcome = await h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-2', conversationId: 'conv-1', reqId: 'req-2', ...second }),
+          { message: { role: 'user', content: 'second' } },
+        );
+
+        const busy = { kind: 'terminated', reason: 'conversation:busy' };
+        expect(outcome).toEqual(busy);
+        expect(turnErrors).toEqual([{ reqId: 'req-2', reason: 'conversation:busy' }]);
+        expect(ends).toEqual([{ outcome: busy }]);
+        // Nothing queued, spawned or terminated.
+        expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]);
+        expect(counters.opens).toBe(1);
+        expect(counters.terminates).toEqual([]);
+
+        // The running turn is untouched and still completes.
+        fireTurnEnd(h.bus, 's-1', 'req-1');
+        expect((await firstTurn).kind).toBe('complete');
+      },
+    );
   });
 });
 

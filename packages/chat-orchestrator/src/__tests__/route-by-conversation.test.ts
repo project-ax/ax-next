@@ -6,6 +6,8 @@ import {
   makeAgentContext,
   createLogger,
   type Logger,
+  type AgentContextAudience,
+  type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -192,6 +194,9 @@ function ctxWith(opts: {
   conversationId?: string;
   reqId?: string;
   logger?: Logger;
+  /** TASK-1091 — the host-stamped turn mode. Absent means `'user'`, `'private'`. */
+  source?: AgentContextSource;
+  audience?: AgentContextAudience;
 }) {
   return makeAgentContext({
     sessionId: opts.sessionId ?? 'fresh-session',
@@ -199,6 +204,8 @@ function ctxWith(opts: {
     userId: 'test-user',
     ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
     ...(opts.reqId !== undefined ? { reqId: opts.reqId } : {}),
+    ...(opts.source !== undefined ? { source: opts.source } : {}),
+    ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
     logger: opts.logger ?? createLogger({ reqId: 'orch-test', writer: () => undefined }),
   });
 }
@@ -375,6 +382,128 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
         payload: { role: 'user', content: 'follow-up' },
       },
     ]);
+  });
+
+  // TASK-1091 — scenario 3 with a non-default turn. This host didn't open
+  // s-existing (a restart, or another path), so it has no record of the mode
+  // that session was spawned for, and the session record would rebuild every
+  // runner call as THAT mode. Only a default turn keeps scenario 3's routing;
+  // any other turn fails closed: the idle session is retired and the turn
+  // spawns fresh with its own mode.
+  it.each([
+    ['an external turn', { source: 'external' }],
+    ['a shared turn', { audience: 'shared' }],
+  ] as ReadonlyArray<readonly [string, { source?: AgentContextSource; audience?: AgentContextAudience }]>)(
+    'TASK-1091: %s never routes into a live session this host did not open',
+    async (_label, mode) => {
+      const mocks = buildMocks({
+        conversations: { 'conv-2': { activeSessionId: 's-existing' } },
+        liveSessions: new Set(['s-existing']),
+      });
+      const terminated: string[] = [];
+      mocks.services['session:terminate'] = async (_ctx, input: unknown) => {
+        terminated.push((input as { sessionId: string }).sessionId);
+        return {};
+      };
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [
+          createChatOrchestratorPlugin({
+            runnerBinaries: { 'claude-sdk': '/irrelevant' },
+            chatTimeoutMs: 5_000,
+          }),
+        ],
+      });
+
+      const expected: AgentOutcome = { kind: 'complete', messages: [] };
+      arrangeImmediateEnd(h.bus, expected, 's-mode', 'req-M');
+
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-mode', conversationId: 'conv-2', reqId: 'req-M', ...mode }),
+        { message: { role: 'user', content: 'follow-up' } },
+      );
+      expect(outcome).toEqual(expected);
+      // Retired, not routed into: a fresh sandbox, and the old one terminated.
+      expect(mocks.trace.sandboxOpen).toBe(1);
+      expect(terminated).toEqual(['s-existing']);
+      expect(mocks.trace.queueWork).toEqual([
+        { sessionId: 's-mode', reqId: 'req-M', payload: { role: 'user', content: 'follow-up' } },
+      ]);
+      // The fresh session's record is written with the turn's own mode.
+      const openInput = mocks.trace.openSessionInputs[0] as {
+        owner: { source?: string; audience?: string };
+      };
+      expect({ source: openInput.owner.source, audience: openInput.owner.audience }).toEqual({
+        source: mode.source,
+        audience: mode.audience,
+      });
+    },
+  );
+
+  // TASK-1091 — a session is alive from `session:create`, INSIDE
+  // `sandbox:open-session`, and the conversation can already point at it (a
+  // retire binds the new session first). A turn of another mode that arrives
+  // while it is still opening must see the mode it is opening for: queueing
+  // the owner's private words into a shared, external session would run them
+  // in that session's mode.
+  it('TASK-1091: a turn of another mode that arrives while the session is still opening is refused, not queued into it', async () => {
+    const conversations: Record<string, { activeSessionId: string | null }> = {
+      'conv-o': { activeSessionId: null },
+    };
+    const liveSessions = new Set<string>();
+    const busRef: { current: HookBus | null } = { current: null };
+    let ownerOutcome: AgentOutcome | undefined;
+    const mocks = buildMocks({
+      conversations,
+      liveSessions,
+      openSession: async (_ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        // What the real open has done by now: the session exists and the
+        // conversation is bound to it.
+        liveSessions.add(sessionId);
+        conversations['conv-o']!.activeSessionId = sessionId;
+        // The owner's turn arrives while this one is still opening.
+        ownerOutcome = await busRef.current!.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-owner', conversationId: 'conv-o', reqId: 'req-owner' }),
+          { message: { role: 'user', content: 'mine' } },
+        );
+        arrangeImmediateEnd(busRef.current!, { kind: 'complete', messages: [] }, sessionId, 'req-ext');
+        return {
+          runnerEndpoint: 'unix:///tmp/mock.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({
+        sessionId: 's-ext',
+        conversationId: 'conv-o',
+        reqId: 'req-ext',
+        source: 'external',
+        audience: 'shared',
+      }),
+      { message: { role: 'user', content: 'from the channel' } },
+    );
+
+    expect(outcome.kind).toBe('complete');
+    expect(ownerOutcome).toEqual({ kind: 'terminated', reason: 'conversation:busy' });
+    // Only the external turn's own message reached the opening session.
+    expect(mocks.trace.queueWork.map((q) => q.reqId)).toEqual(['req-ext']);
+    expect(mocks.trace.sandboxOpen).toBe(1);
   });
 
   // Slice 2c — an agent-proposed connector goes to the workspace admins' queue,

@@ -2,7 +2,7 @@
  * Every terminated turn surfaces itself (TASK-498).
  *
  * WHY THIS IS A SOURCE SCAN, WHICH IS NOT THIS REPO'S HABIT AND NEEDS AN
- * ARGUMENT. `runAgentInvoke` has eighteen places where it builds a `terminated`
+ * ARGUMENT. `runAgentInvoke` has nineteen places where it builds a `terminated`
  * outcome and fires `chat:end`, one per way a turn can fail before or during
  * the run. Each is supposed to call `fireTurnError` first, because `chat:end`
  * is the AUDIT record and `chat:turn-error` is the only thing the browser ever
@@ -17,7 +17,7 @@
  * asked for the mutant that proves the invariant is tested rather than merely
  * observed: deleting `fireTurnError` from the `user-attachments-failed` early
  * return. It SURVIVED the whole orchestrator suite. Every one of these paths
- * needs its own harness to reach behaviourally, and a battery of eighteen
+ * needs its own harness to reach behaviourally, and a battery of nineteen
  * setup-specific fixtures would be a lot of machinery to assert one sentence
  * about shape.
  *
@@ -118,7 +118,7 @@ describe('terminated turns surface themselves', () => {
       the whole point.
     */
     const all = exits();
-    expect(all.length).toBe(18);
+    expect(all.length).toBe(19); // TASK-1091 added `conversation:busy`
     expect(all.every((e) => e.terminated)).toBe(true);
   });
 });

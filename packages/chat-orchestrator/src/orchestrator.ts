@@ -1650,6 +1650,22 @@ export function sessionNeedsCredentialRotation(
   return Object.values(creds).some((c) => c.kind !== 'api-key');
 }
 
+/**
+ * TASK-1091 — a turn's mode: who is present (`source`) and who sees the
+ * replies (`audience`), defaults filled in. A session is spawned for exactly
+ * one mode, because the session record carries both and every runner call's
+ * ctx is rebuilt from it.
+ */
+interface SpawnMode {
+  source: AgentContextSource;
+  audience: AgentContextAudience;
+}
+
+/** Absent `source` is `'user'`; `audienceOf` fails closed (unknown → `'shared'`). */
+function spawnModeOf(ctx: AgentContext): SpawnMode {
+  return { source: ctx.source ?? 'user', audience: audienceOf(ctx) };
+}
+
 export function createOrchestrator(
   bus: HookBus,
   config: ChatOrchestratorConfig,
@@ -1888,6 +1904,7 @@ export function createOrchestrator(
     // be consumed and would leak indefinitely.
     respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
+    spawnModeBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
     skippedConnectorsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
@@ -2147,6 +2164,34 @@ export function createOrchestrator(
   // bounded by the agent population.
   const augmentGenByAgent = new Map<string, number>();
   const augmentGenBySession = new Map<string, number>();
+
+  // TASK-1091 — the mode each session was spawned for. The IPC listeners
+  // rebuild every runner call's ctx with `source` and `audience` from the
+  // session record, written once at spawn, so a turn routed into a warm
+  // session runs in the SESSION's mode, not its own: an external turn queued
+  // into the owner's session would get the owner's identity tools and attended
+  // approvals, and a private turn queued into a shared session would have its
+  // words captured as shared. The routing decision therefore never lets a
+  // session serve a turn of another mode (`turnModeChanged`). Recorded when the
+  // open starts, not after it: the session is alive from `session:create`
+  // inside `sandbox:open-session`, and a retire has already bound the
+  // conversation to it, so a turn routed while it opens must see its mode.
+  // Dropped wherever `augmentGenBySession` is. Same single-replica posture.
+  const spawnModeBySession = new Map<string, SpawnMode>();
+
+  /**
+   * TASK-1091 — true when `sessionId` must not serve this turn: it was spawned
+   * for another mode. A session with no record (this process didn't open it:
+   * opened before a restart, or its record is already dropped) serves only a
+   * default turn (`'user'`, `'private'`), which keeps today's routing; any
+   * other turn fails closed.
+   */
+  function turnModeChanged(sessionId: string, ctx: AgentContext): boolean {
+    const turn = spawnModeOf(ctx);
+    const known = spawnModeBySession.get(sessionId);
+    if (known === undefined) return !(turn.source === 'user' && turn.audience === 'private');
+    return known.source !== turn.source || known.audience !== turn.audience;
+  }
 
   // TASK-806 — the third reason a warm session is retired at its next turn: it
   // spawned with a connector SKIPPED because this caller had never signed in to
@@ -2754,6 +2799,10 @@ export function createOrchestrator(
     //    source of truth: the conversation row's active_session_id IS
     //    "which sandbox is in flight").
     let routedSessionId: string | null = null;
+    // TASK-1091 — set when the live session runs a turn of another mode and is
+    // busy; the turn is refused right after this block (outside the lookup's
+    // catch, so a fault in the refusal can never fall through to a spawn).
+    let busyInOtherMode = false;
     // Gate on the peer hooks being actually registered. CLI canary and
     // mcp-client e2e drive the orchestrator without @ax/conversations
     // loaded; in those presets we skip routing entirely. See
@@ -2781,7 +2830,16 @@ export function createOrchestrator(
             SessionIsAliveInput,
             SessionIsAliveOutput
           >('session:is-alive', ctx, { sessionId: candidate });
-          if (aliveResult.alive) {
+          // TASK-1091 — a session serves only turns of the mode it was spawned
+          // for (see spawnModeBySession). Asked first: a BUSY session of
+          // another mode can be neither retired (that would cut the turn it
+          // is running) nor joined (this turn would run in that turn's mode),
+          // so this turn is refused below. An IDLE one is retired like the
+          // other reasons here, and the turn spawns fresh in its own mode.
+          const modeChanged = aliveResult.alive && turnModeChanged(candidate, ctx);
+          if (modeChanged && sessionBusy(candidate)) {
+            busyInOtherMode = true;
+          } else if (aliveResult.alive) {
             const skillsDirty = respawnSessions.has(candidate);
             const augmentStale = isAugmentStale(candidate, ctx.agentId);
             // A database row can outlive the host's runner handle and proxy
@@ -2813,6 +2871,7 @@ export function createOrchestrator(
               connectorDeletedSessions.has(candidate) ||
               connectorSelectionChanged(candidate, agent) ||
               (!(
+                modeChanged ||
                 routineRetire ||
                 skillsDirty ||
                 augmentStale ||
@@ -2822,6 +2881,7 @@ export function createOrchestrator(
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
             const connectorSignedIn =
               !(
+                modeChanged ||
                 routineRetire ||
                 skillsDirty ||
                 augmentStale ||
@@ -2835,6 +2895,7 @@ export function createOrchestrator(
             // proxy session anyway. A failure retires it (secure direction).
             if (
               !(
+                modeChanged ||
                 routineRetire ||
                 skillsDirty ||
                 augmentStale ||
@@ -2848,6 +2909,7 @@ export function createOrchestrator(
               rotationFailed = true;
             }
             if (
+              modeChanged ||
               routineRetire ||
               skillsDirty ||
               augmentStale ||
@@ -2885,21 +2947,27 @@ export function createOrchestrator(
               // Its proxy session is closed below (TASK-871: directly, not only
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
+              //
+              // TASK-1091: and when it is idle and was spawned for another turn
+              // mode (see modeChanged above). The fresh spawn writes this
+              // turn's source and audience onto its own session record.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: routineRetire
-                  ? 'routine-turn'
-                  : hostSessionMissing
-                    ? 'host-session-lost'
-                    : skillsDirty
-                      ? 'skills-proposed'
-                      : augmentStale
-                        ? 'system-prompt-augment-changed'
-                        : rotationFailed
-                          ? 'credential-rotation-failed'
-                          : connectorsChanged
-                            ? 'connectors-changed'
-                            : 'connector-signed-in',
+                reason: modeChanged
+                  ? 'turn-mode-changed'
+                  : routineRetire
+                    ? 'routine-turn'
+                    : hostSessionMissing
+                      ? 'host-session-lost'
+                      : skillsDirty
+                        ? 'skills-proposed'
+                        : augmentStale
+                          ? 'system-prompt-augment-changed'
+                          : rotationFailed
+                            ? 'credential-rotation-failed'
+                            : connectorsChanged
+                              ? 'connectors-changed'
+                              : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -2915,6 +2983,7 @@ export function createOrchestrator(
               );
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
+              spawnModeBySession.delete(candidate);
               skippedConnectorRefsBySession.delete(candidate);
               skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
@@ -2960,6 +3029,23 @@ export function createOrchestrator(
           err: err instanceof Error ? err : new Error(String(err)),
         });
       }
+    }
+
+    // TASK-1091 — this conversation's live session is busy with a turn of
+    // another mode (decided above). The turn ends here, before anything is
+    // queued, spawned or terminated, in the same three steps as
+    // `conversation:message-not-saved`: no detail and no `error`. The turn
+    // running in the session is untouched. channel-web never gets here (its
+    // turns are always the default mode); a channel that mixes modes in one
+    // conversation serializes its turns or tries again later.
+    if (busyInOtherMode) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'conversation:busy',
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await fireChatEvent('chat:end', ctx, { outcome });
+      return outcome;
     }
 
     if (routedSessionId !== null) {
@@ -4114,6 +4200,11 @@ export function createOrchestrator(
     const sessionId = ctx.sessionId;
     const deferred = newDeferred<AgentOutcome>();
     registerWaiter(sessionId, ctx.reqId, deferred);
+    // TASK-1091 — the mode this session is opened for, recorded BEFORE the
+    // open (see spawnModeBySession): it is alive from inside the open, so a
+    // turn of another mode routed here meanwhile is refused, not queued in.
+    // The finally below drops it if the open fails.
+    spawnModeBySession.set(sessionId, spawnModeOf(ctx));
 
     // 6. Open the sandbox. sandbox:open-session internally calls
     //    session:create (minting the session + token AND writing the v2
@@ -4230,6 +4321,7 @@ export function createOrchestrator(
             // rotating credentials; we drop it only once the runner exits.
             sessionsNeedingRotation.delete(sessionId);
             augmentGenBySession.delete(sessionId);
+            spawnModeBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
             skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
@@ -4488,7 +4580,9 @@ export function createOrchestrator(
         sessionsNeedingRotation.delete(ctx.sessionId);
         // Same lifetime rule for the augment generation (TASK-612): a warm
         // session drops it in handle.exited; a one-shot session is done now.
+        // Likewise its spawn mode (TASK-1091), also on a failed open.
         augmentGenBySession.delete(ctx.sessionId);
+        spawnModeBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
         skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
