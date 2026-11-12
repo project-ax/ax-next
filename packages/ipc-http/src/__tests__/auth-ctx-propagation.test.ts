@@ -1,6 +1,12 @@
 import * as http from 'node:http';
 import { describe, it, expect, afterEach } from 'vitest';
-import { isOwnerlessId, ownerlessIdFor, type AgentContext } from '@ax/core';
+import {
+  isOwnerlessId,
+  ownerlessIdFor,
+  type AgentContext,
+  type AgentContextAudience,
+  type AgentContextSource,
+} from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -319,5 +325,99 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
     const got = capturedCtx as AgentContext | null;
     expect(got?.source).toBe('routine');
     expect(got?.sessionId).toBe('s-http-routine');
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1091 — `'external'` and `audience` ride the same host-only chain on
+  // the k8s (TCP) transport. A shared session's runner-side tool calls run on
+  // this rebuilt ctx, so a lost `audience` would make them recall as private.
+  // -------------------------------------------------------------------------
+
+  /** Mints a session stamped as given, POSTs a chat-end body, returns the ctx. */
+  async function chatEndCtx(
+    opts: { sessionId: string; source?: AgentContextSource; audience?: AgentContextAudience },
+    body: Record<string, unknown>,
+  ): Promise<AgentContext> {
+    let capturedCtx: AgentContext | null = null;
+    let resolveFire: (() => void) | null = null;
+    const fired = new Promise<void>((resolve) => {
+      resolveFire = resolve;
+    });
+    const harness = await createTestHarness({
+      plugins: [createSessionInmemoryPlugin()],
+    });
+    harness.bus.subscribe('chat:end', 'mock-chat-end', async (ctx) => {
+      capturedCtx = ctx;
+      resolveFire?.();
+      return undefined;
+    });
+    const { token } = await harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', harness.ctx(), {
+      sessionId: opts.sessionId,
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        ...OWNER,
+        ...(opts.source !== undefined ? { source: opts.source } : {}),
+        ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
+      },
+    });
+    const listener = await createHttpListener({
+      host: '127.0.0.1',
+      port: 0,
+      bus: harness.bus,
+    });
+    harnesses.push({
+      listener,
+      port: listener.port,
+      token,
+      cleanup: async () => {
+        await listener.close();
+        await harness.close({ onError: () => {} });
+      },
+    });
+    const res = await postJson(listener.port, '/event.chat-end', token, JSON.stringify(body));
+    expect(res.status).toBe(202);
+    await fired;
+    expect(capturedCtx).not.toBeNull();
+    return capturedCtx as unknown as AgentContext;
+  }
+
+  const COMPLETE_CHAT_END = {
+    outcome: { kind: 'complete', messages: [{ role: 'assistant', content: 'done' }] },
+  };
+
+  it('stamps source "external" and audience "shared" onto ctx for the happy-path runner-completed chat:end', async () => {
+    const ctx = await chatEndCtx(
+      { sessionId: 's-http-external', source: 'external', audience: 'shared' },
+      COMPLETE_CHAT_END,
+    );
+    expect(ctx.source).toBe('external');
+    expect(ctx.audience).toBe('shared');
+    expect(ctx.sessionId).toBe('s-http-external');
+  });
+
+  it('leaves ctx.audience absent for a session created without one', async () => {
+    const ctx = await chatEndCtx({ sessionId: 's-http-aud-absent' }, COMPLETE_CHAT_END);
+    // Absent, not `undefined`: a private turn behaves exactly as before.
+    expect('audience' in ctx).toBe(false);
+    expect('source' in ctx).toBe(false);
+  });
+
+  it('SECURITY: a runner cannot forge source or audience via the chat-end frame', async () => {
+    // Host-stamped external + shared. The runner claims the owner's private
+    // mode in the body; the listener reads only the session record.
+    const ctx = await chatEndCtx(
+      { sessionId: 's-http-aud-forge', source: 'external', audience: 'shared' },
+      {
+        ...COMPLETE_CHAT_END,
+        source: 'user',
+        audience: 'private',
+        owner: { source: 'user', audience: 'private' },
+      },
+    );
+    expect(ctx.source).toBe('external');
+    expect(ctx.audience).toBe('shared');
   });
 });

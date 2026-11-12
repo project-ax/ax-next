@@ -104,6 +104,7 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: null,
       conversationId: null,
       source: null,
+      audience: null,
     });
 
     const termResult = await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
@@ -231,6 +232,7 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: 'a-1',
       conversationId: null,
       source: null,
+      audience: null,
     });
   });
 
@@ -261,6 +263,7 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: 'a-1',
       conversationId: null,
       source: 'routine',
+      audience: null,
     });
   });
 
@@ -282,6 +285,63 @@ describe('@ax/session-inmemory plugin', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('resolve-token carries source "external" and audience "shared" when owner carries them (TASK-1091)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      {
+        sessionId: 's-ext-resolve',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, source: 'external', audience: 'shared' },
+      },
+    );
+    const resolved = await h.bus.call<
+      SessionResolveTokenInput,
+      SessionResolveTokenOutput
+    >('session:resolve-token', ctx, { token });
+    // Both cross the bus's returns schema: a z.enum without 'external' would
+    // fail every IPC call of this session, and a z.object without `audience`
+    // would strip it so the session's tool calls looked private.
+    expect(resolved).toEqual({
+      sessionId: 's-ext-resolve',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: null,
+      source: 'external',
+      audience: 'shared',
+    });
+  });
+
+  it.each([
+    ['source', 'admin'],
+    ['source', ''],
+    ['audience', 'public'],
+    ['audience', ''],
+    ['audience', 1],
+  ])('session:create rejects owner.%s %j (TASK-1091)', async (key, value) => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-owner-field',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, [key]: value } as unknown as NonNullable<SessionCreateInput['owner']>,
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    expect((caught as PluginError).message).toContain(`owner.${key}`);
   });
 
   it('resolve-token carries conversationId when owner carries one (Week 10–12 final review)', async () => {
@@ -310,6 +370,7 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: 'a-1',
       conversationId: 'cnv_resolve_1',
       source: null,
+      audience: null,
     });
   });
 

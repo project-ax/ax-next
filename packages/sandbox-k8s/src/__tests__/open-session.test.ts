@@ -481,6 +481,67 @@ describe('sandbox:open-session (k8s)', () => {
     expect(cfg.conversationId).toBeNull();
   });
 
+  // TASK-1091 — owner.source / owner.audience are host-stamped by the
+  // orchestrator and must reach session:create unchanged: the session record is
+  // where the IPC listener reads them back for the runner's calls.
+  describe('forwards owner.source and owner.audience into session:create (TASK-1091)', () => {
+    const OWNER = {
+      userId: 'u-1',
+      agentId: 'agt-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+    };
+
+    /** Opens an owned session; returns the owner each hook received. */
+    async function openWithOwner(
+      owner: Record<string, unknown>,
+    ): Promise<{ createdOwner: Record<string, unknown>; resolverOwner: Record<string, unknown> }> {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api, USER_FILES_RESOLVER);
+      const spy = vi.spyOn(h.bus, 'call');
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-mode',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
+        owner: { ...OWNER, ...owner },
+      });
+      const ownerSentTo = (hook: string): Record<string, unknown> => {
+        const calls = spy.mock.calls.filter(([name]) => name === hook);
+        expect(calls).toHaveLength(1);
+        return (calls[0]![2] as { owner: Record<string, unknown> }).owner;
+      };
+      return {
+        createdOwner: ownerSentTo('session:create'),
+        resolverOwner: ownerSentTo('sandbox:resolve-mounts'),
+      };
+    }
+
+    it('an external, shared owner reaches session:create (and the mount resolver) with both keys', async () => {
+      const { createdOwner, resolverOwner } = await openWithOwner({
+        source: 'external',
+        audience: 'shared',
+      });
+      expect(createdOwner.source).toBe('external');
+      expect(createdOwner.audience).toBe('shared');
+      // The mount resolvers key off the same owner (memory reads it, TASK-1091).
+      expect(resolverOwner.audience).toBe('shared');
+    });
+
+    it('both keys stay absent when the input omits them', async () => {
+      const { createdOwner } = await openWithOwner({});
+      expect('source' in createdOwner).toBe(false);
+      expect('audience' in createdOwner).toBe(false);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // chat:phase producer — sandbox-k8s announces sandbox-starting BEFORE
   // calling createNamespacedPod so the UI can show "Starting sandbox…"

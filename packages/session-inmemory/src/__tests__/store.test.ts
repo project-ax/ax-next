@@ -46,6 +46,7 @@ describe('@ax/session-inmemory store', () => {
       agentId: null,
       conversationId: null,
       source: null,
+      audience: null,
     });
   });
 
@@ -70,6 +71,7 @@ describe('@ax/session-inmemory store', () => {
       agentId: 'a-1',
       conversationId: null,
       source: null,
+      audience: null,
     });
   });
 
@@ -95,6 +97,7 @@ describe('@ax/session-inmemory store', () => {
       agentId: 'a-1',
       conversationId: 'cnv_test_1',
       source: null,
+      audience: null,
     });
   });
 
@@ -123,6 +126,40 @@ describe('@ax/session-inmemory store', () => {
       agentId: 'a-1',
       conversationId: null,
       source: 'routine',
+      audience: null,
+    });
+  });
+
+  it('resolveToken() carries source "external" and audience "shared" when create() carried them (TASK-1091)', () => {
+    const store = createSessionStore();
+    const rec = store.create('s-external', '/tmp/ws', {
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'be helpful',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+      conversationId: 'cnv_ext_1',
+      source: 'external',
+      audience: 'shared',
+    });
+    expect(rec.source).toBe('external');
+    expect(rec.audience).toBe('shared');
+    // resolveToken echoes both so the IPC listeners can stamp them onto the
+    // runner-rebuilt ctx; without `audience` a shared session's tool calls
+    // would recall as if private.
+    expect(store.resolveToken(rec.token)).toEqual({
+      sessionId: 's-external',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: 'cnv_ext_1',
+      source: 'external',
+      audience: 'shared',
     });
   });
 

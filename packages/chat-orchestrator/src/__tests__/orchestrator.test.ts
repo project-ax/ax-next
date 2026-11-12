@@ -1457,6 +1457,79 @@ describe('chat-orchestrator', () => {
   });
 
   // -------------------------------------------------------------------------
+  // TASK-1091 — `'external'` and `audience` ride owner on sandbox:open-session
+  // exactly as `source` does: host-side ctx → session record → the IPC
+  // listeners' rebuilt ctx. Both come ONLY from the host ctx.
+  // -------------------------------------------------------------------------
+  async function ownerOpenedFor(
+    fields: Pick<Parameters<typeof makeAgentContext>[0], 'source' | 'audience'>,
+  ): Promise<Record<string, unknown>> {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved' } }),
+    });
+    let busRef: HookBus | null = null;
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a-resolved',
+            userId: 'test-user',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      makeAgentContext({
+        sessionId: 'mode-session',
+        agentId: 'test-agent',
+        userId: 'test-user',
+        ...fields,
+        logger: createLogger({ reqId: 'orch-mode-test', writer: () => undefined }),
+      }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+    return (mocks.calls.lastSandboxInput as { owner: Record<string, unknown> }).owner;
+  }
+
+  it('forwards ctx.source "external" and ctx.audience "shared" into owner on sandbox:open-session', async () => {
+    const owner = await ownerOpenedFor({ source: 'external', audience: 'shared' });
+    expect(owner.source).toBe('external');
+    expect(owner.audience).toBe('shared');
+  });
+
+  it('a default ctx forwards neither owner.source nor owner.audience', async () => {
+    const owner = await ownerOpenedFor({});
+    expect('source' in owner).toBe(false);
+    expect('audience' in owner).toBe(false);
+  });
+
+  it('an audience value this build does not know forwards as "shared" (fail closed)', async () => {
+    const owner = await ownerOpenedFor({ audience: 'public' as never });
+    expect(owner.audience).toBe('shared');
+  });
+
+  // -------------------------------------------------------------------------
   // TASK-51 (JIT §P4) — the always-on broker tools (search_catalog +
   // request_capability) are locked into every MULTI-TENANT (non-wildcard)
   // agent's effective allowedTools at session-open, while the empty-empty

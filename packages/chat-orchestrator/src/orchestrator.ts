@@ -1,4 +1,5 @@
 import {
+  audienceOf,
   faultLogFields,
   toWellFormedValue,
   PluginError,
@@ -11,6 +12,8 @@ import {
   SYSTEM_PROMPT_LANDED_HOOK,
   SystemPromptAugmentOutputSchema,
   type AgentContext,
+  type AgentContextAudience,
+  type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
   type FireResult,
@@ -1009,9 +1012,18 @@ interface OpenSessionInput {
      * stores a routine turn's rows, but with no conversation, so a scheduled
      * run never counts toward the skill-reflection recurrence gate (TASK-616).
      * SECURITY: never sourced from a runner-supplied frame — only from
-     * ctx.source on the host.
+     * ctx.source on the host. TASK-1091 added `'external'` (a person with no
+     * access to the agent is present).
      */
-    source?: 'routine' | 'user';
+    source?: AgentContextSource;
+    /**
+     * TASK-1091 — who sees the session's replies, from `ctx.audience`,
+     * normalized by `audienceOf` (an unknown value forwards as `'shared'`).
+     * Rides the same host-only path as `source` into the session record, so
+     * the runner's tool calls (memory_recall) see it on their rebuilt ctx.
+     * Absent for a turn whose ctx has none (a private turn).
+     */
+    audience?: AgentContextAudience;
   };
   /**
    * Per-session proxy blob from `proxy:open-session`. REQUIRED (TASK-838):
@@ -4135,6 +4147,12 @@ export function createOrchestrator(
           // spread keeps the key ABSENT (not `undefined`) for user turns, matching
           // the exactOptionalPropertyTypes posture.
           ...(ctx.source !== undefined ? { source: ctx.source } : {}),
+          // TASK-1091 — forward the HOST-DERIVED audience the same way, so the
+          // IPC listeners stamp it onto every runner-rebuilt ctx and a shared
+          // session's memory reads stay shared. `audienceOf` fails closed: a
+          // value this build doesn't know forwards as 'shared'. Absent stays
+          // absent, so a private turn's session record is unchanged.
+          ...(ctx.audience !== undefined ? { audience: audienceOf(ctx) } : {}),
         },
         // Phase 6: credential-proxy is mandatory; proxyConfig is always set
         // by the time we reach this point (the !proxyOpenLoaded gate above

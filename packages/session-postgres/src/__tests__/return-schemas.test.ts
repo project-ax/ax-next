@@ -32,9 +32,41 @@ describe('session-postgres return schemas', () => {
       conversationId: 'c1',
       // TASK-181 — host-derived origin must round-trip (schema can't strip it).
       source: 'routine',
+      // TASK-1091 — and so must audience (a strip reads as private).
+      audience: 'private',
     };
     expect(SessionResolveTokenOutputSchema.parse(full)).toEqual(full);
     expect(SessionResolveTokenOutputSchema.parse(null)).toBeNull();
+  });
+
+  it('SessionResolveTokenOutputSchema round-trips source "external" and audience "shared" (TASK-1091)', () => {
+    const full: SessionResolveTokenOutput = {
+      sessionId: 's1',
+      workspaceRoot: '/w',
+      userId: 'u1',
+      agentId: 'a1',
+      conversationId: 'c1',
+      source: 'external',
+      audience: 'shared',
+    };
+    expect(SessionResolveTokenOutputSchema.parse(full)).toEqual(full);
+    // Required on the reply (null when unset): a resolver that forgot it
+    // fails at the bus instead of reading as private.
+    const { audience: _audience, ...withoutAudience } = full as Exclude<
+      SessionResolveTokenOutput,
+      null
+    >;
+    expect(SessionResolveTokenOutputSchema.safeParse(withoutAudience).success).toBe(false);
+    expect(
+      SessionResolveTokenOutputSchema.safeParse({ ...full, audience: 'public' }).success,
+    ).toBe(false);
+    expect(
+      SessionResolveTokenOutputSchema.safeParse({
+        ...full,
+        source: null,
+        audience: null,
+      }).success,
+    ).toBe(true);
   });
 
   it('SessionGetConfigOutputSchema round-trips a populated value', () => {

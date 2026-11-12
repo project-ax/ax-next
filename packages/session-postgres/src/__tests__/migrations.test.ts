@@ -84,6 +84,10 @@ describe('runSessionMigration v2', () => {
       expect(byName.get('conversation_id')!.is_nullable).toBe('YES');
       expect(byName.has('source')).toBe(true);
       expect(byName.get('source')!.is_nullable).toBe('YES');
+      // TASK-1091 — audience, same shape as source: nullable plain text.
+      expect(byName.has('audience')).toBe(true);
+      expect(byName.get('audience')!.is_nullable).toBe('YES');
+      expect(byName.get('audience')!.data_type).toBe('text');
       expect(byName.get('user_id')!.is_nullable).toBe('NO');
       expect(byName.get('agent_id')!.is_nullable).toBe('NO');
       expect(byName.get('agent_config_json')!.is_nullable).toBe('NO');
@@ -139,6 +143,48 @@ describe('runSessionMigration v2', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.session_id).toBe('s-idem');
       expect(rows[0]?.agent_config_json).toEqual({ systemPrompt: 'be helpful' });
+    } finally {
+      await db.destroy();
+      await pool.end().catch(() => {});
+    }
+  });
+
+  it('adds audience to a table that predates it, leaves legacy rows NULL, and a second run is a no-op (TASK-1091)', async () => {
+    const { db, pool } = await makeDb();
+    try {
+      await runSessionMigration(db);
+      // Roll the table back to its pre-TASK-1091 shape and write a legacy row.
+      await sql`ALTER TABLE session_postgres_v2_session_agent DROP COLUMN audience`.execute(db);
+      await sql`
+        INSERT INTO session_postgres_v2_session_agent
+          (session_id, user_id, agent_id, agent_config_json, source)
+        VALUES ('s-legacy', 'u-1', 'a-1', '{}'::jsonb, 'routine')
+      `.execute(db);
+
+      await runSessionMigration(db);
+      await sql`
+        INSERT INTO session_postgres_v2_session_agent
+          (session_id, user_id, agent_id, agent_config_json, source, audience)
+        VALUES ('s-new', 'u-1', 'a-1', '{}'::jsonb, 'external', 'shared')
+      `.execute(db);
+      // Re-running must neither fail on the existing column nor touch rows.
+      await runSessionMigration(db);
+
+      const rows = await sql<{ session_id: string; source: string | null; audience: string | null }>`
+        SELECT session_id, source, audience FROM session_postgres_v2_session_agent
+        ORDER BY session_id
+      `.execute(db);
+      expect(rows.rows).toEqual([
+        { session_id: 's-legacy', source: 'routine', audience: null },
+        { session_id: 's-new', source: 'external', audience: 'shared' },
+      ]);
+      // No CHECK constraint: a forward deploy must never wedge on a value an
+      // older or newer build wrote. The read side normalizes instead.
+      const checks = await sql<{ conname: string }>`
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'session_postgres_v2_session_agent'::regclass AND contype = 'c'
+      `.execute(db);
+      expect(checks.rows).toEqual([]);
     } finally {
       await db.destroy();
       await pool.end().catch(() => {});

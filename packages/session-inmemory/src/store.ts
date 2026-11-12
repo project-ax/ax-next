@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { PluginError } from '@ax/core';
+import { PluginError, type AgentContextAudience, type AgentContextSource } from '@ax/core';
 import type { AgentConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/session-inmemory';
@@ -45,10 +45,16 @@ export interface SessionOwner {
   conversationId?: string | null;
   /**
    * TASK-181: host-derived session origin — `'routine'` for a scheduled
-   * @ax/routines fire, `'user'`/absent for an interactive turn. Stored as
-   * `null` when absent so `resolveToken` always answers with a typed scalar.
+   * @ax/routines fire, `'user'`/absent for an interactive turn, `'external'`
+   * (TASK-1091) when a person with no access to the agent is present. Stored
+   * as `null` when absent so `resolveToken` always answers with a typed scalar.
    */
-  source?: 'routine' | 'user' | null;
+  source?: AgentContextSource | null;
+  /**
+   * TASK-1091: host-derived audience (`ctx.audience`). Stored as `null` when
+   * absent (≡ private), exactly like `source`.
+   */
+  audience?: AgentContextAudience | null;
 }
 
 export interface SessionRecord {
@@ -60,7 +66,9 @@ export interface SessionRecord {
   readonly agentConfig: AgentConfig | null;
   readonly conversationId: string | null;
   /** TASK-181: host-derived session origin. Null ≡ user / canary / pre-TASK-181. */
-  readonly source: 'routine' | 'user' | null;
+  readonly source: AgentContextSource | null;
+  /** TASK-1091: host-derived audience. Null ≡ private / pre-TASK-1091. */
+  readonly audience: AgentContextAudience | null;
   terminated: boolean;
 }
 
@@ -85,7 +93,13 @@ export interface ResolveTokenResult {
    * out of the conversation count (TASK-616). Null ≡
    * user / canary / pre-TASK-181.
    */
-  source: 'routine' | 'user' | null;
+  source: AgentContextSource | null;
+  /**
+   * TASK-1091: host-derived audience, carried for the same reason as
+   * `source` — without it a shared session's runner-side tool calls
+   * (memory_recall) would run on a ctx that looks private. Null ≡ private.
+   */
+  audience: AgentContextAudience | null;
 }
 
 export interface SessionStore {
@@ -130,6 +144,8 @@ export function createSessionStore(): SessionStore {
         conversationId: owner?.conversationId ?? null,
         // TASK-181 — host-derived session origin; normalized to null when absent.
         source: owner?.source ?? null,
+        // TASK-1091 — host-derived audience; normalized to null when absent.
+        audience: owner?.audience ?? null,
         terminated: false,
       };
       bySessionId.set(sessionId, record);
@@ -149,6 +165,7 @@ export function createSessionStore(): SessionStore {
         agentId: record.agentId,
         conversationId: record.conversationId,
         source: record.source,
+        audience: record.audience,
       };
     },
 

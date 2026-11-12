@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { PluginError } from '@ax/core';
+import { PluginError, type AgentContextAudience, type AgentContextSource } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import { deleteInboxEntries } from './inbox.js';
 import type { SessionDatabase } from './migrations.js';
@@ -91,11 +91,17 @@ export interface SessionOwner {
   conversationId?: string | null;
   /**
    * TASK-181: host-derived session origin — `'routine'` for a scheduled
-   * @ax/routines fire, `'user'`/absent for an interactive turn. Persisted on
-   * the v2 row and echoed back by `resolveToken`. Host-only — never sourced
-   * from the runner wire.
+   * @ax/routines fire, `'user'`/absent for an interactive turn, `'external'`
+   * (TASK-1091) when a person with no access to the agent is present.
+   * Persisted on the v2 row and echoed back by `resolveToken`. Host-only —
+   * never sourced from the runner wire.
    */
-  source?: 'routine' | 'user' | null;
+  source?: AgentContextSource | null;
+  /**
+   * TASK-1091: host-derived audience (`ctx.audience`). Persisted and echoed
+   * exactly like `source`, and host-only for the same reason.
+   */
+  audience?: AgentContextAudience | null;
 }
 
 export interface SessionRecord {
@@ -107,7 +113,9 @@ export interface SessionRecord {
   readonly agentConfig: AgentConfig | null;
   readonly conversationId: string | null;
   /** TASK-181: host-derived session origin. Null ≡ user / canary / pre-TASK-181. */
-  readonly source: 'routine' | 'user' | null;
+  readonly source: AgentContextSource | null;
+  /** TASK-1091: host-derived audience. Null ≡ private / pre-TASK-1091. */
+  readonly audience: AgentContextAudience | null;
   readonly terminated: boolean;
 }
 
@@ -132,7 +140,13 @@ export interface ResolveTokenResult {
    * out of the conversation count (TASK-616). Null ≡
    * user / canary / pre-TASK-181.
    */
-  source: 'routine' | 'user' | null;
+  source: AgentContextSource | null;
+  /**
+   * TASK-1091: host-derived audience, carried for the same reason as
+   * `source` — without it a shared session's runner-side tool calls
+   * (memory_recall) would run on a ctx that looks private. Null ≡ private.
+   */
+  audience: AgentContextAudience | null;
 }
 
 export interface SessionStore {
@@ -200,13 +214,25 @@ function mintToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-// TASK-181 — the DB column is plain TEXT (`string | null`); narrow it to the
-// host-derived literal union on read. Anything that isn't one of the two
-// known origins (a legacy / hand-edited value) reads back as `null`, i.e.
-// treated as a user turn — memory runs normally. We never trust an unknown
-// stored value to suppress memory.
-function normalizeSource(raw: string | null | undefined): 'routine' | 'user' | null {
-  return raw === 'routine' || raw === 'user' ? raw : null;
+// TASK-181 — the DB columns are plain TEXT (`string | null`); narrow them to
+// the host-derived literal unions on read. NULL (a session opened without the
+// field, or a row written before the column existed) stays null.
+//
+// TASK-1091 — a stored value this build doesn't know (hand-edited, or written
+// by a newer build that knows more values) FAILS CLOSED to the least
+// privileged one: an unknown source reads as 'external' (unattended, no
+// identity or skill edits) and an unknown audience as 'shared' (least
+// recall). Before TASK-1091 an unknown source read as null, i.e. a user turn —
+// the most privileged reading. The session record is the only place the IPC
+// listeners learn these from, so a misread here widens what a runner can do.
+function normalizeSource(raw: string | null | undefined): AgentContextSource | null {
+  if (raw === null || raw === undefined) return null;
+  return raw === 'routine' || raw === 'user' || raw === 'external' ? raw : 'external';
+}
+
+function normalizeAudience(raw: string | null | undefined): AgentContextAudience | null {
+  if (raw === null || raw === undefined) return null;
+  return raw === 'private' || raw === 'shared' ? raw : 'shared';
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -252,6 +278,8 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
                 conversation_id: owner.conversationId ?? null,
                 // TASK-181 — host-derived session origin; null for user turns.
                 source: owner.source ?? null,
+                // TASK-1091 — host-derived audience; null when unset (private).
+                audience: owner.audience ?? null,
               } as never)
               .execute();
           }
@@ -264,6 +292,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
             agentConfig: owner?.agentConfig ?? null,
             conversationId: owner?.conversationId ?? null,
             source: owner?.source ?? null,
+            audience: owner?.audience ?? null,
             terminated: v1Row.terminated,
           };
         });
@@ -301,6 +330,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.agent_id',
           'a.conversation_id',
           'a.source',
+          'a.audience',
         ])
         .where('s.token', '=', token)
         .executeTakeFirst();
@@ -312,6 +342,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         agentId: row.agent_id ?? null,
         conversationId: row.conversation_id ?? null,
         source: normalizeSource(row.source),
+        audience: normalizeAudience(row.audience),
       };
     },
 
@@ -333,6 +364,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.agent_config_json',
           'a.conversation_id',
           'a.source',
+          'a.audience',
         ])
         .where('s.session_id', '=', sessionId)
         .executeTakeFirst();
@@ -346,6 +378,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         agentConfig: (row.agent_config_json as AgentConfig | null) ?? null,
         conversationId: row.conversation_id ?? null,
         source: normalizeSource(row.source),
+        audience: normalizeAudience(row.audience),
         terminated: row.terminated,
       };
     },

@@ -194,6 +194,7 @@ describe('@ax/session-postgres plugin', () => {
       agentId: null,
       conversationId: null,
       source: null,
+      audience: null,
     });
 
     const miss = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
@@ -224,6 +225,7 @@ describe('@ax/session-postgres plugin', () => {
       agentId: null,
       conversationId: null,
       source: null,
+      audience: null,
     });
 
     await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
@@ -524,6 +526,7 @@ describe('@ax/session-postgres plugin', () => {
       agentId: 'a-1',
       conversationId: null,
       source: null,
+      audience: null,
     });
   });
 
@@ -555,7 +558,146 @@ describe('@ax/session-postgres plugin', () => {
       agentId: 'a-1',
       conversationId: null,
       source: 'routine',
+      audience: null,
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1091 — `'external'` and `audience` ride the v2 row exactly as
+  // `source` does (TASK-181). Both are host-stamped at create time and read
+  // back through a fail-closed normalizer: a stored value this build doesn't
+  // know reads as the LEAST privileged one ('external' / 'shared').
+  // -------------------------------------------------------------------------
+  async function rawQuery(text: string, values: unknown[]): Promise<Array<Record<string, unknown>>> {
+    const pgMod = await import('pg');
+    const client = new pgMod.default.Client({ connectionString });
+    await client.connect();
+    try {
+      return (await client.query(text, values)).rows as Array<Record<string, unknown>>;
+    } finally {
+      await client.end().catch(() => {});
+    }
+  }
+
+  it('session:resolve-token carries source "external" and audience "shared" (TASK-1091)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      {
+        sessionId: 's-ext-pg',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, source: 'external', audience: 'shared' },
+      },
+    );
+    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+      'session:resolve-token',
+      ctx,
+      { token },
+    );
+    expect(resolved).toEqual({
+      sessionId: 's-ext-pg',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: null,
+      source: 'external',
+      audience: 'shared',
+    });
+    // Persisted as the literal values, not derived at read time.
+    expect(
+      await rawQuery(
+        'SELECT source, audience FROM session_postgres_v2_session_agent WHERE session_id = $1',
+        ['s-ext-pg'],
+      ),
+    ).toEqual([{ source: 'external', audience: 'shared' }]);
+  });
+
+  it('a legacy row with NULL source and audience resolves both as null (TASK-1091)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-legacy-pg', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    // What every row written before these columns existed holds.
+    expect(
+      await rawQuery(
+        'SELECT source, audience FROM session_postgres_v2_session_agent WHERE session_id = $1',
+        ['s-legacy-pg'],
+      ),
+    ).toEqual([{ source: null, audience: null }]);
+    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+      'session:resolve-token',
+      ctx,
+      { token },
+    );
+    expect(resolved).toMatchObject({ source: null, audience: null });
+  });
+
+  it('a stored source and audience this build does not know resolve as "external" and "shared" (fail closed, TASK-1091)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-weird-pg', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    // A hand-edited row, or one written by a newer build that knows more
+    // values. The column has no CHECK, so the read side is the guard.
+    await rawQuery(
+      "UPDATE session_postgres_v2_session_agent SET source = 'weird', audience = 'weird' WHERE session_id = $1",
+      ['s-weird-pg'],
+    );
+    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+      'session:resolve-token',
+      ctx,
+      { token },
+    );
+    expect(resolved).toEqual({
+      sessionId: 's-weird-pg',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: null,
+      // Least privilege: unattended, and least recall.
+      source: 'external',
+      audience: 'shared',
+    });
+  });
+
+  it.each([
+    ['source', 'admin'],
+    ['source', ''],
+    ['audience', 'public'],
+    ['audience', ''],
+    ['audience', 1],
+  ])('session:create rejects owner.%s %j and writes nothing (TASK-1091)', async (key, value) => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-owner-field-pg',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, [key]: value } as unknown as NonNullable<SessionCreateInput['owner']>,
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    expect((caught as PluginError).message).toContain(`owner.${key}`);
+    expect(
+      await rawQuery('SELECT session_id FROM session_postgres_v1_sessions WHERE session_id = $1', [
+        's-bad-owner-field-pg',
+      ]),
+    ).toEqual([]);
   });
 
   it('session:resolve-token carries conversationId when owner carries one (Week 10–12 final review)', async () => {
@@ -585,6 +727,7 @@ describe('@ax/session-postgres plugin', () => {
       agentId: 'a-1',
       conversationId: 'cnv_resolve_pg_1',
       source: null,
+      audience: null,
     });
   });
 

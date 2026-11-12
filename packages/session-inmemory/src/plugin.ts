@@ -1,4 +1,9 @@
-import { PluginError, type Plugin } from '@ax/core';
+import {
+  PluginError,
+  type AgentContextAudience,
+  type AgentContextSource,
+  type Plugin,
+} from '@ax/core';
 import { createInbox } from './inbox.js';
 import { createSessionStore, UNKNOWN_SESSION } from './store.js';
 import {
@@ -113,7 +118,8 @@ function validateOwner(
       agentId: string;
       agentConfig: AgentConfig;
       conversationId: string | null;
-      source: 'routine' | 'user' | null;
+      source: AgentContextSource | null;
+      audience: AgentContextAudience | null;
     }
   | undefined {
   if (raw === undefined) return undefined;
@@ -130,6 +136,7 @@ function validateOwner(
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
   const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
   const sourceRaw = (raw as { source?: unknown }).source;
+  const audienceRaw = (raw as { audience?: unknown }).audience;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -215,22 +222,40 @@ function validateOwner(
       message: `'owner.conversationId' must be a non-empty string or null/undefined`,
     });
   }
-  // source — TASK-181 — optional, accepts 'routine' | 'user' | null | undefined.
-  // Reject anything else so a wiring bug (or a smuggled value) fails loud rather
-  // than silently storing a record with a bogus origin. This is the HOST-side
-  // owner: the runner never reaches this hook, so the only writers are the
-  // orchestrator (forwarding ctx.source) and test harnesses.
-  let source: 'routine' | 'user' | null;
+  // source — TASK-181, widened by TASK-1091 — optional, accepts 'routine' |
+  // 'user' | 'external' | null | undefined. Reject anything else so a wiring
+  // bug (or a smuggled value) fails loud rather than silently storing a record
+  // with a bogus origin. This is the HOST-side owner: the runner never reaches
+  // this hook, so the only writers are the orchestrator (forwarding
+  // ctx.source) and test harnesses.
+  let source: AgentContextSource | null;
   if (sourceRaw === undefined || sourceRaw === null) {
     source = null;
-  } else if (sourceRaw === 'routine' || sourceRaw === 'user') {
+  } else if (sourceRaw === 'routine' || sourceRaw === 'user' || sourceRaw === 'external') {
     source = sourceRaw;
   } else {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
       hookName,
-      message: `'owner.source' must be 'routine', 'user', or null/undefined`,
+      message: `'owner.source' must be 'routine', 'user', 'external', or null/undefined`,
+    });
+  }
+  // audience — TASK-1091 — optional, accepts 'private' | 'shared' | null |
+  // undefined, and rejects anything else, for the same reasons as `source`.
+  // Host-only: it decides what memory the runner's calls may read, so it is
+  // taken from the orchestrator's ctx.audience and nothing else.
+  let audience: AgentContextAudience | null;
+  if (audienceRaw === undefined || audienceRaw === null) {
+    audience = null;
+  } else if (audienceRaw === 'private' || audienceRaw === 'shared') {
+    audience = audienceRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.audience' must be 'private', 'shared', or null/undefined`,
     });
   }
   return {
@@ -253,6 +278,7 @@ function validateOwner(
     },
     conversationId,
     source,
+    audience,
   };
 }
 

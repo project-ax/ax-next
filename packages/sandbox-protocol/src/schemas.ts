@@ -309,17 +309,28 @@ export const OpenSessionInputSchema = z.object({
       conversationId: z.string().min(1).optional(),
       // TASK-181 — origin of the session, derived HOST-SIDE from who opened
       // it: `'routine'` for a scheduled @ax/routines fire, `'user'`/absent for
-      // an interactive turn. Forwarded into session:create so the session
-      // record carries it and the IPC server can stamp it onto the happy-path
-      // runner-completed chat:end ctx (@ax/memory reads it there to store a
-      // routine turn's rows with no conversation — TASK-616). SECURITY: this
-      // rides the
-      // HOST-INTERNAL `sandbox:open-session` hook (orchestrator → sandbox
-      // plugin → session:create), NEVER the runner wire (@ax/ipc-protocol). An
-      // untrusted runner has no way to set it — it is sourced only from
-      // ctx.source on the host. Do NOT move this onto the runner-facing IPC
-      // protocol.
-      source: z.enum(['routine', 'user']).optional(),
+      // an interactive turn, `'external'` (TASK-1091) when a person with no
+      // access to the agent is present. Forwarded into session:create so the
+      // session record carries it and the IPC server can stamp it onto every
+      // runner-rebuilt ctx (the happy-path runner-completed chat:end, the
+      // runner's tool calls). @ax/memory reads it there to store a routine
+      // turn's rows with no conversation (TASK-616).
+      source: z.enum(['routine', 'user', 'external']).optional(),
+      // TASK-1091 — who sees this session's replies: `'private'`/absent for
+      // the owner's own conversation, `'shared'` for one other people are part
+      // of. It decides what memory the session may read and write, so it must
+      // survive into the runner-rebuilt ctx the same way `source` does.
+      // Declared here because this `z.object` strips undeclared keys: without
+      // it every shared session would come back looking private.
+      //
+      // SECURITY (both fields): they ride the HOST-INTERNAL
+      // `sandbox:open-session` hook (orchestrator → sandbox plugin →
+      // session:create), NEVER the runner wire (@ax/ipc-protocol). An
+      // untrusted runner has no way to set them — they are sourced only from
+      // ctx.source / ctx.audience on the host, and the IPC listeners read them
+      // back from the session record, never from a request or frame body. Do
+      // NOT move either onto the runner-facing IPC protocol.
+      audience: z.enum(['private', 'shared']).optional(),
     })
     .optional(),
   proxyConfig: ProxyConfigSchema,

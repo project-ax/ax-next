@@ -187,6 +187,13 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // It is deliberately absent from @ax/ipc-protocol and never read off the
     // inbound payload here. AgentContext.source is OPTIONAL — null on the auth
     // result leaves the field off entirely (treated as a user turn).
+    //
+    // TASK-1091: `source` may now be 'external', and `audience` rides the same
+    // chain with the same SECURITY posture: stamped from the session record,
+    // never from the request or frame body. Every per-request ctx the runner
+    // causes (its tool calls, its chat:end) is rebuilt here, so this is where a
+    // shared session's memory_recall learns it is shared. Null leaves the
+    // field off (treated as private).
     const ctx = makeAgentContext({
       sessionId: auth.sessionId,
       agentId: auth.agentId ?? ownerlessIdFor(auth.sessionId),
@@ -199,6 +206,7 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
         ? { conversationId: auth.conversationId }
         : {}),
       ...(auth.source !== null ? { source: auth.source } : {}),
+      ...(auth.audience !== null ? { audience: auth.audience } : {}),
     });
     await dispatch(req, res, ctx, opts.bus);
   };
