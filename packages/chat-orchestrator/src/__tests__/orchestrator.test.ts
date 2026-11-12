@@ -8904,6 +8904,124 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       expect(respawnReason(lines)).toBeUndefined();
     });
 
+    // A failed open must not leave the session's mode behind: the entry is
+    // written before the open, and only the invoke `finally` drops it when the
+    // open throws. If it stayed, the failed session would still carry its mode
+    // (and leak). Observable through routing: if the failed session id is
+    // still the conversation's alive active session (the terminate the failure
+    // path fires did not take), a default turn must be judged against a
+    // record-less session, not against the mode the failed open recorded.
+    it('a failed sandbox:open-session leaves no mode behind: a later default turn is not judged against the failed session', async () => {
+      const q = queueRecorder();
+      let failOpen = true;
+      let rowPointsAtFailed = false;
+      const { h, counters } = await makeKeepaliveHarness({
+        'session:queue-work': q.service,
+        'session:is-alive': async (_c, input: unknown) => ({
+          alive: rowPointsAtFailed && (input as { sessionId: string }).sessionId === 's-1',
+        }),
+        'conversations:get': async (_c, input: unknown) => {
+          const i = input as { conversationId: string; userId: string };
+          return {
+            conversation: {
+              conversationId: i.conversationId,
+              userId: i.userId,
+              agentId: 'test-agent',
+              activeSessionId: rowPointsAtFailed ? 's-1' : null,
+              activeReqId: null,
+            },
+          };
+        },
+        'sandbox:open-session': async () => {
+          if (failOpen) throw new Error('boom');
+          return {
+            runnerEndpoint: 'unix:///tmp/m.sock',
+            handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+          };
+        },
+      });
+      const lines: string[] = [];
+
+      const failed = await modeTurn(h, 's-1', 'req-1', { source: 'external', audience: 'shared' });
+      expect(failed.kind).toBe('terminated');
+      expect(failed.kind === 'terminated' ? failed.reason : '').toBe('sandbox-open-failed');
+
+      failOpen = false;
+      rowPointsAtFailed = true;
+      const outcome = await modeTurn(h, 's-2', 'req-2', {}, lines);
+
+      // The failed session never warmed, so the turn retires it for what it
+      // is, a lost host session. With the mode left behind it would instead
+      // read 'turn-mode-changed'.
+      expect(outcome.kind).toBe('complete');
+      expect(respawnReason(lines)).toBe('host-session-lost');
+    });
+
+    // The retire path must keep the old session's mode until it is gone. It
+    // rebinds the conversation first, then awaits the proxy close and
+    // session:terminate; a default turn that read the conversation row before
+    // the rebind still sees the old session, alive, and used to find its mode
+    // already forgotten ("unknown" serves default turns).
+    it('a retiring session keeps its mode while it is torn down: a stale-row default turn is not routed into it', async () => {
+      const q = queueRecorder();
+      let releaseTerminate!: () => void;
+      const terminateGate = new Promise<void>((res) => { releaseTerminate = res; });
+      let terminateStarted!: () => void;
+      const terminateStartedP = new Promise<void>((res) => { terminateStarted = res; });
+      let staleRow = false;
+      const { h, counters } = await makeKeepaliveHarness({
+        'session:queue-work': q.service,
+        'conversations:get': async (_c, input: unknown) => {
+          const i = input as { conversationId: string; userId: string };
+          return {
+            conversation: {
+              conversationId: i.conversationId,
+              userId: i.userId,
+              agentId: 'test-agent',
+              activeSessionId: staleRow ? 's-1' : 's-2',
+              activeReqId: null,
+            },
+          };
+        },
+        'session:terminate': async (_c, input: unknown) => {
+          counters.terminates.push((input as { sessionId: string }).sessionId);
+          terminateStarted();
+          await terminateGate;
+          return {};
+        },
+      });
+
+      // s-1 is an external session, warm and idle.
+      staleRow = false;
+      await modeTurn(h, 's-1', 'req-1', { source: 'external', audience: 'shared' });
+
+      // The owner's turn retires s-1; its terminate is held open.
+      staleRow = true;
+      const retiring = h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-2', conversationId: 'conv-1', reqId: 'req-2' }),
+        { message: { role: 'user', content: 'req-2' } },
+      );
+      await terminateStartedP;
+      q.queued.length = 0;
+
+      // A default turn that read the row before the rebind still sees s-1.
+      const concurrent = h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-3', conversationId: 'conv-1', reqId: 'req-3' }),
+        { message: { role: 'user', content: 'req-3' } },
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      expect(q.queued.filter((e) => e.sessionId === 's-1')).toEqual([]);
+
+      // Release: the retirement finishes and the stale-row turn spawns its own.
+      releaseTerminate();
+      await new Promise((r) => setTimeout(r, 50));
+      fireTurnEnd(h.bus, 's-2', 'req-2');
+      fireTurnEnd(h.bus, 's-3', 'req-3');
+      await Promise.all([retiring, concurrent]);
+    });
+
     it.each([
       ['an external turn while the owner’s turn runs', {}, { source: 'external' }],
       ['the owner’s turn while an external, shared turn runs', { source: 'external', audience: 'shared' }, {}],

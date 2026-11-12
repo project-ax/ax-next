@@ -3036,7 +3036,11 @@ export function createOrchestrator(
               );
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
-              spawnModeBySession.delete(candidate);
+              // NOT spawnModeBySession: the old session stays alive across the
+              // awaits below, and a turn that read the conversation row before
+              // the rebind above can still route into it. Its mode must stay
+              // known (a record-less session serves default turns) until the
+              // terminate resolves.
               skippedConnectorRefsBySession.delete(candidate);
               skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
@@ -3057,7 +3061,13 @@ export function createOrchestrator(
               }
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
+                // Gone: drop its mode now (the session:terminate subscriber
+                // also does, but returns early for a session with no waiters).
+                spawnModeBySession.delete(candidate);
               } catch (err) {
+                // The runner may have survived, so keep the mode: a turn that
+                // still reaches it is judged against what it really is. Its
+                // handle.exited cleanup drops the entry when it does exit.
                 ctx.logger.warn('respawn_terminate_failed', {
                   sessionId: candidate,
                   err: err instanceof Error ? err.message : String(err),
