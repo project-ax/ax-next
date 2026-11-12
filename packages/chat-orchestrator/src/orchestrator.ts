@@ -1,6 +1,7 @@
 import {
   audienceOf,
   faultLogFields,
+  isAttendedTurn,
   toWellFormedValue,
   PluginError,
   PROVIDER_ENDPOINTS,
@@ -1471,7 +1472,9 @@ const ALWAYS_ON_BROKER_TOOLS = [
 // "Routine run" means `ctx.source === 'routine'` on `agent:invoke`. Only
 // @ax/routines' fire.ts sets that there, host-side. A chat request has no way
 // to set it. (@ax/decisions' replay also says 'routine', but it calls
-// `tool:execute:<name>` directly and never reaches agent:invoke.)
+// `tool:execute:<name>` directly and never reaches agent:invoke.) An external
+// turn (TASK-1091) is unattended too, but it is not a routine run: these
+// tools stay routine-only.
 //
 // - A task check-in's brief tells the agent to finish with one routine_report
 //   call, so the tool has to be in the catalog the check-in sees.
@@ -1521,9 +1524,9 @@ const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
  * (TASK-46 — surfacing org-defaults as skill-list rows — was closed).
  *
  * `opts.routineRun` (TASK-908) is true only for a routine run: the call site
- * passes `ctx.source === 'routine'`. It also unions in ROUTINE_RUN_TOOLS,
- * after the broker tools, under the same wildcard rule. Anything but `true`
- * adds nothing.
+ * passes `ctx.source === 'routine'` (never "unattended": an external turn is
+ * not a routine run). It also unions in ROUTINE_RUN_TOOLS, after the broker
+ * tools, under the same wildcard rule. Anything but `true` adds nothing.
  */
 export function withBrokerDefaults(
   allowedTools: readonly string[],
@@ -1561,9 +1564,10 @@ const COMPLETE_BOOTSTRAP_TOOL = 'complete_bootstrap';
  * Which identity tools a session is offered, computed at session-open
  * (TASK-989) and applied only when `agents:identity:get` exists.
  *
- * - `update_identity` is offered iff a person is present (`attended`): an
- *   unattended run (`ctx.source === 'routine'` — routines and task check-ins)
- *   never rewrites the agent's identity.
+ * - `update_identity` is offered iff a person with access is present
+ *   (`attended`, `isAttendedTurn(ctx)`): an unattended run — a routine, a task
+ *   check-in, or an external turn (TASK-1091) — never rewrites the agent's
+ *   identity.
  * - `complete_bootstrap` is offered iff `attended && bootstrapMode`: there is
  *   nothing to finish outside a first-run chat.
  *
@@ -2658,7 +2662,8 @@ export function createOrchestrator(
       // already sees the whole catalog. See withBrokerDefaults.
       // TASK-908: a routine run also gets routine_report. ctx.source is
       // host-set (only @ax/routines' fire.ts stamps 'routine'); see
-      // ROUTINE_RUN_TOOLS.
+      // ROUTINE_RUN_TOOLS. Routine-only feature: `=== 'routine'`, not
+      // `!isAttendedTurn` (an external turn gets nothing extra).
       allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds, {
         routineRun: ctx.source === 'routine',
       }),
@@ -2792,6 +2797,8 @@ export function createOrchestrator(
             // retired for this: that would cut the running fire and pull its
             // credentials. The turn queues into it instead, and the routed
             // path below announces the session's spawn-time skips.
+            // Routine-only feature (`=== 'routine'`, not `!isAttendedTurn`): it
+            // serves routines' run warnings, which an external turn has none of.
             const routineRetire = ctx.source === 'routine' && !sessionBusy(candidate);
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
@@ -3026,6 +3033,7 @@ export function createOrchestrator(
       // registerWaiter, so this turn already counts as busy while the fire is
       // awaited (a third fire can't see the session idle and retire it), and
       // BEFORE queue-work, so a subscriber has seen it before the turn ends.
+      // Routine-only feature (`=== 'routine'`): only routines record skips.
       const spawnSkips = ctx.source === 'routine' ? skippedConnectorsBySession.get(sessionId) : undefined;
       if (spawnSkips !== undefined && spawnSkips.length > 0) {
         try {
@@ -3133,11 +3141,12 @@ export function createOrchestrator(
     // first-run state, read from @ax/agents and frozen into
     // `agentConfig.identity`; the runner composes the prompt from it. The host
     // decides bootstrap mode here, once: the first-run setup is pending AND a
-    // person is present. An unattended run (`ctx.source === 'routine'`, stamped
-    // host-side only — routines and task check-ins) never bootstraps, and still
-    // gets the Instructions. The identity tools the session is offered follow
-    // from the same two facts (identityToolScope, applied after the tool-policy
-    // denies below).
+    // person with access is present (`isAttendedTurn`). An unattended run —
+    // `ctx.source` `'routine'` (routines and task check-ins) or `'external'`
+    // (TASK-1091: the person present has no access to the agent), both stamped
+    // host-side only — never bootstraps, and still gets the Instructions. The
+    // identity tools the session is offered follow from the same two facts
+    // (identityToolScope, applied after the tool-policy denies below).
     //
     // A failed read — a throw, or a reply that isn't three texts and a known
     // first-run state — ENDS THE TURN, unlike an augment provider's failure: a
@@ -3147,7 +3156,7 @@ export function createOrchestrator(
     // landed veto below). Without the hook (a preset with no identity store)
     // there is no identity and no scope change: the runner composes normal
     // mode with the display-name line.
-    const attended = ctx.source !== 'routine';
+    const attended = isAttendedTurn(ctx);
     if (bus.hasService(AGENTS_IDENTITY_GET_HOOK)) {
       let read: AgentIdentityAtSpawn | null = null;
       try {
@@ -3767,17 +3776,19 @@ export function createOrchestrator(
     // (see partitionConnectorsBySignIn). A rejected refresh still has a row,
     // so it is kept and surfaces as connector-needs-reconnect below.
     //
-    // Slice 6 — EXCEPT on a routine turn (`ctx.source` is stamped host-side by
-    // routines' fire.ts): there nobody is watching to sign in again, and one
-    // expired connector would fail the whole run. So a routine also goes
-    // without a connector whose sign-in needs doing again (status-batch's
-    // marker; any fault keeps it, today's behaviour). An interactive chat
-    // keeps failing with connector-needs-reconnect: that error is what tells
-    // the person to sign in again. (@ax/decisions' replay also stamps
-    // source:'routine', but it calls `tool:execute:<name>` directly and never
-    // reaches agent:invoke, so it never gets here.)
+    // Slice 6 — EXCEPT on an unattended turn (`!isAttendedTurn(ctx)`: a
+    // routine, stamped host-side by routines' fire.ts, or — TASK-1091 — an
+    // external turn): there nobody present can sign in again, and one expired
+    // connector would fail the whole run. So such a turn also goes without a
+    // connector whose sign-in needs doing again (status-batch's marker; any
+    // fault keeps it, today's behaviour). On an external turn, failing would
+    // also show the owner's connector state to someone without access.
+    // An interactive chat keeps failing with connector-needs-reconnect: that
+    // error is what tells the person to sign in again. (@ax/decisions' replay
+    // also stamps source:'routine', but it calls `tool:execute:<name>` directly
+    // and never reaches agent:invoke, so it never gets here.)
     let connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
-    if (ctx.source === 'routine') {
+    if (!isAttendedTurn(ctx)) {
       connectorSignIn = await skipConnectorsNeedingReconnect(
         bus,
         ctx,
@@ -4175,12 +4186,14 @@ export function createOrchestrator(
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
-      // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
+      // Only not-signed-in skips carry refs: a needs-reconnect skip (unattended
       // turns, slice 6) has a row, so re-asking presence would answer yes and
-      // retire the session on every turn. Harmless: only a routine turn makes
-      // a needs-reconnect skip, and the next routine turn retires an idle
+      // retire the session on every turn. Harmless: only an unattended turn
+      // makes a needs-reconnect skip. The next routine turn retires an idle
       // session anyway (see routineRetire); a queued one into a busy session
-      // is told the spawn-time skips instead (skippedConnectorsBySession).
+      // is told the spawn-time skips instead (skippedConnectorsBySession). An
+      // external session (TASK-1091) goes on without the connector until it is
+      // retired for another reason or idles out: less reach, the safe side.
       const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
       if (skippedRefs.length > 0) {
         skippedConnectorRefsBySession.set(sessionId, skippedRefs);

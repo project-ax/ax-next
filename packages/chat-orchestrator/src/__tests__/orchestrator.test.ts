@@ -6,6 +6,7 @@ import {
   createLogger,
   reject,
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+  type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -1702,7 +1703,7 @@ describe('chat-orchestrator', () => {
   // -------------------------------------------------------------------------
 
   // silentCtx plus a host-set source.
-  function sourcedCtx(sessionId: string, source: 'routine' | 'user') {
+  function sourcedCtx(sessionId: string, source: AgentContextSource) {
     return makeAgentContext({
       sessionId,
       agentId: 'test-agent',
@@ -1763,6 +1764,22 @@ describe('chat-orchestrator', () => {
     const allowedTools = await invokeAndReadAllowedTools(
       { allowedTools: ['file.read'], mcpConfigIds: [] },
       sourcedCtx('s3', 'user'),
+    );
+    expect(allowedTools).toEqual([
+      'file.read',
+      'search_catalog',
+      'request_capability',
+      'skill_propose',
+      'connector_propose',
+    ]);
+  });
+
+  // TASK-1091 — an external turn is unattended, but it is not a routine run:
+  // the routine-only tools stay a routine's (`=== 'routine'`, not "unattended").
+  it('TASK-1091: an external turn of a non-wildcard agent does not see routine_report', async () => {
+    const allowedTools = await invokeAndReadAllowedTools(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s4', 'external'),
     );
     expect(allowedTools).toEqual([
       'file.read',
@@ -2827,8 +2844,12 @@ describe('chat-orchestrator', () => {
       sessionId: string,
       attached: Record<string, ReturnType<typeof oauthConnector>> = { gmail: GMAIL },
       opts: {
-        /** Stamp `source:'routine'` on the turn ctx (routines' fire.ts does). */
-        routine?: boolean;
+        /**
+         * Stamp this host-set `source` on the turn ctx (routines' fire.ts
+         * stamps `'routine'`; TASK-1091's `'external'` is a person with no
+         * access to the agent).
+         */
+        source?: AgentContextSource;
         /** Extra services (e.g. `mcp-oauth:status-batch`). */
         extra?: Record<string, ServiceHandler>;
         /** Extra plugin config (e.g. the subscriber / status bounds). */
@@ -2873,13 +2894,13 @@ describe('chat-orchestrator', () => {
       });
       const reqId = `r-${sessionId}`;
       const turnCtx =
-        opts.routine === true
+        opts.source !== undefined
           ? makeAgentContext({
               sessionId,
               agentId: 'test-agent',
               userId: 'test-user',
               reqId,
-              source: 'routine',
+              source: opts.source,
               logger: createLogger({ reqId, writer: () => undefined }),
             })
           : turnErrorCtx(sessionId, reqId);
@@ -3078,7 +3099,8 @@ describe('chat-orchestrator', () => {
       }
     });
 
-    describe('slice 6: a ROUTINE turn goes without a connector whose sign-in needs doing again', () => {
+    // TASK-1091: an EXTERNAL turn too — nobody present can sign in again.
+    describe('slice 6: an UNATTENDED turn (routine or external) goes without a connector whose sign-in needs doing again', () => {
       function statusBatch(answer: () => Promise<unknown>) {
         const asked: unknown[] = [];
         const services: Record<string, ServiceHandler> = {
@@ -3092,14 +3114,15 @@ describe('chat-orchestrator', () => {
       const marksGmail = () =>
         statusBatch(async () => ({ needsReconnect: ['gmail'], shared: ['gmail'], signIns: {} }));
 
-      it('routine + expired Gmail → skipped, the turn completes, the event says needs-reconnect', async () => {
+      it.each(['routine', 'external'] as const)('%s + expired Gmail → skipped, the turn completes, the event says needs-reconnect', async (source) => {
         const vault = buildVaultHooks({ rows: [PROVIDER_REF, LINEAR_REF], rejected: [GMAIL_REF] });
         const sb = marksGmail();
+        const sessionId = `${source}-expired`;
         const { outcome, turnErrors, sandboxIn, skippedEvents, mocks } = await invoke(
           vault,
-          'rt-expired',
+          sessionId,
           { gmail: GMAIL, linear: LINEAR },
-          { routine: true, extra: sb.services },
+          { source, extra: sb.services },
         );
         expect(outcome.kind).toBe('complete');
         expect(turnErrors).toEqual([]);
@@ -3117,7 +3140,7 @@ describe('chat-orchestrator', () => {
           /^Connectors whose sign-in expired, off for this chat .*: "Gmail"\. .*sign in to it again/,
         );
         expect(skippedEvents).toEqual([
-          { reqId: 'r-rt-expired', connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
+          { reqId: `r-${sessionId}`, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
         ]);
         expect(JSON.stringify(skippedEvents)).not.toContain('account:');
       });
@@ -3129,7 +3152,7 @@ describe('chat-orchestrator', () => {
           vault,
           'rt-mixed',
           { gmail: GMAIL, linear: LINEAR },
-          { routine: true, extra: sb.services },
+          { source: 'routine', extra: sb.services },
         );
         expect(outcome.kind).toBe('complete');
         // Linear was skipped by presence first, so only Gmail is asked about.
@@ -3171,7 +3194,7 @@ describe('chat-orchestrator', () => {
       ])('status-batch %s → the connector is kept (today\'s routine behaviour: the open fails)', async (_label, extra) => {
         const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
         const { outcome, skippedEvents } = await invoke(vault, `rt-keep-${_label}`, { gmail: GMAIL }, {
-          routine: true,
+          source: 'routine',
           ...(extra !== undefined ? { extra } : {}),
           config: { signInStatusTimeoutMs: 20 },
         });
@@ -7312,8 +7335,11 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     sessionId: string;
     conversationId?: string;
     reqId: string;
-    /** Host-set origin; `'routine'` marks a run with no person present. */
-    source?: 'routine' | 'user';
+    /**
+     * Host-set origin; `'routine'` marks a run with no person present,
+     * `'external'` (TASK-1091) one whose person present has no access.
+     */
+    source?: AgentContextSource;
     /** When given, every log line the turn writes is pushed here. */
     lines?: string[];
   }) {
@@ -8257,11 +8283,16 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       );
     }
 
-    async function routineTurn(h: { bus: HookBus }, reqId: string) {
+    /** A turn nobody with access attends: a routine fire, or (TASK-1091) an external turn. */
+    async function unattendedTurn(
+      h: { bus: HookBus },
+      reqId: string,
+      source: 'routine' | 'external' = 'routine',
+    ) {
       fireTurnEnd(h.bus, 's-1', reqId);
       await h.bus.call<unknown, AgentOutcome>(
         'agent:invoke',
-        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId, source: 'routine' }),
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId, source }),
         { message: { role: 'user', content: 'Scheduled check-in.' } },
       );
     }
@@ -8332,7 +8363,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       const store = identityStore({ bootstrap: 'pending' });
       const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
 
-      await routineTurn(h, 'req-r1');
+      await unattendedTurn(h, 'req-r1');
 
       const cfg = counters.openInputs[0]!.owner.agentConfig;
       // The people's Instructions still reach an unattended run; bootstrap
@@ -8359,7 +8390,48 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         'agents:identity:get': store.service,
       });
 
-      await routineTurn(h, 'req-r1');
+      await unattendedTurn(h, 'req-r1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.allowedTools).toEqual([]); // still the wildcard
+      expect(cfg.disallowedTools).toEqual(['update_identity', 'complete_bootstrap']);
+    });
+
+    // TASK-1091 — an external turn (a person with no access to the agent is
+    // present) is unattended: no first-run setup, and no identity tools, so
+    // nobody without access can rewrite the agent. @ax/agents' executors
+    // refuse such a call anyway; this is the catalog side.
+    it('an external turn never bootstraps and is offered neither identity tool', async () => {
+      const store = identityStore({ bootstrap: 'pending' });
+      const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
+
+      await unattendedTurn(h, 'req-e1', 'external');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      // The people's Instructions still reach it; bootstrap mode never does.
+      expect(cfg.identity).toEqual({
+        identity: 'I am Pip',
+        soul: 'Kind',
+        instructions: 'Be brief',
+        bootstrapMode: false,
+      });
+      expect(cfg.allowedTools).not.toContain('update_identity');
+      expect(cfg.allowedTools).not.toContain('complete_bootstrap');
+      // Unattended is not a routine run: no routine-only tools either.
+      expect(cfg.allowedTools).not.toContain('routine_report');
+      expect(store.reads.map((r) => r.source)).toEqual(['external']);
+    });
+
+    it('an external turn of a wildcard agent hides both identity tools from its whole catalog', async () => {
+      const store = identityStore({ bootstrap: 'pending' });
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({
+          agent: { ...TEST_AGENT, allowedTools: [], mcpConfigIds: [] },
+        }),
+        'agents:identity:get': store.service,
+      });
+
+      await unattendedTurn(h, 'req-e1', 'external');
 
       const cfg = counters.openInputs[0]!.owner.agentConfig;
       expect(cfg.allowedTools).toEqual([]); // still the wildcard

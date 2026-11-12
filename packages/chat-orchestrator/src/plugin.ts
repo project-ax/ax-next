@@ -95,14 +95,15 @@ export function createChatOrchestratorPlugin(
             'never-signed-in connectors are not skipped: the session open fails on the missing credential and the turn ends with the generic proxy-open-failed (the pre-TASK-806 blocking behaviour)',
         },
         {
-          // Slice 6 — ROUTINE turns only: a marker read (no resolve, no
-          // refresh) naming the agent's connectors whose sign-in was rejected
-          // and not yet renewed, so the run goes without them instead of
-          // failing. Bounded (SIGN_IN_STATUS_TIMEOUT_MS); any fault keeps them.
+          // Slice 6 — UNATTENDED turns only (a routine, or — TASK-1091 — an
+          // external turn): a marker read (no resolve, no refresh) naming the
+          // agent's connectors whose sign-in was rejected and not yet renewed,
+          // so the run goes without them instead of failing. Bounded
+          // (SIGN_IN_STATUS_TIMEOUT_MS); any fault keeps them.
           // No cycle: @ax/mcp-oauth calls nothing this plugin registers.
           hook: 'mcp-oauth:status-batch',
           degradation:
-            'a routine whose connector sign-in expired is not run without it: the session open fails and the run ends connector-needs-reconnect, as it did before slice 6',
+            'a routine or external turn whose connector sign-in expired is not run without it: the session open fails and the run ends connector-needs-reconnect, as it did before slice 6',
         },
         {
           // TASK-989 — every FRESH spawn reads the agent's identity, soul,
