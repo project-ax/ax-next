@@ -895,6 +895,12 @@ export interface FactMemoryStatement {
    */
   savedBy?: 'person' | 'agent';
   /**
+   * `shared` = learned in a shared conversation, where people without access
+   * to this agent could see it (TASK-1091). Absent on private memories. Display
+   * only: it is never sent back to the server.
+   */
+  audience?: 'shared';
+  /**
    * The id of the turn this row was extracted from (TASK-626) — the person's
    * message OR the agent's reply (TASK-642: the rail reads which from the
    * turn, never from `about`) — the same id the thread keys that message

@@ -879,6 +879,7 @@ function isFactMemoryStatement(v: unknown): v is FactMemoryStatement {
   if (v.savedBy !== undefined && v.savedBy !== 'person' && v.savedBy !== 'agent') {
     return false;
   }
+  if (v.audience !== undefined && v.audience !== 'shared') return false;
   return true;
 }
 

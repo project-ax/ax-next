@@ -40,6 +40,8 @@ describe('workspaceApi facts memory boundary', () => {
     ['a non-string aboutText', { statements: [{ ...goodStatement, aboutText: 9 }], degraded: [] }],
     ['a bad savedBy value', { statements: [{ ...goodStatement, savedBy: 'system' }], degraded: [] }],
     ['a non-string savedBy', { statements: [{ ...goodStatement, savedBy: 1 }], degraded: [] }],
+    ['an audience of "private"', { statements: [{ ...goodStatement, audience: 'private' }], degraded: [] }],
+    ['an audience of "x"', { statements: [{ ...goodStatement, audience: 'x' }], degraded: [] }],
     ['a non-enum page visibility type', { statements: [], degraded: [], visibility: 3 }],
     ['a missing degraded', { statements: [] }],
     ['an invalid page visibility', { statements: [], degraded: [], visibility: 'world' }],
@@ -69,6 +71,12 @@ describe('workspaceApi facts memory boundary', () => {
     expect(page.statements[0]?.savedBy).toBe('person');
     expect(page.statements[1]?.savedBy).toBe('agent');
     expect(page.statements[2]?.closure).toBe('overridden');
+  });
+
+  it('recallMemory keeps a shared audience', async () => {
+    respondWith({ statements: [{ ...goodStatement, audience: 'shared' }], degraded: [] });
+    const page = await workspaceApi.recallMemory('a1', {});
+    expect(page.statements[0]?.audience).toBe('shared');
   });
 
   it('rememberMemory resolves only a body carrying a nonblank id', async () => {

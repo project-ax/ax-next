@@ -343,6 +343,8 @@ export const LEARNED_NOT_ENABLED =
 // Memory settings list (TASK-892).
 export const MEMORY_KIND_PREFERENCE = 'Preference';
 export const MEMORY_KIND_FACT = 'Fact';
+export const MEMORY_SHARED_BADGE = 'Shared';
+export const MEMORY_SHARED_BADGE_HINT = 'Learned in a shared conversation. Anyone there could see it.';
 export const MEMORY_NOTED_TODAY = 'Today';
 export const MEMORY_NOTED_YESTERDAY = 'Yesterday';
 
