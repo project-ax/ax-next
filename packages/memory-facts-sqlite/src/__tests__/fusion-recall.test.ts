@@ -164,6 +164,59 @@ describe('@ax/memory-facts-sqlite — sparse channel', () => {
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(out.records[0]!.id);
   });
+
+  // TASK-1091 — the sparse channel's own audience predicate. A bus-level recall
+  // cannot pin it: the temporal channel also scopes, so the one shared row would
+  // be proposed THERE even if this channel forgot the clause (and hydration
+  // drops private rows afterwards), masking the omission. So drive the channel
+  // directly. CHANNEL_LIMIT + 5 private rows that match the query BETTER (short
+  // rows, term carries most of each) would fill every bm25 slot; only a scope
+  // pushed into THIS query reaches the older, longer, shared row.
+  it('counts its slots against shared rows on a shared recall, not a widened pool', async () => {
+    const databasePath = join(dir, 'facts.db');
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    const ctx = makeAgentContext({
+      sessionId: 's',
+      agentId: 'a',
+      userId: 'u',
+      workspace: { rootPath: '/tmp' },
+    });
+    const shared = await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+      statements: [
+        {
+          about: 'user',
+          relation: 'stated',
+          value:
+            'a rambling note about many unrelated things and places and people and Khalid and yet more words besides',
+          when: JAN,
+          audience: 'shared',
+        },
+      ],
+    });
+    await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+      statements: Array.from({ length: CHANNEL_LIMIT + 5 }, () => ({
+        about: 'user',
+        relation: 'likes_artist',
+        value: 'Khalid',
+        when: SEP,
+        audience: 'private' as const,
+      })),
+    });
+    await plugin.shutdown?.();
+
+    const db = openDatabase(databasePath).driver;
+    toClose.push(db);
+    const ids = sparseChannel(db, {
+      agentKey: AGENT_A,
+      match: buildFtsMatchQuery('Khalid')!,
+      activeOnly: true,
+      limit: CHANNEL_LIMIT,
+      audience: 'shared',
+    });
+    expect(ids).toEqual([shared.records[0]!.id]);
+  });
 });
 
 // ---------------------------------------------------------------------------
