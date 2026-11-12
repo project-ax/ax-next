@@ -254,8 +254,11 @@ export function sparseChannel(
  *
  * `vec0` takes `MATCH` plus `k` and nothing else — no arbitrary predicate can
  * ride along — so tenant scope, `about` and `activeOnly` all have to be
- * applied AFTERWARDS, in application code. Over-fetching 4x (the reference
- * implementation's factor) is what stops a tenant whose nearest neighbours are
+ * applied AFTERWARDS, in application code. The same goes for `ownerUserId` and
+ * the audience filter: they are checked on the base table after vec0's top-N,
+ * so a shared recall can be starved when its nearest neighbours are mostly
+ * private rows. That fails CLOSED (fewer dense candidates, never a leaked
+ * row). Over-fetching 4x (the reference implementation's factor) is what stops a tenant whose nearest neighbours are
  * mostly another tenant's rows from ending up with an empty dense channel.
  * It is a heuristic, not a guarantee: a big enough multi-tenant store can
  * still starve this channel, and the fix then is a per-tenant vec0 partition,
