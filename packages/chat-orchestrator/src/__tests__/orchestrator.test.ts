@@ -8915,7 +8915,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       const q = queueRecorder();
       let failOpen = true;
       let rowPointsAtFailed = false;
-      const { h, counters } = await makeKeepaliveHarness({
+      const { h } = await makeKeepaliveHarness({
         'session:queue-work': q.service,
         'session:is-alive': async (_c, input: unknown) => ({
           alive: rowPointsAtFailed && (input as { sessionId: string }).sessionId === 's-1',
