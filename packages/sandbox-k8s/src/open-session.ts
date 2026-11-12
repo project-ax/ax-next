@@ -307,41 +307,49 @@ export function createOpenSession(deps: OpenSessionDeps) {
           { owner: input.owner },
         );
         const memoryMounts = (resolved as { mounts?: unknown } | null)?.mounts;
-        const m =
-          Array.isArray(memoryMounts) && memoryMounts.length === 1
-            ? (memoryMounts[0] as Record<string, unknown> | null)
-            : null;
-        if (
-          m === null ||
-          typeof m !== 'object' ||
-          m.kind !== 'nfs' ||
-          m.role !== 'memory' ||
-          m.readOnly !== true ||
-          m.mountPath !== '/memory' ||
-          typeof m.server !== 'string' ||
-          m.server === '' ||
-          typeof m.exportPath !== 'string' ||
-          m.exportPath === '' ||
-          typeof m.subPath !== 'string' ||
-          m.subPath === ''
-        ) {
-          throw new PluginError({
-            code: 'invalid-return',
-            plugin: PLUGIN_NAME,
-            hookName: HOOK_NAME,
-            message:
-              "sandbox:memory-mounts must return exactly one read-only nfs mount at /memory",
+        // TASK-1091 — an empty list is the resolver withholding the view (memory
+        // does that for a shared session), so the pod gets no memory volume and
+        // the runner no AX_MEMORY_ROOT. Only an empty list: any other answer must
+        // be exactly one well-formed mount. This provider never reads the
+        // session's audience itself; whether to show memory is memory's call.
+        const withheld = Array.isArray(memoryMounts) && memoryMounts.length === 0;
+        if (!withheld) {
+          const m =
+            Array.isArray(memoryMounts) && memoryMounts.length === 1
+              ? (memoryMounts[0] as Record<string, unknown> | null)
+              : null;
+          if (
+            m === null ||
+            typeof m !== 'object' ||
+            m.kind !== 'nfs' ||
+            m.role !== 'memory' ||
+            m.readOnly !== true ||
+            m.mountPath !== '/memory' ||
+            typeof m.server !== 'string' ||
+            m.server === '' ||
+            typeof m.exportPath !== 'string' ||
+            m.exportPath === '' ||
+            typeof m.subPath !== 'string' ||
+            m.subPath === ''
+          ) {
+            throw new PluginError({
+              code: 'invalid-return',
+              plugin: PLUGIN_NAME,
+              hookName: HOOK_NAME,
+              message:
+                'sandbox:memory-mounts must return no mount, or exactly one read-only nfs mount at /memory',
+            });
+          }
+          mounts.push({
+            kind: 'nfs',
+            role: 'memory',
+            mountPath: '/memory',
+            server: m.server,
+            exportPath: m.exportPath,
+            subPath: m.subPath,
+            readOnly: true,
           });
         }
-        mounts.push({
-          kind: 'nfs',
-          role: 'memory',
-          mountPath: '/memory',
-          server: m.server,
-          exportPath: m.exportPath,
-          subPath: m.subPath,
-          readOnly: true,
-        });
       } catch (err) {
         podLog.error('memory_mounts_failed', {
           err: err instanceof Error ? err.message : String(err),

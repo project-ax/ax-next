@@ -12,6 +12,7 @@ import {
   ALICE,
   BOB,
   engineRecord,
+  eventsNamed,
   makeMemoryHarness,
   type MemoryHarness,
 } from './harness.js';
@@ -212,7 +213,7 @@ describe('memory facts export — real engine + real volume', () => {
 describe('sandbox:memory-mounts resolver', () => {
   async function makeVolumeHarness(options: Parameters<typeof makeMemoryHarness>[1] = {}) {
     const { h, hostRoot } = await makeExportHarness(options);
-    const resolveMounts = (owner: { agentId: string; userId: string }) =>
+    const resolveMounts = (owner: { agentId: string; userId: string; audience?: string }) =>
       h.bus.call<unknown, { mounts: Array<Record<string, unknown>> }>(
         'sandbox:memory-mounts',
         h.ctx(),
@@ -234,6 +235,54 @@ describe('sandbox:memory-mounts resolver', () => {
       readOnly: true,
     });
     expect(mounts[0]!.subPath).toMatch(/^[0-9a-f]{64}\/permanent\/memory\/facts$/);
+  });
+
+  // TASK-1091. The export is every fact the agent has, scoped by owner but not
+  // by audience, so a session whose replies people without access to the
+  // agent can read gets no file view at all. An audience this build doesn't
+  // know fails closed, like `audienceOf`.
+  it.each([
+    ['a shared', 'shared'],
+    ['an unknown-audience', 'public'],
+  ])('%s session gets no memory mount and nothing is flushed', async (_label, audience) => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness();
+    // Straight into the engine: `remember` would schedule an export of its own.
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: 'launch_plan',
+        relation: 'codename',
+        value: 'Nightjar',
+        when: '2026-09-01T00:00:00.000Z',
+        ownerUserId: ALICE,
+        audience: 'private',
+      },
+    ]);
+    const spy = vi.spyOn(h.bus, 'call');
+    try {
+      const out = await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience });
+      expect(out).toEqual({ mounts: [] });
+      // Withheld before the access check and the flush: nothing is granted,
+      // so nothing is read, checked or written.
+      expect(spy.mock.calls.map(([hook]) => hook)).toEqual(['sandbox:memory-mounts']);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await readdir(hostRoot)).toEqual([]);
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([
+      {
+        level: 'info',
+        event: 'memory_mount_withheld',
+        bindings: { agentId: 'agent-1', reason: 'shared-audience' },
+      },
+    ]);
+  });
+
+  it('a session stamped private still gets its mount', async () => {
+    const { h, resolveMounts } = await makeVolumeHarness();
+    const { mounts } = await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' });
+    expect(mounts).toHaveLength(1);
+    expect(mounts[0]).toMatchObject({ kind: 'nfs', role: 'memory', mountPath: '/memory', readOnly: true });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([]);
   });
 
   it('publishes the projection into the host volume during mount resolution', async () => {

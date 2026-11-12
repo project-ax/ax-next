@@ -1259,6 +1259,40 @@ describe('sandbox:open-session (k8s)', () => {
       await h.close();
     });
 
+    // TASK-1091. Memory answers no mount at all to withhold the view from a
+    // shared session. That is a decision, not a malformed reply: the pod opens
+    // with its /files home and no /memory volume.
+    it('a resolver returning zero mounts opens the pod without a /memory volume', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await harnessWithMemory(api, []);
+      const spy = vi.spyOn(h.bus, 'call');
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), INPUT);
+      expect(api.creates).toHaveLength(1);
+      const body = api.creates[0]!.body as {
+        spec: {
+          containers: Array<{
+            env: Array<{ name: string; value: string }>;
+            volumeMounts?: Array<{ name: string; mountPath: string }>;
+          }>;
+          volumes?: Array<{ name: string; nfs?: { server: string; path: string } }>;
+        };
+      };
+      const runner = body.spec.containers[0]!;
+      expect((runner.volumeMounts ?? []).map((m) => m.mountPath)).toContain('/files');
+      expect((runner.volumeMounts ?? []).map((m) => m.mountPath)).not.toContain('/memory');
+      // The /files export is the pod's only NFS volume.
+      expect((body.spec.volumes ?? []).flatMap((v) => (v.nfs ? [v.nfs.server] : []))).toEqual([
+        'files.example.invalid',
+      ]);
+      const env = Object.fromEntries(runner.env.map((e) => [e.name, e.value]));
+      expect(env.AX_USERFILES_ROOT).toBe('/files');
+      expect('AX_MEMORY_ROOT' in env).toBe(false);
+      // Nothing rolled the session back.
+      expect(spy.mock.calls.some(([hook]) => hook === 'session:terminate')).toBe(false);
+      await h.close();
+    });
+
     it('a resolver failure terminates the session and aborts pod creation', async () => {
       const api = makeMockK8sApi();
       api.setReadResponses(readyPod());
@@ -1304,7 +1338,9 @@ describe('sandbox:open-session (k8s)', () => {
 
     it.each([
       ['two mounts', [MEMORY_MOUNT, MEMORY_MOUNT]],
-      ['zero mounts', []],
+      // Not zero mounts: only an empty list withholds the view.
+      ['a null entry alone', [null]],
+      ['a hole alone', new Array(1)],
       ['mounts not an array', { mounts: 'nope' }],
       ['mounts null', null],
       ['mounts undefined', undefined],

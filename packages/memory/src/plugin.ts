@@ -182,6 +182,13 @@ export const MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS = CORE_MEMORY_PRE_CAPTURE_
 export const CAPTURE_REFUSED_EVENT = 'memory_capture_refused';
 
 /**
+ * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
+ * view because people without access to the agent can read its replies
+ * (TASK-1091). Bindings: `agentId` and `reason: 'shared-audience'`.
+ */
+export const MEMORY_MOUNT_WITHHELD_EVENT = 'memory_mount_withheld';
+
+/**
  * The model every memory operation runs on — design §3.0's extractor, pinned.
  *
  * A `provider/model-id` REF: `parseModelRef` splits on the FIRST slash, so the
@@ -379,7 +386,8 @@ export interface MemoryPluginConfig {
    * Writes each agent's facts as files to the memory volume (`/memory` in
    * runners) — the only file view of facts — and registers
    * `memory:export:flush` and `sandbox:memory-mounts`. Without it there is no
-   * file view; recall is unaffected.
+   * file view; recall is unaffected. A shared session never gets the view:
+   * `sandbox:memory-mounts` answers it no mount (TASK-1091).
    */
   exports?: MemoryExportConfig;
 }
@@ -661,6 +669,22 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               owner.userId.trim() === ''
             ) {
               throw invalid('owner must carry an agentId and userId', 'sandbox:memory-mounts');
+            }
+            // TASK-1091. A session whose replies people without access to the
+            // agent can read gets no file view at all. The export holds every
+            // fact the agent has, scoped by owner but not by audience, so
+            // mounting it would hand the room every row recall withholds.
+            // The owner's audience is the session's own: host-stamped, and
+            // out of the runner's reach. `audienceOf` fails closed, so a value
+            // this build doesn't know withholds the view too. Decided before
+            // the access check and the flush: nothing is granted, so there is
+            // nothing to check and nothing to write.
+            if (audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private') {
+              ctx.logger.info(MEMORY_MOUNT_WITHHELD_EVENT, {
+                agentId: owner.agentId,
+                reason: 'shared-audience',
+              });
+              return { mounts: [] };
             }
             const ownerCtx: AgentContext = {
               ...ctx,
