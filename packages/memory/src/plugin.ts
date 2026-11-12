@@ -13,6 +13,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
+import { recallFacts } from './audience.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 import {
@@ -236,6 +237,9 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  *   is a property of the RESOLVED agent — `resolveMemoryAccess` asks
  *   `agents:resolve` on every operation — and never of the request, so the
  *   payload cannot carry it.
+ * - `audience` decides which rows a turn may recall (TASK-1091). The host
+ *   stamps it on `ctx`, and a payload that could set it could widen a shared
+ *   turn's read back to every row.
  *
  * We REFUSE rather than ignore. Ignoring is the shape that reads as working:
  * a caller (or an injected tool argument) sets the field, gets a `200`, and
@@ -254,6 +258,9 @@ const FORBIDDEN_PAYLOAD_FIELDS = [
   'ownerType',
   'teamId',
   'agentId',
+  // Also the read-only display field on `MemoryStatement`, refused like
+  // `savedBy` so a caller echoing it back learns it did nothing.
+  'audience',
 ] as const;
 
 /**
@@ -310,6 +317,13 @@ interface EngineFactRecord {
    * retracted resurfaces it. Anything but `'user'` counts as not the person.
    */
   sourceRole?: string;
+  /**
+   * Who could see the turn this row was learned in (TASK-1091): `'shared'`,
+   * `'private'`, or absent on a row stored before audiences existed, which
+   * reads as private. `recallFacts` refuses a non-shared row in a shared read;
+   * `toMemoryStatement` refuses any other value and forwards only `'shared'`.
+   */
+  audience?: string;
 }
 
 interface EngineRecallOutput {
@@ -736,9 +750,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // (TASK-665), and a page is filled to `limit` after hiding, not
           // before.
           const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
-            const raw = await bus.call<unknown, EngineRecallOutput | null>(
-              FACTS_RECALL_HOOK,
+            // `recallFacts`, like every engine read here: it adds the turn's
+            // audience scope (TASK-1091), last, and refuses a row a shared
+            // turn may not see.
+            const raw = await recallFacts<EngineRecallOutput>(
+              bus,
               ctx,
+              FACTS_RECALL_HOOK,
               {
                 limit: engineLimit,
                 // Owner scope, pushed DOWN into the engine's query rather than
@@ -858,7 +876,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             const group: EngineFactRecord[] = [];
             for (const about of abouts) {
               const slotRows = requireEngineResult(
-                await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+                await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
                   limit: 200,
                   ...memoryReadScope(access),
                   about,
@@ -922,7 +940,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // and an old human correction (never closed) is exactly the row
               // that falls off it — which would crown a newer outranked row.
               const activeRows = requireEngineResult(
-                await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+                await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
                   limit: 200,
                   ...memoryReadScope(access),
                   about: rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId),
@@ -2026,6 +2044,10 @@ const PRIOR_ROWS_PER_ABOUT = 200;
  * conversation feed is: a conversation belongs to one person. Access was
  * resolved by `observe()` before this runs. Throws on an unreadable answer;
  * the caller fails open (see `TwinCheck`).
+ *
+ * Audience-scoped too, like every engine read (`recallFacts`): a shared turn
+ * checks its statements against shared rows only, as if no private row
+ * existed. The same holds for the two reads below.
  */
 async function readPriorRows(
   bus: HookBus,
@@ -2034,7 +2056,7 @@ async function readPriorRows(
 ): Promise<PriorRow[]> {
   const rows: PriorRow[] = [];
   for (const about of query.abouts) {
-    const raw = await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
       about,
       ownerUserId: query.ownerUserId,
       conversationId: query.conversationId,
@@ -2072,7 +2094,7 @@ async function readRetractedValue(
   ctx: AgentContext,
   query: { about: string; slot: string; value: string; ownerUserId: string },
 ): Promise<boolean> {
-  const raw = await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+  const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
     about: query.about,
     ownerUserId: query.ownerUserId,
     slots: [query.slot],
@@ -2102,7 +2124,7 @@ async function readRetractedRows(
 ): Promise<PriorRow[]> {
   const rows: PriorRow[] = [];
   for (const about of query.abouts) {
-    const raw = await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
       about,
       ownerUserId: query.ownerUserId,
       activeOnly: false,
@@ -2384,6 +2406,11 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
   ) {
     malformed('kind is present but not a supported knowledge kind');
   }
+  // TASK-1091. Absent is a row stored before audiences existed, which reads as
+  // private. Any other value is a row nobody can say who saw.
+  if (row.audience !== undefined && row.audience !== 'private' && row.audience !== 'shared') {
+    malformed('audience is present but not a known audience');
+  }
 
   return {
     id: row.id,
@@ -2399,5 +2426,7 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
     ...(typeof row.sourceTurnId === 'string' && row.sourceTurnId !== ''
       ? { sourceTurnId: row.sourceTurnId }
       : {}),
+    // Only `shared` is a label; a private or unstamped row carries no key.
+    ...(row.audience === 'shared' ? { audience: 'shared' as const } : {}),
   };
 }

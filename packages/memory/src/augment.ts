@@ -62,6 +62,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { memoryReadScope, resolveMemoryAccess } from './access.js';
+import { recallFacts } from './audience.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // The profile whitelist IS the normalizer's slot list — the same constant, not
 // a copy (design 3.3/4.1, Invariant 4).
@@ -178,6 +179,9 @@ interface EngineFactRecord {
   // Read by `selectProfileRows`/`needsSlotHistory` (TASK-648): an extracted
   // row from the person's own turn can bring back a value they retracted.
   sourceRole?: string;
+  // Checked by `recallFacts` on a shared turn's reads (TASK-1091), never
+  // rendered: every row that reaches the block is one this turn may see.
+  audience?: string;
 }
 
 interface EngineRecallOutput {
@@ -584,7 +588,9 @@ export async function buildMemoryBlock(
   const ownerScope = memoryReadScope(access);
 
   const recall = async (input: Record<string, unknown>): Promise<EngineRecallOutput> => {
-    const raw = await bus.call<unknown, EngineRecallOutput | null>(factsRecallHook, ctx, {
+    // A shared turn's block holds shared statements only (TASK-1091):
+    // `recallFacts` adds that scope last and refuses a row outside it.
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, factsRecallHook, {
       ...ownerScope,
       activeOnly: true,
       ...input,

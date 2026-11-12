@@ -111,6 +111,13 @@ export interface MemoryStatement {
    * `memory_note` rows.
    */
   sourceTurnId?: string;
+  /**
+   * `'shared'` when the statement was learned in a conversation people
+   * without access to the agent could read (TASK-1091). A read-only display
+   * field: absent for a private row and for one stored before memory kept
+   * audiences, and refused on every input payload.
+   */
+  audience?: 'shared';
 }
 
 /**
