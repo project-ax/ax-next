@@ -501,6 +501,57 @@ describe('notes, closure and provenance', () => {
   });
 });
 
+describe('a note in a shared turn (TASK-1091)', () => {
+  /** Someone without access to the agent can read this turn's reply. */
+  function sharedCtx(h: MemoryHarness): AgentContext {
+    return h.ctx({ conversationId: 'conv-channel', source: 'external', audience: 'shared' });
+  }
+
+  it.each(['user', 'User', ' user ', 'user:someone', `user:${ALICE}`])(
+    'memory_note about a person (%j) in a shared turn saves nothing',
+    async (about) => {
+      const h = await withHarness();
+      const spy = vi.spyOn(h.bus, 'call');
+      const result = await note(h, { about, relation: 'lives_in', value: 'Paris-secret-7' }, sharedCtx(h));
+
+      expect(result).toEqual({
+        ok: false,
+        error: 'forbidden',
+        message:
+          "NOT SAVED: nothing was written to memory — do not tell the person it was saved. Notes about a person aren't saved in a shared conversation.",
+      });
+      expectRefused(result, 'forbidden');
+      // No engine call of any kind: no twin read, no write.
+      expect(spy.mock.calls.some(([hook]) => String(hook).startsWith('memory:facts:'))).toBe(false);
+      spy.mockRestore();
+      expect(readRows(h.databasePath)).toHaveLength(0);
+      const failures = eventsNamed(h.logs, NOTE_FAILED_EVENT);
+      expect(failures.map((line) => line.bindings.reason)).toEqual(['forbidden']);
+      expect(JSON.stringify(failures)).not.toContain('Paris-secret-7');
+
+      // The control: the same note in the owner's private turn is saved.
+      expect(
+        await note(h, { about, relation: 'lives_in', value: 'Paris-secret-7' }, h.ctx({ conversationId: 'conv-9' })),
+      ).toEqual({ ok: true });
+    },
+  );
+
+  it('a note about anything else is saved, stamped shared', async () => {
+    const h = await withHarness();
+    expect(
+      await note(h, { about: 'billing_service', relation: 'owner', value: 'Dana' }, sharedCtx(h)),
+    ).toEqual({ ok: true });
+    const db = new Database(h.databasePath, { readonly: true });
+    try {
+      expect(db.prepare(`SELECT about, audience, conversation_id FROM ${FACTS_TABLE}`).all()).toEqual([
+        { about: 'billing_service', audience: 'shared', conversation_id: 'conv-channel' },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('the note tool degrades, loudly and without leaking', () => {
   const NOTE = { about: 'user', relation: 'visited', value: 'Rome-secret-99' };
 

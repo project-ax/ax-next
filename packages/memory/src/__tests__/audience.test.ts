@@ -1,14 +1,23 @@
-import { HookBus, makeAgentContext, type AgentContext, type LlmCallOutput } from '@ax/core';
+import Database from 'better-sqlite3';
+import {
+  HookBus,
+  makeAgentContext,
+  type AgentContext,
+  type AgentContextAudience,
+  type LlmCallOutput,
+} from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { recallAudienceScope, recallFacts } from '../audience.js';
+import { isPersonSubject, recallAudienceScope, recallFacts, recordFacts } from '../audience.js';
+import { OBSERVER_RUN_EVENT } from '../failure.js';
 import { MEMORY_NOTE_TOOL_HOOK } from '../note-tool.js';
-import { FACTS_RECALL_HOOK } from '../plugin.js';
+import { FACTS_RECALL_HOOK, FACTS_RECORD_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
 import {
   ALICE,
   engineRecord,
+  eventsNamed,
   makeMemoryHarness,
   type MemoryHarness,
   type MemoryHarnessOptions,
@@ -442,5 +451,304 @@ describe('recallFacts — the one door every engine read goes through', () => {
   ])('leaves %s to the caller, unchanged', async (_label, answer) => {
     const { bus } = engineAnswering(answer);
     expect(await recallFacts(bus, turn('shared'), FACTS_RECALL_HOOK, {})).toBe(answer);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The write side: every statement is stamped with its turn's audience, and a
+// shared turn stores nothing about a person.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every row in the engine's table, closed ones included, straight off disk:
+ * the stamp a row was STORED with, which no read path is trusted to show.
+ */
+function storedRows(h: MemoryHarness): Array<{
+  about: string;
+  value: string;
+  audience: string | null;
+  conversation_id: string | null;
+}> {
+  const db = new Database(h.databasePath, { readonly: true });
+  try {
+    return db
+      .prepare('SELECT about, value, audience, conversation_id FROM memory_facts_v1 ORDER BY rowid')
+      .all() as never;
+  } finally {
+    db.close();
+  }
+}
+
+/** The subjects a shared turn stores nothing about (Review focus 4). */
+const PERSON_SUBJECTS = [
+  'user',
+  'User',
+  'USER',
+  ' user ',
+  '\tuser\n',
+  'user:abc',
+  'User:Bob',
+  `  user:${ALICE}  `,
+  'user:',
+];
+/** Subjects that only look like one. A false match costs a fact, so these stay. */
+const NOT_PERSON_SUBJECTS = [
+  'users',
+  'username',
+  'user_research',
+  'User Research',
+  'superuser',
+  'the user',
+  'user-abc',
+  'assistant',
+  'billing_service',
+];
+
+/**
+ * The extractor's answer in the speaker tests: four ways a model writes the
+ * speaker, and one fact about something else.
+ */
+const SPEAKER_FACTS = [
+  { subject: 'user', predicate: 'lives_in', object: 'Paris' },
+  { subject: 'User', predicate: 'prefers', object: 'tea' },
+  { subject: ' user ', predicate: 'role', object: 'admin' },
+  { subject: 'user:abc', predicate: 'works_at', object: 'Initech' },
+  { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+];
+const SPEAKER_TURN = [
+  {
+    role: 'user',
+    content: 'I live in Paris, I prefer tea, I am an admin and I work at Initech. Dana owns the billing service.',
+  },
+  { role: 'assistant', content: 'Thanks, noted.' },
+];
+
+/** One `chat:end` observer pass, awaited. */
+async function observeTurn(h: MemoryHarness, ctx: AgentContext, messages: unknown[] = SPEAKER_TURN): Promise<void> {
+  await h.bus.fire('chat:end', ctx, { outcome: { kind: 'complete', messages } });
+  await h.settleObserver();
+}
+
+describe("@ax/memory — every write carries its turn's audience; a shared turn keeps no speaker facts (TASK-1091)", () => {
+  it('a shared turn stores no speaker facts', async () => {
+    const h = await makeHarness({ llm: () => extractionReply(SPEAKER_FACTS) });
+    await observeTurn(h, sharedCtx(h));
+
+    // The billing row alone: nothing about the speaker however the model
+    // wrote it, and so nothing under the owner's own key either.
+    expect(storedRows(h)).toEqual([
+      { about: 'billing_service', value: 'Dana', audience: 'shared', conversation_id: CHANNEL },
+    ]);
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 4 });
+  });
+
+  it('a private turn still rewrites the speaker', async () => {
+    const h = await makeHarness({ llm: () => extractionReply(SPEAKER_FACTS) });
+    await observeTurn(h, h.ctx({ conversationId: PRIVATE_CONV }));
+
+    // Everything is stored, stamped private, and the rewrite stays narrow:
+    // only the exact literal `user` becomes the owner's key (`subject.ts`).
+    expect(storedRows(h).map((r) => `${r.about}|${r.value}|${r.audience}`).sort()).toEqual(
+      [
+        `user:${ALICE}|Paris|private`,
+        'User|tea|private',
+        ' user |admin|private',
+        'user:abc|Initech|private',
+        'billing_service|Dana|private',
+      ].sort(),
+    );
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 5, speakerFacts: 0 });
+  });
+
+  it('a shared turn whose every fact is about a person writes nothing, and says why', async () => {
+    const h = await makeHarness({ llm: () => extractionReply(SPEAKER_FACTS.slice(0, 4)) });
+    const spy = vi.spyOn(h.bus, 'call');
+    await observeTurn(h, sharedCtx(h));
+
+    expect(spy.mock.calls.some(([hook]) => hook === FACTS_RECORD_HOOK)).toBe(false);
+    expect(storedRows(h)).toEqual([]);
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({
+      outcome: 'skipped',
+      reason: 'only-speaker-facts',
+      speakerFacts: 4,
+    });
+  });
+
+  it.each([
+    ['an absent-audience', 'private', undefined],
+    ['a private', 'private', 'private'],
+    ['a shared', 'shared', 'shared'],
+  ] as const)("every write is stamped with its turn's audience (%s turn: %s)", async (_label, stamped, audience) => {
+    const h = await makeHarness({
+      llm: () => extractionReply([{ subject: 'billing_service', predicate: 'owner', object: 'Dana' }]),
+    });
+    const ctx = h.ctx({ conversationId: CHANNEL, ...(audience !== undefined ? { audience } : {}) });
+
+    // The person's writes...
+    const { id } = await h.remember({ about: 'launch_plan', relation: 'date', value: 'March' }, ctx);
+    await h.correct({ id, about: 'launch_plan', relation: 'date', value: 'April', reason: 'changed' }, ctx);
+    // ...the agent's note...
+    expect(
+      await h.bus.call(MEMORY_NOTE_TOOL_HOOK, ctx, {
+        input: { about: 'standup', relation: 'held_at', value: '9am' },
+      }),
+    ).toEqual({ ok: true });
+    // ...and the observer's batch.
+    await observeTurn(h, ctx, [
+      { role: 'user', content: 'Dana owns the billing service.' },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+
+    const rows = storedRows(h);
+    expect(rows.map((r) => r.value).sort()).toEqual(['9am', 'April', 'Dana', 'March']);
+    // Present on every row, private ones too: a row stored from now on always
+    // says who could see the turn it was learned in.
+    for (const row of rows) expect(row.audience, row.value).toBe(stamped);
+  });
+
+  // `memory:remember` drops nothing itself (only owner routes call it, with
+  // no audience), so this is the write door's own refusal, end to end.
+  it.each(['user', 'User', ' user ', `user:${ALICE}`, 'user:someone'])(
+    'memory:remember about %j in a shared turn is refused forbidden, and nothing is stored',
+    async (about) => {
+      const h = await makeHarness();
+      const spy = vi.spyOn(h.bus, 'call');
+      const failure: unknown = await h.remember({ about, relation: 'lives_in', value: 'Paris' }, sharedCtx(h)).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+      expect((failure as Error).message).not.toContain('Paris');
+      expect(spy.mock.calls.some(([hook]) => hook === FACTS_RECORD_HOOK)).toBe(false);
+      expect(storedRows(h)).toEqual([]);
+    },
+  );
+});
+
+describe('isPersonSubject — what a shared turn stores nothing about', () => {
+  it.each(PERSON_SUBJECTS)('%j is a person', (about) => {
+    expect(isPersonSubject(about)).toBe(true);
+  });
+
+  it.each(NOT_PERSON_SUBJECTS)('%j is not', (about) => {
+    expect(isPersonSubject(about)).toBe(false);
+  });
+});
+
+describe('recordFacts — the one door every engine write goes through', () => {
+  const ANSWER = { records: [{ id: 'row-1' }] };
+  const turn = (audience?: AgentContextAudience): AgentContext =>
+    makeAgentContext({
+      sessionId: 's',
+      agentId: 'agent-1',
+      userId: ALICE,
+      ...(audience !== undefined ? { audience } : {}),
+    });
+
+  /** A bus whose engine records every write it is sent, and answers {@link ANSWER}. */
+  function engineRecording(): { bus: HookBus; written: unknown[] } {
+    const bus = new HookBus();
+    const written: unknown[] = [];
+    bus.registerService(FACTS_RECORD_HOOK, 'stub-engine', async (_c, input) => {
+      written.push(input);
+      return ANSWER;
+    });
+    return { bus, written };
+  }
+
+  it.each([
+    ['an absent audience', 'private', undefined],
+    ['a private turn', 'private', 'private'],
+    ['a shared turn', 'shared', 'shared'],
+    ['an audience this build does not know', 'shared', 'public'],
+  ] as const)('%s stamps every statement %s, over whatever it carried', async (_label, stamped, audience) => {
+    const { bus, written } = engineRecording();
+    const statements = [
+      { about: 'a', value: '1' },
+      { about: 'b', value: '2', audience: 'private' },
+      { about: 'c', value: '3', audience: 'shared' },
+    ];
+    await recordFacts(bus, turn(audience as AgentContextAudience | undefined), FACTS_RECORD_HOOK, {
+      batchKey: 'batch-1',
+      statements,
+    });
+    expect(written).toEqual([
+      {
+        batchKey: 'batch-1',
+        statements: [
+          { about: 'a', value: '1', audience: stamped },
+          { about: 'b', value: '2', audience: stamped },
+          { about: 'c', value: '3', audience: stamped },
+        ],
+      },
+    ]);
+    // The stamp goes on what is sent, not on the caller's objects.
+    expect(statements[1]).toEqual({ about: 'b', value: '2', audience: 'private' });
+  });
+
+  it.each(PERSON_SUBJECTS)(
+    'a shared write about %j is refused forbidden: the whole batch, naming nothing, sending nothing',
+    async (about) => {
+      const { bus, written } = engineRecording();
+      const failure: unknown = await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, {
+        statements: [
+          { about: 'billing_service', value: 'Dana' },
+          { about, value: 'Paris-secret' },
+        ],
+      }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+      expect((failure as Error).message).not.toContain('Paris-secret');
+      expect(written).toEqual([]);
+    },
+  );
+
+  it('an audience this build does not know refuses a person subject too', async () => {
+    const { bus, written } = engineRecording();
+    await expect(
+      recordFacts(bus, turn('public' as AgentContextAudience), FACTS_RECORD_HOOK, {
+        statements: [{ about: 'user', value: 'Paris' }],
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(written).toEqual([]);
+  });
+
+  it.each(NOT_PERSON_SUBJECTS)('a shared write about %j goes through, stamped shared', async (about) => {
+    const { bus, written } = engineRecording();
+    await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements: [{ about }] });
+    expect(written).toEqual([{ statements: [{ about, audience: 'shared' }] }]);
+  });
+
+  it('a private write sends a person subject on: the speaker rewrite already ran upstream', async () => {
+    for (const ctx of [turn(), turn('private')]) {
+      const { bus, written } = engineRecording();
+      await recordFacts(bus, ctx, FACTS_RECORD_HOOK, {
+        statements: [{ about: `user:${ALICE}` }, { about: 'User' }],
+      });
+      expect(written).toEqual([
+        { statements: [{ about: `user:${ALICE}`, audience: 'private' }, { about: 'User', audience: 'private' }] },
+      ]);
+    }
+  });
+
+  it("returns the engine's answer as it came", async () => {
+    const { bus } = engineRecording();
+    expect(await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements: [{ about: 'x' }] })).toBe(ANSWER);
+  });
+
+  // Both engines validate with `map`, which skips a hole, so a hole sent on
+  // as one would never be looked at.
+  it('sends a hole on as a statement with no subject, for the engine to refuse', async () => {
+    const { bus, written } = engineRecording();
+    const statements: object[] = [{ about: 'a' }];
+    statements.length = 2;
+    await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements });
+    expect(written).toEqual([{ statements: [{ about: 'a', audience: 'shared' }, { audience: 'shared' }] }]);
+    expect(1 in (written[0] as { statements: unknown[] }).statements).toBe(true);
   });
 });

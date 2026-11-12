@@ -602,6 +602,47 @@ describe('every statement records the turn it came from', () => {
   });
 });
 
+describe("a shared conversation's passes (TASK-1091)", () => {
+  // The stub extracts one fact per line, about whoever said it: `user` for
+  // the person's lines, `assistant` for the agent's. In a shared conversation
+  // the speaker could be anyone in the room, so its lines are dropped.
+  it('store no speaker facts, and stamp the rest shared, on the idle pass and at chat:end', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    const shared = env.h.ctx({ conversationId: CONV, source: 'external', audience: 'shared' });
+
+    await env.exchange('I moved to Boston last week.', 'Welcome to Boston!', 'req-1', shared);
+    await idle(env);
+    expect(eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
+      outcome: 'recorded',
+      trigger: 'idle',
+      recorded: 1,
+      speakerFacts: 1,
+    });
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely in spring.', 'req-2', shared);
+    await env.chatEnd(shared);
+    expect(eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
+      outcome: 'recorded',
+      trigger: 'chat-end',
+      recorded: 1,
+      speakerFacts: 1,
+      contextOnly: 2,
+    });
+
+    const db = new Database(env.h.databasePath, { readonly: true });
+    try {
+      expect(
+        db.prepare('SELECT about, value, audience, conversation_id FROM memory_facts_v1 ORDER BY rowid').all(),
+      ).toEqual([
+        { about: 'assistant', value: 'Welcome to Boston!', audience: 'shared', conversation_id: CONV },
+        { about: 'assistant', value: 'Paris is lovely in spring.', audience: 'shared', conversation_id: CONV },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('a conversation another plugin refuses is not captured (TASK-908)', () => {
   const TASK_CONV = 'conv-task';
 

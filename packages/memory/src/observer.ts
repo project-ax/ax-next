@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 
+import type { AgentContextAudience } from '@ax/core';
+
 import { attributeFacts, attributeSpeakers } from './attribution.js';
+import { isPersonSubject } from './audience.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
@@ -90,6 +93,13 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
+   * Every fact was about a person, in a shared turn (TASK-1091,
+   * `toStatements`): the speaker could be anyone in the room, so none is
+   * stored. Counted and named apart, like the self-reports, so a shared
+   * conversation that keeps nothing leaves a trace of why.
+   */
+  | { kind: 'skipped'; reason: 'only-speaker-facts'; speakerFacts: number }
+  /**
    * Every fact was a positive reading of something the dialogue only ever
    * negated ("I never lived in Denver" -> `lives_in | Denver`) — TASK-652,
    * `negation.ts`. Counted and named apart, like the self-reports.
@@ -151,6 +161,12 @@ export type ObserverResult =
        * nothing is wrong with the extractor when this is non-zero.
        */
       selfReports: number;
+      /**
+       * Facts dropped because they were about a person in a shared turn
+       * (TASK-1091, `toStatements`). Always 0 in a private turn. Not
+       * `unusable`: this is the rule working, not the extractor failing.
+       */
+      speakerFacts: number;
       /**
        * Facts dropped because they read a negated statement as the positive
        * fact (TASK-652, `negation.ts`). Not `unusable`: the fact parsed fine,
@@ -235,6 +251,13 @@ export interface RunObserverInput {
   record: ObserverRecordFn;
   /** Owner of every statement this batch writes. From `ctx`, never a payload. */
   ownerUserId: string;
+  /**
+   * Who can read the turn's reply: `audienceOf(ctx)`, never a payload
+   * (TASK-1091). In a shared turn every fact about a person is dropped before
+   * the speaker rewrite (`toStatements`). Required, so a caller can't forget
+   * it and quietly get the private behaviour.
+   */
+  audience: AgentContextAudience;
   /**
    * The turn's conversation, as the batch IDENTITY: hashed into `batchKey`.
    * Absent on a turn with no conversation.
@@ -374,12 +397,16 @@ async function extractAndRecord(
   const mapped = toStatements(polarity.facts, {
     ownerUserId: input.ownerUserId,
     conversationId: input.statementConversationId,
+    audience: input.audience,
   });
   if (mapped.statements.length === 0) {
     // "The extractor found nothing durable" and "the extractor found things
     // and every one was unreadable" are different events, and only the first
     // is ordinary.
     if (mapped.unusable > 0) return { kind: 'all-unusable', unusable: mapped.unusable };
+    if (mapped.speakerFacts > 0) {
+      return { kind: 'skipped', reason: 'only-speaker-facts', speakerFacts: mapped.speakerFacts };
+    }
     if (mapped.selfReports > 0) {
       return { kind: 'skipped', reason: 'only-self-reports', selfReports: mapped.selfReports };
     }
@@ -424,6 +451,7 @@ async function extractAndRecord(
     recorded: result.records.length,
     unusable: mapped.unusable,
     selfReports: mapped.selfReports,
+    speakerFacts: mapped.speakerFacts,
     negated: polarity.negated,
     contextOnly: attributed.contextOnly,
     twins,
@@ -697,15 +725,31 @@ export function buildBatchKey(input: {
  * instant is, and two validators for one rule is the drift invariant 4 is
  * about. What this does is produce a CANONICAL `Z` form from whatever the
  * model wrote, and reject what cannot be read at all.
+ *
+ * ## A shared turn keeps no speaker facts (TASK-1091)
+ *
+ * In a turn people without access to the agent can read, every fact about a
+ * person (`isPersonSubject`: `user`, `User`, ` user `, `user:<anyone>`) is
+ * dropped and counted as `speakerFacts`, FIRST, before the speaker rewrite
+ * could file it under the owner's key. A deterministic filter on the
+ * extractor's output, not a prompt change: the extraction prompt is
+ * fingerprint-pinned. `recordFacts` refuses any that get past it.
  */
 export function toStatements(
   facts: ReadonlyArray<ExtractedFact & SourceTurn>,
-  opts: { ownerUserId: string; conversationId?: string | undefined },
-): { statements: ObserverStatement[]; unusable: number; selfReports: number } {
+  opts: { ownerUserId: string; conversationId?: string | undefined; audience: AgentContextAudience },
+): { statements: ObserverStatement[]; unusable: number; selfReports: number; speakerFacts: number } {
   const statements: ObserverStatement[] = [];
   let unusable = 0;
   let selfReports = 0;
+  let speakerFacts = 0;
   for (const fact of facts) {
+    // Anything but a private turn drops, which fails closed. Before every
+    // other check, so the count doesn't depend on them.
+    if (opts.audience !== 'private' && isPersonSubject(fact.subject)) {
+      speakerFacts += 1;
+      continue;
+    }
     // TASK-612: the agent describing what rules/instructions/memory it can
     // see is a snapshot of one session's system prompt, not a fact about the
     // world, and it goes stale the moment a person saves a Rule. Dropped
@@ -726,6 +770,8 @@ export function toStatements(
       // literal subject `user`; the store is keyed by agent alone, so left
       // as-is every person talking to a team agent collapses into one
       // subject. Same rewrite a read uses, so a read finds what this wrote.
+      // Only a private turn's `user` gets here: a shared turn's was dropped
+      // above.
       about: rewriteSpeaker(fact.subject, opts.ownerUserId),
       relation: fact.predicate,
       value: fact.object,
@@ -766,7 +812,7 @@ export function toStatements(
       ...(slot !== null ? { slot } : {}),
     });
   }
-  return { statements, unusable, selfReports };
+  return { statements, unusable, selfReports, speakerFacts };
 }
 
 /**

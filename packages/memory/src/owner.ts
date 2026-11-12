@@ -29,6 +29,14 @@ import { PLUGIN_NAME } from './plugin-name.js';
  * owner is a bucket every unattributed statement falls into and every user of
  * a shared agent can then read.
  *
+ * **Nor is a conversation with a person who has no access to the agent**
+ * (`source: 'external'`, TASK-1091). That turn runs as a real user who answers
+ * for it (for a channel agent, whoever connected the channel), so its
+ * statements are that user's, like anyone's. The person who spoke is not the
+ * owner, and keeping their words out of the owner's memory is `audience`'s
+ * job, not ownership's: a shared turn's rows are stamped shared and say
+ * nothing about a person (`audience.ts`).
+ *
  * ## The two refusals
  *
  * `AgentContext.userId` is typed as a required non-empty string, so neither
