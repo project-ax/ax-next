@@ -1,7 +1,8 @@
 # Slack channel (design)
 
-**Status:** proposed 2026-11-09.
+**Status:** proposed 2026-11-09. Spike (TASK-1090) done 2026-11-12; §7 has the answers. Memory decided 2026-11-12 (§2a).
 **Owner:** Vinay · **Started:** 2026-11-09 · **Code cited at:** `5474a59c9` (main)
+**Cards:** TASK-1090–1099 (§9).
 
 People talk to AX agents in Slack. Everyone can DM their own personal agent. A
 team agent can join a public channel, and anyone at the company can talk to it
@@ -40,10 +41,12 @@ the owner chose to put there.
 7. **Owners never need Slack install rights.** A Slack admin connects the
    workspace once. After that, every agent works in Slack through the shared
    app straight away. A dedicated bot with its own @name is an extra that an
-   admin approves with one click (phase 2).
+   admin approves with one click on Slack's own install screen (phase 2).
 8. **The shared app's name defaults to the AX instance's name.** We take it from
-   `branding:get` and turn it into a valid handle, falling back to `ax`. The
-   admin can change it when connecting the workspace and rename it later.
+   `branding:get` and turn it into a valid name (§7 Q3), falling back to `ax`.
+   The admin can change it when connecting the workspace and rename it later.
+9. **Memory follows who sees the reply, not who is talking** (§2a). Something
+   said privately is never recalled in a channel.
 
 ## 2. Who is talking, and what they can do
 
@@ -56,41 +59,106 @@ the owner chose to put there.
 **Attended** means it works like the web chat: permission requests show up as
 buttons, and only the person whose turn it is can click them.
 
-**External** means the agent's owner isn't there. The turn runs in the owner's
-`ctx` (routines do the same, `packages/routines/src/fire.ts:267`). Connector
-calls that need approval wait for the owner in Today. The bot says in the thread
-that it's waiting for its owner. No identity edits are allowed.
+**External** means nobody with access to the agent is there. The turn runs as
+a real person who answers for it, the way a routine runs as its owner
+(`packages/routines/src/fire.ts:267`): for a channel agent, that's **the person
+who connected the channel**. A team has no user id, and memory refuses made-up
+owners (`packages/memory/src/owner.ts`). Connector calls that need approval wait
+for that person in Today. The bot says in the thread that it's waiting for its
+owner. No identity edits are allowed.
 
 The Slack sender's name and ID go into the message *content*, for example
 `[Slack · #support · Alice (U123)]: …`. That label is untrusted text the model
 reads. Nothing ever treats it as permission to do something.
 
+## 2a. Memory: decided by who sees the reply
+
+Two problems with today's memory once an agent sits in a channel:
+
+1. **Private facts could leak.** A team agent's memory is shared across the
+   team (`packages/memory/src/access.ts`). Something a member told it in a
+   private web chat could be recalled in a public channel, in front of
+   everyone, even when the asker is a trusted teammate.
+2. **Statements get pinned on the wrong person.** The extractor records whoever
+   is talking as `user:<ctx.userId>` (`packages/memory/src/subject.ts`). In an
+   external turn `ctx.userId` is the person who connected the channel, so a
+   passing Slack user's "I live in Paris" would be stored as a fact about them,
+   permanently.
+
+The privacy risk comes from **who sees the answer**, not who asks. So each turn
+carries a second, separate field, **`ctx.audience: 'private' | 'shared'`**.
+channel-slack sets `shared` for channels and group DMs, and `private` for 1:1
+DMs. Everything else (the web app, routines) is `private`, as today.
+`ctx.source` still decides approvals; `ctx.audience` decides memory.
+
+| | Private turn (DM, web) | Shared turn (channel) |
+|---|---|---|
+| **Recall** | Everything, as today | Only statements learned in `shared` turns, plus the agent's instructions and files |
+| **Capture** | As today, stamped `private` | Stamped `shared` |
+| **Facts about the speaker** | As today | **Not captured.** Only facts about the work: projects, decisions, processes, who owns what. |
+
+Knowledge flows one way: shared → private, never back. What the agent learned
+in #support can be recalled anywhere. What someone said privately is never
+recalled in a channel.
+
+- The owner's memory view labels shared statements ("learned in #support") so
+  they can be deleted.
+- Each connected channel has a "Let the agent remember this channel" switch,
+  on by default.
+- **Instructions and files aren't covered by this.** A channel agent's
+  instructions and files are readable in every turn. The connect screen says
+  plainly that they're visible to anyone in the channel.
+
+**Rejected:**
+- *No memory in channels at all:* the safest, but the bot forgets every thread,
+  which loses most of a team bot's value. It stays the fallback if the stamping
+  turns out costly.
+- *Full memory everywhere:* leaks as in problem 1.
+- *Decide by who's asking* (full recall if the asker has AX access): the same
+  leak, because a teammate asking in #general still shows the answer to all of
+  #general.
+
 ## 3. The shared app (phase 1)
 
 ### Connecting a workspace (Slack admin, once)
 
-1. In AX admin settings, **Connect Slack** shows a short guide and a link to the
-   Slack page where the admin creates an **app configuration token**. That page
-   is the one step Slack doesn't let us automate: no OAuth flow hands out that
-   token.
-2. The admin pastes the token and confirms the bot's name. The name defaults to
-   the branding name in handle form, otherwise `ax`.
-3. AX creates the shared app with `apps.manifest.create`. The manifest sets the
-   name, avatar (the branding logo, if Slack lets us set it — see §7), scopes,
-   and the event and interactivity URLs.
+1. In AX admin settings, **Connect Slack** shows a short guide and a link to
+   https://api.slack.com/apps → "Your App Configuration Tokens" → **Generate
+   Token**. That page is the one step Slack doesn't let us automate: no OAuth
+   flow hands out that token. The admin pastes **both** values: the access token
+   (`xoxe.xoxp-…`, valid for 12 hours) and the refresh token (`xoxe-…`).
+2. The admin confirms the bot's name. The name defaults to the branding name,
+   checked against Slack's name rules (§7 Q3), otherwise `ax`.
+3. AX creates the shared app with `apps.manifest.create`, then sets the avatar
+   (the branding logo) with `apps.icon.set`. The manifest sets the name, scopes,
+   and the event and interactivity URLs. Slack sends no challenge and needs no
+   manual Verify click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
-   the bot token.
-5. AX stores the configuration token's refresh token and renews it with
-   `tooling.tokens.rotate`.
+   the bot token. This click is the only one a person must make, and only
+   someone with install rights can make it.
+5. AX keeps the **refresh token** and gets a fresh access token from it with
+   `tooling.tokens.rotate` whenever it needs one. Access tokens are never stored
+   past their 12 hours.
 
 **Renaming:** admin settings → Slack → **Bot name**. AX applies it with
-`apps.manifest.update`. We need to confirm in the spike that a rename alone
-doesn't force a reinstall (§7).
+`apps.manifest.update`. There's no reinstall, and the bot token keeps working
+(§7 Q3). The name people see changes; the @handle underneath stays as it was at
+install. Slack shows mentions by current name, so people don't notice.
 
 **The secrets:** bot token, signing secret, client secret, and the
-configuration token. All live in the credentials store, readable only by
-`@ax/channel-slack`. The configuration token can create apps in the workspace,
-so it is admin-only to set, and nobody can ever read it back.
+configuration **refresh token**. All live in the credentials store, readable
+only by `@ax/channel-slack`.
+
+The refresh token is the dangerous one. It can create apps in the workspace,
+and it **outlives both renewal and `auth.revoke`** (§7, configuration tokens),
+so AX can't retire it through the API. Hence:
+
+- It's admin-only to set, and nobody can ever read it back.
+- Admin settings shows whose token it is, since configuration tokens belong to
+  one person, and lets another admin replace it.
+- **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
+  tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
+  can't do that last step itself.
 
 ### Scopes (smallest set)
 
@@ -116,16 +184,28 @@ belongs to `@ax/channel-slack`. Agents get no Slack-specific fields.
 A team agent that wants its own `@ada`:
 
 1. The owner clicks **Request Slack bot** in agent settings and picks the name
-   and avatar. AX rejects a name already used by its other bots in that
-   workspace.
+   and avatar. AX checks Slack's name rules, and **rejects a name already used
+   by its other bots in that workspace**. Slack itself allows duplicates: it
+   quietly gives the second bot a suffixed handle (`axspikea2`), and in the
+   spike the duplicate fooled even the person testing it (§7 Q5).
 2. The workspace's AX-side Slack admins get a DM from the shared bot:
    **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**. The
    same request shows up in AX admin settings.
-3. **Approve:** AX creates the app with the configuration token, and the admin
-   clicks **Allow** on Slack's install screen. Only someone who's allowed to
-   install apps can grant that, and the configuration token doesn't skip it.
-4. The owner hears "@ada is live — `/invite @ada` to a channel". Until then the
-   agent keeps working through the shared app, so waiting never blocks anyone.
+3. **Approve** creates the app (`apps.manifest.create` + `apps.icon.set`) and
+   opens Slack's install screen straight away. The admin's **Allow** there is
+   the approval: one click, on Slack's own screen. There's no second AX-side
+   approve step. Only someone who's allowed to install apps can click Allow, and
+   the configuration token doesn't skip it.
+4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
+   bot's real handle as read back from `users.info`. Until then the agent keeps
+   working through the shared app, so waiting never blocks anyone.
+
+Everything except Allow is automatic. In the spike, Slack sent no challenge and
+needed no Verify click (§7 Q1).
+
+**Plan limit:** free Slack allows at most 10 custom or third-party apps, and
+each dedicated bot is one of them. The request form shows how many are in use,
+and phase 2 is really for paid workspaces.
 
 For a dedicated bot, being invited to a channel *is* the binding: the app's id
 tells us which agent it is. Disconnecting deletes the app with
@@ -141,7 +221,8 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    app id. Then:
    - Check the v0 signature over the raw body (`req.body: Buffer`), and reject
      requests older than 5 minutes.
-   - Answer the `url_verification` challenge.
+   - Answer the `url_verification` challenge, if one ever comes: the spike saw
+     none (§7 Q1).
    - Reply 200 within 3 seconds and run the turn afterwards.
    - Ignore retries we've already seen (`event_id`).
    - Ignore our own bot's messages.
@@ -158,9 +239,12 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
 5. **Reply.** Subscribe to `chat:stream-chunk`, `chat:phase`, `chat:turn-end`,
    `chat:turn-error` and `chat:permission-request` filtered by `reqId`, the way
    channel-web does (`channel-web/src/server/plugin.ts:807-857`). Then:
-   - Stream into the thread with throttled `chat.update`, about once a second
-     (Slack's rate limit), or Slack's streaming-message API if the spike finds
-     it fits.
+   - Stream into the thread with `chat.startStream` / `appendStream` /
+     `stopStream`. They work in channel threads (pass `recipient_user_id` and
+     `recipient_team_id`) and need only `chat:write`. A stream lasts at most
+     10 minutes, the same as our default chat timeout, so a turn still running
+     at 10 minutes falls back to throttled `chat.update` (Tier 3, about
+     50 a minute).
    - Convert Markdown to mrkdwn and split long replies.
    - Collapse tool calls into one status line, matching the web's #1156.
    - Artifacts and charts become a link to the web app.
@@ -192,6 +276,21 @@ Each one needs an explicit answer for `'external'`, plus a test.
 - **Subscriber risk:** a subscriber that branches on `=== 'routine'` would now
   treat external turns as attended. That is exactly what the audit is for.
 
+**`ctx.audience: 'private' | 'shared'`** is a new context field (§2a). It's
+separate from `source` on purpose: `source` says who is present and decides
+approvals; `audience` says who sees the reply and decides memory.
+
+- It's absent everywhere it isn't set, and absent means `private`, as today.
+- Memory stamps each statement with the audience it was captured in.
+- A `shared` turn recalls only `shared` statements and captures no facts about
+  the speaker.
+- **Alternate implementation:** any channel with more than one reader, such as a
+  mailing list or a shared web room.
+- **Leaky field names:** none. It describes the readers, not the transport.
+- **Subscriber risk:** a reader that ignores the field gets today's behavior,
+  which leaks in exactly the case this field exists for. So memory's recall
+  **must** branch on it, and a test pins that.
+
 **Finding a user by verified email** is a new service hook on the auth plugin
 (for example `auth:find-user-by-email`). Tier-3 attended turns and personal-agent
 DMs need it.
@@ -215,30 +314,31 @@ connectors. The protections are:
 - The identity check reads Slack's API, never the message.
 - Secrets are readable only by this plugin.
 
-## 7. Spike first (TASK card 0)
+## 7. Spike results (TASK-1090, 2026-11-12)
 
-These shape the design, and I haven't verified them against Slack's current
-API:
+Run against the real Canopy workspace by Vinay, a workspace admin, using two
+throwaway apps (`ax-spike-a`, `ax-spike-b`) behind a temporary tunnel. Both apps
+were deleted afterwards, the bot tokens confirmed dead (`account_inactive`),
+and the configuration token revoked. "Tested" means we watched it happen;
+"docs" means only Slack's documentation says so.
 
-1. Does `apps.manifest.create` check the event URL right away, before we've
-   stored the signing secret it returns? If so, how do we accept that first
-   challenge safely?
-2. Can the avatar be set through the API, or only uploaded by hand?
-3. Does renaming the bot with `apps.manifest.update` force a reinstall? Does the
-   @handle change along with the display name?
-4. With Slack's app-approval queue turned on, does a manifest-created app wait
-   in that queue as well? If so, phase 2 should send admins to Slack's queue
-   instead of building our own.
-5. Does Slack reject a bot @name that's already taken in the workspace?
-6. Streaming: throttled `chat.update`, or Slack's streaming-message API?
-7. Local dev on kind: Socket Mode, or a tunnel?
+| # | Question | Answer | Source |
+|---|---|---|---|
+| 1 | Does the event URL need verifying? | **No.** Neither `apps.manifest.create` nor `apps.manifest.update` sent a `url_verification` challenge. A DM to the installed bot arrived as a signed `event_callback` (`message`, `channel_type: im`) with no Verify click. The manifest docs say the URL must be "manually verified"; in practice it wasn't needed. | Tested |
+| 2 | Avatar by API? | **Yes.** `apps.icon.set` with the configuration token and a PNG returned `ok`. | Tested |
+| 3 | Rename | `apps.manifest.update` changing only the name: `permissions_updated: false`, no reinstall, and the bot token kept working. `real_name` changed; the @handle (`name`) **stayed as it was at install**. | Tested |
+| 3 | Name rules | Accepted: ASCII letters, digits, spaces, `-`, `_`, `.`, and long names. Rejected by `apps.manifest.validate`: reserved words (`slackbot`, `here`, `channel`, `everyone` → `invalid_reserved_word`), non-ASCII (`Café` → `bad_username`), and other symbols (`!!` → `invalid_name_specials`). The handle drops hyphens: `ax-spike-a` became `axspikea`. Docs: at most 21 characters for the handle, 35 for the app name, 80 for the bot's display name. | Tested + docs |
+| 4 | App approval | An admin installing a manifest-created app saw only Slack's normal Allow screen: no request, no wait. Slack's approval API (`admin.apps.approve`) is Enterprise-only. **Not seen:** what a regular member gets; the docs say members can't install restricted apps. The design needs no member installs. | Tested (admin only) + docs |
+| 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got handle `axspikea2`. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
+| 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API, falling back to `chat.update` after 10 minutes (§5). | Docs |
+| 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
+| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair, and **the old refresh token and earlier access tokens keep working**. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). | Tested |
+| — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
 
 ## 8. Open questions
 
-1. **Memory on external turns.** Should a channel agent recall what it learned
-   in other conversations, and should it learn from a channel conversation at
-   all? Recommendation: a channel agent's memory comes only from its own Slack
-   threads, and it gets no recall from the owner's other chats.
+1. ~~**Memory on external turns.**~~ **Decided 2026-11-12 (Vinay):** decide by
+   who sees the reply. See §2a.
 2. **Choosing a personal agent.** Recommendation: the default is the owner's
    personal agent, and a slash command can switch to another.
 3. **Who counts as a Slack admin for phase 2 approvals?** Recommendation: the
@@ -255,9 +355,11 @@ API:
 
 **Phase 1: shared app**
 
-- **0. Spike** on the §7 questions. Memory only, no product code.
-- **1. `ctx.source: 'external'`** plus the audit of all 8 consumers (§6). Has a
-  boundary review. Must merge before anything is switched on.
+- **0. Spike** on the §7 questions (TASK-1090). **Done 2026-11-12.**
+- **1. `ctx.source: 'external'` + `ctx.audience`** (TASK-1091): the audit of all
+  8 `source` consumers, plus memory's audience stamping, recall filter and
+  speaker rule (§2a, §6). Has a boundary review. Must merge before anything is
+  switched on.
 - **2. Find a user by verified email** (auth service hook). Has a boundary
   review.
 - **3. `@ax/channel-slack`: connect a workspace and DM a personal agent.** Covers:
