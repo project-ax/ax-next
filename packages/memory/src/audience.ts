@@ -34,8 +34,10 @@ export function recallAudienceScope(ctx: Pick<AgentContext, 'audience'>): { audi
 }
 
 /**
- * Call the engine's recall hook with the turn's audience scope, spread LAST so
- * no caller-built input can override it.
+ * Call the engine's recall hook with the turn's audience scope, and only that.
+ * Any `audience` a caller built into `input` is dropped first, whatever the
+ * turn. Spreading the scope last isn't enough on its own: a private turn's
+ * scope is empty, so it would let a caller's value through.
  *
  * ## The backstop
  *
@@ -64,8 +66,9 @@ export async function recallFacts<TOut>(
   input: Record<string, unknown>,
 ): Promise<TOut | null> {
   const scope = recallAudienceScope(ctx);
+  const { audience: _callerAudience, ...rest } = input;
   const out = await bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {
-    ...input,
+    ...rest,
     ...scope,
   });
   if (scope.audience === 'shared') requireSharedRows(out, hookName);

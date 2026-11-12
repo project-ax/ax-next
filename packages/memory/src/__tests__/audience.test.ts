@@ -346,13 +346,28 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
   });
 
   const REMEMBER = { about: 'launch_plan', relation: 'date', value: PUBLIC };
-  it.each([
-    // A shared turn asking to widen its own read.
-    ['memory:recall', 'private', 'shared', {}],
-    ['memory:recall', 'shared', undefined, {}],
-    ['memory:remember', 'shared', undefined, REMEMBER],
-    ['memory:remember', 'private', 'shared', REMEMBER],
-  ] as const)(
+  /**
+   * Every hook `rejectPrivilegeFields` guards in `plugin.ts`, each with a
+   * payload that is otherwise well formed, so the field is the only thing
+   * left to refuse.
+   */
+  const GUARDED_HOOKS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['memory:recall', {}],
+    ['memory:remember', REMEMBER],
+    ['memory:correct', { id: 'row-1', ...REMEMBER, reason: 'changed' }],
+    ['memory:forget', { ids: ['row-1'] }],
+    ['memory:unforget', { ids: ['row-1'] }],
+    ['memory:uncorrect', { id: 'row-2', restore: 'row-1' }],
+    ['memory:recall-receipts', { conversationId: CHANNEL }],
+  ];
+  it.each(
+    GUARDED_HOOKS.flatMap(([hook, payload]) => [
+      // A shared turn asking to widen its own read.
+      [hook, 'private', 'shared', payload] as const,
+      // A private turn naming any audience at all.
+      [hook, 'shared', undefined, payload] as const,
+    ]),
+  )(
     'audience is not a caller-settable field: %s refuses audience %j (turn audience %j)',
     async (hook, audience, turnAudience, payload) => {
       const h = await makeHarness();
@@ -362,8 +377,8 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
         code: 'invalid-payload',
         message: expect.stringContaining('audience is not a caller-settable field'),
       });
-      // Refused before the store: nothing read, nothing written.
-      expect(spy.mock.calls.some(([called]) => called.startsWith('memory:facts:'))).toBe(false);
+      // Refused before anything else: no access check, nothing read, nothing written.
+      expect(spy.mock.calls.map(([called]) => called)).toEqual([hook]);
     },
   );
 });
@@ -442,6 +457,20 @@ describe('recallFacts — the one door every engine read goes through', () => {
       expect(asked).toEqual([{ limit: 5 }]);
     }
   });
+
+  // Spreading the scope last isn't enough on its own: a private turn's scope
+  // is empty, so it overrides nothing.
+  it.each(['shared', 'private', 'public', undefined])(
+    'a private read drops a caller-built audience %j: the scope comes from ctx alone',
+    async (audience) => {
+      for (const ctx of [turn(), turn('private')]) {
+        const { bus, asked } = engineAnswering({ statements: [], degraded: [] });
+        await recallFacts(bus, ctx, FACTS_RECALL_HOOK, { limit: 5, audience });
+        // Strict: a key holding `undefined` is still a key.
+        expect(asked).toStrictEqual([{ limit: 5 }]);
+      }
+    },
+  );
 
   // Each caller refuses these on its own terms; the wrapper adds nothing a
   // caller could mistake for an answer.
