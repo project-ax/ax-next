@@ -65,7 +65,8 @@ a real person who answers for it, the way a routine runs as its owner
 who connected the channel**. A team has no user id, and memory refuses made-up
 owners (`packages/memory/src/owner.ts`). Connector calls that need approval wait
 for that person in Today. The bot says in the thread that it's waiting for its
-owner. No identity edits are allowed.
+owner. No identity edits, skill authoring or connector requests are allowed,
+and both proposal tools are hidden from external turns.
 
 The Slack sender's name and ID go into the message *content*, for example
 `[Slack · #support · Alice (U123)]: …`. That label is untrusted text the model
@@ -101,8 +102,16 @@ Knowledge flows one way: shared → private, never back. What the agent learned
 in #support can be recalled anywhere. What someone said privately is never
 recalled in a channel.
 
-- The owner's memory view labels shared statements ("learned in #support") so
-  they can be deleted.
+- The owner's memory view labels shared statements so they can be deleted. It
+  says "Shared" for now. Naming the channel ("learned in #support") waits for
+  TASK-1094, since memory never sees a channel name.
+- A shared session gets no `/memory` file view. The export holds every fact the
+  agent has, so it would walk around the recall filter.
+- The speaker rule is a filter, not a prompt change. In a shared turn, any
+  statement whose subject is `user` or starts with `user:` is dropped.
+- Known gaps, accepted: the extractor may name the speaker from the sender
+  label; closing a slot is tenant-wide, so a private statement can close a
+  shared one; a Fix on a shared memory saves as private.
 - Each connected channel has a "Let the agent remember this channel" switch,
   on by default.
 - **Instructions and files aren't covered by this.** A channel agent's
@@ -257,17 +266,21 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
 ## 6. Hooks, and the boundary review
 
 **`ctx.source` gains `'external'`** (`packages/core/src/context.ts:226`). This is
-the most important change in the design. The 8 packages that test
-`source === 'routine'` have been treating "not a routine" as "the owner is
-here":
+the most important change in the design. Code that tests
+`source === 'routine'` has been treating "not a routine" as "the owner is
+here". The real surface is wider than a list of packages:
 
-- `chat-orchestrator`
-- `decisions` (`attendance.ts`, `pre-call.ts`, `plugin.ts`)
-- `memory` (`plugin.ts`, `conversation.ts`)
-- `conversations`
-- `agents/identity/tools`
+- the session, IPC and sandbox chain, whose enums rejected `'external'` and
+  whose schemas would have dropped `audience`
+- the orchestrator (attended turns, slice 6 connector skips, warm-session reuse)
+- the identity tools and `skill.propose`
+- decisions' attendance, and memory's conversation attribution
+- the routines gates, which already refuse non-routine turns
 
-Each one needs an explicit answer for `'external'`, plus a test.
+decisions and conversations only mention `source` in comments (decisions has
+used conversation origin since 2026-08-21). The full audit table lives in
+`docs/plans/2026-11-12-task-1091-ctx-external-audience-plan.md`. Each consumer
+needs an explicit answer for `'external'`, plus a test.
 
 - **Alternate implementation:** any channel where the person present isn't the
   agent's owner, such as email-in or a public web widget.
@@ -284,6 +297,11 @@ approvals; `audience` says who sees the reply and decides memory.
 - Memory stamps each statement with the audience it was captured in.
 - A `shared` turn recalls only `shared` statements and captures no facts about
   the speaker.
+- Memory reads go through one wrapper that adds the filter last. It throws if a
+  shared read returns a row not stamped shared, so an engine that ignores the
+  filter fails loudly.
+- Audience must be constant per conversation, because extraction batches turns
+  under the latest turn's context. TASK-1094 keys conversations so.
 - **Alternate implementation:** any channel with more than one reader, such as a
   mailing list or a shared web room.
 - **Leaky field names:** none. It describes the readers, not the transport.
@@ -356,10 +374,11 @@ and the configuration token revoked. "Tested" means we watched it happen;
 **Phase 1: shared app**
 
 - **0. Spike** on the §7 questions (TASK-1090). **Done 2026-11-12.**
-- **1. `ctx.source: 'external'` + `ctx.audience`** (TASK-1091): the audit of all
-  8 `source` consumers, plus memory's audience stamping, recall filter and
-  speaker rule (§2a, §6). Has a boundary review. Must merge before anything is
-  switched on.
+- **1. `ctx.source: 'external'` + `ctx.audience`** (TASK-1091): the audit of every
+  `source` consumer, plus memory's audience stamping, recall filter and
+  speaker rule (§2a, §6). Has a boundary review. Merges as one stack
+  with TASK-1094, the first card that produces `'external'` and `'shared'`.
+  Must land before anything is switched on.
 - **2. Find a user by verified email** (auth service hook). Has a boundary
   review.
 - **3. `@ax/channel-slack`: connect a workspace and DM a personal agent.** Covers:

@@ -328,7 +328,7 @@ describe('update_identity', () => {
     ).toEqual({
       ok: false,
       error: 'not-available',
-      message: "NOT SAVED: you can't change your identity in a run with no person present.",
+      message: "NOT SAVED: you can't change your identity in a run where nobody with access to this agent is present.",
     });
     expect(ih.scanned).toEqual([]);
     expect(ih.changed).toEqual([]);
@@ -762,7 +762,7 @@ describe('complete_bootstrap', () => {
     expect(await completeBootstrap(ih, pending, 'u1', {}, { source: 'routine' })).toEqual({
       ok: false,
       error: 'not-available',
-      message: "NOT DONE: first-run setup can't be finished in a run with no person present.",
+      message: "NOT DONE: first-run setup can't be finished in a run where nobody with access to this agent is present.",
     });
     expect((await get(ih, pending, 'u1')).bootstrap).toBe('pending');
   });

@@ -157,7 +157,7 @@ const UPDATE_MESSAGES: Record<
     'Your Instructions come from your people, and only they can change them. ' +
     'update_identity changes only your identity or your soul.',
   changed: 'your identity kept changing while you edited it. Try again.',
-  'not-available': "you can't change your identity in a run with no person present.",
+  'not-available': "you can't change your identity in a run where nobody with access to this agent is present.",
   'not-allowed': "you can't change this agent's identity from here.",
   unavailable: "your identity couldn't be saved right now; you may retry later.",
 };
@@ -168,7 +168,7 @@ const COMPLETE_MESSAGES: Record<CompleteBootstrapError, string> = {
   'already-done': 'Already done: your first-run setup was completed earlier.',
   'not-bootstrapping': "You're not in first-run setup, so there's nothing to finish.",
   'needs-identity-and-soul': 'NOT DONE: save both your identity and your soul with update_identity first.',
-  'not-available': "NOT DONE: first-run setup can't be finished in a run with no person present.",
+  'not-available': "NOT DONE: first-run setup can't be finished in a run where nobody with access to this agent is present.",
   'not-allowed': "NOT DONE: you can't finish this agent's first-run setup from here.",
   unavailable: "NOT DONE: this couldn't be completed right now; you may retry later.",
   'invalid-input': 'NOT DONE: complete_bootstrap takes no input; call it with {}.',

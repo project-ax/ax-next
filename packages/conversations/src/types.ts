@@ -122,6 +122,10 @@ export interface Conversation {
    * opened. Adding Slack later adds a VALUE here, not a schema change — and
    * deliberately not an `attendance` field, because attendance is derived and
    * a headless deployment would want "always unattended" regardless of channel.
+   *
+   * Attendance is the channel's default. An `'external'` turn (nobody with
+   * access to the agent present) is unattended in any channel, because the
+   * decisions plugin checks `ctx.source` first.
    */
   origin: ConversationOrigin;
   /**
