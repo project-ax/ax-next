@@ -26,6 +26,30 @@ import { createInstallStore } from '../store.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 
+/*
+  The plugin's turn queue, watched rather than slept on: the real queue, with
+  each accepted `enqueue` counted, so a test can wait for "the second turn is
+  queued" as a fact instead of guessing how many milliseconds it takes.
+*/
+const turnQueue = vi.hoisted(() => ({ queued: 0 }));
+vi.mock('../turn-queue.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turn-queue.js')>();
+  return {
+    ...actual,
+    createKeyedQueue: (o: { maxPerKey: number }) => {
+      const inner = actual.createKeyedQueue(o);
+      return {
+        ...inner,
+        enqueue: (...args: Parameters<typeof inner.enqueue>) => {
+          const result = inner.enqueue(...args);
+          if (result === 'queued') turnQueue.queued += 1;
+          return result;
+        },
+      };
+    },
+  };
+});
+
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
 const NOW_MS = Date.parse('2026-11-13T12:00:00.000Z');
@@ -59,6 +83,8 @@ interface Services {
   invokeGate?: Promise<void>;
   /** How many conversations:find-or-create calls arrived: the last step before a turn is queued. */
   found?: number;
+  /** How many agent:invoke calls have returned (past `invokeGate`, their turn streamed). */
+  invokesReturned?: number;
 }
 
 const newServices = (): Services => ({ routes: [], vault: new Map(), credentialSets: 0, credentialGets: [], invokes: [] });
@@ -131,6 +157,7 @@ function fakeServices(s: Services) {
         await bus.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Hi Alice.' });
         await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
       }
+      s.invokesReturned = (s.invokesReturned ?? 0) + 1;
       return { kind: 'complete', messages: [] };
     },
   };
@@ -599,6 +626,7 @@ describe('@ax/channel-slack plugin', () => {
     s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
     const gate = deferred();
     s.invokeGate = gate.promise;
+    const queuedBefore = turnQueue.queued;
     const post = (body: Buffer) =>
       call(
         'POST',
@@ -607,12 +635,12 @@ describe('@ax/channel-slack plugin', () => {
       );
     expect((await post(eventBody('message', 'first'))).status).toBe(200);
     expect((await post(threadReplyBody('Ev07ABCDEF13', '1763035201.000200', 'second'))).status).toBe(200);
+    // Both turns are in the queue (the second behind the first), and the first
+    // is held at agent:invoke.
     await vi.waitFor(() => {
+      expect(turnQueue.queued - queuedBefore).toBe(2);
       expect(s.invokes).toHaveLength(1);
-      expect(s.found).toBe(2);
     });
-    // The second dispatch queues its turn right after find-or-create answers.
-    await new Promise((resolve) => setTimeout(resolve, 10));
     return { ...b, slack, gate };
   }
 
@@ -624,7 +652,12 @@ describe('@ax/channel-slack plugin', () => {
       expect.objectContaining({ level: 'warn', installId: INSTALL_ID, reason: 'shutting-down', count: 1 }),
     ]);
     gate.release();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The running turn gets past agent:invoke and is done with the agent. (It
+    // then waits out its turn-end grace: shutdown took its turn-end subscriber
+    // with it.) Only one turn ever reached the agent; `close()` above already
+    // said the waiting one was dropped, and turn-queue's own tests pin that a
+    // closed lane never starts it.
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
     expect(s.invokes).toHaveLength(1);
   });
 

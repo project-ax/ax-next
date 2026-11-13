@@ -661,15 +661,13 @@ export function AgentConversation({
             is where the reader is looking for them.
 
             `!readOnly` IS THE HONESTY GATE, not a style choice. `AgentView`
-            passes `readOnly={past !== null}`, and its `pastThread` renders
-            `[]` while `pastError` is set — see the comment on `pastThread`
-            in that file, which keeps that pane deliberately blank so the
-            alert above it is the only thing speaking. So a past
-            conversation whose excerpt read FAILED arrives here as an empty
-            thread, and "Nothing here yet" over it would be a claim about the
-            CONTENT built from a fact about the FETCH: the same substitution
-            the approval notice below exists to stop. A read-only thread with
-            zero messages therefore keeps rendering nothing.
+            passes `readOnly={inSlack}` (TASK-1093): a Slack DM thread, which
+            takes its messages in Slack and has no composer here — the
+            read-only note sits in the composer's slot instead. The welcome
+            copy invites the reader to type below, so over a read-only thread
+            it would point at a box that is not there and contradict the note
+            that says to reply in Slack. A read-only thread with zero messages
+            therefore keeps rendering nothing but that note.
 
             The live side has no matching hole: `AgentView` renders "Loading…"
             while `detail` is null, so `liveThread` reaches zero length only
@@ -690,8 +688,8 @@ export function AgentConversation({
             gets "send something below, {name} picks it up from there"
             directly above a card that is BLOCKING {name} until they answer
             it: an invitation to start, over the thing actually waiting. The
-            grant card then speaks alone, which is what the blank read-only
-            pane above does for the same reason.
+            grant card then speaks alone, which is what the read-only note
+            does over an empty Slack thread for the same reason.
 
             No suggestions, no example prompts, nothing about what the agent
             can do. It names where the reader is and what the box below is
@@ -786,11 +784,11 @@ export function AgentConversation({
         reduced renderer on the surface most people use is how the two would
         drift into asking the same question two different ways.
 
-        NOT gated on `readOnly`. The composer is hidden while a past
-        conversation is open, but a grant is not about the transcript being
-        read — it is a live question that stops this agent until it is answered,
-        and hiding it because somebody scrolled into history is exactly the
-        orphaning this card exists to prevent.
+        NOT gated on `readOnly`. The composer is hidden while a Slack thread
+        is open, but a grant is not about the transcript being read — it is a
+        live question that stops this agent until it is answered, and hiding it
+        because the thread on screen takes its messages elsewhere is exactly
+        the orphaning this card exists to prevent.
 
         Capped and scrollable, as chat's approval stack is: two grants each
         asking for a key are tall enough to push the composer off screen, and a
