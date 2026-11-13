@@ -6,11 +6,10 @@
 // provider callback, with a fake Google and GitHub standing in for the real
 // ones (support/fake-idp.ts).
 //
-// L1-L4 are the sign-ins that must keep working. A1-A9 are holes measured on
-// the unfixed code (6d9630adf). Each starts as `it.fails` and the task that
-// closes it flips it to `it`. `it.fails` goes red by itself if a hole stops
-// reproducing, so a fix that lands early (or a harness that quietly stops
-// reaching better-auth) can't hide behind a passing suite.
+// The first five are the sign-ins that must keep working. The rest are holes,
+// each measured on the code before its fix: a completed sign-in where a refusal
+// belongs (a 200 with a session, or a 302 to `/`). They landed as `it.fails`
+// and the fix that closed each one flipped it to `it`.
 // ---------------------------------------------------------------------------
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
@@ -341,6 +340,25 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(who.isAdmin).toBe(true);
   });
 
+  it("a setup admin whose email is outside the domain list links its first Google sign-in", async () => {
+    // The wizard never checked a domain, so prod's admin may be off the list.
+    // Inserted as the wizard does: role admin, unverified, no sign-in method yet.
+    const wizardId = newId('usr');
+    const now = new Date();
+    await db
+      .insertInto('auth_better_v1_users')
+      .values({ id: wizardId, email: 'wizard@partner.example', email_verified: false, name: 'Wizard', image: null, role: 'admin', created_at: now, updated_at: now })
+      .execute();
+    idp.nextGoogle({ email: 'wizard@partner.example', emailVerified: true, sub: 'g-wizard' });
+    const r = await oauthSignIn(stack.baseUrl, 'google');
+    expect(r.status).toBe(302);
+    expect(r.location).not.toContain('/auth/error');
+    const who = await me(r.axSession);
+    expect(who.id).toBe(wizardId);
+    expect(who.isAdmin).toBe(true);
+    expect(await providersOf(wizardId)).toEqual(['google']);
+  });
+
   // -- the holes ---------------------------------------------------------------
 
   it('email and password sign-up is refused for any email', async () => {
@@ -374,8 +392,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(await countUsers('idtoken@evil.example')).toBe(0);
   });
 
-  // TASK-1116: fails until Task 3
-  it.fails('an off-domain Google account cannot sign up', async () => {
+  it('an off-domain Google account cannot sign up', async () => {
     idp.nextGoogle({ email: 'outsider@evil.example', emailVerified: true, sub: 'g-out' });
     const r = await oauthSignIn(stack.baseUrl, 'google');
     expect(r.location).toContain('/auth/error?error=email_domain_not_allowed');
@@ -386,8 +403,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(decodeURIComponent(r.location)).not.toContain('canopyworks');
   });
 
-  // TASK-1116: fails until Task 3
-  it.fails('a Google email that Google has not verified cannot sign up', async () => {
+  it('a Google email that Google has not verified cannot sign up', async () => {
     idp.nextGoogle({ email: 'unverified@canopyworks.com', emailVerified: false, sub: 'g-unverified' });
     const r = await oauthSignIn(stack.baseUrl, 'google');
     expect(r.location).toContain('/auth/error?error=email_not_verified');
@@ -395,8 +411,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(await countUsers('unverified@canopyworks.com')).toBe(0);
   });
 
-  // TASK-1116: fails until Task 3
-  it.fails('a Google sign-in never attaches to an account someone pre-registered with a password', async () => {
+  it('a Google sign-in never attaches to an account someone pre-registered with a password', async () => {
     const id = await insertPasswordUser('victim@canopyworks.com');
     idp.nextGoogle({ email: 'victim@canopyworks.com', emailVerified: true, sub: 'g-victim' });
     const r = await oauthSignIn(stack.baseUrl, 'google');
@@ -406,8 +421,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(await emailVerifiedOf(id)).toBe(false);
   });
 
-  // TASK-1116: fails until Task 3
-  it.fails('an off-domain account made before the fix cannot sign in with Google any more', async () => {
+  it('an off-domain account made before the fix cannot sign in with Google any more', async () => {
     await insertGoogleUser('guest@evil.example', 'g-guest');
     idp.nextGoogle({ email: 'guest@evil.example', emailVerified: true, sub: 'g-guest' });
     const r = await oauthSignIn(stack.baseUrl, 'google');
@@ -415,8 +429,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.axSession).toBeNull();
   });
 
-  // TASK-1116: fails until Task 3
-  it.fails("GitHub sign-up honours GitHub's own allowed domains", async () => {
+  it("GitHub sign-up honours GitHub's own allowed domains", async () => {
     await addProvider('github', 'canopyworks.com');
     idp.nextGithub({ id: 777, login: 'mal', email: 'mal@evil.example', verified: true });
     const r = await oauthSignIn(stack.baseUrl, 'github');
@@ -425,8 +438,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(await countUsers('mal@evil.example')).toBe(0);
   });
 
-  // TASK-1116: fails until Task 3
-  it.fails('an unverified GitHub email never attaches to an existing account', async () => {
+  it('an unverified GitHub email never attaches to an existing account', async () => {
     await addProvider('github', 'canopyworks.com');
     const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
     idp.nextGithub({ id: 778, login: 'imp', email: 'alice@canopyworks.com', verified: false });
@@ -434,5 +446,18 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.location).toContain('/auth/error?error=');
     expect(r.axSession).toBeNull();
     expect(await providersOf(aliceId)).toEqual(['google']);
+  });
+
+  it('a pre-registered account someone later made admin still never attaches to a Google sign-in', async () => {
+    // Only the setup admin before its FIRST sign-in may link while unverified:
+    // a row that already has a sign-in method (here, the pre-fix password) is
+    // not waiting for one, whatever its role.
+    const id = await insertPasswordUser('promoted@canopyworks.com');
+    await db.updateTable('auth_better_v1_users').set({ role: 'admin' }).where('id', '=', id).execute();
+    idp.nextGoogle({ email: 'promoted@canopyworks.com', emailVerified: true, sub: 'g-promoted' });
+    const r = await oauthSignIn(stack.baseUrl, 'google');
+    expect(r.location).toContain('/auth/error?error=account_not_linkable');
+    expect(r.axSession).toBeNull();
+    expect(await providersOf(id)).toEqual(['credential']);
   });
 });
