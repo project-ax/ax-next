@@ -60,6 +60,25 @@ describe('DISPATCHER_DEPENDENCIES', () => {
     expect(DISPATCHER_DEPENDENCIES.dynamicCallPatterns).toContain('tool:execute:');
   });
 
+  it('reaches no auth: hook, so the user directory stays host-internal (channel-slack design §6)', () => {
+    // These lists are every hook a runner request can reach:
+    // dependency-sync.test.ts fails any handler whose bus.call / bus.hasService
+    // they don't cover. No auth: hook may be among them. auth:find-user-by-email
+    // would tell a sandboxed agent whether an address has an AX account, and
+    // auth:get-user returns the email and the admin flag.
+    const hooks = [
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+      ...DISPATCHER_DEPENDENCIES.optionalCalls.map((oc) => oc.hook),
+      ...DISPATCHER_DEPENDENCIES.dynamicCallPatterns,
+    ];
+    expect(hooks.filter((h) => h.startsWith('auth:'))).toEqual([]);
+    // A dynamic prefix shorter than the namespace ('auth', 'a') would reach
+    // every auth: hook too.
+    expect(
+      DISPATCHER_DEPENDENCIES.dynamicCallPatterns.filter((p) => 'auth:'.startsWith(p)),
+    ).toEqual([]);
+  });
+
   it('does NOT list any dynamic-pattern hook in requiredCalls or optionalCalls', () => {
     // tool:execute:<name> can't be enumerated at manifest time; it must live
     // in dynamicCallPatterns only, never in the named-hook lists (verifyCalls
