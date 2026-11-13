@@ -2449,4 +2449,99 @@ describe('a Slack DM thread', () => {
     await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
     expect(sendMock.mock.calls[1]?.[0]).toMatchObject({ conversationId: null, text: 'trying again' });
   });
+
+  /*
+    "Start fresh" belongs to the chat that refused, not to the view. A grant
+    raised in this agent's web chat shows in every thread of the agent, so it
+    can be answered from the refused one; its re-send lands and THAT chat
+    streams in, and the composer is now aimed at it. A follow-up there is a
+    reply in that chat — starting yet another empty one would yank the view
+    away from the conversation they are in.
+  */
+  it('after a read-only refusal, a chat that then streams in keeps its follow-up', async () => {
+    agentMock.mockImplementation(async (_agent: string, conversationId?: string) =>
+      conversationId === 'c-web-b'
+        ? detail({
+            conversationId: 'c-web-b',
+            origin: 'web',
+            thread: [{ kind: 'user', id: 'tb', text: 'check my linear' }],
+          })
+        : detail(),
+    );
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    // The grant's re-send landed in chat B, and B streams into this view.
+    streamMock.mockImplementationOnce(async (_reqId: string, h: { onDone: () => void }) => {
+      h.onDone();
+    });
+    view.rerenderWith({
+      pendingReply: {
+        reqId: 'r-grant',
+        text: 'check my linear',
+        conversationId: 'c-web-b',
+        attachments: [],
+      },
+    });
+    await waitFor(() => expect(streamMock).toHaveBeenCalledWith('r-grant', expect.anything()));
+    // Chat B is what is on screen now (the turn's end re-read it).
+    await screen.findByText('check my linear');
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-web-b', reqId: 'r3' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const composer = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(composer, { target: { value: 'and the follow-up' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({
+      conversationId: 'c-web-b',
+      text: 'and the follow-up',
+    });
+  });
+
+  /*
+    The same by the re-read's other road: the refused chat is deleted
+    elsewhere, and the re-read falls back to the agent's newest chat. That one
+    is what is on screen now, so the next message goes into it.
+  */
+  it('after a read-only refusal, a re-read that falls back to another chat sends into that chat', async () => {
+    let deleted = false;
+    agentMock.mockImplementation(async (_agent: string, conversationId?: string) => {
+      if (deleted && conversationId === 'c-now') {
+        throw new WorkspaceApiError('/agents/a-quill', 404);
+      }
+      return deleted
+        ? detail({
+            conversationId: 'c-other',
+            origin: 'web',
+            thread: [{ kind: 'user', id: 'to', text: 'the other chat' }],
+          })
+        : detail();
+    });
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    deleted = true;
+    view.rerenderWith({ version: 1 });
+    await screen.findByText('the other chat');
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-other', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const composer = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(composer, { target: { value: 'into the other one' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({
+      conversationId: 'c-other',
+      text: 'into the other one',
+    });
+  });
 });
