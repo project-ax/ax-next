@@ -28,6 +28,7 @@ import {
   CircleStop,
   Hand,
   Layers,
+  Square,
   type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -836,10 +837,30 @@ export function AgentConversation({
           they went to type. `role="note"`, not the Alert's default `alert`:
           an assertive announcement on every open of a thread that is simply
           read-only here would be noise.
+
+          Stop rides along while a reply runs. The composer is where Stop
+          lived, and a turn that came in from Slack is still this person's to
+          stop from here — the interrupt route asks whose conversation it is,
+          not where it came from. Without this, replacing the composer quietly
+          took away a control that worked.
         */
         <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
           <Alert role="note" className="max-w-[720px]">
-            <AlertDescription>{readOnlyNote}</AlertDescription>
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span>{readOnlyNote}</span>
+              {showStop && onStop !== undefined && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={stopping}
+                  onClick={() => onStop()}
+                >
+                  <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
+                  {stopping ? 'Stopping' : 'Stop'}
+                </Button>
+              )}
+            </AlertDescription>
           </Alert>
         </div>
       )}
