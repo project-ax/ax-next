@@ -60,12 +60,17 @@ describe('DISPATCHER_DEPENDENCIES', () => {
     expect(DISPATCHER_DEPENDENCIES.dynamicCallPatterns).toContain('tool:execute:');
   });
 
-  it('reaches no auth: hook, so the user directory stays host-internal (channel-slack design §6)', () => {
-    // These lists are every hook a runner request can reach:
-    // dependency-sync.test.ts fails any handler whose bus.call / bus.hasService
-    // they don't cover. No auth: hook may be among them. auth:find-user-by-email
-    // would tell a sandboxed agent whether an address has an AX account, and
+  it('no ipc-core handler calls an auth: hook directly (channel-slack design §6)', () => {
+    // dependency-sync.test.ts fails any ipc-core handler whose bus.call /
+    // bus.hasService these lists don't cover, so no auth: hook among them
+    // means no handler calls one directly. auth:find-user-by-email would tell
+    // a sandboxed agent whether an address has an AX account, and
     // auth:get-user returns the email and the admin flag.
+    //
+    // This is NOT every hook a runner request can reach: tool:execute:<name>
+    // dispatches into host tool plugins, and those can call any hook. Keeping
+    // auth:find-user-by-email out of them is the caller allowlist's job
+    // (TASK-1093), not this test's.
     const hooks = [
       ...DISPATCHER_DEPENDENCIES.requiredCalls,
       ...DISPATCHER_DEPENDENCIES.optionalCalls.map((oc) => oc.hook),

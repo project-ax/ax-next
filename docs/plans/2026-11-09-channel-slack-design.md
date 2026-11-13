@@ -324,8 +324,12 @@ Attended channel turns (§2) and personal-agent DMs need it.
 - **Leaky field names:** none.
 - **Risk:** it can be used to check whether someone has an AX account. Keep it
   internal to the host, never an IPC action, and return only the id. An
-  ipc-core test pins that no runner action reaches an `auth:` hook. Callers
-  pass only an email they fetched from the identity provider themselves.
+  ipc-core test pins that no ipc-core handler calls an `auth:` hook directly.
+  That isn't everything a runner can reach: `tool:execute:` dispatches into
+  host tool plugins, which can call any hook. So TASK-1093 adds a caller
+  allowlist (a repo-scan test or a lint rule): only auth-better and
+  channel-slack may name this hook. Callers pass only an email they fetched
+  from the identity provider themselves.
 - **Open for TASK-1094:** it says nothing about company members who have no AX
   account, and channel-slack can't read the approved domains. Admitting them as
   external (§2) needs that answer from auth. Add it with that card. Don't copy
