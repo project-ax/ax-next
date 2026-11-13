@@ -366,13 +366,17 @@ describe('@ax/auth-better — provider hot-reload (I10)', () => {
     expect(add.status).toBe(400);
     expect(((await add.json()) as { error?: string }).error).toBe('invalid-payload');
 
-    // Disabling one is refused too: the row is inert, and DELETE cleans it up.
-    const enable = await fetch(`${stack.baseUrl}/admin/auth/providers/oidc`, {
-      method: 'PATCH',
-      headers: ADMIN_HEADERS(stack.cookieHeader),
-      body: JSON.stringify({ enabled: true }),
-    });
-    expect(enable.status).toBe(400);
+    // Turning one on is refused, and so is turning one off: the row is inert
+    // either way, and DELETE cleans it up.
+    for (const enabled of [true, false]) {
+      const patch = await fetch(`${stack.baseUrl}/admin/auth/providers/oidc`, {
+        method: 'PATCH',
+        headers: ADMIN_HEADERS(stack.cookieHeader),
+        body: JSON.stringify({ enabled }),
+      });
+      expect(patch.status, `enabled: ${enabled}`).toBe(400);
+      expect(((await patch.json()) as { error?: string }).error, `enabled: ${enabled}`).toBe('invalid-payload');
+    }
   });
 
   it("a leftover oidc row can't take sign-in down, and can still be deleted", async () => {
