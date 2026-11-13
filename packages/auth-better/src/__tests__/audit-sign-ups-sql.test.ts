@@ -48,6 +48,13 @@ const SEEDS: Seed[] = [
   { email: 'gh@canopyworks.com', verified: true, accounts: [{ provider: 'github', at: 0, scope: null }], sections: [5] },
   { email: 'both@canopyworks.com', verified: true,
     accounts: [{ provider: 'google', at: 0 }, { provider: 'github', at: 1 }], sections: [5] },
+  // No GitHub at all: two sign-ins from one provider are 2+ provider sign-ins all the same.
+  { email: 'twogoogle@canopyworks.com', verified: true,
+    accounts: [{ provider: 'google', at: 0 }, { provider: 'google', at: 1 }], sections: [5] },
+  // The R2 shape (sign-up-gate.test.ts): the setup admin, still unverified, with a GitHub row a
+  // pre-fix link left behind.
+  { email: 'gh-admin@canopyworks.com', verified: false, role: 'admin',
+    accounts: [{ provider: 'github', at: 0 }], sections: [3, 5] },
 ];
 
 let container: StartedPostgreSqlContainer;
@@ -75,7 +82,7 @@ async function seed(): Promise<void> {
       const at = sql`${base} + make_interval(mins => ${a.at})`;
       await sql`INSERT INTO auth_better_v1_accounts
         (id, user_id, account_id, provider_id, access_token, refresh_token, id_token, scope, password, created_at, updated_at)
-        VALUES (${`${id}-a${j}`}, ${id}, ${a.provider === 'credential' ? id : `${a.provider}-${i}`}, ${a.provider},
+        VALUES (${`${id}-a${j}`}, ${id}, ${a.provider === 'credential' ? id : `${a.provider}-${i}-${j}`}, ${a.provider},
           ${`${SECRET}-access-${i}`}, ${`${SECRET}-refresh-${i}`}, ${`${SECRET}-idtoken-${i}`}, ${scope},
           ${a.provider === 'credential' ? `${SECRET}-pwhash-${i}` : null}, ${at}, ${at})`.execute(db);
     }
@@ -177,9 +184,11 @@ describe('audit-sign-ups.sql', () => {
     expect(both.at(-2)).toMatch(/^google \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}(:\d{2})?, github \d{4}-\d{2}-\d{2} /);
     expect(both.at(-1)).toBe(CONFIRM);
     expect(row(s.get(5)!, 'gh@canopyworks.com').at(-1)).toBe(CONFIRM);
+    expect(row(s.get(5)!, 'twogoogle@canopyworks.com')[5]).toBe('google,google');
+    expect(row(s.get(5)!, 'gh-admin@canopyworks.com')[5]).toBe('github');
 
     expect(counts(s.get(6)!)).toEqual({
-      outside_domain: 3, with_password: 5, taken_over: 1, unverified: 3, id_token_sign_in: 1, to_confirm: 2,
+      outside_domain: 3, with_password: 5, taken_over: 1, unverified: 4, id_token_sign_in: 1, to_confirm: 4,
     });
 
     // No secret column's value, and no secret column's name.
