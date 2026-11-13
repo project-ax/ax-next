@@ -3213,14 +3213,63 @@ describe('chat-orchestrator', () => {
         expect(vault.state.openRefs).not.toContain(GMAIL_REF);
         expect(vault.state.openRefs).toContain(LINEAR_REF);
         expect(mcpKeys(sandboxIn)).toEqual(['c0456abcdef']);
-        // The agent is told, by name, with "sign in again" wording.
-        expect(sandboxIn?.owner.agentConfig.systemPromptAugment).toMatch(
-          /^Connectors whose sign-in expired, off for this chat .*: "Gmail"\. .*sign in to it again/,
-        );
+        // What the agent is TOLD depends on who is present: the two tests below.
         expect(skippedEvents).toEqual([
           { reqId: `r-${sessionId}`, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
         ]);
         expect(JSON.stringify(skippedEvents)).not.toContain('account:');
+      });
+
+      it('a routine is told which connector, with "sign in again" wording', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF, LINEAR_REF], rejected: [GMAIL_REF] });
+        const { outcome, sandboxIn } = await invoke(vault, 'rt-told', { gmail: GMAIL, linear: LINEAR }, {
+          source: 'routine',
+          extra: marksGmail().services,
+        });
+        expect(outcome.kind).toBe('complete');
+        expect(sandboxIn?.owner.agentConfig.systemPromptAugment).toMatch(
+          /^Connectors whose sign-in expired, off for this chat .*: "Gmail"\. .*sign in to it again/,
+        );
+      });
+
+      // TASK-1091 — someone without access to the agent is present. Naming the
+      // owner's connectors, saying whose sign-in lapsed, or sending "them" to
+      // the Connectors tab would tell an outsider about the owner's accounts,
+      // and only the owner could act on it. Both reasons (Gmail expired,
+      // Linear never signed in) get the same fixed line. An unknown source
+      // fails closed to the same answer (`isOutsiderTurn`).
+      it.each([
+        ['an external turn', 'external'],
+        ["a turn whose source this build doesn't know", 'bogus'],
+      ] as const)('%s: the session prompt names no connector and gives no sign-in steps', async (_label, source) => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+        const { outcome, sandboxIn, skippedEvents } = await invoke(vault, `outsider-${source}`, { gmail: GMAIL, linear: LINEAR }, {
+          source: source as never,
+          extra: marksGmail().services,
+        });
+        expect(outcome.kind).toBe('complete');
+        // Both were skipped (the owner-side event still says which and why).
+        expect(skippedEvents).toEqual([
+          {
+            reqId: `r-outsider-${source}`,
+            connectors: [
+              { connectorId: 'linear', name: 'Linear', reason: 'not-signed-in' },
+              { connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' },
+            ],
+          },
+        ]);
+        const augment = sandboxIn?.owner.agentConfig.systemPromptAugment ?? '';
+        expect(augment).toBe("Some tools aren't available in this conversation. Don't name them or say why.");
+        expect(augment).not.toMatch(/Gmail|Linear|sign in|sign-in|Connectors tab/i);
+      });
+
+      it('a user turn with a never-signed-in connector is still told its name and the Connectors tab', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
+        const { outcome, sandboxIn } = await invoke(vault, 'user-told', { gmail: GMAIL }, { source: 'user' });
+        expect(outcome.kind).toBe('complete');
+        const augment = sandboxIn?.owner.agentConfig.systemPromptAugment ?? '';
+        expect(augment).toMatch(/^Connectors not signed in for this chat .*: "Gmail"\. /);
+        expect(augment).toContain("on this agent's Connectors tab");
       });
 
       it('routine with BOTH reasons → one event naming each with its reason', async () => {

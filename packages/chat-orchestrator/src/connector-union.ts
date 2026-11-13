@@ -788,12 +788,25 @@ export function reconnectDetail(
 }
 
 /**
+ * TASK-1091 — what an outsider's turn is told instead of
+ * {@link skippedConnectorsPromptLine}'s list. Someone without access to the
+ * agent is present: which connectors the owner has, whose sign-in lapsed and
+ * where to fix it are the owner's business, and only the owner could act on
+ * them. So no names, no reasons and no steps. Fixed host text.
+ */
+export const SKIPPED_CONNECTORS_OUTSIDER_LINE =
+  "Some tools aren't available in this conversation. Don't name them or say why.";
+
+/**
  * TASK-806 — the one line that tells the AGENT which connectors are off for
  * this chat, so it can say "sign in to Gmail first" instead of acting as if
  * the tool never existed. Empty string when nothing was skipped.
  *
- * Slice 6 — a `needs-reconnect` skip (routine turns) is worded "sign in
+ * Slice 6 — a `needs-reconnect` skip (unattended turns) is worded "sign in
  * again". All one reason → one group; mixed → each group named.
+ *
+ * TASK-1091 — `opts.outsider` (the caller passes `isOutsiderTurn(ctx)`):
+ * whatever was skipped, the line is {@link SKIPPED_CONNECTORS_OUTSIDER_LINE}.
  *
  * Connector names are admin/user-authored, so each one is treated as data:
  * control and format characters (newlines, bidi overrides, zero-width) become
@@ -803,8 +816,10 @@ export function reconnectDetail(
  */
 export function skippedConnectorsPromptLine(
   skipped: ReadonlyArray<{ connector: ResolvedConnectorForOrch; reason?: ConnectorSkipReason }>,
+  opts: { outsider?: boolean } = {},
 ): string {
   if (skipped.length === 0) return '';
+  if (opts.outsider === true) return SKIPPED_CONNECTORS_OUTSIDER_LINE;
   const quoted = (group: typeof skipped): string => {
     const names = group.map(({ connector }) => JSON.stringify(connectorLabel(connector)));
     const listed = names.slice(0, SKIPPED_NAMES_MAX).join(', ');

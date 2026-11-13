@@ -3989,8 +3989,14 @@ export function createOrchestrator(
       // Tell the agent, so it can say "sign in to Gmail first" instead of
       // acting as if the tool never existed. Normal mode only: the bootstrap
       // augment admits person-authored content alone (TASK-524), and this line
-      // carries connector names, which are not.
-      const line = skippedConnectorsPromptLine(connectorSignIn.skipped);
+      // carries connector names, which are not. TASK-1091: on an outsider's
+      // turn (`isOutsiderTurn`) the line names nothing and gives no steps:
+      // the owner's connectors and their sign-in state are not the outsider's
+      // to hear about. The chat:connectors-skipped event above still names
+      // them, for the owner's side.
+      const line = skippedConnectorsPromptLine(connectorSignIn.skipped, {
+        outsider: isOutsiderTurn(ctx),
+      });
       agentConfig.systemPromptAugment =
         agentConfig.systemPromptAugment.length > 0
           ? `${agentConfig.systemPromptAugment}\n\n${line}`
