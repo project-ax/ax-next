@@ -1330,7 +1330,7 @@ describe('createEventRouter: text on either side of other work', () => {
 describe("createEventRouter: 👀 on the owner's message while the agent works", () => {
   // Walk on kind (2026-11-13): a cold start left the DM blank for seconds.
   // Vinay's pick over a Working card (it stays on every reply) and Slack's
-  // "is thinking…" line: 👀 on the message, off right before the reply shows.
+  // "is thinking…" line: 👀 on the message, off once the reply shows.
   it('👀 goes on when the turn starts and comes off once the reply is up; the reply is unchanged', async () => {
     const w = world();
     w.scripts.push({ chunks: [{ kind: 'text', text: 'Hello' }], end: 'turn-end' });
