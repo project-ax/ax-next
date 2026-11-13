@@ -262,7 +262,13 @@ function memoryStore(clock: () => number, trail: string[]) {
     },
     async removeAll() {
       await enter('removeAll', []);
+      const removed = [...rows.values()].map((r) => ({
+        installId: r.installId,
+        appId: r.appId,
+        teamId: r.teamId,
+      }));
       rows.clear();
+      return removed;
     },
   };
   return { store, rows, calls, failures };

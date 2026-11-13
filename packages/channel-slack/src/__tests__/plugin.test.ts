@@ -226,6 +226,36 @@ async function installCount(): Promise<number> {
   return Number(r.rows[0]?.n ?? '0');
 }
 
+/** Text a failing delete's message carries, which no log line may repeat. */
+const FAILURE_CANARY = 'failure-text-canary-7c1e';
+
+/**
+ * Run `fn` with a BEFORE DELETE row trigger on the installs table whose
+ * plpgsql body is `body`, then drop it whatever happens. TRUNCATE (the
+ * afterEach cleanup) never fires it.
+ */
+async function withDeleteTrigger(body: string, fn: () => Promise<void>): Promise<void> {
+  await sql
+    .raw(
+      `CREATE FUNCTION channel_slack_test_on_delete() RETURNS trigger LANGUAGE plpgsql AS $fn$
+         BEGIN ${body} END
+       $fn$;
+       CREATE TRIGGER channel_slack_test_on_delete BEFORE DELETE ON channel_slack_v1_installs
+         FOR EACH ROW EXECUTE FUNCTION channel_slack_test_on_delete();`,
+    )
+    .execute(probe);
+  try {
+    await fn();
+  } finally {
+    await sql
+      .raw(
+        `DROP TRIGGER IF EXISTS channel_slack_test_on_delete ON channel_slack_v1_installs;
+         DROP FUNCTION IF EXISTS channel_slack_test_on_delete();`,
+      )
+      .execute(probe);
+  }
+}
+
 function eventBody(type = 'message'): Buffer {
   return Buffer.from(
     JSON.stringify({
@@ -531,18 +561,57 @@ describe('@ax/channel-slack plugin', () => {
     expect(all).not.toContain('7512345678901'); // client ids stay out too
   });
 
-  it('a reset cleanup that fails is logged by code only and does not fail the reset', async () => {
+  it('a reset whose delete fails says nothing was removed, logs by code only, and does not fail the reset', async () => {
     const { harness } = await boot();
-    // The next boot's migration puts it back.
-    await sql`DROP TABLE channel_slack_v1_installs`.execute(probe);
-    const logs = captureLogs();
+    await insertActiveInstall();
+    // The rows are there and readable; only deleting them fails.
+    await withDeleteTrigger(
+      `RAISE EXCEPTION 'refused in test: ${FAILURE_CANARY}'; RETURN OLD;`,
+      async () => {
+        const logs = captureLogs();
+        const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+        expect(fired.rejected).toBe(false);
 
-    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
-    expect(fired.rejected).toBe(false);
-    const failed = logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed');
-    expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatchObject({ level: 'error', code: expect.any(String) });
-    expect(Object.keys(failed[0]!).sort()).toEqual(['code', 'level', 'msg', 'reqId', 'ts']);
+        // Nothing was deleted, so nothing may be reported as removed.
+        expect(await installCount()).toBe(1);
+        expect(logs.filter((l) => l['msg'] === 'slack_install_removed_by_reset')).toEqual([]);
+        const failed = logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed');
+        expect(failed).toHaveLength(1);
+        // plpgsql's RAISE EXCEPTION: Postgres's code, never its message.
+        expect(failed[0]).toMatchObject({ level: 'error', code: 'P0001' });
+        expect(Object.keys(failed[0]!).sort()).toEqual(['code', 'level', 'msg', 'reqId', 'ts']);
+        expect(JSON.stringify(logs)).not.toContain(FAILURE_CANARY);
+      },
+    );
+  });
+
+  it('a reset logs exactly the installs its delete removed, not the ones it could read', async () => {
+    const { harness } = await boot();
+    await insertActiveInstall();
+    await createInstallStore(probe).insertPending({
+      installId: UNKNOWN_ID,
+      appId: 'A07PENDING01',
+      clientId: '7512345678901.7500000000000',
+      botName: 'pending-bot',
+      connectedByUserId: ADMIN.id,
+    });
+    // The delete skips the active install (a row trigger returning NULL), so
+    // what a read sees and what the delete removes differ, as with a connect
+    // that lands between a read and a delete.
+    await withDeleteTrigger(
+      `IF OLD.install_id = '${INSTALL_ID}' THEN RETURN NULL; END IF; RETURN OLD;`,
+      async () => {
+        const logs = captureLogs();
+        const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+        expect(fired.rejected).toBe(false);
+
+        expect(await installCount()).toBe(1);
+        const removed = logs.filter((l) => l['msg'] === 'slack_install_removed_by_reset');
+        expect(removed.map((l) => l['installId'])).toEqual([UNKNOWN_ID]);
+        expect(removed[0]).toMatchObject({ level: 'warn', appId: 'A07PENDING01', teamId: null });
+        expect(logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed')).toEqual([]);
+      },
+    );
   });
 
   it('shutdown unregisters every route and the reset subscriber, and is safe to call twice', async () => {

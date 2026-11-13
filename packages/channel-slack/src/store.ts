@@ -22,6 +22,9 @@ export interface InstallRow {
   installedAt: Date | null;
 }
 
+/** What a reset needs to say about an install it deleted. Never a secret or the client id. */
+export type RemovedInstall = Pick<InstallRow, 'installId' | 'appId' | 'teamId'>;
+
 export interface OAuthState {
   installId: string;
   /** The admin it was minted for. */
@@ -57,10 +60,14 @@ export interface InstallStore {
     installId: string,
     a: { teamId: string; teamName: string; botUserId: string; installedAt: Date },
   ): Promise<void>;
-  /** Every install, any status, oldest first. */
-  list(): Promise<InstallRow[]>;
   remove(installId: string): Promise<void>;
-  removeAll(): Promise<void>;
+  /**
+   * Delete every install, any status, in ONE statement, and return exactly
+   * the rows that statement deleted, in no particular order. A row inserted
+   * meanwhile is either deleted and returned or kept; a delete that fails
+   * deletes and returns nothing.
+   */
+  removeAll(): Promise<RemovedInstall[]>;
 }
 
 const INSTALLS = 'channel_slack_v1_installs';
@@ -120,16 +127,6 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         .limit(1)
         .executeTakeFirst();
       return row === undefined ? null : toRow(row);
-    },
-
-    async list() {
-      const rows = await db
-        .selectFrom(INSTALLS)
-        .select(ROW_COLUMNS)
-        .orderBy('created_at', 'asc')
-        .orderBy('install_id', 'asc')
-        .execute();
-      return rows.map(toRow);
     },
 
     async get(installId) {
@@ -242,7 +239,11 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
     },
 
     async removeAll() {
-      await db.deleteFrom(INSTALLS).execute();
+      const rows = await db
+        .deleteFrom(INSTALLS)
+        .returning(['install_id', 'app_id', 'team_id'])
+        .execute();
+      return rows.map((r) => ({ installId: r.install_id, appId: r.app_id, teamId: r.team_id }));
     },
   };
 }

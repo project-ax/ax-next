@@ -239,10 +239,12 @@ function notHandledYet(logger: Logger): EventDispatcher {
 /**
  * `ax admin reset-bootstrap` wipes every credential, so an install row left
  * behind would read as "connected" with no secrets. Remove them all, logging
- * each one's app id first (the row was the only record of it, and the app
- * stays live in Slack). A failure is logged code-only and doesn't fail the
- * reset (the bus never lets a subscriber's throw do that either); re-running
- * the reset retries it.
+ * each deleted one's app id (the row was the only record of it, and the app
+ * stays live in Slack). The lines come from the delete's own RETURNING, so
+ * they name exactly what is gone: never a row a racing connect added between
+ * a read and the delete, and nothing at all when the delete fails. A failure
+ * is logged code-only and doesn't fail the reset (the bus never lets a
+ * subscriber's throw do that either); re-running the reset retries it.
  *
  * The reset runs in the CLI's own process, which loads this plugin for that
  * reason, so the `clear()` below empties the CLI's signing-secret cache, not
@@ -262,7 +264,7 @@ function subscribeResetCleanup(
       // The row is the only record of the Slack app's id, and the app stays
       // live in Slack after the delete. Say which ones, by id only (no
       // secret, no client id), so the operator can remove them.
-      for (const install of await store.list()) {
+      for (const install of await store.removeAll()) {
         logger.warn('slack_install_removed_by_reset', {
           installId: install.installId,
           appId: install.appId,
@@ -270,7 +272,6 @@ function subscribeResetCleanup(
           hint: RESET_LEFT_APP_HINT,
         });
       }
-      await store.removeAll();
     } catch (err) {
       try {
         logger.error('slack_reset_cleanup_failed', { code: logCode(err) });

@@ -197,6 +197,23 @@ describe('install rows', () => {
     expect(await store.get(c)).toBeNull();
     expect(await store.current()).toBeNull();
   });
+
+  it('removeAll returns exactly the installs its own delete removed: ids, app ids and teams', async () => {
+    const pendingId = await pending();
+    const activeId = await pending();
+    await store.activate(activeId, { ...TEAM, installedAt: new Date() });
+
+    const removed = await store.removeAll();
+    expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
+      [
+        { installId: pendingId, appId: PENDING.appId, teamId: null },
+        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId },
+      ].sort((x, y) => x.installId.localeCompare(y.installId)),
+    );
+    expect(await store.current()).toBeNull();
+    // Nothing left: the next one removes, and says, nothing.
+    expect(await store.removeAll()).toEqual([]);
+  });
 });
 
 describe('OAuth state', () => {
