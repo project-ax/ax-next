@@ -17,8 +17,9 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *
  * The turn's chunks arrive through hook subscribers that are never awaited,
  * so `text`, `status` and `artifact` only buffer, synchronously, and arm a
- * flush. All Slack work runs on one promise chain, so exactly one Slack call
- * is in flight per reply and text goes out in the order it came in.
+ * flush. The reply's Slack work runs on one promise chain, so exactly one of
+ * its calls is in flight and text goes out in the order it came in. 👀 has a
+ * queue of its own (add, then remove) that the reply never waits on.
  *
  *   - Text goes as `markdown_text` chunks: Slack renders the Markdown itself.
  *     Every `<` before `!`, `@` or `#` gets a zero-width space, also across a
@@ -26,7 +27,8 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *   - The status line is ONE `task_update` card (id `status`) per stream
  *     message, updated in place, `complete` (or `error`) when the message ends.
  *     `working()` puts 👀 on the owner's message instead (it leaves no trace
- *     in the reply), and shows the card as Working only if Slack refuses it.
+ *     in the reply), and shows the card as Working only if Slack refuses it
+ *     and no text is out yet.
  *   - The first flush with something to show starts the stream, later ones
  *     append, at most one call per FLUSH_INTERVAL_MS.
  *   - Slack caps a stream at 12,000 characters and 10 minutes. Before a flush
@@ -144,8 +146,14 @@ type Stage = 'start' | 'append' | 'stop' | 'post' | 'react' | 'unreact';
 /** 👀: "seen it, on it". */
 const SEEN_REACTION = 'eyes';
 
-/** Codes where our client gave up but Slack may still have done the call. */
-const OUTCOME_UNKNOWN = /^(timeout|network|bad-response|http-5\d\d)$/;
+/**
+ * Codes where the call may still have been done: our client gave up, or Slack
+ * said "it's possible some aspect of the operation succeeded". A remove that
+ * finds nothing gets `no_reaction`, which is silent, so erring wide is free;
+ * only a refusal for good (`missing_scope`, say) must stay out.
+ */
+const OUTCOME_UNKNOWN =
+  /^(timeout|network|bad-response|http-5\d\d|internal_error|fatal_error|service_unavailable|request_timeout)$/;
 
 function isSlackCode(err: unknown, code: string): boolean {
   return err instanceof SlackApiError && err.code === code;

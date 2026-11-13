@@ -280,13 +280,13 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      landed, so it is taken off too. If Slack refuses the 👀 (an install from
      before `reactions:write`, say), the reply opens with the `Working` card
      instead, unless its text is already showing.
-   - Known gap: running DM turns aren't awaited at shutdown, and Slack never
-     removes a reaction by itself, so a deploy or crash mid-turn leaves that
-     message's 👀 on for good.
      Chosen on the kind walk (2026-11-13) over a `Working` card up front (it
      stays on every reply, and Slack can't remove a task card from a stream) and
      Slack's "is thinking…" line (`assistant.threads.setStatus`, which does work
      in plain DMs).
+   - Known gap: running DM turns aren't awaited at shutdown, and Slack never
+     removes a reaction by itself, so a deploy or crash mid-turn leaves that
+     message's 👀 on for good.
    - Artifacts and charts become a link to the agent's page in the web app (no
      per-artifact or per-conversation page exists yet).
    - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its

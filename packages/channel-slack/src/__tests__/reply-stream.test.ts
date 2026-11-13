@@ -697,9 +697,18 @@ describe('createReplyStream', () => {
     expect(delivered(calls)).toBe('Hi.');
   });
 
-  it('an add whose outcome is unknown (timed out) may have landed: card shown, and it still comes off', async () => {
+  it.each([
+    'timeout',
+    'network',
+    'bad-response',
+    'http-503',
+    'internal_error',
+    'fatal_error',
+    'service_unavailable',
+    'request_timeout',
+  ])('an add that failed with %s may have landed: card shown, and it still comes off', async (code) => {
     const { api, calls } = fakeSlack({
-      fail: (m) => (m === 'addReaction' ? new SlackApiError('reactions.add', 'timeout') : undefined),
+      fail: (m) => (m === 'addReaction' ? new SlackApiError('reactions.add', code) : undefined),
     });
     const s = make(api);
     s.working();
@@ -708,6 +717,53 @@ describe('createReplyStream', () => {
     expect(calls.map((c) => c.method)).toEqual(['addReaction', 'startStream', 'removeReaction']);
     expect(calls.flatMap(cardsOf)).toEqual([{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }]);
     await finishNow(s);
+  });
+
+  it('a refusal Slack gives for good (missing_scope) is not taken off: there is nothing to take off', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) => (m === 'addReaction' ? new SlackApiError('reactions.add', 'missing_scope') : undefined),
+    });
+    const s = make(api);
+    s.working();
+    s.text('Hi.');
+    await finishNow(s);
+    await tick();
+    expect(calls.filter((c) => c.method === 'removeReaction')).toEqual([]);
+  });
+
+  it('a start that is rate-limited, then lands: 👀 stays on through the wait and comes off once, after it', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m, n) => (m === 'startStream' && n === 1 ? new SlackApiError('chat.startStream', 'ratelimited', 3_000) : undefined),
+    });
+    const s = make(api);
+    s.working();
+    s.text('Hi.');
+    await tick();
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'startStream']);
+    await tick(3_000);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'startStream', 'startStream', 'removeReaction']);
+    await finishNow(s);
+    expect(calls.filter((c) => c.method === 'removeReaction')).toHaveLength(1);
+  });
+
+  it('nothing could be shown (stream and post both refused): 👀 still comes off at the end, once', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) =>
+        m === 'startStream'
+          ? new SlackApiError('chat.startStream', 'internal_error')
+          : m === 'postMessage'
+            ? new SlackApiError('chat.postMessage', 'channel_not_found')
+            : undefined,
+    });
+    const s = make(api);
+    s.working();
+    s.text('Hi.');
+    await finishNow(s);
+    await tick();
+    const methods = calls.map((c) => c.method);
+    expect(methods.filter((m) => m === 'removeReaction')).toHaveLength(1);
+    expect(methods.indexOf('removeReaction')).toBeGreaterThan(methods.indexOf('addReaction'));
+    expect(calls.filter((c) => (c.method === 'startStream' || c.method === 'postMessage') && c.ok)).toEqual([]);
   });
 
   it("the fallback card never replaces the agent's own status, and adds no empty line to its reply", async () => {
@@ -745,7 +801,7 @@ describe('createReplyStream', () => {
     expect(rec.lines).toEqual([]);
   });
 
-  it('a 👀 that will not come off is logged by code once, and never tried again: not on a retried start, not per posted part', async () => {
+  it('a 👀 that will not come off is logged by code once, and never tried again: not per posted part', async () => {
     let starts = 0;
     const { api, calls } = fakeSlack({
       fail: (m) => {
