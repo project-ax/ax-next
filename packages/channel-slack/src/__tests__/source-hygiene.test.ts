@@ -12,11 +12,12 @@ import { describe, expect, it } from 'vitest';
  * differently from the code that runs. The escape is the same value at
  * runtime and can't hide anything.
  *
- * The ranges are the zero-width and direction marks (U+200B-U+200F), the bidi
+ * The ranges are the Arabic letter mark (U+061C, a direction mark like
+ * U+200E/U+200F), the zero-width and direction marks (U+200B-U+200F), the bidi
  * embeddings and overrides (U+202A-U+202E), the word joiner, invisible
  * operators and the bidi isolates (U+2060-U+2069), and the byte-order mark.
  */
-const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/u;
+const INVISIBLE = /[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/u;
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -53,10 +54,10 @@ describe('channel-slack source hygiene', () => {
   });
 
   it('the pattern itself matches each range, so a clean result means something', () => {
-    for (const code of [0x200b, 0x200f, 0x202a, 0x202e, 0x2060, 0x2066, 0x2069, 0xfeff]) {
+    for (const code of [0x061c, 0x200b, 0x200f, 0x202a, 0x202e, 0x2060, 0x2066, 0x2069, 0xfeff]) {
       expect(INVISIBLE.test(String.fromCodePoint(code)), code.toString(16)).toBe(true);
     }
-    for (const code of [0x200a, 0x2010, 0x2029, 0x205f, 0x206a, 0xfffd]) {
+    for (const code of [0x061b, 0x061d, 0x200a, 0x2010, 0x2029, 0x205f, 0x206a, 0xfffd]) {
       expect(INVISIBLE.test(String.fromCodePoint(code)), code.toString(16)).toBe(false);
     }
   });

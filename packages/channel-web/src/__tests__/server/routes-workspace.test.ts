@@ -1324,7 +1324,7 @@ describe('channel-web agent-workspace BFF', () => {
           agentFile('b/report.pdf', 20),
           agentFile('a/report.pdf'),
           agentFile('../x'),
-          agentFile('evil‮fdp.exe'),
+          agentFile('evil\u202Efdp.exe'),
           { type: 'tool_result', tool_use_id: 'publish-1', content: JSON.stringify(budget) },
         ],
         createdAt: '2026-08-01T10:00:03.000Z',
@@ -1357,8 +1357,8 @@ describe('channel-web agent-workspace BFF', () => {
     expect(chips[1]).toMatchObject({
       attachmentId: null, agentFilePath: 'b/report.pdf', displayName: 'report.pdf', sizeBytes: 20,
     });
-    expect(chips[2]).toMatchObject({ attachmentId: null, agentFilePath: 'evil‮fdp.exe' });
-    expect(String(chips[2]!.displayName)).not.toContain('‮');
+    expect(chips[2]).toMatchObject({ attachmentId: null, agentFilePath: 'evil\u202Efdp.exe' });
+    expect(String(chips[2]!.displayName)).not.toContain('\u202E');
     expect(chips[3]).toStrictEqual({
       attachmentId: '0123456789abcdef0123456789abcdef',
       displayName: 'budget.csv',
