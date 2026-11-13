@@ -1284,7 +1284,7 @@ describe('@ax/preset-k8s wiring', () => {
     ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
   });
 
-  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, branding optional (TASK-1093)', () => {
+  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, branding and the cap interrupt optional (TASK-1093)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const slack = plugins.find((p) => p.manifest.name === '@ax/channel-slack');
     expect(slack).toBeDefined();
@@ -1305,6 +1305,11 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
     expect(slack!.manifest.optionalCalls).toEqual([
       { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
+      // A DM turn at the 15-minute cap is stopped, not only its reply.
+      {
+        hook: 'agent:interrupt',
+        degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+      },
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',
@@ -1312,9 +1317,9 @@ describe('@ax/preset-k8s wiring', () => {
       'chat:turn-end',
       'chat:turn-error',
     ]);
-    // Every hard call has a producer in this preset, and so does the optional one.
+    // Every hard call has a producer in this preset, and so do the optional ones.
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
-    for (const hook of [...slack!.manifest.calls, 'branding:get']) {
+    for (const hook of [...slack!.manifest.calls, 'branding:get', 'agent:interrupt']) {
       expect(registered.has(hook), hook).toBe(true);
     }
   });

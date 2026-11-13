@@ -404,7 +404,7 @@ function captureLogs(): Array<Record<string, unknown>> {
 // ── The tests ───────────────────────────────────────────────────────────────
 
 describe('@ax/channel-slack plugin', () => {
-  it('manifest pins: registers nothing, calls exactly what it uses, branding is optional', () => {
+  it('manifest pins: registers nothing, calls exactly what it uses, branding and the cap interrupt are optional', () => {
     const plugin = createChannelSlackPlugin({ publicOrigin: HTTPS_ORIGIN });
     expect(PLUGIN_NAME).toBe('@ax/channel-slack');
     expect(plugin.manifest).toEqual({
@@ -424,7 +424,13 @@ describe('@ax/channel-slack plugin', () => {
         'conversations:find-or-create',
         'agent:invoke',
       ],
-      optionalCalls: [{ hook: 'branding:get', degradation: 'the default bot name is "ax"' }],
+      optionalCalls: [
+        { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
+        {
+          hook: 'agent:interrupt',
+          degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+        },
+      ],
       subscribes: ['bootstrap:reset-cleanup', 'chat:stream-chunk', 'chat:turn-end', 'chat:turn-error'],
     });
   });

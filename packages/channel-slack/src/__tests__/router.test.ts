@@ -213,11 +213,18 @@ function world(o: {
   findOrCreateFails?: boolean;
   /** The install store fails when a queued turn re-reads its install. */
   installReadFails?: boolean;
+  /**
+   * How the orchestrator answers agent:interrupt: a turn was stopped (the
+   * default), nothing was running, the call throws, or no orchestrator
+   * registers the hook at all.
+   */
+  interrupt?: 'stopped' | 'idle' | 'fails' | 'absent';
   logger?: Logger;
 } = {}) {
   const bus = new HookBus();
   const scripts: Script[] = [];
   const invokes: Invoke[] = [];
+  const interrupts: Invoke[] = [];
   const findUser: Array<{ ctx: AgentContext; email: unknown }> = [];
   const listed: Array<{ ctx: AgentContext; input: unknown }> = [];
   const conversations: Array<{ ctx: AgentContext; input: { externalKey: string } & Record<string, unknown> }> = [];
@@ -278,6 +285,16 @@ function world(o: {
     return script.outcome ?? { kind: 'complete', messages: [] };
     // Like the real one (AGENT_INVOKE_TIMEOUT_MS): no bus deadline, no stall watch.
   }, { timeoutMs: Number.POSITIVE_INFINITY, stallWarnMs: Number.POSITIVE_INFINITY });
+  if (o.interrupt !== 'absent') {
+    // chat-orchestrator's `agent:interrupt`: `{ conversationId, userId }` in, `{ interrupted }` out.
+    bus.registerService('agent:interrupt', 'fake-orchestrator', async (ctx, input) => {
+      interrupts.push({ ctx, input });
+      if (o.interrupt === 'fails') {
+        throw new PluginError({ code: 'unknown-session', plugin: 'fake-orchestrator', message: 'session of alice@canopyworks.com is gone' });
+      }
+      return { interrupted: o.interrupt !== 'idle' };
+    });
+  }
 
   const slack = fakeSlack(o.slackFail !== undefined ? { fail: o.slackFail } : {});
   const registry = createTurnRegistry();
@@ -345,6 +362,7 @@ function world(o: {
     dispatch,
     scripts,
     invokes,
+    interrupts,
     findUser,
     listed,
     conversations,
@@ -457,6 +475,8 @@ describe('createEventRouter: a DM from the owner', () => {
     });
     expect(w.slack.calls[2]!.args).toEqual({ channel: DM_ALICE, ts: start.ts });
     expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
+    // A turn that ends on its own is never interrupted.
+    expect(w.interrupts).toEqual([]);
   });
 
   it('a reply in a thread keys on thread_ts', async () => {
@@ -788,10 +808,23 @@ describe('createEventRouter: turns that fail', () => {
     await w.dispatch(INSTALL, dm());
     await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS - 1);
     expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+    expect(w.interrupts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
-    expect(w.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_turn_failed', 'timeout']]);
+
+    // The cap ends the turn too, not just its reply: the orchestrator is asked to
+    // stop the conversation's turn, as the owner whose turn it is.
+    const turn = w.invokes[0]!.ctx;
+    expect(w.interrupts.map((i) => i.input)).toEqual([{ conversationId: turn.conversationId, userId: 'usr_alice' }]);
+    expect(w.interrupts[0]!.ctx).toMatchObject({ userId: 'usr_alice', agentId: 'agt_alice_old', conversationId: turn.conversationId });
+    expect(w.lines).toHaveLength(2);
+    expect(w.lines).toEqual(
+      expect.arrayContaining([
+        { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'timeout' } },
+        { level: 'info', msg: 'slack_turn_interrupted', fields: { installId: INSTALL_ID, reason: 'timeout' } },
+      ]),
+    );
 
     // The cap released the turn's sink and its lane, though the invoke never answered.
     expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
@@ -816,6 +849,30 @@ describe('createEventRouter: turns that fail', () => {
     expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream']);
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Done.');
     expect(w.lines).toEqual([]);
+    // The invoke said complete: nothing to stop.
+    expect(w.interrupts).toEqual([]);
+  });
+
+  it.each([
+    ['throws', 'fails', [{ level: 'warn', msg: 'slack_turn_interrupt_failed', fields: { installId: INSTALL_ID, code: 'unknown-session' } }]],
+    ['is not offered by any plugin', 'absent', [{ level: 'warn', msg: 'slack_turn_interrupt_failed', fields: { installId: INSTALL_ID, code: 'unavailable' } }]],
+    ['finds nothing running', 'idle', []],
+  ] as const)('at the cap, an interrupt that %s is logged by code only, and the reply ends all the same', async (_name, interrupt, extra) => {
+    vi.useFakeTimers();
+    const w = world({ interrupt });
+    w.scripts.push({ hang: true });
+    await w.dispatch(INSTALL, dm());
+    await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(w.lines).toHaveLength(1 + extra.length);
+    expect(w.lines).toEqual(
+      expect.arrayContaining([
+        { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'timeout' } },
+        ...extra,
+      ]),
+    );
+    expect(JSON.stringify(w.lines)).not.toContain('alice@');
   });
 
   it('a turn past 9 minutes continues in a new stream in the same thread', async () => {

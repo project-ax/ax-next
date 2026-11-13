@@ -274,8 +274,10 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its
      conversation (matched the way channel-web matches it), `chat:turn-error`,
      a `terminated` invoke outcome, 60 seconds after a complete invoke outcome
-     with no turn-end, or a 15-minute hard cap. Up to 3 turns per conversation
-     run or wait in order; a fourth message gets a "still working" reply.
+     with no turn-end, or a 15-minute hard cap. At the cap the turn itself is
+     also stopped (`agent:interrupt`, best-effort), not only its reply. Up to 3
+     turns per conversation run or wait in order; a fourth message gets a
+     "still working" reply.
 6. **Approvals.**
    - **Attended:** Block Kit buttons. The interactivity route checks the clicker
      is the turn's person, then calls `agent:apply-capability-grant`, the same

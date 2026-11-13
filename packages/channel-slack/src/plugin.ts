@@ -133,7 +133,15 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         'conversations:find-or-create',
         'agent:invoke',
       ],
-      optionalCalls: [{ hook: 'branding:get', degradation: 'the default bot name is "ax"' }],
+      optionalCalls: [
+        { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
+        {
+          // The Stop chat-orchestrator registers next to agent:invoke, so this
+          // adds no new edge to the plugin graph.
+          hook: 'agent:interrupt',
+          degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+        },
+      ],
       subscribes: [RESET_CLEANUP, ...TURN_EVENT_HOOKS],
     },
 

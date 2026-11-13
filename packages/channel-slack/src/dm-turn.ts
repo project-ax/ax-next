@@ -25,6 +25,10 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  * thrown invoke (error), TURN_END_GRACE_MS after a complete invoke whose
  * turn-end never came (complete), or TURN_HARD_CAP_MS (error). Failures are
  * logged as `slack_turn_failed` with a reason and a host code, never text.
+ *
+ * The cap ends the TURN too, not only its reply: the turn is asked to stop
+ * (`agent:interrupt`, best-effort), so a turn nobody will see the end of
+ * doesn't run, and spend, on for hours.
  */
 
 export interface DmTurnDeps {
@@ -103,6 +107,8 @@ const ARTIFACT_TOOLS = new Set([
  */
 const HOST_CODE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
 const BUSY = 'conversation:busy';
+/** chat-orchestrator's Stop (TASK-688): optional, so a preset without it still boots. */
+const INTERRUPT = 'agent:interrupt';
 
 type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'timeout';
 
@@ -199,10 +205,35 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
   });
-  const cap = d.clock.setTimeout(
-    () => decide({ outcome: 'error', fail: { reason: 'timeout' } }),
-    TURN_HARD_CAP_MS,
-  );
+  /**
+   * Ask chat-orchestrator to stop the conversation's in-flight turn: the
+   * same Stop the web app's button sends (`{ conversationId, userId }`; it
+   * re-checks ownership itself). Best-effort and logged by code: the reply has
+   * already ended either way. `interrupted: false` means nothing was running.
+   */
+  const interruptTurn = async (): Promise<void> => {
+    try {
+      if (!d.bus.hasService(INTERRUPT)) {
+        quietly(() => d.logger.warn('slack_turn_interrupt_failed', { installId, code: 'unavailable' }));
+        return;
+      }
+      const out = await d.bus.call<{ conversationId: string; userId: string }, unknown>(INTERRUPT, ctx, {
+        conversationId: r.conversationId,
+        userId: r.userId,
+      });
+      if (isRecord(out) && out['interrupted'] === true) {
+        quietly(() => d.logger.info('slack_turn_interrupted', { installId, reason: 'timeout' }));
+      }
+    } catch (err) {
+      quietly(() => d.logger.warn('slack_turn_interrupt_failed', { installId, code: logCode(err) }));
+    }
+  };
+  const cap = d.clock.setTimeout(() => {
+    // A turn that already ended is not stopped again.
+    if (decided) return;
+    decide({ outcome: 'error', fail: { reason: 'timeout' } });
+    void interruptTurn();
+  }, TURN_HARD_CAP_MS);
   let grace: unknown = null;
 
   const message: AgentMessage = {
