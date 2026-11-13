@@ -1912,11 +1912,26 @@ export function createOrchestrator(
     // couldn't write /opt/kafka …"). Already bounded + sanitized upstream
     // (formatServiceDiagnosis); we forward it verbatim and the renderer treats
     // it as untrusted text. Omitted for ordinary errors so the wire stays lean.
-    ctx.logger.info('chat_turn_error', { reqId, reason, ...(detail !== undefined ? { detail } : {}) });
-    await fireChatEvent('chat:turn-error', ctx, {
+    //
+    // TASK-1091 — every `detail` is written for the agent's owner: which of
+    // their connectors needs signing in again (TASK-783/828), which of their
+    // dev services failed and where (TASK-160). On an outsider's turn
+    // (`isOutsiderTurn`: someone without access to the agent is present) the
+    // frame carries the `reason` code only, because it leaves the host:
+    // @ax/conversations saves it into the thread as-is, and a channel relays
+    // it to whoever is there. None of it is theirs to act on. The log line
+    // keeps the detail, for whoever runs the host.
+    const shown = isOutsiderTurn(ctx) ? undefined : detail;
+    ctx.logger.info('chat_turn_error', {
       reqId,
       reason,
       ...(detail !== undefined ? { detail } : {}),
+      ...(detail !== undefined && shown === undefined ? { detailWithheld: true } : {}),
+    });
+    await fireChatEvent('chat:turn-error', ctx, {
+      reqId,
+      reason,
+      ...(shown !== undefined ? { detail: shown } : {}),
     });
   }
 
@@ -2632,10 +2647,22 @@ export function createOrchestrator(
       // a message carrying one could never be sent. Done once, here, so every
       // writer and the runner see the same text. Same reference when clean.
       const message = toWellFormedValue(input.message);
-      return await runAgentInvokeTurn(
+      const outcome = await runAgentInvokeTurn(
         ctx,
         message === input.message ? input : { ...input, message },
       );
+      // TASK-1091 — a terminated outcome's raw `error` is the host's audit
+      // record (it stays on chat:end); only the `reason` code is meant to
+      // reach a client. An outsider's turn (`isOutsiderTurn`) is answered by a
+      // channel that tells the room from THIS value, and the error can name
+      // the owner's setup: a failed proxy open names each credential that
+      // failed by our env key (`connector:<id>:<slot>`), a fold collision its
+      // connectors, a sandbox failure the dev service and path. So that
+      // caller gets the kind and the code only.
+      if (outcome.kind === 'terminated' && 'error' in outcome && isOutsiderTurn(ctx)) {
+        return { kind: 'terminated', reason: outcome.reason };
+      }
+      return outcome;
     } finally {
       pendingMessageReqIds.delete(ctx.reqId);
       stopRequestedReqIds.delete(ctx.reqId);
@@ -4282,6 +4309,11 @@ export function createOrchestrator(
       // `err` stays on the audit chat:end outcome (no credential/decryption
       // detail leaks). TASK-783: plus, for a connector failure, the connector's
       // label as the detail line — host-sanitized text, never the error's.
+      // TASK-1091: an outsider's turn reaches this too, when the slice-6 skip
+      // couldn't ask about sign-ins (status-batch missing, failing or slow,
+      // so the expired connector was kept). Its frame and its outcome carry
+      // the code only (fireTurnError, runAgentInvoke); the names stay in the
+      // host log.
       await fireTurnError(ctx, ctx.reqId, outcome.reason, failure.detail);
       await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;

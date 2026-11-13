@@ -4,6 +4,7 @@ import {
   PluginError,
   makeAgentContext,
   createLogger,
+  type AgentContextSource,
   type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
@@ -73,12 +74,21 @@ const FORBIDDEN_VOCAB = [
   'privileged',
 ];
 
-function canaryCtx(sessionId: string) {
+function canaryCtx(
+  sessionId: string,
+  opts: { source?: AgentContextSource; logLines?: string[] } = {},
+) {
   return makeAgentContext({
     sessionId,
     agentId: TEST_AGENT.id,
     userId: TEST_AGENT.ownerId,
-    logger: createLogger({ reqId: 'svc-canary', writer: () => undefined }),
+    ...(opts.source !== undefined ? { source: opts.source } : {}),
+    logger: createLogger({
+      reqId: 'svc-canary',
+      writer: (line) => {
+        opts.logLines?.push(line);
+      },
+    }),
   });
 }
 
@@ -395,5 +405,46 @@ describe('dev-services-in-sandbox CI canary (TASK-155)', () => {
     expect(frame!.detail).toContain('writablePaths');
     // Single-line, untrusted-safe (no control chars survived the formatter).
     expect(frame!.detail).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+  });
+
+  // TASK-1091 — the same failure on an OUTSIDER's turn (someone without access
+  // to the agent is present). The detail line is for the agent's author, so
+  // the frame carries the code only, and the outcome the caller answers the
+  // room from carries no raw error (its diagnosis names the service and path).
+  // The host log keeps the line.
+  it("failure path on an outsider's turn: the frame and the outcome carry the code only; the host log keeps the detail", async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks(busRef, [
+      { id: 'kafka-only', capabilities: connectorCaps([KAFKA_SVC]) },
+    ]);
+    mocks.openSessionThrows.current = new PluginError({
+      code: 'service-sidecar-failed',
+      plugin: '@ax/sandbox-k8s',
+      hookName: 'sandbox:open-session',
+      message: "dev service 'kafka' failed to start",
+      diagnosis: {
+        service: 'kafka',
+        path: '/var/lib/kafka/data',
+        reason: 'read-only filesystem',
+      },
+    });
+    const h = await makeHarness(busRef, mocks);
+    const logLines: string[] = [];
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      canaryCtx('svc-canary-sidecar-fail-outsider', { source: 'external', logLines }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome).toEqual({ kind: 'terminated', reason: 'dev-service-failed' });
+    const frames = mocks.trace.turnErrors.filter((e) => e.reason === 'dev-service-failed');
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).not.toHaveProperty('detail');
+    const logged = logLines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((l) => l.msg === 'chat_turn_error');
+    expect(logged).toMatchObject({ reason: 'dev-service-failed', detailWithheld: true });
+    expect(logged?.detail).toContain("'kafka'");
   });
 });

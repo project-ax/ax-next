@@ -2934,6 +2934,13 @@ describe('chat-orchestrator', () => {
         config?: Record<string, unknown>;
         /** Subscribers registered BEFORE the event observer. */
         preSubscribe?: (bus: HookBus) => void;
+        /**
+         * Stamp a conversation on a sourced turn ctx (the user's message is
+         * then saved through `conversations:append-event`, when registered).
+         */
+        conversationId?: string;
+        /** Collects a sourced turn ctx's log lines (JSON, one per entry). */
+        logLines?: string[];
       } = {},
     ) {
       const busRef: { current: HookBus | null } = { current: null };
@@ -2979,7 +2986,13 @@ describe('chat-orchestrator', () => {
               userId: 'test-user',
               reqId,
               source: opts.source,
-              logger: createLogger({ reqId, writer: () => undefined }),
+              ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
+              logger: createLogger({
+                reqId,
+                writer: (line) => {
+                  opts.logLines?.push(line);
+                },
+              }),
             })
           : turnErrorCtx(sessionId, reqId);
       const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -3328,6 +3341,77 @@ describe('chat-orchestrator', () => {
         expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
         expect(vault.state.openRefs).toContain(GMAIL_REF);
         expect(skippedEvents).toEqual([]);
+      });
+
+      // TASK-1091 — the same degraded path on an OUTSIDER's turn. It still
+      // fails (the expired sign-in was kept, and nobody present can sign in
+      // again), but nothing that leaves the host names the owner's connectors:
+      // not the turn error (@ax/conversations saves its payload into the
+      // thread as-is, and a channel relays it), not the outcome the caller
+      // answers the room from, not the saved user turn. The host log keeps the
+      // names (chat:end, the host's audit record, keeps the raw error).
+      async function outsiderTurn(
+        label: string,
+        source: AgentContextSource,
+        rejected: string[],
+        attached: Record<string, ReturnType<typeof oauthConnector>>,
+        extra: Record<string, ServiceHandler> | undefined,
+      ) {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected });
+        const logLines: string[] = [];
+        const saved: unknown[] = [];
+        const r = await invoke(vault, `outsider-keep-${label}`, attached, {
+          source,
+          conversationId: `conv-${label}`,
+          logLines,
+          extra: {
+            ...(extra ?? {}),
+            'conversations:append-event': async (_c, input: unknown) => {
+              saved.push(input);
+              return undefined;
+            },
+          },
+          config: { signInStatusTimeoutMs: 20 },
+        });
+        const turnErrorLog = logLines
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .find((l) => l.msg === 'chat_turn_error');
+        return { ...r, vault, saved, turnErrorLog };
+      }
+
+      it.each([
+        ['missing', undefined],
+        [
+          'throwing',
+          statusBatch(async () => {
+            throw new Error('marker table blip');
+          }).services,
+        ],
+        ['hanging', statusBatch(() => new Promise<never>(() => {})).services],
+      ])('an external turn whose status-batch is %s still fails, naming no connector to the room', async (label, extra) => {
+        const r = await outsiderTurn(label, 'external', [GMAIL_REF], { gmail: GMAIL }, extra);
+        // Kept, so the open failed on it, with the code an owner's turn gets.
+        expect(r.vault.state.openRefs).toContain(GMAIL_REF);
+        expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+        expect(r.turnErrors).toEqual([
+          { reqId: `r-outsider-keep-${label}`, reason: 'connector-needs-reconnect' },
+        ]);
+        expect(r.saved).toHaveLength(1); // the user's own message, nothing else
+        expect(JSON.stringify([r.outcome, r.turnErrors, r.saved])).not.toMatch(/gmail/i);
+        // The host log keeps the name, and says the room didn't get it.
+        expect(r.turnErrorLog).toMatchObject({
+          reason: 'connector-needs-reconnect',
+          detail: 'Connector: Gmail',
+          detailWithheld: true,
+        });
+      });
+
+      it("a turn whose source this build doesn't know fails closed the same way, with several connectors", async () => {
+        const r = await outsiderTurn('bogus', 'bogus' as never, [GMAIL_REF, LINEAR_REF], { gmail: GMAIL, linear: LINEAR }, undefined);
+        expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connectors-need-reconnect' });
+        expect(r.turnErrors).toEqual([{ reqId: 'r-outsider-keep-bogus', reason: 'connectors-need-reconnect' }]);
+        expect(JSON.stringify([r.outcome, r.turnErrors, r.saved])).not.toMatch(/gmail|linear/i);
+        expect(r.turnErrorLog).toMatchObject({ detail: 'Connectors: Gmail, Linear', detailWithheld: true });
       });
     });
 
