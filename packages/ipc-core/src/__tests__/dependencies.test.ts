@@ -70,7 +70,7 @@ describe('DISPATCHER_DEPENDENCIES', () => {
     // This is NOT every hook a runner request can reach: tool:execute:<name>
     // dispatches into host tool plugins, and those can call any hook. Keeping
     // auth:find-user-by-email out of them is the caller allowlist's job
-    // (TASK-1093), not this test's.
+    // (scripts/__tests__/channel-slack-boundaries.test.js), not this test's.
     const hooks = [
       ...DISPATCHER_DEPENDENCIES.requiredCalls,
       ...DISPATCHER_DEPENDENCIES.optionalCalls.map((oc) => oc.hook),

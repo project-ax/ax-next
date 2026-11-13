@@ -329,9 +329,11 @@ Attended channel turns (§2) and personal-agent DMs need it.
   ipc-core test pins that no ipc-core handler calls an `auth:` hook directly.
   That isn't everything a runner can reach: `tool:execute:` dispatches into
   host tool plugins, which can call any hook. So TASK-1093 adds a caller
-  allowlist (a repo-scan test or a lint rule): only auth-better and
-  channel-slack may name this hook. Callers pass only an email they fetched
-  from the identity provider themselves.
+  allowlist, the repo-scan test `scripts/__tests__/channel-slack-boundaries.test.js`:
+  only auth-better and channel-slack may name this hook (plus three listed
+  preset tests), and only channel-slack may build a `slack:` vault ref. It's a
+  scan, not a runtime check: a name built at runtime gets past it. Callers
+  pass only an email they fetched from the identity provider themselves.
 - **Open for TASK-1094:** it says nothing about company members who have no AX
   account, and channel-slack can't read the approved domains. Admitting them as
   external (§2) needs that answer from auth. Add it with that card. Don't copy

@@ -24,8 +24,8 @@ import { logCode } from './log-code.js';
  * agent id makes the store throw.
  *
  * Nothing in the vault limits which plugin reads a ref, so "only channel-slack
- * reads these" is held by a repo-scan guard on `slack:` strings (TASK-1093
- * Task 12), not at runtime. No method here returns a value anywhere but to its
+ * reads these" is held by a repo-scan guard on `slack:` strings
+ * (scripts/__tests__/channel-slack-boundaries.test.js), not at runtime. No method here returns a value anywhere but to its
  * caller, and no log line carries one: failures log the install and a code.
  *
  * The configuration refresh token stored here is exactly the one the admin
