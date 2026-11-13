@@ -169,6 +169,9 @@ function build(input: HandlerInput): BuiltHandler {
       socialProviders.google = {
         clientId: p.clientId,
         clientSecret: p.clientSecret,
+        // The login page uses the redirect flow. An ID token posted by a client
+        // to /sign-in/social skipped every check (TASK-1116), so that door is shut.
+        disableIdTokenSignIn: true,
       };
     } else if (p.kind === 'github') {
       socialProviders.github = {
@@ -197,7 +200,13 @@ function build(input: HandlerInput): BuiltHandler {
     // instance directly — passing the bare Kysely is the dialect path,
     // which we don't have here.
     database: { db: input.database, type: 'postgres' },
-    emailAndPassword: { enabled: true, minPasswordLength: 12 },
+    // Off on purpose (TASK-1116). A typed email proves nothing without a
+    // verification mail, and we send none, so email sign-up let anyone make an
+    // account and pre-claim a teammate's email before their first Google
+    // sign-in. Nothing uses it: the setup wizard's admin has no password, and
+    // the login page is Google-only. `enabled: false` turns password sign-IN
+    // off too, so a password someone set before the fix no longer works.
+    emailAndPassword: { enabled: false },
     // We mount @ax/http-server routes at `/auth/*` (sibling of `/admin/*`).
     // Better-auth's default basePath is `/api/auth`; override so its
     // internal router agrees with where we forward requests.

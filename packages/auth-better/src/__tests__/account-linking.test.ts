@@ -68,4 +68,22 @@ describe('createBetterAuthHandler — account linking', () => {
     const account = capturedConfigs[0]?.['account'] as AccountConfig | undefined;
     expect(account?.accountLinking?.trustedProviders).not.toContain('oidc');
   });
+
+  it('turns email and password sign-in off (TASK-1116)', () => {
+    // A typed email proves nothing without a verification mail, and ax sends
+    // none. `enabled: false` also stops a password set before the fix.
+    createBetterAuthHandler({ database: stubDb, providers: [] });
+    expect(capturedConfigs[0]?.['emailAndPassword']).toEqual({ enabled: false });
+  });
+
+  it('refuses Google ID tokens posted by a client (TASK-1116)', () => {
+    createBetterAuthHandler({
+      database: stubDb,
+      providers: [{ kind: 'google', clientId: 'c', clientSecret: 's' }],
+    });
+    const socialProviders = capturedConfigs[0]?.['socialProviders'] as
+      | Record<string, { disableIdTokenSignIn?: boolean }>
+      | undefined;
+    expect(socialProviders?.['google']?.disableIdTokenSignIn).toBe(true);
+  });
 });

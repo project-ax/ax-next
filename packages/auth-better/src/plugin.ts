@@ -781,8 +781,8 @@ async function forwardToBetterAuth(
   }
 
   if (box.token !== undefined) {
-    // Session-creating response (OAuth callback / email sign-in or sign-up —
-    // better-auth auto-signs-in on sign-up): re-issue the session token as our
+    // Session-creating response (the OAuth callback; email sign-in and sign-up
+    // are off, TASK-1116): re-issue the session token as our
     // http-server-signed cookie. better-auth's own
     // Set-Cookies on this response (its `ax_better_auth.session_token` session
     // cookie + short-lived OAuth-state cookie) are intentionally dropped — its

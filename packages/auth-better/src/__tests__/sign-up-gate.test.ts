@@ -343,8 +343,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
 
   // -- the holes ---------------------------------------------------------------
 
-  // TASK-1116: fails until Task 2
-  it.fails('email and password sign-up is refused for any email', async () => {
+  it('email and password sign-up is refused for any email', async () => {
     for (const email of ['mallory@evil.example', 'bob@canopyworks.com']) {
       const r = await postJson('/auth/sign-up/email', { email, password: PASSWORD, name: 'X' });
       expect(r.status).toBe(400);
@@ -354,8 +353,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     }
   });
 
-  // TASK-1116: fails until Task 2
-  it.fails('a password set before the fix no longer signs anyone in', async () => {
+  it('a password set before the fix no longer signs anyone in', async () => {
     await insertPasswordUser('victim@canopyworks.com');
     const r = await postJson('/auth/sign-in/email', { email: 'victim@canopyworks.com', password: PASSWORD });
     expect(r.status).toBe(400);
@@ -363,8 +361,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.setCookie).not.toContain('ax_auth_session=');
   });
 
-  // TASK-1116: fails until Task 2
-  it.fails('a Google ID token posted to /auth/sign-in/social is refused', async () => {
+  it('a Google ID token posted to /auth/sign-in/social is refused', async () => {
     const token = await idp.signGoogleIdToken({
       email: 'idtoken@evil.example',
       emailVerified: true,
