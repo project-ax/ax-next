@@ -1416,14 +1416,6 @@ ends `Failed`, and the wait times out and prints the pod's `describe` output:
   second, separate account (for a setup admin, one without admin rights).
   Which account to keep, and what to move, is a developer's call. Stop here.
 
-**On kind**, the host image has psql and the database is in the cluster, so
-pipe the file in directly. This is the dry run; add `-v apply=1` to change it:
-
-```bash
-KCTX=kind-ax-next-dev
-kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-next -d ax-next -X -v ON_ERROR_STOP=1 -v old_email=old@example.com -v new_email=new@example.com -f - < packages/auth-better/sql/change-account-email.sql
-```
-
 #### Step 3: change it
 
 This is the Step 2 pod with two changes: it's named
@@ -1488,8 +1480,18 @@ kubectl --context "$KCTX" logs deploy/ax-next-host -n "$NS" --since=1h | grep 's
 kubectl --context "$KCTX" delete configmap change-account-email -n "$NS"
 ```
 
-To undo, run this step again with the two addresses swapped, after the same
-check with the person.
+To undo, run all of 4i again (Steps 1 to 4) with the two addresses swapped,
+after the same check with the person.
+
+**On kind, instead of Steps 1 to 4**, the host image has psql and the
+database is in the cluster, so pipe the file in directly. Don't mix this with
+the prod steps above: it sets its own context. This is the dry run; add
+`-v apply=1` to change it:
+
+```bash
+KCTX=kind-ax-next-dev
+kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-next -d ax-next -X -v ON_ERROR_STOP=1 -v old_email=old@example.com -v new_email=new@example.com -f - < packages/auth-better/sql/change-account-email.sql
+```
 
 ---
 
