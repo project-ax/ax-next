@@ -755,6 +755,32 @@ describe('createEventRouter: turns that fail', () => {
     ]);
   });
 
+  /*
+    The same host-code shape as the orchestrator's and routines'
+    HOST_REASON_RE: lowercase letters, digits, '-' and ':'. An underscore is
+    not in it (a runner-written `snake_case` token isn't a host code), and
+    neither is anything past 64 characters.
+  */
+  it.each([
+    ['chat-run-timeout', 'chat-run-timeout'],
+    ['agent-resolve:forbidden', 'agent-resolve:forbidden'],
+    ['a', 'a'],
+    ['x'.repeat(64), 'x'.repeat(64)],
+    ['not_a_host_code', 'runner-error'],
+    ['ECONNRESET', 'runner-error'],
+    ['-leading-dash', 'runner-error'],
+    ['x'.repeat(65), 'runner-error'],
+    ['', 'runner-error'],
+  ])('a terminated reason %j is logged as %j', async (reason, code) => {
+    const w = world();
+    w.scripts.push({ end: 'none', outcome: { kind: 'terminated', reason } });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'terminated', code } },
+    ]);
+  });
+
   it('the hard cap ends a turn that never ends, and a late turn-end changes nothing', async () => {
     vi.useFakeTimers();
     const w = world();

@@ -94,8 +94,14 @@ const ARTIFACT_TOOLS = new Set([
  * A host code (`conversation:busy`, `chat-run-timeout`,
  * `agent-resolve:forbidden`). A terminated reason can be the runner's own
  * error text, so anything else is logged as `runner-error`.
+ *
+ * The same pattern as `HOST_REASON_RE` in @ax/chat-orchestrator
+ * (packages/chat-orchestrator/src/orchestrator.ts, `outsiderReason`) and in
+ * @ax/routines (packages/routines/src/fire.ts, `terminatedRunText`), where
+ * the reason for its shape is spelled out. Change all three together; no
+ * cross-plugin import.
  */
-const HOST_CODE = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
+const HOST_CODE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
 const BUSY = 'conversation:busy';
 
 type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'timeout';
