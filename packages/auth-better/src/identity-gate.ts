@@ -191,6 +191,20 @@ export function createIdentityGate(
     }
 
     const refusal = decideIdentity(attempt, allowedDomains, local);
-    return refusal === null ? undefined : { error: refusal, errorDescription: REFUSAL_DESCRIPTION };
+    if (refusal === null) return undefined;
+    logRefusal(refusal, attempt);
+    return { error: refusal, errorDescription: REFUSAL_DESCRIPTION };
   };
+}
+
+/**
+ * One stderr line per refusal, so a turned-away sign-in leaves a trace an
+ * operator can find. Code-only, like the other `[ax/auth-better]` lines
+ * (TASK-1047): the refusal code, better-auth's action and the provider id,
+ * all fixed values. Never the email, its domain or the allowed list, which
+ * would put a person's address (or an attacker's text) in the log.
+ */
+function logRefusal(code: IdentityRefusal, attempt: IdentityAttempt): void {
+  const fields = { code, action: attempt.action, provider: attempt.providerId ?? null };
+  process.stderr.write(`[ax/auth-better] sign-in refused ${JSON.stringify(fields)}\n`);
 }

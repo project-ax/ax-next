@@ -41,6 +41,7 @@ import {
   oauthSignIn,
   type FakeIdp,
 } from './support/fake-idp.js';
+import { captureOutput } from './support/capture-output.js';
 
 const COOKIE_KEY = randomBytes(32);
 /** better-auth's own secret, so a test can sign better-auth's session cookie. */
@@ -554,6 +555,28 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     const r = await oauthSignIn(stack.baseUrl, 'github');
     expect(r.location).toContain('/auth/error?error=email_mismatch');
     expect(r.axSession).toBeNull();
+  });
+
+  it('a refusal leaves one code-only line in the server log, naming no email', async () => {
+    await addProvider('github', '');
+    const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
+    await insertAccount(aliceId, 'github', '783');
+    idp.nextGithub({ id: 783, login: 'imp', email: 'imp@evil.example', verified: true });
+    const { result: r, output, authLines } = await captureOutput(() => oauthSignIn(stack.baseUrl, 'github'));
+    expect(r.location).toContain('/auth/error?error=email_mismatch');
+    expect(authLines).toEqual([
+      {
+        via: 'stderr',
+        line: '[ax/auth-better] sign-in refused {"code":"email_mismatch","action":"sign-in","provider":"github"}\n',
+      },
+    ]);
+    // Neither the provider's email nor the account's, in any field or anywhere else.
+    for (const text of ['@', 'imp', 'evil.example', 'alice', 'canopyworks']) {
+      expect(authLines[0]!.line, text).not.toContain(text);
+    }
+    for (const text of ['imp@evil.example', 'alice@canopyworks.com']) {
+      expect(output.join(''), text).not.toContain(text);
+    }
   });
 
   it("a link made before the fix still signs in when GitHub vouches for the account's own email", async () => {

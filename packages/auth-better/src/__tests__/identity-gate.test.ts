@@ -9,6 +9,7 @@ import {
   type IdentityRefusal,
   type LocalUserFacts,
 } from '../identity-gate.js';
+import { captureOutput } from './support/capture-output.js';
 
 // TASK-1116. The identity gate's rules, Docker-free. sign-up-gate.test.ts
 // drives the same gate through the real better-auth handler.
@@ -325,6 +326,29 @@ describe('createIdentityGate', () => {
       error: 'account_not_linkable',
       errorDescription: REFUSAL_DESCRIPTION,
     });
+  });
+
+  it('logs one code-only line per refusal, and nothing when it lets one through', async () => {
+    const refused = await captureOutput(() =>
+      gate({ user: { email: 'outsider@evil.example', emailVerified: true }, source: oauth('create-user', 'google') }, NO_DB),
+    );
+    expect(refused.result).toEqual({ error: 'email_domain_not_allowed', errorDescription: REFUSAL_DESCRIPTION });
+    expect(refused.authLines).toEqual([
+      {
+        via: 'stderr',
+        line: '[ax/auth-better] sign-in refused {"code":"email_domain_not_allowed","action":"create-user","provider":"google"}\n',
+      },
+    ]);
+    // Never the email, its domain or the allowed list.
+    for (const text of ['outsider', 'evil.example', 'canopyworks']) {
+      expect(refused.output.join('')).not.toContain(text);
+    }
+
+    const allowed = await captureOutput(() =>
+      gate({ user: { email: 'alice@canopyworks.com', emailVerified: true }, source: oauth('create-user', 'google') }, NO_DB),
+    );
+    expect(allowed.result).toBeUndefined();
+    expect(allowed.output).toEqual([]);
   });
 
   it('lets an existing admin sign in from outside the list, and no member', async () => {
