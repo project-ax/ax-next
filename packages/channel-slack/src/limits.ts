@@ -51,6 +51,8 @@ export const URL_CHALLENGE_MAX = 4_096;
 
 /** The longest sender email admitted (admission.ts): `auth:find-user-by-email`'s own cap. */
 export const EMAIL_MAX = 320;
+/** The longest Slack display name put in a DM's sender label (format.ts), in UTF-16 code units. */
+export const SENDER_NAME_MAX = 80;
 
 // ── Slack Web API calls ─────────────────────────────────────────────────────
 
@@ -89,3 +91,9 @@ export const REPLY_RATE_LIMIT_RETRIES = 5;
 export const MAX_TURNS_PER_CONVERSATION = 3;
 /** The longest one DM turn may run: 15 minutes. */
 export const TURN_HARD_CAP_MS = 900_000;
+/**
+ * After `agent:invoke` reports a complete turn, how long the reply waits for
+ * that turn's `chat:turn-end` before finishing anyway (the same grace
+ * @ax/routines gives a fire).
+ */
+export const TURN_END_GRACE_MS = 60_000;

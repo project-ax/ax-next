@@ -2,28 +2,28 @@ import { randomBytes } from 'node:crypto';
 import { PluginError, makeAgentContext, type HookBus, type Logger, type Plugin } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createAdminRoutes } from './admin-routes.js';
-import {
-  EVENTS_ROUTE_PATH,
-  createEventsHandler,
-  createSeenEvents,
-  type EventDispatcher,
-} from './events.js';
+import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
 import type { RouteSpec } from './http-types.js';
 import { createLifetime, type Lifetime } from './lifetime.js';
 import {
   EVENT_DEDUPE_MAX,
   EVENT_DEDUPE_TTL_MS,
   EVENTS_MAX_BODY_BYTES,
+  MAX_TURNS_PER_CONVERSATION,
   SIGNING_SECRET_CACHE_MAX,
   SIGNING_SECRET_CACHE_TTL_MS,
 } from './limits.js';
 import { logCode } from './log-code.js';
 import { runMigrations, type ChannelSlackDatabase } from './migrations.js';
 import { createMutex } from './mutex.js';
+import { systemClock } from './reply-stream.js';
+import { createEventRouter } from './router.js';
 import { cacheSigningSecrets, type SigningSecretCache } from './secret-cache.js';
 import { createSecretStore } from './secrets.js';
 import { createSlackApi } from './slack-api.js';
 import { createInstallStore, type InstallStore } from './store.js';
+import { createKeyedQueue } from './turn-queue.js';
+import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './turn-registry.js';
 
 // ---------------------------------------------------------------------------
 // @ax/channel-slack — connect a Slack workspace from AX admin settings, and
@@ -42,8 +42,12 @@ import { createInstallStore, type InstallStore } from './store.js';
 // the install's four secrets in the credentials vault. Its only egress is
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
 //
-// Until PR B lands, a verified event is acknowledged and logged as
-// `slack_event_not_handled`, never answered.
+// A verified event goes to the router (router.ts): a 1:1 DM from an admitted
+// member whose verified email maps to an AX user becomes a turn of their
+// oldest personal agent, in the thread's conversation (origin 'slack'),
+// queued behind any other turn in it (turn-queue.ts). The reply streams into
+// the Slack thread (reply-stream.ts) from the turn's chat events, which one
+// subscriber per event hands to the running turn (turn-registry.ts).
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -65,6 +69,8 @@ export interface ChannelSlackConfig {
 
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
+/** The subscriber name for the three chat events DM turns read. */
+export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/dm-turns`;
 
 const RESET_LEFT_APP_HINT =
   'The reset removed this install from AX, not from Slack. Delete the app at ' +
@@ -122,9 +128,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         'credentials:get',
         'credentials:set',
         'credentials:delete',
+        'auth:find-user-by-email',
+        'agents:list-for-user',
+        'conversations:find-or-create',
+        'agent:invoke',
       ],
       optionalCalls: [{ hook: 'branding:get', degradation: 'the default bot name is "ax"' }],
-      subscribes: [RESET_CLEANUP],
+      subscribes: [RESET_CLEANUP, ...TURN_EVENT_HOOKS],
     },
 
     async init({ bus }) {
@@ -155,6 +165,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       const api = createSlackApi({ fetchImpl });
       const life = createLifetime();
       lifetime = life;
+      const registry = createTurnRegistry();
+      const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
 
       const routes: RouteSpec[] = [
         ...createAdminRoutes({
@@ -181,7 +193,16 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             secrets,
             lifetime: life,
             seen: createSeenEvents({ ttlMs: EVENT_DEDUPE_TTL_MS, max: EVENT_DEDUPE_MAX }),
-            dispatch: notHandledYet(logger),
+            dispatch: createEventRouter({
+              bus,
+              api,
+              registry,
+              publicOrigin,
+              logger,
+              clock: systemClock,
+              secrets,
+              queue,
+            }),
             logger,
             now,
           }),
@@ -201,6 +222,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         undos.push(() => {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
+        undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
+        // Undone first: turns not yet started are dropped. Running ones are
+        // left to finish (or be cut short by the exit); nothing awaits them.
+        undos.push(() => queue.close());
       } catch (err) {
         unwind(undos);
         lifetime = undefined;
@@ -218,21 +243,6 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       unwind(undos);
       await lifetime?.drain();
     },
-  };
-}
-
-/**
- * PR A's dispatch: a verified, new event for an active install is only
- * logged. TASK-1093 PR B (Task 11) replaces this with the event router.
- * `type` is Slack's event name, already checked against `[a-z0-9_.]{1,64}`
- * (events.ts); nothing else from the event is logged.
- */
-function notHandledYet(logger: Logger): EventDispatcher {
-  return async (install, envelope) => {
-    logger.info('slack_event_not_handled', {
-      installId: install.installId,
-      type: envelope.event.type,
-    });
   };
 }
 

@@ -137,7 +137,7 @@ function recordingLogger(): { logger: Logger; lines: Line[] } {
 
 describe('admitSlackUser', () => {
   it('a full, confirmed member is admitted with their users.info email, verbatim', () => {
-    expect(admitSlackUser(member(), TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL });
+    expect(admitSlackUser(member(), TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
   });
 
   it.each<[string, unknown, RefusalReason]>([
@@ -211,23 +211,36 @@ describe('admitSlackUser', () => {
   });
 
   it('is_app_user on a normal member is admitted: it means "authorized this app", not a bot', () => {
-    expect(admitSlackUser(member({ is_app_user: true }), TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL });
+    expect(admitSlackUser(member({ is_app_user: true }), TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
   });
 
   it('refusing flags that are false, null or absent do not refuse', () => {
     const absent = member();
     for (const key of ['deleted', 'is_bot', 'is_restricted', 'is_ultra_restricted']) delete absent[key];
-    expect(admitSlackUser(absent, TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL });
+    expect(admitSlackUser(absent, TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
     expect(
       admitSlackUser(member({ is_workflow_bot: null, is_stranger: false, is_invited_user: null }), TEAM_ID),
-    ).toEqual({ ok: true, email: ALICE_EMAIL });
+    ).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
+  });
+
+  it('the display name comes along for the label: display name, else full name, cleaned', () => {
+    const named = (profile: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+      admitSlackUser(member({ ...over, profile: { email: ALICE_EMAIL, ...profile } }), TEAM_ID);
+    expect(named({ display_name: 'ali', real_name: 'Alice Smith' })).toMatchObject({ ok: true, name: 'ali' });
+    expect(named({ display_name: '  ', real_name: 'Alice Smith' })).toMatchObject({ ok: true, name: 'Alice Smith' });
+    expect(named({}, { real_name: 'Top Level' })).toMatchObject({ ok: true, name: 'Top Level' });
+    expect(named({ display_name: 42 })).toMatchObject({ ok: true, name: '' });
+    const rlo = String.fromCharCode(0x202e);
+    expect(named({ display_name: `[Bob]\n(x)${rlo}y` })).toMatchObject({ ok: true, name: 'Bob x y' });
+    // The name never changes who is admitted, or with what email.
+    expect(named({ display_name: 'ceo@canopyworks.com' })).toEqual({ ok: true, email: ALICE_EMAIL, name: 'ceo@canopyworks.com' });
   });
 
   it(`an email of exactly ${EMAIL_MAX} characters is admitted, untrimmed and not lowercased`, () => {
     const longest = `${'A'.repeat(EMAIL_MAX - 16)}@CanopyWorks.com`;
     expect(longest).toHaveLength(EMAIL_MAX);
-    expect(admitSlackUser(member({ profile: { email: longest } }), TEAM_ID)).toEqual({ ok: true, email: longest });
-    expect(admitSlackUser(member({ profile: { email: ' a@b.c ' } }), TEAM_ID)).toEqual({ ok: true, email: ' a@b.c ' });
+    expect(admitSlackUser(member({ profile: { email: longest } }), TEAM_ID)).toEqual({ ok: true, email: longest, name: '' });
+    expect(admitSlackUser(member({ profile: { email: ' a@b.c ' } }), TEAM_ID)).toEqual({ ok: true, email: ' a@b.c ', name: '' });
   });
 });
 
@@ -274,7 +287,7 @@ describe('admitSender', () => {
       [ALICE]: member(),
       U07GUEST001: member({ id: 'U07GUEST001', is_restricted: true }),
     });
-    expect(await admitSender(api, BOT_TOKEN, ALICE, TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL });
+    expect(await admitSender(api, BOT_TOKEN, ALICE, TEAM_ID)).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
     expect(await admitSender(api, BOT_TOKEN, 'U07GUEST001', TEAM_ID)).toEqual(refused('guest'));
   });
 
@@ -405,7 +418,7 @@ describe('answerMention', () => {
 
   it('a member who mentions the bot gets one private (ephemeral) refusal, at the top level', async () => {
     const { api, calls } = fakeApi();
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention)).toEqual({ ok: true, email: ALICE_EMAIL });
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention)).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
     expect(calls.filter((c) => c.method === 'postEphemeral')).toEqual([
       {
         method: 'postEphemeral',

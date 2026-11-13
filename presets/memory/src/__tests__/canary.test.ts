@@ -53,6 +53,7 @@ function authStub(): Plugin {
       registers: [
         'auth:require-user',
         'auth:get-user',
+        'auth:find-user-by-email',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -83,6 +84,9 @@ function authStub(): Plugin {
           id: input?.userId ?? 'unknown', isAdmin: input?.userId === ROUTINES_ADMIN,
         }),
       );
+      // @ax/channel-slack maps a Slack sender's verified email with this
+      // (TASK-1092's hook). No canary identity has one, so every lookup misses.
+      bus.registerService('auth:find-user-by-email', name, async () => null);
       bus.registerService('auth:create-bootstrap-user', name, async () => ({
         user: { id: 'bootstrap', isAdmin: true },
       }));

@@ -1,6 +1,7 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { COPY } from './copy.js';
 import type { SlackEnvelope } from './events.js';
+import { cleanSenderName } from './format.js';
 import { EMAIL_MAX } from './limits.js';
 import { logCode } from './log-code.js';
 import type { SlackApi } from './slack-api.js';
@@ -40,12 +41,16 @@ export type RefusalReason =
   | 'lookup-failed';
 
 /**
+ * Admitted: the sender's users.info email, and their Slack display name
+ * (`cleanSenderName`'d, '' when they have none) for the label the agent reads
+ * (format.ts `dmSenderLabel`). The name is display text only, never identity.
+ *
  * `code` only on a `lookup-failed` that a users.info call caused: the Slack
  * client's code-only error (`ratelimited`, `account_inactive`, …) or
  * `user-mismatch`, so an operator can tell a revoked token from a rate limit.
  */
 export type Admission =
-  | { ok: true; email: string }
+  | { ok: true; email: string; name: string }
   | { ok: false; reason: RefusalReason; code?: string };
 
 const SLACKBOT_ID = 'USLACKBOT';
@@ -66,6 +71,21 @@ function flagged(user: Record<string, unknown>, key: string): boolean {
 const refuse = (reason: RefusalReason): Admission => ({ ok: false, reason });
 
 /**
+ * What Slack shows for the sender: their display name, else their full name
+ * (the profile's, then the account's), cleaned; '' when none has anything
+ * printable.
+ */
+function displayNameOf(user: Record<string, unknown>): string {
+  const profile = isRecord(user['profile']) ? user['profile'] : {};
+  for (const raw of [profile['display_name'], profile['real_name'], user['real_name']]) {
+    if (typeof raw !== 'string') continue;
+    const name = cleanSenderName(raw);
+    if (name.length > 0) return name;
+  }
+  return '';
+}
+
+/**
  * Pure. Admit a users.info `user` object for the install's workspace, or say
  * why not. The first rule that fires wins:
  *   1. not an object → lookup-failed
@@ -80,7 +100,7 @@ const refuse = (reason: RefusalReason): Admission => ({ ok: false, reason });
  * Otherwise the email, verbatim: `auth:find-user-by-email` does its own
  * (ASCII-only) case folding, and a trimmed or lowercased address could name
  * a different account. `is_app_user` is not a refusal: it means "authorized
- * this app".
+ * this app". The display name comes along for the sender label.
  */
 export function admitSlackUser(user: unknown, teamId: string): Admission {
   if (!isRecord(user)) return refuse('lookup-failed');
@@ -97,7 +117,7 @@ export function admitSlackUser(user: unknown, teamId: string): Admission {
   if (typeof email !== 'string' || email.length < 1 || email.length > EMAIL_MAX) {
     return refuse('no-email');
   }
-  return { ok: true, email };
+  return { ok: true, email, name: displayNameOf(user) };
 }
 
 /**

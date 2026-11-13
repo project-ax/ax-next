@@ -398,7 +398,11 @@ it also needs, at minimum (each is in-process today and says so at its site):
     on one replica is refused by the content origin on another.
   - @ax/channel-slack's event-id dedupe set (events.ts): Slack retries an
     event against whichever replica answers, and one that never saw the
-    first delivery would run the turn a second time.
+    first delivery would run the turn a second time. Also its
+    per-conversation turn queue and active-turn registry (turn-queue.ts,
+    turn-registry.ts): two replicas could each run a turn in one Slack
+    thread at once, and a turn's chat events must reach the replica that
+    started it.
 
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica blob backend, s3) lands. Better to fail the `helm

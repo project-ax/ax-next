@@ -29,7 +29,10 @@
 //   No HTTP. The CLI talks directly to the database via @ax/database-postgres.
 //   Each loaded plugin still calls http:register-route for its routes; the
 //   CLI registers a no-op stub for that hook so verifyCalls passes without
-//   standing up a real listener.
+//   standing up a real listener. channel-slack also calls
+//   conversations:find-or-create and agent:invoke for Slack DMs, which can't
+//   reach this process (its events route lands on that stub), so the CLI
+//   stubs those two with services that refuse if anything ever calls them.
 
 import {
   HookBus,
@@ -156,6 +159,20 @@ export async function runAdminResetBootstrapCommand(
     'admin-reset-bootstrap-stub',
     async () => ({ unregister: () => {} }),
   );
+  // channel-slack is loaded only for its bootstrap:reset-cleanup subscriber.
+  // Its DM path calls these two, and a Slack DM can't reach this process (the
+  // events route above goes nowhere), so they are never called here. Each
+  // refuses rather than pretend, should that ever change.
+  for (const hook of ['conversations:find-or-create', 'agent:invoke'] as const) {
+    bus.registerService(hook, 'admin-reset-bootstrap-stub', async () => {
+      throw new PluginError({
+        code: 'not-available',
+        plugin: PLUGIN_NAME,
+        hookName: hook,
+        message: `${hook} is not available in admin reset-bootstrap`,
+      });
+    });
+  }
 
   let handle;
   try {

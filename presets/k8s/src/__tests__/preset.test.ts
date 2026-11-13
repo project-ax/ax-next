@@ -1297,11 +1297,21 @@ describe('@ax/preset-k8s wiring', () => {
       'credentials:get',
       'credentials:set',
       'credentials:delete',
+      // A Slack DM becomes a turn of the sender's own personal agent.
+      'auth:find-user-by-email',
+      'agents:list-for-user',
+      'conversations:find-or-create',
+      'agent:invoke',
     ]);
     expect(slack!.manifest.optionalCalls).toEqual([
       { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
     ]);
-    expect(slack!.manifest.subscribes).toEqual(['bootstrap:reset-cleanup']);
+    expect(slack!.manifest.subscribes).toEqual([
+      'bootstrap:reset-cleanup',
+      'chat:stream-chunk',
+      'chat:turn-end',
+      'chat:turn-error',
+    ]);
     // Every hard call has a producer in this preset, and so does the optional one.
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
     for (const hook of [...slack!.manifest.calls, 'branding:get']) {

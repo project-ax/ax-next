@@ -1,6 +1,6 @@
 import { clampCodeUnits } from '@ax/core';
 import { replaceSurfaceRewriters } from '@ax/core/surface-text';
-import { STATUS_TITLE_MAX } from './limits.js';
+import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
 
 /**
  * Text that leaves AX for Slack. Model output is untrusted (it can quote
@@ -85,4 +85,33 @@ export function splitForPost(text: string, limit: number): string[] {
     rest = rest.slice(cut);
   }
   return parts;
+}
+
+/**
+ * A Slack display name, made fit for the sender label (`dmSenderLabel`): no
+ * control, bidi or invisible characters, no brackets or parentheses (so a
+ * name can't close the label early and start a second one), single spaces,
+ * at most SENDER_NAME_MAX code units. Empty when nothing printable is left.
+ * The name is the sender's own Slack profile text: untrusted, for the model
+ * to read, never used for identity.
+ */
+export function cleanSenderName(raw: string): string {
+  const flat = replaceSurfaceRewriters(raw)
+    .replace(/[[\]()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clampCodeUnits(flat, SENDER_NAME_MAX).trimEnd();
+}
+
+/**
+ * Who a DM is from, as the agent reads it at the start of the message
+ * content (design §2): `[Slack · DM · Alice Smith (U123)]`. The Slack
+ * user id is ingress-checked (`[A-Za-z0-9._-]`); the name is
+ * `cleanSenderName`'s. The label is untrusted text in the CONTENT, never in
+ * the turn's context: nothing treats it as permission to do anything, and
+ * the turn's identity comes from users.info and AX alone.
+ */
+export function dmSenderLabel(name: string, slackUserId: string): string {
+  const who = name.length > 0 ? `${name} (${slackUserId})` : slackUserId;
+  return `[Slack · DM · ${who}]`;
 }

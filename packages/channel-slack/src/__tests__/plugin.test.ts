@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { HookBus, PluginError, makeAgentContext, type Plugin } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
 import { createHttpServerPlugin } from '@ax/http-server';
 import {
   createTestHarness,
@@ -17,11 +17,14 @@ import { ADMIN_BODY_MAX_BYTES, EVENTS_MAX_BODY_BYTES } from '../limits.js';
 import type { ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
+  TURN_EVENTS_KEY,
   createChannelSlackPlugin,
   type ChannelSlackConfig,
 } from '../plugin.js';
 import { secretRef } from '../secrets.js';
 import { createInstallStore } from '../store.js';
+import { TURN_EVENT_HOOKS } from '../turn-registry.js';
+import { fakeBotToken } from './fake-slack-tokens.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -34,6 +37,10 @@ const SIGNING_SECRET = 'test-signing-secret-not-real-01';
 const APP_ID = 'A07QF9ZK2MN';
 const TEAM_ID = 'T07ABCDEF12';
 const ADMIN = { id: 'usr_ada', displayName: 'Ada Admin', isAdmin: true };
+const BOT_TOKEN = fakeBotToken('PLUGINTESTSECRET');
+const ALICE = 'U07ALICE001';
+const DM_CHANNEL = 'D07DMCHANNEL';
+const DM_TS = '1763035200.000100';
 
 // ── Fakes for the hooks channel-slack calls, other than the database ───────
 
@@ -44,7 +51,13 @@ interface Services {
   credentialSets: number;
   /** Every credentials:get, by ref. */
   credentialGets: string[];
+  /** Every agent:invoke's ctx and input. */
+  invokes?: Array<{ ctx: AgentContext; input: unknown }>;
+  /** The booted bus, so the fake orchestrator can fire the turn's events. */
+  bus?: HookBus;
 }
+
+const newServices = (): Services => ({ routes: [], vault: new Map(), credentialSets: 0, credentialGets: [], invokes: [] });
 
 function fakeServices(s: Services) {
   return {
@@ -81,7 +94,73 @@ function fakeServices(s: Services) {
     'credentials:delete': async (_ctx: unknown, input: unknown) => {
       s.vault.delete((input as { ref: string }).ref);
     },
+    // The DM path. Only Alice's verified email maps, to one personal agent.
+    'auth:find-user-by-email': async (_ctx: unknown, input: unknown) =>
+      (input as { email: string }).email === 'alice@canopyworks.com' ? { userId: 'usr_alice' } : null,
+    'agents:list-for-user': async (_ctx: unknown, input: unknown) => ({
+      agents:
+        (input as { userId: string }).userId === 'usr_alice'
+          ? [
+              {
+                id: 'agt_alice',
+                ownerId: 'usr_alice',
+                ownerType: 'user',
+                visibility: 'personal',
+                createdAt: new Date('2026-01-01T00:00:00Z'),
+              },
+            ]
+          : [],
+    }),
+    'conversations:find-or-create': async (_ctx: unknown, input: unknown) => ({
+      conversation: { conversationId: `conv:${(input as { externalKey: string }).externalKey}` },
+      created: true,
+    }),
+    // A turn that streams one line and ends, on the booted bus, for its own reqId.
+    'agent:invoke': async (ctx: AgentContext, input: unknown) => {
+      s.invokes?.push({ ctx, input });
+      const bus = s.bus;
+      if (bus !== undefined) {
+        await bus.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Hi Alice.' });
+        await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+      }
+      return { kind: 'complete', messages: [] };
+    },
   };
+}
+
+/**
+ * Slack, behind the plugin's own client: answers users.info for Alice and
+ * every chat.* call, and records each method with its auth header and body.
+ */
+function fakeSlackFetch() {
+  const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const method = String(input).replace('https://slack.com/api/', '');
+    const headers = new Headers(init?.headers);
+    const raw = typeof init?.body === 'string' ? init.body : '';
+    const body: Record<string, unknown> = (headers.get('content-type') ?? '').startsWith('application/json')
+      ? (JSON.parse(raw) as Record<string, unknown>)
+      : Object.fromEntries(new URLSearchParams(raw));
+    calls.push({ method, auth: headers.get('authorization'), body });
+    let answer: Record<string, unknown> = { ok: true };
+    if (method === 'users.info') {
+      answer =
+        body['user'] === ALICE
+          ? {
+              ok: true,
+              user: {
+                id: ALICE,
+                team_id: TEAM_ID,
+                is_email_confirmed: true,
+                profile: { email: 'alice@canopyworks.com', real_name: 'Alice' },
+              },
+            }
+          : { ok: false, error: 'user_not_found' };
+    }
+    if (method === 'chat.startStream') answer = { ok: true, ts: '1763039999.000001' };
+    return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  return { fetchImpl, calls };
 }
 
 // ── A request and response shaped like @ax/http-server's ───────────────────
@@ -179,7 +258,7 @@ afterAll(async () => {
 });
 
 async function boot(config: Partial<ChannelSlackConfig> = {}) {
-  const s: Services = { routes: [], vault: new Map(), credentialSets: 0, credentialGets: [] };
+  const s = newServices();
   const plugin = createChannelSlackPlugin({
     publicOrigin: HTTPS_ORIGIN,
     now: () => NOW_MS,
@@ -191,6 +270,7 @@ async function boot(config: Partial<ChannelSlackConfig> = {}) {
     plugins: [createDatabasePostgresPlugin({ connectionString }), plugin],
   });
   booted.push(harness);
+  s.bus = harness.bus;
   const route = (method: 'GET' | 'POST', path: string) => {
     const found = s.routes.find((r) => r.method === method && r.path === path);
     if (found === undefined) throw new Error(`no route ${method} ${path}`);
@@ -256,14 +336,21 @@ async function withDeleteTrigger(body: string, fn: () => Promise<void>): Promise
   }
 }
 
-function eventBody(type = 'message'): Buffer {
+function eventBody(type = 'message', text?: string): Buffer {
   return Buffer.from(
     JSON.stringify({
       type: 'event_callback',
       team_id: TEAM_ID,
       api_app_id: APP_ID,
       event_id: 'Ev07ABCDEF12',
-      event: { type, user: 'U07ALICE001', channel: 'D07DMCHANNEL', channel_type: 'im', ts: '1763035200.000100' },
+      event: {
+        type,
+        user: ALICE,
+        channel: DM_CHANNEL,
+        channel_type: 'im',
+        ts: DM_TS,
+        ...(text !== undefined ? { text } : {}),
+      },
     }),
   );
 }
@@ -303,9 +390,13 @@ describe('@ax/channel-slack plugin', () => {
         'credentials:get',
         'credentials:set',
         'credentials:delete',
+        'auth:find-user-by-email',
+        'agents:list-for-user',
+        'conversations:find-or-create',
+        'agent:invoke',
       ],
       optionalCalls: [{ hook: 'branding:get', degradation: 'the default bot name is "ax"' }],
-      subscribes: ['bootstrap:reset-cleanup'],
+      subscribes: ['bootstrap:reset-cleanup', 'chat:stream-chunk', 'chat:turn-end', 'chat:turn-error'],
     });
   });
 
@@ -410,13 +501,15 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('a signed event for an active install is acknowledged, then logged as not handled yet (PR A)', async () => {
-    const { s, call, harness } = await boot();
+  it('a signed DM from the owner is acknowledged, then answered in its thread through the plugin wiring', async () => {
+    const slack = fakeSlackFetch();
+    const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
     await insertActiveInstall();
     s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
     const logs = captureLogs();
 
-    const body = eventBody('message');
+    const body = eventBody('message', 'Hello there');
     const answer = await call(
       'POST',
       '/slack/events/:installId',
@@ -428,17 +521,34 @@ describe('@ax/channel-slack plugin', () => {
     );
     expect(answer).toEqual({ status: 200, body: undefined, done: true });
 
-    // The dispatch runs after the 200, tracked by the lifetime: closing the
-    // harness drains it.
-    await harness.close({ onError: () => {} });
-    const notHandled = logs.filter((l) => l['msg'] === 'slack_event_not_handled');
-    expect(notHandled).toHaveLength(1);
-    expect(notHandled[0]).toMatchObject({ level: 'info', installId: INSTALL_ID, type: 'message' });
-    // Code-only: nothing from the event but its type.
-    const line = JSON.stringify(notHandled[0]);
-    for (const leak of ['U07ALICE001', 'D07DMCHANNEL', TEAM_ID, APP_ID, SIGNING_SECRET]) {
-      expect(line).not.toContain(leak);
-    }
+    // The reply goes out after the 200: admission, the turn, then the stream.
+    await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.stopStream'));
+    expect(slack.calls.map((c) => [c.method, c.auth])).toEqual([
+      ['users.info', `Bearer ${BOT_TOKEN}`],
+      ['chat.startStream', `Bearer ${BOT_TOKEN}`],
+      ['chat.stopStream', `Bearer ${BOT_TOKEN}`],
+    ]);
+    expect(slack.calls[0]!.body).toEqual({ user: ALICE });
+    expect(slack.calls[1]!.body).toEqual({
+      channel: DM_CHANNEL,
+      thread_ts: DM_TS,
+      recipient_user_id: ALICE,
+      recipient_team_id: TEAM_ID,
+      chunks: [{ type: 'markdown_text', text: 'Hi Alice.' }],
+    });
+
+    expect(s.invokes).toHaveLength(1);
+    const { ctx, input } = s.invokes![0]!;
+    expect(ctx).toMatchObject({
+      userId: 'usr_alice',
+      agentId: 'agt_alice',
+      conversationId: `conv:slack:${INSTALL_ID}:${DM_CHANNEL}:${DM_TS}`,
+      source: 'user',
+      audience: 'private',
+    });
+    expect(input).toEqual({ message: { role: 'user', content: `[Slack \u00b7 DM \u00b7 Alice (${ALICE})]: Hello there` } });
+    // Nothing went wrong, and nothing from the event was logged.
+    expect(logs.filter((l) => String(l['msg']).startsWith('slack_'))).toEqual([]);
   });
 
   it('a bad signature is refused with 401 and nothing is dispatched', async () => {
@@ -460,7 +570,8 @@ describe('@ax/channel-slack plugin', () => {
     );
     expect(answer.status).toBe(401);
     await harness.close({ onError: () => {} });
-    expect(logs.filter((l) => l['msg'] === 'slack_event_not_handled')).toEqual([]);
+    expect(logs.filter((l) => l['msg'] === 'slack_event_refused')).toHaveLength(1);
+    expect(s.invokes).toEqual([]);
   });
 
   it('unsigned requests to a known install read its signing secret once, and a disconnect or reset is seen at once', async () => {
@@ -614,11 +725,12 @@ describe('@ax/channel-slack plugin', () => {
     );
   });
 
-  it('shutdown unregisters every route and the reset subscriber, and is safe to call twice', async () => {
+  it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
     expect(s.routes).toHaveLength(6);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
+    for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
 
     await insertActiveInstall();
     await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
@@ -648,7 +760,8 @@ describe('@ax/channel-slack plugin', () => {
       await expect(plugin.init({ bus, config: {} })).rejects.toThrow();
       expect(s.routes).toHaveLength(2);
       for (const r of s.routes) expect(r.unregister).toHaveBeenCalledTimes(1);
-      // No reset subscriber is left behind either.
+      // No reset or chat subscriber is left behind either.
+      for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
       await insertActiveInstall();
       await bus.fire('bootstrap:reset-cleanup', makeAgentContext({ sessionId: 't', agentId: 't', userId: 't' }), {});
       expect(await installCount()).toBe(1);
