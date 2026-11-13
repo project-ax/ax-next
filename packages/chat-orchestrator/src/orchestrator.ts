@@ -3099,19 +3099,31 @@ export function createOrchestrator(
 
     // TASK-1091 — this conversation's live session is busy with a turn of
     // another mode (decided above). The turn ends here, before anything is
-    // queued, spawned or terminated, in the same three steps as
-    // `conversation:message-not-saved`: no detail and no `error`. The turn
-    // running in the session is untouched. channel-web never gets here (its
-    // turns are always the default mode); a channel that mixes modes in one
+    // queued, spawned or terminated, and it is the one terminated exit that
+    // fires NEITHER chat:turn-error NOR chat:end: it never ran, and those two
+    // would end the turn that IS running. Their subscribers key off the
+    // conversation, the agent or the session, not this request: @ax/memory's
+    // incremental scheduler would run its final pass for the conversation
+    // (dropping the running turn's idle timer), @ax/agent-activity would
+    // clear the agent's "right now", @ax/conversations would save an error
+    // card into the thread, @ax/usage-limits would charge a turn that never
+    // ran, and our own chat:end subscriber, finding no waiter for this reqId,
+    // would end the session's oldest one (the running turn) when this ctx
+    // carries the live session's id.
+    //
+    // So the returned outcome is the ONLY signal, and only a caller that reads
+    // it may reach this. channel-web dispatches fire-and-forget and waits on
+    // chat:turn-error, but its turns are always the default mode, so it never
+    // meets a session of another mode. A channel that mixes modes in one
     // conversation serializes its turns or tries again later.
+    //
+    // Residuals, both reachable only by such a channel: the user's message
+    // was already saved to the display log (persistUserDisplayTurn, above)
+    // and stays there unanswered; and chat:start already ran, so
+    // @ax/agent-activity holds this reqId on the agent's line until the
+    // session's chat:end, and @ax/usage-limits admitted it (never charged).
     if (busyInOtherMode) {
-      const outcome: AgentOutcome = {
-        kind: 'terminated',
-        reason: 'conversation:busy',
-      };
-      await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await fireChatEvent('chat:end', ctx, { outcome });
-      return outcome;
+      return { kind: 'terminated', reason: 'conversation:busy' };
     }
 
     if (routedSessionId !== null) {

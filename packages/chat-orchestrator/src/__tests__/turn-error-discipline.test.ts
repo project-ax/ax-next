@@ -2,7 +2,7 @@
  * Every terminated turn surfaces itself (TASK-498).
  *
  * WHY THIS IS A SOURCE SCAN, WHICH IS NOT THIS REPO'S HABIT AND NEEDS AN
- * ARGUMENT. `runAgentInvoke` has nineteen places where it builds a `terminated`
+ * ARGUMENT. `runAgentInvoke` has eighteen places where it builds a `terminated`
  * outcome and fires `chat:end`, one per way a turn can fail before or during
  * the run. Each is supposed to call `fireTurnError` first, because `chat:end`
  * is the AUDIT record and `chat:turn-error` is the only thing the browser ever
@@ -17,7 +17,7 @@
  * asked for the mutant that proves the invariant is tested rather than merely
  * observed: deleting `fireTurnError` from the `user-attachments-failed` early
  * return. It SURVIVED the whole orchestrator suite. Every one of these paths
- * needs its own harness to reach behaviourally, and a battery of nineteen
+ * needs its own harness to reach behaviourally, and a battery of eighteen
  * setup-specific fixtures would be a lot of machinery to assert one sentence
  * about shape.
  *
@@ -26,6 +26,14 @@
  * do that for the paths they cover), only that no exit is silent. If a refactor
  * moves this code somewhere a regex cannot follow, the honest response is to
  * rewrite the scan — not to delete it, and not to loosen it until it passes.
+ *
+ * ONE TERMINATED EXIT IS DELIBERATELY NOT COUNTED. `conversation:busy`
+ * (TASK-1091) refuses a turn before it runs, while the conversation's live
+ * session is busy with a turn of another mode, and returns its outcome without
+ * firing either event: both would end the turn that IS running (the exit's own
+ * comment lists how). With no `chat:end` it is invisible to this scan, so
+ * `orchestrator.test.ts` pins that it fires nothing. No browser reaches it:
+ * channel-web's turns are always the default mode.
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -118,7 +126,8 @@ describe('terminated turns surface themselves', () => {
       the whole point.
     */
     const all = exits();
-    expect(all.length).toBe(19); // TASK-1091 added `conversation:busy`
+    // 18: TASK-1091's `conversation:busy` exit fires no chat:end (see the header).
+    expect(all.length).toBe(18);
     expect(all.every((e) => e.terminated)).toBe(true);
   });
 });

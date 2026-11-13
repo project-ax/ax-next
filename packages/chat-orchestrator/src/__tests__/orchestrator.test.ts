@@ -9089,32 +9089,53 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       await Promise.all([retiring, concurrent]);
     });
 
+    // The refused turn never started, so it reports nothing to the
+    // conversation: the caller gets the outcome and that is all. Every
+    // subscriber to chat:end / chat:turn-error keys off the conversation, the
+    // agent or the session, not the request: @ax/memory's incremental
+    // scheduler runs its FINAL pass on a chat:end for the conversation (and
+    // drops the idle timer of the turn still running), @ax/agent-activity
+    // clears the agent's "right now" on either, @ax/conversations saves an
+    // error card into the thread on chat:turn-error, and the orchestrator's
+    // own chat:end subscriber resolves a waiter by session when the reqId has
+    // none. `memoryFinalPasses` stands in for the scheduler's trigger.
+    function busyHarnessObservers(bus: HookBus) {
+      const turnErrors: unknown[] = [];
+      const ends: Array<{ reqId: string; payload: unknown }> = [];
+      const memoryFinalPasses: string[] = [];
+      bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
+        turnErrors.push(p);
+        return undefined;
+      });
+      bus.subscribe('chat:end', 'obs', async (c, p: unknown) => {
+        ends.push({ reqId: c.reqId, payload: p });
+        if (c.conversationId !== undefined) memoryFinalPasses.push(c.conversationId);
+        return undefined;
+      });
+      return { turnErrors, ends, memoryFinalPasses };
+    }
+
     it.each([
       ['an external turn while the owner’s turn runs', {}, { source: 'external' }],
       ['the owner’s turn while an external, shared turn runs', { source: 'external', audience: 'shared' }, {}],
       ['a shared turn while a private turn runs', {}, { audience: 'shared' }],
     ] as ReadonlyArray<readonly [string, Mode, Mode]>)(
-      'a different-mode turn while the session is busy ends terminated conversation:busy and queues nothing: %s',
+      'a different-mode turn while the session is busy ends terminated conversation:busy, queues nothing and reports nothing: %s',
       async (_label, first, second) => {
         const q = queueRecorder();
         const { h, counters } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
-        const turnErrors: unknown[] = [];
-        const ends: unknown[] = [];
-        h.bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
-          turnErrors.push(p);
-          return undefined;
-        });
-        h.bus.subscribe('chat:end', 'obs', async (_c, p: unknown) => {
-          ends.push(p);
-          return undefined;
-        });
+        const obs = busyHarnessObservers(h.bus);
 
         // The first turn spawns s-1 and stays in flight (no turn-end yet).
+        let firstSettled = false;
         const firstTurn = h.bus.call<unknown, AgentOutcome>(
           'agent:invoke',
           ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1', ...first }),
           { message: { role: 'user', content: 'first' } },
         );
+        void firstTurn.then(() => {
+          firstSettled = true;
+        });
         await vi.waitFor(() => expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]));
 
         const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -9123,20 +9144,60 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
           { message: { role: 'user', content: 'second' } },
         );
 
-        const busy = { kind: 'terminated', reason: 'conversation:busy' };
-        expect(outcome).toEqual(busy);
-        expect(turnErrors).toEqual([{ reqId: 'req-2', reason: 'conversation:busy' }]);
-        expect(ends).toEqual([{ outcome: busy }]);
+        // The caller gets the outcome directly; nothing else hears of it.
+        expect(outcome).toEqual({ kind: 'terminated', reason: 'conversation:busy' });
+        expect(obs.turnErrors).toEqual([]);
+        expect(obs.ends).toEqual([]);
+        expect(obs.memoryFinalPasses).toEqual([]);
         // Nothing queued, spawned or terminated.
         expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]);
         expect(counters.opens).toBe(1);
         expect(counters.terminates).toEqual([]);
 
-        // The running turn is untouched and still completes.
+        // The running turn is untouched: still in flight, then completes.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(firstSettled).toBe(false);
         fireTurnEnd(h.bus, 's-1', 'req-1');
         expect((await firstTurn).kind).toBe('complete');
+        expect(obs.turnErrors).toEqual([]);
+        expect(obs.memoryFinalPasses).toEqual([]);
       },
     );
+
+    // The strongest form: the refused turn's ctx carries the LIVE session's
+    // id. A chat:end for it reached the orchestrator's own subscriber, found
+    // no waiter for req-2, fell back to the session's oldest waiter and ended
+    // the running turn with the refusal's outcome.
+    it('a busy refusal whose ctx carries the live session id still leaves the running turn alone', async () => {
+      const q = queueRecorder();
+      const { h } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
+      const obs = busyHarnessObservers(h.bus);
+
+      const firstTurn = h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+        { message: { role: 'user', content: 'first' } },
+      );
+      let firstSettled = false;
+      void firstTurn.then(() => {
+        firstSettled = true;
+      });
+      await vi.waitFor(() => expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]));
+
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2', source: 'external' }),
+        { message: { role: 'user', content: 'second' } },
+      );
+      expect(outcome).toEqual({ kind: 'terminated', reason: 'conversation:busy' });
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(firstSettled).toBe(false);
+      fireTurnEnd(h.bus, 's-1', 'req-1');
+      expect(await firstTurn).toMatchObject({ kind: 'complete' });
+      expect(obs.turnErrors).toEqual([]);
+      expect(obs.ends).toEqual([]);
+    });
   });
 });
 
