@@ -2418,4 +2418,35 @@ describe('a Slack DM thread', () => {
     await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
     expect(sendMock.mock.calls[1]?.[0]).toMatchObject({ conversationId: null, text: 'trying again' });
   });
+
+  /*
+    A re-read lands between the refusal and the next message — a turn ending
+    elsewhere, the shell's version bump. It reads the conversation on screen
+    and re-aims the composer at whatever it read, so an intent kept only by
+    clearing the conversation id was quietly undone, and the next message hit
+    the same wall again. The intent holds until a send goes out.
+  */
+  it('a re-read after a read-only refusal does not re-aim the next message at the same wall', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    const readsBefore = agentMock.mock.calls.length;
+    view.rerenderWith({ version: 1 });
+    await waitFor(() => expect(agentMock.mock.calls.length).toBeGreaterThan(readsBefore));
+    // The refused thread is still what is on screen: the re-read did not snap
+    // the pane to some other chat.
+    expect(screen.getByText('what is on today')).toBeTruthy();
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-fresh', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(box, { target: { value: 'trying again' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({ conversationId: null, text: 'trying again' });
+  });
 });

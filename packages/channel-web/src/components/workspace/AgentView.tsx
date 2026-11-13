@@ -714,6 +714,15 @@ export function AgentView({
   */
   const draftRef = useRef(false);
   /*
+    TASK-1093 — the last send was refused as read-only, so the NEXT one starts a
+    fresh chat. A flag rather than clearing `conversationRef`: any re-read
+    (`load`) re-aims that ref at the chat it read, which is the very chat that
+    refused. The thread stays on screen (the refusal is about it); only where
+    the next message goes changes. Cleared once a send goes out, and by any chat
+    switch, which is an explicit choice of where to send.
+  */
+  const freshNextRef = useRef(false);
+  /*
     Moves on every chat switch ("New chat" or a sidebar pick). A send or a
     switch that started before it moved is about a chat that has been left,
     and its answer must not be applied (last click wins).
@@ -806,6 +815,7 @@ export function AgentView({
         conversationAgentRef.current = agentId;
         conversationRef.current = null;
         draftRef.current = false;
+        freshNextRef.current = false;
       }
       /*
         Read the chat on screen — and read AGAIN if that changed while the
@@ -1003,6 +1013,7 @@ export function AgentView({
       // Another chat was picked while this one was opening: that one wins.
       if (epoch !== viewEpochRef.current) return;
       draftRef.current = false;
+      freshNextRef.current = false;
       conversationRef.current = next.conversationId;
       leaveChat();
       setDetail(next);
@@ -1022,6 +1033,7 @@ export function AgentView({
   const startNewChat = () => {
     viewEpochRef.current += 1;
     draftRef.current = true;
+    freshNextRef.current = false;
     conversationRef.current = null;
     leaveChat();
     setDetail((d) => (d === null ? d : asEmptyChat(d)));
@@ -1544,7 +1556,7 @@ export function AgentView({
       setTurnError(null);
       // The last turn's "you stopped this" is history the moment they say more.
       setStopNotice(null);
-      const target = conversationRef.current;
+      const target = freshNextRef.current ? null : conversationRef.current;
       const epoch = viewEpochRef.current;
       setSending(true);
       try {
@@ -1556,6 +1568,9 @@ export function AgentView({
             ? { attachmentIds: files.map((a) => a.attachmentId) }
             : {}),
         });
+        // A send went out, so a read-only refusal's "start a fresh chat" is
+        // spent (if the view moved meanwhile, the switch already cleared it).
+        if (epoch === viewEpochRef.current) freshNextRef.current = false;
         /*
           The POST landed, so every id it carried has been committed into that
           turn. The ids are not offered for a second send unless the turn is
@@ -1605,9 +1620,12 @@ export function AgentView({
           A read-only refusal (TASK-1093) is the same trap by another road: the
           conversation is there but takes no messages from here, and every
           following send would be turned away just the same. The copy says to
-          start a new chat, so the next message does.
+          start a new chat, so the next message does — via `freshNextRef`, not
+          by clearing the ref, because the conversation still exists and any
+          re-read would point the ref straight back at it.
         */
-        if (kind === 'gone' || e instanceof ConversationReadOnlyError) conversationRef.current = null;
+        if (kind === 'gone') conversationRef.current = null;
+        if (e instanceof ConversationReadOnlyError) freshNextRef.current = true;
         setTurnError({
           kind,
           sentence: null,
