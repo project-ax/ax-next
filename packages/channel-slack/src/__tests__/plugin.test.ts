@@ -654,11 +654,15 @@ describe('@ax/channel-slack plugin', () => {
     gate.release();
     // The running turn gets past agent:invoke and is done with the agent. (It
     // then waits out its turn-end grace: shutdown took its turn-end subscriber
-    // with it.) Only one turn ever reached the agent; `close()` above already
-    // said the waiting one was dropped, and turn-queue's own tests pin that a
-    // closed lane never starts it.
+    // with it.)
+    //
+    // No "only one turn reached the agent" assertion here: checked the moment
+    // the first returns, it passes whether or not the dropped one would start
+    // afterwards, so it proved nothing. `close()` above already said the
+    // waiting one was dropped, and turn-queue.test.ts ("close drops waiting
+    // jobs and refuses new ones; the running one finishes") pins that a closed
+    // lane never starts it.
     await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
-    expect(s.invokes).toHaveLength(1);
   });
 
   it('a turn still waiting when the admin disconnects never reaches the agent', async () => {
