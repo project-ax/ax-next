@@ -71,8 +71,11 @@ owner. No identity edits, skill authoring or connector requests are allowed,
 and both proposal tools are hidden from external turns.
 
 The Slack sender's name and ID go into the message *content*, for example
-`[Slack · #support · Alice (U123)]: …`. That label is untrusted text the model
-reads. Nothing ever treats it as permission to do something.
+`[Slack · #support · Alice (U123)]: …`. In a 1:1 DM (TASK-1093) it reads
+`[Slack · DM · Alice (U123)]: <text>`: the sender's Slack display name (else
+their real name), with brackets and parentheses removed so a name can't close
+the label early. That label is untrusted text the model reads. Nothing ever
+treats it as permission to do something.
 
 ## 2a. Memory: decided by who sees the reply
 
@@ -165,8 +168,8 @@ and it **outlives both renewal and `auth.revoke`** (§7, configuration tokens),
 so AX can't retire it through the API. Hence:
 
 - It's admin-only to set, and nobody can ever read it back.
-- Admin settings shows whose token it is, since configuration tokens belong to
-  one person, and lets another admin replace it.
+- Admin settings shows who added the token (an AX admin; configuration tokens
+  belong to one person). Replacing it comes with the rename card (TASK-1096).
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
   can't do that last step itself.
@@ -178,6 +181,11 @@ agent's own name and avatar), `im:history` and `im:write` (DMs), `channels:histo
 (threads the bot is in), `users:read` and `users:read.email` (the identity check),
 and `commands` (connecting a channel). Reading files waits until we support
 them.
+
+TASK-1093 (DMs) ships only `app_mentions:read`, `chat:write`, `im:history`,
+`users:read` and `users:read.email`, with the App Home messages tab on (without
+it nobody can DM the app), no interactivity and no slash commands. TASK-1094 and
+TASK-1095 add the rest when they need it; a dev install reconnects.
 
 ### Connecting a channel to a team agent
 
@@ -253,17 +261,28 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - Stream into the thread with `chat.startStream` / `appendStream` /
      `stopStream`. They work in channel threads (pass `recipient_user_id` and
      `recipient_team_id`) and need only `chat:write`. A stream lasts at most
-     10 minutes, the same as our default chat timeout, so a turn still running
-     at 10 minutes falls back to throttled `chat.update` (Tier 3, about
-     50 a minute).
-   - Convert Markdown to mrkdwn and split long replies.
-   - Collapse tool calls into one status line, matching the web's #1156.
-   - Artifacts and charts become a link to the web app.
+     10 minutes and holds at most 12,000 characters, so a long reply closes
+     the stream and starts a new one in the same thread (Slack's own advice).
+     If a stream call fails, the rest of the reply is posted with
+     `chat.postMessage`.
+   - Send the reply as Markdown (`markdown_text` chunks); Slack renders it. No
+     mrkdwn conversion.
+   - Collapse tool calls into one status line, matching the web's #1156 (one
+     `task_update` card that changes in place).
+   - Artifacts and charts become a link to the agent's page in the web app (no
+     per-artifact or per-conversation page exists yet).
+   - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its
+     conversation (matched the way channel-web matches it), `chat:turn-error`,
+     a `terminated` invoke outcome, 60 seconds after a complete invoke outcome
+     with no turn-end, or a 15-minute hard cap. Up to 3 turns per conversation
+     run or wait in order; a fourth message gets a "still working" reply.
 6. **Approvals.**
    - **Attended:** Block Kit buttons. The interactivity route checks the clicker
      is the turn's person, then calls `agent:apply-capability-grant`, the same
      hook `/api/chat/permission-decision` uses (`routes-chat.ts:825`).
    - **External:** a "waiting for my owner" note, and the call waits in Today.
+   - Until TASK-1095, a Slack conversation (origin `'slack'`) is unattended for
+     decisions, so held calls wait in Today.
 
 ## 6. Hooks, and the boundary review
 
@@ -341,7 +360,11 @@ Attended channel turns (§2) and personal-agent DMs need it.
 
 **No other new hooks** (apart from the open question above).
 `@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
-registers routes and subscribes to chat events.
+registers routes and subscribes to chat events. Two existing surfaces widen:
+conversations' `origin` gains `'slack'` (a Slack thread is read-only in the web
+app), and `credentials:get` gains an optional `scope: 'global'` that reads only
+the workspace-wide row, so a user-scoped row can't shadow an install's signing
+secret.
 
 **Security:** the `security-checklist` walk is required. This opens a new path
 for untrusted input (anyone in a channel) into an agent that has its owner's
@@ -370,7 +393,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 | 3 | Name rules | Accepted: ASCII letters, digits, spaces, `-`, `_`, `.`, and long names. Rejected by `apps.manifest.validate`: reserved words (`slackbot`, `here`, `channel`, `everyone` → `invalid_reserved_word`), non-ASCII (`Café` → `bad_username`), and other symbols (`!!` → `invalid_name_specials`). The handle drops hyphens: `ax-spike-a` became `axspikea`. Docs: at most 21 characters for the handle, 35 for the app name, 80 for the bot's display name. | Tested + docs |
 | 4 | App approval | An admin installing a manifest-created app saw only Slack's normal Allow screen: no request, no wait. Slack's approval API (`admin.apps.approve`) is Enterprise-only. **Not seen:** what a regular member gets; the docs say members can't install restricted apps. The design needs no member installs. | Tested (admin only) + docs |
 | 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got handle `axspikea2`. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
-| 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API, falling back to `chat.update` after 10 minutes (§5). | Docs |
+| 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API; past 10 minutes or 12,000 characters, a new stream in the same thread (§5). | Docs |
 | 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
 | — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair, and **the old refresh token and earlier access tokens keep working**. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). | Tested |
 | — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
@@ -380,7 +403,9 @@ and the configuration token revoked. "Tested" means we watched it happen;
 1. ~~**Memory on external turns.**~~ **Decided 2026-11-12 (Vinay):** decide by
    who sees the reply. See §2a.
 2. **Choosing a personal agent.** Recommendation: the default is the owner's
-   personal agent, and a slash command can switch to another.
+   personal agent, and a slash command can switch to another. Until then
+   (TASK-1093), a DM goes to the owner's OLDEST personal agent, so creating a
+   new one doesn't silently move their Slack thread.
 3. **Who counts as a Slack admin for phase 2 approvals?** Recommendation: the
    person who connected the workspace, plus admins added in AX settings,
    following Slack's `is_admin` if it turns out to be reliable.
@@ -407,7 +432,8 @@ and the configuration token revoked. "Tested" means we watched it happen;
   - admin Connect Slack, using the branding name as the default bot name
   - the events route and identity checks
   - personal-agent DMs with streamed replies
-  - presets, canary acceptance test, and Helm secrets
+  - presets and the canary acceptance test. No Helm secrets: they live in the
+    credentials store. Host egress on 443 is already open.
 
   Depends on 1 and 2.
 - **4. Channels:** connecting a channel to a team agent (AX side and slash
