@@ -829,6 +829,64 @@ describe('createEventRouter: no turn', () => {
     ]);
   });
 
+  /*
+    A users.info call that failed for a reason that says nothing about the
+    sender (rate limit, timeout, network, 5xx) used to be silence, exactly like
+    a refusal: an admitted owner's message vanished without a word. A 1:1 DM
+    reaches only the sender, so they are told to try again.
+  */
+  it.each(['ratelimited', 'timeout', 'network', 'http-503'])(
+    'a users.info %s is temporary: the DM sender is told to try again, and nothing more',
+    async (code) => {
+      const flaky = 'U07FLAKY001';
+      SLACK_USERS[flaky] = new SlackApiError('users.info', code);
+      try {
+        const w = world();
+        await w.dispatch(INSTALL, dm({ user: flaky }));
+        await w.idle();
+        expect(w.findUser).toEqual([]);
+        expect(w.invokes).toEqual([]);
+        expect(methods(w.slack.calls)).toEqual(['usersInfo', 'postMessage']);
+        expect(w.slack.calls[1]!.args).toEqual({ channel: DM_ALICE, threadTs: TS, markdownText: COPY.turnFailed });
+        expect(w.lines).toEqual([
+          { level: 'warn', msg: 'slack_sender_refused', fields: { installId: INSTALL_ID, reason: 'lookup-failed', code } },
+        ]);
+      } finally {
+        delete SLACK_USERS[flaky];
+      }
+    },
+  );
+
+  it.each(['token_revoked', 'account_inactive', 'user_not_found', 'http-404', 'bad-response'])(
+    'a users.info %s is not temporary: silence, like a refusal',
+    async (code) => {
+      const failing = 'U07FAILED01';
+      SLACK_USERS[failing] = new SlackApiError('users.info', code);
+      try {
+        const w = world();
+        await w.dispatch(INSTALL, dm({ user: failing }));
+        await w.idle();
+        expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+        expect(w.invokes).toEqual([]);
+      } finally {
+        delete SLACK_USERS[failing];
+      }
+    },
+  );
+
+  it('a mention whose users.info failed temporarily stays silent: it is not a 1:1 DM', async () => {
+    const flaky = 'U07FLAKY001';
+    SLACK_USERS[flaky] = new SlackApiError('users.info', 'ratelimited');
+    try {
+      const w = world();
+      await w.dispatch(INSTALL, envelope({ type: 'app_mention', user: flaky, channel: 'C07GENERAL1', ts: TS, text: `<@${BOT_USER_ID}> hi` }));
+      await w.idle();
+      expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+    } finally {
+      delete SLACK_USERS[flaky];
+    }
+  });
+
   it('not mapped → slack_sender_not_mapped logged with only installId, notMapped posted, no invoke', async () => {
     const w = world();
     await w.dispatch(INSTALL, dm({ user: CAROL }));

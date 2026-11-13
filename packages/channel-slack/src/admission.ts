@@ -22,7 +22,10 @@ import type { InstallRow } from './store.js';
  * (Slack Connect) and anything a bot sent get silence. A message anywhere else
  * (a channel, a group DM) is ignored; a mention there gets one private
  * (ephemeral) refusal, and only an admitted member gets even that. A refused
- * sender always gets silence: a non-member learns nothing from the bot.
+ * sender always gets silence: a non-member learns nothing from the bot. A
+ * users.info call that failed only because Slack was briefly unavailable
+ * refuses nobody (`isTemporaryLookupFailure`): in a 1:1 DM, which only the
+ * sender sees, the router says "try again".
  *
  * The router (router.ts) runs these in order: screenEvent → the bot token →
  * admitSender (or answerMention) → findSenderUser.
@@ -142,6 +145,24 @@ export async function admitSender(
     return { ok: false, reason: 'lookup-failed', code: 'user-mismatch' };
   }
   return admitSlackUser(user, teamId);
+}
+
+/**
+ * Our Slack client's codes for "Slack, or the way to it, was briefly not
+ * there": rate limited, timed out, unreachable, or a 5xx (slack-api.ts).
+ */
+const TEMPORARY_LOOKUP_CODE = /^(?:ratelimited|timeout|network|http-5\d\d)$/;
+
+/**
+ * A users.info failure that says nothing about the sender, only that Slack was
+ * briefly unavailable. The sender may well be a member waiting on an answer,
+ * so in a 1:1 DM (where only they can see it) the router says "try again"
+ * instead of nothing. Everything else stays silent: a refusal is about the
+ * sender, and a code like `token_revoked`, `user_not_found` or `user-mismatch`
+ * is about the install or the account, which no retry fixes.
+ */
+export function isTemporaryLookupFailure(a: Admission): boolean {
+  return !a.ok && a.reason === 'lookup-failed' && a.code !== undefined && TEMPORARY_LOOKUP_CODE.test(a.code);
 }
 
 // ── Where: which events are answered at all ─────────────────────────────────

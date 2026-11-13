@@ -1,5 +1,12 @@
 import { makeAgentContext, type AgentContext } from '@ax/core';
-import { admitSender, answerMention, findSenderUser, screenEvent, type Admission } from './admission.js';
+import {
+  admitSender,
+  answerMention,
+  findSenderUser,
+  isTemporaryLookupFailure,
+  screenEvent,
+  type Admission,
+} from './admission.js';
 import { COPY } from './copy.js';
 import { pickPersonalAgent, runDmTurn, type DmTurnDeps } from './dm-turn.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
@@ -17,7 +24,8 @@ import type { KeyedQueue } from './turn-queue.js';
  *   2. The install's bot token, from the vault.
  *   3. A mention gets the private refusal, if the sender is admitted.
  *   4. A DM's sender is admitted from users.info, never from the text. A
- *      refused sender gets silence.
+ *      refused sender gets silence; a users.info call that failed only
+ *      because Slack was briefly unavailable gets "try again".
  *   5. A shared file gets "I can't read files yet"; an empty message nothing.
  *   6. auth:find-user-by-email with users.info's email → the sender's oldest
  *      personal agent → conversations:find-or-create for the thread
@@ -145,12 +153,6 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
     return;
   }
 
-  const admission = await admitSender(d.api, botToken, screened.sender, teamId);
-  if (!admission.ok) {
-    refused(admission);
-    return;
-  }
-
   const token = botToken;
   const say = async (text: string): Promise<void> => {
     try {
@@ -163,6 +165,15 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
     log('error', 'slack_event_failed', { stage, code: logCode(err) });
     await say(COPY.turnFailed);
   };
+
+  const admission = await admitSender(d.api, botToken, screened.sender, teamId);
+  if (!admission.ok) {
+    refused(admission);
+    // Slack was briefly unavailable, so this says nothing about the sender:
+    // in a 1:1 DM only they see "try again". Refusals stay silent.
+    if (isTemporaryLookupFailure(admission)) await say(COPY.turnFailed);
+    return;
+  }
 
   if (screened.fileShare) {
     await say(COPY.filesUnsupported);

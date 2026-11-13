@@ -5,6 +5,7 @@ import {
   admitSlackUser,
   answerMention,
   findSenderUser,
+  isTemporaryLookupFailure,
   screenEvent,
   type Admission,
   type Mention,
@@ -300,6 +301,44 @@ describe('admitSender', () => {
       reason: 'lookup-failed',
       code: 'user-mismatch',
     });
+  });
+});
+
+describe('isTemporaryLookupFailure', () => {
+  // Our client's own codes for "Slack, or the way to it, was briefly not there".
+  it.each(['ratelimited', 'timeout', 'network', 'http-500', 'http-502', 'http-503', 'http-504', 'http-599'])(
+    'a users.info %s says nothing about the sender: temporary',
+    (code) => {
+      expect(isTemporaryLookupFailure({ ok: false, reason: 'lookup-failed', code })).toBe(true);
+    },
+  );
+
+  // About the install or the account (a retry won't fix it), or an answer we couldn't trust.
+  it.each([
+    'token_revoked',
+    'invalid_auth',
+    'account_inactive',
+    'user_not_found',
+    'user-mismatch',
+    'bad-response',
+    'too-large',
+    'redirect',
+    'slack-error',
+    'unknown',
+    'http-404',
+    'http-429',
+    'http-50',
+    'http-5000',
+    'xhttp-503',
+  ])('a users.info %s is not temporary', (code) => {
+    expect(isTemporaryLookupFailure({ ok: false, reason: 'lookup-failed', code })).toBe(false);
+  });
+
+  it('a refusal, a lookup failure with no code, and an admission are never temporary', () => {
+    expect(isTemporaryLookupFailure({ ok: false, reason: 'lookup-failed' })).toBe(false);
+    expect(isTemporaryLookupFailure({ ok: false, reason: 'guest' })).toBe(false);
+    expect(isTemporaryLookupFailure({ ok: false, reason: 'guest', code: 'ratelimited' })).toBe(false);
+    expect(isTemporaryLookupFailure({ ok: true, email: ALICE_EMAIL, name: 'Alice' })).toBe(false);
   });
 });
 
