@@ -16,7 +16,7 @@
  */
 import { useCallback, useRef, useState, type ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   workspaceApi,
   WorkspaceApiError,
@@ -2349,6 +2349,33 @@ describe('a Slack DM thread', () => {
     view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
     expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
     expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+  });
+
+  /*
+    The workspace opens an agent on its newest chat, so someone who talks to
+    their agent mostly in Slack lands on a read-only Slack thread on every
+    visit. The way out is right in the note — the same New chat the sidebar
+    offers — rather than a trip to the sidebar they may not have open.
+  */
+  it('"New chat" inside the note starts an empty chat here, with a composer', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    renderPlain();
+    const said = await screen.findByText(CONVERSATION_IN_SLACK);
+    const note = said.closest('[role="note"]') as HTMLElement;
+    const fresh = within(note).getByRole('button', { name: 'New chat' });
+
+    fireEvent.click(fresh);
+    const box = await screen.findByPlaceholderText('Message Quill');
+    expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+    // The Slack thread is left behind, not written to.
+    expect(screen.queryByText('what is on today')).toBeNull();
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-fresh', reqId: 'r9' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(box, { target: { value: 'hello from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({ conversationId: null });
   });
 
   it('a send refused as read-only says so: never "deleted", and no Resend', async () => {

@@ -1014,6 +1014,19 @@ export function AgentView({
   };
 
   /*
+    An empty chat to type into: the sidebar's New chat, and the one in a Slack
+    thread's "reply there" note (TASK-1093). One body, so the two can't drift.
+    Nothing is created until the first message is sent.
+  */
+  const startNewChat = () => {
+    viewEpochRef.current += 1;
+    draftRef.current = true;
+    conversationRef.current = null;
+    leaveChat();
+    setDetail((d) => (d === null ? d : asEmptyChat(d)));
+  };
+
+  /*
     A chat switch the sidebar asked for. Waits for the first detail: picking a
     chat from Today navigates here first, and the request is what this fresh
     view does once it can.
@@ -1028,11 +1041,7 @@ export function AgentView({
       conversation being left.
     */
     if (chatCommand.kind === 'new') {
-      viewEpochRef.current += 1;
-      draftRef.current = true;
-      conversationRef.current = null;
-      leaveChat();
-      setDetail((d) => (d === null ? d : asEmptyChat(d)));
+      startNewChat();
       return;
     }
     // The chat already on screen: nothing to switch, and a failed send's
@@ -2196,7 +2205,7 @@ export function AgentView({
                 conversationId={detail.conversationId ?? liveVisuals?.conversationId ?? null}
                 decisions={decisions}
                 readOnly={inSlack}
-                {...(inSlack ? { readOnlyNote: CONVERSATION_IN_SLACK } : {})}
+                {...(inSlack ? { readOnlyNote: CONVERSATION_IN_SLACK, onNewChat: startNewChat } : {})}
                 busy={streaming || sending}
                 {...(streaming ? { onStop: () => void stop() } : {})}
                 stopping={stopping}

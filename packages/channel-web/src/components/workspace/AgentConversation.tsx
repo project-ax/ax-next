@@ -28,6 +28,7 @@ import {
   CircleStop,
   Hand,
   Layers,
+  Plus,
   Square,
   type LucideIcon,
 } from 'lucide-react';
@@ -239,6 +240,13 @@ interface Props {
    * read-only thread simply has no composer.
    */
   readOnlyNote?: string;
+  /**
+   * TASK-1093 — a "New chat" button inside the read-only note, so the reader
+   * who landed on a thread they can't write to has the way out right where
+   * they went to type. The same action as the sidebar's New chat. Only drawn
+   * with the note.
+   */
+  onNewChat?: () => void;
   /** True while a reply is streaming — the composer waits it out. */
   busy?: boolean;
   /**
@@ -382,6 +390,7 @@ export function AgentConversation({
   decisions,
   readOnly,
   readOnlyNote,
+  onNewChat,
   busy = false,
   onStop,
   stopping = false,
@@ -848,18 +857,26 @@ export function AgentConversation({
           <Alert role="note" className="max-w-[720px]">
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
               <span>{readOnlyNote}</span>
-              {showStop && onStop !== undefined && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={stopping}
-                  onClick={() => onStop()}
-                >
-                  <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
-                  {stopping ? 'Stopping' : 'Stop'}
-                </Button>
-              )}
+              <span className="flex gap-2">
+                {showStop && onStop !== undefined && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={stopping}
+                    onClick={() => onStop()}
+                  >
+                    <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
+                    {stopping ? 'Stopping' : 'Stop'}
+                  </Button>
+                )}
+                {onNewChat !== undefined && (
+                  <Button type="button" size="sm" variant="outline" onClick={() => onNewChat()}>
+                    <Plus aria-hidden="true" data-icon="inline-start" />
+                    New chat
+                  </Button>
+                )}
+              </span>
             </AlertDescription>
           </Alert>
         </div>
