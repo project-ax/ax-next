@@ -1190,8 +1190,9 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
         contentBlocks: [{ type: 'text', text: 'Resume the routine with new instructions.' }],
       });
 
-      expect(result.status).toBe(404);
-      expect(await result.json()).toEqual({ error: 'conversation-not-found' });
+      // TASK-1093: refused as read-only (its own code), never as "not found".
+      expect(result.status).toBe(409);
+      expect(await result.json()).toEqual({ error: 'conversation-read-only' });
       expect(booted.chatRunCaptures).toEqual([]);
       expect(callSpy.mock.calls.filter(([name]) => [
         'conversations:bind-session', 'attachments:commit', 'agent:invoke',
@@ -1226,8 +1227,10 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
         contentBlocks: [{ type: 'text', text: 'Answering from the browser instead.' }],
       });
 
-      expect(result.status).toBe(404);
-      expect(await result.json()).toEqual({ error: 'conversation-not-found' });
+      // Read-only, said as such: the page can tell the person where to reply
+      // instead of "it may have been deleted".
+      expect(result.status).toBe(409);
+      expect(await result.json()).toEqual({ error: 'conversation-read-only' });
       expect(booted.chatRunCaptures).toEqual([]);
       expect(callSpy.mock.calls.filter(([name]) => [
         'conversations:bind-session', 'attachments:commit', 'agent:invoke',
@@ -1287,8 +1290,8 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
       conversationId: created.conversationId, agentId: 'agt_test',
       contentBlocks: [{ type: 'text', text: 'Now resume the routine as an ordinary chat.' }],
     });
-    expect(send.status).toBe(404);
-    expect(await send.json()).toEqual({ error: 'conversation-not-found' });
+    expect(send.status).toBe(409);
+    expect(await send.json()).toEqual({ error: 'conversation-read-only' });
     expect(booted.approvalEffects).toHaveLength(1);
     const read = await fetch(`http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`);
     expect(read.status).toBe(200);

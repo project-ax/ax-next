@@ -43,6 +43,10 @@ import {
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { StorageFullError } from '@/lib/storage-full';
 import {
+  CONVERSATION_IN_SLACK,
+  ConversationReadOnlyError,
+} from '@/lib/conversation-read-only';
+import {
   readAlertVariant,
   toReadOutcome,
   type ReadOutcome,
@@ -348,7 +352,16 @@ function hasDurableCopy(
 function asEmptyChat(d: AgentDetail): AgentDetail {
   // `liveReqId` is a turn running in the chat this read named, not in this
   // empty one: carried over, the reattach effect would stream it in here.
-  return { ...d, conversationId: null, thread: [], decisions: { status: 'ok' }, liveReqId: null };
+  // `origin` likewise (TASK-1093): a new chat starts here, whatever the last
+  // one was, so a Slack thread's "reply there" must not follow it.
+  return {
+    ...d,
+    conversationId: null,
+    thread: [],
+    decisions: { status: 'ok' },
+    liveReqId: null,
+    origin: null,
+  };
 }
 
 const SWITCH_COPY: Record<ReadOutcome, string> = {
@@ -663,6 +676,14 @@ export function AgentView({
      * in `sent`.
      */
     refusal?: string;
+    /**
+     * TASK-1093 — the send was refused because this conversation takes no new
+     * messages here (`409 conversation-read-only`: a routine's conversation,
+     * or a Slack thread on a page that still showed a composer). `refusal`
+     * carries the sentence; this takes Resend away, because it would only be
+     * refused again.
+     */
+    readOnly?: true;
     /**
      * The failure is one the agent's Connectors tab fixes (TASK-796: a
      * connector nobody signed in to yet, or whose sign-in expired). The strip
@@ -1576,6 +1597,9 @@ export function AgentView({
           sentence: null,
           source: 'turn',
           ...(e instanceof StorageFullError ? { refusal: e.sentence } : {}),
+          ...(e instanceof ConversationReadOnlyError
+            ? { refusal: e.sentence, readOnly: true }
+            : {}),
         });
       }
     },
@@ -1741,6 +1765,13 @@ export function AgentView({
     of the same two messages.
   */
   const liveThread: ThreadMessage[] = [...detail.thread];
+  /*
+    TASK-1093 — a Slack DM thread is the person's own conversation, so it is
+    listed and readable here, but its turns belong to Slack: the send route
+    refuses it. So no composer over it, and the note in its place says where
+    to reply. "New chat" starts one here (`asEmptyChat` clears the origin).
+  */
+  const inSlack = detail.origin === 'slack';
   // A hidden turn (TASK-689) is not the person's words, so it gets no bubble —
   // but `sent` stays set, because the failure strip below reads it. Nor does a
   // turn whose committed copy the read already returned: that would draw twice.
@@ -2069,7 +2100,8 @@ export function AgentView({
                         {sent !== null &&
                           sent.hidden !== true &&
                           turnError.kind === 'failed' &&
-                          turnError.source === 'turn' && (
+                          turnError.source === 'turn' &&
+                          turnError.readOnly !== true && (
                           <Button
                             size="sm"
                             /*
@@ -2163,7 +2195,8 @@ export function AgentView({
                 */
                 conversationId={detail.conversationId ?? liveVisuals?.conversationId ?? null}
                 decisions={decisions}
-                readOnly={false}
+                readOnly={inSlack}
+                {...(inSlack ? { readOnlyNote: CONVERSATION_IN_SLACK } : {})}
                 busy={streaming || sending}
                 {...(streaming ? { onStop: () => void stop() } : {})}
                 stopping={stopping}

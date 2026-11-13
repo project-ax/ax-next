@@ -79,6 +79,14 @@ function response() {
   return { value, res };
 }
 
+/*
+  TASK-1093 — a conversation whose turns come from somewhere else (a routine's
+  runs, a Slack DM thread) is refused with its own code, not as "not found": it
+  is the caller's own conversation, and a page that still offers a composer
+  over it must be able to say why instead of "it may have been deleted".
+*/
+const READ_ONLY = { status: 409, json: { error: 'conversation-read-only' } };
+
 describe('interactive chat admission uses stored conversation origin', () => {
   it.each([false, true])('keeps an ordinary existing web conversation writable (active=%s)', async (active) => {
     const { handlers, calls } = fixture({ origin: 'web', active });
@@ -96,7 +104,22 @@ describe('interactive chat admission uses stored conversation origin', () => {
     const { res, value } = response();
     await handlers.postMessage(request(), res);
 
-    expect(value).toEqual({ status: 404, json: { error: 'conversation-not-found' } });
+    expect(value).toEqual(READ_ONLY);
+    expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
+  });
+
+  it.each([false, true])('refuses a Slack DM thread as read-only (active=%s), without writes (TASK-1093)', async (active) => {
+    // Its turns belong to Slack: a web post would fork the thread.
+    const { handlers, calls } = fixture({ origin: 'slack', active });
+    const { res, value } = response();
+    await handlers.postMessage(request({
+      contentBlocks: [
+        { type: 'text', text: 'Answering from the browser instead.' },
+        { type: 'attachment_ref', attachmentId: 'attachment' },
+      ],
+    }), res);
+
+    expect(value).toEqual(READ_ONLY);
     expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
   });
 
@@ -120,7 +143,7 @@ describe('interactive chat admission uses stored conversation origin', () => {
       origin: 'web', source: 'web', userId: 'owner', allowRoutine: true,
     }, { origin: 'web', source: 'web' }), res);
 
-    expect(value).toEqual({ status: 404, json: { error: 'conversation-not-found' } });
+    expect(value).toEqual(READ_ONLY);
     expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
   });
 
@@ -131,7 +154,7 @@ describe('interactive chat admission uses stored conversation origin', () => {
       contentBlocks: [{ type: 'attachment_ref', attachmentId: 'attachment' }],
     }), res);
 
-    expect(value).toEqual({ status: 404, json: { error: 'conversation-not-found' } });
+    expect(value).toEqual(READ_ONLY);
     expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
   });
 
@@ -140,7 +163,7 @@ describe('interactive chat admission uses stored conversation origin', () => {
     const { res, value } = response();
     await handlers.postMessage(request({ agentId: 'other-reachable-agent' }), res);
 
-    expect(value).toEqual({ status: 404, json: { error: 'conversation-not-found' } });
+    expect(value).toEqual(READ_ONLY);
     expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
   });
 
@@ -158,7 +181,7 @@ describe('interactive chat admission uses stored conversation origin', () => {
     const { res, value } = response();
     await handlers.postMessage(request(), res);
 
-    expect(value).toEqual({ status: 404, json: { error: 'conversation-not-found' } });
+    expect(value).toEqual(READ_ONLY);
     expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
   });
 
@@ -167,7 +190,7 @@ describe('interactive chat admission uses stored conversation origin', () => {
     const { res, value } = response();
     await handlers.postMessage(request(), res);
 
-    expect(value).toEqual({ status: 404, json: { error: 'conversation-not-found' } });
+    expect(value).toEqual(READ_ONLY);
     expect(calls).toEqual({ attachments: [], binds: [], invokes: [] });
   });
 

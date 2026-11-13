@@ -9,4 +9,4 @@ Add `@ax/channel-slack`, so people can talk to their own AX agent from Slack. A 
 
 `credentials:get` can now be asked for the workspace-wide value only (`scope: 'global'`). The Slack install's secrets are read that way, so a key someone stored for themselves under the same name can never stand in for the install's own.
 
-Conversations can now come from Slack (origin `'slack'`). A Slack DM thread shows up in the web app but stays read-only there, so the conversation never forks. Until Slack can show approval buttons, a tool call that needs your OK from a Slack DM waits in Today, the same as a routine's.
+Conversations can now come from Slack (origin `'slack'`). A Slack DM thread shows up in the web app but stays read-only there, so the conversation never forks: where the message box would be, it says "This conversation is in Slack. Reply there." Until Slack can show approval buttons, a tool call that needs your OK from a Slack DM waits in Today, the same as a routine's.

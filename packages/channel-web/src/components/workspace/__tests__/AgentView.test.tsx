@@ -32,6 +32,11 @@ import {
 } from '../decision-copy';
 import { uploadAttachment } from '@/lib/attachment-upload';
 import { StorageFullError } from '@/lib/storage-full';
+import {
+  CONVERSATION_IN_SLACK,
+  CONVERSATION_READ_ONLY,
+  ConversationReadOnlyError,
+} from '@/lib/conversation-read-only';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { ERROR_LABELS } from '@/lib/turn-error-labels';
 import { rail as railFixture } from './rail-fixture';
@@ -2297,5 +2302,69 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     expect(onChatCommandConsumed).not.toHaveBeenCalled();
     expect(screen.queryByText('the March question')).toBeNull();
     expect(agentMock.mock.calls.some(([, c]) => c === 'c-old')).toBe(false);
+  });
+});
+
+/*
+  TASK-1093 — a Slack DM thread is listed in the web app (it is the person's
+  own conversation with their agent), but its turns belong to Slack and the
+  send route refuses it (`409 conversation-read-only`). It used to show a live
+  composer, and every message sent from it came back as "We could not find
+  that. It may have been deleted." So the page says where to reply instead,
+  and a refusal that still gets through says what it is.
+*/
+describe('a Slack DM thread', () => {
+  function renderPlain(over: Partial<ComponentProps<typeof AgentView>> = {}) {
+    const props = viewProps(over);
+    const r = render(<AgentView {...props} />);
+    return { ...r, rerenderWith: (more: Partial<ComponentProps<typeof AgentView>>) =>
+      r.rerender(<AgentView {...props} {...more} />) };
+  }
+
+  it('shows "reply in Slack" where the composer would be, and no composer', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    renderPlain();
+    await screen.findByText('what is on today');
+
+    const said = await screen.findByText(CONVERSATION_IN_SLACK);
+    // A note, not an alarm: nothing went wrong.
+    expect(said.closest('[role="note"]')).not.toBeNull();
+    expect(screen.queryByPlaceholderText('Message Quill')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    expect(CONVERSATION_IN_SLACK).toBe('This conversation is in Slack. Reply there.');
+  });
+
+  it('keeps the composer for a conversation that started here', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'web' }));
+    renderPlain();
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+  });
+
+  it('"New chat" from a Slack thread brings the composer back', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    const view = renderPlain();
+    await screen.findByText(CONVERSATION_IN_SLACK);
+
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+  });
+
+  it('a send refused as read-only says so: never "deleted", and no Resend', async () => {
+    // A page that still offers a composer (an older host named no origin).
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(CONVERSATION_READ_ONLY)).toBeTruthy();
+    expect(screen.queryByText(/deleted|no longer available|didn’t finish/)).toBeNull();
+    // Resend would only be refused again.
+    expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/409|conversation-read-only|→/);
   });
 });

@@ -100,6 +100,8 @@ interface ConvRow {
   activeReqId: string | null;
   createdAt: string;
   lastActivityAt: string | null;
+  /** `conversations:get`'s stored origin. Absent, as in older fixtures, unless a test sets it. */
+  origin?: string;
 }
 
 function conv(over: Partial<ConvRow> & { conversationId: string }): ConvRow {
@@ -1748,6 +1750,44 @@ describe('channel-web agent-workspace BFF', () => {
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     expect((captured.body as { liveReqId: unknown }).liveReqId).toBeNull();
+  });
+
+  /*
+    TASK-1093 — a Slack DM thread is read-only in the web app (the send route
+    refuses it), so the page needs to know which conversation it is showing
+    BEFORE anyone types into it: the detail carries the stored origin.
+  */
+  it('says where the conversation on screen takes its messages: a Slack DM thread reads origin slack', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [
+      conv({ conversationId: 'c-slack', agentId: 'a1', origin: 'slack', lastActivityAt: '2026-08-02T10:00:00.000Z' }),
+      conv({ conversationId: 'c-web', agentId: 'a1', origin: 'web' }),
+    ];
+    turnsByConversation.set('c-slack', []);
+    turnsByConversation.set('c-web', []);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+
+    const latest = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), latest.res);
+    expect(latest.captured.body).toMatchObject({ conversationId: 'c-slack', origin: 'slack' });
+
+    const web = mkRes();
+    await h.agentDetail({ ...mkReq({ agentId: 'a1' }), query: { [CONVERSATION_ID_QUERY_KEY]: 'c-web' } }, web.res);
+    expect(web.captured.body).toMatchObject({ conversationId: 'c-web', origin: 'web' });
+  });
+
+  it('names no origin when there is no conversation, or the store answered none', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const none = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), none.res);
+    expect(none.captured.body).toMatchObject({ conversationId: null, origin: null });
+
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', []);
+    const unstated = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), unstated.res);
+    expect(unstated.captured.body).toMatchObject({ conversationId: 'c1', origin: null });
   });
 
   it('puts each stored step summary on its own step, and nowhere else', async () => {

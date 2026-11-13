@@ -12,6 +12,11 @@ import { workspaceApi } from '../lib/workspace-api';
 import { HttpError } from '../lib/http';
 import { StorageFullError } from '../lib/storage-full';
 import { STORAGE_FULL_SEND } from '../lib/storage-copy';
+import {
+  CONVERSATION_READ_ONLY,
+  ConversationReadOnlyError,
+} from '../lib/conversation-read-only';
+import { HTTP_NOT_FOUND } from '../lib/http';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -140,5 +145,60 @@ describe('workspaceApi.sendMessage — storage-full refusal', () => {
     const err = await send().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(HttpError);
     expect(err).not.toBeInstanceOf(StorageFullError);
+  });
+});
+
+/*
+  TASK-1093 — a conversation whose turns come from somewhere else (a Slack DM
+  thread, a routine's runs) answers a send with `409 conversation-read-only`.
+  As a bare status that read as "We could not reach the server just now", and
+  its 404 predecessor as "We could not find that. It may have been deleted."
+  Neither is true: the conversation is right there. The refusal carries our
+  own sentence instead.
+*/
+describe('workspaceApi.sendMessage — conversation-read-only refusal', () => {
+  const send = () =>
+    workspaceApi.sendMessage({
+      agentId: 'agt_a',
+      conversationId: 'cnv-slack',
+      text: 'answering from the browser',
+    });
+
+  it('rejects with a ConversationReadOnlyError wearing our sentence, never "deleted"', async () => {
+    mockJson(409, { error: 'conversation-read-only' });
+    const err = await send().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConversationReadOnlyError);
+    expect((err as ConversationReadOnlyError).sentence).toBe(CONVERSATION_READ_ONLY);
+    expect((err as Error).message).toBe(CONVERSATION_READ_ONLY);
+    expect((err as Error).message).not.toBe(HTTP_NOT_FOUND);
+    expect(CONVERSATION_READ_ONLY).not.toMatch(/deleted|AX/);
+    // Still an HttpError: the 401 latch and `toReadOutcome` see what they saw.
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(409);
+  });
+
+  it('leaves any other 409, and a 409 it cannot read, a plain HttpError', async () => {
+    mockJson(409, { error: 'something-else' });
+    const other = await send().catch((e: unknown) => e);
+    expect(other).toBeInstanceOf(HttpError);
+    expect(other).not.toBeInstanceOf(ConversationReadOnlyError);
+
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    } as unknown as Response);
+    const unreadable = await send().catch((e: unknown) => e);
+    expect(unreadable).toBeInstanceOf(HttpError);
+    expect(unreadable).not.toBeInstanceOf(ConversationReadOnlyError);
+  });
+
+  it('is not fooled by the code on another status', async () => {
+    mockJson(404, { error: 'conversation-read-only' });
+    const err = await send().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect(err).not.toBeInstanceOf(ConversationReadOnlyError);
   });
 });

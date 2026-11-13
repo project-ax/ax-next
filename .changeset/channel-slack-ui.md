@@ -3,3 +3,5 @@
 ---
 
 Admins can now connect Slack from Admin > Slack. Paste the two configuration tokens Slack gives you, pick the bot's name, and click Allow in Slack. The tab shows whose token is in use and when it was added. Disconnect then tells you the one step only you can do: revoking that token on Slack's own page. The pasted tokens are never shown again, not even to you.
+
+A conversation that takes no new messages here (a Slack DM thread, a routine's run) no longer claims it "may have been deleted" when someone tries to send into it. The send route now answers `409 conversation-read-only` for it (it used to be a 404 `conversation-not-found`), and the page says the conversation can't take new messages here and to start a new chat.

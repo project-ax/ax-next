@@ -650,6 +650,11 @@ interface ConversationRow {
   activeReqId?: string | null;
   lastActivityAt?: string | null;
   createdAt: string;
+  /**
+   * Where the conversation's turns come from (`web`, `routine`, `slack`).
+   * Read, never trusted for a shape: see `AgentDetail.origin`.
+   */
+  origin?: unknown;
 }
 interface ConversationsListInput {
   userId: string;
@@ -1291,6 +1296,15 @@ export interface AgentDetail {
    * ownership of the id itself (`conversations:get-by-req-id`).
    */
   liveReqId: string | null;
+  /**
+   * TASK-1093 — where that conversation takes its messages: its stored origin
+   * as `conversations:get` answered it (`'web'`, `'routine'`, `'slack'`).
+   * A Slack DM thread is read-only here (the send route answers
+   * `409 conversation-read-only`), and the page has to know that BEFORE
+   * anyone types into it, so it shows where to reply instead of a composer.
+   * `null` with no conversation, or when the store answered no string.
+   */
+  origin: string | null;
   /** Reconstructed from that conversation's turns. */
   thread: ThreadMessage[];
   /**
@@ -8146,6 +8160,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
       let liveReqId: string | null = null;
+      let threadOrigin: string | null = null;
       let decisionsRead: WorkspaceReadStatus = 'ok';
       // Read whether or not there is a thread yet: the live panel needs it for
       // the first turn too (TASK-744).
@@ -8196,6 +8211,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           }
           threadConversationId = got.conversation.conversationId;
           liveReqId = got.conversation.activeReqId ?? null;
+          const origin = got.conversation.origin;
+          threadOrigin = typeof origin === 'string' ? origin : null;
           /*
             The still-open decisions raised in THIS conversation, as cards at
             the end of the thread. They go last because that is where they
@@ -8252,6 +8269,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // when it looks wrong.
         conversationId: threadConversationId,
         liveReqId,
+        origin: threadOrigin,
         thread,
         decisions: { status: decisionsRead },
         past,

@@ -56,7 +56,9 @@ import { quickTitle } from './quick-title.js';
 //   4. get-or-creates the conversation:
 //        - conversationId === null → conversations:create
 //        - else → conversations:get; only stored origin 'web' admits a turn
-//        - any other origin → 404 before attachments, binding or dispatch
+//        - any other origin (a routine's runs, a Slack DM thread, or none we
+//          can read) → 409 conversation-read-only before attachments,
+//          binding or dispatch (TASK-1093)
 //        - admitted web conversation with agent-mismatch → 400 (I10)
 //        - on conversations:get not-found OR forbidden → 404 (no leak)
 //   5. server-mints `reqId` (J9 — never client-supplied). The browser uses
@@ -566,9 +568,18 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
             userId,
           });
           if (got.conversation.origin !== 'web') {
-            // Routine histories cannot become interactive chats. Missing or
-            // malformed provider metadata cannot grant that capability either.
-            res.status(404).json({ error: 'conversation-not-found' });
+            // Routine histories and Slack DM threads cannot become interactive
+            // chats here: their turns come from somewhere else, and a web turn
+            // would fork the thread. Missing or malformed provider metadata
+            // cannot grant that capability either.
+            //
+            // TASK-1093: refused with its OWN code, not as "not found". The
+            // conversation is the caller's (conversations:get checked), so
+            // saying it exists leaks nothing, and a page that still offers a
+            // composer over it can then say why instead of "it may have been
+            // deleted". 409, like `not-authored`: the request conflicts with
+            // the conversation's state, not with who is asking (that is 403).
+            res.status(409).json({ error: 'conversation-read-only' });
             return;
           }
           if (got.conversation.agentId !== body.agentId) {

@@ -231,6 +231,13 @@ interface Props {
   conversationId: string | null;
   decisions: Decision[];
   readOnly: boolean;
+  /**
+   * TASK-1093 — said where the composer would be, when `readOnly` because the
+   * conversation takes its messages somewhere else (a Slack DM thread: "Reply
+   * there"). A neutral note, not an alarm: nothing went wrong. Without it a
+   * read-only thread simply has no composer.
+   */
+  readOnlyNote?: string;
   /** True while a reply is streaming — the composer waits it out. */
   busy?: boolean;
   /**
@@ -373,6 +380,7 @@ export function AgentConversation({
   conversationId,
   decisions,
   readOnly,
+  readOnlyNote,
   busy = false,
   onStop,
   stopping = false,
@@ -822,6 +830,19 @@ export function AgentConversation({
         )}
       </div>
 
+      {readOnly && readOnlyNote !== undefined && (
+        /*
+          In the composer's own slot, so the reader finds the answer where
+          they went to type. `role="note"`, not the Alert's default `alert`:
+          an assertive announcement on every open of a thread that is simply
+          read-only here would be noise.
+        */
+        <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
+          <Alert role="note" className="max-w-[720px]">
+            <AlertDescription>{readOnlyNote}</AlertDescription>
+          </Alert>
+        </div>
+      )}
       {!readOnly && (
         <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
           {attachments.length > 0 && (
