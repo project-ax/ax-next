@@ -8,6 +8,9 @@ import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
  * own. Replies go out as Markdown (`markdown_text`), which Slack renders
  * itself, so nothing here converts formatting; it only takes away the power
  * to ping people and keeps every message under Slack's caps.
+ *
+ * And one thing for text coming IN: `decodeSlackEntities`, so the agent reads
+ * a DM as its sender typed it.
  */
 
 const ZERO_WIDTH_SPACE = '\u200B';
@@ -85,6 +88,20 @@ export function splitForPost(text: string, limit: number): string[] {
     rest = rest.slice(cut);
   }
   return parts;
+}
+
+const SLACK_ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>' };
+
+/**
+ * A message's text as its sender typed it. Slack escapes exactly three
+ * characters in message text, `&` `<` `>` as `&amp;` `&lt;` `&gt;`, so that
+ * its own references (`<@U…>`, `<#C…>`, `<url|label>`) can't be confused
+ * with typed text. This undoes those three, in one left-to-right pass, so a
+ * typed `&lt;` (sent as `&amp;lt;`) stays `&lt;`. Nothing else changes: a
+ * reference stays as Slack wrote it, and any other entity is left alone.
+ */
+export function decodeSlackEntities(text: string): string {
+  return text.replace(/&(amp|lt|gt);/g, (entity, name: string) => SLACK_ENTITIES[name] ?? entity);
 }
 
 /**

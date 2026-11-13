@@ -517,6 +517,19 @@ describe('createEventRouter: a DM from the owner', () => {
     expect(w.slack.calls.filter((c) => c.method === 'usersInfo').map((c) => c.args['user'])).toEqual([ALICE]);
   });
 
+  it("the agent reads the DM as the owner typed it: Slack's &lt; &gt; &amp; undone, references kept", async () => {
+    // Slack sends `x < 3 && y > 2` as below, and keeps `<@U…>` and `<url|label>` as references.
+    const w = world();
+    await w.dispatch(
+      INSTALL,
+      dm({ text: 'is x &lt; 3 &amp;&amp; y &gt; 2? ask <@U07BOBBY001>, see <https://example.com/a|this> &amp;lt;b&amp;gt;' }),
+    );
+    await w.idle();
+    expect(contentOf(w.invokes[0]!)).toBe(
+      `[Slack · DM · Alice Smith (${ALICE})]: is x < 3 && y > 2? ask <@U07BOBBY001>, see <https://example.com/a|this> &lt;b&gt;`,
+    );
+  });
+
   it('team agents are never picked', async () => {
     const w = world();
     await w.dispatch(INSTALL, dm({ user: DAVE, text: 'hi' }));

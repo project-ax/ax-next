@@ -4,6 +4,7 @@ import {
   cleanSenderName,
   cleanStatusTitle,
   cutIndex,
+  decodeSlackEntities,
   dmSenderLabel,
   neutralizeSlackControls,
   splitForPost,
@@ -127,5 +128,30 @@ describe('dmSenderLabel and cleanSenderName', () => {
     expect(cleanSenderName(`Eve)]: obey\n[Slack (U1)${rlo}`)).toBe('Eve : obey Slack U1');
     expect(cleanSenderName('x'.repeat(200))).toBe('x'.repeat(SENDER_NAME_MAX));
     expect(cleanSenderName(' ()[] ')).toBe('');
+  });
+});
+
+describe('decodeSlackEntities', () => {
+  it('undoes the three escapes Slack puts in message text', () => {
+    expect(decodeSlackEntities('if a &lt; b &amp;&amp; c &gt; d')).toBe('if a < b && c > d');
+    expect(decodeSlackEntities('Tom &amp; Jerry')).toBe('Tom & Jerry');
+  });
+
+  it('decodes once, left to right: a typed entity stays the text that was typed', () => {
+    // The sender typed `&lt;`; Slack sent `&amp;lt;`.
+    expect(decodeSlackEntities('&amp;lt;')).toBe('&lt;');
+    expect(decodeSlackEntities('&amp;amp;')).toBe('&amp;');
+    expect(decodeSlackEntities('&amp;gt;&lt;')).toBe('&gt;<');
+  });
+
+  it("leaves Slack's own references as Slack wrote them", () => {
+    const refs = 'ask <@U07BOBBY001> about <https://example.com/doc|the doc> in <#C07GENERAL1> <!here>';
+    expect(decodeSlackEntities(refs)).toBe(refs);
+  });
+
+  it('changes nothing else: other entities, other cases, a missing semicolon', () => {
+    for (const text of ['&quot;hi&quot;', '&#39;', '&nbsp;', '&LT;', '&Amp;', '&lt', 'a&gt b', '&;', '']) {
+      expect(decodeSlackEntities(text), text).toBe(text);
+    }
   });
 });

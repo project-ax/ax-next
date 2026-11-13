@@ -1,6 +1,6 @@
 import { makeAgentContext, makeReqId, type AgentMessage, type HookBus, type Logger } from '@ax/core';
 import { COPY } from './copy.js';
-import { dmSenderLabel } from './format.js';
+import { decodeSlackEntities, dmSenderLabel } from './format.js';
 import { TURN_END_GRACE_MS, TURN_HARD_CAP_MS } from './limits.js';
 import { logCode } from './log-code.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
@@ -53,7 +53,10 @@ export interface DmTurnRequest {
   userId: string;
   agentId: string;
   conversationId: string;
-  /** The owner's words, verbatim. */
+  /**
+   * The owner's words as Slack sent them. The turn undoes Slack's `&amp;`,
+   * `&lt;` and `&gt;` (format.ts `decodeSlackEntities`) and nothing else.
+   */
   text: string;
 }
 
@@ -238,7 +241,8 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
 
   const message: AgentMessage = {
     role: 'user',
-    content: `${dmSenderLabel(r.senderName, r.senderSlackId)}: ${r.text}`,
+    // As the owner typed it: `if x &lt; 3` reaches the model as `if x < 3`.
+    content: `${dmSenderLabel(r.senderName, r.senderSlackId)}: ${decodeSlackEntities(r.text)}`,
   };
   void (async () => {
     try {

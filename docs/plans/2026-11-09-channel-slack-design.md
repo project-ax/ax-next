@@ -74,8 +74,10 @@ The Slack sender's name and ID go into the message *content*, for example
 `[Slack · #support · Alice (U123)]: …`. In a 1:1 DM (TASK-1093) it reads
 `[Slack · DM · Alice (U123)]: <text>`: the sender's Slack display name (else
 their real name), with brackets and parentheses removed so a name can't close
-the label early. That label is untrusted text the model reads. Nothing ever
-treats it as permission to do something.
+the label early. `<text>` is the message as its sender typed it: Slack's
+`&amp;`, `&lt;` and `&gt;` escaping is undone, and nothing else (a `<@U…>` or
+`<url|label>` reference stays as Slack wrote it). That label is untrusted text
+the model reads. Nothing ever treats it as permission to do something.
 
 ## 2a. Memory: decided by who sees the reply
 
