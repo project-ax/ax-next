@@ -27,6 +27,7 @@ export const REFUSAL_DESCRIPTION = "This account can't sign in here. Ask your ad
 export type IdentityRefusal =
   | 'sign_in_method_not_allowed'
   | 'email_not_verified'
+  | 'email_mismatch'
   | 'email_domain_not_allowed'
   | 'account_not_linkable';
 
@@ -42,6 +43,8 @@ export interface IdentityAttempt {
 
 /** The existing local user that a link or a sign-in lands on. */
 export interface LocalUserFacts {
+  /** The account's own email, as stored on its row. */
+  email: string;
   emailVerified: boolean;
   role: string;
   accountCount: number;
@@ -61,6 +64,17 @@ export function emailDomain(email: string): string {
   const at = email.lastIndexOf('@');
   if (at < 0 || at === email.length - 1) return '';
   return email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * Two emails are the same address when they match ignoring ASCII case only.
+ * Not `toLowerCase()`: that maps some non-ASCII letters onto ASCII ones (the
+ * Kelvin sign U+212A becomes "k"), which would make two different mailboxes
+ * compare equal.
+ */
+function sameEmail(a: string, b: string): boolean {
+  const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return fold(a) === fold(b);
 }
 
 /**
@@ -84,7 +98,23 @@ export function decideIdentity(
   //    unverified addresses.
   if (!attempt.emailVerified) return 'email_not_verified';
 
-  // 3. The email's domain must be in THAT provider's list, on every action, so
+  // 3. A link or a sign-in lands on an existing account only when the provider
+  //    vouches for THAT account's own email. better-auth finds the account for
+  //    a sign-in by the provider's account id, never by email, so without this
+  //    a link made once keeps working whatever email the provider names now.
+  //    Before TASK-1116, `trustedProviders` let a GitHub account holding an
+  //    UNVERIFIED copy of a teammate's email link into their account. Nothing
+  //    in the data marks those rows, and their holder can verify an address of
+  //    their own. This runs before the domain list, which never turns an admin
+  //    away. The cost: someone whose provider email changed since they linked
+  //    it (a renamed Google account, a new GitHub primary email) is refused
+  //    until it matches again or an admin updates the account's email.
+  if (attempt.action !== 'create-user') {
+    if (local === undefined) return 'account_not_linkable';
+    if (!sameEmail(attempt.email, local.email)) return 'email_mismatch';
+  }
+
+  // 4. The email's domain must be in THAT provider's list, on every action, so
   //    an off-domain member made while the old check was dead is refused at its
   //    next sign-in. One exception: an existing admin. Admins are appointed by
   //    the operator (the setup wizard or SQL), never admitted by a sign-up, and
@@ -94,13 +124,13 @@ export function decideIdentity(
     return 'email_domain_not_allowed';
   }
 
-  // 4. A link attaches this sign-in to an account that already exists, so that
+  // 5. A link attaches this sign-in to an account that already exists, so that
   //    account must be one nobody else could have set up: its email is
   //    verified, or it is the setup wizard's admin waiting for its first
   //    sign-in (role admin, no sign-in method yet). An unverified row with a
-  //    sign-in method is what a pre-registered password left behind.
-  if (attempt.action === 'link-account') {
-    if (local === undefined) return 'account_not_linkable';
+  //    sign-in method is what a pre-registered password left behind. (Rule 3
+  //    already refused a link that lands on no user.)
+  if (attempt.action === 'link-account' && local !== undefined) {
     if (local.emailVerified) return null;
     if (local.role === 'admin' && local.accountCount === 0) return null;
     return 'account_not_linkable';
@@ -142,6 +172,7 @@ export function createIdentityGate(
       if (found) {
         const accounts = await ctx.context.internalAdapter.findAccounts(found.id);
         local = {
+          email: String(found.email ?? ''),
           emailVerified: found.emailVerified === true,
           role: String((found as { role?: unknown }).role ?? 'user'),
           accountCount: accounts.length,

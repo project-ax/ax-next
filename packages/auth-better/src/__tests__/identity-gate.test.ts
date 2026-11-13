@@ -39,6 +39,9 @@ describe('emailDomain', () => {
   });
 });
 
+/** The existing account, with its email optional: by default it's the one the provider names. */
+type LocalRow = Omit<LocalUserFacts, 'email'> & { email?: string };
+
 interface Row {
   name: string;
   attempt?: Partial<IdentityAttempt>;
@@ -46,7 +49,7 @@ interface Row {
   google?: readonly string[];
   /** GitHub's list. Default `[]` (open). */
   github?: readonly string[];
-  local?: LocalUserFacts;
+  local?: LocalRow;
   expected: IdentityRefusal | null;
 }
 
@@ -58,9 +61,12 @@ const ATTEMPT: IdentityAttempt = {
   emailVerified: true,
 };
 
-/** `local` is `{ emailVerified, role, accountCount }`. */
-function local(emailVerified: boolean, role: string, accountCount: number): LocalUserFacts {
-  return { emailVerified, role, accountCount };
+/**
+ * `local` is `{ emailVerified, role, accountCount }`, plus the account's own
+ * email when it isn't the one the provider names.
+ */
+function local(emailVerified: boolean, role: string, accountCount: number, email?: string): LocalRow {
+  return { emailVerified, role, accountCount, ...(email !== undefined ? { email } : {}) };
 }
 
 const ROWS: Row[] = [
@@ -153,6 +159,50 @@ const ROWS: Row[] = [
     local: local(false, 'admin', 0),
     expected: 'email_not_verified',
   },
+  // An existing account takes a sign-in only when the provider vouches for
+  // that account's OWN email. A GitHub link made through the old
+  // trusted-provider hole is still on file; its holder can verify an address of
+  // their own, and nothing else tells the two apart (TASK-1116 review, R1-R3).
+  {
+    name: 'sign-in whose provider names another email',
+    attempt: { action: 'sign-in', providerId: 'github', email: 'imp@evil.example' },
+    local: local(true, 'user', 2, 'alice@canopyworks.com'),
+    expected: 'email_mismatch',
+  },
+  {
+    name: 'admin sign-in whose provider names another email',
+    github: ['canopyworks.com'],
+    attempt: { action: 'sign-in', providerId: 'github', email: 'imp@evil.example' },
+    local: local(false, 'admin', 1, 'admin@canopyworks.com'),
+    expected: 'email_mismatch',
+  },
+  {
+    name: 'another email is refused before its domain is looked at',
+    github: ['canopyworks.com'],
+    attempt: { action: 'sign-in', providerId: 'github', email: 'imp@evil.example' },
+    local: local(true, 'user', 2, 'alice@canopyworks.com'),
+    expected: 'email_mismatch',
+  },
+  {
+    name: 'the same email in another case',
+    attempt: { action: 'sign-in' },
+    local: local(true, 'user', 1, 'Alice@CanopyWorks.COM'),
+    expected: null,
+  },
+  {
+    // U+212A KELVIN SIGN: toLowerCase() turns it into an ASCII "k".
+    name: 'a non-ASCII look-alike is another email',
+    attempt: { action: 'sign-in', email: 'Kate@canopyworks.com' },
+    local: local(true, 'user', 1, 'kate@canopyworks.com'),
+    expected: 'email_mismatch',
+  },
+  {
+    name: 'link whose provider names another email',
+    attempt: { action: 'link-account' },
+    local: local(true, 'user', 1, 'bob@canopyworks.com'),
+    expected: 'email_mismatch',
+  },
+  { name: 'sign-in that lands on no user', attempt: { action: 'sign-in' }, expected: 'account_not_linkable' },
 ];
 
 describe('decideIdentity', () => {
@@ -161,7 +211,10 @@ describe('decideIdentity', () => {
       ['google', google ?? ['canopyworks.com']],
       ['github', github ?? []],
     ]);
-    expect(decideIdentity({ ...ATTEMPT, ...attempt }, lists, facts)).toBe(expected);
+    const tried: IdentityAttempt = { ...ATTEMPT, ...attempt };
+    // The account's own email is the one the provider names, unless the row says otherwise.
+    const found = facts === undefined ? undefined : { email: tried.email, ...facts };
+    expect(decideIdentity(tried, lists, found)).toBe(expected);
   });
 });
 
@@ -250,6 +303,25 @@ describe('createIdentityGate', () => {
     });
     // A link that lands on no user.
     await expect(gate(data, ctxWith(null, []))).resolves.toEqual({
+      error: 'account_not_linkable',
+      errorDescription: REFUSAL_DESCRIPTION,
+    });
+  });
+
+  it("compares the provider's email with the one on the account's own row", async () => {
+    // GitHub's list is open here, so only the account's email can refuse it.
+    const alice = { id: 'u-alice', email: 'Alice@CanopyWorks.com', emailVerified: true, role: 'user' };
+    const signIn = (email: string): GateData => ({
+      user: { id: 'u-alice', email, emailVerified: true },
+      source: oauth('sign-in', 'github'),
+    });
+    await expect(gate(signIn('imp@evil.example'), ctxWith(alice, [{ providerId: 'github' }]))).resolves.toEqual({
+      error: 'email_mismatch',
+      errorDescription: REFUSAL_DESCRIPTION,
+    });
+    await expect(gate(signIn('alice@canopyworks.com'), ctxWith(alice, [{ providerId: 'github' }]))).resolves.toBeUndefined();
+    // A sign-in that lands on no user is refused, not waved through.
+    await expect(gate(signIn('alice@canopyworks.com'), ctxWith(null, []))).resolves.toEqual({
       error: 'account_not_linkable',
       errorDescription: REFUSAL_DESCRIPTION,
     });

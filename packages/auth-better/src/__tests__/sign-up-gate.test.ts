@@ -245,6 +245,24 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     return id;
   }
 
+  /**
+   * A sign-in method already on an existing account: the row a pre-fix link left
+   * behind, e.g. one `trustedProviders` let a GitHub account holding an
+   * UNVERIFIED copy of the account's email make.
+   */
+  async function insertAccount(userId: string, provider: 'google' | 'github', accountId: string): Promise<void> {
+    const now = new Date();
+    await db
+      .insertInto('auth_better_v1_accounts')
+      .values({
+        id: newId('acc'), user_id: userId, account_id: accountId, provider_id: provider,
+        access_token: null, refresh_token: null, id_token: null,
+        access_token_expires_at: null, refresh_token_expires_at: null, scope: 'read:user,user:email',
+        password: null, created_at: now, updated_at: now,
+      })
+      .execute();
+  }
+
   async function countUsers(email: string): Promise<number> {
     const rows = await db.selectFrom('auth_better_v1_users').where('email', '=', email).select('id').execute();
     return rows.length;
@@ -459,5 +477,59 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.location).toContain('/auth/error?error=account_not_linkable');
     expect(r.axSession).toBeNull();
     expect(await providersOf(id)).toEqual(['credential']);
+  });
+
+  // -- links made before the fix -----------------------------------------------
+  //
+  // Until TASK-1116, `trustedProviders` let a GitHub account holding an
+  // UNVERIFIED copy of someone's email link into their account. The fix stops
+  // new links like that, but the rows stay. On a later sign-in better-auth finds
+  // the account by GitHub's id, not by email, and the link's holder can verify
+  // an address of their own, so GitHub vouches for SOME email. Only the
+  // account's own email tells them apart. (R1-R3: the whole-branch review's
+  // reproductions, each a completed sign-in on the code before this rule.)
+
+  it('a GitHub link made before the fix no longer opens the account when GitHub names another email (R1)', async () => {
+    await addProvider('github', '');
+    const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
+    await insertAccount(aliceId, 'github', '779');
+    idp.nextGithub({ id: 779, login: 'imp', email: 'imp@evil.example', verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.location).toContain('/auth/error?error=email_mismatch');
+    expect(r.axSession).toBeNull();
+  });
+
+  it("a GitHub link made before the fix can't open the setup admin's account from another email (R2)", async () => {
+    // The domain list never turns an admin away, so the list alone can't stop this one.
+    await addProvider('github', 'canopyworks.com');
+    await insertAccount(stack.adminUserId, 'github', '780');
+    idp.nextGithub({ id: 780, login: 'imp', email: 'imp@evil.example', verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.location).toContain('/auth/error?error=email_mismatch');
+    expect(r.axSession).toBeNull();
+  });
+
+  it("a member's leftover link is refused for its email before its domain (R3)", async () => {
+    // Refused before the fix too, by the domain list. The email comes first now,
+    // so the server log (and the error code) names what is actually wrong.
+    await addProvider('github', 'canopyworks.com');
+    const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
+    await insertAccount(aliceId, 'github', '781');
+    idp.nextGithub({ id: 781, login: 'imp', email: 'imp@evil.example', verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.location).toContain('/auth/error?error=email_mismatch');
+    expect(r.axSession).toBeNull();
+  });
+
+  it("a link made before the fix still signs in when GitHub vouches for the account's own email", async () => {
+    // The owner proving their own address keeps working, whoever made the link.
+    await addProvider('github', '');
+    const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
+    await insertAccount(aliceId, 'github', '782');
+    idp.nextGithub({ id: 782, login: 'alice', email: 'Alice@CanopyWorks.com', verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.status).toBe(302);
+    expect(r.location).not.toContain('/auth/error');
+    expect((await me(r.axSession)).id).toBe(aliceId);
   });
 });
