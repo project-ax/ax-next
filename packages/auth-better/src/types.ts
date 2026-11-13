@@ -89,8 +89,10 @@ export type GetUserOutput = User | null;
  *   - Verified accounts only. An account whose email no provider has verified
  *     is never found.
  *   - Approved sign-in domains only: the given address and the account's
- *     email must both be on a domain sign-in accepts. When no domains are
- *     configured (blank), any domain is approved, the same as sign-in.
+ *     email must both be on an approved domain. In @ax/auth-better that is
+ *     the Google provider's allowed-domain list (the one Google sign-in
+ *     enforces), read whether or not the provider is enabled. A blank list,
+ *     or no Google provider, approves any domain, the same as sign-in.
  *   - `null` for no match, for more than one match (accounts that differ only
  *     in case), or for any failed rule. `null` never says which rule failed.
  *   - Returns only the id: no email, name or admin flag.
