@@ -14,6 +14,7 @@ const AUDIT = readFileSync(new URL('../../sql/audit-sign-ups.sql', import.meta.u
 const TAKEN_OVER = 'LINKED AFTER PASSWORD - treat as taken over';
 const PASSWORD_ONLY = 'password only';
 const PASSWORD_LATER = 'password added after a provider sign-in - ask a developer';
+const CONFIRM = 'confirm with the person';
 /** Every secret column gets a value with this in it. None may reach the output. */
 const SECRET = 'SECRET';
 const TABLES = ['auth_better_v1_users', 'auth_better_v1_accounts', 'auth_better_v1_sessions',
@@ -42,7 +43,11 @@ const SEEDS: Seed[] = [
   { email: 'promoted@canopyworks.com', verified: false, role: 'admin', accounts: [{ provider: 'credential', at: 0 }], sections: [2, 3] },
   // A Google account made by POST /auth/sign-in/social with an idToken: better-auth stores no scope.
   { email: 'idtok@canopyworks.com', verified: true, accounts: [{ provider: 'google', at: 0, scope: null }], sections: [4] },
-  { email: 'gh@canopyworks.com', verified: true, accounts: [{ provider: 'github', at: 0, scope: null }], sections: [] },
+  // Any GitHub sign-in, or a second provider on one account: the old `trustedProviders` let one link
+  // in on an email the provider hadn't verified, and nothing on file tells those links apart.
+  { email: 'gh@canopyworks.com', verified: true, accounts: [{ provider: 'github', at: 0, scope: null }], sections: [5] },
+  { email: 'both@canopyworks.com', verified: true,
+    accounts: [{ provider: 'google', at: 0 }, { provider: 'github', at: 1 }], sections: [5] },
 ];
 
 let container: StartedPostgreSqlContainer;
@@ -120,7 +125,7 @@ function row(section: string, email: string): string[] {
 /** The header cells of a section's table. */
 const header = (section: string) => section.split('\n')[1]!.split('|').map((c) => c.trim());
 
-/** The counts row of section 5, by column name. */
+/** The counts row of section 6, by column name. */
 function counts(section: string): Record<string, number> {
   const lines = section.split('\n');
   const names = lines[1]!.split('|').map((c) => c.trim());
@@ -135,10 +140,10 @@ describe('audit-sign-ups.sql', () => {
     expect(r.exitCode, r.output).toBe(0);
     const out = r.stdout;
     const s = sections(out);
-    expect([...s.keys()]).toEqual([0, 1, 2, 3, 4, 5]);
+    expect([...s.keys()]).toEqual([0, 1, 2, 3, 4, 5, 6]);
 
     for (const seedRow of SEEDS) {
-      const found = [1, 2, 3, 4].filter((n) => s.get(n)!.split('|').some((c) => c.trim() === seedRow.email));
+      const found = [1, 2, 3, 4, 5].filter((n) => s.get(n)!.split('|').some((c) => c.trim() === seedRow.email));
       expect(found, seedRow.email).toEqual(seedRow.sections);
     }
 
@@ -147,6 +152,7 @@ describe('audit-sign-ups.sql', () => {
     expect(header(s.get(2)!)).toEqual([...userColumns, 'password_set', 'first_provider_link', 'verdict']);
     expect(header(s.get(3)!)).toEqual(userColumns);
     expect(header(s.get(4)!)).toEqual([...userColumns, 'id_token_link']);
+    expect(header(s.get(5)!)).toEqual([...userColumns, 'methods_added', 'verdict']);
 
     // Section 0: the providers and their lists, `(any domain)` for none.
     expect(row(s.get(0)!, 'google')).toEqual(['google', 't', 'canopyworks.com']);
@@ -165,8 +171,15 @@ describe('audit-sign-ups.sql', () => {
     }
     expect(row(s.get(2)!, 'later@canopyworks.com').at(-1)).toBe(PASSWORD_LATER);
 
-    expect(counts(s.get(5)!)).toEqual({
-      outside_domain: 3, with_password: 5, taken_over: 1, unverified: 3, id_token_sign_in: 1,
+    // Each sign-in method with when it was added, oldest first, to ask the person about.
+    const both = row(s.get(5)!, 'both@canopyworks.com');
+    expect(both[5]).toBe('google,github');
+    expect(both.at(-2)).toMatch(/^google \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}(:\d{2})?, github \d{4}-\d{2}-\d{2} /);
+    expect(both.at(-1)).toBe(CONFIRM);
+    expect(row(s.get(5)!, 'gh@canopyworks.com').at(-1)).toBe(CONFIRM);
+
+    expect(counts(s.get(6)!)).toEqual({
+      outside_domain: 3, with_password: 5, taken_over: 1, unverified: 3, id_token_sign_in: 1, to_confirm: 2,
     });
 
     // No secret column's value, and no secret column's name.
@@ -185,7 +198,7 @@ describe('audit-sign-ups.sql', () => {
     const s = sections(r.stdout);
     expect(s.get(1)).not.toContain('eng@eng.canopyworks.com');
     expect(s.get(1)).not.toContain('Bob@CanopyWorks.COM');
-    expect(counts(s.get(5)!).outside_domain).toBe(2);
+    expect(counts(s.get(6)!).outside_domain).toBe(2);
   });
 
   it('prints its usage and runs nothing without -v domain', async () => {
@@ -211,7 +224,7 @@ describe('audit-sign-ups.sql', () => {
     const r = await runAudit(['-v', 'domain=canopyworks.com'], AUDIT,
       ['-c', "DELETE FROM auth_better_v1_accounts WHERE provider_id = 'credential'"]);
     expect(r.exitCode).not.toBe(0);
-    expect(r.output).toContain('== 5. Counts');
+    expect(r.output).toContain('== 6. Counts');
     expect(r.output).toContain('cannot execute DELETE in a read-only transaction');
     expect(await rowCounts()).toEqual(before);
   });

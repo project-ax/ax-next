@@ -4,7 +4,8 @@
 -- Until TASK-1116, anyone could sign up with any email and a password (POST /auth/sign-up/email),
 -- a client could post a Google ID token to sign in, and the Google domain check never ran. A
 -- password account made before the real owner's first Google/GitHub sign-in was then linked to
--- that owner (account pre-takeover). This lists the accounts each hole could have made.
+-- that owner (account pre-takeover), and a GitHub account holding an UNVERIFIED copy of someone's
+-- email could link into their account. This lists the accounts each hole could have made.
 --
 --   psql -X -v ON_ERROR_STOP=1 -v domain=canopyworks.com -f audit-sign-ups.sql
 --
@@ -20,7 +21,7 @@
 -- token, a session token, a verification value or a provider secret. Its output still names
 -- people, so keep it out of tickets and chat (record the counts only).
 --
--- Columns of sections 1-4: sign_in_methods is the account's provider ids, oldest first
+-- Columns of sections 1-5: sign_in_methods is the account's provider ids, oldest first
 -- ('credential' is a password); live_sessions counts sessions not yet expired.
 
 \if :{?domain}
@@ -115,7 +116,35 @@ SELECT id, email, role, email_verified, created_at, sign_in_methods, live_sessio
  WHERE id_token_link IS NOT NULL
  ORDER BY created_at, email;
 
-\echo '== 5. Counts'
+-- `trustedProviders` let a Google or GitHub account link into an existing account with that email
+-- even when the provider had NOT verified it (GitHub reports unverified addresses). Nothing on file
+-- says whether a link was made that way, so this lists every account with a GitHub sign-in, or with
+-- two or more provider sign-ins, and when each method was added. Since TASK-1116 such a link signs
+-- in only while the provider vouches for the account's own email, but whether every method really
+-- belongs to that person is something only they can say.
+\echo '== 5. Accounts with a GitHub sign-in or 2+ provider sign-ins (confirm with the person)'
+WITH u AS (
+  SELECT u.id, u.email, u.role, u.email_verified, u.created_at,
+         coalesce((SELECT string_agg(a.provider_id, ',' ORDER BY a.created_at, a.provider_id)
+                     FROM auth_better_v1_accounts a WHERE a.user_id = u.id), '(none)') AS sign_in_methods,
+         (SELECT count(*) FROM auth_better_v1_sessions s
+           WHERE s.user_id = u.id AND s.expires_at > now()) AS live_sessions,
+         (SELECT string_agg(a.provider_id || ' ' || to_char(a.created_at, 'YYYY-MM-DD HH24:MI:SSOF'), ', '
+                            ORDER BY a.created_at, a.provider_id)
+            FROM auth_better_v1_accounts a WHERE a.user_id = u.id) AS methods_added,
+         (SELECT count(*) FROM auth_better_v1_accounts a
+           WHERE a.user_id = u.id AND a.provider_id <> 'credential') AS provider_sign_ins,
+         EXISTS (SELECT 1 FROM auth_better_v1_accounts a
+                  WHERE a.user_id = u.id AND a.provider_id = 'github') AS has_github
+    FROM auth_better_v1_users u
+)
+SELECT id, email, role, email_verified, created_at, sign_in_methods, live_sessions, methods_added,
+       'confirm with the person' AS verdict
+  FROM u
+ WHERE has_github OR provider_sign_ins >= 2
+ ORDER BY created_at, email;
+
+\echo '== 6. Counts'
 WITH allowed AS (
   SELECT lower(trim(d)) AS d FROM regexp_split_to_table(:'domain', ',') AS d WHERE trim(d) <> ''
 ), u AS (
@@ -127,14 +156,19 @@ WITH allowed AS (
          (SELECT min(a.created_at) FROM auth_better_v1_accounts a
            WHERE a.user_id = u.id AND a.provider_id <> 'credential') AS first_provider_link,
          EXISTS (SELECT 1 FROM auth_better_v1_accounts a
-                  WHERE a.user_id = u.id AND a.provider_id = 'google' AND a.scope IS NULL) AS id_token_sign_in
+                  WHERE a.user_id = u.id AND a.provider_id = 'google' AND a.scope IS NULL) AS id_token_sign_in,
+         (SELECT count(*) FROM auth_better_v1_accounts a
+           WHERE a.user_id = u.id AND a.provider_id <> 'credential') AS provider_sign_ins,
+         EXISTS (SELECT 1 FROM auth_better_v1_accounts a
+                  WHERE a.user_id = u.id AND a.provider_id = 'github') AS has_github
     FROM auth_better_v1_users u
 )
 SELECT count(*) FILTER (WHERE email_domain IS NULL OR email_domain NOT IN (SELECT d FROM allowed)) AS outside_domain,
        count(*) FILTER (WHERE password_set IS NOT NULL) AS with_password,
        count(*) FILTER (WHERE first_provider_link >= password_set) AS taken_over,
        count(*) FILTER (WHERE NOT email_verified AND NOT (role = 'admin' AND NOT has_accounts)) AS unverified,
-       count(*) FILTER (WHERE id_token_sign_in) AS id_token_sign_in
+       count(*) FILTER (WHERE id_token_sign_in) AS id_token_sign_in,
+       count(*) FILTER (WHERE has_github OR provider_sign_ins >= 2) AS to_confirm
   FROM u;
 
 ROLLBACK;

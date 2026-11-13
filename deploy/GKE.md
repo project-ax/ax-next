@@ -1107,7 +1107,9 @@ email and a password. A client could post a Google ID token straight to the
 server and get an account. And the Google email-domain check didn't actually
 run. Worse, a password account set up under someone's email was linked to that
 person when they first signed in with Google, so whoever set the password could
-sign in as them. This step lists the accounts those holes could have let in.
+sign in as them. And a GitHub account holding an unverified copy of someone's
+email could link itself to their account. This step lists the accounts those
+holes could have let in.
 
 **When.** Run it now, before the TASK-1116 deploy, to see what the open sign-up
 let in. Then run it once more after the deploy.
@@ -1118,7 +1120,7 @@ So it needs no backup, and it's safe while the app is up.
 
 **Its output names people.** It prints account ids, emails, roles and
 timestamps (never a password hash, a token or a secret). Keep it out of tickets
-and chat. Record only the section 5 counts on the card.
+and chat. Record only the section 6 counts on the card.
 
 **Every `kubectl` command names its context**, as in 4f and 4g. The default
 context on our laptops is prod, so we never lean on it. Set it once, check,
@@ -1201,7 +1203,7 @@ kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-n
 
 #### Step 3: read it
 
-Sections 1–4 list each account's `id`, `email`, `role`, `email_verified`,
+Sections 1–5 list each account's `id`, `email`, `role`, `email_verified`,
 `created_at`, `sign_in_methods` (how it signs in, oldest first; `credential` is
 a password) and `live_sessions` (sessions that haven't expired yet).
 
@@ -1229,7 +1231,12 @@ a password) and `live_sessions` (sessions that haven't expired yet).
   - `password added after a provider sign-in - ask a developer`: nothing in ax
     does this. Ask a developer.
 - **`== 3. Unverified accounts (not counting a setup admin waiting for its first sign-in)`.**
-  These can't sign in after the deploy.
+  A row whose `sign_in_methods` is `credential` or `(none)` can't sign in after
+  the deploy: passwords are off, and a new sign-in won't attach to an
+  unverified account. A row with a Google or GitHub method still can, through
+  that provider, when it vouches for the account's own email (and, for a
+  member, section 1's domain rule allows it). The account is marked verified
+  then.
 - **`== 4. Google sign-ins made with a client-posted ID token (no OAuth scope on file)`.**
   Accounts made by posting a Google ID token straight to the server instead of
   going through Google's sign-in page. Nothing in ax does that, so each row is
@@ -1237,11 +1244,23 @@ a password) and `live_sessions` (sessions that haven't expired yet).
   An account that's also in section 1 is an outsider. This is a strong hint,
   not proof: a row someone added by hand looks the same. It can also miss
   some: before 2026-10-27, a later normal Google sign-in hid the mark.
-- **`== 5. Counts`.** The numbers to record on the card: `outside_domain`,
+- **`== 5. Accounts with a GitHub sign-in or 2+ provider sign-ins (confirm with the person)`.**
+  Before the fix, a Google or GitHub account could link itself to an existing
+  account with the same email even when the provider hadn't verified that
+  email (GitHub does report unverified ones). Nothing on file says whether a
+  link was made that way. So this lists every account that signs in with
+  GitHub, or with more than one provider, and `methods_added` says when each
+  sign-in method was added. The verdict is `confirm with the person`: ask them
+  whether every method listed is theirs. A method they don't recognize is an
+  incident: **stop and ask a developer.** Since the deploy, a link like that
+  only signs in while its provider vouches for the account's own email. That
+  also means someone whose provider email changed since they linked it is
+  turned away until the two match again.
+- **`== 6. Counts`.** The numbers to record on the card: `outside_domain`,
   `with_password`, `taken_over` (the `LINKED AFTER PASSWORD` rows),
-  `unverified` and `id_token_sign_in`.
+  `unverified`, `id_token_sign_in` and `to_confirm` (the section 5 rows).
 
-If sections 1–4 are empty, there's nothing to do. Otherwise, change no data
+If sections 1–5 are empty, there's nothing to do. Otherwise, change no data
 without a developer. When you're done, delete `audit-output.txt`.
 
 ---
