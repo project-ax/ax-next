@@ -6,7 +6,7 @@
  *   2. Empty state when zero providers configured.
  *   3. "Add provider" reveals the AddProviderForm.
  *   4. Submit POSTs the right body shape (incl. CSRF header) and refetches.
- *   5. discoveryUrl field appears only when kind === 'oidc'.
+ *   5. Offers only Google and GitHub (generic OIDC was never wired up).
  *   6. Toggle calls PATCH and refetches.
  *   7. Delete is gated by a styled confirm dialog; Cancel cancels the call.
  *   8. Save error renders inline; the form stays open.
@@ -76,17 +76,18 @@ describe('AuthProvidersTab', () => {
     expect(screen.getByLabelText('Client secret')).toBeTruthy();
   });
 
-  it('discoveryUrl is hidden by default and shown when kind=oidc', async () => {
+  // TASK-1116: "Generic OIDC" was never wired into sign-in, and saving one
+  // took every sign-in down. The server refuses it now; the form doesn't offer it.
+  it('offers only Google and GitHub', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     render(<AuthProvidersTab />);
     await waitFor(() =>
       screen.getByRole('button', { name: /Add provider/i }),
     );
     fireEvent.click(screen.getByRole('button', { name: /Add provider/i }));
-    // Default kind=google → no discovery URL field.
+    const select = screen.getByLabelText('Provider') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['google', 'github']);
     expect(screen.queryByLabelText(/Discovery URL/i)).toBeNull();
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'oidc' } });
-    expect(screen.getByLabelText(/Discovery URL/i)).toBeTruthy();
   });
 
   it('submit POSTs the upsert with CSRF header and refetches on 201', async () => {
@@ -301,8 +302,8 @@ describe('AuthProvidersTab', () => {
 
   /**
    * TASK-342 / audit D4 — this form asked a non-technical admin for a Client
-   * ID, a Client secret and a Discovery URL, and explained none of them. None
-   * of the three is guessable if you have never registered an OAuth app.
+   * ID and a Client secret, and explained neither. Neither is guessable if you
+   * have never registered an OAuth app.
    */
   describe('every provider field explains itself', () => {
     const openForm = async () => {
@@ -324,14 +325,6 @@ describe('AuthProvidersTab', () => {
       expect(hintFor('Provider')).toMatch(/sign in/i);
       expect(hintFor('Client ID')).toMatch(/register ax as an application/i);
       expect(hintFor('Client secret')).toMatch(/like a password/i);
-    });
-
-    it('glosses Discovery URL by the names a provider’s docs actually use', async () => {
-      await openForm();
-      fireEvent.change(screen.getByLabelText('Provider'), {
-        target: { value: 'oidc' },
-      });
-      expect(hintFor('Discovery URL')).toMatch(/well-known configuration/i);
     });
 
     it('says what leaving the domain allow-list blank actually means', async () => {

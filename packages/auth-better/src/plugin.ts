@@ -460,26 +460,25 @@ async function loadProviders(
 
   const out: ProviderRow[] = [];
   for (const r of rows) {
+    // Only the kinds better-auth is wired for, checked BEFORE the secret is
+    // decrypted. Anything else (a leftover `oidc` row from when the admin
+    // form offered it, or a row a newer binary wrote) never reaches
+    // better-auth, which rejects an unknown social-provider key and would
+    // take every sign-in down with it (TASK-1116). The admin list still
+    // shows such a row, and DELETE removes it.
+    if (r.kind !== 'google' && r.kind !== 'github') continue;
     const { plaintext } = await bus.call<
       { ciphertext: Uint8Array },
       { plaintext: string }
     >('credentials:envelope-decrypt', ctx, { ciphertext: r.client_secret_encrypted });
-    if (r.kind === 'google' || r.kind === 'github' || r.kind === 'oidc') {
-      // Build the row carefully: `discoveryUrl` is optional in the
-      // ProviderRow type (exactOptionalPropertyTypes is ON), so emit
-      // the field only when DB has a value. Conditional spread keeps
-      // the shape clean.
-      out.push({
-        kind: r.kind,
-        clientId: r.client_id,
-        clientSecret: plaintext,
-        ...(r.discovery_url !== null ? { discoveryUrl: r.discovery_url } : {}),
-        ...(r.allowed_domains !== null ? { allowedDomains: r.allowed_domains } : {}),
-      });
-    }
-    // Unknown kinds are dropped — defensive against a forward-compat row
-    // older binaries can't speak. Logging is deferred to Task 1.5 (the
-    // CRUD layer is the right place to surface unknown kinds).
+    // `allowedDomains` is optional in ProviderRow (exactOptionalPropertyTypes
+    // is ON), so emit it only when the DB has a value.
+    out.push({
+      kind: r.kind,
+      clientId: r.client_id,
+      clientSecret: plaintext,
+      ...(r.allowed_domains !== null ? { allowedDomains: r.allowed_domains } : {}),
+    });
   }
   return out;
 }

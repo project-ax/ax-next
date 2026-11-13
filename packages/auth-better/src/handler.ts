@@ -35,17 +35,15 @@ const refuseMalformedHost: BetterAuthPlugin = {
  * decrypted plaintext, never the envelope. Callers (Task 1.5) are
  * responsible for unwrapping ciphertext before reaching this layer.
  *
- * `oidc` here is the generic-OAuth shape (any standards-compliant OIDC
- * provider with a discovery URL). Built-in better-auth providers like
- * `google` and `github` get first-class entries; `oidc` is wired through
- * a generic plugin in Task 1.4 — for this task it's just a passthrough
- * field on the social-providers map.
+ * Only the two kinds better-auth is wired for. A generic `oidc` kind was
+ * once offered by the admin form but never wired (better-auth rejects an
+ * unknown social-provider key, so a saved one took every sign-in down);
+ * loadProviders() in plugin.ts skips any other kind (TASK-1116).
  */
 export interface ProviderRow {
-  kind: 'google' | 'github' | 'oidc';
+  kind: 'google' | 'github';
   clientId: string;
   clientSecret: string;
-  discoveryUrl?: string;
   /**
    * Comma-separated email domains this provider may let in, for sign-up and
    * sign-in. Empty = any account at the provider. Enforced in identity-gate.ts.
@@ -163,11 +161,8 @@ export function createBetterAuthHandler(input: HandlerInput): HandlerHandle {
 
 function build(input: HandlerInput): BuiltHandler {
   // better-auth's `socialProviders` is a typed map keyed by built-in
-  // provider names (google, github, …). We populate the keys we know;
-  // `oidc` is not a built-in and gets wired through a generic plugin
-  // in Task 1.4. For this task we erase to `Record<string, any>` so
-  // the plan's three-kind switch compiles cleanly today and adapts
-  // when generic-OAuth lands.
+  // provider names. We populate the two ax wires, one entry per row, on a
+  // plain record that's cast once at the call below.
   const socialProviders: Record<string, unknown> = {};
   for (const p of input.providers) {
     if (p.kind === 'google') {
@@ -182,15 +177,6 @@ function build(input: HandlerInput): BuiltHandler {
       socialProviders.github = {
         clientId: p.clientId,
         clientSecret: p.clientSecret,
-      };
-    } else if (p.kind === 'oidc') {
-      // Placeholder — in Task 1.4 this becomes a `genericOAuth({...})`
-      // plugin entry, not a socialProviders key. Leaving the field in
-      // the map is harmless because better-auth ignores unknown keys.
-      socialProviders.oidc = {
-        clientId: p.clientId,
-        clientSecret: p.clientSecret,
-        discoveryUrl: p.discoveryUrl,
       };
     }
   }

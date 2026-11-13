@@ -2,7 +2,7 @@
  * AuthProvidersTab — admin OAuth identity provider CRUD.
  *
  * Lists `auth_providers` rows from `@ax/auth-better`, lets an admin add /
- * toggle / remove Google, GitHub, and generic OIDC identity providers.
+ * toggle / remove Google and GitHub identity providers.
  * Each mutation triggers `auth:providers-changed` server-side and the
  * better-auth handler hot-reloads — no kernel restart needed (I10).
  */
@@ -31,8 +31,15 @@ import { AddProviderForm } from './AddProviderForm';
 const KIND_LABEL: Record<AuthProviderKind, string> = {
   google: 'Google',
   github: 'GitHub',
-  oidc: 'Generic OIDC',
 };
+
+/**
+ * The list can still hold a kind the form no longer offers (a leftover `oidc`
+ * row, TASK-1116), so an unknown kind shows as stored and can still be removed.
+ */
+function labelFor(kind: string): string {
+  return Object.hasOwn(KIND_LABEL, kind) ? KIND_LABEL[kind as AuthProviderKind] : kind;
+}
 
 export function AuthProvidersTab() {
   const [providers, setProviders] = useState<AuthProviderEntry[]>([]);
@@ -157,7 +164,7 @@ export function AuthProvidersTab() {
       {!loading && !loadError && providers.length === 0 && !adding && (
         <PaneStatus variant="empty">
           No identity providers configured. Add one to let users sign in with
-          Google, GitHub, or any OIDC issuer.
+          Google or GitHub.
         </PaneStatus>
       )}
 
@@ -168,21 +175,21 @@ export function AuthProvidersTab() {
             className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
           >
             <div className="flex flex-col min-w-0 flex-1 gap-0.5">
-              <span className="text-[13px] font-medium">{KIND_LABEL[p.kind]}</span>
+              <span className="text-[13px] font-medium">{labelFor(p.kind)}</span>
 
             </div>
             {/* (D5) Was a hand-rolled switch — two divs and a translate. The
                 primitive is installed and brings its own keyboard handling. */}
             <Switch
               checked={p.enabled}
-              aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${KIND_LABEL[p.kind]}`}
+              aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
               onCheckedChange={() => void handleToggle(p)}
             />
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={`Details for ${KIND_LABEL[p.kind]}`}
+              aria-label={`Details for ${labelFor(p.kind)}`}
               onClick={() => setSelected(p)}
             >
               <ChevronRight aria-hidden="true" />
@@ -203,10 +210,10 @@ export function AuthProvidersTab() {
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
         <SheetContent className="w-full overflow-y-auto sm:max-w-[424px]">
-          <SheetHeader><SheetTitle>{selected ? KIND_LABEL[selected.kind] : 'Sign-in method'}</SheetTitle><SheetDescription>Manage this sign-in method.</SheetDescription></SheetHeader>
+          <SheetHeader><SheetTitle>{selected ? labelFor(selected.kind) : 'Sign-in method'}</SheetTitle><SheetDescription>Manage this sign-in method.</SheetDescription></SheetHeader>
           {selected && <div className="mt-6 flex flex-col gap-6">
             <p className="break-all text-sm text-muted-foreground">Client ID: {selected.clientId}</p>
-            <Button type="button" variant="destructive" onClick={() => { setPendingDelete(selected); setSelected(null); }} aria-label={`Remove ${KIND_LABEL[selected.kind]}`}>Remove {selected ? KIND_LABEL[selected.kind] : 'method'}</Button>
+            <Button type="button" variant="destructive" onClick={() => { setPendingDelete(selected); setSelected(null); }} aria-label={`Remove ${labelFor(selected.kind)}`}>Remove {selected ? labelFor(selected.kind) : 'method'}</Button>
           </div>}
         </SheetContent>
       </Sheet>
@@ -226,7 +233,7 @@ export function AuthProvidersTab() {
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
               <span className="font-medium text-foreground">
-                {KIND_LABEL[pendingDisable.kind]}
+                {labelFor(pendingDisable.kind)}
               </span>{' '}
               is the only sign-in method still switched on. Turning it off will
               lock everyone out — including you, and including this page. Add
@@ -259,7 +266,7 @@ export function AuthProvidersTab() {
             <p className="text-sm text-muted-foreground">
               Remove the{' '}
               <span className="font-medium text-foreground">
-                {KIND_LABEL[pendingDelete.kind]}
+                {labelFor(pendingDelete.kind)}
               </span>{' '}
               identity provider? Users will no longer be able to sign in with it.
             </p>
