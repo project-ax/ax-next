@@ -1100,6 +1100,152 @@ kubectl --context "$KCTX" delete configmap run-error-scrub -n "$NS"
 
 ---
 
+### 4h. Audit accounts after TASK-1116 (sign-up gate)
+
+Until TASK-1116, the sign-in rules had holes. Anyone could sign up with any
+email and a password. A client could post a Google ID token straight to the
+server and get an account. And the Google email-domain check didn't actually
+run. Worse, a password account set up under someone's email was linked to that
+person when they first signed in with Google, so whoever set the password could
+sign in as them. This step lists the accounts those holes could have let in.
+
+**When.** Run it now, before the TASK-1116 deploy, to see what the open sign-up
+let in. Then run it once more after the deploy.
+
+**It changes nothing.** The session is read-only and the queries run in one
+read-only transaction that is rolled back. Any write in that session fails.
+So it needs no backup, and it's safe while the app is up.
+
+**Its output names people.** It prints account ids, emails, roles and
+timestamps (never a password hash, a token or a secret). Keep it out of tickets
+and chat. Record only the section 5 counts on the card.
+
+**Every `kubectl` command names its context**, as in 4f and 4g. The default
+context on our laptops is prod, so we never lean on it. Set it once, check,
+then copy-paste:
+
+```bash
+KCTX=<your GKE context>        # kubectl config get-contexts
+NS=ax-next
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
+```
+
+#### Step 1: load the script
+
+Work from the repo root of a checkout that has the script: the TASK-1116
+branch until it merges, `main` after.
+
+```bash
+git log -1 --oneline -- packages/auth-better/sql/audit-sign-ups.sql   # must print a commit
+kubectl --context "$KCTX" create configmap auth-sign-up-audit -n "$NS" \
+  --from-file=audit.sql=packages/auth-better/sql/audit-sign-ups.sql
+```
+
+`AlreadyExists` means an earlier try left one behind. Delete it (the last
+command in Step 2) and create it again, so the pod runs this checkout's script.
+
+#### Step 2: run it, read the log, clean up
+
+The pod reads the database URL from the existing `ax-next-db` Secret, as in 4g.
+The password stays inside the cluster: it never goes on your laptop's command
+line, into your shell history, or into the pod spec. The psql line passes the
+allowed domain as `-v domain=canopyworks.com`. On another install, change that
+one value (a comma-separated list works too: `-v domain=a.com,b.org`).
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: auth-sign-up-audit
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: audit
+      configMap: { name: auth-sign-up-audit }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: audit, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v domain=canopyworks.com -f /sql/audit.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/auth-sign-up-audit -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod auth-sign-up-audit -n "$NS"
+kubectl --context "$KCTX" logs auth-sign-up-audit -n "$NS" > audit-output.txt   # names people: delete when done
+kubectl --context "$KCTX" delete pod auth-sign-up-audit -n "$NS"
+kubectl --context "$KCTX" delete configmap auth-sign-up-audit -n "$NS"
+```
+
+The log starts with `SET` and `BEGIN` and ends with `ROLLBACK`: psql reporting
+each statement it ran. If it ends with an `ERROR:` line instead, nothing was
+read in full. The `describe` output (printed when the wait times out) and the
+log say why.
+
+**On kind**, the host image has psql and the database is in the cluster, so
+pipe the file in directly:
+
+```bash
+KCTX=kind-ax-next-dev
+kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-next -d ax-next -X -v ON_ERROR_STOP=1 -v domain=canopyworks.com -f - < packages/auth-better/sql/audit-sign-ups.sql
+```
+
+#### Step 3: read it
+
+Sections 1–4 list each account's `id`, `email`, `role`, `email_verified`,
+`created_at`, `sign_in_methods` (how it signs in, oldest first; `credential` is
+a password) and `live_sessions` (sessions that haven't expired yet).
+
+- **`== 0. Sign-in providers`.** Each enabled provider should show the domains
+  you expect. `(any domain)` means anyone with an account at that provider.
+- **`== 1. Accounts outside the allowed domain`.** Accounts whose email is
+  outside the domain you passed with `-v domain`. Matching is exact, so
+  `eng.canopyworks.com` is outside `canopyworks.com`. After the deploy, a
+  member (role `user`) here is turned away at its next sign-in through a
+  provider whose own list leaves its domain out. On canopyworks.ai, section 0
+  should show Google's list as exactly `canopyworks.com`, so that's every
+  member here. Elsewhere, compare with section 0: a provider showing
+  `(any domain)` turns nobody away. Sessions already issued last up to 7 days.
+  An admin here keeps access, because the list never turns an admin away.
+  Decide whether each one should be an admin.
+- **`== 2. Accounts with a password (ax never sets one)`.** Every row came in
+  through the old email sign-up, because nothing in ax sets a password. The
+  `verdict` column:
+  - `LINKED AFTER PASSWORD - treat as taken over`: someone set a password
+    before the real owner's first Google or GitHub sign-in, and could sign in
+    as them until this deploy. **That's an incident. Stop and ask a
+    developer.**
+  - `password only`: nobody can use it after the deploy, but it blocks the
+    real owner's email until the row is removed.
+  - `password added after a provider sign-in - ask a developer`: nothing in ax
+    does this. Ask a developer.
+- **`== 3. Unverified accounts (not counting a setup admin waiting for its first sign-in)`.**
+  These can't sign in after the deploy.
+- **`== 4. Google sign-ins made with a client-posted ID token (no OAuth scope on file)`.**
+  Accounts made by posting a Google ID token straight to the server instead of
+  going through Google's sign-in page. Nothing in ax does that, so each row is
+  someone calling the API directly, and the domain check didn't run for them.
+  An account that's also in section 1 is an outsider. This is a strong hint,
+  not proof: a row someone added by hand looks the same. It can also miss
+  some: before 2026-10-27, a later normal Google sign-in hid the mark.
+- **`== 5. Counts`.** The numbers to record on the card: `outside_domain`,
+  `with_password`, `taken_over` (the `LINKED AFTER PASSWORD` rows),
+  `unverified` and `id_token_sign_in`.
+
+If sections 1–4 are empty, there's nothing to do. Otherwise, change no data
+without a developer. When you're done, delete `audit-output.txt`.
+
+---
+
 ## Step 5 — Static IP, DNS, and the managed certificate
 
 ### 5a. Reserve a global static IP
