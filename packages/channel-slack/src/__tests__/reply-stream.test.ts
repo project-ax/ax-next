@@ -24,7 +24,7 @@ const TARGET: ReplyTarget = {
 const AGENT_LINK = 'https://ax.example/workspace/agents/agt_alice';
 const ZWSP = '\u200B';
 
-type Method = 'startStream' | 'appendStream' | 'stopStream' | 'postMessage';
+type Method = 'setThreadStatus' | 'startStream' | 'appendStream' | 'stopStream' | 'postMessage';
 
 interface Call {
   method: Method;
@@ -78,6 +78,7 @@ function fakeSlack(o: { latencyMs?: number; fail?: (method: Method, n: number) =
     usersInfo: notHere,
     postEphemeral: notHere,
     postMessage: (token, a) => run('postMessage', token, { ...a }, () => undefined),
+    setThreadStatus: (token, a) => run('setThreadStatus', token, { ...a }, () => undefined),
     startStream: (token, a) =>
       run('startStream', token, { ...a }, () => {
         const ts = `1763035300.${String(nextTs++).padStart(6, '0')}`;
@@ -560,36 +561,66 @@ describe('createReplyStream', () => {
     ]);
   });
 
-  it('working() shows the Working card at the first flush, before any text, and it completes at finish', async () => {
+  it("working() asks Slack for the thinking line first and shows no card; the reply that follows is text only", async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     s.working();
     await tick();
-    expect(calls.map((c) => c.method)).toEqual(['startStream']);
-    expect(calls.flatMap(cardsOf)).toEqual([{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }]);
+    expect(calls).toEqual([
+      {
+        method: 'setThreadStatus',
+        token: BOT_TOKEN,
+        args: { channel: TARGET.channel, threadTs: TARGET.threadTs, status: COPY.thinkingStatus },
+        ok: true,
+      },
+    ]);
     s.text('Hi.');
     await tick();
     await finishNow(s);
-    expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
-    expect(calls.flatMap(cardsOf).at(-1)).toEqual({ type: 'task_update', id: 'status', title: 'Working', status: 'complete' });
+    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'startStream', 'stopStream']);
+    expect(calls.flatMap(cardsOf)).toEqual([]);
     expect(delivered(calls)).toBe('Hi.');
   });
 
-  it('working() then nothing: the same message says emptyReply, never a second post', async () => {
+  it('working() then nothing: one postMessage of emptyReply (Slack clears the thinking line itself)', async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     s.working();
     await tick();
     await finishNow(s, 'complete');
-    expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
+    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'postMessage']);
     expect(delivered(calls)).toBe(COPY.emptyReply);
   });
 
-  it("working() never replaces the agent's own status", async () => {
-    const { api, calls } = fakeSlack();
-    const s = make(api);
-    s.status('Reading your calendar');
+  it('a thinking line Slack refuses is logged by code, and the Working card shows instead', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) =>
+        m === 'setThreadStatus' ? new SlackApiError('assistant.threads.setStatus', 'method_not_supported_for_channel_type') : undefined,
+    });
+    const rec = recordingLogger();
+    const s = make(api, rec.logger);
     s.working();
+    await tick();
+    await tick();
+    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'startStream']);
+    expect(calls.flatMap(cardsOf)).toEqual([{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }]);
+    expect(rec.lines).toContainEqual(
+      expect.objectContaining({ msg: 'slack_reply_failed', fields: { stage: 'status', code: 'method_not_supported_for_channel_type' } }),
+    );
+    // Only the card was shown: the same message says emptyReply, never a second post.
+    await finishNow(s, 'complete');
+    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'startStream', 'appendStream', 'stopStream']);
+    expect(delivered(calls)).toBe(COPY.emptyReply);
+  });
+
+  it("the fallback card never replaces the agent's own status", async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) => (m === 'setThreadStatus' ? new SlackApiError('assistant.threads.setStatus', 'internal_error') : undefined),
+    });
+    const s = make(api);
+    s.working();
+    s.status('Reading your calendar');
+    await tick();
     await tick();
     expect(calls.flatMap(cardsOf)).toEqual([
       { type: 'task_update', id: 'status', title: 'Reading your calendar', status: 'in_progress' },

@@ -146,6 +146,11 @@ interface SlackCall {
 
 function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
   const calls: SlackCall[] = [];
+  /**
+   * The thread's "is thinking…" line. Kept apart from `calls` (it isn't part of
+   * any message); `after` is how many `calls` came before it.
+   */
+  const statuses: Array<{ token: string; args: Record<string, unknown>; after: number }> = [];
   let nextTs = 1;
   const notHere = async (): Promise<never> => {
     throw new Error('the router must not call this Slack method');
@@ -188,8 +193,11 @@ function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
     async stopStream(token, a) {
       record('stopStream', token, { ...a });
     },
+    async setThreadStatus(token, a) {
+      statuses.push({ token, args: { ...a }, after: calls.length });
+    },
   };
-  return { api, calls };
+  return { api, calls, statuses };
 }
 
 // ── The world ───────────────────────────────────────────────────────────────
@@ -474,14 +482,9 @@ describe('createEventRouter: a DM from the owner', () => {
       threadTs: TS,
       recipientUserId: ALICE,
       recipientTeamId: TEAM_ID,
-      // The Working card opens every reply (see 'Working from the start').
-      chunks: [{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }, { type: 'markdown_text', text: 'Hello' }],
+      chunks: [{ type: 'markdown_text', text: 'Hello' }],
     });
-    expect(w.slack.calls[2]!.args).toEqual({
-      channel: DM_ALICE,
-      ts: start.ts,
-      chunks: [{ type: 'task_update', id: 'status', title: 'Working', status: 'complete' }],
-    });
+    expect(w.slack.calls[2]!.args).toEqual({ channel: DM_ALICE, ts: start.ts });
     expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
     // A turn that ends on its own is never interrupted.
     expect(w.interrupts).toEqual([]);
@@ -681,9 +684,7 @@ describe('createEventRouter: turns in one thread', () => {
     ]);
     // Replies never interleave: the first stream stops before the second starts.
     const streamCalls = w.slack.calls.filter((c) => c.method !== 'usersInfo');
-    const firstText = (c: (typeof streamCalls)[number]) =>
-      chunksOf(c).flatMap((k) => (k.type === 'markdown_text' ? [k.text] : []))[0];
-    expect(streamCalls.map((c) => [c.method, firstText(c)])).toEqual([
+    expect(streamCalls.map((c) => [c.method, (chunksOf(c)[0] as { text?: string } | undefined)?.text])).toEqual([
       ['startStream', 'one'],
       ['stopStream', undefined],
       ['startStream', 'two'],
@@ -830,9 +831,7 @@ describe('createEventRouter: turns that fail', () => {
     w.scripts.push({ hang: true });
     await w.dispatch(INSTALL, dm());
     await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS - 1);
-    // Only the Working card so far, carried into a new message at 9 minutes.
-    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'startStream']);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('');
+    expect(methods(w.slack.calls)).toEqual(['usersInfo']);
     expect(w.interrupts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60_000);
@@ -948,8 +947,7 @@ describe('createEventRouter: turns that fail', () => {
     await vi.advanceTimersByTimeAsync(STREAM_MAX_AGE_MS);
     later.release();
     await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
-    // The new message opens with the Working card; the rest of the text is appended to it.
-    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'startStream', 'appendStream', 'stopStream']);
+    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'startStream', 'stopStream']);
     const starts = w.slack.calls.filter((c) => c.method === 'startStream');
     expect(starts.map((c) => c.args['threadTs'])).toEqual([TS, TS]);
     expect(starts[0]!.ts).not.toBe(starts[1]!.ts);
@@ -1305,32 +1303,29 @@ describe('createEventRouter: text on either side of other work', () => {
   });
 });
 
-// ── Working from the start ──────────────────────────────────────────────────
+// ── Thinking from the start ─────────────────────────────────────────────────
 
-describe('createEventRouter: the owner sees Working before the agent says anything', () => {
-  // Walk on kind (2026-11-13): a cold start left the DM blank for seconds. The
-  // reply opens with the Working card as soon as the turn starts.
-  it('a turn that has not said anything yet shows the Working card after one flush interval', async () => {
-    vi.useFakeTimers();
+describe('createEventRouter: the owner sees the thinking line before the agent says anything', () => {
+  // Walk on kind (2026-11-13): a cold start left the DM blank for seconds.
+  // Slack's own "is thinking…" line covers the wait and clears itself when the
+  // reply arrives, so the reply carries no leftover card.
+  it('the thread gets the thinking line as soon as the turn starts, and the reply is unchanged', async () => {
     const w = world();
-    w.scripts.push({ hang: true });
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Hello' }], end: 'turn-end' });
     await w.dispatch(INSTALL, dm());
-    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
-    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream']);
-    expect(w.slack.calls[1]!.args).toMatchObject({
-      channel: DM_ALICE,
-      threadTs: TS,
-      chunks: [{ type: 'task_update', id: 'status', title: COPY.statusDefault, status: 'in_progress' }],
-    });
+    await w.idle();
+    expect(w.slack.statuses).toEqual([
+      { token: BOT_TOKEN, args: { channel: DM_ALICE, threadTs: TS, status: COPY.thinkingStatus }, after: 1 },
+    ]);
+    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream']);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Hello');
   });
 
-  it('a refused sender gets no card: silence stays silence', async () => {
-    vi.useFakeTimers();
+  it('a refused sender gets no thinking line: silence stays silence', async () => {
     const w = world();
-    w.scripts.push({ hang: true });
     await w.dispatch(INSTALL, dm({ user: 'U0STRANGER' }));
-    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS * 3);
-    expect(methods(w.slack.calls).filter((m) => m !== 'usersInfo')).toEqual([]);
+    await w.idle();
+    expect(w.slack.statuses).toEqual([]);
     expect(w.invokes).toEqual([]);
   });
 });

@@ -26,4 +26,6 @@ export const COPY = {
   emptyReply: "I didn't have anything to add.",
   artifactLink: (link: string) => `I made something you can open in the web app: [Open it](${link})`,
   statusDefault: 'Working',
+  /** Slack shows it after the bot's name: "ax is thinking…". */
+  thinkingStatus: 'is thinking…',
 } as const;

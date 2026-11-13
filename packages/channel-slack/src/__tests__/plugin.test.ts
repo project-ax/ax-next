@@ -583,20 +583,22 @@ describe('@ax/channel-slack plugin', () => {
     );
     expect(answer).toEqual({ status: 200, body: undefined, done: true });
 
-    // The reply goes out after the 200: admission, the turn, then the stream.
+    // The reply goes out after the 200: admission, the thinking line, the turn, then the stream.
     await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.stopStream'));
     expect(slack.calls.map((c) => [c.method, c.auth])).toEqual([
       ['users.info', `Bearer ${BOT_TOKEN}`],
+      ['assistant.threads.setStatus', `Bearer ${BOT_TOKEN}`],
       ['chat.startStream', `Bearer ${BOT_TOKEN}`],
       ['chat.stopStream', `Bearer ${BOT_TOKEN}`],
     ]);
     expect(slack.calls[0]!.body).toEqual({ user: ALICE });
-    expect(slack.calls[1]!.body).toEqual({
+    expect(slack.calls[1]!.body).toEqual({ channel_id: DM_CHANNEL, thread_ts: DM_TS, status: 'is thinking\u2026' });
+    expect(slack.calls[2]!.body).toEqual({
       channel: DM_CHANNEL,
       thread_ts: DM_TS,
       recipient_user_id: ALICE,
       recipient_team_id: TEAM_ID,
-      chunks: [{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }, { type: 'markdown_text', text: 'Hi Alice.' }],
+      chunks: [{ type: 'markdown_text', text: 'Hi Alice.' }],
     });
 
     expect(s.invokes).toHaveLength(1);

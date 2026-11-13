@@ -117,6 +117,10 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
     ],
     ['chat.appendStream', () => api.appendStream(BOT, { channel: 'D1', ts: '1.3', chunks: [] })],
     ['chat.stopStream', () => api.stopStream(BOT, { channel: 'D1', ts: '1.3' })],
+    [
+      'assistant.threads.setStatus',
+      () => api.setThreadStatus(BOT, { channel: 'D1', threadTs: '1.2', status: 'is thinking…' }),
+    ],
   ];
 }
 
@@ -174,7 +178,7 @@ describe('requests', () => {
       if (FORM_METHODS.includes(req.method)) {
         expect(type, req.method).toMatch(/^application\/x-www-form-urlencoded/);
       } else {
-        expect(req.method).toMatch(/^chat\./);
+        expect(req.method).toMatch(/^(chat\.|assistant\.threads\.setStatus$)/);
         expect(type, req.method).toMatch(/^application\/json/);
       }
       const auth = req.headers.get('authorization');
@@ -282,6 +286,17 @@ describe('requests', () => {
       ['chat.stopStream', { channel: 'D1', ts: '1.3', chunks: [done] }],
       ['chat.stopStream', { channel: 'D1', ts: '1.3' }],
     ]);
+  });
+
+  it("setThreadStatus sends Slack's own field names as JSON, with the bot token", async () => {
+    const slack = fakeSlack(() => okJson({}));
+    await createSlackApi({ fetchImpl: slack.fetchImpl }).setThreadStatus(BOT, {
+      channel: 'D1',
+      threadTs: '1.2',
+      status: 'is thinking…',
+    });
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/assistant.threads.setStatus');
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({ channel_id: 'D1', thread_ts: '1.2', status: 'is thinking…' });
   });
 
   it('postMessage always disables unfurling', async () => {

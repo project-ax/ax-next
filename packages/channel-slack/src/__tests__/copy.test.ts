@@ -25,6 +25,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'notMapped',
         'queueFull',
         'statusDefault',
+        'thinkingStatus',
         'turnFailed',
       ].sort(),
     );

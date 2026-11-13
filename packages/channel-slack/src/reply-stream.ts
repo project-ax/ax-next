@@ -25,7 +25,8 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     delta boundary, so model text never pings anyone (format.ts).
  *   - The status line is ONE `task_update` card (id `status`) per stream
  *     message, updated in place, `complete` (or `error`) when the message ends.
- *     `working()` shows it as Working before the agent has said anything.
+ *     `working()` asks Slack for its "is thinking…" line first (it leaves no
+ *     trace in the reply), and shows the card as Working only if Slack refuses.
  *   - The first flush with something to show starts the stream, later ones
  *     append, at most one call per FLUSH_INTERVAL_MS.
  *   - Slack caps a stream at 12,000 characters and 10 minutes. Before a flush
@@ -62,9 +63,10 @@ export interface ReplyStream {
   text(delta: string): void;
   status(title: string): void;
   /**
-   * Show the Working card now, before the agent says anything (a cold start
-   * can take seconds). It never replaces the agent's own status, and it isn't
-   * something to say: a reply that ends with only this card says emptyReply.
+   * Show that the agent is on it, before it says anything (a cold start can
+   * take seconds): Slack's "is thinking…" line, which Slack clears itself when
+   * the reply arrives. If Slack refuses that, the Working card instead. Neither
+   * replaces the agent's own status, nor counts as something to say.
    */
   working(): void;
   /** The turn made an artifact or a visual: the reply ends with a link to the agent. */
@@ -133,7 +135,7 @@ interface Batch {
   overflow: boolean;
 }
 
-type Stage = 'start' | 'append' | 'stop' | 'post';
+type Stage = 'start' | 'append' | 'stop' | 'post' | 'status';
 
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
@@ -425,10 +427,23 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     },
 
     working() {
-      if (finished || title !== null) return;
-      title = COPY.statusDefault;
-      pending.push({ kind: 'status' });
-      armFlush();
+      if (finished) return;
+      void enqueue(async () => {
+        try {
+          await d.api.setThreadStatus(d.botToken, {
+            channel: d.target.channel,
+            threadTs: d.target.threadTs,
+            status: COPY.thinkingStatus,
+          });
+        } catch (err) {
+          log('status', err);
+          // No thinking line: the Working card covers the wait instead.
+          if (finished || title !== null) return;
+          title = COPY.statusDefault;
+          pending.push({ kind: 'status' });
+          armFlush();
+        }
+      });
     },
 
     artifact() {
