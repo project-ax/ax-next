@@ -3133,22 +3133,42 @@ export function createOrchestrator(
     // incremental scheduler would run its final pass for the conversation
     // (dropping the running turn's idle timer), @ax/agent-activity would
     // clear the agent's "right now", @ax/conversations would save an error
-    // card into the thread, @ax/usage-limits would charge a turn that never
-    // ran, and our own chat:end subscriber, finding no waiter for this reqId,
-    // would end the session's oldest one (the running turn) when this ctx
-    // carries the live session's id.
+    // card into the thread, @ax/usage-limits would bill the assumed cost of a
+    // turn that never ran, and our own chat:end subscriber, finding no waiter
+    // for this reqId, would end the session's oldest one (the running turn)
+    // when this ctx carries the live session's id.
     //
     // So the returned outcome is the ONLY signal, and only a caller that reads
     // it may reach this. channel-web dispatches fire-and-forget and waits on
     // chat:turn-error, but its turns are always the default mode, so it never
-    // meets a session of another mode. A channel that mixes modes in one
-    // conversation serializes its turns or tries again later.
+    // meets a session of another mode.
     //
-    // Residuals, both reachable only by such a channel: the user's message
-    // was already saved to the display log (persistUserDisplayTurn, above)
-    // and stays there unanswered; and chat:start already ran, so
-    // @ax/agent-activity holds this reqId on the agent's line until the
-    // session's chat:end, and @ax/usage-limits admitted it (never charged).
+    // It is not free. By this line the refused turn has already cost three
+    // things, all reachable only by a channel that mixes modes in one
+    // conversation:
+    //  1. A turn of usage. chat:start ran, and @ax/usage-limits' admission
+    //     counted it in the user's hourly `turns` bucket, which the per-hour
+    //     turn limit reads. (Its assumed cost is never billed: no chat:end.)
+    //  2. An unanswered message. persistUserDisplayTurn (above) saved it to
+    //     the thread's display log, and nothing will answer it. A retry saves
+    //     it again.
+    //  3. The running turn's activity line. @ax/agent-activity's chat:start
+    //     replaced the agent's "right now" (start time, trigger, current
+    //     tool) with this turn's, and this reqId never gets a turn-end, so the
+    //     line reads Working until the session's chat:end, an idle window
+    //     after the running turn finishes.
+    // Deciding "busy" before chat:start would avoid all three, but it needs
+    // the conversation's live session, so the lookup (conversations:get +
+    // session:is-alive) would have to run ahead of the gates. A second,
+    // earlier lookup can be overtaken (a turn of another mode starts between
+    // it and this routing), so this refusal and its costs would stay for that
+    // race. Moving the one lookup there instead makes every routed turn act on
+    // an alive/busy answer that is older by chat:start, agents:resolve and the
+    // save. Neither is worth it before a mixed-mode channel exists.
+    //
+    // TASK-1094, the first caller that can reach this, must serialize its
+    // turns per conversation, and on conversation:busy tell the room the agent
+    // is busy and back off. Never a hot retry: each one pays all three again.
     if (busyInOtherMode) {
       return { kind: 'terminated', reason: 'conversation:busy' };
     }
