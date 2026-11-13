@@ -148,10 +148,17 @@ export async function admitSender(
 }
 
 /**
- * Our Slack client's codes for "Slack, or the way to it, was briefly not
- * there": rate limited, timed out, unreachable, or a 5xx (slack-api.ts).
+ * "Slack, or the way to it, was briefly not there". Two sources:
+ *
+ *   - our client's own codes (slack-api.ts): rate limited, timed out,
+ *     unreachable, or a 5xx;
+ *   - Slack's own `ok: false` codes for a problem on its side, which arrive on
+ *     an HTTP 200 as plain codes (`internal_error`, `fatal_error`,
+ *     `service_unavailable`, `request_timeout`). Slack documents each as
+ *     transient on every Web API method, so a retry is the right advice.
  */
-const TEMPORARY_LOOKUP_CODE = /^(?:ratelimited|timeout|network|http-5\d\d)$/;
+const TEMPORARY_LOOKUP_CODE =
+  /^(?:ratelimited|timeout|network|http-5\d\d|internal_error|fatal_error|service_unavailable|request_timeout)$/;
 
 /**
  * A users.info failure that says nothing about the sender, only that Slack was

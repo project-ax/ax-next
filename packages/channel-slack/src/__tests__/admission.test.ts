@@ -313,6 +313,16 @@ describe('isTemporaryLookupFailure', () => {
     },
   );
 
+  // Slack's own `ok: false` codes for "we had a problem, not you" — documented
+  // as transient on every Web API method. They arrive as plain codes on an
+  // HTTP 200, so the http-5xx row above never sees them.
+  it.each(['internal_error', 'fatal_error', 'service_unavailable', 'request_timeout'])(
+    "a users.info %s is Slack's own transient failure: temporary",
+    (code) => {
+      expect(isTemporaryLookupFailure({ ok: false, reason: 'lookup-failed', code })).toBe(true);
+    },
+  );
+
   // About the install or the account (a retry won't fix it), or an answer we couldn't trust.
   it.each([
     'token_revoked',
@@ -330,6 +340,8 @@ describe('isTemporaryLookupFailure', () => {
     'http-50',
     'http-5000',
     'xhttp-503',
+    'internal_errors',
+    'not_internal_error',
   ])('a users.info %s is not temporary', (code) => {
     expect(isTemporaryLookupFailure({ ok: false, reason: 'lookup-failed', code })).toBe(false);
   });
