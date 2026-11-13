@@ -51,17 +51,21 @@ export type ResumeFailure =
   /** We knew what to send and the POST refused it. */
   | 'send-failed'
   /**
-   * TASK-1093 — the POST was refused because the conversation takes its
-   * messages somewhere else (a Slack DM thread). Its own reason, because the
+   * TASK-1093 — the POST was refused because the conversation is a Slack DM
+   * thread, which takes its messages in Slack. Its own reason, because the
    * advice differs: messaging the agent HERE is refused too, so the row says
-   * to reply where the conversation lives.
+   * to reply in Slack. ONLY a Slack thread: the route refuses a routine's
+   * conversation the same way, but there is nowhere for the person to go and
+   * reply to a routine run, so that refusal stays `send-failed` and keeps its
+   * sentence.
    */
   | 'read-only';
 
 /**
  * What a grant's `onGranted` reports back to its row: `true` the agent picked
  * up again; `false` it did not, and a message to it here will; `'reply-elsewhere'`
- * it did not, and its conversation takes messages only where it lives.
+ * it did not, and its conversation is a Slack thread that takes messages only
+ * in Slack.
  */
 export type GrantResume = boolean | 'reply-elsewhere';
 
@@ -129,9 +133,11 @@ export async function resumeParkedTurn(target: {
 }): Promise<ResumeResult> {
   const { agentId, conversationId } = target;
   let text: string | null;
+  let origin: string | null | undefined;
   try {
     const detail = await workspaceApi.agent(agentId, conversationId);
     text = lastUserText(detail.thread);
+    origin = detail.origin;
   } catch (e) {
     // The operator's half. The reader's half is the row's sentence.
     console.warn('[workspace] could not read the turn to resume', e);
@@ -147,6 +153,9 @@ export async function resumeParkedTurn(target: {
     return { resumed: true, reqId, conversationId: landed, text };
   } catch (e) {
     console.warn('[workspace] could not re-send the turn to resume', e);
-    return { resumed: false, reason: e instanceof ConversationReadOnlyError ? 'read-only' : 'send-failed' };
+    // Read-only AND Slack. The detail we just read names the origin; a routine
+    // or an unnamed origin keeps the plain refused-send sentence.
+    const inSlack = e instanceof ConversationReadOnlyError && origin === 'slack';
+    return { resumed: false, reason: inSlack ? 'read-only' : 'send-failed' };
   }
 }

@@ -187,14 +187,18 @@ describe('every way it can fail to resume', () => {
   });
 
   /*
-    TASK-1093 — a conversation that takes its messages somewhere else (a Slack
-    DM thread) refuses a re-send from here. That is not a failure the person
-    can fix by messaging the agent HERE, so it is its own reason: the row says
-    to reply where the conversation lives.
+    TASK-1093 — a conversation that takes its messages somewhere else refuses a
+    re-send from here. Only a SLACK thread gets its own reason: the row then
+    says to reply in Slack. A routine's conversation is refused by the same
+    route, but "reply to it in Slack" would be wrong
+    there, so it keeps the plain refused-send reason and its sentence.
   */
-  it('reports a conversation that takes its messages elsewhere as read-only', async () => {
+  it('reports a refused re-send on a Slack thread as read-only', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread));
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue({
+      ...detail(askedThread),
+      origin: 'slack',
+    });
     vi.spyOn(workspaceApi, 'sendMessage').mockRejectedValue(
       new ConversationReadOnlyError('/api/chat/messages'),
     );
@@ -203,4 +207,22 @@ describe('every way it can fail to resume', () => {
       resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
     ).resolves.toEqual({ resumed: false, reason: 'read-only' });
   });
+
+  it.each([['routine'], [null], [undefined]])(
+    'reports a read-only refusal on a non-Slack conversation (origin %s) as a refused send',
+    async (origin) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(workspaceApi, 'agent').mockResolvedValue({
+        ...detail(askedThread),
+        origin,
+      });
+      vi.spyOn(workspaceApi, 'sendMessage').mockRejectedValue(
+        new ConversationReadOnlyError('/api/chat/messages'),
+      );
+
+      await expect(
+        resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
+      ).resolves.toEqual({ resumed: false, reason: 'send-failed' });
+    },
+  );
 });

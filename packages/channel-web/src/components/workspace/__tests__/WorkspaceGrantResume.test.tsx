@@ -299,30 +299,6 @@ describe('a grant answered in the thread', () => {
     expect(toastSpy).not.toHaveBeenCalled();
   });
 
-  /*
-    TASK-1093 — the conversation the grant was raised on takes its messages
-    somewhere else (a Slack DM thread), so the re-send is refused as read-only.
-    "Send it a message" would point them at a composer that refuses them too;
-    the row says to reply where the conversation lives instead.
-  */
-  it('says to reply where the conversation lives when it takes no messages from here', async () => {
-    await stopATurn(linearSkill());
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
-
-    connect();
-
-    expect(await screen.findByText(GRANT_NOT_RESUMED_ELSEWHERE)).toBeInTheDocument();
-    expect(screen.queryByText(GRANT_NOT_RESUMED)).toBeNull();
-    expect(GRANT_NOT_RESUMED_ELSEWHERE).toMatch(/Slack/);
-    expect(GRANT_NOT_RESUMED_ELSEWHERE).not.toMatch(/send it a message/);
-    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
-    await waitFor(() =>
-      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
-    );
-  });
-
   it('says so, and keeps the row, when it cannot start the agent again', async () => {
     await stopATurn(linearSkill());
 
@@ -420,5 +396,53 @@ describe('a grant answered on Today, for an agent nobody is looking at', () => {
       from several agents and "your agent" would not say which one started.
     */
     expect(toastSpy).toHaveBeenCalledWith({ title: grantResumedTitle('Scout') });
+  });
+
+  /*
+    TASK-1093 — the send route refuses every conversation that did not start
+    here, Slack threads and routine runs alike. Only a Slack thread is
+    somewhere the person can go and reply, so only a Slack thread gets the
+    "reply to it in Slack" sentence. A routine's grant,
+    answered here on Today, keeps the plain could-not-start-it sentence it had
+    before the Slack copy existed.
+  */
+  async function answerTodayGrantOn(origin: string): Promise<void> {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) => ({
+      ...detailFor(SCOUT, conversationId ?? 'cnv-2', threads['cnv-2'] ?? []),
+      origin,
+    }));
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-2', agentId: 'a-scout', request: linearSkill() },
+      ],
+    });
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+
+    renderAt('/workspace');
+    await screen.findByTestId('grant-skill:linear');
+    connect();
+  }
+
+  it('says to reply in Slack when the grant was raised in a Slack thread', async () => {
+    await answerTodayGrantOn('slack');
+
+    expect(await screen.findByText(GRANT_NOT_RESUMED_ELSEWHERE)).toBeInTheDocument();
+    expect(screen.queryByText(GRANT_NOT_RESUMED)).toBeNull();
+    expect(GRANT_NOT_RESUMED_ELSEWHERE).toMatch(/Slack/);
+    expect(GRANT_NOT_RESUMED_ELSEWHERE).not.toMatch(/send it a message/);
+    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
+    await waitFor(() =>
+      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
+    );
+  });
+
+  it('keeps the plain sentence when the grant was raised in a routine run', async () => {
+    await answerTodayGrantOn('routine');
+
+    expect(await screen.findByText(GRANT_NOT_RESUMED)).toBeInTheDocument();
+    expect(screen.queryByText(GRANT_NOT_RESUMED_ELSEWHERE)).toBeNull();
+    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
   });
 });
