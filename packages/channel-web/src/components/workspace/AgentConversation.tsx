@@ -510,6 +510,14 @@ export function AgentConversation({
   const fieldRef = useRef<HTMLInputElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const stopClicked = useRef(false);
+  /*
+    TASK-1093 — a read-only (Slack) thread has no field: Stop rides in the
+    "reply in Slack" note and is simply removed when the turn ends, dropping
+    focus on <body>. There the next thing a person can do is start a New chat,
+    so focus goes to that button, or to the note itself when there is none.
+  */
+  const noteRef = useRef<HTMLDivElement>(null);
+  const noteNewChatRef = useRef<HTMLButtonElement>(null);
   // A layout effect, not a passive one (TASK-790): the field takes focus in
   // the same commit that turns Stop back into Send, so there is no tick where
   // focus sits on the button or <body> and a fast typist's key goes nowhere.
@@ -517,9 +525,9 @@ export function AgentConversation({
     if (busy || !stopClicked.current) return;
     stopClicked.current = false;
     const at = document.activeElement;
-    if (at === null || at === document.body || at === actionRef.current) {
-      fieldRef.current?.focus();
-    }
+    if (at !== null && at !== document.body && at !== actionRef.current) return;
+    if (fieldRef.current !== null) fieldRef.current.focus();
+    else (noteNewChatRef.current ?? noteRef.current)?.focus();
   }, [busy]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -853,7 +861,23 @@ export function AgentConversation({
           took away a control that worked.
         */
         <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
-          <Alert role="note" className="max-w-[720px]">
+          <Alert
+            ref={noteRef}
+            role="note"
+            tabIndex={-1}
+            className={cn("max-w-[720px]", RESOLUTION_FOCUS_RING)}
+          >
+            {/*
+              The composer announcer's twin, for the composer's Stop that lives
+              here now: in the DOM for as long as the note is, so "Stopping."
+              and "Stopped." are changes to a live region rather than a region
+              inserted with its text (the announcement screen readers drop).
+              Scoped to the note, so it never doubles the composer's — the two
+              are never on screen together.
+            */}
+            <span className="sr-only" role="status" aria-live="polite">
+              {stopping ? 'Stopping.' : stoppedShown ? 'Stopped.' : ''}
+            </span>
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
               <span>{readOnlyNote}</span>
               <span className="flex gap-2">
@@ -863,14 +887,23 @@ export function AgentConversation({
                     size="sm"
                     variant="outline"
                     disabled={stopping}
-                    onClick={() => onStop()}
+                    onClick={() => {
+                      stopClicked.current = true;
+                      onStop();
+                    }}
                   >
                     <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
                     {stopping ? 'Stopping' : 'Stop'}
                   </Button>
                 )}
                 {onNewChat !== undefined && (
-                  <Button type="button" size="sm" variant="outline" onClick={() => onNewChat()}>
+                  <Button
+                    ref={noteNewChatRef}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onNewChat()}
+                  >
                     <Plus aria-hidden="true" data-icon="inline-start" />
                     New chat
                   </Button>
