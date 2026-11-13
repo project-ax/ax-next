@@ -355,7 +355,8 @@ describe('AgentConversation — Stop inside the read-only note', () => {
   });
 
   it('moves focus to the note itself when there is no New chat to land on', () => {
-    const props = slackProps({ busy: true, onNewChat: undefined });
+    const props = slackProps({ busy: true });
+    delete props.onNewChat;
     const { rerender } = render(<AgentConversation {...props} />);
     const stop = within(slackNote()).getByRole('button', { name: 'Stop' });
     stop.focus();

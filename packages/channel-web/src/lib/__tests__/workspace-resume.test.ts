@@ -208,13 +208,14 @@ describe('every way it can fail to resume', () => {
     ).resolves.toEqual({ resumed: false, reason: 'read-only' });
   });
 
-  it.each([['routine'], [null], [undefined]])(
+  // `undefined`: an older host that names no origin at all.
+  it.each<[string | null | undefined]>([['routine'], [null], [undefined]])(
     'reports a read-only refusal on a non-Slack conversation (origin %s) as a refused send',
     async (origin) => {
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       vi.spyOn(workspaceApi, 'agent').mockResolvedValue({
         ...detail(askedThread),
-        origin,
+        ...(origin === undefined ? {} : { origin }),
       });
       vi.spyOn(workspaceApi, 'sendMessage').mockRejectedValue(
         new ConversationReadOnlyError('/api/chat/messages'),
