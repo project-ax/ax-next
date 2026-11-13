@@ -84,9 +84,10 @@ export interface OnboardingRouteHandlerDeps {
 function isValidEmail(s: string): boolean {
   // Parsed by hand, not with `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`: that pattern
   // backtracks polynomially on input like `!@!.!.!.…` (CodeQL
-  // js/polynomial-redos), and this runs on an unauthenticated route. The
-  // rules are the same: one `@`, something before it, and a domain with a dot
-  // that has something on both sides. 254 is the longest address SMTP allows.
+  // js/polynomial-redos), and this runs before any user exists (only the
+  // bootstrap cookie gates it). The rules are the same: one `@`, something
+  // before it, and a domain with a dot that has something on both sides. 254
+  // is the longest address SMTP allows.
   if (s.length > 254 || !/^[\x21-\x7E]+$/.test(s)) return false;
   const at = s.indexOf('@');
   if (at <= 0 || at !== s.lastIndexOf('@')) return false;
