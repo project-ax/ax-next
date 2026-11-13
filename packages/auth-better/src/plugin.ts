@@ -619,7 +619,20 @@ async function findUserByEmail(
     .limit(2)
     .execute();
   const row = rows[0];
-  if (row === undefined) return null;
+  if (row === undefined) {
+    // On a miss only, one more parameterized lookup with the same match and no
+    // verified rule, so an operator can tell "not verified yet" (e.g. the
+    // wizard admin before a Google sign-in) from "no account". Code-only line:
+    // never the address, never its domain. The caller still gets plain null.
+    const unverified = await db
+      .selectFrom('auth_better_v1_users')
+      .select('id')
+      .where(emailEqualsAsciiFold(email))
+      .limit(1)
+      .executeTakeFirst();
+    if (unverified !== undefined) ctx.logger.info('auth_find_user_by_email_unverified_only');
+    return null;
+  }
   if (rows.length > 1) {
     // Never pick one: that could hand one person's agent to another. Code-only
     // line, never the address. (The query stops at two.)
@@ -640,9 +653,12 @@ async function findUserByEmail(
     .where('kind', '=', 'google')
     .executeTakeFirst();
   const allowed = parseDomains(google?.allowed_domains);
-  return isDomainAllowed(email, allowed) && isDomainAllowed(row.email, allowed)
-    ? { userId: row.id }
-    : null;
+  if (!isDomainAllowed(email, allowed) || !isDomainAllowed(row.email, allowed)) {
+    // A verified account matched, on a domain the list excludes. Code-only.
+    ctx.logger.info('auth_find_user_by_email_off_domain');
+    return null;
+  }
+  return { userId: row.id };
 }
 
 /**

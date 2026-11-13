@@ -384,6 +384,43 @@ describe('auth:find-user-by-email contract', () => {
     expect(lines.join('\n')).not.toMatch(/\berin\b|canopyworks/i);
   });
 
+  it('a miss on the domain or the verified rule logs a code-only reason, never the address', async () => {
+    // So an operator can tell "not verified yet" from "wrong domain" when a
+    // Slack user isn't recognized. The caller still only ever sees null.
+    harness = await bootHarness();
+    await seed([ALICE, CAROL, { id: 'usr_frank', email: 'frank@canopyworks.com', verified: false }]);
+    const lines: string[] = [];
+    const ctx = harness.ctx({
+      logger: createLogger({ reqId: 'find-user-test', writer: (line) => lines.push(line) }),
+    });
+    /** Look `email` up, check the result, and return [level, msg] of each reason it logged. */
+    const reasons = async (email: string, want: FindUserByEmailOutput): Promise<string[][]> => {
+      const from = lines.length;
+      expect(await find(email, ctx), email).toEqual(want);
+      return lines
+        .slice(from)
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((e) => String(e['msg']).startsWith('auth_find_user_by_email_'))
+        .map((e) => [String(e['level']), String(e['msg'])]);
+    };
+
+    // A verified account matched, but its domain isn't on the list.
+    expect(await reasons('carol@gmail.com', null)).toEqual([
+      ['info', 'auth_find_user_by_email_off_domain'],
+    ]);
+    // Only an unverified account holds the address (in any ASCII case).
+    expect(await reasons('FRANK@canopyworks.com', null)).toEqual([
+      ['info', 'auth_find_user_by_email_unverified_only'],
+    ]);
+    // No account at all, and a hit: no reason either way.
+    expect(await reasons('zed@canopyworks.com', null)).toEqual([]);
+    expect(await reasons('alice@canopyworks.com', { userId: 'usr_alice' })).toEqual([]);
+
+    // Code-only: no field of any line carries any part of an address.
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.join('\n')).not.toMatch(/carol|gmail|frank|\bzed\b|alice|canopyworks/i);
+  });
+
   it('rejects a malformed request without echoing it', async () => {
     harness = await bootHarness();
     const h = harness;
