@@ -178,6 +178,13 @@ describe('only auth-better and channel-slack name auth:find-user-by-email or sla
     expect(files.some((f) => f.startsWith('presets/'))).toBe(true);
   });
 
+  it('every allowlisted file exists, so a renamed one cannot leave a stale hole', () => {
+    for (const rule of Object.values(RULES)) {
+      for (const f of rule.files.keys()) expect(files, f).toContain(f);
+      for (const reason of rule.files.values()) expect(reason.length).toBeGreaterThan(0);
+    }
+  });
+
   it('sees the real owners — the detector works on real code, not only on the fixtures', () => {
     // Positive control: channel-slack IS the legitimate home of both names.
     // If these go quiet, the scan above is vacuous.

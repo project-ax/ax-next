@@ -132,7 +132,8 @@ const PLUGINS_TO_DROP = new Set<string>([
   // TASK-1093: not on this canary's path. Every call it makes is satisfied
   // here (the kept postgres + credentials, the stub control plane), so it
   // would boot and add its six routes to `mountedRoutes`. It boots for real in
-  // the memory canary and prod-bootstrap.test.ts.
+  // the memory canary and prod-bootstrap.test.ts, and its DM path end to end
+  // in channel-slack-composition.test.ts.
   '@ax/channel-slack',
   // Re-added below with an injected clock (manifest asserted identical).
   DISK_QUOTA_PLUGIN,

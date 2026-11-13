@@ -231,7 +231,8 @@ const PLUGINS_TO_DROP = new Set<string>([
   // so leaving it in would fail the kernel's verifyCalls. Not on a chat path.
   // It boots for real over HTTP in the memory canary
   // (presets/memory/src/__tests__/canary.test.ts) and against the shared
-  // database in prod-bootstrap.test.ts.
+  // database in prod-bootstrap.test.ts. Its DM path runs end to end against
+  // real agents, conversations and vault in channel-slack-composition.test.ts.
   '@ax/channel-slack',
 ]);
 
