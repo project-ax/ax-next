@@ -142,7 +142,8 @@ export function decideIdentity(
   //    their own. This runs before the domain list, which never turns an admin
   //    away. The cost: someone whose provider email changed since they linked
   //    it (a renamed Google account, a new GitHub primary email) is refused
-  //    until it matches again or an admin updates the account's email.
+  //    until it matches again, or until the operator changes the account's
+  //    email after confirming it's them (deploy/GKE.md 4i: there's no UI).
   if (attempt.action !== 'create-user') {
     if (local === undefined) return 'account_not_linkable';
     if (!sameEmail(email, local.email)) return 'email_mismatch';

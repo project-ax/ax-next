@@ -1255,13 +1255,219 @@ a password) and `live_sessions` (sessions that haven't expired yet).
   incident: **stop and ask a developer.** Since the deploy, a link like that
   only signs in while its provider vouches for the account's own email. That
   also means someone whose provider email changed since they linked it is
-  turned away until the two match again.
+  turned away until the two match again, or until you change the account's
+  email ([4i](#4i-change-an-accounts-email-sign-in-recovery)).
 - **`== 6. Counts`.** The numbers to record on the card: `outside_domain`,
   `with_password`, `taken_over` (the `LINKED AFTER PASSWORD` rows),
   `unverified`, `id_token_sign_in` and `to_confirm` (the section 5 rows).
 
 If sections 1–5 are empty, there's nothing to do. Otherwise, change no data
 without a developer. When you're done, delete `audit-output.txt`.
+
+---
+
+### 4i. Change an account's email (sign-in recovery)
+
+Since TASK-1116, nobody signs in to an account unless Google or GitHub vouches
+for that account's own email. So someone whose address changed at their
+provider since they first signed in (a renamed Google account, or a new
+primary email on GitHub) gets "This account can't sign in here. Ask your admin
+for help." The host log has a `sign-in refused` line with
+`"code":"email_mismatch"` from the time they tried. There's no screen for
+fixing that. This step is the way back: it sets the account's email to the
+address their provider vouches for now.
+
+The script changes the email on one account, inside one transaction, and
+prints the account before and after the change. It touches nothing else: not
+the account's sign-in methods, not its sessions. Its output names a person,
+so keep it out of tickets and chat.
+
+**This changes who can sign in to the account.** Afterwards, whoever holds the
+new address at Google or GitHub can sign in as this person and see everything
+the account can see. Whoever holds the old address can't. Change it for the
+wrong person, or to the wrong address, and you've handed someone's account to
+a stranger. So before you run anything:
+
+1. **Confirm it's really them, through a channel you already trust.** Talk to
+   them in person or on a video call, or message them somewhere you already
+   know is them. Not by email to the new address, and not on the strength of a
+   message that only says it's them. Ask what address their Google or GitHub
+   account shows now, and write it down exactly.
+2. **Check the new address can sign in here.** For a member (not an admin), it
+   has to be inside that provider's allowed domains (4h, section 0 shows
+   them). And it has to be all lowercase plain ASCII. The sign-in compares
+   nothing else, so the script refuses anything else.
+
+**Every `kubectl` command names its context**, as in 4f to 4h. Set it once,
+check, then copy-paste:
+
+```bash
+KCTX=<your GKE context>        # kubectl config get-contexts
+NS=ax-next
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
+```
+
+#### Step 1: load the script and the two addresses
+
+Work from the repo root of a checkout that has the script: the TASK-1116
+branch until it merges, `main` after. `OLD_EMAIL` is the account's email
+exactly as it's stored, capitals included (4h prints it that way). `NEW_EMAIL`
+is the address you confirmed with the person, in lowercase.
+
+```bash
+OLD_EMAIL='<the account email now>'
+NEW_EMAIL='<the confirmed new address>'
+git log -1 --oneline -- packages/auth-better/sql/change-account-email.sql   # must print a commit
+kubectl --context "$KCTX" create configmap change-account-email -n "$NS" \
+  --from-file=change.sql=packages/auth-better/sql/change-account-email.sql \
+  --from-literal=old_email="$OLD_EMAIL" --from-literal=new_email="$NEW_EMAIL"
+```
+
+`AlreadyExists` means an earlier try left one behind. Delete it (the last
+command in Step 4) and create it again, so the pods read these two addresses.
+
+#### Step 2: dry run
+
+This changes nothing: the script makes the change inside a transaction, shows
+it, then rolls it back. The pod reads the database URL from the existing
+`ax-next-db` Secret, as in 4g and 4h, and the two addresses from the
+ConfigMap, so nobody edits the YAML below.
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: change-account-email-check
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: change
+      configMap: { name: change-account-email }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: change, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+        - name: OLD_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: old_email } }
+        - name: NEW_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: new_email } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v old_email="$OLD_EMAIL" -v new_email="$NEW_EMAIL" -f /sql/change.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/change-account-email-check -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod change-account-email-check -n "$NS"
+kubectl --context "$KCTX" logs change-account-email-check -n "$NS"
+kubectl --context "$KCTX" delete pod change-account-email-check -n "$NS"
+```
+
+Read the log before you go on:
+
+- `== The account now` shows exactly one account, and it's the person you
+  talked to: their name, the old address, the sign-in methods you'd expect.
+- Then `UPDATE 1`, then `== The account after the change` with the new
+  address and nothing else different.
+- It ends with `Dry run: nothing was changed. Run again with -v apply=1 to change it.`
+  and then `ROLLBACK`.
+
+If it has a line starting `Stopped:` instead, nothing was changed, the pod
+ends `Failed`, and the wait times out and prints the pod's `describe` output:
+
+- `Stopped: no account has exactly that email. Nothing was changed.` The old
+  address isn't spelled the way the account stores it. Copy it from the 4h
+  output, capitals included, and start again from Step 1.
+- `Stopped: the new email must be all lowercase plain ASCII with one @. Nothing was changed.`
+  Write the new address in lowercase and start again from Step 1. If it really
+  has a character beyond plain ASCII (an accented letter, say), this person
+  can't sign in here at all: the sign-in refuses such addresses.
+- `Stopped: another account already has that email. Nothing was changed. Ask a developer.`
+  Usually the person already signed in with the new address, and that made a
+  second, separate account (for a setup admin, one without admin rights).
+  Which account to keep, and what to move, is a developer's call. Stop here.
+
+**On kind**, the host image has psql and the database is in the cluster, so
+pipe the file in directly. This is the dry run; add `-v apply=1` to change it:
+
+```bash
+KCTX=kind-ax-next-dev
+kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-next -d ax-next -X -v ON_ERROR_STOP=1 -v old_email=old@example.com -v new_email=new@example.com -f - < packages/auth-better/sql/change-account-email.sql
+```
+
+#### Step 3: change it
+
+This is the Step 2 pod with two changes: it's named
+`change-account-email-apply`, and its psql line adds `-v apply=1`. It's written
+out in full so nobody edits YAML by hand against prod.
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: change-account-email-apply
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: change
+      configMap: { name: change-account-email }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: change, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+        - name: OLD_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: old_email } }
+        - name: NEW_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: new_email } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v apply=1 -v old_email="$OLD_EMAIL" -v new_email="$NEW_EMAIL" -f /sql/change.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/change-account-email-apply -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod change-account-email-apply -n "$NS"
+kubectl --context "$KCTX" logs change-account-email-apply -n "$NS"
+kubectl --context "$KCTX" delete pod change-account-email-apply -n "$NS"
+```
+
+It worked only if the wait printed `pod/change-account-email-apply condition met`
+and the log has `UPDATE 1` and ends with `COMMIT`. If anything failed before
+the commit, the database rolled the whole change back, and nothing was
+written.
+
+#### Step 4: verify and clean up
+
+- Ask the person to sign in. They should land in their own account, with
+  their agents and conversations. If they're turned away again, the newest
+  `sign-in refused` line in the host log says why:
+
+```bash
+kubectl --context "$KCTX" logs deploy/ax-next-host -n "$NS" --since=1h | grep 'sign-in refused'
+```
+
+- Delete the ConfigMap, which holds both addresses:
+
+```bash
+kubectl --context "$KCTX" delete configmap change-account-email -n "$NS"
+```
+
+To undo, run this step again with the two addresses swapped, after the same
+check with the person.
 
 ---
 
