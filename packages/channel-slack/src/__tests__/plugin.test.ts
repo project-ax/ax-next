@@ -55,6 +55,10 @@ interface Services {
   invokes?: Array<{ ctx: AgentContext; input: unknown }>;
   /** The booted bus, so the fake orchestrator can fire the turn's events. */
   bus?: HookBus;
+  /** When set, every agent:invoke waits for it before its turn says anything. */
+  invokeGate?: Promise<void>;
+  /** How many conversations:find-or-create calls arrived: the last step before a turn is queued. */
+  found?: number;
 }
 
 const newServices = (): Services => ({ routes: [], vault: new Map(), credentialSets: 0, credentialGets: [], invokes: [] });
@@ -111,13 +115,17 @@ function fakeServices(s: Services) {
             ]
           : [],
     }),
-    'conversations:find-or-create': async (_ctx: unknown, input: unknown) => ({
-      conversation: { conversationId: `conv:${(input as { externalKey: string }).externalKey}` },
-      created: true,
-    }),
+    'conversations:find-or-create': async (_ctx: unknown, input: unknown) => {
+      s.found = (s.found ?? 0) + 1;
+      return {
+        conversation: { conversationId: `conv:${(input as { externalKey: string }).externalKey}` },
+        created: true,
+      };
+    },
     // A turn that streams one line and ends, on the booted bus, for its own reqId.
     'agent:invoke': async (ctx: AgentContext, input: unknown) => {
       s.invokes?.push({ ctx, input });
+      if (s.invokeGate !== undefined) await s.invokeGate;
       const bus = s.bus;
       if (bus !== undefined) {
         await bus.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Hi Alice.' });
@@ -355,6 +363,27 @@ function eventBody(type = 'message', text?: string): Buffer {
   );
 }
 
+/** A second DM in the first one's thread (DM_TS), with its own event id. */
+function threadReplyBody(eventId: string, ts: string, text: string): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      type: 'event_callback',
+      team_id: TEAM_ID,
+      api_app_id: APP_ID,
+      event_id: eventId,
+      event: { type: 'message', user: ALICE, channel: DM_CHANNEL, channel_type: 'im', ts, thread_ts: DM_TS, text },
+    }),
+  );
+}
+
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 /** Log lines the plugin's own logger writes (it writes JSON lines to stdout). */
 function captureLogs(): Array<Record<string, unknown>> {
   const lines: Array<Record<string, unknown>> = [];
@@ -549,6 +578,63 @@ describe('@ax/channel-slack plugin', () => {
     expect(input).toEqual({ message: { role: 'user', content: `[Slack \u00b7 DM \u00b7 Alice (${ALICE})]: Hello there` } });
     // Nothing went wrong, and nothing from the event was logged.
     expect(logs.filter((l) => String(l['msg']).startsWith('slack_'))).toEqual([]);
+  });
+
+  /**
+   * Two DMs in one thread, the first turn held at agent:invoke: the second is
+   * queued behind it. Resolves once the second has reached the queue.
+   */
+  async function oneRunningOneWaiting() {
+    const slack = fakeSlackFetch();
+    const b = await boot({ fetchImpl: slack.fetchImpl });
+    const { s, call } = b;
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const gate = deferred();
+    s.invokeGate = gate.promise;
+    const post = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+      );
+    expect((await post(eventBody('message', 'first'))).status).toBe(200);
+    expect((await post(threadReplyBody('Ev07ABCDEF13', '1763035201.000200', 'second'))).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(s.invokes).toHaveLength(1);
+      expect(s.found).toBe(2);
+    });
+    // The second dispatch queues its turn right after find-or-create answers.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return { ...b, slack, gate };
+  }
+
+  it('a turn still waiting at shutdown is dropped, and the log says whose and how many', async () => {
+    const { s, plugin, gate } = await oneRunningOneWaiting();
+    const logs = captureLogs();
+    await plugin.shutdown?.();
+    expect(logs.filter((l) => l['msg'] === 'slack_turns_dropped')).toEqual([
+      expect.objectContaining({ level: 'warn', installId: INSTALL_ID, reason: 'shutting-down', count: 1 }),
+    ]);
+    gate.release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(s.invokes).toHaveLength(1);
+  });
+
+  it('a turn still waiting when the admin disconnects never reaches the agent', async () => {
+    const { s, call, gate } = await oneRunningOneWaiting();
+    const logs = captureLogs();
+    const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
+    expect(off.status).toBe(200);
+    expect(await installCount()).toBe(0);
+
+    gate.release();
+    await vi.waitFor(() => expect(logs.some((l) => l['msg'] === 'slack_turns_dropped')).toBe(true));
+    expect(s.invokes).toHaveLength(1);
+    expect(logs.filter((l) => l['msg'] === 'slack_turns_dropped')).toEqual([
+      expect.objectContaining({ level: 'info', installId: INSTALL_ID, reason: 'disconnected', count: 1 }),
+    ]);
   });
 
   it('a bad signature is refused with 401 and nothing is dispatched', async () => {

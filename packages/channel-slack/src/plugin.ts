@@ -201,6 +201,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
               logger,
               clock: systemClock,
               secrets,
+              installs: store,
               queue,
             }),
             logger,
@@ -223,9 +224,18 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
-        // Undone first: turns not yet started are dropped. Running ones are
+        // Undone first: turns not yet started are dropped, and each install's
+        // count is logged (those senders never get a reply). Running ones are
         // left to finish (or be cut short by the exit); nothing awaits them.
-        undos.push(() => queue.close());
+        undos.push(() => {
+          for (const { group, count } of queue.close()) {
+            try {
+              logger.warn('slack_turns_dropped', { installId: group, reason: 'shutting-down', count });
+            } catch {
+              // A log line never stops the shutdown.
+            }
+          }
+        });
       } catch (err) {
         unwind(undos);
         lifetime = undefined;

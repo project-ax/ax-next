@@ -15,7 +15,7 @@ import { createEventRouter } from '../router.js';
 import type { SecretName } from '../secrets.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
-import { createKeyedQueue } from '../turn-queue.js';
+import { createKeyedQueue, type KeyedQueue } from '../turn-queue.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 
@@ -211,6 +211,8 @@ function world(o: {
   findUserFails?: boolean;
   listFails?: boolean;
   findOrCreateFails?: boolean;
+  /** The install store fails when a queued turn re-reads its install. */
+  installReadFails?: boolean;
   logger?: Logger;
 } = {}) {
   const bus = new HookBus();
@@ -282,14 +284,24 @@ function world(o: {
   subscribeTurnEvents(bus, registry, '@ax/channel-slack/dm-turns');
   const inner = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
   const jobs: Array<Promise<void>> = [];
-  const queue = {
-    enqueue: (key: string, job: () => Promise<void>) =>
-      inner.enqueue(key, () => {
+  const queue: KeyedQueue = {
+    enqueue: (key, group, job) =>
+      inner.enqueue(key, group, () => {
         const p = job();
         jobs.push(p);
         return p;
       }),
     close: () => inner.close(),
+  };
+  /** The install rows, as the store would answer a re-read. `disconnect()` removes ours. */
+  const installRows = new Map<string, InstallRow>([[INSTALL_ID, INSTALL]]);
+  const installs = {
+    async get(installId: string): Promise<InstallRow | null> {
+      if (o.installReadFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: alice@canopyworks.com' });
+      }
+      return installRows.get(installId) ?? null;
+    },
   };
   const secretReads: SecretName[] = [];
   const secrets = {
@@ -308,6 +320,7 @@ function world(o: {
     logger,
     clock: systemClock,
     secrets,
+    installs,
     queue,
   });
 
@@ -321,7 +334,12 @@ function world(o: {
     }
   }
 
-  return { bus, dispatch, scripts, invokes, findUser, listed, conversations, slack, lines, secretReads, idle, jobs };
+  /** What Disconnect (or a reset) leaves behind: no install row. */
+  const disconnect = (): void => {
+    installRows.delete(INSTALL_ID);
+  };
+
+  return { bus, dispatch, scripts, invokes, findUser, listed, conversations, slack, lines, secretReads, idle, jobs, disconnect };
 }
 
 function envelope(event: Partial<SlackInnerEvent> & { type: string }, ext = false): SlackEnvelope {
@@ -619,6 +637,43 @@ describe('createEventRouter: turns in one thread', () => {
     first.release();
     await w.idle();
     expect(w.invokes.map(contentOf)).toEqual([0, 1, 2].map((i) => `[Slack · DM · Alice Smith (${ALICE})]: message ${i}`));
+  });
+
+  it('a turn still waiting when its install is disconnected never reaches the agent', async () => {
+    const w = world();
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'two' }], end: 'turn-end' });
+    await w.dispatch(INSTALL, dm({ text: 'first' }));
+    await w.dispatch(INSTALL, dm({ ts: '1763035201.000200', threadTs: TS, text: 'second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(1);
+
+    // The admin disconnects while the first turn runs and the second waits.
+    w.disconnect();
+    first.release();
+    await w.idle();
+
+    // The running turn finishes; the waiting one never starts, and says so in the log.
+    expect(w.invokes.map(contentOf)).toEqual([`[Slack · DM · Alice Smith (${ALICE})]: first`]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('one');
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'disconnected', count: 1 } },
+    ]);
+  });
+
+  it("a queued turn whose install can't be read tells the sender, logged by code only, and never reaches the agent", async () => {
+    const w = world({ installReadFails: true });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(w.invokes).toEqual([]);
+    expect(w.slack.calls.filter((c) => c.method === 'postMessage').map((c) => c.args)).toEqual([
+      { channel: DM_ALICE, threadTs: TS, markdownText: COPY.turnFailed },
+    ]);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_event_failed', fields: { installId: INSTALL_ID, stage: 'install', code: 'store-unavailable' } },
+    ]);
+    expect(JSON.stringify(w.lines)).not.toContain('alice@');
   });
 });
 

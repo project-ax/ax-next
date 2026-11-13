@@ -24,8 +24,8 @@ describe('createKeyedQueue', () => {
     const log: string[] = [];
     const a = gatedJob(log, 'a');
     const b = gatedJob(log, 'b');
-    expect(q.enqueue('conv-1', a.job)).toBe('queued');
-    expect(q.enqueue('conv-1', b.job)).toBe('queued');
+    expect(q.enqueue('conv-1', 'inst-a', a.job)).toBe('queued');
+    expect(q.enqueue('conv-1', 'inst-a', b.job)).toBe('queued');
     await settle();
     expect(log).toEqual(['start a']);
     a.release();
@@ -41,8 +41,8 @@ describe('createKeyedQueue', () => {
     const log: string[] = [];
     const a = gatedJob(log, 'a');
     const b = gatedJob(log, 'b');
-    q.enqueue('conv-1', a.job);
-    q.enqueue('conv-2', b.job);
+    q.enqueue('conv-1', 'inst-a', a.job);
+    q.enqueue('conv-2', 'inst-b', b.job);
     await settle();
     expect(log).toEqual(['start a', 'start b']);
     b.release();
@@ -55,15 +55,15 @@ describe('createKeyedQueue', () => {
     const q = createKeyedQueue({ maxPerKey: 3 });
     const log: string[] = [];
     const jobs = ['a', 'b', 'c', 'd'].map((n) => gatedJob(log, n));
-    expect(jobs.map((j) => q.enqueue('conv-1', j.job))).toEqual(['queued', 'queued', 'queued', 'full']);
+    expect(jobs.map((j) => q.enqueue('conv-1', 'inst-a', j.job))).toEqual(['queued', 'queued', 'queued', 'full']);
     // Another conversation is not affected.
-    expect(q.enqueue('conv-2', gatedJob(log, 'other').job)).toBe('queued');
+    expect(q.enqueue('conv-2', 'inst-b', gatedJob(log, 'other').job)).toBe('queued');
     await settle();
     // Once the running one ends there is room for one more.
     jobs[0]!.release();
     await settle();
-    expect(q.enqueue('conv-1', gatedJob(log, 'e').job)).toBe('queued');
-    expect(q.enqueue('conv-1', gatedJob(log, 'f').job)).toBe('full');
+    expect(q.enqueue('conv-1', 'inst-a', gatedJob(log, 'e').job)).toBe('queued');
+    expect(q.enqueue('conv-1', 'inst-a', gatedJob(log, 'f').job)).toBe('full');
     expect(log).not.toContain('start d');
   });
 
@@ -72,33 +72,55 @@ describe('createKeyedQueue', () => {
     const log: string[] = [];
     const a = gatedJob(log, 'a');
     const b = gatedJob(log, 'b');
-    q.enqueue('conv-1', a.job);
-    q.enqueue('conv-1', b.job);
+    q.enqueue('conv-1', 'inst-a', a.job);
+    q.enqueue('conv-1', 'inst-a', b.job);
     await settle();
-    q.close();
-    expect(q.enqueue('conv-1', gatedJob(log, 'c').job)).toBe('closed');
+    // Says what it dropped, so the caller can log it: never silently.
+    expect(q.close()).toEqual([{ group: 'inst-a', count: 1 }]);
+    expect(q.enqueue('conv-1', 'inst-a', gatedJob(log, 'c').job)).toBe('closed');
     a.release();
     b.release();
     await settle();
     expect(log).toEqual(['start a', 'end a']);
+    // Nothing is left to drop the second time.
+    expect(q.close()).toEqual([]);
+  });
+
+  it("close counts each group's dropped jobs across its lanes, and leaves out a group with none waiting", async () => {
+    const q = createKeyedQueue({ maxPerKey: 3 });
+    const log: string[] = [];
+    // inst-a: two conversations, each running one and holding waiting ones.
+    for (const n of ['a1', 'a2', 'a3']) q.enqueue('conv-1', 'inst-a', gatedJob(log, n).job);
+    for (const n of ['a4', 'a5']) q.enqueue('conv-2', 'inst-a', gatedJob(log, n).job);
+    // inst-b: one running, none waiting.
+    q.enqueue('conv-3', 'inst-b', gatedJob(log, 'b1').job);
+    // inst-c: one running, one waiting.
+    for (const n of ['c1', 'c2']) q.enqueue('conv-4', 'inst-c', gatedJob(log, n).job);
+    await settle();
+    expect(log).toEqual(['start a1', 'start a4', 'start b1', 'start c1']);
+    const dropped = q.close();
+    expect([...dropped].sort((x, y) => x.group.localeCompare(y.group))).toEqual([
+      { group: 'inst-a', count: 3 },
+      { group: 'inst-c', count: 1 },
+    ]);
   });
 
   it('a job that throws or rejects does not stop the next one', async () => {
     const q = createKeyedQueue({ maxPerKey: 3 });
     const log: string[] = [];
-    q.enqueue('conv-1', () => {
+    q.enqueue('conv-1', 'inst-a', () => {
       throw new Error('sync throw');
     });
-    q.enqueue('conv-1', async () => {
+    q.enqueue('conv-1', 'inst-a', async () => {
       throw new Error('async reject');
     });
-    q.enqueue('conv-1', async () => {
+    q.enqueue('conv-1', 'inst-a', async () => {
       log.push('third ran');
     });
     await settle();
     expect(log).toEqual(['third ran']);
     // The key is free again: three more fit.
-    const more = ['x', 'y', 'z'].map((n) => q.enqueue('conv-1', gatedJob(log, n).job));
+    const more = ['x', 'y', 'z'].map((n) => q.enqueue('conv-1', 'inst-a', gatedJob(log, n).job));
     expect(more).toEqual(['queued', 'queued', 'queued']);
   });
 

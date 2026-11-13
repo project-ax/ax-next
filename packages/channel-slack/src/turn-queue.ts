@@ -9,23 +9,41 @@
  *   - `maxPerKey` counts the running job plus those waiting. One more is
  *     refused (`full`) and never runs: the sender is told to send it again.
  *   - `close()` drops every job that hasn't started and refuses new ones
- *     (`closed`). A running job is left to finish; nothing awaits it.
+ *     (`closed`). It returns how many it dropped for each job's `group` (the
+ *     install), so the caller can say so: nothing is dropped silently. A
+ *     running job is left to finish; nothing awaits it.
  *   - A job that throws or rejects is the job's own business (each one
  *     reports its failures itself); the next one still runs.
+ *
+ * A job that has waited may find the world changed (its install disconnected):
+ * checking that is the job's own first step (router.ts), because only the job
+ * knows what "still wanted" means.
  *
  * In memory: the chart pins one host replica (a stated residual).
  */
 
 export type EnqueueResult = 'queued' | 'full' | 'closed';
 
+/** Jobs `close()` dropped for one group. Groups with none dropped are left out. */
+export interface DroppedJobs {
+  group: string;
+  count: number;
+}
+
 export interface KeyedQueue {
-  enqueue(key: string, job: () => Promise<void>): EnqueueResult;
-  close(): void;
+  /** `group` is who the job is for (channel-slack: the install), for `close()`'s count. */
+  enqueue(key: string, group: string, job: () => Promise<void>): EnqueueResult;
+  close(): DroppedJobs[];
+}
+
+interface Waiting {
+  group: string;
+  job: () => Promise<void>;
 }
 
 interface Lane {
   running: boolean;
-  waiting: Array<() => Promise<void>>;
+  waiting: Waiting[];
 }
 
 export function createKeyedQueue(o: { maxPerKey: number }): KeyedQueue {
@@ -38,8 +56,8 @@ export function createKeyedQueue(o: { maxPerKey: number }): KeyedQueue {
 
   /** Start the lane's next job, or forget the lane when there is none. */
   function next(key: string, lane: Lane): void {
-    const job = closed ? undefined : lane.waiting.shift();
-    if (job === undefined) {
+    const waiting = closed ? undefined : lane.waiting.shift();
+    if (waiting === undefined) {
       lane.running = false;
       lanes.delete(key);
       return;
@@ -47,7 +65,7 @@ export function createKeyedQueue(o: { maxPerKey: number }): KeyedQueue {
     lane.running = true;
     void (async () => {
       try {
-        await job();
+        await waiting.job();
       } catch {
         // The job logs and answers its own failures.
       }
@@ -56,7 +74,7 @@ export function createKeyedQueue(o: { maxPerKey: number }): KeyedQueue {
   }
 
   return {
-    enqueue(key, job) {
+    enqueue(key, group, job) {
       if (closed) return 'closed';
       let lane = lanes.get(key);
       if (lane === undefined) {
@@ -64,14 +82,19 @@ export function createKeyedQueue(o: { maxPerKey: number }): KeyedQueue {
         lanes.set(key, lane);
       }
       if ((lane.running ? 1 : 0) + lane.waiting.length >= maxPerKey) return 'full';
-      lane.waiting.push(job);
+      lane.waiting.push({ group, job });
       if (!lane.running) next(key, lane);
       return 'queued';
     },
 
     close() {
       closed = true;
-      for (const lane of lanes.values()) lane.waiting.length = 0;
+      const dropped = new Map<string, number>();
+      for (const lane of lanes.values()) {
+        for (const { group } of lane.waiting) dropped.set(group, (dropped.get(group) ?? 0) + 1);
+        lane.waiting.length = 0;
+      }
+      return [...dropped].map(([group, count]) => ({ group, count }));
     },
   };
 }

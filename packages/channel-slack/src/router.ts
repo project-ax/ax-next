@@ -5,7 +5,7 @@ import { pickPersonalAgent, runDmTurn, type DmTurnDeps } from './dm-turn.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
-import type { InstallRow } from './store.js';
+import type { InstallRow, InstallStore } from './store.js';
 import type { KeyedQueue } from './turn-queue.js';
 
 /**
@@ -24,6 +24,9 @@ import type { KeyedQueue } from './turn-queue.js';
  *      (`slack:<installId>:<channel>:<thread_ts>`, origin `'slack'`).
  *   7. The turn is queued behind any other in its conversation; the fourth
  *      waiting gets "send it again after I reply".
+ *   8. When the turn's time comes, the install is read again: one that was
+ *      disconnected (or reset) while the turn waited is dropped, logged as
+ *      `slack_turns_dropped`, and its agent never runs.
  *
  * The dispatch resolves once the turn is queued: a turn can outlast the
  * ingress's shutdown drain, and isn't awaited (decisions: running DM turns
@@ -34,6 +37,8 @@ import type { KeyedQueue } from './turn-queue.js';
 
 export interface RouterDeps extends DmTurnDeps {
   secrets: Pick<SecretStore, 'get'>;
+  /** Read again when a queued turn starts: Disconnect may have removed the install meanwhile. */
+  installs: Pick<InstallStore, 'get'>;
   queue: KeyedQueue;
 }
 
@@ -90,7 +95,7 @@ export function createEventRouter(d: RouterDeps): EventDispatcher {
 
 async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope): Promise<void> {
   const installId = install.installId;
-  const log = (level: 'info' | 'warn' | 'error', msg: string, fields: Record<string, string> = {}): void => {
+  const log = (level: 'info' | 'warn' | 'error', msg: string, fields: Record<string, string | number> = {}): void => {
     try {
       d.logger[level](msg, { installId, ...fields });
     } catch {
@@ -216,8 +221,22 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
 
   const mapped = userId;
   const chosen = agentId;
-  const queued = d.queue.enqueue(conversationId, () =>
-    runDmTurn(d, {
+  const queued = d.queue.enqueue(conversationId, installId, async () => {
+    // A turn can wait minutes behind another. If the admin disconnected the
+    // install meanwhile (or a reset removed it), its agent must not run: the
+    // workspace was let go, and the reply would have nowhere to go.
+    let current: InstallRow | null;
+    try {
+      current = await d.installs.get(installId);
+    } catch (err) {
+      await failed('install', err);
+      return;
+    }
+    if (current?.status !== 'active') {
+      log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
+      return;
+    }
+    await runDmTurn(d, {
       install,
       botToken: token,
       channel: screened.channel,
@@ -228,8 +247,8 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
       agentId: chosen,
       conversationId,
       text: screened.text,
-    }),
-  );
+    });
+  });
   if (queued === 'full') {
     await say(COPY.queueFull);
   } else if (queued === 'closed') {
