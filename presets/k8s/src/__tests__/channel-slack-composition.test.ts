@@ -247,6 +247,8 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
     case 'chat.stopStream':
     case 'chat.postMessage':
     case 'chat.postEphemeral':
+    case 'reactions.add':
+    case 'reactions.remove':
       answer = { ok: true };
       break;
     default:
@@ -354,13 +356,29 @@ function dm(from: SlackPerson, channel: string, ts: string, text: string): Recor
 }
 
 /** The Slack calls made after `from`, once one of them is `method`. */
-async function slackCallsUntil(from: number, method: string): Promise<SlackCall[]> {
+async function slackCallsUntil(from: number, ...methods: string[]): Promise<SlackCall[]> {
   await vi.waitFor(
-    () => expect(slackCalls.slice(from).map((c) => c.method)).toContain(method),
+    () => expect(slackCalls.slice(from).map((c) => c.method)).toEqual(expect.arrayContaining(methods)),
     { timeout: 10_000 },
   );
   return slackCalls.slice(from);
 }
+
+/**
+ * A DM turn's calls: its reply, and 👀 on and off the owner's message. 👀 runs
+ * on a queue of its own, so it is waited for too (else its removal lands in
+ * the next step's calls), and only its order against the reply's start is fixed.
+ */
+async function dmTurnCalls(from: number): Promise<SlackCall[]> {
+  const calls = await slackCallsUntil(from, 'chat.stopStream', 'reactions.remove');
+  const methods = calls.map((c) => c.method);
+  expect(methods.filter((m) => !m.startsWith('reactions.'))).toEqual(['users.info', 'chat.startStream', 'chat.stopStream']);
+  expect(methods.filter((m) => m.startsWith('reactions.'))).toEqual(['reactions.add', 'reactions.remove']);
+  expect(methods.indexOf('reactions.remove')).toBeGreaterThan(methods.indexOf('chat.startStream'));
+  return calls;
+}
+
+const callOf = (calls: SlackCall[], method: string): SlackCall => calls.find((c) => c.method === method)!;
 
 // ── The test ────────────────────────────────────────────────────────────────
 
@@ -519,10 +537,11 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const aliceTs = nextTs();
     let mark = slackCalls.length;
     expect((await deliver(installId, dm(ALICE, 'D07ALICEDM1', aliceTs, 'What is on today?'))).status).toBe(200);
-    let calls = await slackCallsUntil(mark, 'chat.stopStream');
-    expect(calls.map((c) => c.method)).toEqual(['users.info', 'chat.startStream', 'chat.stopStream']);
+    let calls = await dmTurnCalls(mark);
     for (const c of calls) expect(c.auth).toBe(`Bearer ${BOT_TOKEN}`);
-    expect(calls[1]!.body).toEqual({
+    // 👀 on Alice's own message while her agent works.
+    expect(callOf(calls, 'reactions.add').body).toEqual({ channel: 'D07ALICEDM1', timestamp: aliceTs, name: 'eyes' });
+    expect(callOf(calls, 'chat.startStream').body).toEqual({
       channel: 'D07ALICEDM1',
       thread_ts: aliceTs,
       recipient_user_id: ALICE.slackId,
@@ -558,7 +577,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       (await deliver(installId, { ...dm(ALICE, 'D07ALICEDM1', nextTs(), 'And tomorrow?'), thread_ts: aliceTs }))
         .status,
     ).toBe(200);
-    await slackCallsUntil(mark, 'chat.stopStream');
+    await dmTurnCalls(mark);
     expect(invokes).toHaveLength(2);
     expect(invokes[1]!.ctx.conversationId).toBe(aliceConversation);
 
@@ -566,8 +585,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const bobTs = nextTs();
     mark = slackCalls.length;
     expect((await deliver(installId, dm(BOB, 'D07BOBDM001', bobTs, 'Hi'))).status).toBe(200);
-    calls = await slackCallsUntil(mark, 'chat.stopStream');
-    expect(calls[1]!.body).toMatchObject({
+    calls = await dmTurnCalls(mark);
+    expect(callOf(calls, 'chat.startStream').body).toMatchObject({
       channel: 'D07BOBDM001',
       thread_ts: bobTs,
       recipient_user_id: BOB.slackId,
