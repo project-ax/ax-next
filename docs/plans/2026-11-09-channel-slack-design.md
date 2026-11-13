@@ -315,10 +315,11 @@ approvals; `audience` says who sees the reply and decides memory.
 `auth:find-user-by-email`: `{ email } → { userId } | null` (TASK-1092).
 Attended channel turns (§2) and personal-agent DMs need it.
 
-- **Rules:** the match is case-insensitive and otherwise exact. Only verified
-  accounts count, and only on an approved domain (a blank list means any
-  domain). Accounts that differ only in case match nobody. `null` never says
-  why.
+- **Rules:** the match is ASCII case-insensitive and otherwise exact, and an
+  address with any non-ASCII character matches nobody (no Unicode lookalikes).
+  Only verified accounts count, and only on an approved domain (a blank list
+  means any domain). Accounts that differ only in case match nobody. `null`
+  never says why.
 - **Alternate implementation:** an OIDC or SCIM directory.
 - **Leaky field names:** none.
 - **Risk:** it can be used to check whether someone has an AX account. Keep it

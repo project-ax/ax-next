@@ -8,7 +8,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 import { z } from 'zod';
 // Type-only import from `@ax/http-server` — we never import a runtime value
 // from a peer plugin (Invariant I2 — no cross-plugin imports). TypeScript's
@@ -65,6 +65,10 @@ const AUTH_ROUTE = '/auth/*';
 const MAX_DISPLAY_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 320;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+$/;
+
+// `auth:find-user-by-email` matches printable ASCII only (0x21-0x7e: no space,
+// no control byte, nothing outside ASCII). Anything else finds nobody.
+const PRINTABLE_ASCII_RE = /^[\x21-\x7e]+$/;
 
 // `auth:find-user-by-email` returns the id and nothing else. `.strict()` makes
 // a future edit that returns more (the email, the admin flag) fail loudly as
@@ -595,16 +599,22 @@ async function findUserByEmail(
     });
   }
 
-  // lower() on both sides, compared with `=`. Never LIKE/ILIKE: they read `%`
-  // and `_` as wildcards. No trimming. The UNIQUE on email is case-sensitive
-  // and auth:create-bootstrap-user stores the address as typed, so two rows
-  // can differ only in case; we fetch at most two to tell that apart. The
-  // verified rule is part of the match itself, so an unverified row is never
-  // returned and never counts toward ambiguity.
+  // Printable ASCII only, checked before any query: nothing outside ASCII can
+  // be folded onto an ASCII address, and no byte the database would reject
+  // reaches it.
+  if (!PRINTABLE_ASCII_RE.test(email)) return null;
+
+  // ASCII case-insensitive, otherwise exact: emailEqualsAsciiFold folds A-Z
+  // and nothing else, on both sides, compared with `=`. Never LIKE/ILIKE: they
+  // read `%` and `_` as wildcards. No trimming. The UNIQUE on email is
+  // case-sensitive and auth:create-bootstrap-user stores the address as typed,
+  // so two rows can differ only in case; we fetch at most two to tell that
+  // apart. The verified rule is part of the match itself, so an unverified row
+  // is never returned and never counts toward ambiguity.
   const rows = await db
     .selectFrom('auth_better_v1_users')
     .select(['id', 'email'])
-    .where((eb) => eb(eb.fn('lower', ['email']), '=', eb.fn('lower', [eb.val(email)])))
+    .where(emailEqualsAsciiFold(email))
     .where('email_verified', '=', true)
     .limit(2)
     .execute();
@@ -620,15 +630,29 @@ async function findUserByEmail(
   // Approved domains = the Google provider's list, the one sign-in enforces,
   // read now (never a cached copy) and WHETHER OR NOT the provider is enabled:
   // turning Google sign-in off must not widen who is found. No row or a blank
-  // list means any domain, as at sign-in. The STORED verified email is checked.
+  // list means any domain, as at sign-in. Both the input's domain and the
+  // STORED verified email's are checked: after the ASCII-only match they are
+  // the same domain up to case, and checking both keeps this rule from
+  // resting on the match alone.
   const google = await db
     .selectFrom('auth_providers')
     .select('allowed_domains')
     .where('kind', '=', 'google')
     .executeTakeFirst();
-  return isDomainAllowed(row.email, parseDomains(google?.allowed_domains))
+  const allowed = parseDomains(google?.allowed_domains);
+  return isDomainAllowed(email, allowed) && isDomainAllowed(row.email, allowed)
     ? { userId: row.id }
     : null;
+}
+
+/**
+ * `email` equals `input` up to ASCII case. Under COLLATE "C", lower() folds
+ * A-Z and nothing else. Plain lower() follows the database locale, which folds
+ * lookalikes onto ASCII (U+0130 dotted capital I to 'i', U+212A Kelvin sign to
+ * 'k'), so 'al\u0130ce@…' would find alice. `input` is a bound parameter.
+ */
+function emailEqualsAsciiFold(input: string): RawBuilder<boolean> {
+  return sql<boolean>`lower(${sql.ref('email')} COLLATE "C") = lower(${input} COLLATE "C")`;
 }
 
 async function createBootstrapUser(

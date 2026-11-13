@@ -28,9 +28,9 @@ import type {
 // The hook maps an email that an identity provider verified (Slack, for
 // @ax/channel-slack) to the AX account that owns it. Returning the wrong
 // person's id hands one person's agent to another, so every rule fails closed:
-// case-insensitive but otherwise exact, verified accounts only, approved
-// sign-in domains only, and two verified case variants match nobody. It
-// returns only the id.
+// ASCII case-insensitive but otherwise exact (printable ASCII only), verified
+// accounts only, approved sign-in domains only, and two verified case variants
+// match nobody. It returns only the id.
 //
 // We exercise the BUS surface, as bootstrap-user.test.ts does. Rows are
 // seeded AFTER boot: the hook reads the tables at call time, and init's
@@ -265,10 +265,10 @@ describe('auth:find-user-by-email contract', () => {
     expect(await find('dave@eng.canopyworks.com')).toBeNull();
   });
 
-  it('no wildcard, prefix or substring match', async () => {
+  it('no wildcard, prefix, substring or Unicode lookalike match', async () => {
     harness = await bootHarness();
     // No Google row, so any domain is approved: only the match rules decide.
-    await seed([ALICE], null);
+    await seed([ALICE, CAROL], null);
 
     for (const probe of [
       '%',
@@ -279,11 +279,51 @@ describe('auth:find-user-by-email contract', () => {
       'alice@canopyworks.com.evil.org',
       ' alice@canopyworks.com',
       'alice@canopyworks.com ',
+      // Lookalikes a locale-aware lower() folds onto ASCII: U+0130 (dotted
+      // capital I) to 'i', U+212A (Kelvin sign) to 'k'. Only A-Z may fold.
+      'al\u0130ce@canopyworks.com',
+      'alice@canopywor\u212As.com',
+      'carol@gma\u0130l.com',
+      // Fullwidth 'a' (U+FF41): no Unicode normalization either.
+      '\uFF41lice@canopyworks.com',
+      // Refused before any query, so a NUL byte is a miss, not a database error.
+      'alice\u0000@canopyworks.com',
     ]) {
-      expect(await find(probe), `probe ${JSON.stringify(probe)}`).toBeNull();
+      // Soft, so a failure lists every probe that matched (or threw), not the first.
+      expect
+        .soft(
+          await find(probe).catch((e: unknown) => e),
+          `probe ${JSON.stringify(probe)}`,
+        )
+        .toBeNull();
     }
-    // The control: the exact address is found under the same setup.
+    // The controls: the exact addresses are found under the same setup.
     expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+    expect(await find('carol@gmail.com')).toEqual({ userId: 'usr_carol' });
+  });
+
+  it('a stored lookalike never matches a plain ASCII address', async () => {
+    // The other direction. The input is plain ASCII and passes the input
+    // check, so only the ASCII-only fold on the stored side keeps these rows
+    // from answering for alice and mallory.
+    harness = await bootHarness();
+    await seed([
+      { id: 'usr_lookalike', email: 'al\u0130ce@canopyworks.com', verified: true },
+      { id: 'usr_kelvin', email: 'mallory@canopywor\u212As.com', verified: true },
+    ]);
+
+    expect(await find('alice@canopyworks.com')).toBeNull();
+    expect(await find('mallory@canopyworks.com')).toBeNull();
+  });
+
+  it('an address with a character outside printable ASCII is never found, even stored exactly', async () => {
+    // Fails closed. An ASCII-only fold can't say which non-ASCII addresses are
+    // "the same", so the hook answers none of them, and it answers before any
+    // query. A verified account with such an email can't be mapped by this hook.
+    harness = await bootHarness();
+    await seed([{ id: 'usr_jose', email: 'jos\u00E9@canopyworks.com', verified: true }]);
+
+    expect(await find('jos\u00E9@canopyworks.com')).toBeNull();
   });
 
   it.each([

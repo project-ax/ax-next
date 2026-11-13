@@ -82,13 +82,15 @@ export type GetUserOutput = User | null;
  * wrong person's id would hand one person's agent to another:
  *
  *   - Host-internal only. Never an HTTP route or an IPC action.
- *   - The match is case-insensitive and otherwise exact: no wildcard, prefix
- *     or substring match, and no trimming.
+ *   - The match is ASCII case-insensitive (only A-Z fold to a-z) and otherwise
+ *     exact: no wildcard, prefix or substring match, no Unicode case folding
+ *     or normalization, and no trimming. An address with any character
+ *     outside printable ASCII is never found.
  *   - Verified accounts only. An account whose email no provider has verified
  *     is never found.
- *   - Approved sign-in domains only: the account's email must be on a domain
- *     sign-in accepts. When no domains are configured (blank), any domain is
- *     approved, the same as sign-in.
+ *   - Approved sign-in domains only: the given address and the account's
+ *     email must both be on a domain sign-in accepts. When no domains are
+ *     configured (blank), any domain is approved, the same as sign-in.
  *   - `null` for no match, for more than one match (accounts that differ only
  *     in case), or for any failed rule. `null` never says which rule failed.
  *   - Returns only the id: no email, name or admin flag.
