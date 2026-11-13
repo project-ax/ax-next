@@ -9173,30 +9173,28 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       await Promise.all([retiring, concurrent]);
     });
 
-    // The refused turn never started, so it reports nothing to the
-    // conversation: the caller gets the outcome and that is all. Every
-    // subscriber to chat:end / chat:turn-error keys off the conversation, the
-    // agent or the session, not the request: @ax/memory's incremental
-    // scheduler runs its FINAL pass on a chat:end for the conversation (and
-    // drops the idle timer of the turn still running), @ax/agent-activity
-    // clears the agent's "right now" on either, @ax/conversations saves an
-    // error card into the thread on chat:turn-error, and the orchestrator's
-    // own chat:end subscriber resolves a waiter by session when the reqId has
-    // none. `memoryFinalPasses` stands in for the scheduler's trigger.
+    // The refused turn never ran, so it fires neither chat:end nor
+    // chat:turn-error: the caller gets the outcome and that is all. Every
+    // subscriber to those two keys off the conversation, the agent or the
+    // session, not the request: @ax/memory's incremental scheduler runs its
+    // FINAL pass on a chat:end for the conversation (and drops the idle timer
+    // of the turn still running), @ax/agent-activity clears the agent's
+    // "right now" on either, @ax/conversations saves an error card into the
+    // thread on chat:turn-error, and the orchestrator's own chat:end
+    // subscriber resolves a waiter by session when the reqId has none. So
+    // `ends` must stay empty: any chat:end would trigger one of those.
     function busyHarnessObservers(bus: HookBus) {
       const turnErrors: unknown[] = [];
       const ends: Array<{ reqId: string; payload: unknown }> = [];
-      const memoryFinalPasses: string[] = [];
       bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
         turnErrors.push(p);
         return undefined;
       });
       bus.subscribe('chat:end', 'obs', async (c, p: unknown) => {
         ends.push({ reqId: c.reqId, payload: p });
-        if (c.conversationId !== undefined) memoryFinalPasses.push(c.conversationId);
         return undefined;
       });
-      return { turnErrors, ends, memoryFinalPasses };
+      return { turnErrors, ends };
     }
 
     it.each([
@@ -9232,7 +9230,6 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         expect(outcome).toEqual({ kind: 'terminated', reason: 'conversation:busy' });
         expect(obs.turnErrors).toEqual([]);
         expect(obs.ends).toEqual([]);
-        expect(obs.memoryFinalPasses).toEqual([]);
         // Nothing queued, spawned or terminated.
         expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]);
         expect(counters.opens).toBe(1);
@@ -9244,7 +9241,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         fireTurnEnd(h.bus, 's-1', 'req-1');
         expect((await firstTurn).kind).toBe('complete');
         expect(obs.turnErrors).toEqual([]);
-        expect(obs.memoryFinalPasses).toEqual([]);
+        expect(obs.ends).toEqual([]);
       },
     );
 
