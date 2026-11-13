@@ -948,6 +948,32 @@ describe('chat-orchestrator', () => {
       expect(r.turnErrors).toEqual([{ reqId: 'r-ext-code', reason: 'connector-needs-reconnect' }]);
     });
 
+    // The filter's edges, mirroring @ax/routines' reject table: each of these
+    // could spell a host, path, sentence or second line, so it must collapse.
+    it.each([
+      ['a dotted host', 'x.example.com:443'],
+      ['a slash', 'private/path'],
+      ['a space', 'private words'],
+      ['an underscore', 'private_code'],
+      ['a second line', 'chat-run-timeout\nPRIVATE second line'],
+      ['a code one character too long', 'a'.repeat(65)],
+      ['nothing', ''],
+      ['capital letters', 'PRIVATE-CODE'],
+    ])('an external turn: %s becomes runner-error', async (name, reason) => {
+      const r = await runnerEnds(`edge-${name.replace(/\W+/g, '-')}`, 'external', reason);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: 'runner-error' });
+      expect(r.turnErrors.length).toBeGreaterThan(0);
+      for (const f of r.turnErrors) expect(f.reason).toBe('runner-error');
+    });
+
+    it('an external turn: a 64-character code is the longest that passes through', async () => {
+      const code = 'a'.repeat(64);
+      const r = await runnerEnds('edge-64', 'external', code);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: code });
+      expect(r.turnErrors.length).toBeGreaterThan(0);
+      for (const f of r.turnErrors) expect(f.reason).toBe(code);
+    });
+
     it("a user's turn keeps the raw reason", async () => {
       const r = await runnerEnds('user-raw', 'user', RAW);
       expect(r.outcome).toEqual({ kind: 'terminated', reason: RAW });
