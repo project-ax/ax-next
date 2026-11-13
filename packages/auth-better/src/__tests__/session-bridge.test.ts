@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { APIError } from 'better-auth';
-import { parseDomains, emailDomain, assertDomainAllowed } from '../session-bridge.js';
+import {
+  parseDomains,
+  emailDomain,
+  assertDomainAllowed,
+  isDomainAllowed,
+} from '../session-bridge.js';
 
 describe('parseDomains', () => {
   it('splits comma-separated domains, trims + lowercases', () => {
@@ -25,6 +30,26 @@ describe('emailDomain', () => {
   });
   it('returns empty string for a trailing @ (no domain part)', () => {
     expect(emailDomain('user@')).toBe('');
+  });
+});
+
+// The one domain predicate. The Google sign-in gate (assertDomainAllowed) and
+// auth:find-user-by-email both answer through it, so the two can't drift.
+describe('isDomainAllowed', () => {
+  it('allows any email when the list is empty (blank = open, as at sign-in)', () => {
+    expect(isDomainAllowed('x@anywhere.com', [])).toBe(true);
+  });
+  it('matches the domain case-insensitively', () => {
+    expect(isDomainAllowed('X@Example.COM', ['example.com'])).toBe(true);
+  });
+  it('rejects an out-of-list domain', () => {
+    expect(isDomainAllowed('x@evil.com', ['example.com'])).toBe(false);
+  });
+  it('rejects a subdomain of a listed domain (the match is exact)', () => {
+    expect(isDomainAllowed('x@eng.example.com', ['example.com'])).toBe(false);
+  });
+  it('rejects an address with no domain', () => {
+    expect(isDomainAllowed('garbage', ['example.com'])).toBe(false);
   });
 });
 

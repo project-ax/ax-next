@@ -9,6 +9,8 @@ export type {
   CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
+  FindUserByEmailInput,
+  FindUserByEmailOutput,
   GetUserInput,
   GetUserOutput,
   HttpRequestLike,

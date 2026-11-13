@@ -73,6 +73,37 @@ export interface GetUserInput {
 
 export type GetUserOutput = User | null;
 
+/**
+ * `auth:find-user-by-email` input: an email address an identity provider
+ * verified (for @ax/channel-slack, the Slack sender's `users.info` email).
+ *
+ * CONTRACT — every auth implementation registering this hook MUST keep all of
+ * these. The hook maps an outside identity to an AX account, so returning the
+ * wrong person's id would hand one person's agent to another:
+ *
+ *   - Host-internal only. Never an HTTP route or an IPC action.
+ *   - The match is case-insensitive and otherwise exact: no wildcard, prefix
+ *     or substring match, and no trimming.
+ *   - Verified accounts only. An account whose email no provider has verified
+ *     is never found.
+ *   - Approved sign-in domains only: the account's email must be on a domain
+ *     sign-in accepts. When no domains are configured (blank), any domain is
+ *     approved, the same as sign-in.
+ *   - `null` for no match, for more than one match (accounts that differ only
+ *     in case), or for any failed rule. `null` never says which rule failed.
+ *   - Returns only the id: no email, name or admin flag.
+ *
+ * Callers pass only an email they fetched from the identity provider
+ * themselves, never one taken from message text or a command argument. `null`
+ * means "no AX account we can vouch for", not "not an employee".
+ */
+export interface FindUserByEmailInput {
+  email: string;
+}
+
+/** `auth:find-user-by-email` output. See `FindUserByEmailInput` for the contract. */
+export type FindUserByEmailOutput = { userId: string } | null;
+
 export interface CreateBootstrapUserInput {
   displayName: string;
   email?: string;

@@ -9,6 +9,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
+import { z } from 'zod';
 // Type-only import from `@ax/http-server` — we never import a runtime value
 // from a peer plugin (Invariant I2 — no cross-plugin imports). TypeScript's
 // `verbatimModuleSyntax: true` plus `import type {...}` guarantees the
@@ -26,6 +27,8 @@ import type {
   CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
+  FindUserByEmailInput,
+  FindUserByEmailOutput,
   HttpRequestLike,
   User,
 } from './types.js';
@@ -36,7 +39,12 @@ import {
   type HandlerHandle,
   type ProviderRow,
 } from './handler.js';
-import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
+import {
+  isDomainAllowed,
+  parseDomains,
+  sessionTokenALS,
+  type AuthRequestBox,
+} from './session-bridge.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -57,6 +65,11 @@ const AUTH_ROUTE = '/auth/*';
 const MAX_DISPLAY_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 320;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+$/;
+
+// `auth:find-user-by-email` returns the id and nothing else. `.strict()` makes
+// a future edit that returns more (the email, the admin flag) fail loudly as
+// `invalid-return` instead of having the extra keys quietly stripped.
+const FindUserByEmailOutputSchema = z.object({ userId: z.string().min(1) }).strict().nullable();
 
 /**
  * Config surface for `@ax/auth-better`. All fields optional; defaults
@@ -102,6 +115,8 @@ export interface AuthBetterConfig {
 //
 // What's new vs. 1.3:
 //   - Real impls for auth:require-user, auth:get-user, auth:create-bootstrap-user
+//   - auth:find-user-by-email (TASK-1092): host-internal verified-email lookup
+//     for @ax/channel-slack; returns only `{ userId }` or null
 //   - `/auth/*` splat route forwards to better-auth's WebStandards handler
 //   - auth:providers-changed subscriber rebuilds the handler in place
 //
@@ -145,6 +160,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
       registers: [
         'auth:require-user',
         'auth:get-user',
+        'auth:find-user-by-email',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -283,6 +299,16 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:get-user',
         PLUGIN_NAME,
         async (_ctx, input) => getUserById(localDb, input.userId),
+      );
+
+      // Host-internal identity mapping for @ax/channel-slack (TASK-1092):
+      // never an HTTP route or an IPC action. The contract is on
+      // FindUserByEmailInput in types.ts.
+      bus.registerService<FindUserByEmailInput, FindUserByEmailOutput>(
+        'auth:find-user-by-email',
+        PLUGIN_NAME,
+        (ctx, input) => findUserByEmail(localDb, ctx, input),
+        { returns: FindUserByEmailOutputSchema },
       );
 
       bus.registerService<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
@@ -543,6 +569,66 @@ async function getUserById(
     .select(['id', 'email', 'name', 'role'])
     .executeTakeFirst();
   return row === undefined ? null : rowToUser(row);
+}
+
+/**
+ * `auth:find-user-by-email`: the one verified account that owns `email`, on an
+ * approved sign-in domain, or null. The contract is on FindUserByEmailInput in
+ * types.ts. Every rule fails closed, and the address never reaches an error
+ * message or a log line (it's PII from an outside system).
+ */
+async function findUserByEmail(
+  db: Kysely<AuthBetterDatabase>,
+  ctx: AgentContext,
+  input: FindUserByEmailInput,
+): Promise<FindUserByEmailOutput> {
+  // The address arrives from another system through host code. A wrong type is
+  // a caller bug, so it throws; a malformed string of the right type simply
+  // finds nobody.
+  const email: unknown = input?.email;
+  if (typeof email !== 'string' || email.length === 0 || email.length > MAX_EMAIL_LEN) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'auth:find-user-by-email',
+      message: `email must be a non-empty string of at most ${MAX_EMAIL_LEN} characters`,
+    });
+  }
+
+  // lower() on both sides, compared with `=`. Never LIKE/ILIKE: they read `%`
+  // and `_` as wildcards. No trimming. The UNIQUE on email is case-sensitive
+  // and auth:create-bootstrap-user stores the address as typed, so two rows
+  // can differ only in case; we fetch at most two to tell that apart. The
+  // verified rule is part of the match itself, so an unverified row is never
+  // returned and never counts toward ambiguity.
+  const rows = await db
+    .selectFrom('auth_better_v1_users')
+    .select(['id', 'email'])
+    .where((eb) => eb(eb.fn('lower', ['email']), '=', eb.fn('lower', [eb.val(email)])))
+    .where('email_verified', '=', true)
+    .limit(2)
+    .execute();
+  const row = rows[0];
+  if (row === undefined) return null;
+  if (rows.length > 1) {
+    // Never pick one: that could hand one person's agent to another. Code-only
+    // line, never the address. (The query stops at two.)
+    ctx.logger.warn('auth_find_user_by_email_ambiguous', { matches: 2 });
+    return null;
+  }
+
+  // Approved domains = the Google provider's list, the one sign-in enforces,
+  // read now (never a cached copy) and WHETHER OR NOT the provider is enabled:
+  // turning Google sign-in off must not widen who is found. No row or a blank
+  // list means any domain, as at sign-in. The STORED verified email is checked.
+  const google = await db
+    .selectFrom('auth_providers')
+    .select('allowed_domains')
+    .where('kind', '=', 'google')
+    .executeTakeFirst();
+  return isDomainAllowed(row.email, parseDomains(google?.allowed_domains))
+    ? { userId: row.id }
+    : null;
 }
 
 async function createBootstrapUser(

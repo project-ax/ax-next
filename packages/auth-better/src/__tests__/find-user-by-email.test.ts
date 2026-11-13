@@ -1,0 +1,391 @@
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { Kysely, PostgresDialect } from 'kysely';
+import {
+  PostgreSqlContainer,
+  type StartedPostgreSqlContainer,
+} from '@testcontainers/postgresql';
+import pg from 'pg';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
+import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { HookBus, PluginError, createLogger, type AgentContext } from '@ax/core';
+import { createAuthBetterPlugin } from '../plugin.js';
+import type { AuthBetterDatabase } from '../migrations.js';
+import type {
+  CreateBootstrapUserInput,
+  CreateBootstrapUserOutput,
+  FindUserByEmailInput,
+  FindUserByEmailOutput,
+} from '../index.js';
+
+// ---------------------------------------------------------------------------
+// auth:find-user-by-email contract (TASK-1092).
+//
+// The hook maps an email that an identity provider verified (Slack, for
+// @ax/channel-slack) to the AX account that owns it. Returning the wrong
+// person's id hands one person's agent to another, so every rule fails closed:
+// case-insensitive but otherwise exact, verified accounts only, approved
+// sign-in domains only, and two verified case variants match nobody. It
+// returns only the id.
+//
+// We exercise the BUS surface, as bootstrap-user.test.ts does. Rows are
+// seeded AFTER boot: the hook reads the tables at call time, and init's
+// loadProviders then never tries to decrypt the dummy Google secret.
+// ---------------------------------------------------------------------------
+
+const HOOK = 'auth:find-user-by-email';
+
+let container: StartedPostgreSqlContainer;
+let connectionString: string;
+let harness: TestHarness | undefined;
+
+beforeAll(async () => {
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
+  connectionString = container.getConnectionUri();
+}, 60_000);
+
+afterAll(async () => {
+  if (container) await stopPostgresContainer(container);
+});
+
+async function dropTables(): Promise<void> {
+  const k = new Kysely<AuthBetterDatabase>({
+    dialect: new PostgresDialect({
+      pool: new pg.Pool({ connectionString, max: 1 }),
+    }),
+  });
+  try {
+    await k.schema.dropTable('auth_providers').ifExists().execute();
+    await k.schema.dropTable('auth_better_v1_verifications').ifExists().execute();
+    await k.schema.dropTable('auth_better_v1_accounts').ifExists().execute();
+    await k.schema.dropTable('auth_better_v1_sessions').ifExists().execute();
+    await k.schema.dropTable('auth_better_v1_users').ifExists().execute();
+  } finally {
+    await k.destroy().catch(() => {});
+  }
+}
+
+async function bootHarness(): Promise<TestHarness> {
+  await dropTables();
+  // Same mocks as bootstrap-user.test.ts: no http-server, and pass-through
+  // envelope hooks so verifyCalls() lets the plugin boot.
+  return createTestHarness({
+    services: {
+      'http:register-route': async (_ctx, _input) => ({ unregister: () => {} }),
+      'credentials:envelope-encrypt': async (_ctx, input) => ({
+        ciphertext: Buffer.from((input as { plaintext: string }).plaintext, 'utf8'),
+      }),
+      'credentials:envelope-decrypt': async (_ctx, input) => ({
+        plaintext: Buffer.from((input as { ciphertext: Uint8Array }).ciphertext).toString('utf8'),
+      }),
+    },
+    plugins: [
+      createDatabasePostgresPlugin({ connectionString }),
+      createAuthBetterPlugin(),
+    ],
+  });
+}
+
+afterEach(async () => {
+  if (harness !== undefined) {
+    await harness.close({ onError: () => {} });
+    harness = undefined;
+  }
+});
+
+/** Run `fn` on a short-lived connection of our own, closed afterwards. */
+async function withDb(fn: (k: Kysely<AuthBetterDatabase>) => Promise<unknown>): Promise<void> {
+  const k = new Kysely<AuthBetterDatabase>({
+    dialect: new PostgresDialect({
+      pool: new pg.Pool({ connectionString, max: 1 }),
+    }),
+  });
+  try {
+    await fn(k);
+  } finally {
+    await k.destroy().catch(() => {});
+  }
+}
+
+interface SeedUser {
+  id: string;
+  email: string;
+  verified: boolean;
+}
+
+interface SeedGoogle {
+  allowedDomains: string | null;
+  enabled: boolean;
+}
+
+const DEFAULT_GOOGLE: SeedGoogle = { allowedDomains: 'canopyworks.com', enabled: true };
+
+/**
+ * Insert user rows and, unless `google` is null, the `google` provider row.
+ * The secret is a dummy: nothing decrypts it, because the row lands after boot
+ * and this test never fires auth:providers-changed.
+ */
+async function seed(users: SeedUser[], google: SeedGoogle | null = DEFAULT_GOOGLE): Promise<void> {
+  await withDb(async (k) => {
+    const now = new Date();
+    if (users.length > 0) {
+      await k
+        .insertInto('auth_better_v1_users')
+        .values(
+          users.map((u) => ({
+            id: u.id,
+            email: u.email,
+            email_verified: u.verified,
+            name: null,
+            image: null,
+            role: 'user' as const,
+            created_at: now,
+            updated_at: now,
+          })),
+        )
+        .execute();
+    }
+    if (google !== null) {
+      await k
+        .insertInto('auth_providers')
+        .values({
+          kind: 'google',
+          client_id: 'cid',
+          client_secret_encrypted: Buffer.from('x'),
+          discovery_url: null,
+          allowed_domains: google.allowedDomains,
+          enabled: google.enabled,
+          created_at: now,
+          updated_at: now,
+        })
+        .execute();
+    }
+  });
+}
+
+function find(email: string, ctx?: AgentContext): Promise<FindUserByEmailOutput> {
+  if (harness === undefined) throw new Error('boot the harness first');
+  return harness.bus.call<FindUserByEmailInput, FindUserByEmailOutput>(
+    HOOK,
+    ctx ?? harness.ctx(),
+    { email },
+  );
+}
+
+const ALICE: SeedUser = { id: 'usr_alice', email: 'alice@canopyworks.com', verified: true };
+const CAROL: SeedUser = { id: 'usr_carol', email: 'carol@gmail.com', verified: true };
+
+describe('auth:find-user-by-email contract', () => {
+  it('returns only the id for a verified email on an approved domain', async () => {
+    harness = await bootHarness();
+    await seed([ALICE]);
+
+    const r = await find('alice@canopyworks.com');
+    expect(r).toEqual({ userId: 'usr_alice' });
+    // Nothing but the id leaves: no email, name or admin flag.
+    expect(Object.keys(r!)).toEqual(['userId']);
+  });
+
+  it('returns null when no account has that email', async () => {
+    harness = await bootHarness();
+    await seed([ALICE]);
+
+    expect(await find('zed@canopyworks.com')).toBeNull();
+  });
+
+  it('matches case-insensitively in both directions', async () => {
+    harness = await bootHarness();
+    await seed([ALICE, { id: 'usr_bob', email: 'Bob@CanopyWorks.com', verified: true }]);
+
+    // Mixed-case input, lowercase stored row.
+    expect(await find('ALICE@CanopyWorks.COM')).toEqual({ userId: 'usr_alice' });
+    // Lowercase input, mixed-case stored row (the wizard stores what was typed).
+    expect(await find('bob@canopyworks.com')).toEqual({ userId: 'usr_bob' });
+  });
+
+  it('an unverified email is never found: the wizard admin until a provider verifies it', async () => {
+    harness = await bootHarness();
+    const created = await harness.bus.call<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
+      'auth:create-bootstrap-user',
+      harness.ctx(),
+      { displayName: 'Admin', email: 'admin@canopyworks.com' },
+    );
+    await seed([{ id: 'usr_frank', email: 'frank@canopyworks.com', verified: false }]);
+
+    expect(await find('admin@canopyworks.com')).toBeNull();
+    expect(await find('frank@canopyworks.com')).toBeNull();
+
+    // A Google or GitHub sign-in that links the account flips the flag.
+    await withDb((k) =>
+      k
+        .updateTable('auth_better_v1_users')
+        .set({ email_verified: true })
+        .where('id', '=', created.user.id)
+        .execute(),
+    );
+    expect(await find('admin@canopyworks.com')).toEqual({ userId: created.user.id });
+    // Frank still isn't, with a verified account elsewhere in the table.
+    expect(await find('frank@canopyworks.com')).toBeNull();
+  });
+
+  it('an unverified row never stands in for another account and never makes the verified owner ambiguous', async () => {
+    // Email/password sign-up is open over the API (TASK-1116), so anyone can
+    // hold an unverified row under somebody else's address. The verified rule
+    // is part of the match itself, before ambiguity is counted.
+    harness = await bootHarness();
+    await seed([
+      // The owner, as Google sign-up stores it (lowercased) and verifies it.
+      ALICE,
+      // An unverified case variant of the same address: e.g. a wizard admin
+      // typed as 'ALICE@…', or a pre-registered row.
+      { id: 'usr_squatter', email: 'ALICE@canopyworks.com', verified: false },
+      // Bob's address, pre-registered by someone else. Bob never signed in.
+      { id: 'usr_prereg', email: 'bob@canopyworks.com', verified: false },
+    ]);
+
+    // Correct: the verified owner, never the unverified row, and not null
+    // (the unverified variant is not a second match).
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+    expect(await find('ALICE@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+    // None: the unverified holder isn't found, and the verified row elsewhere
+    // doesn't stand in for it.
+    expect(await find('bob@canopyworks.com')).toBeNull();
+  });
+
+  it('an email on another domain is not found, including a subdomain', async () => {
+    harness = await bootHarness();
+    await seed([CAROL, { id: 'usr_dave', email: 'dave@eng.canopyworks.com', verified: true }]);
+
+    expect(await find('carol@gmail.com')).toBeNull();
+    // Exact domain match, the same as sign-in: a subdomain is another domain.
+    expect(await find('dave@eng.canopyworks.com')).toBeNull();
+  });
+
+  it('no wildcard, prefix or substring match', async () => {
+    harness = await bootHarness();
+    // No Google row, so any domain is approved: only the match rules decide.
+    await seed([ALICE], null);
+
+    for (const probe of [
+      '%',
+      '%@canopyworks.com',
+      '_lice@canopyworks.com',
+      'lice@canopyworks.com',
+      'alice@canopyworks.co',
+      'alice@canopyworks.com.evil.org',
+      ' alice@canopyworks.com',
+      'alice@canopyworks.com ',
+    ]) {
+      expect(await find(probe), `probe ${JSON.stringify(probe)}`).toBeNull();
+    }
+    // The control: the exact address is found under the same setup.
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+  });
+
+  it.each([
+    ['no Google provider row', null],
+    ['a Google row with no list', { allowedDomains: null, enabled: true }],
+    ['a Google row with a blank list', { allowedDomains: '  ', enabled: true }],
+  ] as const)(
+    'with no approved domains configured (%s), any verified domain is found, as at sign-in',
+    async (_label, google) => {
+      harness = await bootHarness();
+      await seed([CAROL], google);
+
+      expect(await find('carol@gmail.com')).toEqual({ userId: 'usr_carol' });
+    },
+  );
+
+  it('a disabled Google provider still limits the domains', async () => {
+    // Turning Google sign-in off must not widen who can be found.
+    harness = await bootHarness();
+    await seed([ALICE, CAROL], { allowedDomains: 'canopyworks.com', enabled: false });
+
+    expect(await find('carol@gmail.com')).toBeNull();
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+  });
+
+  it('any domain in the comma-separated list is approved', async () => {
+    harness = await bootHarness();
+    await seed([ALICE, { id: 'usr_pat', email: 'pat@partner.org', verified: true }], {
+      allowedDomains: 'canopyworks.com, Partner.ORG',
+      enabled: true,
+    });
+
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+    expect(await find('pat@partner.org')).toEqual({ userId: 'usr_pat' });
+  });
+
+  it('two verified accounts that differ only in case match nobody, and the warning carries no email', async () => {
+    // The UNIQUE on email is case-sensitive and the wizard stores what was
+    // typed, so case variants can coexist. Never pick one of them.
+    harness = await bootHarness();
+    await seed([
+      { id: 'usr_erin_upper', email: 'Erin@canopyworks.com', verified: true },
+      { id: 'usr_erin_lower', email: 'erin@canopyworks.com', verified: true },
+    ]);
+    const lines: string[] = [];
+    const ctx = harness.ctx({
+      logger: createLogger({ reqId: 'find-user-test', writer: (line) => lines.push(line) }),
+    });
+
+    expect(await find('erin@canopyworks.com', ctx)).toBeNull();
+    expect(await find('ERIN@canopyworks.com', ctx)).toBeNull();
+
+    const entries = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const ambiguous = entries.filter((e) => e['msg'] === 'auth_find_user_by_email_ambiguous');
+    expect(ambiguous).toHaveLength(2);
+    for (const e of ambiguous) expect(e['level']).toBe('warn');
+    // Code-only: neither half of the address reaches a log line.
+    expect(lines.join('\n')).not.toMatch(/\berin\b|canopyworks/i);
+  });
+
+  it('rejects a malformed request without echoing it', async () => {
+    harness = await bootHarness();
+    const h = harness;
+    const call = (input: unknown): Promise<FindUserByEmailOutput> =>
+      h.bus.call<unknown, FindUserByEmailOutput>(HOOK, h.ctx(), input);
+
+    const tooLong = 'x'.repeat(305) + '@canopyworks.com';
+    expect(tooLong).toHaveLength(321);
+    for (const input of [null, {}, { email: 42 }, { email: '' }, { email: tooLong }]) {
+      const err = await call(input).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      const label = JSON.stringify(input).slice(0, 40);
+      expect(err, label).toBeInstanceOf(PluginError);
+      expect((err as PluginError).code, label).toBe('invalid-payload');
+      expect((err as PluginError).message, label).not.toMatch(/canopyworks/i);
+    }
+
+    // 320 characters is the longest legal address: a miss, not an error.
+    const longest = 'x'.repeat(304) + '@canopyworks.com';
+    expect(longest).toHaveLength(320);
+    expect(await call({ email: longest })).toBeNull();
+  });
+
+  it('registers with a strict returns schema: only { userId } or null', async () => {
+    const spy = vi.spyOn(HookBus.prototype, 'registerService');
+    try {
+      harness = await bootHarness();
+      const registration = spy.mock.calls.find(([hookName]) => hookName === HOOK);
+      expect(registration).toBeDefined();
+      const returns = registration?.[3]?.returns;
+      expect(returns).toBeDefined();
+      expect(returns!.safeParse({ userId: 'usr_x' }).success).toBe(true);
+      expect(returns!.safeParse(null).success).toBe(true);
+      // An implementation that returns more than the id fails loudly
+      // (invalid-return) instead of having the extra keys quietly stripped.
+      expect(returns!.safeParse({ userId: 'usr_x', email: 'a@b.c' }).success).toBe(false);
+      expect(returns!.safeParse({ userId: '' }).success).toBe(false);
+      expect(returns!.safeParse(undefined).success).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

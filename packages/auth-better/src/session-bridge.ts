@@ -39,14 +39,28 @@ export function emailDomain(email: string): string {
 }
 
 /**
+ * THE approved-domain predicate. An empty `allowed` list means any domain
+ * (blank = open). Otherwise the email's domain must equal a listed one exactly:
+ * a subdomain is not a match, and an email with no domain never is. `allowed`
+ * is expected from `parseDomains` (lowercased, trimmed).
+ *
+ * The Google sign-in gate (`assertDomainAllowed`) and `auth:find-user-by-email`
+ * both answer through this one function, so "who may sign in" and "who Slack
+ * may map to an account" can't drift apart.
+ */
+export function isDomainAllowed(email: string, allowed: string[]): boolean {
+  if (allowed.length === 0) return true;
+  return allowed.includes(emailDomain(email));
+}
+
+/**
  * Authorization gate for Google provisioning. Empty `allowed` => open. Throws
  * better-auth's APIError (FORBIDDEN) so a rejected sign-in surfaces as a clean
  * 403 from better-auth's router rather than an unhandled 500. Message is generic
  * — never echoes the allowed list or the rejected email.
  */
 export function assertDomainAllowed(email: string, allowed: string[]): void {
-  if (allowed.length === 0) return;
-  if (!allowed.includes(emailDomain(email))) {
+  if (!isDomainAllowed(email, allowed)) {
     throw new APIError('FORBIDDEN', { message: 'email domain not permitted' });
   }
 }

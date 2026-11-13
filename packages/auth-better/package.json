@@ -21,7 +21,8 @@
     "@ax/core": "workspace:*",
     "better-auth": "1.7.7",
     "jose": "^6.2.8",
-    "kysely": "0.28.17"
+    "kysely": "0.28.17",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/credentials": "workspace:*",
