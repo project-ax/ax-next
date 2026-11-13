@@ -82,7 +82,19 @@ export interface OnboardingRouteHandlerDeps {
  * error from auth:create-bootstrap-user.
  */
 function isValidEmail(s: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && /^[\x21-\x7E]+$/.test(s);
+  // Parsed by hand, not with `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`: that pattern
+  // backtracks polynomially on input like `!@!.!.!.…` (CodeQL
+  // js/polynomial-redos), and this runs on an unauthenticated route. The
+  // rules are the same: one `@`, something before it, and a domain with a dot
+  // that has something on both sides. 254 is the longest address SMTP allows.
+  if (s.length > 254 || !/^[\x21-\x7E]+$/.test(s)) return false;
+  const at = s.indexOf('@');
+  if (at <= 0 || at !== s.lastIndexOf('@')) return false;
+  // Some dot with at least one character on each side, as the old pattern's
+  // `[^\s@]+\.[^\s@]+` required.
+  const domain = s.slice(at + 1);
+  const dot = domain.indexOf('.', 1);
+  return dot !== -1 && dot < domain.length - 1;
 }
 
 export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) {

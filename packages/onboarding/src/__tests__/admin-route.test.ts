@@ -258,6 +258,36 @@ describe('@ax/onboarding POST /setup/admin', () => {
     expect((await res.json() as { error: string }).error).toBe('invalid-email');
   });
 
+  // CodeQL js/polynomial-redos (alert #35): the old pattern backtracked on
+  // `!@!.!.!.…`. The email check is a linear parse now, capped at 254
+  // characters (the SMTP maximum), and this route is unauthenticated.
+  it.each([
+    ['the ReDoS shape, over the length cap', '!@!.' + '!.'.repeat(5_000)],
+    ['the ReDoS shape under the cap, ending in a space', '!@!.' + '!.'.repeat(100) + ' '],
+    ['an address one character over 254', `${'a'.repeat(244)}@example.com`],
+    ['two @ signs', 'a@b@c.d'],
+    ['a domain with no dot', 'a@localhost'],
+    ['a dot only at the end', 'a@b.'],
+  ])('%s → 400 invalid-email', async (_label, email) => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Vinay', email }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid-email');
+  });
+
   it('saves the admin email in lowercase, so its first sign-in can find it', async () => {
     stack = await bootStack();
     const { port } = stack;
