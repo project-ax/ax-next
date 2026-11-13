@@ -1,4 +1,5 @@
 import {
+  isOutsiderTurn,
   isOwnerlessId,
   makeAgentContext,
   PluginError,
@@ -239,11 +240,12 @@ export function createToolConnectorProposePlugin(): Plugin {
           // `source` is host-stamped by the IPC listener from the session
           // record, never taken from the tool input. Checked BEFORE the draft
           // is read, so a malformed draft gets this answer and not a field
-          // error that invites another try. Only `'external'`: a routine
-          // (and @ax/decisions' replay of a call the owner approved, which
-          // runs as one) still files. The orchestrator also leaves the tool
-          // out of an external session's catalog; this is the gate.
-          if (toolCtx.source === 'external') {
+          // error that invites another try. `isOutsiderTurn` also refuses a
+          // source this build doesn't know (fail closed). A routine (and
+          // @ax/decisions' replay of a call the owner approved, which runs as
+          // one) still files. The orchestrator also leaves the tool out of an
+          // external session's catalog; this is the gate.
+          if (isOutsiderTurn(toolCtx)) {
             return { ...EXTERNAL_REFUSAL };
           }
 

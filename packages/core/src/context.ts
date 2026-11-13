@@ -213,6 +213,30 @@ export function isAttendedTurn(ctx: Pick<AgentContext, 'source'>): boolean {
   }
 }
 
+/**
+ * True when someone with no access to the agent may be present: `'external'`,
+ * or a source this build doesn't know. Fails closed, so a gate that keeps an
+ * outsider from acting for the owner (proposal tools, attended approvals)
+ * refuses a value it can't place. Not the inverse of `isAttendedTurn`: a
+ * routine is unattended but has no outsider in it.
+ */
+export function isOutsiderTurn(ctx: Pick<AgentContext, 'source'>): boolean {
+  const source: AgentContextSource | undefined = ctx.source;
+  switch (source) {
+    case undefined:
+    case 'user':
+    case 'routine':
+      return false;
+    case 'external':
+      return true;
+    default: {
+      const _exhaustive: never = source;
+      void _exhaustive;
+      return true;
+    }
+  }
+}
+
 /** `'private'` only when absent or exactly `'private'`; else `'shared'`. */
 export function audienceOf(
   ctx: Pick<AgentContext, 'audience'>,
@@ -253,7 +277,8 @@ export interface AgentContext {
    * `'external'`: a person is present who has no access to the agent. The
    * turn runs as a real user who answers for it (for a channel agent,
    * whoever connected the channel). It is unattended (see
-   * `isAttendedTurn`), and may make no identity or skill edits.
+   * `isAttendedTurn`), and may make no identity or skill edits. The gates
+   * that refuse it ask `isOutsiderTurn`, which refuses an unknown source too.
    *
    * Origin label only — no transport/storage vocabulary, so it stays
    * transport-agnostic per Invariant 1.

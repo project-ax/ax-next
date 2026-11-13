@@ -80,11 +80,11 @@ export interface PreCallDeps {
   ttlMs: number;
   /**
    * Whether anyone is expected to answer. AW-6 makes this a property of the
-   * conversation's CHANNEL rather than of the turn (bar one kind of turn,
-   * `'external'`, which is always unattended: see `attendance.ts`), which
-   * means a bus round trip — hence the promise. It is one indexed row read,
-   * and it rides inside the 10 s pre-call ceiling alongside the policy call
-   * and the row write.
+   * conversation's CHANNEL rather than of the turn (bar an outsider's turn,
+   * `'external'` or a source this build doesn't know, which is always
+   * unattended: see `attendance.ts`), which means a bus round trip — hence
+   * the promise. It is one indexed row read, and it rides inside the 10 s
+   * pre-call ceiling alongside the policy call and the row write.
    *
    * Required now: there is no sensible in-process default. AW-4's
    * `ctx.source === 'routine'` guess is gone, because the honest fallback for

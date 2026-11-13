@@ -152,6 +152,37 @@ describe('authenticate', () => {
     expect(result.audience).toBeNull();
   });
 
+  // Both session stores refuse or remap an unknown stored value today, but
+  // this is the last hop before the value becomes `ctx.source` on every
+  // runner call, so it fails closed on its own: an unknown source reads as
+  // 'external' (least privilege), an unknown audience as 'shared' (least
+  // recall).
+  it.each([
+    { label: 'an unknown source', resolved: { source: 'bogus' }, want: { source: 'external', audience: null } },
+    { label: 'an empty source', resolved: { source: '' }, want: { source: 'external', audience: null } },
+    { label: 'an unknown audience', resolved: { audience: 'public' }, want: { source: null, audience: 'shared' } },
+    {
+      label: 'known values',
+      resolved: { source: 'routine', audience: 'private' },
+      want: { source: 'routine', audience: 'private' },
+    },
+  ])('fails closed on what the resolver returns: $label', async ({ resolved, want }) => {
+    const h = await createTestHarness({
+      services: {
+        'session:resolve-token': async () => ({
+          sessionId: 's-odd',
+          workspaceRoot: '/tmp/ws',
+          userId: 'u-1',
+          agentId: 'a-1',
+          conversationId: null,
+          ...resolved,
+        }),
+      },
+    });
+    const result = await authenticate('Bearer tok', h.bus, h.ctx());
+    expect(result).toMatchObject({ ok: true, ...want });
+  });
+
   it('matches the Bearer scheme case-insensitively', async () => {
     const h = await makeHarnessWithSession('s-6', '/tmp/ws-6');
     const result = await authenticate(`bearer ${h.token}`, h.bus, h.ctx());

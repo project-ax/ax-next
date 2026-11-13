@@ -365,6 +365,13 @@ describe('skill.propose handler (TASK-74)', () => {
       });
     });
 
+    it("refuses a session whose source this build doesn't know (fails closed)", async () => {
+      const { bus, calls } = countingBus();
+      const r = await skillProposeHandler(validPayload, sourcedCtx('bogus' as never), bus);
+      expect(calls()).toBe(0);
+      expect(r).toEqual(hookRejected(EXTERNAL_REFUSAL));
+    });
+
     it.each(['routine', 'user'] as const)("still forwards a %s session's proposal", async (source) => {
       const { bus, calls } = countingBus();
       const r = await skillProposeHandler(validPayload, sourcedCtx(source), bus);

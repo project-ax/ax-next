@@ -1831,6 +1831,24 @@ describe('chat-orchestrator', () => {
     expect(scope.disallowedTools).toEqual(['skill_propose']);
   });
 
+  // `isOutsiderTurn` fails closed: a source this build doesn't know might be an
+  // outsider, so it gets the external catalog, not the owner's.
+  it("TASK-1091: a turn whose source this build doesn't know is offered neither proposal tool, listed or wildcard", async () => {
+    const listed = await invokeAndReadToolScope(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s10', 'bogus' as never),
+    );
+    expect(listed.allowedTools).toEqual(['file.read', 'search_catalog', 'request_capability']);
+    expect('disallowedTools' in listed).toBe(false);
+
+    const wildcard = await invokeAndReadToolScope(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s11', 'bogus' as never),
+    );
+    expect(wildcard.allowedTools).toEqual([]);
+    expect(wildcard.disallowedTools).toEqual(['skill_propose', 'connector_propose']);
+  });
+
   it.each(['routine', 'user'] as const)(
     'TASK-1091: a %s turn still sees both proposal tools, listed or wildcard',
     async (source) => {

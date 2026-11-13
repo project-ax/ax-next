@@ -20,9 +20,10 @@
  * once that user says yes. That is a fact about the TURN. One thread can mix
  * the owner's turns with external ones, and no `origin` can say which is
  * which. So an external turn is `unattended` in every conversation. The check
- * is `=== 'external'` and deliberately not `!isAttendedTurn(ctx)`, which
- * would quietly move routine attendance off the channel. It only ever moves a
- * turn toward `unattended`, the safe direction below.
+ * is `isOutsiderTurn(ctx)` (`'external'`, or a source this build doesn't know)
+ * and deliberately not `!isAttendedTurn(ctx)`, which would quietly move
+ * routine attendance off the channel. It only ever moves a turn toward
+ * `unattended`, the safe direction below.
  *
  * WHY IT FAILS TO `unattended`. The two mistakes are not symmetric:
  *
@@ -36,7 +37,7 @@
  * So every unknown answer — no conversation, a conversation nobody can read, a
  * conversations store that is not even loaded — is `unattended`.
  */
-import type { AgentContext, HookBus } from '@ax/core';
+import { isOutsiderTurn, type AgentContext, type HookBus } from '@ax/core';
 import { PLUGIN_NAME } from './pre-call.js';
 import type { Attendance } from './types.js';
 
@@ -111,16 +112,16 @@ export async function conversationChannel(
 }
 
 /**
- * An external turn → unattended, whatever the channel. Otherwise the channel
- * decides: `web` → attended, `routine` → unattended, everything else →
- * unattended.
+ * An external turn (or one whose source this build doesn't know) →
+ * unattended, whatever the channel. Otherwise the channel decides: `web` →
+ * attended, `routine` → unattended, everything else → unattended.
  */
 export async function attendanceFor(
   bus: HookBus,
   ctx: AgentContext,
   conversationId: string,
 ): Promise<Attendance> {
-  if (ctx.source === 'external') return 'unattended';
+  if (isOutsiderTurn(ctx)) return 'unattended';
   const channel = await conversationChannel(bus, ctx, conversationId);
   if (channel === null) return 'unattended';
   return channel.origin === 'web' ? 'attended' : 'unattended';

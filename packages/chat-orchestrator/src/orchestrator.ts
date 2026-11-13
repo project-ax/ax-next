@@ -2,6 +2,7 @@ import {
   audienceOf,
   faultLogFields,
   isAttendedTurn,
+  isOutsiderTurn,
   toWellFormedValue,
   PluginError,
   PROVIDER_ENDPOINTS,
@@ -1538,10 +1539,11 @@ const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
  * not a routine run). It also unions in ROUTINE_RUN_TOOLS, after the broker
  * tools, under the same wildcard rule. Anything but `true` adds nothing.
  *
- * `opts.external` (TASK-1091) is true only for an external turn: the call site
- * passes `ctx.source === 'external'`. It leaves PROPOSAL_TOOLS out of the
- * union. A proposal tool the agent lists itself stays listed (removing it
- * could empty the list into the wildcard); proposalToolScope hides it.
+ * `opts.external` (TASK-1091) is true only for an outsider's turn: the call
+ * site passes `isOutsiderTurn(ctx)` (external, or a source this build doesn't
+ * know). It leaves PROPOSAL_TOOLS out of the union. A proposal tool the agent
+ * lists itself stays listed (removing it could empty the list into the
+ * wildcard); proposalToolScope hides it.
  */
 export function withBrokerDefaults(
   allowedTools: readonly string[],
@@ -1654,7 +1656,7 @@ export function identityToolScope(
  * whole catalog), or one whose `allowedTools` names one itself — the
  * identityToolScope rule: never by shrinking `allowedTools`. Only
  * `opts.external` hides anything; the call site passes
- * `ctx.source === 'external'`, so a routine keeps both.
+ * `isOutsiderTurn(ctx)`, so a routine keeps both.
  *
  * Existing entries stay first with no duplicates, and the input comes back
  * unchanged (possibly `undefined`) when nothing is hidden, so a frozen
@@ -2759,11 +2761,12 @@ export function createOrchestrator(
       // host-set (only @ax/routines' fire.ts stamps 'routine'); see
       // ROUTINE_RUN_TOOLS. Routine-only feature: `=== 'routine'`, not
       // `!isAttendedTurn` (an external turn gets nothing extra).
-      // TASK-1091: an external turn gets neither proposal tool (see
+      // TASK-1091: an outsider's turn (`isOutsiderTurn`: external, or a
+      // source this build doesn't know) gets neither proposal tool (see
       // PROPOSAL_TOOLS); proposalToolScope, below, hides them from the rest.
       allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds, {
         routineRun: ctx.source === 'routine',
-        external: ctx.source === 'external',
+        external: isOutsiderTurn(ctx),
       }),
       mcpConfigIds: agent.mcpConfigIds,
       model: agent.model,
@@ -3467,15 +3470,16 @@ export function createOrchestrator(
       }
     }
 
-    // TASK-1091 — an external turn is offered neither proposal tool (see
-    // proposalToolScope). Last, so the tool-policy denies and the identity
-    // tools keep their places in `disallowedTools`. Not gated on the identity
-    // read: these tools exist whatever the identity store.
+    // TASK-1091 — an outsider's turn (`isOutsiderTurn`) is offered neither
+    // proposal tool (see proposalToolScope). Last, so the tool-policy denies
+    // and the identity tools keep their places in `disallowedTools`. Not
+    // gated on the identity read: these tools exist whatever the identity
+    // store.
     const proposalDenies = proposalToolScope(
       agent,
       agentConfig.allowedTools,
       agentConfig.disallowedTools,
-      { external: ctx.source === 'external' },
+      { external: isOutsiderTurn(ctx) },
     );
     if (proposalDenies !== undefined) {
       agentConfig.disallowedTools = proposalDenies;

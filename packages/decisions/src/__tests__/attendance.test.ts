@@ -192,8 +192,17 @@ describe('attendanceFor', () => {
     expect(await attendanceFor(bus, ctx({ source: 'external' }), 'conv-web')).toBe('unattended');
   });
 
+  it("a source this build doesn't know is unattended even in a web conversation (fails closed)", async () => {
+    // An unknown source may be an outsider, who can't approve anything. Read
+    // as attended, the host would never replay the approved call: it would
+    // wait for a warm agent that is already gone.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-web': { origin: 'web' } });
+    expect(await attendanceFor(bus, ctx({ source: 'bogus' as never }), 'conv-web')).toBe('unattended');
+  });
+
   it("a routine turn in a web conversation stays attended: routine attendance is the channel's (AW-6)", async () => {
-    // Pins the deliberate `=== 'external'` (not `!isAttendedTurn(ctx)`): a
+    // Pins the deliberate `isOutsiderTurn(ctx)` (not `!isAttendedTurn(ctx)`): a
     // scheduled fire into a thread somebody is watching is still watched.
     const bus = new HookBus();
     withConversations(bus, {

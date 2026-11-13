@@ -4,6 +4,7 @@ import {
   createLogger,
   makeAgentContext,
   isAttendedTurn,
+  isOutsiderTurn,
   audienceOf,
   isOwnerlessId,
   ownerlessIdFor,
@@ -469,5 +470,20 @@ describe('external source + audience (TASK-1091)', () => {
     expect(audienceOf({ audience: 'private' })).toBe('private');
     expect(audienceOf({ audience: 'shared' })).toBe('shared');
     expect(audienceOf({ audience: 'public' as never })).toBe('shared');
+  });
+
+  // The gates that keep an outsider from acting for the owner (proposal
+  // tools, attended approvals) ask this, so a source this build does not know
+  // must land on the refusing side, not on "an owner is driving".
+  it.each([
+    { label: 'absent', source: undefined, outsider: false },
+    { label: "'user'", source: 'user', outsider: false },
+    { label: "'routine'", source: 'routine', outsider: false },
+    { label: "'external'", source: 'external', outsider: true },
+    { label: 'an unknown value', source: 'bogus', outsider: true },
+    { label: 'an empty string', source: '', outsider: true },
+  ] as const)('isOutsiderTurn fails closed: $label → $outsider', ({ source, outsider }) => {
+    const ctx = source === undefined ? {} : { source: source as never };
+    expect(isOutsiderTurn(ctx)).toBe(outsider);
   });
 });

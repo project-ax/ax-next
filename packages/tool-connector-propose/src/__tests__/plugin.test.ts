@@ -289,6 +289,13 @@ describe('@ax/tool-connector-propose — plugin', () => {
       expect(installCalls).toHaveLength(0);
     });
 
+    it("files no request from a turn whose source this build doesn't know (fails closed)", async () => {
+      const { bus, installCalls } = busWithStubs();
+      await init(bus);
+      expect(await callAs(bus, 'bogus' as never, valid)).toEqual(EXTERNAL_REFUSAL);
+      expect(installCalls).toHaveLength(0);
+    });
+
     it.each(['routine', 'user'] as const)('a %s turn still files the request', async (source) => {
       const { bus, installCalls } = busWithStubs();
       await init(bus);

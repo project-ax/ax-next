@@ -82,6 +82,40 @@ type SessionResolveTokenOutput =
     }
   | null;
 
+// TASK-1091 — the values this build knows. A `Record` over each union, so a
+// new member is a compile error here until someone decides how it reads.
+const KNOWN_SOURCES: Readonly<Record<AgentContextSource, true>> = {
+  routine: true,
+  user: true,
+  external: true,
+};
+const KNOWN_AUDIENCES: Readonly<Record<AgentContextAudience, true>> = {
+  private: true,
+  shared: true,
+};
+
+/**
+ * The resolved session's origin. Absent stays `null` (a user turn); a value
+ * this build doesn't know reads as `'external'`, the least privileged.
+ */
+function sessionSource(raw: unknown): AgentContextSource | null {
+  if (raw === undefined || raw === null) return null;
+  return typeof raw === 'string' && Object.hasOwn(KNOWN_SOURCES, raw)
+    ? (raw as AgentContextSource)
+    : 'external';
+}
+
+/**
+ * The resolved session's audience. Absent stays `null` (private); a value
+ * this build doesn't know reads as `'shared'`, the least recall.
+ */
+function sessionAudience(raw: unknown): AgentContextAudience | null {
+  if (raw === undefined || raw === null) return null;
+  return typeof raw === 'string' && Object.hasOwn(KNOWN_AUDIENCES, raw)
+    ? (raw as AgentContextAudience)
+    : 'shared';
+}
+
 export async function authenticate(
   authHeader: string | undefined,
   bus: HookBus,
@@ -139,12 +173,13 @@ export async function authenticate(
     agentId: resolved.agentId ?? null,
     conversationId: resolved.conversationId ?? null,
     // TASK-181 — host-derived; absent ⇒ null (treated as a user turn). Both
-    // session stores' returns schemas reject a value outside the enum, so an
-    // unknown stored value never reaches here (session-postgres maps it to
-    // 'external' first, TASK-1091).
-    source: resolved.source ?? null,
+    // session stores' returns schemas reject a value outside the enum
+    // (session-postgres maps it to 'external' first, TASK-1091), and this
+    // hop fails closed on its own as well: it is the last one before the
+    // value becomes `ctx.source` on every runner call.
+    source: sessionSource(resolved.source),
     // TASK-1091 — host-derived; absent ⇒ null (treated as private). Same
-    // guarantee: an unknown stored value reads as 'shared' upstream.
-    audience: resolved.audience ?? null,
+    // posture: an unknown value reads as 'shared'.
+    audience: sessionAudience(resolved.audience),
   };
 }
