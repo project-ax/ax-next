@@ -600,6 +600,61 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect((await me(r.axSession)).id).toBe(aliceId);
   });
 
+  // -- a look-alike of someone's address -----------------------------------------
+  //
+  // better-auth lowercases the provider's email with full Unicode rules before
+  // it calls the gate, and that turns the Kelvin sign (U+212A) into an ASCII
+  // "k". So a GitHub account whose verified address is KELVIN_KATE, a different
+  // mailbox, reached the gate as kate's own address. K1 and K2 are the round-2
+  // review's reproductions; on the code before the gate read the address as the
+  // provider sent it, each one signed in as kate.
+
+  /** `Kate@canopyworks.com` spelled with U+212A KELVIN SIGN, which `toLowerCase()` makes an ASCII "k". */
+  const KELVIN_KATE = 'Kate@canopyworks.com';
+
+  it("a leftover GitHub link can't open an account from a look-alike of its email (K1)", async () => {
+    await addProvider('github', 'canopyworks.com');
+    const kateId = await insertGoogleUser('kate@canopyworks.com', 'g-kate');
+    await insertAccount(kateId, 'github', '790');
+    idp.nextGithub({ id: 790, login: 'imp', email: KELVIN_KATE, verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.location).toContain('/auth/error?error=email_not_supported');
+    expect(r.axSession).toBeNull();
+  });
+
+  it("a new GitHub account with a look-alike of a member's email never links into that account (K2)", async () => {
+    await addProvider('github', 'canopyworks.com');
+    const kateId = await insertGoogleUser('kate@canopyworks.com', 'g-kate');
+    idp.nextGithub({ id: 791, login: 'imp', email: KELVIN_KATE, verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.location).toContain('/auth/error?error=email_not_supported');
+    expect(r.axSession).toBeNull();
+    expect(await providersOf(kateId)).toEqual(['google']);
+  });
+
+  it("a look-alike can't claim a teammate's address before they first sign in", async () => {
+    // Nobody has kate's address yet. better-auth would create
+    // `kate@canopyworks.com`, verified, for whoever holds the look-alike, and
+    // kate's own first sign-in would then link into that account.
+    await addProvider('github', 'canopyworks.com');
+    idp.nextGithub({ id: 792, login: 'imp', email: KELVIN_KATE, verified: true });
+    const r = await oauthSignIn(stack.baseUrl, 'github');
+    expect(r.location).toContain('/auth/error?error=email_not_supported');
+    expect(r.axSession).toBeNull();
+    expect(await countUsers('kate@canopyworks.com')).toBe(0);
+  });
+
+  it('an address with any character beyond plain ASCII is refused outright', async () => {
+    // Already lowercase, so better-auth's lowercasing leaves it alone: only the
+    // plain-ASCII rule turns it away. The cost: someone whose address really
+    // has an accented letter can't sign in here.
+    idp.nextGoogle({ email: 'josé@canopyworks.com', emailVerified: true, sub: 'g-jose' });
+    const r = await oauthSignIn(stack.baseUrl, 'google');
+    expect(r.location).toContain('/auth/error?error=email_not_supported');
+    expect(r.axSession).toBeNull();
+    expect(await countUsers('josé@canopyworks.com')).toBe(0);
+  });
+
   // -- better-auth's session-only routes ---------------------------------------
   //
   // Reachable only with better-auth's own session cookie, which the bridge never

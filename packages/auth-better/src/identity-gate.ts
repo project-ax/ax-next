@@ -37,6 +37,7 @@ export const REFUSAL_DESCRIPTION = "This account can't sign in here. Ask your ad
 export type IdentityRefusal =
   | 'sign_in_method_not_allowed'
   | 'email_not_verified'
+  | 'email_not_supported'
   | 'email_mismatch'
   | 'email_domain_not_allowed'
   | 'account_not_linkable';
@@ -46,7 +47,12 @@ export interface IdentityAttempt {
   action: ValidateUserInfoAction;
   method: string;
   providerId: string | undefined;
-  email: string;
+  /**
+   * The email exactly as the provider sent it, or null when there is none the
+   * gate can trust (see createIdentityGate). Never better-auth's `user.email`,
+   * which has been through `toLowerCase()` by the time the gate runs.
+   */
+  email: string | null;
   /** What the PROVIDER asserted about this email, never what the local row says. */
   emailVerified: boolean;
 }
@@ -74,6 +80,15 @@ export function emailDomain(email: string): string {
   const at = email.lastIndexOf('@');
   if (at < 0 || at === email.length - 1) return '';
   return email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * True when every character is printable ASCII, U+0021 to U+007E: no space, no
+ * control character, nothing beyond ASCII. The gate compares only such emails,
+ * so folding their case can't turn one address into another.
+ */
+export function isPlainAscii(s: string): boolean {
+  return /^[\x21-\x7E]+$/.test(s);
 }
 
 /**
@@ -108,7 +123,16 @@ export function decideIdentity(
   //    unverified addresses.
   if (!attempt.emailVerified) return 'email_not_verified';
 
-  // 3. A link or a sign-in lands on an existing account only when the provider
+  // 3. Every rule below reads the email as the provider spelled it, and only
+  //    plain ASCII: one with any other character is refused outright, admins
+  //    included. Case-folding then can't make two mailboxes one. (better-auth
+  //    lowercases with full Unicode rules, which turned a GitHub address
+  //    written with the Kelvin sign into a teammate's.) The cost: someone
+  //    whose address really has an accented letter can't sign in here.
+  const email = attempt.email;
+  if (email === null || !isPlainAscii(email)) return 'email_not_supported';
+
+  // 4. A link or a sign-in lands on an existing account only when the provider
   //    vouches for THAT account's own email. better-auth finds the account for
   //    a sign-in by the provider's account id, never by email, so without this
   //    a link made once keeps working whatever email the provider names now.
@@ -121,24 +145,24 @@ export function decideIdentity(
   //    until it matches again or an admin updates the account's email.
   if (attempt.action !== 'create-user') {
     if (local === undefined) return 'account_not_linkable';
-    if (!sameEmail(attempt.email, local.email)) return 'email_mismatch';
+    if (!sameEmail(email, local.email)) return 'email_mismatch';
   }
 
-  // 4. The email's domain must be in THAT provider's list, on every action, so
+  // 5. The email's domain must be in THAT provider's list, on every action, so
   //    an off-domain member made while the old check was dead is refused at its
   //    next sign-in. One exception: an existing admin. Admins are appointed by
   //    the operator (the setup wizard or SQL), never admitted by a sign-up, and
   //    the list must not lock the operator out of their own install.
   const existingAdmin = attempt.action !== 'create-user' && local?.role === 'admin';
-  if (list.length > 0 && !list.includes(emailDomain(attempt.email)) && !existingAdmin) {
+  if (list.length > 0 && !list.includes(emailDomain(email)) && !existingAdmin) {
     return 'email_domain_not_allowed';
   }
 
-  // 5. A link attaches this sign-in to an account that already exists, so that
+  // 6. A link attaches this sign-in to an account that already exists, so that
   //    account must be one nobody else could have set up: its email is
   //    verified, or it is the setup wizard's admin waiting for its first
   //    sign-in (role admin, no sign-in method yet). An unverified row with a
-  //    sign-in method is what a pre-registered password left behind. (Rule 3
+  //    sign-in method is what a pre-registered password left behind. (Rule 4
   //    already refused a link that lands on no user.)
   if (attempt.action === 'link-account' && local !== undefined) {
     if (local.emailVerified) return null;
@@ -164,11 +188,23 @@ export function createIdentityGate(
   }
 
   return async ({ user, source }, ctx) => {
+    // The email exactly as the provider sent it: the raw profile, which
+    // better-auth 1.7 passes on every OAuth path (Google's ID-token claims,
+    // GitHub's `/user` with its primary email filled in). Not `user.email`:
+    // better-auth has lowercased that with full Unicode rules, so a look-alike
+    // written with the Kelvin sign U+212A arrives there as an ASCII address.
+    // And only when it is the address better-auth itself will look up, store or
+    // link (`user.email`), so the gate never approves one address while
+    // better-auth acts on another. A path that passes no profile email is
+    // refused (fail closed): re-check that every path still passes one on a
+    // better-auth upgrade.
+    const sent = source.oauth?.profile?.email;
+    const acted = String(user.email ?? '');
     const attempt: IdentityAttempt = {
       action: source.action,
       method: source.method,
       providerId: source.oauth?.providerId,
-      email: String(user.email ?? ''),
+      email: typeof sent === 'string' && sameEmail(sent, acted) ? sent : null,
       emailVerified: user.emailVerified === true,
     };
 

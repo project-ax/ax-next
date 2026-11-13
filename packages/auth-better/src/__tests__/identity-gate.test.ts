@@ -190,12 +190,29 @@ const ROWS: Row[] = [
     local: local(true, 'user', 1, 'Alice@CanopyWorks.COM'),
     expected: null,
   },
+  // The email is the provider's own spelling, and only plain ASCII is ever
+  // compared (sign-up-gate.test.ts K1/K2: the look-alike that made this rule).
   {
-    // U+212A KELVIN SIGN: toLowerCase() turns it into an ASCII "k".
-    name: 'a non-ASCII look-alike is another email',
-    attempt: { action: 'sign-in', email: 'Kate@canopyworks.com' },
-    local: local(true, 'user', 1, 'kate@canopyworks.com'),
-    expected: 'email_mismatch',
+    name: 'an address beyond plain ASCII',
+    attempt: { email: 'jos\u00e9@canopyworks.com' },
+    expected: 'email_not_supported',
+  },
+  {
+    name: 'an address with a space in it',
+    attempt: { email: 'alice @canopyworks.com' },
+    expected: 'email_not_supported',
+  },
+  {
+    name: 'no address the gate can read',
+    attempt: { email: null },
+    expected: 'email_not_supported',
+  },
+  {
+    // The admin pass is for the domain list, never for an address the gate can't compare.
+    name: 'an admin gets no pass on an address beyond plain ASCII',
+    attempt: { action: 'sign-in', email: 'boss@p\u00e4rtner.example' },
+    local: local(true, 'admin', 1),
+    expected: 'email_not_supported',
   },
   {
     name: 'link whose provider names another email',
@@ -214,7 +231,7 @@ describe('decideIdentity', () => {
     ]);
     const tried: IdentityAttempt = { ...ATTEMPT, ...attempt };
     // The account's own email is the one the provider names, unless the row says otherwise.
-    const found = facts === undefined ? undefined : { email: tried.email, ...facts };
+    const found = facts === undefined ? undefined : { email: tried.email ?? '', ...facts };
     expect(decideIdentity(tried, lists, found)).toBe(expected);
   });
 });
@@ -241,8 +258,21 @@ function ctxWith(user: Record<string, unknown> | null, accounts: unknown[]): Gat
 
 const NO_DB = {} as GateCtx;
 
-function oauth(action: GateData['source']['action'], providerId: string): GateData['source'] {
-  return { action, method: 'oauth', oauth: { providerId } };
+/**
+ * What better-auth hands the gate on an OAuth callback: the provider's profile
+ * exactly as it sent it, and `user.email` after better-auth's own
+ * `toLowerCase()`. `user` overrides any field of the user it passes.
+ */
+function fromProvider(
+  action: GateData['source']['action'],
+  providerId: string,
+  email: string,
+  user: GateData['user'] = {},
+): GateData {
+  return {
+    user: { email: email.toLowerCase(), emailVerified: true, ...user },
+    source: { action, method: 'oauth', oauth: { providerId, profile: { email } } },
+  };
 }
 
 describe('createIdentityGate', () => {
@@ -254,43 +284,34 @@ describe('createIdentityGate', () => {
   ]);
 
   it('lets an on-domain sign-up through without reading the database', async () => {
-    await expect(
-      gate({ user: { email: 'alice@canopyworks.com', emailVerified: true }, source: oauth('create-user', 'google') }, NO_DB),
-    ).resolves.toBeUndefined();
+    await expect(gate(fromProvider('create-user', 'google', 'alice@canopyworks.com'), NO_DB)).resolves.toBeUndefined();
   });
 
   it('refuses with one generic sentence that names neither the email nor the list', async () => {
-    const result = await gate(
-      { user: { email: 'outsider@evil.example', emailVerified: true }, source: oauth('create-user', 'google') },
-      NO_DB,
-    );
+    const result = await gate(fromProvider('create-user', 'google', 'outsider@evil.example'), NO_DB);
     expect(result).toEqual({ error: 'email_domain_not_allowed', errorDescription: REFUSAL_DESCRIPTION });
     expect(REFUSAL_DESCRIPTION).toBe("This account can't sign in here. Ask your admin for help.");
   });
 
   it('treats a provider with no list as open, and a kind it does not gate as unconfigured', async () => {
-    await expect(
-      gate({ user: { email: 'x@anywhere.example', emailVerified: true }, source: oauth('create-user', 'github') }, NO_DB),
-    ).resolves.toBeUndefined();
-    await expect(
-      gate({ user: { email: 'x@idp.example', emailVerified: true }, source: oauth('create-user', 'oidc') }, NO_DB),
-    ).resolves.toEqual({ error: 'sign_in_method_not_allowed', errorDescription: REFUSAL_DESCRIPTION });
+    await expect(gate(fromProvider('create-user', 'github', 'x@anywhere.example'), NO_DB)).resolves.toBeUndefined();
+    await expect(gate(fromProvider('create-user', 'oidc', 'x@idp.example'), NO_DB)).resolves.toEqual({
+      error: 'sign_in_method_not_allowed',
+      errorDescription: REFUSAL_DESCRIPTION,
+    });
   });
 
   it("reads emailVerified from the provider's claim, never a truthy stand-in", async () => {
     // Only a real `true` counts: a string from an odd token fails closed.
     const truthy = 'true' as unknown as boolean;
     await expect(
-      gate({ user: { email: 'alice@canopyworks.com', emailVerified: truthy }, source: oauth('create-user', 'google') }, NO_DB),
+      gate(fromProvider('create-user', 'google', 'alice@canopyworks.com', { emailVerified: truthy }), NO_DB),
     ).resolves.toEqual({ error: 'email_not_verified', errorDescription: REFUSAL_DESCRIPTION });
   });
 
   it("links the setup wizard's admin (role admin, no accounts) and nobody else unverified", async () => {
     const admin = { id: 'u-admin', email: 'admin@canopyworks.com', emailVerified: false, role: 'admin' };
-    const data: GateData = {
-      user: { id: 'u-admin', email: 'admin@canopyworks.com', emailVerified: true },
-      source: oauth('link-account', 'google'),
-    };
+    const data = fromProvider('link-account', 'google', 'admin@canopyworks.com', { id: 'u-admin' });
     await expect(gate(data, ctxWith(admin, []))).resolves.toBeUndefined();
     // Once it has a sign-in method, it's no longer waiting for its first one.
     await expect(gate(data, ctxWith(admin, [{ providerId: 'credential' }]))).resolves.toEqual({
@@ -312,10 +333,7 @@ describe('createIdentityGate', () => {
   it("compares the provider's email with the one on the account's own row", async () => {
     // GitHub's list is open here, so only the account's email can refuse it.
     const alice = { id: 'u-alice', email: 'Alice@CanopyWorks.com', emailVerified: true, role: 'user' };
-    const signIn = (email: string): GateData => ({
-      user: { id: 'u-alice', email, emailVerified: true },
-      source: oauth('sign-in', 'github'),
-    });
+    const signIn = (email: string): GateData => fromProvider('sign-in', 'github', email, { id: 'u-alice' });
     await expect(gate(signIn('imp@evil.example'), ctxWith(alice, [{ providerId: 'github' }]))).resolves.toEqual({
       error: 'email_mismatch',
       errorDescription: REFUSAL_DESCRIPTION,
@@ -328,10 +346,46 @@ describe('createIdentityGate', () => {
     });
   });
 
+  // better-auth lowercases `user.email` with full Unicode rules before it calls
+  // the gate. The raw profile is the provider's own spelling.
+  describe("decides from the email as the provider sent it, never better-auth's lowercased copy", () => {
+    const kate = { id: 'u-kate', email: 'kate@canopyworks.com', emailVerified: true, role: 'user' };
+    const NOT_SUPPORTED = { error: 'email_not_supported', errorDescription: REFUSAL_DESCRIPTION };
+
+    it('refuses a look-alike that lowercases into the account\'s address', async () => {
+      // U+212A KELVIN SIGN: `toLowerCase()` hands the gate `kate@canopyworks.com`.
+      const data = fromProvider('sign-in', 'github', 'Kate@canopyworks.com', { id: 'u-kate' });
+      expect(data.user.email).toBe('kate@canopyworks.com');
+      await expect(gate(data, ctxWith(kate, [{ providerId: 'github' }]))).resolves.toEqual(NOT_SUPPORTED);
+    });
+
+    it('takes the same address in any ASCII case', async () => {
+      const data = fromProvider('sign-in', 'github', 'Kate@CanopyWorks.com', { id: 'u-kate' });
+      await expect(gate(data, ctxWith(kate, [{ providerId: 'github' }]))).resolves.toBeUndefined();
+    });
+
+    it('refuses when the profile names no email', async () => {
+      const noProfile: GateData = {
+        user: { id: 'u-kate', email: 'kate@canopyworks.com', emailVerified: true },
+        source: { action: 'sign-in', method: 'oauth', oauth: { providerId: 'github' } },
+      };
+      await expect(gate(noProfile, ctxWith(kate, [{ providerId: 'github' }]))).resolves.toEqual(NOT_SUPPORTED);
+      const notAString: GateData = {
+        ...noProfile,
+        source: { action: 'sign-in', method: 'oauth', oauth: { providerId: 'github', profile: { email: 42 } } },
+      };
+      await expect(gate(notAString, ctxWith(kate, [{ providerId: 'github' }]))).resolves.toEqual(NOT_SUPPORTED);
+    });
+
+    it('never approves one address while better-auth acts on another', async () => {
+      // An on-list address in the profile can't carry an off-list one through.
+      const data = fromProvider('create-user', 'google', 'alice@canopyworks.com', { email: 'mallory@evil.example' });
+      await expect(gate(data, NO_DB)).resolves.toEqual(NOT_SUPPORTED);
+    });
+  });
+
   it('logs one code-only line per refusal, and nothing when it lets one through', async () => {
-    const refused = await captureOutput(() =>
-      gate({ user: { email: 'outsider@evil.example', emailVerified: true }, source: oauth('create-user', 'google') }, NO_DB),
-    );
+    const refused = await captureOutput(() => gate(fromProvider('create-user', 'google', 'outsider@evil.example'), NO_DB));
     expect(refused.result).toEqual({ error: 'email_domain_not_allowed', errorDescription: REFUSAL_DESCRIPTION });
     expect(refused.authLines).toEqual([
       {
@@ -344,18 +398,13 @@ describe('createIdentityGate', () => {
       expect(refused.output.join('')).not.toContain(text);
     }
 
-    const allowed = await captureOutput(() =>
-      gate({ user: { email: 'alice@canopyworks.com', emailVerified: true }, source: oauth('create-user', 'google') }, NO_DB),
-    );
+    const allowed = await captureOutput(() => gate(fromProvider('create-user', 'google', 'alice@canopyworks.com'), NO_DB));
     expect(allowed.result).toBeUndefined();
     expect(allowed.output).toEqual([]);
   });
 
   it('lets an existing admin sign in from outside the list, and no member', async () => {
-    const data: GateData = {
-      user: { id: 'u-boss', email: 'boss@partner.example', emailVerified: true },
-      source: oauth('sign-in', 'google'),
-    };
+    const data = fromProvider('sign-in', 'google', 'boss@partner.example', { id: 'u-boss' });
     const boss = { id: 'u-boss', email: 'boss@partner.example', emailVerified: true, role: 'admin' };
     await expect(gate(data, ctxWith(boss, [{ providerId: 'google' }]))).resolves.toBeUndefined();
     await expect(gate(data, ctxWith({ ...boss, role: 'user' }, [{ providerId: 'google' }]))).resolves.toEqual({
