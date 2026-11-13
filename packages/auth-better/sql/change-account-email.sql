@@ -3,7 +3,9 @@
 --
 -- The way back for someone the identity gate (identity-gate.ts) turns away because their Google
 -- or GitHub address changed since they linked it: the provider no longer vouches for the
--- account's own email (`email_mismatch` in the host log).
+-- account's own email (`email_mismatch` in the host log). Also the fix for an account whose email
+-- has a capital letter (sign-up audit, section 6): better-auth looks emails up in lowercase, so a
+-- setup admin the wizard saved as typed never links its first sign-in.
 --
 --   dry run (the default; shows the account before and after, then rolls back):
 --     psql -X -v ON_ERROR_STOP=1 -v old_email=<its email now> -v new_email=<new email> -f change-account-email.sql

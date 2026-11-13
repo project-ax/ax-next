@@ -84,7 +84,7 @@ afterAll(async () => {
 interface BootedStack {
   harness: TestHarness;
   baseUrl: string;
-  /** The setup wizard's admin (`admin@canopyworks.com`): role admin, unverified, no accounts. */
+  /** The setup wizard's admin (`admin@canopyworks.com` unless named): role admin, unverified, no accounts. */
   adminCookie: string;
   adminUserId: string;
 }
@@ -97,7 +97,7 @@ async function dropTables(): Promise<void> {
   await db.schema.dropTable('auth_better_v1_users').ifExists().execute();
 }
 
-async function bootStack(): Promise<BootedStack> {
+async function bootStack(adminEmail = 'admin@canopyworks.com'): Promise<BootedStack> {
   await dropTables();
   const http = createHttpServerPlugin({
     host: '127.0.0.1',
@@ -132,7 +132,7 @@ async function bootStack(): Promise<BootedStack> {
     const { cookieHeader, user } = await signInAsAdmin({
       bus: harness.bus,
       cookieKey: COOKIE_KEY,
-      email: 'admin@canopyworks.com',
+      email: adminEmail,
     });
     return {
       harness,
@@ -388,6 +388,25 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.location).not.toContain('/auth/error');
     expect((await me(r.axSession)).id).toBe(aliceId);
     expect(await providersOf(aliceId)).toEqual(['github', 'google']);
+  });
+
+  it('a setup admin typed with capital letters links its first Google sign-in and stays admin (K4)', async () => {
+    // The wizard stored the email as typed. better-auth looks a user up by the
+    // lowercased address and Postgres compares it case-sensitively, so it never
+    // found this admin: the first Google sign-in made a NEW member instead.
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack('Owner@CanopyWorks.com');
+    await addProvider('google', 'canopyworks.com');
+    idp.nextGoogle({ email: 'owner@canopyworks.com', emailVerified: true, sub: 'g-owner' });
+    const r = await oauthSignIn(stack.baseUrl, 'google');
+    expect(r.status).toBe(302);
+    expect(r.location).not.toContain('/auth/error');
+    const who = await me(r.axSession);
+    expect(who.id).toBe(stack.adminUserId);
+    expect(who.isAdmin).toBe(true);
+    expect(await providersOf(stack.adminUserId)).toEqual(['google']);
+    const rows = await db.selectFrom('auth_better_v1_users').select('email').execute();
+    expect(rows.map((row) => row.email)).toEqual(['owner@canopyworks.com']);
   });
 
   it('an admin whose email is outside the domain list still signs in', async () => {

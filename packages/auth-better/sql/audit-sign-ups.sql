@@ -21,7 +21,7 @@
 -- token, a session token, a verification value or a provider secret. Its output still names
 -- people, so keep it out of tickets and chat (record the counts only).
 --
--- Columns of sections 1-5: sign_in_methods is the account's provider ids, oldest first
+-- Columns of sections 1-6: sign_in_methods is the account's provider ids, oldest first
 -- ('credential' is a password); live_sessions counts sessions not yet expired.
 
 \if :{?domain}
@@ -144,11 +144,34 @@ SELECT id, email, role, email_verified, created_at, sign_in_methods, live_sessio
  WHERE has_github OR provider_sign_ins >= 2
  ORDER BY created_at, email;
 
-\echo '== 6. Counts'
+-- better-auth finds a user by the lowercased email, and the column compares case-sensitively, so an
+-- account whose email has a capital letter is never found by email: a setup admin the wizard saved
+-- as typed (it kept capitals until TASK-1116) never links its first sign-in, which makes a new member
+-- instead. Such an account still signs in through a method already on it. One with a character
+-- beyond plain ASCII (0x21-0x7E) can't sign in at all: the sign-in gate refuses such an address.
+-- deploy/GKE.md 4i changes the email.
+\echo '== 6. Accounts whose email has a capital letter or a character beyond plain ASCII (fix with 4i)'
+WITH u AS (
+  SELECT u.id, u.email, u.role, u.email_verified, u.created_at,
+         coalesce((SELECT string_agg(a.provider_id, ',' ORDER BY a.created_at, a.provider_id)
+                     FROM auth_better_v1_accounts a WHERE a.user_id = u.id), '(none)') AS sign_in_methods,
+         (SELECT count(*) FROM auth_better_v1_sessions s
+           WHERE s.user_id = u.id AND s.expires_at > now()) AS live_sessions,
+         u.email !~ '^[\x21-\x7e]+$' AS not_ascii
+    FROM auth_better_v1_users u
+)
+SELECT id, email, role, email_verified, created_at, sign_in_methods, live_sessions,
+       CASE WHEN not_ascii THEN 'not plain ASCII - cannot sign in (4i)'
+            ELSE 'capital letters - lowercase it (4i)' END AS verdict
+  FROM u
+ WHERE email <> lower(email) OR not_ascii
+ ORDER BY created_at, email;
+
+\echo '== 7. Counts'
 WITH allowed AS (
   SELECT lower(trim(d)) AS d FROM regexp_split_to_table(:'domain', ',') AS d WHERE trim(d) <> ''
 ), u AS (
-  SELECT u.email_verified, u.role,
+  SELECT u.email_verified, u.role, u.email,
          lower(substring(u.email from '@([^@]*)$')) AS email_domain,
          EXISTS (SELECT 1 FROM auth_better_v1_accounts a WHERE a.user_id = u.id) AS has_accounts,
          (SELECT min(a.created_at) FROM auth_better_v1_accounts a
@@ -168,7 +191,8 @@ SELECT count(*) FILTER (WHERE email_domain IS NULL OR email_domain NOT IN (SELEC
        count(*) FILTER (WHERE first_provider_link >= password_set) AS taken_over,
        count(*) FILTER (WHERE NOT email_verified AND NOT (role = 'admin' AND NOT has_accounts)) AS unverified,
        count(*) FILTER (WHERE id_token_sign_in) AS id_token_sign_in,
-       count(*) FILTER (WHERE has_github OR provider_sign_ins >= 2) AS to_confirm
+       count(*) FILTER (WHERE has_github OR provider_sign_ins >= 2) AS to_confirm,
+       count(*) FILTER (WHERE email <> lower(email) OR email !~ '^[\x21-\x7e]+$') AS email_to_fix
   FROM u;
 
 ROLLBACK;

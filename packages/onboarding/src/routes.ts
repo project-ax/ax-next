@@ -75,8 +75,14 @@ export interface OnboardingRouteHandlerDeps {
   validationTimeoutMs?: number;
 }
 
+/**
+ * Plain ASCII only (U+0021 to U+007E). The sign-in gate in @ax/auth-better
+ * refuses any other address, so an admin saved with one could never sign in
+ * (TASK-1116). Refusing it here makes it the wizard's `invalid-email`, not an
+ * error from auth:create-bootstrap-user.
+ */
 function isValidEmail(s: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && /^[\x21-\x7E]+$/.test(s);
 }
 
 export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) {

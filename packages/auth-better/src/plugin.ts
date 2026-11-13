@@ -37,6 +37,7 @@ import {
   type ProviderRow,
 } from './handler.js';
 import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
+import { isPlainAscii } from './identity-gate.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -608,6 +609,18 @@ async function createBootstrapUser(
         message: 'email must look like an email address',
       });
     }
+    // Checked as typed, before lowercasing: `toLowerCase()` turns some
+    // non-ASCII letters into ASCII ones (the Kelvin sign U+212A into "k").
+    // The sign-in gate refuses any address beyond plain ASCII, so an admin
+    // saved with one could never sign in (TASK-1116).
+    if (!isPlainAscii(input.email)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'auth:create-bootstrap-user',
+        message: 'email must be plain ASCII',
+      });
+    }
   }
 
   // I6: bootstrap is one-shot. Refuse if any admin already exists.
@@ -628,9 +641,14 @@ async function createBootstrapUser(
   }
 
   const id = `usr_${randomBytes(16).toString('hex')}`;
+  // Lowercase (TASK-1116). better-auth finds a user by the lowercased email
+  // and the column compares case-sensitively, so an admin stored as typed
+  // (`Owner@CanopyWorks.com`) was never found at its first sign-in: Google
+  // made a new member instead, and the admin could never sign in. Plain ASCII
+  // was checked above, so this folds ASCII case and nothing else.
   const email =
     input.email !== undefined && input.email.length > 0
-      ? input.email
+      ? input.email.toLowerCase()
       : `bootstrap+${id}@local.invalid`;
   const displayName = input.displayName.length > 0 ? input.displayName : null;
   const now = new Date();

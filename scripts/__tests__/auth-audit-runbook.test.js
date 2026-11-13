@@ -133,12 +133,14 @@ describe('the sign-up audit runbook (GKE.md 4h)', () => {
     const headers = script.split('\n').filter((l) => l.startsWith("\\echo '== ")).map((l) => l.slice(7, -1));
     expect(headers.length, 'the script prints no section headers').toBeGreaterThan(0);
     for (const h of headers) expect(text, `4h does not quote "${h}"`).toContain(h);
-    for (const name of ['outside_domain', 'with_password', 'taken_over', 'unverified', 'id_token_sign_in', 'to_confirm']) {
+    for (const name of ['outside_domain', 'with_password', 'taken_over', 'unverified', 'id_token_sign_in', 'to_confirm',
+      'email_to_fix']) {
       expect(script, `the script does not count ${name}`).toMatch(new RegExp(`\\bAS ${name}\\b`));
       expect(text, `4h does not explain ${name}`).toContain(name);
     }
     for (const verdict of ['LINKED AFTER PASSWORD - treat as taken over', 'password only',
-      'password added after a provider sign-in - ask a developer', 'confirm with the person']) {
+      'password added after a provider sign-in - ask a developer', 'confirm with the person',
+      'capital letters - lowercase it (4i)', 'not plain ASCII - cannot sign in (4i)']) {
       expect(script).toContain(`'${verdict}'`);
       expect(text).toContain(verdict);
     }

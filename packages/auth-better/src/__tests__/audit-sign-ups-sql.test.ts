@@ -15,6 +15,8 @@ const TAKEN_OVER = 'LINKED AFTER PASSWORD - treat as taken over';
 const PASSWORD_ONLY = 'password only';
 const PASSWORD_LATER = 'password added after a provider sign-in - ask a developer';
 const CONFIRM = 'confirm with the person';
+const CAPITALS = 'capital letters - lowercase it (4i)';
+const NOT_ASCII = 'not plain ASCII - cannot sign in (4i)';
 /** Every secret column gets a value with this in it. None may reach the output. */
 const SECRET = 'SECRET';
 const TABLES = ['auth_better_v1_users', 'auth_better_v1_accounts', 'auth_better_v1_sessions',
@@ -29,7 +31,8 @@ type Seed = {
 /** `at` is minutes after the base time. Google rows made by the redirect flow have a scope. */
 const SEEDS: Seed[] = [
   { email: 'alice@canopyworks.com', verified: true, accounts: [{ provider: 'google', at: 0 }], sections: [] },
-  { email: 'Bob@CanopyWorks.COM', verified: true, accounts: [{ provider: 'google', at: 0 }], sections: [] },
+  // Signs in through its Google link, but better-auth's lowercase lookup by email never finds it.
+  { email: 'Bob@CanopyWorks.COM', verified: true, accounts: [{ provider: 'google', at: 0 }], sections: [6] },
   { email: 'guest@gmail.example', verified: true, accounts: [{ provider: 'google', at: 0 }], session: 'expired', sections: [1] },
   { email: 'eng@eng.canopyworks.com', verified: true, accounts: [{ provider: 'google', at: 0 }], sections: [1] },
   { email: 'pwonly@canopyworks.com', verified: false, accounts: [{ provider: 'credential', at: 0 }], sections: [2, 3] },
@@ -40,6 +43,10 @@ const SEEDS: Seed[] = [
     accounts: [{ provider: 'google', at: 0 }, { provider: 'credential', at: 1 }], sections: [2] },
   { email: 'mallory@evil.example', verified: false, accounts: [{ provider: 'credential', at: 0 }], session: 'live', sections: [1, 2, 3] },
   { email: 'admin@canopyworks.com', verified: false, role: 'admin', accounts: [], sections: [] },
+  // A setup admin the wizard saved as typed: its first sign-in would make a new member instead.
+  { email: 'Owner@CanopyWorks.com', verified: false, role: 'admin', accounts: [], sections: [6] },
+  // The sign-in gate refuses an address beyond plain ASCII, so this one can't sign in at all.
+  { email: 'jos\u00e9@canopyworks.com', verified: true, accounts: [{ provider: 'google', at: 0 }], sections: [6] },
   { email: 'promoted@canopyworks.com', verified: false, role: 'admin', accounts: [{ provider: 'credential', at: 0 }], sections: [2, 3] },
   // A Google account made by POST /auth/sign-in/social with an idToken: better-auth stores no scope.
   { email: 'idtok@canopyworks.com', verified: true, accounts: [{ provider: 'google', at: 0, scope: null }], sections: [4] },
@@ -132,7 +139,7 @@ function row(section: string, email: string): string[] {
 /** The header cells of a section's table. */
 const header = (section: string) => section.split('\n')[1]!.split('|').map((c) => c.trim());
 
-/** The counts row of section 6, by column name. */
+/** The counts row of section 7, by column name. */
 function counts(section: string): Record<string, number> {
   const lines = section.split('\n');
   const names = lines[1]!.split('|').map((c) => c.trim());
@@ -147,10 +154,10 @@ describe('audit-sign-ups.sql', () => {
     expect(r.exitCode, r.output).toBe(0);
     const out = r.stdout;
     const s = sections(out);
-    expect([...s.keys()]).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([...s.keys()]).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 
     for (const seedRow of SEEDS) {
-      const found = [1, 2, 3, 4, 5].filter((n) => s.get(n)!.split('|').some((c) => c.trim() === seedRow.email));
+      const found = [1, 2, 3, 4, 5, 6].filter((n) => s.get(n)!.split('|').some((c) => c.trim() === seedRow.email));
       expect(found, seedRow.email).toEqual(seedRow.sections);
     }
 
@@ -160,6 +167,7 @@ describe('audit-sign-ups.sql', () => {
     expect(header(s.get(3)!)).toEqual(userColumns);
     expect(header(s.get(4)!)).toEqual([...userColumns, 'id_token_link']);
     expect(header(s.get(5)!)).toEqual([...userColumns, 'methods_added', 'verdict']);
+    expect(header(s.get(6)!)).toEqual([...userColumns, 'verdict']);
 
     // Section 0: the providers and their lists, `(any domain)` for none.
     expect(row(s.get(0)!, 'google')).toEqual(['google', 't', 'canopyworks.com']);
@@ -187,8 +195,15 @@ describe('audit-sign-ups.sql', () => {
     expect(row(s.get(5)!, 'twogoogle@canopyworks.com')[5]).toBe('google,google');
     expect(row(s.get(5)!, 'gh-admin@canopyworks.com')[5]).toBe('github');
 
-    expect(counts(s.get(6)!)).toEqual({
+    // What each email needs: capitals can just be lowercased; anything beyond ASCII can't sign in.
+    expect(row(s.get(6)!, 'Bob@CanopyWorks.COM').at(-1)).toBe(CAPITALS);
+    expect(row(s.get(6)!, 'Owner@CanopyWorks.com').at(-1)).toBe(CAPITALS);
+    expect(row(s.get(6)!, 'Owner@CanopyWorks.com')[5]).toBe('(none)');
+    expect(row(s.get(6)!, 'jos\u00e9@canopyworks.com').at(-1)).toBe(NOT_ASCII);
+
+    expect(counts(s.get(7)!)).toEqual({
       outside_domain: 3, with_password: 5, taken_over: 1, unverified: 4, id_token_sign_in: 1, to_confirm: 4,
+      email_to_fix: 3,
     });
 
     // No secret column's value, and no secret column's name.
@@ -207,7 +222,7 @@ describe('audit-sign-ups.sql', () => {
     const s = sections(r.stdout);
     expect(s.get(1)).not.toContain('eng@eng.canopyworks.com');
     expect(s.get(1)).not.toContain('Bob@CanopyWorks.COM');
-    expect(counts(s.get(6)!).outside_domain).toBe(2);
+    expect(counts(s.get(7)!).outside_domain).toBe(2);
   });
 
   it('prints its usage and runs nothing without -v domain', async () => {
@@ -233,7 +248,7 @@ describe('audit-sign-ups.sql', () => {
     const r = await runAudit(['-v', 'domain=canopyworks.com'], AUDIT,
       ['-c', "DELETE FROM auth_better_v1_accounts WHERE provider_id = 'credential'"]);
     expect(r.exitCode).not.toBe(0);
-    expect(r.output).toContain('== 6. Counts');
+    expect(r.output).toContain('== 7. Counts');
     expect(r.output).toContain('cannot execute DELETE in a read-only transaction');
     expect(await rowCounts()).toEqual(before);
   });

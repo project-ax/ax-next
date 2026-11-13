@@ -128,7 +128,7 @@ describe('change-account-email.sql', () => {
     expect(again.exitCode).not.toBe(0);
   });
 
-  it('matches the old email exactly as stored, capitals included', async () => {
+  it("matches the old email exactly as stored, so it can lowercase a setup admin's (audit section 6)", async () => {
     const r = await run({ old_email: 'Owner@CanopyWorks.com', new_email: 'owner@canopyworks.com', apply: '1' });
     expect(r.exitCode, r.output).toBe(0);
     expect(await emailOf('u-owner')).toBe('owner@canopyworks.com');

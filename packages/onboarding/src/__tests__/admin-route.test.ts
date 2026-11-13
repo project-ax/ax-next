@@ -235,6 +235,56 @@ describe('@ax/onboarding POST /setup/admin', () => {
     expect((await res.json() as { error: string }).error).toBe('invalid-email');
   });
 
+  // TASK-1116: the sign-in refuses any address beyond plain ASCII, so an
+  // admin saved with one could never sign in. Say so here, as a 400 the
+  // wizard explains, not as an error from auth-better.
+  it('an email with a character beyond plain ASCII → 400', async () => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Jos\u00e9', email: 'jos\u00e9@example.com' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid-email');
+  });
+
+  it('saves the admin email in lowercase, so its first sign-in can find it', async () => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Owner', email: 'Owner@CanopyWorks.com' }),
+    });
+
+    expect(res.status).toBe(200);
+    const pool = new pg.Pool({ connectionString, max: 1 });
+    pool.on('error', () => {});
+    try {
+      const { rows } = await pool.query<{ email: string }>('SELECT email FROM auth_better_v1_users');
+      expect(rows.map((r) => r.email)).toEqual(['owner@canopyworks.com']);
+    } finally {
+      await pool.end();
+    }
+  });
+
   it('missing name → 400', async () => {
     stack = await bootStack();
     const { port } = stack;

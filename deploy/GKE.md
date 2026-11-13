@@ -1120,7 +1120,7 @@ So it needs no backup, and it's safe while the app is up.
 
 **Its output names people.** It prints account ids, emails, roles and
 timestamps (never a password hash, a token or a secret). Keep it out of tickets
-and chat. Record only the section 6 counts on the card.
+and chat. Record only the section 7 counts on the card.
 
 **Every `kubectl` command names its context**, as in 4f and 4g. The default
 context on our laptops is prod, so we never lean on it. Set it once, check,
@@ -1203,7 +1203,7 @@ kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-n
 
 #### Step 3: read it
 
-Sections 1–5 list each account's `id`, `email`, `role`, `email_verified`,
+Sections 1–6 list each account's `id`, `email`, `role`, `email_verified`,
 `created_at`, `sign_in_methods` (how it signs in, oldest first; `credential` is
 a password) and `live_sessions` (sessions that haven't expired yet).
 
@@ -1257,11 +1257,26 @@ a password) and `live_sessions` (sessions that haven't expired yet).
   also means someone whose provider email changed since they linked it is
   turned away until the two match again, or until you change the account's
   email ([4i](#4i-change-an-accounts-email-sign-in-recovery)).
-- **`== 6. Counts`.** The numbers to record on the card: `outside_domain`,
+- **`== 6. Accounts whose email has a capital letter or a character beyond plain ASCII (fix with 4i)`.**
+  The sign-in only matches lowercase plain ASCII, and until TASK-1116 the
+  setup wizard saved the admin's email exactly as typed. The `verdict` column:
+  - `capital letters - lowercase it (4i)`: the account still signs in through
+    a method it already has, but a sign-in looks emails up in lowercase, so
+    nothing new can find it. A setup admin here with `sign_in_methods`
+    `(none)` can't sign in at all: their first sign-in makes a new account,
+    without admin rights, instead. Change the email to the same address in
+    lowercase with [4i](#4i-change-an-accounts-email-sign-in-recovery).
+    Lowercasing doesn't change whose address it is.
+  - `not plain ASCII - cannot sign in (4i)`: the sign-in refuses an address
+    like this, so nobody can sign in to this account. If the person has a
+    plain ASCII address their provider vouches for, 4i can move the account
+    to it, after you've confirmed it's them.
+- **`== 7. Counts`.** The numbers to record on the card: `outside_domain`,
   `with_password`, `taken_over` (the `LINKED AFTER PASSWORD` rows),
-  `unverified`, `id_token_sign_in` and `to_confirm` (the section 5 rows).
+  `unverified`, `id_token_sign_in`, `to_confirm` (the section 5 rows) and
+  `email_to_fix` (the section 6 rows).
 
-If sections 1–5 are empty, there's nothing to do. Otherwise, change no data
+If sections 1–6 are empty, there's nothing to do. Otherwise, change no data
 without a developer. When you're done, delete `audit-output.txt`.
 
 ---
@@ -1276,6 +1291,13 @@ for help." The host log has a `sign-in refused` line with
 `"code":"email_mismatch"` from the time they tried. There's no screen for
 fixing that. This step is the way back: it sets the account's email to the
 address their provider vouches for now.
+
+It's also the fix for the accounts in section 6 of
+[4h](#4h-audit-accounts-after-task-1116-sign-up-gate). Above all, a setup admin
+whose email the wizard saved with capital letters (it kept them until
+TASK-1116): sign-in looks emails up in lowercase, so it never finds that
+account, and their first sign-in makes a new account without admin rights
+instead. For them, the new email is the same address in lowercase.
 
 The script changes the email on one account, inside one transaction, and
 prints the account before and after the change. It touches nothing else: not
