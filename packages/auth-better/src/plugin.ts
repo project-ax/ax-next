@@ -136,6 +136,9 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   const secret = config.secret;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
+  // Provider kinds loadProviders() has already said it skips, so each is
+  // logged once per process rather than on every provider change.
+  const reportedSkippedKinds = new Set<string>();
   const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 
   return {
@@ -204,7 +207,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         },
       };
       const store = createProvidersStore(localDb, envelope);
-      const providers = await loadProviders(localDb, bus, initCtx);
+      const providers = await loadProviders(localDb, bus, initCtx, reportedSkippedKinds);
 
       // 3) Build the handler --------------------------------------------
       handle = createBetterAuthHandler({
@@ -241,7 +244,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:providers-changed',
         PROVIDERS_CHANGED_KEY,
         async (subCtx: AgentContext) => {
-          const next = await loadProviders(localDb, bus, subCtx);
+          const next = await loadProviders(localDb, bus, subCtx, reportedSkippedKinds);
           localHandle.rebuild({
             database: localDb,
             providers: next,
@@ -444,6 +447,7 @@ async function loadProviders(
   db: Kysely<AuthBetterDatabase>,
   bus: HookBus,
   ctx: AgentContext,
+  reportedSkippedKinds: Set<string>,
 ): Promise<ProviderRow[]> {
   const rows = await db
     .selectFrom('auth_providers')
@@ -466,7 +470,19 @@ async function loadProviders(
     // better-auth, which rejects an unknown social-provider key and would
     // take every sign-in down with it (TASK-1116). The admin list still
     // shows such a row, and DELETE removes it.
-    if (r.kind !== 'google' && r.kind !== 'github') continue;
+    //
+    // Said once per kind per process, so an operator can see why an enabled
+    // row signs nobody in. The kind is the row's own key, written by an admin
+    // or SQL, never request input.
+    if (r.kind !== 'google' && r.kind !== 'github') {
+      if (!reportedSkippedKinds.has(r.kind)) {
+        reportedSkippedKinds.add(r.kind);
+        process.stderr.write(
+          `[ax/auth-better] sign-in provider ignored ${JSON.stringify({ code: 'provider-kind-unsupported', kind: r.kind })}\n`,
+        );
+      }
+      continue;
+    }
     const { plaintext } = await bus.call<
       { ciphertext: Uint8Array },
       { plaintext: string }

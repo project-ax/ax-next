@@ -34,11 +34,18 @@ const KIND_LABEL: Record<AuthProviderKind, string> = {
 };
 
 /**
- * The list can still hold a kind the form no longer offers (a leftover `oidc`
- * row, TASK-1116), so an unknown kind shows as stored and can still be removed.
+ * Google and GitHub are the only kinds the server signs anyone in with. The
+ * list can still hold another (a leftover `oidc` row, TASK-1116): the server
+ * skips it at sign-in whatever its switch says, refuses to toggle it, and
+ * still lets it be removed.
  */
+function isWiredKind(kind: string): kind is AuthProviderKind {
+  return Object.hasOwn(KIND_LABEL, kind);
+}
+
+/** An unknown kind shows as stored. */
 function labelFor(kind: string): string {
-  return Object.hasOwn(KIND_LABEL, kind) ? KIND_LABEL[kind as AuthProviderKind] : kind;
+  return isWiredKind(kind) ? KIND_LABEL[kind] : kind;
 }
 
 export function AuthProvidersTab() {
@@ -86,10 +93,14 @@ export function AuthProvidersTab() {
    *
    * So the last one asks first. Any other toggle still flips immediately: a
    * confirmation on every switch would train people to click through this one.
+   *
+   * Only Google and GitHub count. A leftover row of another kind signs nobody
+   * in, enabled or not, so counting it hid this warning on the real last
+   * method (TASK-1116).
    */
-  const enabledCount = providers.filter((p) => p.enabled).length;
+  const enabledCount = providers.filter((p) => p.enabled && isWiredKind(p.kind)).length;
   const isLastEnabled = (p: AuthProviderEntry): boolean =>
-    p.enabled && enabledCount === 1;
+    p.enabled && isWiredKind(p.kind) && enabledCount === 1;
 
   const applyToggle = async (p: AuthProviderEntry) => {
     setActionError(null);
@@ -169,33 +180,44 @@ export function AuthProvidersTab() {
       )}
 
       <ul className="flex flex-col list-none m-0 p-0">
-        {providers.map((p) => (
-          <li
-            key={p.kind}
-            className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
-          >
-            <div className="flex flex-col min-w-0 flex-1 gap-0.5">
-              <span className="text-[13px] font-medium">{labelFor(p.kind)}</span>
-
-            </div>
-            {/* (D5) Was a hand-rolled switch — two divs and a translate. The
-                primitive is installed and brings its own keyboard handling. */}
-            <Switch
-              checked={p.enabled}
-              aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
-              onCheckedChange={() => void handleToggle(p)}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label={`Details for ${labelFor(p.kind)}`}
-              onClick={() => setSelected(p)}
+        {providers.map((p, i) => {
+          const wired = isWiredKind(p.kind);
+          const hintId = `auth-provider-unsupported-${i}`;
+          return (
+            <li
+              key={p.kind}
+              className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
             >
-              <ChevronRight aria-hidden="true" />
-            </Button>
-          </li>
-        ))}
+              <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                <span className="text-[13px] font-medium">{labelFor(p.kind)}</span>
+                {!wired && (
+                  <span id={hintId} className="text-xs text-muted-foreground">
+                    No longer supported, so it does nothing. You can remove it.
+                  </span>
+                )}
+              </div>
+              {/* (D5) Was a hand-rolled switch — two divs and a translate. The
+                  primitive is installed and brings its own keyboard handling.
+                  A leftover kind's switch is off: the server refuses to toggle it. */}
+              <Switch
+                checked={p.enabled}
+                disabled={!wired}
+                aria-describedby={wired ? undefined : hintId}
+                aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
+                onCheckedChange={() => void handleToggle(p)}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`Details for ${labelFor(p.kind)}`}
+                onClick={() => setSelected(p)}
+              >
+                <ChevronRight aria-hidden="true" />
+              </Button>
+            </li>
+          );
+        })}
       </ul>
 
       {adding ? (

@@ -20,6 +20,7 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin } from '../plugin.js';
 import type { AuthBetterDatabase } from '../migrations.js';
 import { freshClientIp } from './support/fake-idp.js';
+import { captureOutput } from './support/capture-output.js';
 
 // ---------------------------------------------------------------------------
 // I10 — runtime provider config + handler hot-reload (no kernel restart).
@@ -410,7 +411,18 @@ describe('@ax/auth-better — provider hot-reload (I10)', () => {
           updated_at: now,
         })
         .execute();
-      await stack.harness.bus.fire('auth:providers-changed', ctx, {});
+      // Skipped on every rebuild, said once: one line names the kind, not a
+      // line per provider change.
+      const { authLines } = await captureOutput(async () => {
+        await stack.harness.bus.fire('auth:providers-changed', ctx, {});
+        await stack.harness.bus.fire('auth:providers-changed', ctx, {});
+      });
+      expect(authLines).toEqual([
+        {
+          via: 'stderr',
+          line: '[ax/auth-better] sign-in provider ignored {"code":"provider-kind-unsupported","kind":"oidc"}\n',
+        },
+      ]);
 
       const signIn = await fetch(`${stack.baseUrl}/auth/sign-in/social`, {
         method: 'POST',

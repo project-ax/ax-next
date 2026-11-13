@@ -10,6 +10,8 @@
  *   6. Toggle calls PATCH and refetches.
  *   7. Delete is gated by a styled confirm dialog; Cancel cancels the call.
  *   8. Save error renders inline; the form stays open.
+ *   9. A leftover row of a kind the server no longer runs (oidc) is no way in:
+ *      it doesn't count toward the last-method warning, and its switch is off.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
@@ -131,6 +133,14 @@ describe('AuthProvidersTab', () => {
     clientId: 'gh-client-id',
   };
 
+  // TASK-1116: saved back when the form offered "Generic OIDC". The server
+  // skips it at sign-in and refuses to toggle it; only DELETE works.
+  const oidcEntry = {
+    ...googleEntry,
+    kind: 'oidc',
+    clientId: 'oidc-client-id',
+  };
+
   it('toggle PATCHes the new enabled state and refetches', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonOk({ providers: [googleEntry, githubEntry] }),
@@ -214,6 +224,20 @@ describe('AuthProvidersTab', () => {
       expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
     });
 
+    it('does not count a leftover oidc row as another way in', async () => {
+      // Enabled or not, nobody can sign in through it: Google is still the last one.
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, oidcEntry] }));
+
+      render(<AuthProvidersTab />);
+      await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+
+      expect(
+        await screen.findByText(/turn off the only way to sign in\?/i),
+      ).toBeTruthy();
+      expect(fetchMock.mock.calls).toHaveLength(1);
+    });
+
     it('asks nothing when turning one back ON', async () => {
       // The guard is about REMOVING the last way in, not about adding one.
       fetchMock.mockResolvedValueOnce(
@@ -229,6 +253,23 @@ describe('AuthProvidersTab', () => {
       await waitFor(() => expect(fetchMock.mock.calls).toHaveLength(3));
       expect(screen.queryByText(/turn off the only way to sign in\?/i)).toBeNull();
     });
+  });
+
+  it("a leftover oidc row's switch is off, says why, and the row can still be removed", async () => {
+    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, oidcEntry] }));
+
+    render(<AuthProvidersTab />);
+    const leftover = (await screen.findByRole('switch', { name: /oidc/i })) as HTMLButtonElement;
+    expect(leftover.disabled).toBe(true);
+    const hintId = leftover.getAttribute('aria-describedby');
+    expect(hintId).not.toBeNull();
+    expect(document.getElementById(hintId!)?.textContent).toMatch(/no longer supported/i);
+
+    fireEvent.click(leftover);
+    expect(fetchMock.mock.calls).toHaveLength(1);
+    // Google's own switch is untouched, and the leftover can still go.
+    expect((screen.getByRole('switch', { name: /Disable Google/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Details for oidc' })).toBeTruthy();
   });
 
   it('delete is gated by a styled dialog; Cancel cancels the request', async () => {
