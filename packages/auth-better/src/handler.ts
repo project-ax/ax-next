@@ -251,7 +251,13 @@ function build(input: HandlerInput): BuiltHandler {
       // token can be minted). identity-gate.ts says more.
       validateUserInfo: createIdentityGate(input.providers),
       additionalFields: {
-        role: { type: 'string', defaultValue: 'user' },
+        // `input: false` (TASK-1116): no client and no provider profile ever
+        // sets it. better-auth refuses `role` on /update-user (400
+        // FIELD_NOT_ALLOWED; before this, a member with better-auth's own
+        // session cookie could make themselves admin) and drops it from a
+        // provider's profile. Admins come only from the setup wizard or the
+        // operator's SQL.
+        role: { type: 'string', defaultValue: 'user', input: false },
       },
       modelName: 'auth_better_v1_users',
       fields: {

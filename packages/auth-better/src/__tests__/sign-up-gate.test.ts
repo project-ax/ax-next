@@ -292,6 +292,15 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     return row?.email_verified;
   }
 
+  async function roleOf(userId: string): Promise<string | undefined> {
+    const row = await db
+      .selectFrom('auth_better_v1_users')
+      .where('id', '=', userId)
+      .select('role')
+      .executeTakeFirst();
+    return row?.role;
+  }
+
   /**
    * better-auth's OWN session cookie for `userId`, signed the way better-call
    * signs cookies (`<token>.<base64 HMAC-SHA256>`). The bridge never hands one
@@ -616,5 +625,16 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.status).toBe(404);
     expect(r.body.code).toBe('ID_TOKEN_NOT_SUPPORTED');
     expect(await providersOf(id)).toEqual(['credential']);
+  });
+
+  it("/update-user can't make a member an admin", async () => {
+    // Admins come only from the setup wizard or the operator's own SQL.
+    const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
+    const session = await betterAuthSession(aliceId);
+    expect(await betterAuthSessionUser(session)).toBe(aliceId);
+    const r = await postJson('/auth/update-user', { role: 'admin' }, session);
+    expect(r.status).toBe(400);
+    expect(r.body.code).toBe('FIELD_NOT_ALLOWED');
+    expect(await roleOf(aliceId)).toBe('user');
   });
 });

@@ -75,6 +75,17 @@ describe('createBetterAuthHandler — account linking', () => {
     expect(typeof user?.validateUserInfo).toBe('function');
   });
 
+  it('never takes a role from a client or a provider profile (TASK-1116)', () => {
+    // `input: false`: better-auth refuses `role` on /update-user and drops it
+    // from a provider's profile, so only the setup wizard or SQL makes an admin.
+    createBetterAuthHandler({ database: stubDb, providers: [] });
+    const user = capturedConfigs[0]?.['user'] as
+      | { additionalFields?: { role?: { input?: boolean; defaultValue?: unknown } } }
+      | undefined;
+    expect(user?.additionalFields?.role?.input).toBe(false);
+    expect(user?.additionalFields?.role?.defaultValue).toBe('user');
+  });
+
   it('turns email and password sign-in off (TASK-1116)', () => {
     // A typed email proves nothing without a verification mail, and ax sends
     // none. `enabled: false` also stops a password set before the fix.
