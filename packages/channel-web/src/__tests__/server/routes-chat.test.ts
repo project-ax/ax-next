@@ -1206,6 +1206,42 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     }
   });
 
+  it('TASK-1093: a Slack DM thread is read-only in the web app through actual HTTP', async () => {
+    // Its turns belong to Slack: a web post would fork the thread and answer
+    // somewhere the person isn't looking. The read still works.
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const created = await booted.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create', booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test', origin: 'slack' },
+    );
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
+    try {
+      const result = await postMessage(booted.port, {
+        conversationId: created.conversationId,
+        agentId: 'agt_test',
+        contentBlocks: [{ type: 'text', text: 'Answering from the browser instead.' }],
+      });
+
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ error: 'conversation-not-found' });
+      expect(booted.chatRunCaptures).toEqual([]);
+      expect(callSpy.mock.calls.filter(([name]) => [
+        'conversations:bind-session', 'attachments:commit', 'agent:invoke',
+      ].includes(name))).toEqual([]);
+      const read = await fetch(`http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`);
+      expect(read.status).toBe(200);
+      expect((await read.json() as { conversation: Record<string, unknown> }).conversation).toMatchObject({
+        origin: 'slack',
+      });
+    } finally {
+      callSpy.mockRestore();
+    }
+  });
+
   it('TASK-925: a real routine decision still replays through HTTP approval while chat ingress stays closed', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },

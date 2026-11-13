@@ -173,10 +173,22 @@ describe('attendanceFor', () => {
     const bus = new HookBus();
     withConversations(bus, {
       'conv-a': { origin: undefined },
-      'conv-b': { origin: 'slack' },
+      'conv-b': { origin: 'carrier-pigeon' },
     });
     expect(await attendanceFor(bus, ctx(), 'conv-a')).toBe('unattended');
     expect(await attendanceFor(bus, ctx(), 'conv-b')).toBe('unattended');
+  });
+
+  it('a slack conversation is unattended until approval buttons exist (TASK-1095)', async () => {
+    // TASK-1093. A Slack DM is the owner's own turn (`source: 'user'`), but
+    // Slack can't show an approval card yet: read as attended, a held call
+    // would park on a button nobody can see. Unattended, it waits in Today and
+    // the host replays it on approval. TASK-1095 adds the buttons and must
+    // flip this (and this test) on purpose.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-slack': { origin: 'slack' } });
+    expect(await attendanceFor(bus, ctx({ source: 'user' }), 'conv-slack')).toBe('unattended');
+    expect(await attendanceFor(bus, ctx(), 'conv-slack')).toBe('unattended');
   });
 
   it('an external turn is unattended even in a web conversation', async () => {

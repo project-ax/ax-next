@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   AppendTranscriptOutputSchema,
+  CONVERSATION_ORIGINS,
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
@@ -54,6 +55,20 @@ describe('conversations return schemas', () => {
       const parsed = GetMetadataOutputSchema.parse({ ...full, workspaceRef: 'v1' });
       expect(parsed).not.toHaveProperty('workspaceRef');
       expect(parsed.conversationId).toBe('c1');
+    });
+
+    // TASK-1093. The schema and the store's list are one list: a channel the
+    // store can return must not be refused (invalid-return) on the way out.
+    it('accepts every origin the store can return, and nothing else', () => {
+      expect([...CONVERSATION_ORIGINS]).toEqual(['web', 'routine', 'slack']);
+      for (const origin of ['web', 'routine', 'slack']) {
+        expect(GetMetadataOutputSchema.safeParse({ ...full, origin }).success, origin).toBe(true);
+      }
+      for (const origin of ['Slack', 'carrier-pigeon', '', null]) {
+        expect(GetMetadataOutputSchema.safeParse({ ...full, origin }).success, String(origin)).toBe(
+          false,
+        );
+      }
     });
 
     it('rejects a missing required field', () => {

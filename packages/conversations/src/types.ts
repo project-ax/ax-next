@@ -33,16 +33,18 @@ export type { ContentBlock };
 export type TurnRole = 'user' | 'assistant' | 'tool';
 
 /**
- * The channel that opened a conversation. See `Conversation.origin`.
+ * The values a stored `origin` may take: one list for the type, the store's
+ * validation and read narrowing, and `conversations:get-metadata`'s return
+ * schema, so a value one of them knows can't be refused by another.
  *
- * Two values because `packages/` contains exactly two producers of
- * conversations: channel-web and the routines tick. A third channel adds a
- * third value.
+ * One value per producer of conversations in `packages/`: channel-web, the
+ * routines tick, and channel-slack's DM threads (TASK-1093). A fourth channel
+ * adds a fourth value.
  */
-export type ConversationOrigin = 'web' | 'routine';
+export const CONVERSATION_ORIGINS = ['web', 'routine', 'slack'] as const;
 
-/** The values a stored `origin` may take. Exported so the store can validate against one list. */
-export const CONVERSATION_ORIGINS: readonly ConversationOrigin[] = ['web', 'routine'];
+/** The channel that opened a conversation. See `Conversation.origin`. */
+export type ConversationOrigin = (typeof CONVERSATION_ORIGINS)[number];
 
 export interface Turn {
   turnId: string;
@@ -119,9 +121,15 @@ export interface Conversation {
    *
    * `'web'` on every row that predates the column and on every caller that
    * does not pass one: an existing conversation is by definition one a human
-   * opened. Adding Slack later adds a VALUE here, not a schema change — and
+   * opened. A new channel adds a VALUE here, not a schema change — and
    * deliberately not an `attendance` field, because attendance is derived and
    * a headless deployment would want "always unattended" regardless of channel.
+   *
+   * `'slack'` (TASK-1093) is a DM thread with the Slack bot. channel-web
+   * refuses posts into any non-`'web'` conversation, so it is read-only in the
+   * web app, and decisions reads it as unattended (Slack can't show an
+   * approval card yet). TASK-1095 adds Slack approval buttons and must flip
+   * that attendance.
    *
    * Attendance is the channel's default. An `'external'` turn (nobody with
    * access to the agent present) is unattended in any channel, because the
@@ -554,7 +562,7 @@ export const GetMetadataOutputSchema = z.object({
   // here vanishes silently on the way out of the bus — the attendance read
   // would see `undefined` and fall to its unattended fail-safe for every
   // conversation, forever, with nothing failing loudly.
-  origin: z.enum(['web', 'routine']),
+  origin: z.enum(CONVERSATION_ORIGINS),
   activeSessionId: z.string().nullable(),
 }) as unknown as ZodType<GetMetadataOutput>;
 
