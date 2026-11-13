@@ -221,8 +221,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     if (offAsked) return;
     offAsked = true;
     onEyes(async () => {
+      // Runs at most once (`offAsked`), after the add has settled.
       if (!reacted) return;
-      reacted = false;
       try {
         await api.removeReaction(botToken, eyes);
       } catch (err) {
