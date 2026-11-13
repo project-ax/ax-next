@@ -166,11 +166,13 @@ const DEFAULT_TURN_END_GRACE_MS = 60_000;
  * (`system-prompt:<reason>`, TASK-908), which the orchestrator fires right
  * after building the system prompt and before connector assembly. A message the
  * orchestrator couldn't save (`conversation:message-not-saved`, TASK-1059) is
- * also refused before routing. Such a fire
+ * also refused before routing, and a turn whose conversation's session is busy
+ * with a turn of another mode (`conversation:busy`, TASK-1091) is refused while
+ * routing, before anything spawns. Such a fire
  * never chose its connectors, so it leaves the routine's last warning alone.
  */
 function refusedBeforeAssembly(reason: string): boolean {
-  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:') || reason === 'conversation:message-not-saved';
+  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:') || reason === 'conversation:message-not-saved' || reason === 'conversation:busy';
 }
 
 /**
