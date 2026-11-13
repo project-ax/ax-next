@@ -124,6 +124,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** The newlines that make `next` start a paragraph after text ending in `tail`; none it already has. */
+function paragraphBreak(tail: string, next: string): string {
+  const have = (/\n*$/.exec(tail)?.[0].length ?? 0) + (/^\n*/.exec(next)?.[0].length ?? 0);
+  return '\n'.repeat(Math.max(0, 2 - have));
+}
+
 /** Run one DM turn to the end of its reply. Never rejects. */
 export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> {
   const installId = r.install.installId;
@@ -176,10 +182,26 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
   };
 
   const toolNames = new Map<string, string>();
+  /**
+   * Text after other work (a tool call, a status, thinking) starts a new
+   * paragraph. claude-sdk sends whole text blocks, so without this the block
+   * after a tool call is glued to the one before ("…handling.Done!"). Inside
+   * one uninterrupted run nothing is added: aisdk sends word-sized deltas.
+   */
+  let textTail = '';
+  let otherSinceText = false;
   const onChunk = (c: StreamChunkIn): void => {
+    if (c.kind !== 'text') {
+      if (textTail !== '') otherSinceText = true;
+    } else if (c.text !== undefined && c.text !== '') {
+      const text = otherSinceText ? paragraphBreak(textTail, c.text) + c.text : c.text;
+      otherSinceText = false;
+      textTail = (textTail + text).slice(-2);
+      stream.text(text);
+      return;
+    }
     switch (c.kind) {
       case 'text':
-        if (c.text !== undefined) stream.text(c.text);
         return;
       case 'tool-use':
         if (c.toolCallId !== undefined && c.toolName !== undefined) toolNames.set(c.toolCallId, c.toolName);

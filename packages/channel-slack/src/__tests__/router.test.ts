@@ -1238,3 +1238,59 @@ describe('createEventRouter: nothing left behind', () => {
     expect(w.invokes).toHaveLength(endings.length + 2);
   });
 });
+
+// ── Text split by tool calls ────────────────────────────────────────────────
+
+describe('createEventRouter: text on either side of other work', () => {
+  // Walk on kind (2026-11-13): claude-sdk hands over whole text blocks, and the
+  // block after a tool call landed glued to the one before ("...handling.Done!").
+  it('text after a tool call starts a new paragraph', async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        { kind: 'text', text: 'Let me replace it.' },
+        { kind: 'tool-use', toolCallId: 'c1', toolName: 'Write', input: {} },
+        { kind: 'tool-result', toolCallId: 'c1', output: 'ok' },
+        { kind: 'text', text: 'Done!' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Let me replace it.\n\nDone!');
+  });
+
+  it('thinking or a step summary between texts is a break too; a break never doubles up', async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        { kind: 'text', text: 'One.' },
+        { kind: 'thinking', text: 'hmm' },
+        { kind: 'text', text: 'Two.\n' },
+        { kind: 'step-summary', toolCallId: 'c1', text: 'Checking' },
+        { kind: 'text', text: 'Three.\n\n' },
+        { kind: 'tool-use', toolCallId: 'c2', toolName: 'web_search', input: {} },
+        { kind: 'text', text: 'Four.' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('One.\n\nTwo.\n\nThree.\n\nFour.');
+  });
+
+  it('deltas of one uninterrupted text run are joined as sent (aisdk streams words)', async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        { kind: 'text', text: 'Hel' },
+        { kind: 'text', text: 'lo ' },
+        { kind: 'text', text: 'there' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Hello there');
+  });
+});
