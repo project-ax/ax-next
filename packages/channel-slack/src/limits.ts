@@ -47,6 +47,11 @@ export const EVENT_TEXT_MAX = 40_000;
 /** A `url_verification` challenge (Slack's are about 48 characters). */
 export const URL_CHALLENGE_MAX = 4_096;
 
+// ── Admission ───────────────────────────────────────────────────────────────
+
+/** The longest sender email admitted (admission.ts): `auth:find-user-by-email`'s own cap. */
+export const EMAIL_MAX = 320;
+
 // ── Slack Web API calls ─────────────────────────────────────────────────────
 
 export const SLACK_API_TIMEOUT_MS = 10_000;
