@@ -64,10 +64,11 @@ export interface ReplyStream {
   status(title: string): void;
   /**
    * Show that the agent is on it, before it says anything (a cold start can
-   * take seconds): 👀 on the owner's message, taken off right before the reply
-   * first shows (text, a status card, or the failure line). If Slack refuses
-   * the 👀, the Working card instead. Neither replaces the agent's own status,
-   * nor counts as something to say.
+   * take seconds): 👀 on the owner's message, taken off once the reply first
+   * shows (text, a status card, or the failure line), on a queue the reply
+   * never waits on. If Slack refuses the 👀 before any text is out, the
+   * Working card instead. Neither replaces the agent's own status, nor counts
+   * as something to say.
    */
   working(): void;
   /** The turn made an artifact or a visual: the reply ends with a link to the agent. */
@@ -143,6 +144,9 @@ type Stage = 'start' | 'append' | 'stop' | 'post' | 'react' | 'unreact';
 /** 👀: "seen it, on it". */
 const SEEN_REACTION = 'eyes';
 
+/** Codes where our client gave up but Slack may still have done the call. */
+const OUTCOME_UNKNOWN = /^(timeout|network|bad-response|http-5\d\d)$/;
+
 function isSlackCode(err: unknown, code: string): boolean {
   return err instanceof SlackApiError && err.code === code;
 }
@@ -178,8 +182,12 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   let flushTimer: unknown = null;
   let ageTimer: unknown = null;
   let chain: Promise<void> = Promise.resolve();
-  /** 👀 is on the owner's message. */
+  /** 👀's own queue: add, then remove, strictly in order. The reply never awaits it. */
+  let eyesChain: Promise<void> = Promise.resolve();
+  /** 👀 may be on the owner's message: the add succeeded, or its outcome is unknown. */
   let reacted = false;
+  /** Taking 👀 off was asked for (it is asked once). */
+  let offAsked = false;
 
   const log = (stage: Stage | 'internal', err: unknown): void => {
     try {
@@ -198,19 +206,29 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
 
   const eyes = { channel: target.channel, ts: d.messageTs, name: SEEN_REACTION };
 
+  const onEyes = (job: () => Promise<void>): void => {
+    eyesChain = eyesChain.then(job).catch((err: unknown) => log('internal', err));
+  };
+
   /**
-   * Take 👀 off, once, right before the reply first shows. One try: a reply
-   * never waits on a reaction, so a failure (a rate limit included) is only
+   * Take 👀 off: asked once, when the reply has first shown (its stream
+   * started or its first post landed) and again at the end, in case nothing
+   * could be shown. It goes on 👀's own queue, after the add, so the reply
+   * never waits on it. One try: a failure (a rate limit included) is only
    * logged, and `no_reaction` (already gone) isn't one.
    */
-  async function unreact(): Promise<void> {
-    if (!reacted) return;
-    reacted = false;
-    try {
-      await api.removeReaction(botToken, eyes);
-    } catch (err) {
-      if (!isSlackCode(err, 'no_reaction')) log('unreact', err);
-    }
+  function unreact(): void {
+    if (offAsked) return;
+    offAsked = true;
+    onEyes(async () => {
+      if (!reacted) return;
+      reacted = false;
+      try {
+        await api.removeReaction(botToken, eyes);
+      } catch (err) {
+        if (!isSlackCode(err, 'no_reaction')) log('unreact', err);
+      }
+    });
   }
 
   const sleep = (ms: number): Promise<void> =>
@@ -331,10 +349,10 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       if (b.chunks.length === 0) return b;
       try {
         if (kind === 'start') {
-          await unreact();
           const startedAt = clock.now();
           const { ts } = await api.startStream(botToken, { ...target, chunks: b.chunks });
           open = { ts, startedAt, sent: b.textLength, card: b.card };
+          unreact();
           streamsStarted += 1;
           if (!finished) armAge(startedAt);
         } else {
@@ -410,8 +428,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   async function post(markdownText: string): Promise<boolean> {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        await unreact();
         await api.postMessage(botToken, { channel: target.channel, threadTs: target.threadTs, markdownText });
+        unreact();
         return true;
       } catch (err) {
         if (isRateLimited(err) && attempt < REPLY_RATE_LIMIT_RETRIES) {
@@ -459,7 +477,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
 
     working() {
       if (finished) return;
-      void enqueue(async () => {
+      onEyes(async () => {
+        if (offAsked) return;
         try {
           await api.addReaction(botToken, eyes);
           reacted = true;
@@ -469,9 +488,11 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
             reacted = true;
             return;
           }
+          // We gave up, but Slack may have added it: take it off later anyway.
+          if (err instanceof SlackApiError && OUTCOME_UNKNOWN.test(err.code)) reacted = true;
           log('react', err);
-          // No 👀: the Working card covers the wait instead.
-          if (finished || title !== null) return;
+          // No 👀: the Working card covers the wait, unless the reply is already showing.
+          if (finished || title !== null || anyText) return;
           title = COPY.statusDefault;
           pending.push({ kind: 'status' });
           armFlush();
@@ -508,6 +529,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
           if (mode === 'post') await postRest();
         } finally {
           disarmAge();
+          // Whatever could be shown has been: 👀 comes off (if it isn't already).
+          unreact();
         }
       });
       return finishing;

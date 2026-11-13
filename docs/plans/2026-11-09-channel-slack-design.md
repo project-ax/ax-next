@@ -272,10 +272,17 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - Collapse tool calls into one status line, matching the web's #1156 (one
      `task_update` card that changes in place).
    - While the agent works, the owner's message wears 👀 (`reactions.add`, from
-     the turn's start), taken off right before the reply first shows: its text,
-     its status card, or the failure line. One try to take it off: the reply
-     never waits on a reaction. If Slack refuses the 👀 (an install from before
-     `reactions:write`, say), the reply opens with the `Working` card instead.
+     the turn's start), taken off once the reply first shows: its stream has
+     started (text, its status card, or the failure line) or its first post
+     landed, and again at the turn's end in case nothing could be shown. The
+     reactions run on their own queue, add then remove, which the reply never
+     waits on; taking it off is one try. An add that timed out may still have
+     landed, so it is taken off too. If Slack refuses the 👀 (an install from
+     before `reactions:write`, say), the reply opens with the `Working` card
+     instead, unless its text is already showing.
+   - Known gap: running DM turns aren't awaited at shutdown, and Slack never
+     removes a reaction by itself, so a deploy or crash mid-turn leaves that
+     message's 👀 on for good.
      Chosen on the kind walk (2026-11-13) over a `Working` card up front (it
      stays on every reply, and Slack can't remove a task card from a stream) and
      Slack's "is thinking…" line (`assistant.threads.setStatus`, which does work

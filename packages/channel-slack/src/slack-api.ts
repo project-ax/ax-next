@@ -1,10 +1,10 @@
 /**
  * channel-slack's only egress: a small Slack Web API client over an injected
- * `fetch`. No Slack SDK: about eleven methods don't earn a dependency tree,
+ * `fetch`. No Slack SDK: about thirteen methods don't earn a dependency tree,
  * or retries and logging we don't control.
  *
  * The capability is as small as we could make it (invariant 5):
- *   - one destination, `https://slack.com/api/<method>`, POST, for the eleven
+ *   - one destination, `https://slack.com/api/<method>`, POST, for the thirteen
  *     methods below and no others. Nothing a caller passes reaches the URL;
  *   - redirects are refused (`redirect: 'manual'`; any 3xx, or an answer a
  *     fetch followed a redirect to anyway, is `redirect`), so no token is
@@ -19,7 +19,8 @@
  * `tooling.tokens.rotate`, `oauth.v2.access` and `users.info` take ONLY form
  * bodies ("arguments sent in a JSON body are ignored by methods that don't
  * list application/json"), and so do the `apps.*` calls here. Every `chat.*`
- * call is JSON. `oauth.v2.access` authenticates the app with HTTP Basic, so
+ * call is JSON, and so are `reactions.add` and `reactions.remove` (both list
+ * JSON; MEASURED working on the kind walk, 2026-11-13). `oauth.v2.access` authenticates the app with HTTP Basic, so
  * the client secret never rides in a body; `tooling.tokens.rotate` takes no
  * token at all; everything else sends `Authorization: Bearer <token>`.
  *

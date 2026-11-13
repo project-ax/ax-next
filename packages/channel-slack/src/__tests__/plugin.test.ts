@@ -583,19 +583,23 @@ describe('@ax/channel-slack plugin', () => {
     );
     expect(answer).toEqual({ status: 200, body: undefined, done: true });
 
-    // The reply goes out after the 200: admission, 👀 on, the turn, 👀 off, then the stream.
-    await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.stopStream'));
-    expect(slack.calls.map((c) => [c.method, c.auth])).toEqual([
-      ['users.info', `Bearer ${BOT_TOKEN}`],
-      ['reactions.add', `Bearer ${BOT_TOKEN}`],
-      ['reactions.remove', `Bearer ${BOT_TOKEN}`],
-      ['chat.startStream', `Bearer ${BOT_TOKEN}`],
-      ['chat.stopStream', `Bearer ${BOT_TOKEN}`],
-    ]);
-    expect(slack.calls[0]!.body).toEqual({ user: ALICE });
-    expect(slack.calls[1]!.body).toEqual({ channel: DM_CHANNEL, timestamp: DM_TS, name: 'eyes' });
-    expect(slack.calls[2]!.body).toEqual({ channel: DM_CHANNEL, timestamp: DM_TS, name: 'eyes' });
-    expect(slack.calls[3]!.body).toEqual({
+    // The reply goes out after the 200: admission, 👀 on, the turn, the stream,
+    // and 👀 off once the stream is up (on its own queue, so its place relative
+    // to the stop isn't fixed).
+    await vi.waitFor(() =>
+      expect(slack.calls.map((c) => c.method)).toEqual(expect.arrayContaining(['chat.stopStream', 'reactions.remove'])),
+    );
+    const methods = slack.calls.map((c) => c.method);
+    for (const c of slack.calls) expect(c.auth).toBe(`Bearer ${BOT_TOKEN}`);
+    expect(methods.filter((m) => !m.startsWith('reactions.'))).toEqual(['users.info', 'chat.startStream', 'chat.stopStream']);
+    expect(methods.filter((m) => m.startsWith('reactions.'))).toEqual(['reactions.add', 'reactions.remove']);
+    expect(methods.indexOf('reactions.add')).toBe(1);
+    expect(methods.indexOf('reactions.remove')).toBeGreaterThan(methods.indexOf('chat.startStream'));
+    const sentBody = (m: string) => slack.calls.find((c) => c.method === m)!.body;
+    expect(sentBody('users.info')).toEqual({ user: ALICE });
+    expect(sentBody('reactions.add')).toEqual({ channel: DM_CHANNEL, timestamp: DM_TS, name: 'eyes' });
+    expect(sentBody('reactions.remove')).toEqual({ channel: DM_CHANNEL, timestamp: DM_TS, name: 'eyes' });
+    expect(sentBody('chat.startStream')).toEqual({
       channel: DM_CHANNEL,
       thread_ts: DM_TS,
       recipient_user_id: ALICE,

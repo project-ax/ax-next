@@ -126,6 +126,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Chunk kinds that arrive in stream order between two runs of text. */
+const BREAKS_TEXT: ReadonlySet<string> = new Set(['tool-use', 'tool-result', 'thinking']);
+
 /** The newlines that make `next` start a paragraph after text ending in `tail`; none it already has. */
 function paragraphBreak(tail: string, next: string): string {
   const have = (/\n*$/.exec(tail)?.[0].length ?? 0) + (/^\n*/.exec(next)?.[0].length ?? 0);
@@ -186,16 +189,22 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
 
   const toolNames = new Map<string, string>();
   /**
-   * Text after other work (a tool call, a status, thinking) starts a new
+   * Text after other work (a tool call or its result, thinking) starts a new
    * paragraph. claude-sdk sends whole text blocks, so without this the block
    * after a tool call is glued to the one before ("…handling.Done!"). Inside
    * one uninterrupted run nothing is added: aisdk sends word-sized deltas.
+   *
+   * Only kinds that arrive in stream order count. A `step-summary` arrives
+   * late (@ax/step-summaries answers off the stream's path) and can land
+   * between two word deltas; the tool call it describes already made the
+   * break. A kind this build doesn't know doesn't count either: a missed break
+   * glues two paragraphs, a wrong one splits a sentence.
    */
   let textTail = '';
   let otherSinceText = false;
   const onChunk = (c: StreamChunkIn): void => {
     if (c.kind !== 'text') {
-      if (textTail !== '') otherSinceText = true;
+      if (textTail !== '' && c.kind !== undefined && BREAKS_TEXT.has(c.kind)) otherSinceText = true;
     } else if (c.text !== undefined && c.text !== '') {
       const text = otherSinceText ? paragraphBreak(textTail, c.text) + c.text : c.text;
       otherSinceText = false;
@@ -234,7 +243,7 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
   });
   // 👀 on the owner's message while a cold runner starts, not a blank thread
-  // (walk on kind, 2026-11-13); it comes off right before the reply shows.
+  // (walk on kind, 2026-11-13); it comes off once the reply shows.
   stream.working();
   /**
    * Ask chat-orchestrator to stop the conversation's in-flight turn: the

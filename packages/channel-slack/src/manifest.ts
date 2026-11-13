@@ -2,7 +2,7 @@
  * The Slack app AX creates for a workspace: its manifest, the two URLs Slack
  * calls back on, and the install link an admin follows to Allow it.
  *
- * The grant is as small as DMs need (invariant 5): five bot scopes, two
+ * The grant is as small as DMs need (invariant 5): six bot scopes, two
  * events, no interactivity and no slash commands. The App Home messages tab
  * is on and writable, because without it people can't DM the app at all
  * (MEASURED: `messages_tab_disabled`). Token rotation is off so the bot token

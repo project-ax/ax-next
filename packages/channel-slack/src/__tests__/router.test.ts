@@ -1271,14 +1271,14 @@ describe('createEventRouter: text on either side of other work', () => {
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Let me replace it.\n\nDone!');
   });
 
-  it('thinking or a step summary between texts is a break too; a break never doubles up', async () => {
+  it('thinking or a tool result between texts is a break too; a break never doubles up', async () => {
     const w = world();
     w.scripts.push({
       chunks: [
         { kind: 'text', text: 'One.' },
         { kind: 'thinking', text: 'hmm' },
         { kind: 'text', text: 'Two.\n' },
-        { kind: 'step-summary', toolCallId: 'c1', text: 'Checking' },
+        { kind: 'tool-result', toolCallId: 'c1', output: 'x' },
         { kind: 'text', text: 'Three.\n\n' },
         { kind: 'tool-use', toolCallId: 'c2', toolName: 'web_search', input: {} },
         { kind: 'text', text: 'Four.' },
@@ -1288,6 +1288,25 @@ describe('createEventRouter: text on either side of other work', () => {
     await w.dispatch(INSTALL, dm());
     await w.idle();
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe('One.\n\nTwo.\n\nThree.\n\nFour.');
+  });
+
+  it('a step summary that lands mid-sentence is no break: it arrives late, for a tool call already passed', async () => {
+    // @ax/step-summaries answers off the stream's path, so its summary can land
+    // between two word deltas of the text after the tool it describes.
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        { kind: 'tool-use', toolCallId: 'c1', toolName: 'web_search', input: {} },
+        { kind: 'tool-result', toolCallId: 'c1', output: 'x' },
+        { kind: 'text', text: 'Here is the ans' },
+        { kind: 'step-summary', toolCallId: 'c1', text: 'Searched the web' },
+        { kind: 'text', text: 'wer.' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Here is the answer.');
   });
 
   it('deltas of one uninterrupted text run are joined as sent (aisdk streams words)', async () => {
@@ -1312,7 +1331,7 @@ describe("createEventRouter: 👀 on the owner's message while the agent works",
   // Walk on kind (2026-11-13): a cold start left the DM blank for seconds.
   // Vinay's pick over a Working card (it stays on every reply) and Slack's
   // "is thinking…" line: 👀 on the message, off right before the reply shows.
-  it('👀 goes on when the turn starts and comes off right before the reply; the reply is unchanged', async () => {
+  it('👀 goes on when the turn starts and comes off once the reply is up; the reply is unchanged', async () => {
     const w = world();
     w.scripts.push({ chunks: [{ kind: 'text', text: 'Hello' }], end: 'turn-end' });
     await w.dispatch(INSTALL, dm());
@@ -1320,7 +1339,8 @@ describe("createEventRouter: 👀 on the owner's message while the agent works",
     const eyes = { channel: DM_ALICE, ts: TS, name: 'eyes' };
     expect(w.slack.reactions).toEqual([
       { op: 'add', token: BOT_TOKEN, args: eyes, after: 1 },
-      { op: 'remove', token: BOT_TOKEN, args: eyes, after: 1 },
+      // After usersInfo and startStream: off once the reply is up, never before it.
+      { op: 'remove', token: BOT_TOKEN, args: eyes, after: 2 },
     ]);
     expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream']);
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Hello');
