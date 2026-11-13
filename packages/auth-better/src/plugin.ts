@@ -37,6 +37,7 @@ import {
   type ProviderRow,
 } from './handler.js';
 import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
+import { isPlainAscii } from './identity-gate.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -136,6 +137,9 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   const secret = config.secret;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
+  // Provider kinds loadProviders() has already said it skips, so each is
+  // logged once per process rather than on every provider change.
+  const reportedSkippedKinds = new Set<string>();
   const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 
   return {
@@ -204,7 +208,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         },
       };
       const store = createProvidersStore(localDb, envelope);
-      const providers = await loadProviders(localDb, bus, initCtx);
+      const providers = await loadProviders(localDb, bus, initCtx, reportedSkippedKinds);
 
       // 3) Build the handler --------------------------------------------
       handle = createBetterAuthHandler({
@@ -241,7 +245,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:providers-changed',
         PROVIDERS_CHANGED_KEY,
         async (subCtx: AgentContext) => {
-          const next = await loadProviders(localDb, bus, subCtx);
+          const next = await loadProviders(localDb, bus, subCtx, reportedSkippedKinds);
           localHandle.rebuild({
             database: localDb,
             providers: next,
@@ -444,6 +448,7 @@ async function loadProviders(
   db: Kysely<AuthBetterDatabase>,
   bus: HookBus,
   ctx: AgentContext,
+  reportedSkippedKinds: Set<string>,
 ): Promise<ProviderRow[]> {
   const rows = await db
     .selectFrom('auth_providers')
@@ -460,26 +465,37 @@ async function loadProviders(
 
   const out: ProviderRow[] = [];
   for (const r of rows) {
+    // Only the kinds better-auth is wired for, checked BEFORE the secret is
+    // decrypted. Anything else (a leftover `oidc` row from when the admin
+    // form offered it, or a row a newer binary wrote) never reaches
+    // better-auth, which rejects an unknown social-provider key and would
+    // take every sign-in down with it (TASK-1116). The admin list still
+    // shows such a row, and DELETE removes it.
+    //
+    // Said once per kind per process, so an operator can see why an enabled
+    // row signs nobody in. The kind is the row's own key, written by an admin
+    // or SQL, never request input.
+    if (r.kind !== 'google' && r.kind !== 'github') {
+      if (!reportedSkippedKinds.has(r.kind)) {
+        reportedSkippedKinds.add(r.kind);
+        process.stderr.write(
+          `[ax/auth-better] sign-in provider ignored ${JSON.stringify({ code: 'provider-kind-unsupported', kind: r.kind })}\n`,
+        );
+      }
+      continue;
+    }
     const { plaintext } = await bus.call<
       { ciphertext: Uint8Array },
       { plaintext: string }
     >('credentials:envelope-decrypt', ctx, { ciphertext: r.client_secret_encrypted });
-    if (r.kind === 'google' || r.kind === 'github' || r.kind === 'oidc') {
-      // Build the row carefully: `discoveryUrl` is optional in the
-      // ProviderRow type (exactOptionalPropertyTypes is ON), so emit
-      // the field only when DB has a value. Conditional spread keeps
-      // the shape clean.
-      out.push({
-        kind: r.kind,
-        clientId: r.client_id,
-        clientSecret: plaintext,
-        ...(r.discovery_url !== null ? { discoveryUrl: r.discovery_url } : {}),
-        ...(r.allowed_domains !== null ? { allowedDomains: r.allowed_domains } : {}),
-      });
-    }
-    // Unknown kinds are dropped — defensive against a forward-compat row
-    // older binaries can't speak. Logging is deferred to Task 1.5 (the
-    // CRUD layer is the right place to surface unknown kinds).
+    // `allowedDomains` is optional in ProviderRow (exactOptionalPropertyTypes
+    // is ON), so emit it only when the DB has a value.
+    out.push({
+      kind: r.kind,
+      clientId: r.client_id,
+      clientSecret: plaintext,
+      ...(r.allowed_domains !== null ? { allowedDomains: r.allowed_domains } : {}),
+    });
   }
   return out;
 }
@@ -593,6 +609,18 @@ async function createBootstrapUser(
         message: 'email must look like an email address',
       });
     }
+    // Checked as typed, before lowercasing: `toLowerCase()` turns some
+    // non-ASCII letters into ASCII ones (the Kelvin sign U+212A into "k").
+    // The sign-in gate refuses any address beyond plain ASCII, so an admin
+    // saved with one could never sign in (TASK-1116).
+    if (!isPlainAscii(input.email)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'auth:create-bootstrap-user',
+        message: 'email must be plain ASCII',
+      });
+    }
   }
 
   // I6: bootstrap is one-shot. Refuse if any admin already exists.
@@ -613,9 +641,14 @@ async function createBootstrapUser(
   }
 
   const id = `usr_${randomBytes(16).toString('hex')}`;
+  // Lowercase (TASK-1116). better-auth finds a user by the lowercased email
+  // and the column compares case-sensitively, so an admin stored as typed
+  // (`Owner@CanopyWorks.com`) was never found at its first sign-in: Google
+  // made a new member instead, and the admin could never sign in. Plain ASCII
+  // was checked above, so this folds ASCII case and nothing else.
   const email =
     input.email !== undefined && input.email.length > 0
-      ? input.email
+      ? input.email.toLowerCase()
       : `bootstrap+${id}@local.invalid`;
   const displayName = input.displayName.length > 0 ? input.displayName : null;
   const now = new Date();
@@ -781,8 +814,8 @@ async function forwardToBetterAuth(
   }
 
   if (box.token !== undefined) {
-    // Session-creating response (OAuth callback / email sign-in or sign-up —
-    // better-auth auto-signs-in on sign-up): re-issue the session token as our
+    // Session-creating response (the OAuth callback; email sign-in and sign-up
+    // are off, TASK-1116): re-issue the session token as our
     // http-server-signed cookie. better-auth's own
     // Set-Cookies on this response (its `ax_better_auth.session_token` session
     // cookie + short-lived OAuth-state cookie) are intentionally dropped — its

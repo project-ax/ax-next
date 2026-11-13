@@ -235,6 +235,108 @@ describe('@ax/onboarding POST /setup/admin', () => {
     expect((await res.json() as { error: string }).error).toBe('invalid-email');
   });
 
+  // TASK-1116: the sign-in refuses any address beyond plain ASCII, so an
+  // admin saved with one could never sign in. Say so here, as a 400 the
+  // wizard explains, not as an error from auth-better.
+  it('an email with a character beyond plain ASCII → 400', async () => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Jos\u00e9', email: 'jos\u00e9@example.com' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid-email');
+  });
+
+  // CodeQL js/polynomial-redos (alert #35): the old pattern backtracked on
+  // `!@!.!.!.…`. The email check is a linear parse now, capped at 254
+  // characters (the SMTP maximum). It runs before any user exists, gated only
+  // by the bootstrap cookie.
+  it.each([
+    ['the ReDoS shape, over the length cap', '!@!.' + '!.'.repeat(5_000)],
+    ['the ReDoS shape under the cap, ending in a space', '!@!.' + '!.'.repeat(100) + ' '],
+    ['an address one character over 254', `${'a'.repeat(243)}@example.com`],
+    ['two @ signs', 'a@b@c.d'],
+    ['a domain with no dot', 'a@localhost'],
+    ['a dot only at the end', 'a@b.'],
+  ])('%s → 400 invalid-email', async (_label, email) => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Vinay', email }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid-email');
+  });
+
+  it('accepts an address of exactly 254 characters, the cap', async () => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+    const email = `${'a'.repeat(242)}@example.com`;
+    expect(email).toHaveLength(254);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Long', email }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('saves the admin email in lowercase, so its first sign-in can find it', async () => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { bootstrapCookie } = await claimAndExtract(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
+      method: 'POST',
+      headers: {
+        cookie: bootstrapCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({ name: 'Owner', email: 'Owner@CanopyWorks.com' }),
+    });
+
+    expect(res.status).toBe(200);
+    const pool = new pg.Pool({ connectionString, max: 1 });
+    pool.on('error', () => {});
+    try {
+      const { rows } = await pool.query<{ email: string }>('SELECT email FROM auth_better_v1_users');
+      expect(rows.map((r) => r.email)).toEqual(['owner@canopyworks.com']);
+    } finally {
+      await pool.end();
+    }
+  });
+
   it('missing name → 400', async () => {
     stack = await bootStack();
     const { port } = stack;

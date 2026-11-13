@@ -2,7 +2,8 @@ import { betterAuth } from 'better-auth';
 import type { BetterAuthPlugin } from 'better-auth';
 import type { Kysely } from 'kysely';
 import type { AuthBetterDatabase } from './migrations.js';
-import { parseDomains, assertDomainAllowed, sessionTokenALS } from './session-bridge.js';
+import { createIdentityGate } from './identity-gate.js';
+import { sessionTokenALS } from './session-bridge.js';
 
 /**
  * Refuses a request whose Host header was malformed with a fixed 400
@@ -34,18 +35,20 @@ const refuseMalformedHost: BetterAuthPlugin = {
  * decrypted plaintext, never the envelope. Callers (Task 1.5) are
  * responsible for unwrapping ciphertext before reaching this layer.
  *
- * `oidc` here is the generic-OAuth shape (any standards-compliant OIDC
- * provider with a discovery URL). Built-in better-auth providers like
- * `google` and `github` get first-class entries; `oidc` is wired through
- * a generic plugin in Task 1.4 — for this task it's just a passthrough
- * field on the social-providers map.
+ * Only the two kinds better-auth is wired for. A generic `oidc` kind was
+ * once offered by the admin form but never wired (better-auth rejects an
+ * unknown social-provider key, so a saved one took every sign-in down);
+ * loadProviders() in plugin.ts skips any other kind (TASK-1116).
  */
 export interface ProviderRow {
-  kind: 'google' | 'github' | 'oidc';
+  kind: 'google' | 'github';
   clientId: string;
   clientSecret: string;
-  discoveryUrl?: string;
-  /** Comma-separated list of allowed email domains for Google sign-in. Empty = open (all domains allowed). Populated by loadProviders() in plugin.ts. */
+  /**
+   * Comma-separated email domains this provider may let in, for sign-up and
+   * sign-in. Empty = any account at the provider. Enforced in identity-gate.ts.
+   * Populated by loadProviders() in plugin.ts.
+   */
   allowedDomains?: string;
 }
 
@@ -158,38 +161,29 @@ export function createBetterAuthHandler(input: HandlerInput): HandlerHandle {
 
 function build(input: HandlerInput): BuiltHandler {
   // better-auth's `socialProviders` is a typed map keyed by built-in
-  // provider names (google, github, …). We populate the keys we know;
-  // `oidc` is not a built-in and gets wired through a generic plugin
-  // in Task 1.4. For this task we erase to `Record<string, any>` so
-  // the plan's three-kind switch compiles cleanly today and adapts
-  // when generic-OAuth lands.
+  // provider names. We populate the two ax wires, one entry per row, on a
+  // plain record that's cast once at the call below.
   const socialProviders: Record<string, unknown> = {};
   for (const p of input.providers) {
     if (p.kind === 'google') {
       socialProviders.google = {
         clientId: p.clientId,
         clientSecret: p.clientSecret,
+        // LOAD-BEARING (TASK-1116). Refuses ID tokens posted by a client. On
+        // /link-social better-auth adds the account from such a token itself,
+        // without calling the identity gate (`validateUserInfo` below), so this
+        // flag is the only thing that shuts that path. On /sign-in/social the
+        // gate would catch one too. The login page uses the redirect flow.
+        // GitHub needs nothing: better-auth has no ID-token sign-in for it.
+        disableIdTokenSignIn: true,
       };
     } else if (p.kind === 'github') {
       socialProviders.github = {
         clientId: p.clientId,
         clientSecret: p.clientSecret,
       };
-    } else if (p.kind === 'oidc') {
-      // Placeholder — in Task 1.4 this becomes a `genericOAuth({...})`
-      // plugin entry, not a socialProviders key. Leaving the field in
-      // the map is harmless because better-auth ignores unknown keys.
-      socialProviders.oidc = {
-        clientId: p.clientId,
-        clientSecret: p.clientSecret,
-        discoveryUrl: p.discoveryUrl,
-      };
     }
   }
-
-  const googleAllowedDomains = parseDomains(
-    input.providers.find((p) => p.kind === 'google')?.allowedDomains,
-  );
 
   const auth = betterAuth({
     ...(input.secret !== undefined ? { secret: input.secret } : {}),
@@ -197,7 +191,16 @@ function build(input: HandlerInput): BuiltHandler {
     // instance directly — passing the bare Kysely is the dialect path,
     // which we don't have here.
     database: { db: input.database, type: 'postgres' },
-    emailAndPassword: { enabled: true, minPasswordLength: 12 },
+    // Off on purpose (TASK-1116). A typed email proves nothing without a
+    // verification mail, and we send none, so email sign-up let anyone make an
+    // account and pre-claim a teammate's email before their first Google
+    // sign-in. Nothing uses it: the setup wizard's admin has no password, and
+    // the login page is Google-only. `enabled: false` turns password sign-IN
+    // off too, so a password someone set before the fix no longer works. It
+    // does NOT unmount /reset-password, which adds a password without the
+    // identity gate: that route stays inert only because no
+    // `sendResetPassword` is set, so no reset token can be minted.
+    emailAndPassword: { enabled: false },
     // We mount @ax/http-server routes at `/auth/*` (sibling of `/admin/*`).
     // Better-auth's default basePath is `/api/auth`; override so its
     // internal router agrees with where we forward requests.
@@ -238,8 +241,23 @@ function build(input: HandlerInput): BuiltHandler {
       },
     },
     user: {
+      // Who may get an account, attach a sign-in to one, or sign in at all
+      // (TASK-1116); identity-gate.ts has the rules. better-auth runs it on
+      // every OAuth callback (sign-up, link, sign-in) and on every user it
+      // creates, but NOT everywhere a sign-in method is added: /link-social
+      // with an ID token, /reset-password and the server-only setPassword add
+      // one without it. Config keeps those shut: Google's
+      // `disableIdTokenSignIn` above, and no `sendResetPassword` (so no reset
+      // token can be minted). identity-gate.ts says more.
+      validateUserInfo: createIdentityGate(input.providers),
       additionalFields: {
-        role: { type: 'string', defaultValue: 'user' },
+        // `input: false` (TASK-1116): no client and no provider profile ever
+        // sets it. better-auth refuses `role` on /update-user (400
+        // FIELD_NOT_ALLOWED; before this, a member with better-auth's own
+        // session cookie could make themselves admin) and drops it from a
+        // provider's profile. Admins come only from the setup wizard or the
+        // operator's SQL.
+        role: { type: 'string', defaultValue: 'user', input: false },
       },
       modelName: 'auth_better_v1_users',
       fields: {
@@ -254,28 +272,24 @@ function build(input: HandlerInput): BuiltHandler {
       // plumbed from AX_AUTH_SECRET in the preset/chart) — without it better-auth
       // derives an ephemeral per-process key and tokens won't survive a restart.
       encryptOAuthTokens: true,
-      // Auto-link a social sign-in to an EXISTING user when the email matches.
-      // Without this, the onboarding wizard's admin — created as an email
-      // identity with NO password (local password support is deferred) and with
-      // `email_verified: false` (the wizard never verifies the typed address) —
-      // can never sign in: the OAuth provider returns `account_not_linked`.
+      // Implicit linking (attach a sign-in to the EXISTING user with that email)
+      // stays on so the setup wizard's admin can sign in at all: the wizard
+      // inserts it with NO password and `email_verified: false`, so its first
+      // Google sign-in has to link to it.
       //
-      // better-auth (link-account.mjs) throws that error via TWO independent
-      // clauses, and both must be cleared:
-      //   1. `!isTrustedProvider && !userInfo.emailVerified` — cleared by
-      //      `trustedProviders` (Google/GitHub assert verified emails).
-      //   2. `requireLocalEmailVerified && !dbUser.user.emailVerified` —
-      //      `requireLocalEmailVerified` DEFAULTS TO TRUE, and the wizard admin's
-      //      local email is unverified, so this fires even for a trusted provider.
-      //      We set it false: safe here because the trusted provider verifies the
-      //      email AND Google is domain-gated (`databaseHooks.user.create.before`
-      //      below), so the OAuth round-trip itself proves ownership. better-auth
-      //      then flips the local user's emailVerified to true on link.
-      // Generic OIDC is intentionally NOT trusted — email-verification guarantees
-      // vary by IdP; revisit when generic-OAuth lands (Task 1.4 placeholder above).
+      // identity-gate.ts (`user.validateUserInfo` above) decides who may link:
+      // the provider must have verified the email, and the existing user must
+      // be verified too, or be that setup admin before its first sign-in.
+      //
+      // No provider is trusted to skip email verification (better-auth's
+      // trusted-providers list stays unset): GitHub reports unverified emails,
+      // and trusting it let an unverified copy of a teammate's email take over
+      // their account (TASK-1116). `requireLocalEmailVerified` stays false only
+      // because better-auth can't make the setup-admin exception; the gate
+      // enforces it instead. better-auth flips the local user's emailVerified
+      // to true on a link with a verified email.
       accountLinking: {
         enabled: true,
-        trustedProviders: ['google', 'github'],
         requireLocalEmailVerified: false,
       },
       fields: {
@@ -303,16 +317,13 @@ function build(input: HandlerInput): BuiltHandler {
     databaseHooks: {
       user: {
         create: {
-          before: async (user, context) => {
-            // Gate runs ONLY during the Google OAuth callback — `googleAllowedDomains`
-            // is parsed from the Google provider row, so checking any other provider's
-            // callback (e.g. github) against it would mis-gate once others are wired.
-            // better-auth's social callback path is `/callback/:providerId`.
-            if (context?.path?.includes('/callback/google')) {
-              assertDomainAllowed(String(user.email), googleAllowedDomains);
-            }
-            return { data: { ...user, role: 'user' } };
-          },
+          // Every account better-auth creates is a member; admins come only
+          // from the setup wizard (or the operator's own SQL). Who may create
+          // an account at all is identity-gate.ts's call, and it runs first.
+          // Don't gate on `context.path` here: in better-auth 1.7 it's the
+          // route pattern (`/callback/:id`), which is how the old Google domain
+          // check silently never ran (TASK-1116).
+          before: async (user) => ({ data: { ...user, role: 'user' } }),
         },
       },
       session: {
