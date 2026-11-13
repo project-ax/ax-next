@@ -2504,6 +2504,68 @@ describe('a Slack DM thread', () => {
   });
 
   /*
+    The refusal can ARRIVE after the view has moved on. The refused send is
+    still posting when a grant's re-send streams another web chat B into this
+    view; only then does the 409 come back. The refusal names the chat that was
+    posted to, which is no longer the one the composer is aimed at, so it must
+    not turn the follow-up in B into a fresh chat.
+  */
+  it('a read-only refusal that lands after the view moved to another chat keeps the follow-up in that chat', async () => {
+    agentMock.mockImplementation(async (_agent: string, conversationId?: string) =>
+      conversationId === 'c-web-b'
+        ? detail({
+            conversationId: 'c-web-b',
+            origin: 'web',
+            thread: [{ kind: 'user', id: 'tb', text: 'check my linear' }],
+          })
+        : detail(),
+    );
+    // Hold the refused POST open: it settles only after the view has moved.
+    let refuse: (e: unknown) => void = () => {};
+    sendMock.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject; }),
+    );
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'c-now' });
+
+    // While it is still posting, the grant's re-send streams chat B in.
+    streamMock.mockImplementationOnce(async (_reqId: string, h: { onDone: () => void }) => {
+      h.onDone();
+    });
+    view.rerenderWith({
+      pendingReply: {
+        reqId: 'r-grant',
+        text: 'check my linear',
+        conversationId: 'c-web-b',
+        attachments: [],
+      },
+    });
+    await waitFor(() => expect(streamMock).toHaveBeenCalledWith('r-grant', expect.anything()));
+    await screen.findByText('check my linear');
+
+    // NOW the refusal for the first chat arrives.
+    await act(async () => {
+      refuse(new ConversationReadOnlyError('/api/chat/messages'));
+    });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-web-b', reqId: 'r3' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const composer = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(composer, { target: { value: 'and the follow-up' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({
+      conversationId: 'c-web-b',
+      text: 'and the follow-up',
+    });
+  });
+
+  /*
     The same by the re-read's other road: the refused chat is deleted
     elsewhere, and the re-read falls back to the agent's newest chat. That one
     is what is on screen now, so the next message goes into it.
