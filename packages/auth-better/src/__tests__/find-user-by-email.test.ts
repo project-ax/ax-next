@@ -256,6 +256,21 @@ describe('auth:find-user-by-email contract', () => {
     expect(await find('bob@canopyworks.com')).toBeNull();
   });
 
+  it('two unverified case variants never crowd out the verified owner', async () => {
+    // Guards the verified rule staying inside the query. A refactor to "fetch
+    // two matches, then drop the unverified ones in JS" fails here: the
+    // variants are inserted first, so a scan that stops at two sees only them.
+    harness = await bootHarness();
+    await seed([
+      { id: 'usr_variant_upper', email: 'GRACE@canopyworks.com', verified: false },
+      { id: 'usr_variant_mixed', email: 'Grace@canopyworks.com', verified: false },
+      { id: 'usr_grace', email: 'grace@canopyworks.com', verified: true },
+    ]);
+
+    expect(await find('grace@canopyworks.com')).toEqual({ userId: 'usr_grace' });
+    expect(await find('GRACE@canopyworks.com')).toEqual({ userId: 'usr_grace' });
+  });
+
   it('an email on another domain is not found, including a subdomain', async () => {
     harness = await bootHarness();
     await seed([CAROL, { id: 'usr_dave', email: 'dave@eng.canopyworks.com', verified: true }]);
