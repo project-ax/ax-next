@@ -854,6 +854,107 @@ describe('chat-orchestrator', () => {
     ]);
   });
 
+  // TASK-1091 — a runner-reported failure's `reason` is the runner's own text
+  // (`${err.name}: ${err.message}`, up to 4096 chars), so it is untrusted and
+  // can name the owner's setup. On an outsider's turn both things that leave
+  // the host — the outcome the caller answers the room from, and every
+  // chat:turn-error frame (@ax/conversations saves it into the thread) — carry
+  // a host code only: anything else becomes `runner-error`. A host code passes
+  // through; a user's turn keeps the raw reason; the host log keeps it always.
+  describe('a runner-reported reason on an outsider turn', () => {
+    async function runnerEnds(
+      label: string,
+      source: AgentContextSource | undefined,
+      reason: string,
+    ) {
+      let busRef: HookBus | null = null;
+      const logLines: string[] = [];
+      const mocks = buildMocks({
+        openSession: async (_ctx, input: unknown) => {
+          const sessionId = (input as { sessionId: string }).sessionId;
+          // The IPC server stamps the session's source on the chat:end ctx.
+          setImmediate(() => {
+            void busRef!.fire(
+              'chat:end',
+              makeAgentContext({
+                sessionId,
+                agentId: 'agent',
+                userId: 'user',
+                reqId: `r-ipc-${label}`,
+                conversationId: `cnv-${label}`,
+                ...(source !== undefined ? { source } : {}),
+                logger: createLogger({ reqId: `r-ipc-${label}`, writer: (l) => logLines.push(l) }),
+              }),
+              { outcome: { kind: 'terminated', reason } },
+            );
+          });
+          return {
+            runnerEndpoint: `unix:///tmp/${label}.sock`,
+            handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+          };
+        },
+      });
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [
+          createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
+        ],
+      });
+      busRef = h.bus;
+      const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+      h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+        turnErrors.push(p as { reqId?: string; reason?: string });
+        return undefined;
+      });
+      const ends: unknown[] = [];
+      h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+        ends.push(p);
+        return undefined;
+      });
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        makeAgentContext({
+          sessionId: `sess-${label}`,
+          agentId: 'test-agent',
+          userId: 'test-user',
+          reqId: `r-${label}`,
+          conversationId: `cnv-${label}`,
+          ...(source !== undefined ? { source } : {}),
+          logger: createLogger({ reqId: `r-${label}`, writer: (l) => logLines.push(l) }),
+        }),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      const turnErrorLog = logLines
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .find((l) => l.msg === 'chat_turn_error');
+      return { outcome, turnErrors, ends, turnErrorLog };
+    }
+
+    const RAW = "Error: mcpServers entry 'gmail' has invalid transport";
+
+    it('an external turn: the outcome and every turn-error frame say runner-error; the log and chat:end keep the text', async () => {
+      const r = await runnerEnds('ext-raw', 'external', RAW);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: 'runner-error' });
+      expect(r.turnErrors.length).toBeGreaterThan(0);
+      for (const f of r.turnErrors) expect(f.reason).toBe('runner-error');
+      expect(JSON.stringify([r.outcome, r.turnErrors])).not.toMatch(/gmail|transport/i);
+      expect(r.turnErrorLog).toMatchObject({ reason: RAW });
+      expect(r.ends).toContainEqual({ outcome: { kind: 'terminated', reason: RAW } });
+    });
+
+    it('an external turn: a host code passes through', async () => {
+      const r = await runnerEnds('ext-code', 'external', 'connector-needs-reconnect');
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+      expect(r.turnErrors).toEqual([{ reqId: 'r-ext-code', reason: 'connector-needs-reconnect' }]);
+    });
+
+    it("a user's turn keeps the raw reason", async () => {
+      const r = await runnerEnds('user-raw', 'user', RAW);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: RAW });
+      expect(r.turnErrors).toEqual([{ reqId: 'r-user-raw', reason: RAW }]);
+    });
+  });
+
   it('F2b: a terminated chat:end with NO in-flight waiter does NOT fire chat:turn-error', async () => {
     // Guards both double-fire (chokepoint already settled the deferred + fired
     // its own turn-error) and spurious-fire (a reaped warm runner POSTs a late
@@ -3348,7 +3449,7 @@ describe('chat-orchestrator', () => {
       // again), but nothing that leaves the host names the owner's connectors:
       // not the turn error (@ax/conversations saves its payload into the
       // thread as-is, and a channel relays it), not the outcome the caller
-      // answers the room from, not the saved user turn. The host log keeps the
+      // answers the room from. The host log keeps the
       // names (chat:end, the host's audit record, keeps the raw error).
       async function outsiderTurn(
         label: string,
@@ -3359,24 +3460,17 @@ describe('chat-orchestrator', () => {
       ) {
         const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected });
         const logLines: string[] = [];
-        const saved: unknown[] = [];
         const r = await invoke(vault, `outsider-keep-${label}`, attached, {
           source,
           conversationId: `conv-${label}`,
           logLines,
-          extra: {
-            ...(extra ?? {}),
-            'conversations:append-event': async (_c, input: unknown) => {
-              saved.push(input);
-              return undefined;
-            },
-          },
+          ...(extra !== undefined ? { extra } : {}),
           config: { signInStatusTimeoutMs: 20 },
         });
         const turnErrorLog = logLines
           .map((l) => JSON.parse(l) as Record<string, unknown>)
           .find((l) => l.msg === 'chat_turn_error');
-        return { ...r, vault, saved, turnErrorLog };
+        return { ...r, vault, turnErrorLog };
       }
 
       it.each([
@@ -3396,8 +3490,7 @@ describe('chat-orchestrator', () => {
         expect(r.turnErrors).toEqual([
           { reqId: `r-outsider-keep-${label}`, reason: 'connector-needs-reconnect' },
         ]);
-        expect(r.saved).toHaveLength(1); // the user's own message, nothing else
-        expect(JSON.stringify([r.outcome, r.turnErrors, r.saved])).not.toMatch(/gmail/i);
+        expect(JSON.stringify([r.outcome, r.turnErrors])).not.toMatch(/gmail/i);
         // The host log keeps the name, and says the room didn't get it.
         expect(r.turnErrorLog).toMatchObject({
           reason: 'connector-needs-reconnect',
@@ -3410,7 +3503,7 @@ describe('chat-orchestrator', () => {
         const r = await outsiderTurn('bogus', 'bogus' as never, [GMAIL_REF, LINEAR_REF], { gmail: GMAIL, linear: LINEAR }, undefined);
         expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connectors-need-reconnect' });
         expect(r.turnErrors).toEqual([{ reqId: 'r-outsider-keep-bogus', reason: 'connectors-need-reconnect' }]);
-        expect(JSON.stringify([r.outcome, r.turnErrors, r.saved])).not.toMatch(/gmail|linear/i);
+        expect(JSON.stringify([r.outcome, r.turnErrors])).not.toMatch(/gmail|linear/i);
         expect(r.turnErrorLog).toMatchObject({ detail: 'Connectors: Gmail, Linear', detailWithheld: true });
       });
     });

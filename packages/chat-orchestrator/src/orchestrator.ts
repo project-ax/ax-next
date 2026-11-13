@@ -1152,6 +1152,24 @@ interface Deferred<T> {
   readonly settled: boolean;
 }
 
+/**
+ * TASK-1091 — the `reason` an outsider's turn may show. When the runner
+ * reports a failure itself, `reason` is the runner's own text
+ * (`${err.name}: ${err.message}`, up to 4096 chars): untrusted, and able to
+ * name the owner's setup. Every host code has the shape below; anything else
+ * becomes `runner-error`. The raw reason stays in the host log and on
+ * chat:end (the audit record).
+ *
+ * Copied from @ax/routines' `HOST_REASON_RE` (packages/routines/src/fire.ts,
+ * `terminatedRunText`), which explains why one such token can't spell a
+ * sentence, URL, path or dotted host. Change both together; no cross-plugin
+ * import.
+ */
+const HOST_REASON_RE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
+function outsiderReason(reason: string): string {
+  return HOST_REASON_RE.test(reason) ? reason : 'runner-error';
+}
+
 function newDeferred<T>(): Deferred<T> {
   let resolveFn: (v: T) => void = () => undefined;
   let rejectFn: (e: unknown) => void = () => undefined;
@@ -1921,16 +1939,23 @@ export function createOrchestrator(
     // @ax/conversations saves it into the thread as-is, and a channel relays
     // it to whoever is there. None of it is theirs to act on. The log line
     // keeps the detail, for whoever runs the host.
-    const shown = isOutsiderTurn(ctx) ? undefined : detail;
+    //
+    // The `reason` too: a runner-reported failure (onChatEnd) carries the
+    // runner's own text as its reason, so an outsider's frame gets a host code
+    // only (`outsiderReason`). The log keeps the raw reason.
+    const outsider = isOutsiderTurn(ctx);
+    const shown = outsider ? undefined : detail;
+    const shownReason = outsider ? outsiderReason(reason) : reason;
     ctx.logger.info('chat_turn_error', {
       reqId,
       reason,
+      ...(shownReason !== reason ? { shownReason } : {}),
       ...(detail !== undefined ? { detail } : {}),
       ...(detail !== undefined && shown === undefined ? { detailWithheld: true } : {}),
     });
     await fireChatEvent('chat:turn-error', ctx, {
       reqId,
-      reason,
+      reason: shownReason,
       ...(shown !== undefined ? { detail: shown } : {}),
     });
   }
@@ -2658,9 +2683,11 @@ export function createOrchestrator(
       // the owner's setup: a failed proxy open names each credential that
       // failed by our env key (`connector:<id>:<slot>`), a fold collision its
       // connectors, a sandbox failure the dev service and path. So that
-      // caller gets the kind and the code only.
-      if (outcome.kind === 'terminated' && 'error' in outcome && isOutsiderTurn(ctx)) {
-        return { kind: 'terminated', reason: outcome.reason };
+      // caller gets the kind and the code only. The `reason` itself may be a
+      // runner's own text when the runner reported the failure (onChatEnd), so
+      // it passes only as a host code (`outsiderReason`).
+      if (outcome.kind === 'terminated' && isOutsiderTurn(ctx)) {
+        return { kind: 'terminated', reason: outsiderReason(outcome.reason) };
       }
       return outcome;
     } finally {
