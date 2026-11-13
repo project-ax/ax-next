@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
   PostgreSqlContainer,
@@ -43,6 +43,8 @@ import {
 } from './support/fake-idp.js';
 
 const COOKIE_KEY = randomBytes(32);
+/** better-auth's own secret, so a test can sign better-auth's session cookie. */
+const BETTER_AUTH_SECRET = randomBytes(32).toString('hex');
 /** Not a secret: the password a pre-fix `/auth/sign-up/email` would have stored. */
 const PASSWORD = 'correcthorsebattery';
 const ORIGINAL_CREDENTIALS_KEY = process.env.AX_CREDENTIALS_KEY;
@@ -121,7 +123,7 @@ async function bootStack(): Promise<BootedStack> {
       createDatabasePostgresPlugin({ connectionString }),
       createCredentialsPlugin(),
       http,
-      createAuthBetterPlugin(),
+      createAuthBetterPlugin({ secret: BETTER_AUTH_SECRET }),
     ],
   });
   try {
@@ -178,9 +180,11 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(res.status).toBe(201);
   }
 
+  /** A POST to better-auth. With `cookie`, it also sends the Origin better-auth wants beside one. */
   async function postJson(
     path: string,
     body: unknown,
+    cookie?: string,
   ): Promise<{ status: number; body: Record<string, unknown>; setCookie: string }> {
     const res = await fetch(`${stack.baseUrl}${path}`, {
       method: 'POST',
@@ -188,6 +192,7 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
         'content-type': 'application/json',
         'x-requested-with': 'ax-admin',
         'x-forwarded-for': freshClientIp(),
+        ...(cookie !== undefined ? { cookie, origin: stack.baseUrl } : {}),
       },
       body: JSON.stringify(body),
     });
@@ -284,6 +289,36 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
       .select('email_verified')
       .executeTakeFirst();
     return row?.email_verified;
+  }
+
+  /**
+   * better-auth's OWN session cookie for `userId`, signed the way better-call
+   * signs cookies (`<token>.<base64 HMAC-SHA256>`). The bridge never hands one
+   * out: it re-issues every session as `ax_auth_session`. A test mints one to
+   * pin what better-auth's session-only routes do if that ever changes.
+   */
+  async function betterAuthSession(userId: string): Promise<string> {
+    const token = randomBytes(24).toString('base64url');
+    const now = new Date();
+    await db
+      .insertInto('auth_better_v1_sessions')
+      .values({
+        id: newId('ses'), user_id: userId, token, expires_at: new Date(now.getTime() + 3_600_000),
+        ip_address: null, user_agent: null, created_at: now, updated_at: now,
+      })
+      .execute();
+    const signature = createHmac('sha256', BETTER_AUTH_SECRET).update(token).digest('base64');
+    return `ax_better_auth.session_token=${encodeURIComponent(`${token}.${signature}`)}`;
+  }
+
+  /** Whose session better-auth itself says `cookie` is, or null. */
+  async function betterAuthSessionUser(cookie: string): Promise<string | null> {
+    const res = await fetch(`${stack.baseUrl}/auth/get-session`, {
+      headers: { cookie, 'x-forwarded-for': freshClientIp() },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { user?: { id?: string } } | null;
+    return body?.user?.id ?? null;
   }
 
   /** Who `/admin/me` says the session belongs to. */
@@ -531,5 +566,32 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
     expect(r.status).toBe(302);
     expect(r.location).not.toContain('/auth/error');
     expect((await me(r.axSession)).id).toBe(aliceId);
+  });
+
+  // -- better-auth's session-only routes ---------------------------------------
+  //
+  // Reachable only with better-auth's own session cookie, which the bridge never
+  // hands out (plugin.ts drops it and issues ax_auth_session). So these are
+  // defense in depth: if that ever changes, the doors below must already be
+  // shut.
+
+  it("/link-social refuses a client-posted Google ID token, a link path the identity gate doesn't see", async () => {
+    // better-auth adds the account on this path itself (`createAccount`), never
+    // calling `validateUserInfo`. Here that would attach the owner's Google
+    // account to a row someone pre-registered with a password, the link the
+    // gate refuses on the callback (account_not_linkable). Only Google's
+    // `disableIdTokenSignIn` shuts it.
+    const id = await insertPasswordUser('victim@canopyworks.com');
+    const session = await betterAuthSession(id);
+    expect(await betterAuthSessionUser(session)).toBe(id);
+    const token = await idp.signGoogleIdToken({
+      email: 'victim@canopyworks.com',
+      emailVerified: true,
+      sub: 'g-victim',
+    });
+    const r = await postJson('/auth/link-social', { provider: 'google', idToken: { token } }, session);
+    expect(r.status).toBe(404);
+    expect(r.body.code).toBe('ID_TOKEN_NOT_SUPPORTED');
+    expect(await providersOf(id)).toEqual(['credential']);
   });
 });

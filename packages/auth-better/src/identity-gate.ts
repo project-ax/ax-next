@@ -9,12 +9,22 @@ import type { BetterAuthOptions, ValidateUserInfoAction } from 'better-auth';
 // attacker could also use, and sign up with any Google account at all: the
 // Google domain check never ran (see the note on `context.path` below).
 //
-// handler.ts wires it as better-auth's `user.validateUserInfo`, which better-auth
-// runs before every account creation, every account link and every OAuth
-// sign-in, and which names the provider in `source.oauth.providerId`. A refusal
-// becomes a redirect to `/auth/error?error=<code>` on a browser flow (a 403
-// elsewhere), and a throw from here is a 403 `validation_failed`: it fails
-// closed.
+// handler.ts wires it as better-auth's `user.validateUserInfo`. better-auth 1.7
+// runs it on the OAuth callback (create-user, link-account and sign-in, naming
+// the provider in `source.oauth.providerId`) and inside every
+// `internalAdapter.createUser`, which fails closed when a caller names no
+// source. A refusal becomes a redirect to `/auth/error?error=<code>` on a
+// browser flow (a 403 elsewhere), and a throw from here is a 403
+// `validation_failed`: it fails closed.
+//
+// It does NOT run everywhere a sign-in method is added to an existing account.
+// Three better-auth paths add one without it: `/link-social` with an ID token
+// (`createAccount` straight from the token), `/reset-password` (a password),
+// and the server-only `setPassword`. Config keeps them shut, and that config is
+// load-bearing: Google's `disableIdTokenSignIn` (the only guard on the first;
+// GitHub has no ID-token sign-in), no `sendResetPassword` (no reset token can
+// be minted), and no route for `setPassword`. Re-check this list on a
+// better-auth upgrade.
 //
 // Never gate on `context.path`: in better-auth 1.7 it is the route pattern
 // (`/callback/:id`), not the request path, which is how the old Google domain

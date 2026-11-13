@@ -169,8 +169,12 @@ function build(input: HandlerInput): BuiltHandler {
       socialProviders.google = {
         clientId: p.clientId,
         clientSecret: p.clientSecret,
-        // The login page uses the redirect flow. An ID token posted by a client
-        // to /sign-in/social skipped every check (TASK-1116), so that door is shut.
+        // LOAD-BEARING (TASK-1116). Refuses ID tokens posted by a client. On
+        // /link-social better-auth adds the account from such a token itself,
+        // without calling the identity gate (`validateUserInfo` below), so this
+        // flag is the only thing that shuts that path. On /sign-in/social the
+        // gate would catch one too. The login page uses the redirect flow.
+        // GitHub needs nothing: better-auth has no ID-token sign-in for it.
         disableIdTokenSignIn: true,
       };
     } else if (p.kind === 'github') {
@@ -192,7 +196,10 @@ function build(input: HandlerInput): BuiltHandler {
     // account and pre-claim a teammate's email before their first Google
     // sign-in. Nothing uses it: the setup wizard's admin has no password, and
     // the login page is Google-only. `enabled: false` turns password sign-IN
-    // off too, so a password someone set before the fix no longer works.
+    // off too, so a password someone set before the fix no longer works. It
+    // does NOT unmount /reset-password, which adds a password without the
+    // identity gate: that route stays inert only because no
+    // `sendResetPassword` is set, so no reset token can be minted.
     emailAndPassword: { enabled: false },
     // We mount @ax/http-server routes at `/auth/*` (sibling of `/admin/*`).
     // Better-auth's default basePath is `/api/auth`; override so its
@@ -235,8 +242,13 @@ function build(input: HandlerInput): BuiltHandler {
     },
     user: {
       // Who may get an account, attach a sign-in to one, or sign in at all
-      // (TASK-1116). better-auth runs it before every account creation, link
-      // and OAuth sign-in; identity-gate.ts has the rules.
+      // (TASK-1116); identity-gate.ts has the rules. better-auth runs it on
+      // every OAuth callback (sign-up, link, sign-in) and on every user it
+      // creates, but NOT everywhere a sign-in method is added: /link-social
+      // with an ID token, /reset-password and the server-only setPassword add
+      // one without it. Config keeps those shut: Google's
+      // `disableIdTokenSignIn` above, and no `sendResetPassword` (so no reset
+      // token can be minted). identity-gate.ts says more.
       validateUserInfo: createIdentityGate(input.providers),
       additionalFields: {
         role: { type: 'string', defaultValue: 'user' },
