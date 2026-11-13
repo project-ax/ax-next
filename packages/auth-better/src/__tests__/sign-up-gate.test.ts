@@ -608,7 +608,11 @@ describe('@ax/auth-better: who may sign up and sign in (TASK-1116)', () => {
   });
 
   it("a link made before the fix still signs in when GitHub vouches for the account's own email", async () => {
-    // The owner proving their own address keeps working, whoever made the link.
+    // A keeps-working guard: the owner proving their own address keeps
+    // working, whoever made the link. GitHub's capitals were decoration while
+    // the gate read better-auth's lowercased copy of the email. It reads the
+    // address as GitHub spelled it now (K1/K2 below), so this is also the one
+    // real sign-in that fails if the comparison stops ignoring ASCII case.
     await addProvider('github', '');
     const aliceId = await insertGoogleUser('alice@canopyworks.com', 'g-alice');
     await insertAccount(aliceId, 'github', '782');
