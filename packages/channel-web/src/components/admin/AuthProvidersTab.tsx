@@ -182,6 +182,9 @@ export function AuthProvidersTab() {
       <ul className="flex flex-col list-none m-0 p-0">
         {providers.map((p, i) => {
           const wired = isWiredKind(p.kind);
+          // A leftover kind shows as off whatever its stored flag says:
+          // nobody signs in through it, so it must never look like a way in.
+          const on = wired && p.enabled;
           const hintId = `auth-provider-unsupported-${i}`;
           return (
             <li
@@ -198,12 +201,13 @@ export function AuthProvidersTab() {
               </div>
               {/* (D5) Was a hand-rolled switch — two divs and a translate. The
                   primitive is installed and brings its own keyboard handling.
-                  A leftover kind's switch is off: the server refuses to toggle it. */}
+                  A leftover kind's switch is off and disabled: the server
+                  skips it at sign-in and refuses to toggle it. */}
               <Switch
-                checked={p.enabled}
+                checked={on}
                 disabled={!wired}
                 aria-describedby={wired ? undefined : hintId}
-                aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
+                aria-label={`${on ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
                 onCheckedChange={() => void handleToggle(p)}
               />
               <Button

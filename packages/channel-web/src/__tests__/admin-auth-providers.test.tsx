@@ -256,11 +256,18 @@ describe('AuthProvidersTab', () => {
   });
 
   it("a leftover oidc row's switch is off, says why, and the row can still be removed", async () => {
+    // Its stored `enabled` is true, but nobody signs in through it, so it
+    // never shows as on: a dead row must not look like a way in.
+    expect(oidcEntry.enabled).toBe(true);
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, oidcEntry] }));
 
     render(<AuthProvidersTab />);
     const leftover = (await screen.findByRole('switch', { name: /oidc/i })) as HTMLButtonElement;
     expect(leftover.disabled).toBe(true);
+    expect(leftover.getAttribute('aria-checked')).toBe('false');
+    expect(leftover.getAttribute('data-state')).toBe('unchecked');
+    // Named for what it shows, not for its stored flag.
+    expect(screen.getByRole('switch', { name: 'Enable oidc' })).toBe(leftover);
     const hintId = leftover.getAttribute('aria-describedby');
     expect(hintId).not.toBeNull();
     expect(document.getElementById(hintId!)?.textContent).toMatch(/no longer supported/i);
