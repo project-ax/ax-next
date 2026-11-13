@@ -25,6 +25,7 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     delta boundary, so model text never pings anyone (format.ts).
  *   - The status line is ONE `task_update` card (id `status`) per stream
  *     message, updated in place, `complete` (or `error`) when the message ends.
+ *     `working()` shows it as Working before the agent has said anything.
  *   - The first flush with something to show starts the stream, later ones
  *     append, at most one call per FLUSH_INTERVAL_MS.
  *   - Slack caps a stream at 12,000 characters and 10 minutes. Before a flush
@@ -60,6 +61,12 @@ export type ReplyOutcome = 'complete' | 'error' | 'busy';
 export interface ReplyStream {
   text(delta: string): void;
   status(title: string): void;
+  /**
+   * Show the Working card now, before the agent says anything (a cold start
+   * can take seconds). It never replaces the agent's own status, and it isn't
+   * something to say: a reply that ends with only this card says emptyReply.
+   */
+  working(): void;
   /** The turn made an artifact or a visual: the reply ends with a link to the agent. */
   artifact(): void;
   finish(outcome: ReplyOutcome): Promise<void>;
@@ -145,6 +152,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   let title: string | null = null;
   let artifactSeen = false;
   let anyText = false;
+  /** The agent sent a status of its own (working() alone doesn't count). */
+  let agentStatus = false;
   /** The last delta ended in `<`: a `!`, `@` or `#` starting the next is neutralized. */
   let openAngle = false;
   let open: OpenStream | null = null;
@@ -407,9 +416,17 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
 
     status(raw) {
       if (finished || typeof raw !== 'string') return;
+      agentStatus = true;
       const next = cleanStatusTitle(raw) || COPY.statusDefault;
       if (next === title) return;
       title = next;
+      pending.push({ kind: 'status' });
+      armFlush();
+    },
+
+    working() {
+      if (finished || title !== null) return;
+      title = COPY.statusDefault;
       pending.push({ kind: 'status' });
       armFlush();
     },
@@ -428,6 +445,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       if (artifactSeen) lines.push(COPY.artifactLink(d.agentLink));
       if (outcome === 'error') lines.push(COPY.turnFailed);
       if (outcome === 'busy') lines.push(COPY.busy);
+      // Only the Working card was shown: say so in that message, not a second one.
+      if (!anyText && !agentStatus && title !== null && lines.length === 0) lines.push(COPY.emptyReply);
       if (lines.length > 0) pending.push({ kind: 'text', text: (anyText ? '\n\n' : '') + lines.join('\n\n') });
       const nothing = !anyText && title === null && lines.length === 0;
       finishing = enqueue(async () => {

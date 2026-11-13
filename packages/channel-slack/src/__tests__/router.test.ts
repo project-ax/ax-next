@@ -474,9 +474,14 @@ describe('createEventRouter: a DM from the owner', () => {
       threadTs: TS,
       recipientUserId: ALICE,
       recipientTeamId: TEAM_ID,
-      chunks: [{ type: 'markdown_text', text: 'Hello' }],
+      // The Working card opens every reply (see 'Working from the start').
+      chunks: [{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }, { type: 'markdown_text', text: 'Hello' }],
     });
-    expect(w.slack.calls[2]!.args).toEqual({ channel: DM_ALICE, ts: start.ts });
+    expect(w.slack.calls[2]!.args).toEqual({
+      channel: DM_ALICE,
+      ts: start.ts,
+      chunks: [{ type: 'task_update', id: 'status', title: 'Working', status: 'complete' }],
+    });
     expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
     // A turn that ends on its own is never interrupted.
     expect(w.interrupts).toEqual([]);
@@ -676,7 +681,9 @@ describe('createEventRouter: turns in one thread', () => {
     ]);
     // Replies never interleave: the first stream stops before the second starts.
     const streamCalls = w.slack.calls.filter((c) => c.method !== 'usersInfo');
-    expect(streamCalls.map((c) => [c.method, (chunksOf(c)[0] as { text?: string } | undefined)?.text])).toEqual([
+    const firstText = (c: (typeof streamCalls)[number]) =>
+      chunksOf(c).flatMap((k) => (k.type === 'markdown_text' ? [k.text] : []))[0];
+    expect(streamCalls.map((c) => [c.method, firstText(c)])).toEqual([
       ['startStream', 'one'],
       ['stopStream', undefined],
       ['startStream', 'two'],
@@ -823,7 +830,9 @@ describe('createEventRouter: turns that fail', () => {
     w.scripts.push({ hang: true });
     await w.dispatch(INSTALL, dm());
     await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS - 1);
-    expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+    // Only the Working card so far, carried into a new message at 9 minutes.
+    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'startStream']);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('');
     expect(w.interrupts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60_000);
@@ -939,7 +948,8 @@ describe('createEventRouter: turns that fail', () => {
     await vi.advanceTimersByTimeAsync(STREAM_MAX_AGE_MS);
     later.release();
     await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
-    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'startStream', 'stopStream']);
+    // The new message opens with the Working card; the rest of the text is appended to it.
+    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'startStream', 'appendStream', 'stopStream']);
     const starts = w.slack.calls.filter((c) => c.method === 'startStream');
     expect(starts.map((c) => c.args['threadTs'])).toEqual([TS, TS]);
     expect(starts[0]!.ts).not.toBe(starts[1]!.ts);
@@ -1292,5 +1302,35 @@ describe('createEventRouter: text on either side of other work', () => {
     await w.dispatch(INSTALL, dm());
     await w.idle();
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Hello there');
+  });
+});
+
+// ── Working from the start ──────────────────────────────────────────────────
+
+describe('createEventRouter: the owner sees Working before the agent says anything', () => {
+  // Walk on kind (2026-11-13): a cold start left the DM blank for seconds. The
+  // reply opens with the Working card as soon as the turn starts.
+  it('a turn that has not said anything yet shows the Working card after one flush interval', async () => {
+    vi.useFakeTimers();
+    const w = world();
+    w.scripts.push({ hang: true });
+    await w.dispatch(INSTALL, dm());
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream']);
+    expect(w.slack.calls[1]!.args).toMatchObject({
+      channel: DM_ALICE,
+      threadTs: TS,
+      chunks: [{ type: 'task_update', id: 'status', title: COPY.statusDefault, status: 'in_progress' }],
+    });
+  });
+
+  it('a refused sender gets no card: silence stays silence', async () => {
+    vi.useFakeTimers();
+    const w = world();
+    w.scripts.push({ hang: true });
+    await w.dispatch(INSTALL, dm({ user: 'U0STRANGER' }));
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS * 3);
+    expect(methods(w.slack.calls).filter((m) => m !== 'usersInfo')).toEqual([]);
+    expect(w.invokes).toEqual([]);
   });
 });

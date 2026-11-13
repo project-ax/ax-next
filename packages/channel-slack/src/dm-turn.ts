@@ -230,6 +230,9 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
   });
+  // The owner sees Working at the first flush, not a blank thread while a cold
+  // runner starts (walk on kind, 2026-11-13).
+  stream.working();
   /**
    * Ask chat-orchestrator to stop the conversation's in-flight turn: the
    * same Stop the web app's button sends (`{ conversationId, userId }`; it

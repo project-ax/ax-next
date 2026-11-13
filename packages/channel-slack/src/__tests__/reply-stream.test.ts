@@ -560,6 +560,43 @@ describe('createReplyStream', () => {
     ]);
   });
 
+  it('working() shows the Working card at the first flush, before any text, and it completes at finish', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.working();
+    await tick();
+    expect(calls.map((c) => c.method)).toEqual(['startStream']);
+    expect(calls.flatMap(cardsOf)).toEqual([{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }]);
+    s.text('Hi.');
+    await tick();
+    await finishNow(s);
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
+    expect(calls.flatMap(cardsOf).at(-1)).toEqual({ type: 'task_update', id: 'status', title: 'Working', status: 'complete' });
+    expect(delivered(calls)).toBe('Hi.');
+  });
+
+  it('working() then nothing: the same message says emptyReply, never a second post', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.working();
+    await tick();
+    await finishNow(s, 'complete');
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
+    expect(delivered(calls)).toBe(COPY.emptyReply);
+  });
+
+  it("working() never replaces the agent's own status", async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.status('Reading your calendar');
+    s.working();
+    await tick();
+    expect(calls.flatMap(cardsOf)).toEqual([
+      { type: 'task_update', id: 'status', title: 'Reading your calendar', status: 'in_progress' },
+    ]);
+    await finishNow(s);
+  });
+
   it('artifact() twice → one link line at the end', async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);

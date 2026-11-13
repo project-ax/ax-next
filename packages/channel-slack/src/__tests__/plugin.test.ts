@@ -596,7 +596,7 @@ describe('@ax/channel-slack plugin', () => {
       thread_ts: DM_TS,
       recipient_user_id: ALICE,
       recipient_team_id: TEAM_ID,
-      chunks: [{ type: 'markdown_text', text: 'Hi Alice.' }],
+      chunks: [{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }, { type: 'markdown_text', text: 'Hi Alice.' }],
     });
 
     expect(s.invokes).toHaveLength(1);
