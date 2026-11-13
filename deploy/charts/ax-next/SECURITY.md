@@ -462,8 +462,8 @@ Flagged for re-review when Bitnami's transition completes.
 - **Web proxy missing.** Runner pods can't reach the public internet at all
   today. Tools that need npm/pip/curl will fail. The web-proxy comes in
   Week 10+; until then, k8s mode is "agent can think but can't fetch."
-- **An artifact link is only as private as your sign-up rule (D10).**
-  Anyone signed in to this AX install who has an artifact's link can open and download it, and can pass the link on. So a link is only as private as your sign-up rule. On canopyworks.ai sign-up is limited to canopyworks.com accounts, so that means teammates. On an install with open sign-up, it means anyone who can make an account. Turn a link off or get a new one from the artifact's ⋯ menu; the old link stops working right away.
+- **An artifact link is only as private as your sign-in rule (D10).**
+  Anyone signed in to this AX install who has an artifact's link can open and download it, and can pass the link on. So a link is only as private as the rule for who can sign in. People sign in only through a sign-in provider (Google or GitHub); there's no email-and-password sign-up. If a provider lists allowed email domains, an account whose email (as that provider verifies it) is outside them can't sign up or sign in. The one exception is an admin the install's operator appointed. On canopyworks.ai the list is canopyworks.com, so that means teammates. With no list, it means anyone with an account at that provider. Until TASK-1116 this rule wasn't enforced: anyone could sign up with any email and a password, and the Google domain check didn't actually run. If your install is older than that, run the account audit in `deploy/GKE.md` (4h) once. Turn a link off or get a new one from the artifact's ⋯ menu; the old link stops working right away.
 
 ## What we don't know yet
 

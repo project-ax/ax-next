@@ -1,0 +1,6 @@
+---
+'@ax/auth-better': patch
+'@ax/channel-web': patch
+---
+
+Close the open sign-up. Email-and-password sign-up and sign-in are off (a password set before this release no longer works), Google ID tokens posted by a client are refused, and one identity gate now checks every sign-up, account link and sign-in. The provider must have verified the email, and the email must be inside that provider's allowed domains, with one exception: an admin the operator appointed. A sign-in only attaches to an existing account that is verified, or that is the setup wizard's admin waiting for its first sign-in. The gate replaces a Google domain check that never actually ran on better-auth 1.7, and it stops a GitHub account holding an unverified copy of a teammate's email from taking over their account. The never-wired "Generic OIDC" provider option is gone from the admin form, and a leftover OIDC row can no longer take sign-in down. If you run an install older than this, run the account audit in `deploy/GKE.md` (4h) once to see what the open sign-up let in.
