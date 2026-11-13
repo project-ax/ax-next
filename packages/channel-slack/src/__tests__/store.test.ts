@@ -155,7 +155,7 @@ describe('install rows', () => {
     const installId = await pending();
     await store.activate(installId, {
       ...TEAM,
-      teamName: 'Acme‮fdp.exe ⁦Corp\u0007',
+      teamName: 'Acme\u202Efdp.exe \u2066Corp\u0007',
       installedAt: new Date(),
     });
     expect((await store.get(installId))?.teamName).toBe('Acme fdp.exe Corp');

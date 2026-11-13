@@ -702,14 +702,14 @@ describe('GET /admin/slack', () => {
   it("the name auth gives is made fit to show on one line: no bidi, control or invisible characters, at most 120", async () => {
     const w = world();
     await w.connect();
-    w.users.get(ADA.id)!.displayName = `  Ada‮\u0000 Admin\uD800 ${'x'.repeat(300)}`;
+    w.users.get(ADA.id)!.displayName = `  Ada\u202E\u0000 Admin\uD800 ${'x'.repeat(300)}`;
     const shown = ((await w.status()).body as { connectedBy: string }).connectedBy;
     expect(shown.startsWith('Ada Admin� x')).toBe(true);
     expect(shown.length).toBeLessThanOrEqual(120);
-    expect(shown).not.toMatch(/[\u0000‮\uD800]/);
+    expect(shown).not.toMatch(/[\u0000\u202E\uD800]/);
 
     // Nothing left once it's cleaned: the email stands in.
-    w.users.get(ADA.id)!.displayName = '‮​';
+    w.users.get(ADA.id)!.displayName = '\u202E\u200B';
     expect((await w.status()).body).toMatchObject({ connectedBy: 'ada@example.com' });
   });
 
