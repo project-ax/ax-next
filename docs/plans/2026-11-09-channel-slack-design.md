@@ -181,11 +181,11 @@ so AX can't retire it through the API. Hence:
 `app_mentions:read`, `chat:write`, `chat:write.customize` (replies show the
 agent's own name and avatar), `im:history` and `im:write` (DMs), `channels:history`
 (threads the bot is in), `users:read` and `users:read.email` (the identity check),
-and `commands` (connecting a channel). Reading files waits until we support
-them.
+`reactions:write` (👀 on a message while the agent works on it), and `commands`
+(connecting a channel). Reading files waits until we support them.
 
 TASK-1093 (DMs) ships only `app_mentions:read`, `chat:write`, `im:history`,
-`users:read` and `users:read.email`, with the App Home messages tab on (without
+`reactions:write`, `users:read` and `users:read.email`, with the App Home messages tab on (without
 it nobody can DM the app), no interactivity and no slash commands. TASK-1094 and
 TASK-1095 add the rest when they need it; a dev install reconnects.
 
@@ -271,6 +271,15 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      mrkdwn conversion.
    - Collapse tool calls into one status line, matching the web's #1156 (one
      `task_update` card that changes in place).
+   - While the agent works, the owner's message wears 👀 (`reactions.add`, from
+     the turn's start), taken off right before the reply first shows: its text,
+     its status card, or the failure line. One try to take it off: the reply
+     never waits on a reaction. If Slack refuses the 👀 (an install from before
+     `reactions:write`, say), the reply opens with the `Working` card instead.
+     Chosen on the kind walk (2026-11-13) over a `Working` card up front (it
+     stays on every reply, and Slack can't remove a task card from a stream) and
+     Slack's "is thinking…" line (`assistant.threads.setStatus`, which does work
+     in plain DMs).
    - Artifacts and charts become a link to the agent's page in the web app (no
      per-artifact or per-conversation page exists yet).
    - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its

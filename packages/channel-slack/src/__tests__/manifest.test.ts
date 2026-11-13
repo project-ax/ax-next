@@ -47,7 +47,7 @@ describe('buildAppManifest', () => {
       oauth_config: {
         redirect_urls: ['https://ax.example/admin/slack/oauth/callback'],
         scopes: {
-          bot: ['app_mentions:read', 'chat:write', 'im:history', 'users:read', 'users:read.email'],
+          bot: ['app_mentions:read', 'chat:write', 'im:history', 'reactions:write', 'users:read', 'users:read.email'],
         },
       },
       settings: {
@@ -71,11 +71,13 @@ describe('buildAppManifest', () => {
     expect(manifest.features.bot_user.display_name).toBe('Ada Bot');
   });
 
-  it('asks for exactly five bot scopes and two events', () => {
+  it('asks for exactly six bot scopes and two events', () => {
     expect([...BOT_SCOPES]).toStrictEqual([
       'app_mentions:read',
       'chat:write',
       'im:history',
+      // 👀 on the owner's message while the agent works (walk on kind, 2026-11-13).
+      'reactions:write',
       'users:read',
       'users:read.email',
     ]);
@@ -91,7 +93,7 @@ describe('buildAppManifest', () => {
     };
     manifest.oauth_config.scopes.bot.push('channels:history');
     manifest.settings.event_subscriptions.bot_events.push('message.channels');
-    expect(BOT_SCOPES).toHaveLength(5);
+    expect(BOT_SCOPES).toHaveLength(6);
     expect(BOT_EVENTS).toHaveLength(2);
   });
 });
@@ -110,7 +112,7 @@ describe('buildInstallUrl', () => {
     ]);
     expect(url.searchParams.get('client_id')).toBe('123.456');
     expect(url.searchParams.get('scope')).toBe(
-      'app_mentions:read,chat:write,im:history,users:read,users:read.email',
+      'app_mentions:read,chat:write,im:history,reactions:write,users:read,users:read.email',
     );
     expect(url.searchParams.get('state')).toBe('abc123');
     expect(url.hash).toBe('');

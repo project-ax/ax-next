@@ -25,8 +25,8 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     delta boundary, so model text never pings anyone (format.ts).
  *   - The status line is ONE `task_update` card (id `status`) per stream
  *     message, updated in place, `complete` (or `error`) when the message ends.
- *     `working()` asks Slack for its "is thinking…" line first (it leaves no
- *     trace in the reply), and shows the card as Working only if Slack refuses.
+ *     `working()` puts 👀 on the owner's message instead (it leaves no trace
+ *     in the reply), and shows the card as Working only if Slack refuses it.
  *   - The first flush with something to show starts the stream, later ones
  *     append, at most one call per FLUSH_INTERVAL_MS.
  *   - Slack caps a stream at 12,000 characters and 10 minutes. Before a flush
@@ -64,9 +64,10 @@ export interface ReplyStream {
   status(title: string): void;
   /**
    * Show that the agent is on it, before it says anything (a cold start can
-   * take seconds): Slack's "is thinking…" line, which Slack clears itself when
-   * the reply arrives. If Slack refuses that, the Working card instead. Neither
-   * replaces the agent's own status, nor counts as something to say.
+   * take seconds): 👀 on the owner's message, taken off right before the reply
+   * first shows (text, a status card, or the failure line). If Slack refuses
+   * the 👀, the Working card instead. Neither replaces the agent's own status,
+   * nor counts as something to say.
    */
   working(): void;
   /** The turn made an artifact or a visual: the reply ends with a link to the agent. */
@@ -101,6 +102,8 @@ export interface ReplyStreamDeps {
   api: SlackApi;
   botToken: string;
   target: ReplyTarget;
+  /** The owner's message: 👀 goes on it while the agent works (`working()`). */
+  messageTs: string;
   /** Where the artifact line points: the agent's page in the web app. Host-built. */
   agentLink: string;
   logger: Logger;
@@ -135,7 +138,14 @@ interface Batch {
   overflow: boolean;
 }
 
-type Stage = 'start' | 'append' | 'stop' | 'post' | 'status';
+type Stage = 'start' | 'append' | 'stop' | 'post' | 'react' | 'unreact';
+
+/** 👀: "seen it, on it". */
+const SEEN_REACTION = 'eyes';
+
+function isSlackCode(err: unknown, code: string): boolean {
+  return err instanceof SlackApiError && err.code === code;
+}
 
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
@@ -168,6 +178,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   let flushTimer: unknown = null;
   let ageTimer: unknown = null;
   let chain: Promise<void> = Promise.resolve();
+  /** 👀 is on the owner's message. */
+  let reacted = false;
 
   const log = (stage: Stage | 'internal', err: unknown): void => {
     try {
@@ -183,6 +195,23 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     chain = run;
     return run;
   };
+
+  const eyes = { channel: target.channel, ts: d.messageTs, name: SEEN_REACTION };
+
+  /**
+   * Take 👀 off, once, right before the reply first shows. One try: a reply
+   * never waits on a reaction, so a failure (a rate limit included) is only
+   * logged, and `no_reaction` (already gone) isn't one.
+   */
+  async function unreact(): Promise<void> {
+    if (!reacted) return;
+    reacted = false;
+    try {
+      await api.removeReaction(botToken, eyes);
+    } catch (err) {
+      if (!isSlackCode(err, 'no_reaction')) log('unreact', err);
+    }
+  }
 
   const sleep = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => {
@@ -302,6 +331,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       if (b.chunks.length === 0) return b;
       try {
         if (kind === 'start') {
+          await unreact();
           const startedAt = clock.now();
           const { ts } = await api.startStream(botToken, { ...target, chunks: b.chunks });
           open = { ts, startedAt, sent: b.textLength, card: b.card };
@@ -380,6 +410,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   async function post(markdownText: string): Promise<boolean> {
     for (let attempt = 0; ; attempt += 1) {
       try {
+        await unreact();
         await api.postMessage(botToken, { channel: target.channel, threadTs: target.threadTs, markdownText });
         return true;
       } catch (err) {
@@ -430,14 +461,16 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       if (finished) return;
       void enqueue(async () => {
         try {
-          await d.api.setThreadStatus(d.botToken, {
-            channel: d.target.channel,
-            threadTs: d.target.threadTs,
-            status: COPY.thinkingStatus,
-          });
+          await api.addReaction(botToken, eyes);
+          reacted = true;
         } catch (err) {
-          log('status', err);
-          // No thinking line: the Working card covers the wait instead.
+          // Already there (from this bot): it is on, and comes off as usual.
+          if (isSlackCode(err, 'already_reacted')) {
+            reacted = true;
+            return;
+          }
+          log('react', err);
+          // No 👀: the Working card covers the wait instead.
           if (finished || title !== null) return;
           title = COPY.statusDefault;
           pending.push({ kind: 'status' });

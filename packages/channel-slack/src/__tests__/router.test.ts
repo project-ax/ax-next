@@ -147,10 +147,10 @@ interface SlackCall {
 function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
   const calls: SlackCall[] = [];
   /**
-   * The thread's "is thinking…" line. Kept apart from `calls` (it isn't part of
-   * any message); `after` is how many `calls` came before it.
+   * 👀 on and off the owner's message. Kept apart from `calls` (it isn't part
+   * of the reply); `after` is how many `calls` came before it.
    */
-  const statuses: Array<{ token: string; args: Record<string, unknown>; after: number }> = [];
+  const reactions: Array<{ op: 'add' | 'remove'; token: string; args: Record<string, unknown>; after: number }> = [];
   let nextTs = 1;
   const notHere = async (): Promise<never> => {
     throw new Error('the router must not call this Slack method');
@@ -193,11 +193,14 @@ function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
     async stopStream(token, a) {
       record('stopStream', token, { ...a });
     },
-    async setThreadStatus(token, a) {
-      statuses.push({ token, args: { ...a }, after: calls.length });
+    async addReaction(token, a) {
+      reactions.push({ op: 'add', token, args: { ...a }, after: calls.length });
+    },
+    async removeReaction(token, a) {
+      reactions.push({ op: 'remove', token, args: { ...a }, after: calls.length });
     },
   };
-  return { api, calls, statuses };
+  return { api, calls, reactions };
 }
 
 // ── The world ───────────────────────────────────────────────────────────────
@@ -1303,29 +1306,44 @@ describe('createEventRouter: text on either side of other work', () => {
   });
 });
 
-// ── Thinking from the start ─────────────────────────────────────────────────
+// ── 👀 while the agent works ───────────────────────────────────────────────
 
-describe('createEventRouter: the owner sees the thinking line before the agent says anything', () => {
+describe("createEventRouter: 👀 on the owner's message while the agent works", () => {
   // Walk on kind (2026-11-13): a cold start left the DM blank for seconds.
-  // Slack's own "is thinking…" line covers the wait and clears itself when the
-  // reply arrives, so the reply carries no leftover card.
-  it('the thread gets the thinking line as soon as the turn starts, and the reply is unchanged', async () => {
+  // Vinay's pick over a Working card (it stays on every reply) and Slack's
+  // "is thinking…" line: 👀 on the message, off right before the reply shows.
+  it('👀 goes on when the turn starts and comes off right before the reply; the reply is unchanged', async () => {
     const w = world();
     w.scripts.push({ chunks: [{ kind: 'text', text: 'Hello' }], end: 'turn-end' });
     await w.dispatch(INSTALL, dm());
     await w.idle();
-    expect(w.slack.statuses).toEqual([
-      { token: BOT_TOKEN, args: { channel: DM_ALICE, threadTs: TS, status: COPY.thinkingStatus }, after: 1 },
+    const eyes = { channel: DM_ALICE, ts: TS, name: 'eyes' };
+    expect(w.slack.reactions).toEqual([
+      { op: 'add', token: BOT_TOKEN, args: eyes, after: 1 },
+      { op: 'remove', token: BOT_TOKEN, args: eyes, after: 1 },
     ]);
     expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream']);
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Hello');
   });
 
-  it('a refused sender gets no thinking line: silence stays silence', async () => {
+  it("in a thread, 👀 goes on the message itself while the reply goes in the thread", async () => {
+    const w = world();
+    const own = '1763035201.000200';
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Hello' }], end: 'turn-end' });
+    await w.dispatch(INSTALL, dm({ ts: own, threadTs: TS }));
+    await w.idle();
+    expect(w.slack.reactions.map((r) => [r.op, r.args['ts']])).toEqual([
+      ['add', own],
+      ['remove', own],
+    ]);
+    expect(w.slack.calls.find((c) => c.method === 'startStream')!.args['threadTs']).toBe(TS);
+  });
+
+  it('a refused sender gets no 👀: silence stays silence', async () => {
     const w = world();
     await w.dispatch(INSTALL, dm({ user: 'U0STRANGER' }));
     await w.idle();
-    expect(w.slack.statuses).toEqual([]);
+    expect(w.slack.reactions).toEqual([]);
     expect(w.invokes).toEqual([]);
   });
 });

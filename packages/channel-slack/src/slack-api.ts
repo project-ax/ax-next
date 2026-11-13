@@ -133,11 +133,9 @@ export interface SlackApi {
     botToken: string,
     a: { channel: string; ts: string; chunks?: readonly StreamChunkOut[] },
   ): Promise<void>;
-  /**
-   * The thread's "<bot name> <status>" line under the conversation. Slack
-   * clears it when the app next posts there, or after two minutes.
-   */
-  setThreadStatus(botToken: string, a: { channel: string; threadTs: string; status: string }): Promise<void>;
+  /** An emoji reaction (by name, e.g. `eyes`) from the bot on one message. */
+  addReaction(botToken: string, a: { channel: string; ts: string; name: string }): Promise<void>;
+  removeReaction(botToken: string, a: { channel: string; ts: string; name: string }): Promise<void>;
 }
 
 type SlackMethod =
@@ -152,7 +150,8 @@ type SlackMethod =
   | 'chat.startStream'
   | 'chat.appendStream'
   | 'chat.stopStream'
-  | 'assistant.threads.setStatus';
+  | 'reactions.add'
+  | 'reactions.remove';
 
 type Auth =
   | { kind: 'none' }
@@ -429,12 +428,12 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       );
     },
 
-    async setThreadStatus(botToken, a) {
-      await call(
-        'assistant.threads.setStatus',
-        bearer(botToken),
-        json({ channel_id: a.channel, thread_ts: a.threadTs, status: a.status }),
-      );
+    async addReaction(botToken, a) {
+      await call('reactions.add', bearer(botToken), json({ channel: a.channel, timestamp: a.ts, name: a.name }));
+    },
+
+    async removeReaction(botToken, a) {
+      await call('reactions.remove', bearer(botToken), json({ channel: a.channel, timestamp: a.ts, name: a.name }));
     },
 
     async postEphemeral(botToken, a) {

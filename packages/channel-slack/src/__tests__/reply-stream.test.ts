@@ -15,6 +15,9 @@ import { fakeBotToken } from './fake-slack-tokens.js';
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
 const BOT_TOKEN = fakeBotToken('REPLYSTREAMTESTSECRET');
+/** The owner's message: in a thread, its own ts differs from the thread's. */
+const MESSAGE_TS = '1763035200.000900';
+const EYES = { channel: 'D07DMCHANNEL', ts: MESSAGE_TS, name: 'eyes' };
 const TARGET: ReplyTarget = {
   channel: 'D07DMCHANNEL',
   threadTs: '1763035200.000100',
@@ -24,7 +27,7 @@ const TARGET: ReplyTarget = {
 const AGENT_LINK = 'https://ax.example/workspace/agents/agt_alice';
 const ZWSP = '\u200B';
 
-type Method = 'setThreadStatus' | 'startStream' | 'appendStream' | 'stopStream' | 'postMessage';
+type Method = 'addReaction' | 'removeReaction' | 'startStream' | 'appendStream' | 'stopStream' | 'postMessage';
 
 interface Call {
   method: Method;
@@ -78,7 +81,8 @@ function fakeSlack(o: { latencyMs?: number; fail?: (method: Method, n: number) =
     usersInfo: notHere,
     postEphemeral: notHere,
     postMessage: (token, a) => run('postMessage', token, { ...a }, () => undefined),
-    setThreadStatus: (token, a) => run('setThreadStatus', token, { ...a }, () => undefined),
+    addReaction: (token, a) => run('addReaction', token, { ...a }, () => undefined),
+    removeReaction: (token, a) => run('removeReaction', token, { ...a }, () => undefined),
     startStream: (token, a) =>
       run('startStream', token, { ...a }, () => {
         const ts = `1763035300.${String(nextTs++).padStart(6, '0')}`;
@@ -153,7 +157,15 @@ let make: (api: SlackApi, logger?: Logger) => ReplyStream;
 beforeEach(() => {
   vi.useFakeTimers();
   make = (api, logger = recordingLogger().logger) =>
-    createReplyStream({ api, botToken: BOT_TOKEN, target: TARGET, agentLink: AGENT_LINK, logger, clock: systemClock });
+    createReplyStream({
+      api,
+      botToken: BOT_TOKEN,
+      target: TARGET,
+      messageTs: MESSAGE_TS,
+      agentLink: AGENT_LINK,
+      logger,
+      clock: systemClock,
+    });
 });
 
 afterEach(() => {
@@ -561,61 +573,74 @@ describe('createReplyStream', () => {
     ]);
   });
 
-  it("working() asks Slack for the thinking line first and shows no card; the reply that follows is text only", async () => {
+  it("working() puts 👀 on the owner's message, takes it off right before the reply shows, and shows no card", async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     s.working();
     await tick();
-    expect(calls).toEqual([
-      {
-        method: 'setThreadStatus',
-        token: BOT_TOKEN,
-        args: { channel: TARGET.channel, threadTs: TARGET.threadTs, status: COPY.thinkingStatus },
-        ok: true,
-      },
-    ]);
+    expect(calls).toEqual([{ method: 'addReaction', token: BOT_TOKEN, args: EYES, ok: true, ts: MESSAGE_TS }]);
     s.text('Hi.');
     await tick();
     await finishNow(s);
-    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'startStream', 'stopStream']);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'removeReaction', 'startStream', 'stopStream']);
+    expect(calls[1]!.args).toEqual(EYES);
     expect(calls.flatMap(cardsOf)).toEqual([]);
     expect(delivered(calls)).toBe('Hi.');
   });
 
-  it('working() then nothing: one postMessage of emptyReply (Slack clears the thinking line itself)', async () => {
+  it("the agent's own status card is the first thing shown: 👀 comes off right before it", async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.working();
+    s.status('Searching email');
+    await tick();
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'removeReaction', 'startStream']);
+    await finishNow(s);
+  });
+
+  it('working() then nothing: 👀 comes off right before the emptyReply post', async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     s.working();
     await tick();
     await finishNow(s, 'complete');
-    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'postMessage']);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'removeReaction', 'postMessage']);
     expect(delivered(calls)).toBe(COPY.emptyReply);
   });
 
-  it('a thinking line Slack refuses is logged by code, and the Working card shows instead', async () => {
+  it('a turn that fails: 👀 comes off right before the failure line', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.working();
+    await tick();
+    await finishNow(s, 'error');
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'removeReaction', 'startStream', 'stopStream']);
+    expect(delivered(calls)).toBe(COPY.turnFailed);
+  });
+
+  it('a 👀 Slack refuses is logged by code, and the Working card shows instead (nothing to take off)', async () => {
     const { api, calls } = fakeSlack({
-      fail: (m) =>
-        m === 'setThreadStatus' ? new SlackApiError('assistant.threads.setStatus', 'method_not_supported_for_channel_type') : undefined,
+      fail: (m) => (m === 'addReaction' ? new SlackApiError('reactions.add', 'missing_scope') : undefined),
     });
     const rec = recordingLogger();
     const s = make(api, rec.logger);
     s.working();
     await tick();
     await tick();
-    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'startStream']);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'startStream']);
     expect(calls.flatMap(cardsOf)).toEqual([{ type: 'task_update', id: 'status', title: 'Working', status: 'in_progress' }]);
     expect(rec.lines).toContainEqual(
-      expect.objectContaining({ msg: 'slack_reply_failed', fields: { stage: 'status', code: 'method_not_supported_for_channel_type' } }),
+      expect.objectContaining({ msg: 'slack_reply_failed', fields: { stage: 'react', code: 'missing_scope' } }),
     );
     // Only the card was shown: the same message says emptyReply, never a second post.
     await finishNow(s, 'complete');
-    expect(calls.map((c) => c.method)).toEqual(['setThreadStatus', 'startStream', 'appendStream', 'stopStream']);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'startStream', 'appendStream', 'stopStream']);
     expect(delivered(calls)).toBe(COPY.emptyReply);
   });
 
   it("the fallback card never replaces the agent's own status", async () => {
     const { api, calls } = fakeSlack({
-      fail: (m) => (m === 'setThreadStatus' ? new SlackApiError('assistant.threads.setStatus', 'internal_error') : undefined),
+      fail: (m) => (m === 'addReaction' ? new SlackApiError('reactions.add', 'internal_error') : undefined),
     });
     const s = make(api);
     s.working();
@@ -626,6 +651,41 @@ describe('createReplyStream', () => {
       { type: 'task_update', id: 'status', title: 'Reading your calendar', status: 'in_progress' },
     ]);
     await finishNow(s);
+  });
+
+  it('already_reacted counts as on (it still comes off), and no_reaction on the way off is no failure', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) =>
+        m === 'addReaction'
+          ? new SlackApiError('reactions.add', 'already_reacted')
+          : m === 'removeReaction'
+            ? new SlackApiError('reactions.remove', 'no_reaction')
+            : undefined,
+    });
+    const rec = recordingLogger();
+    const s = make(api, rec.logger);
+    s.working();
+    s.text('Hi.');
+    await finishNow(s);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'removeReaction', 'startStream', 'stopStream']);
+    expect(calls.flatMap(cardsOf)).toEqual([]);
+    expect(rec.lines).toEqual([]);
+  });
+
+  it('a 👀 that will not come off is logged by code, and the reply still goes out', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) => (m === 'removeReaction' ? new SlackApiError('reactions.remove', 'ratelimited', 1_000) : undefined),
+    });
+    const rec = recordingLogger();
+    const s = make(api, rec.logger);
+    s.working();
+    s.text('Hi.');
+    await finishNow(s);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'removeReaction', 'startStream', 'stopStream']);
+    expect(delivered(calls)).toBe('Hi.');
+    expect(rec.lines).toEqual([
+      expect.objectContaining({ msg: 'slack_reply_failed', fields: { stage: 'unreact', code: 'ratelimited' } }),
+    ]);
   });
 
   it('artifact() twice → one link line at the end', async () => {

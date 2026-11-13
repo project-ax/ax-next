@@ -251,6 +251,7 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
       install,
       botToken: token,
       channel: screened.channel,
+      messageTs: screened.ts,
       threadTs: screened.threadTs,
       senderSlackId: screened.sender,
       senderName: admission.name,

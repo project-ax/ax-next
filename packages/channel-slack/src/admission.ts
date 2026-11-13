@@ -182,6 +182,8 @@ export interface DirectMessage {
   /** Slack's user id for the sender: what admission looks up. */
   sender: string;
   channel: string;
+  /** The message itself: where 👀 goes while the agent works. */
+  ts: string;
   /** The thread the reply goes in: the message's own ts at the top level. */
   threadTs: string;
   /** The owner's words to their agent. Never read for identity. */
@@ -236,6 +238,7 @@ export function screenEvent(
       kind: 'dm',
       sender,
       channel: event.channel,
+      ts: event.ts,
       threadTs: event.threadTs ?? event.ts,
       text: event.text ?? '',
       fileShare: event.subtype === 'file_share',

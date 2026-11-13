@@ -14,6 +14,7 @@ export const BOT_SCOPES = Object.freeze([
   'app_mentions:read',
   'chat:write',
   'im:history',
+  'reactions:write',
   'users:read',
   'users:read.email',
 ] as const);

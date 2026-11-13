@@ -45,6 +45,8 @@ export interface DmTurnRequest {
   install: InstallRow;
   botToken: string;
   channel: string;
+  /** The owner's message: 👀 goes on it while the agent works. */
+  messageTs: string;
   threadTs: string;
   /** The sender's Slack user id: the reply's recipient, and part of the label. */
   senderSlackId: string;
@@ -165,6 +167,7 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
       recipientUserId: r.senderSlackId,
       recipientTeamId: r.install.teamId ?? '',
     },
+    messageTs: r.messageTs,
     agentLink: `${d.publicOrigin}/workspace/agents/${encodeURIComponent(r.agentId)}`,
     logger: replyLogger,
     clock: d.clock,
@@ -230,8 +233,8 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
   });
-  // The owner sees Working at the first flush, not a blank thread while a cold
-  // runner starts (walk on kind, 2026-11-13).
+  // 👀 on the owner's message while a cold runner starts, not a blank thread
+  // (walk on kind, 2026-11-13); it comes off right before the reply shows.
   stream.working();
   /**
    * Ask chat-orchestrator to stop the conversation's in-flight turn: the

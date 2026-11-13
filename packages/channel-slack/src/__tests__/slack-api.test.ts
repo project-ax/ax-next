@@ -117,10 +117,8 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
     ],
     ['chat.appendStream', () => api.appendStream(BOT, { channel: 'D1', ts: '1.3', chunks: [] })],
     ['chat.stopStream', () => api.stopStream(BOT, { channel: 'D1', ts: '1.3' })],
-    [
-      'assistant.threads.setStatus',
-      () => api.setThreadStatus(BOT, { channel: 'D1', threadTs: '1.2', status: 'is thinking…' }),
-    ],
+    ['reactions.add', () => api.addReaction(BOT, { channel: 'D1', ts: '1.2', name: 'eyes' })],
+    ['reactions.remove', () => api.removeReaction(BOT, { channel: 'D1', ts: '1.2', name: 'eyes' })],
   ];
 }
 
@@ -178,7 +176,7 @@ describe('requests', () => {
       if (FORM_METHODS.includes(req.method)) {
         expect(type, req.method).toMatch(/^application\/x-www-form-urlencoded/);
       } else {
-        expect(req.method).toMatch(/^(chat\.|assistant\.threads\.setStatus$)/);
+        expect(req.method).toMatch(/^(chat|reactions)\./);
         expect(type, req.method).toMatch(/^application\/json/);
       }
       const auth = req.headers.get('authorization');
@@ -288,15 +286,18 @@ describe('requests', () => {
     ]);
   });
 
-  it("setThreadStatus sends Slack's own field names as JSON, with the bot token", async () => {
+  it("addReaction and removeReaction send Slack's own field names as JSON", async () => {
     const slack = fakeSlack(() => okJson({}));
-    await createSlackApi({ fetchImpl: slack.fetchImpl }).setThreadStatus(BOT, {
-      channel: 'D1',
-      threadTs: '1.2',
-      status: 'is thinking…',
-    });
-    expect(slack.sent[0]!.url).toBe('https://slack.com/api/assistant.threads.setStatus');
-    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({ channel_id: 'D1', thread_ts: '1.2', status: 'is thinking…' });
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    await api.addReaction(BOT, { channel: 'D1', ts: '1.2', name: 'eyes' });
+    await api.removeReaction(BOT, { channel: 'D1', ts: '1.2', name: 'eyes' });
+    expect(slack.sent.map((r) => r.url)).toStrictEqual([
+      'https://slack.com/api/reactions.add',
+      'https://slack.com/api/reactions.remove',
+    ]);
+    for (const r of slack.sent) {
+      expect(JSON.parse(r.body)).toStrictEqual({ channel: 'D1', timestamp: '1.2', name: 'eyes' });
+    }
   });
 
   it('postMessage always disables unfurling', async () => {

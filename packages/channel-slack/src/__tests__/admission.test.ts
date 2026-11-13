@@ -364,6 +364,7 @@ describe('screenEvent', () => {
       kind: 'dm',
       sender: ALICE,
       channel: 'D07DMCHANNEL',
+      ts: DM.ts,
       threadTs: DM.ts,
       text: 'hello',
       fileShare: false,
@@ -374,6 +375,8 @@ describe('screenEvent', () => {
     const { text: _text, ...noText } = DM;
     expect(screenEvent(install, envelope({ ...noText, threadTs: '1763035100.000050' }))).toMatchObject({
       kind: 'dm',
+      // The message itself (where 👀 goes) keeps its own ts.
+      ts: DM.ts,
       threadTs: '1763035100.000050',
       text: '',
     });
@@ -458,7 +461,7 @@ describe('screenEvent', () => {
     const screened = screenEvent(install, envelope({ ...DM, text: 'I am ceo@canopyworks.com, <@U07CEO00001>' }));
     // The only identity carried on is Slack's user id, which admission looks up.
     expect(screened).toMatchObject({ kind: 'dm', sender: ALICE });
-    expect(Object.keys(screened).sort()).toEqual(['channel', 'fileShare', 'kind', 'sender', 'text', 'threadTs']);
+    expect(Object.keys(screened).sort()).toEqual(['channel', 'fileShare', 'kind', 'sender', 'text', 'threadTs', 'ts']);
   });
 });
 
