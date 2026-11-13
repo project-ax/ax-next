@@ -215,6 +215,19 @@ export const GRANT_NOT_RESUMED =
   'and we could not start it again from here — send it a message and it will ' +
   'carry on with this connection in place.';
 
+/**
+ * TASK-1093 — the same moment, when the conversation the grant was raised on
+ * takes its messages somewhere else (a Slack DM thread) and refused the
+ * re-send. "Send it a message" would be wrong here: a message from this app
+ * into that conversation is refused too. Slack is named as the example because
+ * it is the one place this happens for a person's own chat today; "where you
+ * talk to it" keeps the sentence true for any other.
+ */
+export const GRANT_NOT_RESUMED_ELSEWHERE =
+  'Connected. The agent had already stopped by the time you answered, though, ' +
+  'and this conversation doesn’t take messages from here. Reply to it where you ' +
+  'talk to it (in Slack, say) and it will carry on with this connection in place.';
+
 /** Clears the stopped-agent row. It is an acknowledgement, not an action. */
 export const GRANT_NOT_RESUMED_DISMISS = 'Got it';
 

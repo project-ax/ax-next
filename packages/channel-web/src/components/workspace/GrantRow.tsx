@@ -53,6 +53,7 @@ import {
   GRANT_NO_CONVERSATION,
   GRANT_NOT_RESUMED,
   GRANT_NOT_RESUMED_DISMISS,
+  GRANT_NOT_RESUMED_ELSEWHERE,
   GRANT_REJECT_HINT,
   GRANT_REJECT_LABEL,
   HOST_ALLOW_ALWAYS_LABEL,
@@ -74,6 +75,7 @@ import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import type { GrantResume } from '@/lib/workspace-resume';
 import {
   clearGrantDraft,
   getGrantDraft,
@@ -109,7 +111,7 @@ interface Props {
    * `skill`: a `host` grant widens the LIVE session allowlist
    * and the agent never stopped, so there is nothing to pick up.
    */
-  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
 }
 
 type GrantSlot = Extract<WorkspaceGrant['request'], { kind: 'skill' }>['slots'][number];
@@ -162,7 +164,9 @@ export function GrantRow({
    * sentence saying we already had, and re-pressing it would post a second
    * decision for a capability the person already owns.
    */
-  const [stalled, setStalled] = useState(false);
+  // Set when the grant landed and the agent did not pick up again; which
+  // sentence the row says depends on where the conversation takes messages.
+  const [stalled, setStalled] = useState<false | 'here' | 'elsewhere'>(false);
   /*
     The row's own node, read while it is still mounted so `closest` can find
     the consent region above it. Every branch below hangs it on its root.
@@ -310,17 +314,17 @@ export function GrantRow({
         it is the one thing that definitely worked, sending them back to
         re-enter a key that is already saved.
       */
-      let resumed = false;
+      let resumed: GrantResume = false;
       try {
         resumed = await onGranted(grant);
       } catch (e) {
         console.warn('[workspace] the resume after a grant threw', e);
       }
-      if (resumed) {
+      if (resumed === true) {
         resolveAndReturnFocus();
         return;
       }
-      setStalled(true);
+      setStalled(resumed === 'reply-elsewhere' ? 'elsewhere' : 'here');
     } catch (err) {
       // Never the status, never the path — those go to the console.
       setError(userFacingMessage(err, 'grant-row'));
@@ -485,7 +489,7 @@ export function GrantRow({
           className={`mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground ${RESOLUTION_FOCUS_RING}`}
           data-testid="grant-not-resumed"
         >
-          {GRANT_NOT_RESUMED}
+          {stalled === 'elsewhere' ? GRANT_NOT_RESUMED_ELSEWHERE : GRANT_NOT_RESUMED}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button size="sm" variant="secondary" onClick={resolveAndReturnFocus}>

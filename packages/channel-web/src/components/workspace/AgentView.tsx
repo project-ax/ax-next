@@ -104,6 +104,7 @@ import {
   workspaceGrantActions,
   type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
+import type { GrantResume } from '@/lib/workspace-resume';
 import {
   DEFAULT_SETTINGS_SECTION,
   type AgentSettingsSection,
@@ -162,7 +163,7 @@ interface Props {
    * the one this panel has open, and a grant answered on Today has no panel at
    * all. One implementation, both render sites.
    */
-  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
   onBack: () => void;
   /**
    * Opens Settings on AI model keys — the Memory panel's paused-memory "Fix
@@ -1600,7 +1601,13 @@ export function AgentView({
           This is the same rule as the missing "Try again" one line down, applied
           to the control nobody thinks of as one.
         */
-        if (kind === 'gone') conversationRef.current = null;
+        /*
+          A read-only refusal (TASK-1093) is the same trap by another road: the
+          conversation is there but takes no messages from here, and every
+          following send would be turned away just the same. The copy says to
+          start a new chat, so the next message does.
+        */
+        if (kind === 'gone' || e instanceof ConversationReadOnlyError) conversationRef.current = null;
         setTurnError({
           kind,
           sentence: null,

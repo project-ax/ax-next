@@ -2394,4 +2394,28 @@ describe('a Slack DM thread', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/409|conversation-read-only|→/);
   });
+
+  /*
+    The refusal is about THAT conversation, and the composer is still aimed at
+    it. Left aimed there, every next message is refused the same way — the
+    composer becomes a control that cannot work. So the next send starts a
+    fresh chat, which is what the copy tells them to do.
+  */
+  it('after a read-only refusal, the next message starts a fresh chat instead of hitting the same wall', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'c-now' });
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-fresh', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(box, { target: { value: 'trying again' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({ conversationId: null, text: 'trying again' });
+  });
 });

@@ -24,7 +24,12 @@ import {
   getWorkspaceGrantSnapshot,
   workspaceGrantActions,
 } from '@/lib/workspace-grant-store';
-import { GRANT_NOT_RESUMED, grantResumedTitle } from '@/lib/grant-copy';
+import {
+  GRANT_NOT_RESUMED,
+  GRANT_NOT_RESUMED_ELSEWHERE,
+  grantResumedTitle,
+} from '@/lib/grant-copy';
+import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
 import { toastActions } from '@/lib/toast-store';
 import type { StreamHandlers } from '@/lib/workspace-api';
 import type { PermissionRequest } from '@/server/types';
@@ -292,6 +297,30 @@ describe('a grant answered in the thread', () => {
     // something they are watching happen. The Today case below is where the
     // sentence is the only evidence there is.
     expect(toastSpy).not.toHaveBeenCalled();
+  });
+
+  /*
+    TASK-1093 — the conversation the grant was raised on takes its messages
+    somewhere else (a Slack DM thread), so the re-send is refused as read-only.
+    "Send it a message" would point them at a composer that refuses them too;
+    the row says to reply where the conversation lives instead.
+  */
+  it('says to reply where the conversation lives when it takes no messages from here', async () => {
+    await stopATurn(linearSkill());
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+
+    connect();
+
+    expect(await screen.findByText(GRANT_NOT_RESUMED_ELSEWHERE)).toBeInTheDocument();
+    expect(screen.queryByText(GRANT_NOT_RESUMED)).toBeNull();
+    expect(GRANT_NOT_RESUMED_ELSEWHERE).toMatch(/Slack/);
+    expect(GRANT_NOT_RESUMED_ELSEWHERE).not.toMatch(/send it a message/);
+    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
+    await waitFor(() =>
+      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
+    );
   });
 
   it('says so, and keeps the row, when it cannot start the agent again', async () => {

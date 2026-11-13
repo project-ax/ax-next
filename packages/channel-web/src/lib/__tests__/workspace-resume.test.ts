@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { workspaceApi, type ThreadMessage } from '@/lib/workspace-api';
+import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
 import { lastUserText, resumeParkedTurn } from '@/lib/workspace-resume';
 
 const userMsg = (id: string, text: string): ThreadMessage => ({
@@ -183,5 +184,23 @@ describe('every way it can fail to resume', () => {
     await expect(
       resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
     ).resolves.toEqual({ resumed: false, reason: 'send-failed' });
+  });
+
+  /*
+    TASK-1093 — a conversation that takes its messages somewhere else (a Slack
+    DM thread) refuses a re-send from here. That is not a failure the person
+    can fix by messaging the agent HERE, so it is its own reason: the row says
+    to reply where the conversation lives.
+  */
+  it('reports a conversation that takes its messages elsewhere as read-only', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread));
+    vi.spyOn(workspaceApi, 'sendMessage').mockRejectedValue(
+      new ConversationReadOnlyError('/api/chat/messages'),
+    );
+
+    await expect(
+      resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
+    ).resolves.toEqual({ resumed: false, reason: 'read-only' });
   });
 });

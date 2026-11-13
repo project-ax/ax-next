@@ -76,6 +76,7 @@ import type {
   WorkspaceReadStatus,
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import type { GrantResume } from '@/lib/workspace-resume';
 import { AgentTile } from './bits';
 import {
   CONSENT_REGION_ATTR,
@@ -342,7 +343,7 @@ interface Props {
    * Forwarded to the same `GrantRow` Today uses, so a grant answered in the
    * thread and one answered in the queue do the same thing.
    */
-  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
   /**
    * WHICH conversation the `thread` above is (TASK-418) — scroll position is
    * meaningless across a change of it.

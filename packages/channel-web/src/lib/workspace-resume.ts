@@ -36,16 +36,34 @@
  * alternative (a server-side resume that re-invokes without appending) would
  * have been a change to the chat wire that neither card owns.
  */
+import { ConversationReadOnlyError } from './conversation-read-only';
 import { workspaceApi, type ThreadMessage } from './workspace-api';
 
-/** Why a resume did not happen. Each one gets the same sentence; see `grant-copy`. */
+/**
+ * Why a resume did not happen. Every reason but `read-only` gets the same
+ * sentence; see `grant-copy`.
+ */
 export type ResumeFailure =
   /** The conversation read failed, so we never learned what to re-send. */
   | 'thread-unreadable'
   /** We read it and there is no user turn in it to re-issue. */
   | 'nothing-to-resume'
   /** We knew what to send and the POST refused it. */
-  | 'send-failed';
+  | 'send-failed'
+  /**
+   * TASK-1093 — the POST was refused because the conversation takes its
+   * messages somewhere else (a Slack DM thread). Its own reason, because the
+   * advice differs: messaging the agent HERE is refused too, so the row says
+   * to reply where the conversation lives.
+   */
+  | 'read-only';
+
+/**
+ * What a grant's `onGranted` reports back to its row: `true` the agent picked
+ * up again; `false` it did not, and a message to it here will; `'reply-elsewhere'`
+ * it did not, and its conversation takes messages only where it lives.
+ */
+export type GrantResume = boolean | 'reply-elsewhere';
 
 export type ResumeResult =
   | {
@@ -129,6 +147,6 @@ export async function resumeParkedTurn(target: {
     return { resumed: true, reqId, conversationId: landed, text };
   } catch (e) {
     console.warn('[workspace] could not re-send the turn to resume', e);
-    return { resumed: false, reason: 'send-failed' };
+    return { resumed: false, reason: e instanceof ConversationReadOnlyError ? 'read-only' : 'send-failed' };
   }
 }
