@@ -105,6 +105,35 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     expect(screen.getByRole('button', { name: 'Usage' }).getAttribute('data-active')).toBeTruthy();
   });
 
+  // TASK-1093 — Admin › Slack sits between Teams and Branding, so Usage stays
+  // right after Branding (pinned above).
+  it('lists Slack in the Admin group between Teams and Branding, for admins only', () => {
+    const { unmount } = render(
+      <AdminSidebar activeTab="slack" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />,
+    );
+    const items = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent?.trim() ?? '')
+      .filter((t) => t.length > 0);
+    expect(items.indexOf('Slack')).toBe(items.indexOf('Teams') + 1);
+    expect(items.indexOf('Branding')).toBe(items.indexOf('Slack') + 1);
+    expect(items.filter((t) => t === 'Slack')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Slack' }).getAttribute('data-active')).toBeTruthy();
+    unmount();
+
+    render(<AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />);
+    expect(screen.queryByRole('button', { name: 'Slack' })).toBeNull();
+  });
+
+  it('routes the admin Slack tab to the slack tab id', () => {
+    const onTabChange = vi.fn();
+    render(
+      <AdminSidebar activeTab="branding" isAdmin onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
+    );
+    screen.getByText('Slack').click();
+    expect(onTabChange).toHaveBeenCalledWith('slack');
+  });
+
   // TASK-690 — everyone has a storage limit, so everyone gets the tab that
   // shows it. (An admin's extra controls live INSIDE the tab: the nav does not
   // grow a second entry.)

@@ -72,6 +72,16 @@ export interface CredentialsGetInput {
    * literal `true` counts.
    */
   rejected?: boolean;
+  /**
+   * Read only the workspace-wide (global-scope) row. The user and agent
+   * steps are skipped, so a row someone stored for themselves, or on an
+   * agent, under the same ref can never stand in for a secret that belongs
+   * to the whole install (TASK-1093: a Slack install's signing secret). The
+   * env fallback still applies (it is the same for everyone), and an
+   * `account:` ref keeps its global gate. Omit it for the usual
+   * user -> agent -> global walk. `'global'` is the only value accepted.
+   */
+  scope?: 'global';
 }
 
 export type CredentialsGetOutput = string;
@@ -391,6 +401,17 @@ function validateRef(ref: unknown): string {
     });
   }
   return ref;
+}
+
+/** `credentials:get`'s optional `scope`: true for a global-only read. Only `'global'` is accepted. */
+function validateGetScope(scope: unknown): boolean {
+  if (scope === undefined) return false;
+  if (scope === 'global') return true;
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    message: "credentials:get scope must be 'global' when given",
+  });
 }
 
 function validateUserId(userId: unknown): string {
@@ -840,6 +861,11 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // `provider:` / `skill:` / `routine:` refs are minted by the platform,
       // not chosen by a user, so they walk the full chain unchanged.
       //
+      // `onlyGlobal` (credentials:get's `scope: 'global'`) drops the user and
+      // agent steps for any ref: the caller wants the install's own value and
+      // nothing a person or an agent stored under the same name. The
+      // `account:` global gate still applies.
+      //
       // The walk makes no network call and never invokes a
       // `credentials:resolve:<kind>` service — store-blob:get is one cheap row
       // read. That is what lets doResolve run it outside the inflight mutex
@@ -850,15 +876,18 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         ctx: AgentContext,
         userId: string,
         ref: string,
+        onlyGlobal = false,
       ): Promise<
         | { scope: CredentialScope; ownerId: string | null; env: ReturnType<typeof unwrapEnvelope> }
         | undefined
       > {
         const guardAccount = ref.startsWith(GUARDED_ACCOUNT_REF_PREFIX);
         const attempts: Array<{ scope: CredentialScope; ownerId: string | null }> = [];
-        if (!guardAccount) attempts.push({ scope: 'user', ownerId: userId });
-        if (ctx.agentId !== undefined && ctx.agentId !== '') {
-          attempts.push({ scope: 'agent', ownerId: ctx.agentId });
+        if (!onlyGlobal) {
+          if (!guardAccount) attempts.push({ scope: 'user', ownerId: userId });
+          if (ctx.agentId !== undefined && ctx.agentId !== '') {
+            attempts.push({ scope: 'agent', ownerId: ctx.agentId });
+          }
         }
         attempts.push({ scope: 'global', ownerId: null });
 
@@ -907,11 +936,13 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         userId: string,
         ref: string,
         rejected: boolean,
+        onlyGlobal: boolean,
       ): Promise<string> {
         // user -> agent -> global -> envFallback -> not-found (agent -> global
-        // -> envFallback for `account:` refs). The walk (and its `account:`
-        // rules) is findRow; it runs OUTSIDE the inflight mutex.
-        let found = await findRow(ctx, userId, ref);
+        // -> envFallback for `account:` refs; global -> envFallback for a
+        // global-only read). The walk (and its `account:` rules) is findRow;
+        // it runs OUTSIDE the inflight mutex.
+        let found = await findRow(ctx, userId, ref, onlyGlobal);
         if (found !== undefined) {
           // Found the row. Mutex on the RESOLVED tuple so concurrent
           // callers landing here share one resolver Promise.
@@ -943,13 +974,13 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
               // snapshot would present the old one, which a rotating
               // authorization server refuses as reuse: a false "sign-in
               // expired". Renew from the row as it is now.
-              found = await findRow(ctx, userId, ref);
-              if (found === undefined) return doResolve(ctx, userId, ref, false);
+              found = await findRow(ctx, userId, ref, onlyGlobal);
+              if (found === undefined) return doResolve(ctx, userId, ref, false, onlyGlobal);
               key = mutexKey(found.scope, found.ownerId, ref);
               existing = inflight.get(key);
               if (existing !== undefined && !renewing.has(existing)) {
                 // Yet another ordinary read started meanwhile: wait for it too.
-                return doResolve(ctx, userId, ref, true);
+                return doResolve(ctx, userId, ref, true, onlyGlobal);
               }
             }
           }
@@ -981,7 +1012,8 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         async (ctx, input) => {
           const ref = validateRef(input.ref);
           const userId = validateUserId(input.userId);
-          return doResolve(ctx, userId, ref, input.rejected === true);
+          const onlyGlobal = validateGetScope(input.scope);
+          return doResolve(ctx, userId, ref, input.rejected === true, onlyGlobal);
         },
         { returns: CredentialsGetOutputSchema },
       );

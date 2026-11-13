@@ -9,8 +9,8 @@
 // Architecturally this CLI is the kernel host (same pattern as
 // `credentials.ts`): it bootstraps the same plugin set that owns
 // bootstrap-installed state — database-postgres, storage-postgres,
-// credentials, credentials-store-db, auth-better, agents, onboarding —
-// so subscribers to `bootstrap:reset-cleanup` are active when the hook
+// credentials, credentials-store-db, auth-better, agents, channel-slack,
+// onboarding — so subscribers to `bootstrap:reset-cleanup` are active when the hook
 // fires. Without those subscribers on the bus, the cascade no-ops and
 // the next wizard run trips over leftover admin/agent/credential rows.
 // All onboarding state shape lives inside @ax/onboarding (Invariant I4
@@ -43,6 +43,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createAuthBetterPlugin } from '@ax/auth-better';
 import { createAgentsPlugin } from '@ax/agents';
+import { createChannelSlackPlugin } from '@ax/channel-slack';
 import {
   createOnboardingPlugin,
   printTokenToStdout,
@@ -141,7 +142,8 @@ export async function runAdminResetBootstrapCommand(
     return 2;
   }
 
-  const baseUrl = env.AX_PUBLIC_BASE_URL ?? DEFAULT_BASE_URL;
+  // Same semantics as the host: blank (empty or whitespace) means unset.
+  const baseUrl = env.AX_PUBLIC_BASE_URL?.trim() || DEFAULT_BASE_URL;
 
   const bus = new HookBus();
 
@@ -177,6 +179,11 @@ export async function runAdminResetBootstrapCommand(
         createCredentialsStoreDbPlugin(),
         createAuthBetterPlugin(),
         createAgentsPlugin(),
+        // The reset wipes channel-slack's slack:* secrets from the vault
+        // (credentials-store-db); its own subscriber removes the install
+        // rows, which would otherwise still read as "connected". Its routes
+        // land on the no-op stub above, so publicOrigin only has to parse.
+        createChannelSlackPlugin({ publicOrigin: baseUrl }),
         // Silent writers: onboarding's first-boot init prints a token +
         // writes a token file when the row is missing. We're about to
         // OVERWRITE that token via bootstrap:reset, so suppress the

@@ -13,6 +13,7 @@
     { "path": "../storage-postgres" },
     { "path": "../audit-log" },
     { "path": "../agents" },
+    { "path": "../channel-slack" },
     { "path": "../auth-better" },
     { "path": "../credential-proxy" },
     { "path": "../credentials" },

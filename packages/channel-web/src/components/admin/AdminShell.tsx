@@ -14,6 +14,7 @@ import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
 import { TeamList } from './TeamList';
 import { BrandingTab } from './BrandingTab';
+import { SlackTab } from './SlackTab';
 import { UsageTab } from './UsageTab';
 import { StorageTab } from './StorageTab';
 import { SkillsTab } from '../settings/SkillsTab';
@@ -69,6 +70,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   'model-config': { eyebrow: 'Admin', title: 'Helper model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
+  slack: { eyebrow: 'Admin', title: 'Slack' },
   branding: { eyebrow: 'Admin', title: 'Branding' },
   usage: { eyebrow: 'Admin', title: 'Usage and limits' },
 };
@@ -85,6 +87,7 @@ const TAB_HELP: Record<AdminTabId, string> = {
   'model-config': 'Used for conversation titles and quick tasks. Each agent’s chat model is chosen in Agents. Choose from the models enabled in Models.',
   'auth-providers': 'Manage the methods people use to sign in. Client secrets are encrypted at rest and never returned in plaintext.',
   teams: 'Teams are view-only for now. You can see the teams you’re in, but cannot create or change them.',
+  slack: 'Connect your Slack workspace so people can DM the bot to talk to their own agent.',
   branding: 'Set the name and logo shown across the app, sign-in page, and browser tab. Branding is public so people see it before signing in.',
   usage: 'Review estimated model spending, message counts, and workspace limits. You can pause agents or change a person’s limits.',
 };
@@ -170,6 +173,7 @@ export function AdminShell({
         {activeTab === 'agents' && <AgentForm isAdmin={isAdmin} />}
         {activeTab === 'routines' && <RoutinesTab isAdmin={isAdmin} />}
         {activeTab === 'teams' && <TeamList />}
+        {activeTab === 'slack' && isAdmin && <SlackTab />}
         {activeTab === 'branding' && <BrandingTab />}
         {activeTab === 'usage' && <UsageTab />}
         {activeTab === 'storage' && <StorageTab isAdmin={isAdmin} />}

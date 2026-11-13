@@ -18,8 +18,8 @@
  * presence check. See `test-utils/heading-outline.ts` for the four rules and
  * why "no headings at all" is one of them.
  *
- * ("Nine" is the count when that was measured. There are eleven tabs now — the
- * Usage tab (TASK-692) is the tenth, Storage (TASK-690) the eleventh — and
+ * ("Nine" is the count when that was measured. More tabs have come since —
+ * Usage (TASK-692), Storage (TASK-690), Slack (TASK-1093) among them — and
  * `TABS` below is the live list.)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -94,6 +94,10 @@ function emptyResponse(url: string): Response {
       totalBytes: 0,
     });
   }
+  // SlackTab (TASK-1093): nothing connected yet, so the form and its card show.
+  if (/\/admin\/slack(\?|$)/.test(url)) {
+    return json({ state: 'not-connected', defaultBotName: 'canopy', canConnect: true });
+  }
   if (url.startsWith('/admin/models/policy')) return json({ source: 'builtin', version: 0, allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' });
   if (url.startsWith('/admin/models/catalog')) return json({ providers: [] });
   return json({ providers: [], agents: [], teams: [], connectors: [] });
@@ -147,6 +151,7 @@ const TABS: ReadonlyArray<readonly [nav: string, title: string]> = [
   ['Helper model', 'Helper model'],
   ['Sign-in methods', 'Sign-in methods'],
   ['Teams', 'Teams'],
+  ['Slack', 'Slack'],
   ['Branding', 'Branding'],
   ['Usage', 'Usage and limits'],
   ['Storage', 'Storage'],

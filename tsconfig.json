@@ -36,6 +36,7 @@
     { "path": "packages/eventbus-postgres" },
     { "path": "packages/session-postgres" },
     { "path": "packages/channel-web" },
+    { "path": "packages/channel-slack" },
     { "path": "packages/http-server" },
     { "path": "packages/agents" },
     { "path": "packages/teams" },

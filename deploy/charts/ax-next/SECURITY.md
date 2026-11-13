@@ -198,7 +198,8 @@ Applies to pods labeled `app.kubernetes.io/name: <release>-host` in
   - k8s API server (443 + 6443; the dual port covers Calico DNAT edge
     cases).
   - DNS.
-  - HTTPS (443) — Anthropic API calls.
+  - HTTPS (443), any destination: model providers, sign-in providers,
+    connectors' servers and Slack (`slack.com`).
 
 ### What happens without a NetworkPolicy-enforcing CNI
 

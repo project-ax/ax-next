@@ -57,6 +57,7 @@ import { createWebToolsPlugin } from '@ax/web-tools';
 import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
 import { parseContentOrigin, type ParsedContentOrigin } from './content-origin.js';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
+import { createChannelSlackPlugin } from '@ax/channel-slack';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
@@ -558,6 +559,16 @@ export interface K8sPresetConfig {
     enabled?: boolean;
     registryUrl?: string;
     verifiedPublishersOnly?: boolean;
+    fetchImpl?: typeof fetch;
+  };
+  /**
+   * @ax/channel-slack (TASK-1093) -- connect a Slack workspace from Admin >
+   * Slack. Always loaded, with nothing to configure: its public origin is
+   * `presetPublicOrigin(config)` (only an https one can connect), and its
+   * secrets live in the credentials vault. It reaches nothing until an admin
+   * connects a workspace. `fetchImpl` is for tests only.
+   */
+  channelSlack?: {
     fetchImpl?: typeof fetch;
   };
   /**
@@ -1499,6 +1510,31 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(
     createChannelWebServerPlugin({
       chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+    }),
+  );
+
+  // ----- 10b. channel-slack (TASK-1093) -----------------------------------
+  // Admin > Slack connects a workspace (`/admin/slack*`), and Slack delivers
+  // events to `POST /slack/events/:installId`, the plugin's one route that
+  // skips CSRF (Slack signs each delivery instead). Hard-calls http-server, auth, the shared database and the
+  // credentials vault, all loaded above; `branding:get` is optional (the bot's
+  // default name).
+  //
+  // Both URLs come from here, because the preset is the layer allowed to know
+  // two plugins' surfaces: the same public origin @ax/mcp-oauth gets, and
+  // branding's public light logo for the bot's avatar (Slack fetches it itself;
+  // a missing or unsuitable logo just leaves Slack's default).
+  //
+  // Single-replica: its event dedupe and admin lock are in-process, which the
+  // chart's one-host pin (ax-next.validateHostReplicas) keeps honest.
+  const slackOrigin = presetPublicOrigin(config);
+  plugins.push(
+    createChannelSlackPlugin({
+      publicOrigin: slackOrigin,
+      iconUrl: `${slackOrigin}/api/branding/logo/light`,
+      ...(config.channelSlack?.fetchImpl !== undefined
+        ? { fetchImpl: config.channelSlack.fetchImpl }
+        : {}),
     }),
   );
 

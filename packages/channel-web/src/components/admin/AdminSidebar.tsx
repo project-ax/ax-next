@@ -15,6 +15,7 @@ import {
   Gauge,
   HardDrive,
   Globe,
+  MessageSquare,
 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -44,6 +45,8 @@ export type AdminTabId =
   | 'model-config'
   | 'auth-providers'
   | 'teams'
+  // TASK-1093 — connect a Slack workspace so people can DM their own agent.
+  | 'slack'
   | 'branding'
   | 'usage';
 
@@ -65,6 +68,8 @@ export const ADMIN_NAV: NavItem[] = [
   { id: 'model-config', label: 'Helper model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },
+  // TASK-1093 — before Branding, so Usage stays right after Branding.
+  { id: 'slack', label: 'Slack', icon: MessageSquare },
   { id: 'branding', label: 'Branding', icon: Palette },
   // TASK-692 — who used what, the two per-person limits, and the pause switch.
   { id: 'usage', label: 'Usage', icon: Gauge },

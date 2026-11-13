@@ -30,6 +30,8 @@ const ALICE = 'user-alice';
 const BOB = 'user-bob';
 const ROUTINES_ADMIN = 'routines-admin';
 const EVE = 'user-eve';
+/** The one identity the auth stub signs in as an admin (TASK-1093's /admin/slack). */
+const CANARY_ADMIN = 'canary-admin';
 
 // `sandbox:open-session` REQUIRES a proxyConfig (TASK-838) — the host refuses an
 // input without one before minting a session. Minimal valid blob (unix-socket
@@ -71,7 +73,7 @@ function authStub(): Plugin {
               message: 'no test identity header',
             });
           }
-          return { user: { id, isAdmin: false } };
+          return { user: { id, isAdmin: id === CANARY_ADMIN } };
         },
       );
       bus.registerService<{ userId?: string }, unknown>(
@@ -720,6 +722,56 @@ describe('@ax/preset-memory canary', () => {
       { about: 'user', relation: 'likes', value: 'tea', provenance: 'human' },
     );
     expect(badBody.status).toBe(400);
+  });
+
+  // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
+  // assembly, over the real http-server. Nothing is connected, so nothing here
+  // reaches Slack.
+  it('channel-slack: admin status over the real route; only the events route skips CSRF (TASK-1093)', async () => {
+    // No https origin in this assembly, and no branding name: the defaults.
+    expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
+      status: 200,
+      json: { state: 'not-connected', defaultBotName: 'ax', canConnect: false },
+    });
+    expect((await apiJson('GET', '/admin/slack', ALICE)).status).toBe(403);
+    expect((await apiJson('GET', '/admin/slack', null)).status).toBe(401);
+
+    // The admin POSTs keep http-server's CSRF check...
+    const noCsrf = await fetch(url('/admin/slack/disconnect'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+      body: '{}',
+    });
+    expect(noCsrf.status).toBe(403);
+
+    // ...and Slack's deliveries skip it: no CSRF header, and an install that
+    // doesn't exist gets a "not found", compared with one fetched here rather
+    // than written down. The CSRF check runs before routing, so without the
+    // route (or without its bypass) this would have been a 403.
+    //
+    // The reference is a GET under /api that nothing serves, which
+    // @ax/static-files answers with its own hand-written JSON 404 (its API
+    // prefix rule), NOT the http-server router's. So this pins that the two
+    // 404s look alike in this assembly; plugin.test.ts is the one that pins
+    // channel-slack's answer against the router's. No POST can get the
+    // router's 404 here: @ax/static-files mounts GET /*, so the router finds
+    // a GET for every path and answers an unserved POST 405.
+    const unservedPost = await fetch(url('/slack/no-such-route'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: '{}',
+    });
+    expect(unservedPost.status).toBe(405);
+    const unserved = await fetch(url('/api/canary-no-such-route'));
+    expect(unserved.status).toBe(404);
+    const delivery = await fetch(url('/slack/events/AAAAAAAAAAAAAAAAAAAAAA'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'url_verification', challenge: 'canary' }),
+    });
+    expect(delivery.status).toBe(unserved.status);
+    expect(delivery.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
+    expect(await delivery.text()).toBe(await unserved.text());
   });
 
   it('Undo after Forget over the real routes brings an agent note back as the same agent row (TASK-630)', async () => {

@@ -126,6 +126,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Blob GC, report mode (TASK-777): not on this canary's path; its own canary
   // is blob-gc-report-acceptance.test.ts.
   '@ax/blob-gc',
+  // TASK-1093: not on this canary's path. Every call it makes is satisfied
+  // here (the kept postgres + credentials, the stub control plane), so it
+  // would boot and add its six routes to `mountedPaths`. It boots for real in
+  // the memory canary and prod-bootstrap.test.ts.
+  '@ax/channel-slack',
 ]);
 
 const AGENT_ID = 'usage-canary-agent';

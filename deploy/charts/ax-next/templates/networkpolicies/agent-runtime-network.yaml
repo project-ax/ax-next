@@ -7,7 +7,8 @@ Allows the host pod to do its job:
       - postgres (port 5432, in-cluster or external)
       - k8s API (443/6443, scoped via the host SA's Role to runner CRUD)
       - DNS (53)
-      - HTTPS (443) — Anthropic API + future channel integrations
+      - HTTPS (443), any destination: model providers, sign-in providers,
+        connectors' servers and Slack (slack.com)
       - the user-files NFS export (only when sandbox.filestore.server +
         sandbox.filestore.hostReadPath are both set — the host mounts the
         export read-only to serve the Files browser). Scoped to the Filestore

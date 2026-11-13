@@ -321,6 +321,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/auth-better',
         '@ax/blob-store-fs',
         '@ax/branding',
+        '@ax/channel-slack',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
         '@ax/connector-directory',
@@ -1281,6 +1282,31 @@ describe('@ax/preset-k8s wiring', () => {
         connectorDirectory: { enabled: true, registryUrl: 'http://registry.test' },
       }),
     ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
+  });
+
+  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, branding optional (TASK-1093)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const slack = plugins.find((p) => p.manifest.name === '@ax/channel-slack');
+    expect(slack).toBeDefined();
+    expect(slack!.manifest.registers).toEqual([]);
+    expect(slack!.manifest.calls).toEqual([
+      'http:register-route',
+      'auth:require-user',
+      'auth:get-user',
+      'database:get-instance',
+      'credentials:get',
+      'credentials:set',
+      'credentials:delete',
+    ]);
+    expect(slack!.manifest.optionalCalls).toEqual([
+      { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
+    ]);
+    expect(slack!.manifest.subscribes).toEqual(['bootstrap:reset-cleanup']);
+    // Every hard call has a producer in this preset, and so does the optional one.
+    const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+    for (const hook of [...slack!.manifest.calls, 'branding:get']) {
+      expect(registered.has(hook), hook).toBe(true);
+    }
   });
 
   it('names the OAuth client after the branding: @ax/branding registers branding:get for @ax/mcp-oauth', () => {
