@@ -76,6 +76,12 @@ export const STREAM_MAX_AGE_MS = 540_000;
 /** Characters per `chat.postMessage` part when a reply falls back to posting. */
 export const POST_PART_LIMIT = 11_000;
 export const STATUS_TITLE_MAX = 120;
+/**
+ * How many times one reply call is tried again after Slack says `ratelimited`
+ * (each wait is Slack's Retry-After, at most RETRY_AFTER_CAP_MS) before the
+ * reply stops waiting: a stream call then falls back to posting, a post gives up.
+ */
+export const REPLY_RATE_LIMIT_RETRIES = 5;
 
 // ── Turns ───────────────────────────────────────────────────────────────────
 
