@@ -211,8 +211,9 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
   /**
    * Ask chat-orchestrator to stop the conversation's in-flight turn: the
    * same Stop the web app's button sends (`{ conversationId, userId }`; it
-   * re-checks ownership itself). Best-effort and logged by code: the reply has
-   * already ended either way. `interrupted: false` means nothing was running.
+   * re-checks ownership itself). Best-effort and logged by code: the reply
+   * ends either way. `interrupted: false` means nothing was running by then.
+   * Never rejects.
    */
   const interruptTurn = async (): Promise<void> => {
     try {
@@ -224,18 +225,25 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
         conversationId: r.conversationId,
         userId: r.userId,
       });
-      if (isRecord(out) && out['interrupted'] === true) {
-        quietly(() => d.logger.info('slack_turn_interrupted', { installId, reason: 'timeout' }));
-      }
+      const interrupted = isRecord(out) && out['interrupted'] === true;
+      quietly(() => d.logger.info('slack_turn_interrupted', { installId, reason: 'timeout', interrupted }));
     } catch (err) {
       quietly(() => d.logger.warn('slack_turn_interrupt_failed', { installId, code: logCode(err) }));
     }
   };
+  /*
+    The stop the cap sent, awaited before this turn returns. The lane is
+    released when this function returns, and the orchestrator stops "the
+    conversation's in-flight turn": released first, the next queued DM in the
+    thread could start before the stop lands and be the turn it stops.
+  */
+  let interrupting: Promise<void> | null = null;
   const cap = d.clock.setTimeout(() => {
     // A turn that already ended is not stopped again.
     if (decided) return;
     decide({ outcome: 'error', fail: { reason: 'timeout' } });
-    void interruptTurn();
+    // Sent now, not after the reply: the turn is still burning until it lands.
+    interrupting = interruptTurn();
   }, TURN_HARD_CAP_MS);
   let grace: unknown = null;
 
@@ -281,5 +289,10 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
       }),
     );
   }
-  await stream.finish(outcome);
+  try {
+    await stream.finish(outcome);
+  } finally {
+    // The owner has their reply; the lane waits for the stop (see `interrupting`).
+    if (interrupting !== null) await interrupting;
+  }
 }
