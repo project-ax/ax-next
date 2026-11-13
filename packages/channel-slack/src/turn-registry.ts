@@ -56,6 +56,8 @@ export interface TurnRegistry {
   onStreamChunk(payload: unknown): void;
   onTurnEnd(ctx: Pick<AgentContext, 'conversationId'>, payload: unknown): void;
   onTurnError(payload: unknown): void;
+  /** Sinks registered now. 0 once every turn has ended: each one unregisters however it ends. */
+  size(): number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -128,6 +130,10 @@ export function createTurnRegistry(): TurnRegistry {
     onTurnError(payload) {
       const sink = sinkFor(payload);
       if (sink !== undefined) safely(() => sink.error());
+    },
+
+    size() {
+      return byReqId.size;
     },
   };
 }

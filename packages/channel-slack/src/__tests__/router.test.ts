@@ -292,6 +292,7 @@ function world(o: {
         return p;
       }),
     close: () => inner.close(),
+    size: () => inner.size(),
   };
   /** The install rows, as the store would answer a re-read. `disconnect()` removes ours. */
   const installRows = new Map<string, InstallRow>([[INSTALL_ID, INSTALL]]);
@@ -339,7 +340,23 @@ function world(o: {
     installRows.delete(INSTALL_ID);
   };
 
-  return { bus, dispatch, scripts, invokes, findUser, listed, conversations, slack, lines, secretReads, idle, jobs, disconnect };
+  return {
+    bus,
+    dispatch,
+    scripts,
+    invokes,
+    findUser,
+    listed,
+    conversations,
+    slack,
+    lines,
+    secretReads,
+    idle,
+    jobs,
+    disconnect,
+    registry,
+    queue,
+  };
 }
 
 function envelope(event: Partial<SlackInnerEvent> & { type: string }, ext = false): SlackEnvelope {
@@ -375,6 +392,15 @@ function replyIn(calls: readonly SlackCall[], channel: string): string {
 }
 
 const methods = (calls: readonly SlackCall[]) => calls.map((c) => c.method);
+
+/** A logger whose every call throws. */
+function throwingLogger(): Logger {
+  const fail = (): never => {
+    throw new Error('log down');
+  };
+  const logger: Logger = { debug: fail, info: fail, warn: fail, error: fail, child: () => logger };
+  return logger;
+}
 const contentOf = (i: Invoke) => (i.input as { message: { content: string } }).message.content;
 
 afterEach(() => {
@@ -741,6 +767,9 @@ describe('createEventRouter: turns that fail', () => {
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
     expect(w.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_turn_failed', 'timeout']]);
 
+    // The cap released the turn's sink and its lane, though the invoke never answered.
+    expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
+
     const before = w.slack.calls.length;
     const reqId = w.invokes[0]!.ctx.reqId;
     const late = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', conversationId: w.invokes[0]!.ctx.conversationId! });
@@ -999,28 +1028,80 @@ describe('createEventRouter: no turn', () => {
   });
 
   it('a dispatch never rejects, even when every hook, Slack call and log line throws', async () => {
-    const throwing: Logger = {
-      debug: () => {
-        throw new Error('log down');
-      },
-      info: () => {
-        throw new Error('log down');
-      },
-      warn: () => {
-        throw new Error('log down');
-      },
-      error: () => {
-        throw new Error('log down');
-      },
-      child: () => throwing,
-    };
     const w = world({
-      logger: throwing,
+      logger: throwingLogger(),
       findUserFails: true,
       slackFail: (method) => (method === 'usersInfo' ? undefined : new SlackApiError(`chat.${method}`, 'internal_error')),
     });
     await expect(w.dispatch(INSTALL, dm())).resolves.toBeUndefined();
     await expect(w.dispatch(INSTALL, dm({ subtype: 'file_share' }))).resolves.toBeUndefined();
     await expect(w.dispatch(INSTALL, dm({ user: CAROL }))).resolves.toBeUndefined();
+  });
+
+  it('a log line that throws never costs the owner their reply line', async () => {
+    // Slack works; only logging is down. Each failure below is logged BEFORE
+    // its line is posted, so a throwing log must not stop the post.
+    const w = world({ logger: throwingLogger(), findUserFails: true });
+    await expect(w.dispatch(INSTALL, dm())).resolves.toBeUndefined();
+    await expect(w.dispatch(INSTALL, dm({ subtype: 'file_share' }))).resolves.toBeUndefined();
+    await expect(w.dispatch(INSTALL, dm({ user: DAVE }))).resolves.toBeUndefined();
+    await w.idle();
+    expect(w.slack.calls.filter((c) => c.method === 'postMessage').map((c) => c.args)).toEqual([
+      { channel: DM_ALICE, threadTs: TS, markdownText: COPY.turnFailed },
+      { channel: DM_ALICE, threadTs: TS, markdownText: COPY.filesUnsupported },
+      { channel: DM_ALICE, threadTs: TS, markdownText: COPY.turnFailed },
+    ]);
+
+    // And a turn that runs still streams its reply.
+    const ok = world({ logger: throwingLogger() });
+    ok.scripts.push({ chunks: [{ kind: 'text', text: 'Still here.' }], end: 'turn-end' });
+    await ok.dispatch(INSTALL, dm());
+    await ok.idle();
+    expect(replyIn(ok.slack.calls, DM_ALICE)).toBe('Still here.');
+  });
+});
+
+// ── Nothing left behind ─────────────────────────────────────────────────────
+
+describe('createEventRouter: nothing left behind', () => {
+  /*
+    Every turn registers a sink and holds a lane in the queue, and both must
+    be released however it ends, or a long-lived host keeps one of each per
+    DM. Nothing else notices a leak: the next turn works either way.
+  */
+  it('however a turn ends, no sink stays in the registry and no lane in the queue', async () => {
+    const w = world();
+    const endings: Script[] = [
+      { chunks: [{ kind: 'text', text: 'done' }], end: 'turn-end' },
+      { chunks: [{ kind: 'text', text: 'partial' }], end: 'turn-error', outcome: { kind: 'terminated', reason: 'chat-run-timeout' } },
+      { end: 'none', outcome: { kind: 'terminated', reason: 'conversation:busy' } },
+      { end: 'none', outcome: { kind: 'terminated', reason: 'Error: something the runner said' } },
+      { end: 'none', fail: true },
+    ];
+    for (const [i, script] of endings.entries()) {
+      w.scripts.push(script);
+      await w.dispatch(INSTALL, dm({ ts: `1763035200.00010${i}`, text: `message ${i}` }));
+      await w.idle();
+      expect([w.registry.size(), w.queue.size()], `ending ${i}`).toEqual([0, 0]);
+    }
+    expect(w.invokes).toHaveLength(endings.length);
+
+    // Two in one thread: the second waits its turn, then both are gone.
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, end: 'turn-end' }, { end: 'turn-end' });
+    await w.dispatch(INSTALL, dm({ ts: '1763035300.000100', text: 'one' }));
+    await w.dispatch(INSTALL, dm({ ts: '1763035300.000200', threadTs: '1763035300.000100', text: 'two' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect([w.registry.size(), w.queue.size()]).toEqual([1, 1]);
+    first.release();
+    await w.idle();
+    expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
+
+    // A turn dropped because its install went away holds nothing either.
+    w.disconnect();
+    await w.dispatch(INSTALL, dm({ ts: '1763035400.000100', text: 'after the disconnect' }));
+    await w.idle();
+    expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
+    expect(w.invokes).toHaveLength(endings.length + 2);
   });
 });

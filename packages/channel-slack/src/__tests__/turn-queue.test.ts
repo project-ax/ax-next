@@ -124,6 +124,35 @@ describe('createKeyedQueue', () => {
     expect(more).toEqual(['queued', 'queued', 'queued']);
   });
 
+  it('size counts the lanes holding a job, and is 0 once every job has ended, thrown ones included', async () => {
+    const q = createKeyedQueue({ maxPerKey: 3 });
+    const log: string[] = [];
+    expect(q.size()).toBe(0);
+    const a = gatedJob(log, 'a');
+    const b = gatedJob(log, 'b');
+    const c = gatedJob(log, 'c');
+    q.enqueue('conv-1', 'inst-a', a.job);
+    q.enqueue('conv-1', 'inst-a', b.job);
+    q.enqueue('conv-2', 'inst-b', c.job);
+    q.enqueue('conv-3', 'inst-b', async () => {
+      throw new Error('a failing job');
+    });
+    expect(q.size()).toBe(3);
+    await settle();
+    // conv-3's job threw: its lane is gone.
+    expect(q.size()).toBe(2);
+    a.release();
+    c.release();
+    await settle();
+    // conv-1 still runs b; conv-2 is done.
+    expect(q.size()).toBe(1);
+    b.release();
+    await settle();
+    expect(q.size()).toBe(0);
+    // Every job ran to its end, once.
+    expect([...log].sort()).toEqual(['end a', 'end b', 'end c', 'start a', 'start b', 'start c']);
+  });
+
   it('refuses a cap that is not a positive integer', () => {
     for (const maxPerKey of [0, -1, 1.5, Number.NaN]) {
       expect(() => createKeyedQueue({ maxPerKey }), String(maxPerKey)).toThrow(RangeError);

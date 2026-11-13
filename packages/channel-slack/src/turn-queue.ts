@@ -34,6 +34,8 @@ export interface KeyedQueue {
   /** `group` is who the job is for (channel-slack: the install), for `close()`'s count. */
   enqueue(key: string, group: string, job: () => Promise<void>): EnqueueResult;
   close(): DroppedJobs[];
+  /** Keys with a job running or waiting. 0 once every job has ended: a finished lane is forgotten. */
+  size(): number;
 }
 
 interface Waiting {
@@ -95,6 +97,10 @@ export function createKeyedQueue(o: { maxPerKey: number }): KeyedQueue {
         lane.waiting.length = 0;
       }
       return [...dropped].map(([group, count]) => ({ group, count }));
+    },
+
+    size() {
+      return lanes.size;
     },
   };
 }

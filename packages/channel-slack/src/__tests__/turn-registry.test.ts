@@ -156,6 +156,23 @@ describe('createTurnRegistry', () => {
     expect(seen).toEqual(['chunk text', 'end']);
   });
 
+  it('size counts the sinks held now: an undo releases its own, once', () => {
+    const r = createTurnRegistry();
+    expect(r.size()).toBe(0);
+    const undoA = r.register(recordingSink().sink);
+    const undoB = r.register(recordingSink({ reqId: 'req-bbbbbbbbbbbb' }).sink);
+    expect(r.size()).toBe(2);
+    undoA();
+    undoA();
+    expect(r.size()).toBe(1);
+    // A second sink for the same reqId replaces the first; the first's undo can't remove it.
+    const undoC = r.register(recordingSink({ reqId: 'req-bbbbbbbbbbbb' }).sink);
+    undoB();
+    expect(r.size()).toBe(1);
+    undoC();
+    expect(r.size()).toBe(0);
+  });
+
   it('subscribeTurnEvents wires the three hooks on the bus, and its undo removes them', async () => {
     const bus = new HookBus();
     const r = createTurnRegistry();
