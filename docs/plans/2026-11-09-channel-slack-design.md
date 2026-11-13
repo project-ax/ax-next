@@ -22,8 +22,10 @@ the owner chose to put there.
    a coworker. They don't have to exist in AX.
 2. **A company email gets you in.** A Slack user may talk to an agent only if
    they are a full member of the workspace (not a guest, not a bot, not
-   deactivated) with a verified `@<approved domain>` email. That's the same
-   domain AX's Google sign-in allows. We fetch the email ourselves through
+   deactivated) with a verified email on an approved domain. The approved
+   domains are the ones AX's Google sign-in allows: the Google provider's
+   *Allowed email domains* list. When that list is blank, sign-in accepts any
+   domain, and so does this check. We fetch the email ourselves through
    `users.info`. Anything in the message text is ignored for identity.
 3. **A company email doesn't get you someone else's agent.** Being an employee
    is the same bar as signing up for AX. AX still runs `agents:resolve` so one
@@ -309,17 +311,28 @@ approvals; `audience` says who sees the reply and decides memory.
   which leaks in exactly the case this field exists for. So memory's recall
   **must** branch on it, and a test pins that.
 
-**Finding a user by verified email** is a new service hook on the auth plugin
-(for example `auth:find-user-by-email`). Tier-3 attended turns and personal-agent
-DMs need it.
+**Finding a user by verified email** is a new service hook on the auth plugin,
+`auth:find-user-by-email`: `{ email } → { userId } | null` (TASK-1092).
+Attended channel turns (§2) and personal-agent DMs need it.
 
+- **Rules:** the match is case-insensitive and otherwise exact. Only verified
+  accounts count, and only on an approved domain (a blank list means any
+  domain). Accounts that differ only in case match nobody. `null` never says
+  why.
 - **Alternate implementation:** an OIDC or SCIM directory.
 - **Leaky field names:** none.
 - **Risk:** it can be used to check whether someone has an AX account. Keep it
-  internal to the host, never an IPC action, and return only the id.
+  internal to the host, never an IPC action, and return only the id. An
+  ipc-core test pins that no runner action reaches an `auth:` hook. Callers
+  pass only an email they fetched from the identity provider themselves.
+- **Open for TASK-1094:** it says nothing about company members who have no AX
+  account, and channel-slack can't read the approved domains. Admitting them as
+  external (§2) needs that answer from auth. Add it with that card. Don't copy
+  the domain list into channel-slack.
 
-**No other new hooks.** `@ax/channel-slack` uses existing hooks, like
-channel-web and routines do. It registers routes and subscribes to chat events.
+**No other new hooks** (apart from the open question above).
+`@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
+registers routes and subscribes to chat events.
 
 **Security:** the `security-checklist` walk is required. This opens a new path
 for untrusted input (anyone in a channel) into an agent that has its owner's
