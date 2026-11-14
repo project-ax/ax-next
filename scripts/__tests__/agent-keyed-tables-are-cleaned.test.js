@@ -275,9 +275,15 @@ function stripComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
 }
 
-/** Does this package react to the agent, or its conversations, going away? */
+/**
+ * Does this package react to the agent, or its conversations, going away? Only
+ * code counts: a comment that quotes the hook is not a subscription (TASK-1094).
+ */
 export function reactsToDeletion(files) {
-  return files.some(({ text }) => CLEANUP_TRIGGERS.some((t) => t.test(text)));
+  return files.some(({ text }) => {
+    const code = stripComments(text);
+    return CLEANUP_TRIGGERS.some((t) => t.test(code));
+  });
 }
 
 describe('agent-scoped tables are cleaned when their agent is deleted (TASK-718)', () => {
@@ -429,6 +435,26 @@ describe('agent-scoped tables are cleaned when their agent is deleted (TASK-718)
       // Quote style is not the point.
       expect(reactsToDeletion([file('p/plugin.ts', 'subscribes: ["agents:deleted"]')])).toBe(true);
       expect(reactsToDeletion([file('p/plugin.ts', 'bus.subscribe(`agents:deleted`, X, h)')])).toBe(true);
+    });
+
+    it('a hook named only in a comment is not a reaction (TASK-1094)', () => {
+      // A migration header that quoted the hook once passed this check for a
+      // table with no subscriber anywhere. deletesFrom already skips comments;
+      // this has to as well, or prose stands in for the subscription.
+      expect(
+        reactsToDeletion([file('p/migrations.ts', "// the 'agents:deleted' subscriber removes these rows")]),
+      ).toBe(false);
+      expect(reactsToDeletion([file('p/store.ts', '/* removed on `conversations:purged` */')])).toBe(false);
+      // A comment just above the real subscription doesn't hide it.
+      expect(
+        reactsToDeletion([
+          file(
+            'p/plugin.ts',
+            `// the cleanup
+bus.subscribe('agents:deleted', KEY, handler);`,
+          ),
+        ]),
+      ).toBe(true);
     });
   });
 });
