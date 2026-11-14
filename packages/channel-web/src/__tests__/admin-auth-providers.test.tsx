@@ -6,10 +6,12 @@
  *   2. Empty state when zero providers configured.
  *   3. "Add provider" reveals the AddProviderForm.
  *   4. Submit POSTs the right body shape (incl. CSRF header) and refetches.
- *   5. discoveryUrl field appears only when kind === 'oidc'.
+ *   5. Offers only Google and GitHub (generic OIDC was never wired up).
  *   6. Toggle calls PATCH and refetches.
  *   7. Delete is gated by a styled confirm dialog; Cancel cancels the call.
  *   8. Save error renders inline; the form stays open.
+ *   9. A leftover row of a kind the server no longer runs (oidc) is no way in:
+ *      it doesn't count toward the last-method warning, and its switch is off.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
@@ -76,17 +78,18 @@ describe('AuthProvidersTab', () => {
     expect(screen.getByLabelText('Client secret')).toBeTruthy();
   });
 
-  it('discoveryUrl is hidden by default and shown when kind=oidc', async () => {
+  // TASK-1116: "Generic OIDC" was never wired into sign-in, and saving one
+  // took every sign-in down. The server refuses it now; the form doesn't offer it.
+  it('offers only Google and GitHub', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     render(<AuthProvidersTab />);
     await waitFor(() =>
       screen.getByRole('button', { name: /Add provider/i }),
     );
     fireEvent.click(screen.getByRole('button', { name: /Add provider/i }));
-    // Default kind=google → no discovery URL field.
+    const select = screen.getByLabelText('Provider') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['google', 'github']);
     expect(screen.queryByLabelText(/Discovery URL/i)).toBeNull();
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'oidc' } });
-    expect(screen.getByLabelText(/Discovery URL/i)).toBeTruthy();
   });
 
   it('submit POSTs the upsert with CSRF header and refetches on 201', async () => {
@@ -128,6 +131,14 @@ describe('AuthProvidersTab', () => {
     ...googleEntry,
     kind: 'github' as const,
     clientId: 'gh-client-id',
+  };
+
+  // TASK-1116: saved back when the form offered "Generic OIDC". The server
+  // skips it at sign-in and refuses to toggle it; only DELETE works.
+  const oidcEntry = {
+    ...googleEntry,
+    kind: 'oidc',
+    clientId: 'oidc-client-id',
   };
 
   it('toggle PATCHes the new enabled state and refetches', async () => {
@@ -213,6 +224,20 @@ describe('AuthProvidersTab', () => {
       expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
     });
 
+    it('does not count a leftover oidc row as another way in', async () => {
+      // Enabled or not, nobody can sign in through it: Google is still the last one.
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, oidcEntry] }));
+
+      render(<AuthProvidersTab />);
+      await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+
+      expect(
+        await screen.findByText(/turn off the only way to sign in\?/i),
+      ).toBeTruthy();
+      expect(fetchMock.mock.calls).toHaveLength(1);
+    });
+
     it('asks nothing when turning one back ON', async () => {
       // The guard is about REMOVING the last way in, not about adding one.
       fetchMock.mockResolvedValueOnce(
@@ -228,6 +253,30 @@ describe('AuthProvidersTab', () => {
       await waitFor(() => expect(fetchMock.mock.calls).toHaveLength(3));
       expect(screen.queryByText(/turn off the only way to sign in\?/i)).toBeNull();
     });
+  });
+
+  it("a leftover oidc row's switch is off, says why, and the row can still be removed", async () => {
+    // Its stored `enabled` is true, but nobody signs in through it, so it
+    // never shows as on: a dead row must not look like a way in.
+    expect(oidcEntry.enabled).toBe(true);
+    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, oidcEntry] }));
+
+    render(<AuthProvidersTab />);
+    const leftover = (await screen.findByRole('switch', { name: /oidc/i })) as HTMLButtonElement;
+    expect(leftover.disabled).toBe(true);
+    expect(leftover.getAttribute('aria-checked')).toBe('false');
+    expect(leftover.getAttribute('data-state')).toBe('unchecked');
+    // Named for what it shows, not for its stored flag.
+    expect(screen.getByRole('switch', { name: 'Enable oidc' })).toBe(leftover);
+    const hintId = leftover.getAttribute('aria-describedby');
+    expect(hintId).not.toBeNull();
+    expect(document.getElementById(hintId!)?.textContent).toMatch(/no longer supported/i);
+
+    fireEvent.click(leftover);
+    expect(fetchMock.mock.calls).toHaveLength(1);
+    // Google's own switch is untouched, and the leftover can still go.
+    expect((screen.getByRole('switch', { name: /Disable Google/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Details for oidc' })).toBeTruthy();
   });
 
   it('delete is gated by a styled dialog; Cancel cancels the request', async () => {
@@ -301,8 +350,8 @@ describe('AuthProvidersTab', () => {
 
   /**
    * TASK-342 / audit D4 — this form asked a non-technical admin for a Client
-   * ID, a Client secret and a Discovery URL, and explained none of them. None
-   * of the three is guessable if you have never registered an OAuth app.
+   * ID and a Client secret, and explained neither. Neither is guessable if you
+   * have never registered an OAuth app.
    */
   describe('every provider field explains itself', () => {
     const openForm = async () => {
@@ -324,14 +373,6 @@ describe('AuthProvidersTab', () => {
       expect(hintFor('Provider')).toMatch(/sign in/i);
       expect(hintFor('Client ID')).toMatch(/register ax as an application/i);
       expect(hintFor('Client secret')).toMatch(/like a password/i);
-    });
-
-    it('glosses Discovery URL by the names a provider’s docs actually use', async () => {
-      await openForm();
-      fireEvent.change(screen.getByLabelText('Provider'), {
-        target: { value: 'oidc' },
-      });
-      expect(hintFor('Discovery URL')).toMatch(/well-known configuration/i);
     });
 
     it('says what leaving the domain allow-list blank actually means', async () => {

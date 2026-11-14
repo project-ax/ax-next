@@ -454,7 +454,7 @@ export interface K8sPresetConfig {
   contentOrigin?: ParsedContentOrigin;
   /**
    * @ax/auth-better config. Auth-better is config-light by design — providers
-   * (google / github / generic OIDC) live exclusively in the `auth_providers`
+   * (google / github) live exclusively in the `auth_providers`
    * DB table managed by Phase 1's `/admin/auth/providers/*` CRUD. There is no
    * env-driven provider config; the operator walks the onboarding wizard at
    * `/setup/*` (Phase 2) and adds providers from the admin UI (Phase 3.5).
@@ -1862,7 +1862,7 @@ export function loadK8sConfigFromEnv(
           .filter((s) => s.length > 0);
 
   // ---- auth (auth-better is DB-driven) --------------------------------
-  // Providers (google / github / generic OIDC) come from the
+  // Providers (google / github) come from the
   // `auth_providers` table managed by Phase 1's /admin/auth/providers/*
   // CRUD. First boot is the onboarding wizard (Phase 2): operator sets
   // AX_BOOTSTRAP_TOKEN (read directly by @ax/onboarding from process.env),

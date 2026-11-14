@@ -104,7 +104,7 @@ vi.mock('better-auth', async (importOriginal) => {
 // Import the plugin AFTER vi.mock so its handler is built by the wrapper.
 const { createAuthBetterPlugin } = await import('../plugin.js');
 
-// minPasswordLength is 12. Not secrets: nothing here signs anyone in.
+// Not secrets: nothing here signs anyone in (and password sign-in is off).
 const PASSWORD = 'correcthorsebattery';
 const NEW_PASSWORD = 'horsebatterystaple';
 
@@ -215,27 +215,30 @@ describe('@ax/auth-better: a malformed Host is a counted 400 (TASK-1052)', () =>
   });
 
   it('a refused request never reaches the endpoint', async () => {
-    const signUp = (host: string) =>
+    // An OAuth callback: the first thing it does is look its `state` up in the
+    // database (better-auth's callback route, before it even looks for the
+    // provider), so reaching the endpoint always shows up as a query. Email
+    // sign-up can't be the probe any more: it is off (TASK-1116) and refuses
+    // before any query.
+    const callback = (host: string) =>
       requestWithHost(port, {
-        method: 'POST',
-        path: '/auth/sign-up/email',
+        method: 'GET',
+        path: '/auth/callback/google?state=refused-state&code=refused-code',
         host,
-        json: { email: 'refused@example.com', password: PASSWORD, name: 'Refused' },
       });
     queries.length = 0;
-    const { result: refused, authLines } = await captureOutput(() => signUp('marker five'));
+    const { result: refused, authLines } = await captureOutput(() => callback('marker five'));
     expect(refused.status).toBe(400);
-    // Better Auth's own answer to this sign-up on the inert database is ALSO a
-    // 400 (FAILED_TO_CREATE_USER, after it queries), so the body is what proves
-    // the refusal.
     expect(JSON.parse(refused.body)).toEqual({ error: 'malformed-host' });
     expect(queries).toEqual([]);
-    expect(authLines).toEqual([{ via: 'stderr', line: BAD_REQUEST_LINE }]);
+    expect(authLines).toEqual([
+      { via: 'stderr', line: '[ax/auth-better] bad request on GET /auth/* {"code":"malformed-host"}\n' },
+    ]);
 
-    // Control: the same sign-up on a well-formed Host reaches the endpoint,
-    // which queries. Its status is Better Auth's business.
+    // Control: the same callback on a well-formed Host reaches the endpoint,
+    // which queries. Its answer is Better Auth's business.
     queries.length = 0;
-    await signUp(`127.0.0.1:${port}`);
+    await callback(`127.0.0.1:${port}`);
     expect(queries.length).toBeGreaterThan(0);
   });
 
