@@ -23,14 +23,16 @@ the owner chose to put there.
 2. **A company email gets you in.** A Slack user may talk to an agent only if
    they are a full member of the workspace (not a guest, not a bot, not
    deactivated) with a verified email on an approved domain. The approved
-   domains are the ones AX's sign-in allows: the *Allowed email domains*
-   lists of the Google and GitHub sign-in providers (since TASK-1116 each
-   provider enforces its own list). An email on any non-blank list counts; a
-   blank list adds nothing; with no list at all, sign-in accepts any domain,
-   and so does this check. We fetch the email ourselves through
+   domains come from AX's sign-in settings: the *Allowed email domains* lists
+   of the Google and GitHub sign-in providers. An email on any non-blank list
+   counts; a blank list adds nothing; with no list at all, any domain counts,
+   as at sign-in. It isn't exactly sign-in's rule (since TASK-1116 each
+   provider enforces only its own list), and differs both ways: a disabled
+   provider's list still counts, and a blank list never opens the others. We
+   fetch the email ourselves through
    `users.info`. Anything in the message text is ignored for identity.
 3. **A company email doesn't get you someone else's agent.** Being an employee
-   is the same bar as signing up for AX. AX still runs `agents:resolve` so one
+   is about the same bar as signing up for AX (§1.2 has the differences). AX still runs `agents:resolve` so one
    employee can't use another's agent, and Slack must not become a way around
    that.
 4. **Personal agents answer only their owner, only in a 1:1 DM.** We route by
@@ -360,9 +362,10 @@ Attended channel turns (§2) and personal-agent DMs need it.
   address with any non-ASCII character matches nobody (no Unicode lookalikes).
   Only verified accounts count, and only on an approved domain (§1.2: on any
   non-blank Google or GitHub list; no list at all means any domain).
-  Disabling a provider keeps its list in force, but deleting it removes its
-  list from this lookup, so an admin who deletes the only restricted provider
-  widens who Slack can map. Accounts that differ only in case match nobody.
+  A disabled provider's list still counts both ways: it keeps other domains
+  out and keeps its own approved. Deleting the provider removes its list from
+  this lookup, so an admin who deletes the only restricted provider widens who
+  Slack can map. Accounts that differ only in case match nobody.
   `null` never says why.
 - **Alternate implementation:** an OIDC or SCIM directory.
 - **Leaky field names:** none.

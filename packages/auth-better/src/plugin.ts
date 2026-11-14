@@ -664,9 +664,10 @@ async function findUserByEmail(
 
 /**
  * Every sign-in provider's allowed-domain list, parsed, for `isOnApprovedDomain`.
- * Read WHETHER OR NOT a provider is enabled: turning a sign-in method off must
- * not widen who counts as on an approved domain. Only the kinds the sign-in
- * gate enforces (`GATED_KINDS`); any other row configures nothing.
+ * Read WHETHER OR NOT a provider is enabled: turning a sign-in method off
+ * neither widens nor narrows who counts as on an approved domain (its list
+ * still keeps other domains out, and still approves its own). Only the kinds
+ * the sign-in gate enforces (`GATED_KINDS`); any other row configures nothing.
  */
 async function readApprovedDomainLists(
   db: Kysely<AuthBetterDatabase>,

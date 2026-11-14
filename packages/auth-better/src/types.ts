@@ -88,7 +88,7 @@ export type GetUserOutput = User | null;
  *     outside printable ASCII is never found.
  *   - Verified accounts only. An account whose email no provider has verified
  *     is never found. (One operator path keeps the flag across an email
- *     change: the deploy/GKE.md 4i runbook, `sql/change-account-email.sql`,
+ *     change: the deploy/GKE.md 4i runbook, `packages/auth-better/sql/change-account-email.sql`,
  *     which requires confirming who the person is first. Sign-in trusts the
  *     same flag.)
  *   - Approved sign-in domains only: the given address and the account's
@@ -96,7 +96,10 @@ export type GetUserOutput = User | null;
  *     on at least one sign-in provider's non-blank allowed-domain list (Google
  *     or GitHub), each read whether or not the provider is enabled
  *     (`isOnApprovedDomain` in identity-gate.ts). A blank list adds nothing;
- *     with no list anywhere, any domain is approved, the same as sign-in.
+ *     with no list anywhere, any domain is approved, the same as sign-in. A
+ *     disabled provider's list still counts both ways: it keeps other domains
+ *     out and keeps its own approved. To stop mapping a domain, remove it from
+ *     the list or delete the provider.
  *   - `null` for no match, for more than one match (accounts that differ only
  *     in case), or for any failed rule. `null` never says which rule failed.
  *   - Returns only the id: no email, name or admin flag.
