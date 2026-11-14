@@ -11,6 +11,7 @@ import {
 import { createReplyStream, systemClock, type ReplyStream, type ReplyTarget } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
+import { spellsMention } from './lenient-decoder.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -1340,6 +1341,38 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       }
     },
   );
+
+  it.each(['<&excl;channel> now', '&LT;!here&GT; now', '&lt!everyone now', '&commat;everyone now'])(
+    '%j split at every point across two text() calls, a flush between: decoded, nothing Slack gets is a live mention',
+    async (input) => {
+      expect(spellsMention(input)).toBe(true);
+      for (let k = 0; k <= input.length; k += 1) {
+        const { api, calls } = fakeSlack();
+        const s = make(api);
+        s.text(input.slice(0, k));
+        await tick();
+        s.text(input.slice(k));
+        await finishNow(s);
+
+        // Read as one text, the way a decoder would if Slack joins a stream's appends.
+        const sent = delivered(calls);
+        expect(spellsMention(sent), `split at ${k}: ${JSON.stringify(sent)}`).toBe(false);
+        expect(sent.split(ZWSP).join(''), `split at ${k}`).toBe(input);
+      }
+    },
+  );
+
+  it("a link's query string streams as written: `&page=2&utm_source=x` is no reference, so it gets no mark", async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    const link = '[the report](https://x.example/r?id=5&page=2&utm_source=slack)';
+    for (const delta of ['See ', link.slice(0, 33), link.slice(33), ' for more.']) {
+      s.text(delta);
+      await tick();
+    }
+    await finishNow(s);
+    expect(delivered(calls)).toBe(`See ${link} for more.`);
+  });
 
   it.each<[string, string]>([
     ['Ping @here', `Ping @${ZWSP}here`],

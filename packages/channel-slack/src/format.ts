@@ -29,13 +29,22 @@ const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.le
 /**
  * What Slack could read as a reference or a broadcast. The zero-width space
  * goes right after the match:
- *   - a `<` before `!`, `@` or `#`: `<!channel>`, `<@U…>`, `<#C…>`;
- *   - an `&` that starts an HTML entity Markdown decodes into an `@` or a `<`,
- *     in any case: a numeric one (`&#64;`, `&#x40;`, any `&#` and a digit,
- *     or `&#x`), `&commat;` or `&lt;`. Whether Slack decodes `markdown_text`
- *     before it looks for mentions is unmeasured (TASK-1097's walk); if it
- *     does, `&#64;channel` is `@channel`. Marked, it decodes to nothing.
- *     `&amp;`, `&gt;` and a plain `R&D` stay as they are;
+ *   - a `<` before `!`, `@`, `#` or `&`: `<!channel>`, `<@U…>`, `<#C…>`, and
+ *     `<&excl;channel>`, which a decoder could turn into the first;
+ *   - an `&` that starts a character reference Markdown or HTML could decode,
+ *     in any case: a numeric one (`&#` and a digit, or `&#x`); any name ended
+ *     by `;` (`&commat;`, `&excl;`, `&num;`, `&lt;`, `&nvlt;` …: HTML has
+ *     too many to list the dangerous ones) except `&amp;`, `&gt;`, `&quot;`,
+ *     `&apos;` and `&nbsp;`, harmless and common in prose; `&lt` with no `;`
+ *     (HTML's legacy form, the only one without `;` that decodes to a
+ *     mention's character); and a name too long for a stream to wait for (31
+ *     characters, longer than any HTML name). Whether Slack decodes
+ *     `markdown_text` at all is unmeasured (TASK-1097's walk): this is
+ *     defense in depth. Marked, a reference decodes to nothing. Any other
+ *     name with no `;` is left alone, because no decoder reads it (Markdown
+ *     needs the `;`, HTML's legacy names have none of these characters) and
+ *     it is how a link's query string looks (`&page=2&utm_source=x`): a mark
+ *     there would break the link. So is a lone letter (`R&D`, `a&b`);
  *   - the `@` of a broadcast word, in any case, when no letter or digit comes
  *     right before the `@` or right after the word: `hi @channel.` and
  *     `(@Here)` are broadcasts, `me@channel.com` and `@channels` are not.
@@ -43,15 +52,19 @@ const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.le
  * emphasis mark (`_@here_`), so it exempts nothing. One pattern, lookarounds
  * only: punctuation next to a word can't slip past it.
  */
-const SLACK_CONTROL = /<(?=[!@#])|&(?=#[0-9]|#x|commat;|lt;)|(?<![A-Za-z0-9])@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
+const SLACK_CONTROL =
+  /<(?=[!@#&])|&(?=#[0-9x]|lt|[a-z][a-z0-9]{30}|(?!(?:amp|gt|quot|apos|nbsp);)[a-z][a-z0-9]{0,30};)|(?<![A-Za-z0-9])@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
 
 /**
- * An `&` that ends the text with nothing after it but the start of an entity
- * SLACK_CONTROL marks: `&`, `&#`, `&c` … `&commat`, `&l`, `&lt`, any case.
- * The longest is seven code units (`&commat`).
+ * An `&` that ends the text with nothing after it but the start of a
+ * reference SLACK_CONTROL may still mark: `&`, `&#`, or a name of up to 30
+ * letters and digits that a `;` could still end (`&excl`, `&amp`), any case.
+ * `&lt` is decided (always marked), and so is a name of 31 (marked: it is
+ * longer than any HTML name, so the stream stops waiting and releases it
+ * marked). So a held tail is at most 31 code units.
  */
-const UNDECIDED_ENTITY = /&(?:#|c(?:o(?:m(?:m(?:at?)?)?)?)?|lt?)?$/i;
-const LONGEST_UNDECIDED_ENTITY = '&commat'.length;
+const UNDECIDED_ENTITY = /&(?:#|(?!lt)[a-z][a-z0-9]{0,29})?$/i;
+const LONGEST_UNDECIDED_ENTITY = 31;
 
 /**
  * `<!channel>`, `<!here>`, `<!everyone>`, `<@U…>` and `<#C…>` are Slack's
@@ -81,18 +94,18 @@ export function neutralizeSlackControls(text: string, before = ''): string {
  * How many code units at the end of `text` neutralizeSlackControls can't
  * decide yet: an `@` followed by nothing but the start of a broadcast word
  * (or the whole word: `@channel` then `s` is a name), or an `&` followed by
- * nothing but the start of an entity it marks (`&#`, `&comm`, `&lt`: the
- * next character decides). The next characters decide it, so a reply stream
- * holds these back until they come (reply-stream.ts). At most nine
- * (`@everyone`); 0 when nothing waits.
+ * nothing but the start of a reference it may mark (`&#`, `&excl`: a `;`
+ * may still come). The next characters decide it, so a reply stream holds
+ * these back until they come (reply-stream.ts). At most 31 (`&` and a
+ * 30-character name; at 31 the name is marked); 0 when nothing waits.
  *
  * Whatever comes before the `@` is never read. A letter there makes the word
  * an address in the reply (`me@chan`), but Slack judges each message, and
  * the status card, a new stream or a cut can come between that letter and
  * the `@`: sent then, `@chan` would start the next run and `nel` complete a
  * live `@channel` in it. Held, the word reaches that run whole and is judged
- * there. An entity waits for the same reason: sent as `&#`, the `&` is
- * already out when `64;` shows it needed a mark.
+ * there. A reference waits for the same reason: sent as `&#` or `&excl`, the
+ * `&` is already out when `64;` or `;` shows it needed a mark.
  */
 export function undecidedTail(text: string): number {
   const entity = UNDECIDED_ENTITY.exec(text.slice(-LONGEST_UNDECIDED_ENTITY));
