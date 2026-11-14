@@ -299,8 +299,13 @@ export async function registerMemoryNote(
             : err instanceof PluginError && err.code === 'forbidden'
               ? 'forbidden'
               : 'memory-unavailable';
+        // A refusal this tool makes on purpose (a person in a shared turn, a
+        // conversation memory may not learn from) is a decision, not a
+        // failure: info, so a "remember off" channel isn't a stream of warns.
+        // Everything else, a resolver's own `forbidden` included, stays warn.
+        const deliberate = err instanceof NoteInputError && err.code === 'forbidden';
         try {
-          ctx.logger[isMissingCredential(err) ? 'error' : 'warn'](
+          ctx.logger[isMissingCredential(err) ? 'error' : deliberate ? 'info' : 'warn'](
             memoryFailureEvent(err, NOTE_FAILED_EVENT),
             { agentId: ctx.agentId, path: 'note', reason: error },
           );

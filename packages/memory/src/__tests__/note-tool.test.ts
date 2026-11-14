@@ -533,7 +533,8 @@ describe('a note in a shared turn (TASK-1091)', () => {
       spy.mockRestore();
       expect(readRows(h.databasePath)).toHaveLength(0);
       const failures = eventsNamed(h.logs, NOTE_FAILED_EVENT);
-      expect(failures.map((line) => line.bindings.reason)).toEqual(['forbidden']);
+      // At info: a refusal this tool makes on purpose is a decision, not a failure.
+      expect(failures.map((line) => [line.level, line.bindings.reason])).toEqual([['info', 'forbidden']]);
       expect(JSON.stringify(failures)).not.toContain('Paris-secret-7');
 
       // The control: the same note in the owner's private turn is saved.
@@ -607,7 +608,10 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
         { agentId: DEFAULT_AGENT, refusedBy: 'test-refuser', reason: 'channel-not-remembered', tool: 'memory_note' },
       ],
     ]);
-    expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => e.bindings.reason)).toEqual(['forbidden']);
+    // Not a warn: a "remember off" channel refuses every note, as it should.
+    expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
+      ['info', 'forbidden'],
+    ]);
 
     // The control: a conversation nobody refuses is saved as before.
     expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-on' }))).toEqual({ ok: true });
@@ -648,6 +652,16 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
     // without the ask, `asked` would stay empty here too.
     expectRefused(await note(h, NOTE, h.ctx({ conversationId: 'conv-1' })), 'forbidden');
     expect(asked).toEqual([{ conversationId: 'conv-1' }]);
+  });
+
+  it('a note whose conversation is an empty string is not asked about, and is saved', async () => {
+    const h = await withHarness();
+    const asked = refuseEverything(h);
+
+    expect(await note(h, NOTE, h.ctx({ conversationId: '' }))).toEqual({ ok: true });
+    expect(asked).toEqual([]);
+    expect(readRows(h.databasePath)).toHaveLength(1);
+    expect(eventsNamed(h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
   });
 
   it("a task check-in's note is refused, though a routine run's row would carry no conversation", async () => {
@@ -826,8 +840,12 @@ describe('the note tool degrades, loudly and without leaking', () => {
   });
 
   it('a resolver refusal answers forbidden, not unavailable', async () => {
-    const { bus, ctx } = await stubNoteBus(() => ({}), { resolve: 'forbidden' });
+    const { bus, ctx, logs } = await stubNoteBus(() => ({}), { resolve: 'forbidden' });
     expectRefused(await callNote(bus, ctx), 'forbidden');
+    // Not one of the tool's own refusals: still a warn.
+    expect(eventsNamed(logs, NOTE_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
+      ['warn', 'forbidden'],
+    ]);
   });
 
   it('an engine invalid-payload answers a generic invalid-input, never the engine text', async () => {
