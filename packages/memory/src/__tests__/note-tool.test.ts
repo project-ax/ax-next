@@ -7,14 +7,20 @@ import {
   HookBus,
   PluginError,
   makeAgentContext,
+  reject,
   type AgentContext,
   type Logger,
+  type MemoryPreCapturePayload,
 } from '@ax/core';
 import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
 import { volumeAgentKey } from '../export-volume.js';
-import { createMemoryPlugin } from '../plugin.js';
+import {
+  CAPTURE_REFUSED_EVENT,
+  MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
+  createMemoryPlugin,
+} from '../plugin.js';
 import { NO_CREDENTIAL_EVENT, NOTE_FAILED_EVENT } from '../failure.js';
 import {
   MEMORY_NOTE_DESCRIPTOR,
@@ -24,6 +30,7 @@ import {
 import {
   ALICE,
   BOB,
+  DEFAULT_AGENT,
   capturingLogger,
   engineRecall,
   engineRecord,
@@ -549,6 +556,202 @@ describe('a note in a shared turn (TASK-1091)', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('a note in a conversation memory may not learn from (TASK-1094)', () => {
+  // `memory:pre-capture` (TASK-908): any plugin may refuse to let memory learn
+  // from a conversation. Extraction passes have always asked; a note asks too,
+  // so a refusal is not a promise the agent's own notes can break.
+  const NOTE = { about: 'billing_service', relation: 'owner', value: 'Dana' };
+  const REFUSED_MESSAGE =
+    'NOT SAVED: nothing was written to memory — do not tell the person it was saved. ' +
+    "Memory is turned off for this conversation, so notes aren't saved here.";
+
+  /** Refuses one conversation, the way the plugin that owns it would. */
+  function refuse(h: MemoryHarness, conversationId: string, reason: string): void {
+    h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-refuser', async (_ctx, payload) =>
+      payload.conversationId === conversationId ? reject({ reason }) : undefined,
+    );
+  }
+
+  /** Records every ask and refuses all of them. */
+  function refuseEverything(h: MemoryHarness): unknown[] {
+    const asked: unknown[] = [];
+    h.bus.subscribe('memory:pre-capture', 'test-refuse-all', async (_ctx, payload) => {
+      asked.push(payload);
+      return reject({ reason: 'refuse-all' });
+    });
+    return asked;
+  }
+
+  it('a refused conversation saves nothing, reads nothing, and tells the model so without naming who refused', async () => {
+    const h = await withHarness();
+    refuse(h, 'conv-off', 'channel-not-remembered');
+    const spy = vi.spyOn(h.bus, 'call');
+
+    const result = await note(h, NOTE, h.ctx({ conversationId: 'conv-off' }));
+
+    expect(result).toEqual({ ok: false, error: 'forbidden', message: REFUSED_MESSAGE });
+    expectRefused(result, 'forbidden');
+    expect(JSON.stringify(result)).not.toMatch(/test-refuser|channel-not-remembered/);
+    // Asked before access and before the engine: no read, no write.
+    const called = spy.mock.calls.map(([hook]) => String(hook));
+    spy.mockRestore();
+    expect(called.filter((hook) => hook === 'agents:resolve' || hook.startsWith('memory:facts:'))).toEqual([]);
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    // Who refused, and why, go to the log at info: a refusal is a decision.
+    expect(eventsNamed(h.logs, CAPTURE_REFUSED_EVENT).map((e) => [e.level, e.bindings])).toEqual([
+      [
+        'info',
+        { agentId: DEFAULT_AGENT, refusedBy: 'test-refuser', reason: 'channel-not-remembered', tool: 'memory_note' },
+      ],
+    ]);
+    expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => e.bindings.reason)).toEqual(['forbidden']);
+
+    // The control: a conversation nobody refuses is saved as before.
+    expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-on' }))).toEqual({ ok: true });
+    expect(readRows(h.databasePath).map((row) => row.conversation_id)).toEqual(['conv-on']);
+  });
+
+  it("asks once, before the write, with the conversation and the turn's own context", async () => {
+    const h = await withHarness();
+    const asked: unknown[] = [];
+    h.bus.subscribe('memory:pre-capture', 'test-observer', async (ctx, payload) => {
+      asked.push({
+        payload,
+        agentId: ctx.agentId,
+        userId: ctx.userId,
+        rowsAtAsk: readRows(h.databasePath).length,
+      });
+      return undefined;
+    });
+
+    expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-1' }))).toEqual({ ok: true });
+
+    expect(asked).toEqual([
+      { payload: { conversationId: 'conv-1' }, agentId: DEFAULT_AGENT, userId: ALICE, rowsAtAsk: 0 },
+    ]);
+    expect(readRows(h.databasePath)).toHaveLength(1);
+    expect(eventsNamed(h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
+  });
+
+  it('a note with no conversation is not asked about, and is saved', async () => {
+    const h = await withHarness();
+    const asked = refuseEverything(h);
+
+    expect(await note(h, NOTE)).toEqual({ ok: true });
+    expect(asked).toEqual([]);
+    expect(readRows(h.databasePath)).toHaveLength(1);
+
+    // Paired with a note that HAS a conversation, which is asked and refused:
+    // without the ask, `asked` would stay empty here too.
+    expectRefused(await note(h, NOTE, h.ctx({ conversationId: 'conv-1' })), 'forbidden');
+    expect(asked).toEqual([{ conversationId: 'conv-1' }]);
+  });
+
+  it("a task check-in's note is refused, though a routine run's row would carry no conversation", async () => {
+    // @ax/routines refuses a task check-in's conversation whatever the source
+    // (TASK-908). TASK-616 stores a routine run's rows with no conversation,
+    // but the ask is about the conversation the host set on the run.
+    const h = await withHarness();
+    refuse(h, 'conv-task', 'task-check-in');
+
+    expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-task', source: 'routine' }))).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: REFUSED_MESSAGE,
+    });
+    expect(readRows(h.databasePath)).toHaveLength(0);
+
+    // A run nobody refuses (a repeat routine) is stored as TASK-616 stores it.
+    expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-repeat', source: 'routine' }))).toEqual({
+      ok: true,
+    });
+    expect(readRows(h.databasePath).map((row) => row.conversation_id)).toEqual([null]);
+  });
+
+  it("a subscriber that throws doesn't stop the note: the bus skips it, as on every extraction pass", async () => {
+    const h = await withHarness();
+    let asked = 0;
+    h.bus.subscribe('memory:pre-capture', 'test-thrower', async () => {
+      asked += 1;
+      throw new Error('lookup failed');
+    });
+
+    expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-1' }))).toEqual({ ok: true });
+    expect(asked).toBe(1);
+    expect(readRows(h.databasePath)).toHaveLength(1);
+  });
+
+  it('a subscriber that never answers is skipped at the 10 s bound, and the note is saved', async () => {
+    const h = await withHarness();
+    h.bus.subscribe('memory:pre-capture', 'test-hung', () => new Promise<undefined>(() => {}));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let result: MemoryNoteResult | undefined;
+    try {
+      const pending = note(h, NOTE, h.ctx({ conversationId: 'conv-1' })).then((r) => {
+        result = r;
+      });
+      await vi.advanceTimersByTimeAsync(MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS - 1);
+      // Still waiting for the answer, so nothing is written yet.
+      expect(result).toBeUndefined();
+      expect(readRows(h.databasePath)).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result).toEqual({ ok: true });
+    expect(readRows(h.databasePath)).toHaveLength(1);
+    expect(eventsNamed(h.logs, 'hook_subscriber_timed_out').map((e) => e.bindings)).toEqual([
+      { hook: 'memory:pre-capture', plugin: 'test-hung', timeoutMs: 10_000 },
+    ]);
+  });
+
+  it('an ask that itself fails saves nothing', async () => {
+    const h = await withHarness();
+    const realFire = h.bus.fire.bind(h.bus) as (...args: unknown[]) => Promise<unknown>;
+    let fires = 0;
+    const spy = vi.spyOn(h.bus, 'fire').mockImplementation((async (hook: string, ...rest: unknown[]) => {
+      if (hook === 'memory:pre-capture') {
+        fires += 1;
+        throw new Error('bus exploded');
+      }
+      return realFire(hook, ...rest);
+    }) as never);
+
+    const result = await note(h, NOTE, h.ctx({ conversationId: 'conv-1' }));
+    spy.mockRestore();
+
+    expectRefused(result, 'memory-unavailable');
+    expect(JSON.stringify(result)).not.toContain('bus exploded');
+    expect(fires).toBe(1);
+    expect(readRows(h.databasePath)).toHaveLength(0);
+  });
+
+  it('bad input, or a person-note in a shared turn, is refused for that reason before memory asks', async () => {
+    const h = await withHarness();
+    const asked = refuseEverything(h);
+
+    const badInput = await note(h, { about: 'billing_service', relation: 'owner' }, h.ctx({ conversationId: 'conv-1' }));
+    expect(expectRefused(badInput, 'invalid-input')).toMatch(/must be non-empty strings/);
+    const personInShared = await note(
+      h,
+      { about: 'user', relation: 'lives in', value: 'Paris' },
+      h.ctx({ conversationId: 'conv-1', source: 'external', audience: 'shared' }),
+    );
+    expect(expectRefused(personInShared, 'forbidden')).toMatch(/about a person/);
+    expect(asked).toEqual([]);
+
+    // Paired with a valid note in the same conversation, which is asked.
+    expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-1' }))).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: REFUSED_MESSAGE,
+    });
+    expect(asked).toEqual([{ conversationId: 'conv-1' }]);
   });
 });
 

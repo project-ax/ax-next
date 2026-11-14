@@ -1,5 +1,4 @@
 import {
-  MEMORY_PRE_CAPTURE_HOOK,
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS as CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
   audienceOf,
@@ -9,13 +8,13 @@ import {
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
-  type MemoryPreCapturePayload,
   type Plugin,
 } from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
 import { recallFacts, recordFacts } from './audience.js';
+import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 import {
@@ -178,8 +177,12 @@ export const CHAT_END_HOOK = 'chat:end';
  */
 export const MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS = CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS;
 
-/** Logged at `info` when a `memory:pre-capture` subscriber refuses a pass. */
-export const CAPTURE_REFUSED_EVENT = 'memory_capture_refused';
+/**
+ * Logged at `info` when a `memory:pre-capture` subscriber refuses a pass, or
+ * (TASK-1094) a note. Defined with the ask itself in `capture.ts`, which
+ * `memory_note` shares; re-exported here, where it has always been.
+ */
+export { CAPTURE_REFUSED_EVENT };
 
 /**
  * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
@@ -1723,26 +1726,20 @@ async function observe(
     // nothing either. A subscriber that throws, or misses the bound, is
     // skipped by the bus and the pass goes on (see
     // MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS). With no conversation there
-    // is nothing to refuse, and memory doesn't ask.
-    const conversationId = ctx.conversationId;
-    if (typeof conversationId === 'string' && conversationId !== '') {
-      const asked = await bus.fire<MemoryPreCapturePayload>(
-        MEMORY_PRE_CAPTURE_HOOK,
-        ctx,
-        { conversationId },
-        { subscriberTimeoutMs: MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS },
-      );
-      if (asked.rejected) {
-        // `info`: a refusal is a decision, not a fault. Ids and the
-        // subscriber's own reason only, never conversation text.
-        ctx.logger.info(CAPTURE_REFUSED_EVENT, {
-          agentId: ctx.agentId,
-          refusedBy: asked.source,
-          reason: asked.reason,
-          ...(trigger !== undefined ? { trigger } : {}),
-        });
-        return true;
-      }
+    // is nothing to refuse, and memory doesn't ask. `memory_note` asks the
+    // same question before it writes (TASK-1094), through the same
+    // `captureRefusal`, so a refusal stops the agent's own notes too.
+    const refusal = await captureRefusal(bus, ctx);
+    if (refusal !== undefined) {
+      // `info`: a refusal is a decision, not a fault. Ids and the
+      // subscriber's own reason only, never conversation text.
+      ctx.logger.info(CAPTURE_REFUSED_EVENT, {
+        agentId: ctx.agentId,
+        refusedBy: refusal.source,
+        reason: refusal.reason,
+        ...(trigger !== undefined ? { trigger } : {}),
+      });
+      return true;
     }
 
     // Access from `ctx`, resolved through `agents:resolve` BEFORE any

@@ -9,6 +9,7 @@ import {
 
 import { resolveMemoryAccess } from './access.js';
 import { isPersonSubject, recordFacts } from './audience.js';
+import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -86,6 +87,9 @@ const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
 const PERSON_IN_SHARED_MESSAGE = "Notes about a person aren't saved in a shared conversation.";
+// The same words whoever refused and why: that goes to the log, not the model.
+const NOT_SAVED_HERE_MESSAGE =
+  "Memory is turned off for this conversation, so notes aren't saved here.";
 
 const FAILURE_MESSAGES: Record<MemoryNoteErrorCode, string> = {
   // Engine-side rejection: deliberately generic — the engine's own error text
@@ -221,6 +225,23 @@ export async function registerMemoryNote(
         // pass on.
         if (audienceOf(ctx) === 'shared' && isPersonSubject(input.about as string)) {
           throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
+        }
+        // TASK-1094: ask `memory:pre-capture` first, as every extraction
+        // pass does (`captureRefusal`). A plugin that keeps a conversation
+        // out of memory keeps the agent's own notes in it out too; otherwise
+        // the agent could write down what memory was told not to learn.
+        // After the input and person checks, so those refusals still say
+        // what's wrong; before access and the engine, so a refused note
+        // reads nothing and writes nothing.
+        const refusal = await captureRefusal(bus, ctx);
+        if (refusal !== undefined) {
+          ctx.logger.info(CAPTURE_REFUSED_EVENT, {
+            agentId: ctx.agentId,
+            refusedBy: refusal.source,
+            reason: refusal.reason,
+            tool: MEMORY_NOTE_DESCRIPTOR.name,
+          });
+          throw new NoteInputError(NOT_SAVED_HERE_MESSAGE, 'forbidden');
         }
 
         const access = await resolveMemoryAccess(bus, ctx);
