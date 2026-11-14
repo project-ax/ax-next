@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { makeAgentContext } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
   PostgreSqlContainer,
@@ -18,6 +19,8 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin } from '../plugin.js';
 import type { AuthBetterDatabase } from '../migrations.js';
+import { freshClientIp } from './support/fake-idp.js';
+import { captureOutput } from './support/capture-output.js';
 
 // ---------------------------------------------------------------------------
 // I10 — runtime provider config + handler hot-reload (no kernel restart).
@@ -344,5 +347,108 @@ describe('@ax/auth-better — provider hot-reload (I10)', () => {
       }),
     });
     expect(res.status).toBe(400);
+  });
+
+  // TASK-1116. `oidc` was offered by the admin form but never wired into
+  // better-auth: saving one took every /auth/* request down (500) and failed
+  // the next boot.
+  it('refuses to add or turn on an oidc provider, which was never wired up', async () => {
+    const add = await fetch(`${stack.baseUrl}/admin/auth/providers`, {
+      method: 'POST',
+      headers: ADMIN_HEADERS(stack.cookieHeader),
+      body: JSON.stringify({
+        kind: 'oidc',
+        clientId: 'c',
+        clientSecret: 's',
+        discoveryUrl: 'https://idp.example/.well-known/openid-configuration',
+      }),
+    });
+    expect(add.status).toBe(400);
+    expect(((await add.json()) as { error?: string }).error).toBe('invalid-payload');
+
+    // Turning one on is refused, and so is turning one off: the row is inert
+    // either way, and DELETE cleans it up.
+    for (const enabled of [true, false]) {
+      const patch = await fetch(`${stack.baseUrl}/admin/auth/providers/oidc`, {
+        method: 'PATCH',
+        headers: ADMIN_HEADERS(stack.cookieHeader),
+        body: JSON.stringify({ enabled }),
+      });
+      expect(patch.status, `enabled: ${enabled}`).toBe(400);
+      expect(((await patch.json()) as { error?: string }).error, `enabled: ${enabled}`).toBe('invalid-payload');
+    }
+  });
+
+  it("a leftover oidc row can't take sign-in down, and can still be deleted", async () => {
+    const post = await fetch(`${stack.baseUrl}/admin/auth/providers`, {
+      method: 'POST',
+      headers: ADMIN_HEADERS(stack.cookieHeader),
+      body: JSON.stringify({
+        kind: 'google',
+        clientId: 'test-client-id.apps.googleusercontent.com',
+        clientSecret: 'test-client-secret',
+      }),
+    });
+    expect(post.status).toBe(201);
+
+    // A row saved before the form stopped offering oidc, enabled.
+    const ctx = makeAgentContext({ sessionId: 'test', agentId: 'test', userId: 'system' });
+    const { ciphertext } = await stack.harness.bus.call<
+      { plaintext: string },
+      { ciphertext: Uint8Array }
+    >('credentials:envelope-encrypt', ctx, { plaintext: 'leftover' });
+    const k = new Kysely<AuthBetterDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 1 }) }),
+    });
+    try {
+      const now = new Date();
+      await k
+        .insertInto('auth_providers')
+        .values({
+          kind: 'oidc',
+          client_id: 'c',
+          client_secret_encrypted: ciphertext,
+          discovery_url: 'https://idp.example/.well-known/openid-configuration',
+          allowed_domains: null,
+          enabled: true,
+          created_at: now,
+          updated_at: now,
+        })
+        .execute();
+      // Skipped on every rebuild, said once: one line names the kind, not a
+      // line per provider change.
+      const { authLines } = await captureOutput(async () => {
+        await stack.harness.bus.fire('auth:providers-changed', ctx, {});
+        await stack.harness.bus.fire('auth:providers-changed', ctx, {});
+      });
+      expect(authLines).toEqual([
+        {
+          via: 'stderr',
+          line: '[ax/auth-better] sign-in provider ignored {"code":"provider-kind-unsupported","kind":"oidc"}\n',
+        },
+      ]);
+
+      const signIn = await fetch(`${stack.baseUrl}/auth/sign-in/social`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-requested-with': 'ax-admin',
+          'x-forwarded-for': freshClientIp(),
+        },
+        body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
+      });
+      expect(signIn.status).toBe(200);
+      expect(((await signIn.json()) as { url?: string }).url).toMatch(/accounts\.google\.com/);
+
+      const del = await fetch(`${stack.baseUrl}/admin/auth/providers/oidc`, {
+        method: 'DELETE',
+        headers: ADMIN_HEADERS(stack.cookieHeader),
+      });
+      expect(del.status).toBe(204);
+      const left = await k.selectFrom('auth_providers').where('kind', '=', 'oidc').select('kind').execute();
+      expect(left).toHaveLength(0);
+    } finally {
+      await k.destroy().catch(() => {});
+    }
   });
 });

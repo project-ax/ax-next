@@ -75,8 +75,27 @@ export interface OnboardingRouteHandlerDeps {
   validationTimeoutMs?: number;
 }
 
+/**
+ * Plain ASCII only (U+0021 to U+007E). The sign-in gate in @ax/auth-better
+ * refuses any other address, so an admin saved with one could never sign in
+ * (TASK-1116). Refusing it here makes it the wizard's `invalid-email`, not an
+ * error from auth:create-bootstrap-user.
+ */
 function isValidEmail(s: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  // Parsed by hand, not with `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`: that pattern
+  // backtracks polynomially on input like `!@!.!.!.…` (CodeQL
+  // js/polynomial-redos), and this runs before any user exists (only the
+  // bootstrap cookie gates it). The rules are the same: one `@`, something
+  // before it, and a domain with a dot that has something on both sides. 254
+  // is the longest address SMTP allows.
+  if (s.length > 254 || !/^[\x21-\x7E]+$/.test(s)) return false;
+  const at = s.indexOf('@');
+  if (at <= 0 || at !== s.lastIndexOf('@')) return false;
+  // Some dot with at least one character on each side, as the old pattern's
+  // `[^\s@]+\.[^\s@]+` required.
+  const domain = s.slice(at + 1);
+  const dot = domain.indexOf('.', 1);
+  return dot !== -1 && dot < domain.length - 1;
 }
 
 export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) {
