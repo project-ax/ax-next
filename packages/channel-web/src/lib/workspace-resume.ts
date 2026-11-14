@@ -36,16 +36,38 @@
  * alternative (a server-side resume that re-invokes without appending) would
  * have been a change to the chat wire that neither card owns.
  */
+import { ConversationReadOnlyError } from './conversation-read-only';
 import { workspaceApi, type ThreadMessage } from './workspace-api';
 
-/** Why a resume did not happen. Each one gets the same sentence; see `grant-copy`. */
+/**
+ * Why a resume did not happen. Every reason but `read-only` gets the same
+ * sentence; see `grant-copy`.
+ */
 export type ResumeFailure =
   /** The conversation read failed, so we never learned what to re-send. */
   | 'thread-unreadable'
   /** We read it and there is no user turn in it to re-issue. */
   | 'nothing-to-resume'
   /** We knew what to send and the POST refused it. */
-  | 'send-failed';
+  | 'send-failed'
+  /**
+   * TASK-1093 — the POST was refused because the conversation is a Slack DM
+   * thread, which takes its messages in Slack. Its own reason, because the
+   * advice differs: messaging the agent HERE is refused too, so the row says
+   * to reply in Slack. ONLY a Slack thread: the route refuses a routine's
+   * conversation the same way, but there is nowhere for the person to go and
+   * reply to a routine run, so that refusal stays `send-failed` and keeps its
+   * sentence.
+   */
+  | 'read-only';
+
+/**
+ * What a grant's `onGranted` reports back to its row: `true` the agent picked
+ * up again; `false` it did not, and a message to it here will; `'reply-elsewhere'`
+ * it did not, and its conversation is a Slack thread that takes messages only
+ * in Slack.
+ */
+export type GrantResume = boolean | 'reply-elsewhere';
 
 export type ResumeResult =
   | {
@@ -111,9 +133,11 @@ export async function resumeParkedTurn(target: {
 }): Promise<ResumeResult> {
   const { agentId, conversationId } = target;
   let text: string | null;
+  let origin: string | null | undefined;
   try {
     const detail = await workspaceApi.agent(agentId, conversationId);
     text = lastUserText(detail.thread);
+    origin = detail.origin;
   } catch (e) {
     // The operator's half. The reader's half is the row's sentence.
     console.warn('[workspace] could not read the turn to resume', e);
@@ -129,6 +153,9 @@ export async function resumeParkedTurn(target: {
     return { resumed: true, reqId, conversationId: landed, text };
   } catch (e) {
     console.warn('[workspace] could not re-send the turn to resume', e);
-    return { resumed: false, reason: 'send-failed' };
+    // Read-only AND Slack. The detail we just read names the origin; a routine
+    // or an unnamed origin keeps the plain refused-send sentence.
+    const inSlack = e instanceof ConversationReadOnlyError && origin === 'slack';
+    return { resumed: false, reason: inSlack ? 'read-only' : 'send-failed' };
   }
 }

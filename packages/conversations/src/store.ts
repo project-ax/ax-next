@@ -82,11 +82,15 @@ export function validateOptionalBoolean(
   return value;
 }
 
+function isConversationOrigin(value: unknown): value is ConversationOrigin {
+  return typeof value === 'string' && (CONVERSATION_ORIGINS as readonly string[]).includes(value);
+}
+
 /**
  * Reject an `origin` outside the known channels.
  *
  * Validated at the boundary rather than trusted, for the same reason `hidden`
- * is: a caller passing `'Web'` or `'slack'` would otherwise persist a value the
+ * is: a caller passing `'Web'` or `'Slack'` would otherwise persist a value the
  * read path silently narrows to `'web'` — an attendance answer that is wrong in
  * the permissive direction, arrived at by a typo, with nothing failing.
  */
@@ -95,13 +99,24 @@ export function validateOptionalOrigin(
   field: string,
 ): ConversationOrigin | undefined {
   if (value === undefined) return undefined;
-  if (
-    typeof value !== 'string' ||
-    !CONVERSATION_ORIGINS.includes(value as ConversationOrigin)
-  ) {
+  if (!isConversationOrigin(value)) {
     throw invalid(`${field} must be one of ${CONVERSATION_ORIGINS.join(' | ')} if provided`);
   }
-  return value as ConversationOrigin;
+  return value;
+}
+
+/**
+ * AW-6. The stored `origin` as a value of the union: itself when it is one
+ * this build knows, else `'web'`. NULL is every row that predates the column,
+ * a conversation a human opened in the browser, which is exactly what `'web'`
+ * means (there is no backfill). Anything else (a hand-edited row, a channel
+ * a newer host wrote) must not widen the union everything downstream switches
+ * on. Both projections of the row use this one function: two that read the
+ * column differently is how an attendance answer starts depending on which
+ * hook asked.
+ */
+export function readOrigin(raw: unknown): ConversationOrigin {
+  return isConversationOrigin(raw) ? raw : 'web';
 }
 
 export function validateRole(value: unknown): TurnRole {
@@ -166,12 +181,8 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     lastActivityAt:
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     hidden: row.hidden,
-    // AW-6. NULL — and anything the DB holds that is not a value we recognise
-    // — reads as `'web'`. There is no backfill: every row that predates the
-    // column belongs to a conversation a human opened in the browser, which is
-    // exactly what `'web'` means. Narrowing here rather than casting keeps a
-    // hand-edited row from widening the union everything downstream switches on.
-    origin: row.origin === 'routine' ? 'routine' : 'web',
+    // AW-6. Narrowed, never cast: see `readOrigin`.
+    origin: readOrigin(row.origin),
     externalKey: row.external_key,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -901,10 +912,8 @@ export function createConversationStore(
             ? null
             : row.last_activity_at.toISOString(),
         createdAt: row.created_at.toISOString(),
-        // AW-6. Same narrowing as `rowToConversation` — kept in step with it,
-        // because two projections of the same column reading NULL differently
-        // is how an attendance answer starts depending on which hook asked.
-        origin: row.origin === 'routine' ? 'routine' : 'web',
+        // AW-6. The same `readOrigin` as `rowToConversation`.
+        origin: readOrigin(row.origin),
         activeSessionId: row.active_session_id,
       };
     },

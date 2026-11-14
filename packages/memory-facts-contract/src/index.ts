@@ -77,6 +77,9 @@ export type FactKind = 'world' | 'experience' | 'observation' | 'opinion';
 /** Who spoke a source turn — see {@link FactStatementInput.sourceRole}. */
 export type SourceRole = 'user' | 'assistant';
 
+/** Who could see the turn a statement was learned in — see {@link FactStatementInput.audience}. */
+export type FactAudience = 'private' | 'shared';
+
 export interface FactStatementInput {
   /** Entity (dem-memory's subject): 1..1024 UTF-16 units; no C0, DEL or C1 controls. */
   about: string;
@@ -139,6 +142,25 @@ export interface FactStatementInput {
    * value they had marked never-right show again.
    */
   sourceRole?: SourceRole;
+  /**
+   * WHO could see the turn this statement was learned in (TASK-1091):
+   * `private` (the agent's owner, or someone with access to the agent) or
+   * `shared` (a reply anyone in the room could read). Decided and stamped by
+   * the product layer — `@ax/memory` copies it off the turn's context — and
+   * echoed back exactly as supplied. Absent on a row stored without one,
+   * which includes every row written before this field existed.
+   *
+   * Any value other than the two spellings — `''`, `null`, another case, a
+   * non-string — is `invalid-payload`, never coerced: a stamp that silently
+   * became "no stamp" would drop the row out of every shared read without a
+   * trace, and one that silently became `shared` would publish it.
+   *
+   * Unlike {@link sourceRole} this IS a retrieval key, and only in one
+   * direction: {@link RecallInput.audience} narrows a read to rows stamped
+   * `shared`. It changes no closure rule — slot chains stay tenant-wide, so a
+   * private statement can still close a shared one.
+   */
+  audience?: FactAudience;
 }
 
 export interface RecordInput {
@@ -261,6 +283,13 @@ export interface FactRecord {
    * value they had marked never-right show again.
    */
   sourceRole?: SourceRole;
+  /**
+   * The audience this row was stamped with (TASK-1091), echoed back exactly as
+   * {@link FactStatementInput.audience} supplied it — on the `record`
+   * response, a recalled row, a `batchKey` replay and `scan`. Absent on a row
+   * stored without one; a reader must treat that as private, never as shared.
+   */
+  audience?: FactAudience;
   kind?: FactKind;
 }
 
@@ -411,6 +440,32 @@ export interface RecallInput {
    * who asked for one conversation a result set dressed up as filtered.
    */
   conversationId?: string;
+  /**
+   * `'shared'` scopes this read to rows whose {@link FactRecord.audience} is
+   * `shared` (TASK-1091): a reply that people without access to the agent can
+   * read recalls only what was learned where they could see it. Omitted = no
+   * audience restriction, which is every other case in this contract.
+   *
+   * A SCOPE, not a hint, held to the same rules as {@link ownerUserId}:
+   *
+   *  - Pushed into the store's own predicate, never applied to rows after
+   *    they come back — `limit` has to count rows a shared reply may SEE.
+   *    Design §6.1, "Never post-filter a widened pool."
+   *  - Applied on BOTH paths. Unlike {@link slots} and {@link conversationId},
+   *    a `query` recall honours it: every ranked-retrieval channel, and the
+   *    step that turns ranked ids back into rows, carries the predicate.
+   *  - Strict equality, so a row stored with NO audience — including every row
+   *    that predates this field — never matches. Unstamped is not provably
+   *    shared.
+   *
+   * `'shared'` is the ONLY accepted value. `'private'` is rejected rather than
+   * read as "rows not stamped shared": that reading has to decide what an
+   * unstamped row means, and a scope that needs `IS NULL OR …` to say what it
+   * means is a scope someone will get backwards. Any other value — `''`, a
+   * different case, a non-string — is `invalid-payload` too, because treating
+   * it as absent would widen a read the caller believed it had narrowed.
+   */
+  audience?: 'shared';
 }
 
 export interface RecallOutput {
@@ -2424,6 +2479,248 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         await expectCode('invalid-payload', () =>
           recall({ query: 'where do I live', limit: 10, conversationId: 'conv-1' }),
         );
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // audience (TASK-1091) — a provenance stamp that is also a one-way scope
+    // -----------------------------------------------------------------------
+    //
+    // A shared reply (a channel anyone in the room can read) must recall only
+    // what was learned where those people could see it. The engine's part is
+    // to store the stamp it is handed, echo it, and honour `audience: 'shared'`
+    // as a SCOPE in its own predicate — the same rules `ownerUserId` is held
+    // to, on the listing AND the `query` path.
+    describe('audience stamp + shared-only recall', () => {
+      const FEB = '2023-02-01T00:00:00.000Z';
+
+      it.each(['private', 'shared'] as const)(
+        'echoes audience %s on the record response, a recalled row, a replay and scan',
+        async (audience) => {
+          const statements: FactStatementInput[] = [
+            { about: 'user', relation: 'stated', value: `audience-${audience}`, when: JAN, audience },
+          ];
+          const first = await record({ batchKey: `audience-${audience}`, statements });
+          expect(first.records[0]!.audience).toBe(audience);
+
+          // Recall, the replay and scan all read the STORED row back, so these
+          // are the halves that prove the stamp round-trips through the store.
+          const out = await recall({ about: 'user', limit: 10 });
+          expect(out.statements[0]!.audience).toBe(audience);
+
+          const replay = await record({ batchKey: `audience-${audience}`, statements });
+          expect(replay.records[0]!.id).toBe(first.records[0]!.id);
+          expect(replay.records[0]!.audience).toBe(audience);
+
+          const scanned = await scan();
+          expect(scanned.statements[0]!.audience).toBe(audience);
+        },
+      );
+
+      it('omits audience when absent', async () => {
+        const written = await recordOne({ about: 'user', relation: 'stated', value: 'hello', when: JAN });
+        expect('audience' in written).toBe(false);
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect('audience' in out.statements[0]!).toBe(false);
+
+        const scanned = await scan();
+        expect('audience' in scanned.statements[0]!).toBe(false);
+      });
+
+      // Rejected, never coerced: `''` or `null` read as "no stamp" would drop
+      // the row out of every shared read without a trace, and anything read
+      // as `shared` would publish it.
+      it.each(['public', '', 1, null])('record rejects audience %j', async (audience) => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:record', makeCtx(), {
+            statements: [{ about: 'user', relation: 'stated', value: 'hello', when: JAN, audience }],
+          }),
+        );
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements).toEqual([]);
+      });
+
+      // The "unstamped rows never match" case. Every row stored before this
+      // field existed has NO audience, and a shared read must not return it:
+      // unstamped is not provably shared. Strict equality gives that for free
+      // in SQL, which is exactly why it needs pinning — a `COALESCE` or an
+      // `IS NOT 'private'` written later would quietly publish them all.
+      it('a shared recall returns only rows stamped shared', async () => {
+        const shared = await recordOne({
+          about: 'user',
+          relation: 'uses_tool',
+          value: 'Jira',
+          when: JAN,
+          audience: 'shared',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Paris',
+          when: JUN,
+          audience: 'private',
+        });
+        await recordOne({ about: 'user', relation: 'likes_food', value: 'ramen', when: SEP });
+
+        const out = await recall({ about: 'user', limit: 10, audience: 'shared' });
+        expect(out.statements.map((r) => r.id)).toEqual([shared.id]);
+        expect(out.statements[0]!.audience).toBe('shared');
+      });
+
+      // The push-down case. Ten NEWER private rows lead the recency order, so a
+      // `limit: 2` read that took the top rows first and filtered afterwards
+      // would return nothing — while both shared rows sit there, visible.
+      // Design §6.1, "Never post-filter a widened pool."
+      it('limit counts shared rows, not a widened pool', async () => {
+        const older = await recordOne({
+          about: 'user',
+          relation: 'uses_tool',
+          value: 'Jira',
+          when: JAN,
+          audience: 'shared',
+        });
+        const newer = await recordOne({
+          about: 'user',
+          relation: 'uses_tool',
+          value: 'Linear',
+          when: FEB,
+          audience: 'shared',
+        });
+        await record({
+          statements: Array.from({ length: 10 }, (_, i) => ({
+            about: 'user',
+            relation: `private_fact_${i}`,
+            value: `fact-${i}`,
+            when: JUN,
+            audience: 'private' as const,
+          })),
+        });
+
+        const out = await recall({ about: 'user', limit: 2, audience: 'shared' });
+        expect(out.statements.map((r) => r.id)).toEqual([newer.id, older.id]);
+      });
+
+      // ANDed, like ownerUserId + tenant: naming an owner does not widen a
+      // shared read to that owner's private rows, and a shared read does not
+      // widen an owner-scoped one to another owner's shared rows.
+      it('composes with ownerUserId', async () => {
+        const aliceShared = await recordOne({
+          about: 'user',
+          relation: 'uses_tool',
+          value: 'Jira',
+          when: JAN,
+          ownerUserId: 'owner-alice',
+          audience: 'shared',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'uses_tool',
+          value: 'Linear',
+          when: JUN,
+          ownerUserId: 'owner-bob',
+          audience: 'shared',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Paris',
+          when: SEP,
+          ownerUserId: 'owner-alice',
+          audience: 'private',
+        });
+
+        const out = await recall({
+          about: 'user',
+          limit: 10,
+          ownerUserId: 'owner-alice',
+          audience: 'shared',
+        });
+        expect(out.statements.map((r) => r.id)).toEqual([aliceShared.id]);
+      });
+
+      // Unlike `slots` and `conversationId`, the audience scope is honoured by
+      // ranked retrieval rather than rejected alongside `query`. The private
+      // row is the query's best match and the unstamped one matches too; only
+      // the shared row — a weaker match — may come back. The temporal channel
+      // admits recent rows whatever the query says, so an unscoped channel
+      // would leak the other two all by itself.
+      it('a shared query recall returns only shared rows, even when a private row matches the query better', async (t) => {
+        needsFusion(t);
+        const privateRow = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+          audience: 'private',
+        });
+        const sharedRow = await recordOne({
+          about: 'user',
+          relation: 'stated',
+          value: 'the team went to a Khalid tribute night after the offsite',
+          when: JUN,
+          audience: 'shared',
+        });
+        const unstamped = await recordOne({
+          about: 'user',
+          relation: 'stated',
+          value: 'Khalid concert tickets',
+          when: SEP,
+        });
+
+        // The contrast, pinned rather than assumed: unscoped, the query
+        // reaches all three rows.
+        const unscoped = await recall({ query: 'Khalid', limit: 10 });
+        expect(unscoped.statements.map((s) => s.id).sort()).toEqual(
+          [privateRow.id, sharedRow.id, unstamped.id].sort(),
+        );
+
+        const out = await recall({ query: 'Khalid', limit: 10, audience: 'shared' });
+        expect(out.statements.map((s) => s.id)).toEqual([sharedRow.id]);
+
+        // History mode runs the same scoped channels.
+        const history = await recall({
+          query: 'Khalid',
+          limit: 10,
+          audience: 'shared',
+          activeOnly: false,
+        });
+        expect(history.statements.map((s) => s.id)).toEqual([sharedRow.id]);
+      });
+
+      // `'private'` is not a spelling of "everything not shared" — see
+      // RecallInput.audience — and the rest would widen a read the caller
+      // believed it had narrowed.
+      it.each(['private', '', 'SHARED', 1, null])('recall rejects audience %j', async (audience) => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:recall', makeCtx(), { about: 'user', limit: 10, audience }),
+        );
+      });
+
+      it('omitting audience recalls every row as before', async () => {
+        const shared = await recordOne({
+          about: 'user',
+          relation: 'uses_tool',
+          value: 'Jira',
+          when: JAN,
+          audience: 'shared',
+        });
+        const privateRow = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Paris',
+          when: JUN,
+          audience: 'private',
+        });
+        const unstamped = await recordOne({
+          about: 'user',
+          relation: 'likes_food',
+          value: 'ramen',
+          when: SEP,
+        });
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements.map((r) => r.id)).toEqual([unstamped.id, privateRow.id, shared.id]);
       });
     });
 

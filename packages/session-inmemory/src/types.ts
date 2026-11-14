@@ -1,5 +1,5 @@
 import { z, type ZodType } from 'zod';
-import type { AgentMessage } from '@ax/core';
+import type { AgentContextAudience, AgentContextSource, AgentMessage } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // AgentConfig — frozen-at-creation snapshot of a resolving agent's settings.
@@ -156,14 +156,24 @@ export interface SessionCreateInput {
     conversationId?: string | null;
     /**
      * TASK-181: host-derived session origin — `'routine'` for a scheduled
-     * @ax/routines fire, `'user'`/absent for an interactive turn. Persisted
-     * on the session record and echoed back by `session:resolve-token` so the
-     * IPC server can stamp it onto the happy-path runner-completed `chat:end`
-     * ctx (@ax/memory reads it there to store a routine turn's rows with no
-     * conversation — TASK-616). Host-only — it never arrives from the
-     * runner wire (absent from @ax/ipc-protocol). Optional; absent ≡ user.
+     * @ax/routines fire, `'user'`/absent for an interactive turn, `'external'`
+     * (TASK-1091) when a person with no access to the agent is present.
+     * Persisted on the session record and echoed back by
+     * `session:resolve-token` so the IPC server can stamp it onto every
+     * runner-rebuilt ctx (the happy-path runner-completed `chat:end` among
+     * them — @ax/memory reads it there to store a routine turn's rows with no
+     * conversation, TASK-616). Host-only — it never arrives from the runner
+     * wire (absent from @ax/ipc-protocol). Optional; absent ≡ user.
      */
-    source?: 'routine' | 'user';
+    source?: AgentContextSource;
+    /**
+     * TASK-1091: who sees this session's replies (`ctx.audience`) —
+     * `'private'`/absent for the owner's own conversation, `'shared'` for one
+     * other people are part of. Persisted and echoed exactly like `source`,
+     * and host-only for the same reason: it decides what memory the runner's
+     * calls may read. Optional; absent ≡ private.
+     */
+    audience?: AgentContextAudience;
   };
 }
 
@@ -203,7 +213,14 @@ export type SessionResolveTokenOutput =
        * error/terminated/unit paths. Null for user / canary / admin /
        * pre-TASK-181 sessions.
        */
-      source: 'routine' | 'user' | null;
+      source: AgentContextSource | null;
+      /**
+       * TASK-1091: host-derived audience recorded at create time, stamped
+       * onto the per-request AgentContext like `source`. REQUIRED on the
+       * reply (null when unset) so a resolver that forgot it fails at the
+       * bus instead of reading as private. Null ≡ private.
+       */
+      audience: AgentContextAudience | null;
     }
   | null;
 
@@ -326,7 +343,12 @@ export const SessionResolveTokenOutputSchema = z
     agentId: z.string().nullable(),
     conversationId: z.string().nullable(),
     // TASK-181 — host-derived session origin echoed onto the resolve result.
-    source: z.enum(['routine', 'user']).nullable(),
+    // TASK-1091 widened it: a stored 'external' must pass, or every IPC call
+    // of that session would fail at this schema.
+    source: z.enum(['routine', 'user', 'external']).nullable(),
+    // TASK-1091 — required + nullable: a z.object strips an undeclared key,
+    // which would make a shared session's IPC ctx look private.
+    audience: z.enum(['private', 'shared']).nullable(),
   })
   .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
 

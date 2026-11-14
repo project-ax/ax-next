@@ -6,6 +6,8 @@ import {
   createLogger,
   reject,
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+  type AgentContextAudience,
+  type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -17,6 +19,7 @@ import { createChatOrchestratorPlugin } from '../index.js';
 import {
   withBrokerDefaults,
   identityToolScope,
+  proposalToolScope,
   sessionNeedsCredentialRotation,
   CHAT_START_SUBSCRIBER_TIMEOUT_MS,
   CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
@@ -851,6 +854,133 @@ describe('chat-orchestrator', () => {
     ]);
   });
 
+  // TASK-1091 — a runner-reported failure's `reason` is the runner's own text
+  // (`${err.name}: ${err.message}`, up to 4096 chars), so it is untrusted and
+  // can name the owner's setup. On an outsider's turn both things that leave
+  // the host — the outcome the caller answers the room from, and every
+  // chat:turn-error frame (@ax/conversations saves it into the thread) — carry
+  // a host code only: anything else becomes `runner-error`. A host code passes
+  // through; a user's turn keeps the raw reason; the host log keeps it always.
+  describe('a runner-reported reason on an outsider turn', () => {
+    async function runnerEnds(
+      label: string,
+      source: AgentContextSource | undefined,
+      reason: string,
+    ) {
+      let busRef: HookBus | null = null;
+      const logLines: string[] = [];
+      const mocks = buildMocks({
+        openSession: async (_ctx, input: unknown) => {
+          const sessionId = (input as { sessionId: string }).sessionId;
+          // The IPC server stamps the session's source on the chat:end ctx.
+          setImmediate(() => {
+            void busRef!.fire(
+              'chat:end',
+              makeAgentContext({
+                sessionId,
+                agentId: 'agent',
+                userId: 'user',
+                reqId: `r-ipc-${label}`,
+                conversationId: `cnv-${label}`,
+                ...(source !== undefined ? { source } : {}),
+                logger: createLogger({ reqId: `r-ipc-${label}`, writer: (l) => logLines.push(l) }),
+              }),
+              { outcome: { kind: 'terminated', reason } },
+            );
+          });
+          return {
+            runnerEndpoint: `unix:///tmp/${label}.sock`,
+            handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+          };
+        },
+      });
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [
+          createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
+        ],
+      });
+      busRef = h.bus;
+      const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+      h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+        turnErrors.push(p as { reqId?: string; reason?: string });
+        return undefined;
+      });
+      const ends: unknown[] = [];
+      h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+        ends.push(p);
+        return undefined;
+      });
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        makeAgentContext({
+          sessionId: `sess-${label}`,
+          agentId: 'test-agent',
+          userId: 'test-user',
+          reqId: `r-${label}`,
+          conversationId: `cnv-${label}`,
+          ...(source !== undefined ? { source } : {}),
+          logger: createLogger({ reqId: `r-${label}`, writer: (l) => logLines.push(l) }),
+        }),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      const turnErrorLog = logLines
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .find((l) => l.msg === 'chat_turn_error');
+      return { outcome, turnErrors, ends, turnErrorLog };
+    }
+
+    const RAW = "Error: mcpServers entry 'gmail' has invalid transport";
+
+    it('an external turn: the outcome and every turn-error frame say runner-error; the log and chat:end keep the text', async () => {
+      const r = await runnerEnds('ext-raw', 'external', RAW);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: 'runner-error' });
+      expect(r.turnErrors.length).toBeGreaterThan(0);
+      for (const f of r.turnErrors) expect(f.reason).toBe('runner-error');
+      expect(JSON.stringify([r.outcome, r.turnErrors])).not.toMatch(/gmail|transport/i);
+      expect(r.turnErrorLog).toMatchObject({ reason: RAW });
+      expect(r.ends).toContainEqual({ outcome: { kind: 'terminated', reason: RAW } });
+    });
+
+    it('an external turn: a host code passes through', async () => {
+      const r = await runnerEnds('ext-code', 'external', 'connector-needs-reconnect');
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+      expect(r.turnErrors).toEqual([{ reqId: 'r-ext-code', reason: 'connector-needs-reconnect' }]);
+    });
+
+    // The filter's edges, mirroring @ax/routines' reject table: each of these
+    // could spell a host, path, sentence or second line, so it must collapse.
+    it.each([
+      ['a dotted host', 'x.example.com:443'],
+      ['a slash', 'private/path'],
+      ['a space', 'private words'],
+      ['an underscore', 'private_code'],
+      ['a second line', 'chat-run-timeout\nPRIVATE second line'],
+      ['a code one character too long', 'a'.repeat(65)],
+      ['nothing', ''],
+      ['capital letters', 'PRIVATE-CODE'],
+    ])('an external turn: %s becomes runner-error', async (name, reason) => {
+      const r = await runnerEnds(`edge-${name.replace(/\W+/g, '-')}`, 'external', reason);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: 'runner-error' });
+      expect(r.turnErrors.length).toBeGreaterThan(0);
+      for (const f of r.turnErrors) expect(f.reason).toBe('runner-error');
+    });
+
+    it('an external turn: a 64-character code is the longest that passes through', async () => {
+      const code = 'a'.repeat(64);
+      const r = await runnerEnds('edge-64', 'external', code);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: code });
+      expect(r.turnErrors.length).toBeGreaterThan(0);
+      for (const f of r.turnErrors) expect(f.reason).toBe(code);
+    });
+
+    it("a user's turn keeps the raw reason", async () => {
+      const r = await runnerEnds('user-raw', 'user', RAW);
+      expect(r.outcome).toEqual({ kind: 'terminated', reason: RAW });
+      expect(r.turnErrors).toEqual([{ reqId: 'r-user-raw', reason: RAW }]);
+    });
+  });
+
   it('F2b: a terminated chat:end with NO in-flight waiter does NOT fire chat:turn-error', async () => {
     // Guards both double-fire (chokepoint already settled the deferred + fired
     // its own turn-error) and spurious-fire (a reaped warm runner POSTs a late
@@ -1457,6 +1587,79 @@ describe('chat-orchestrator', () => {
   });
 
   // -------------------------------------------------------------------------
+  // TASK-1091 — `'external'` and `audience` ride owner on sandbox:open-session
+  // exactly as `source` does: host-side ctx → session record → the IPC
+  // listeners' rebuilt ctx. Both come ONLY from the host ctx.
+  // -------------------------------------------------------------------------
+  async function ownerOpenedFor(
+    fields: Pick<Parameters<typeof makeAgentContext>[0], 'source' | 'audience'>,
+  ): Promise<Record<string, unknown>> {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved' } }),
+    });
+    let busRef: HookBus | null = null;
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a-resolved',
+            userId: 'test-user',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      makeAgentContext({
+        sessionId: 'mode-session',
+        agentId: 'test-agent',
+        userId: 'test-user',
+        ...fields,
+        logger: createLogger({ reqId: 'orch-mode-test', writer: () => undefined }),
+      }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+    return (mocks.calls.lastSandboxInput as { owner: Record<string, unknown> }).owner;
+  }
+
+  it('forwards ctx.source "external" and ctx.audience "shared" into owner on sandbox:open-session', async () => {
+    const owner = await ownerOpenedFor({ source: 'external', audience: 'shared' });
+    expect(owner.source).toBe('external');
+    expect(owner.audience).toBe('shared');
+  });
+
+  it('a default ctx forwards neither owner.source nor owner.audience', async () => {
+    const owner = await ownerOpenedFor({});
+    expect('source' in owner).toBe(false);
+    expect('audience' in owner).toBe(false);
+  });
+
+  it('an audience value this build does not know forwards as "shared" (fail closed)', async () => {
+    const owner = await ownerOpenedFor({ audience: 'public' as never });
+    expect(owner.audience).toBe('shared');
+  });
+
+  // -------------------------------------------------------------------------
   // TASK-51 (JIT §P4) — the always-on broker tools (search_catalog +
   // request_capability) are locked into every MULTI-TENANT (non-wildcard)
   // agent's effective allowedTools at session-open, while the empty-empty
@@ -1629,7 +1832,7 @@ describe('chat-orchestrator', () => {
   // -------------------------------------------------------------------------
 
   // silentCtx plus a host-set source.
-  function sourcedCtx(sessionId: string, source: 'routine' | 'user') {
+  function sourcedCtx(sessionId: string, source: AgentContextSource) {
     return makeAgentContext({
       sessionId,
       agentId: 'test-agent',
@@ -1639,10 +1842,11 @@ describe('chat-orchestrator', () => {
     });
   }
 
-  async function invokeAndReadAllowedTools(
+  /** The tool scope frozen onto the session: what it lists, and what it hides. */
+  async function invokeAndReadToolScope(
     agent: { allowedTools: string[]; mcpConfigIds: string[] },
     ctx: ReturnType<typeof sourcedCtx>,
-  ): Promise<string[]> {
+  ): Promise<{ allowedTools: string[]; disallowedTools?: string[] }> {
     const mocks = buildMocks({
       agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved', ...agent } }),
     });
@@ -1657,7 +1861,14 @@ describe('chat-orchestrator', () => {
       message: { role: 'user', content: 'hi' },
     });
     expect(outcome.kind).toBe('complete');
-    return getConfig().allowedTools;
+    return getConfig() as { allowedTools: string[]; disallowedTools?: string[] };
+  }
+
+  async function invokeAndReadAllowedTools(
+    agent: { allowedTools: string[]; mcpConfigIds: string[] },
+    ctx: ReturnType<typeof sourcedCtx>,
+  ): Promise<string[]> {
+    return (await invokeAndReadToolScope(agent, ctx)).allowedTools;
   }
 
   it('TASK-983: a routine run of a non-wildcard agent sees reporting and full-update read tools', async () => {
@@ -1699,6 +1910,90 @@ describe('chat-orchestrator', () => {
       'connector_propose',
     ]);
   });
+
+  // TASK-1091 — an external turn is unattended, but it is not a routine run:
+  // the routine-only tools stay a routine's (`=== 'routine'`, not "unattended").
+  // Nor is it offered the two proposal tools (the tests just below).
+  it('TASK-1091: an external turn of a non-wildcard agent does not see routine_report', async () => {
+    const allowedTools = await invokeAndReadAllowedTools(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s4', 'external'),
+    );
+    expect(allowedTools).toEqual(['file.read', 'search_catalog', 'request_capability']);
+  });
+
+  // TASK-1091 — skill_propose and connector_propose act for the agent's people
+  // (a clean authored skill goes live with no human; a connector request lands
+  // in the admins' queue in the owner's name). An external turn, where the
+  // person present has no access to the agent, is offered neither: left out of
+  // a listed scope, hidden from a wildcard one. The host refuses both anyway;
+  // this is the catalog side. `=== 'external'` only: a routine keeps both,
+  // because the skill-reflection routine's whole job is proposing skills.
+  it('TASK-1091: an external turn of a non-wildcard agent is not offered either proposal tool, and needs nothing hidden', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s5', 'external'),
+    );
+    expect(scope.allowedTools).not.toContain('skill_propose');
+    expect(scope.allowedTools).not.toContain('connector_propose');
+    expect('disallowedTools' in scope).toBe(false);
+  });
+
+  it('TASK-1091: an external turn of a wildcard agent has both proposal tools in disallowedTools', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s6', 'external'),
+    );
+    expect(scope.allowedTools).toEqual([]); // still the wildcard
+    expect(scope.disallowedTools).toEqual(['skill_propose', 'connector_propose']);
+  });
+
+  it('TASK-1091: an external turn of an agent that lists a proposal tool itself has it hidden', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: ['file.read', 'skill_propose'], mcpConfigIds: [] },
+      sourcedCtx('s7', 'external'),
+    );
+    // Never by shrinking allowedTools (that could empty it into the wildcard).
+    expect(scope.allowedTools).toEqual(['file.read', 'skill_propose', 'search_catalog', 'request_capability']);
+    expect(scope.disallowedTools).toEqual(['skill_propose']);
+  });
+
+  // `isOutsiderTurn` fails closed: a source this build doesn't know might be an
+  // outsider, so it gets the external catalog, not the owner's.
+  it("TASK-1091: a turn whose source this build doesn't know is offered neither proposal tool, listed or wildcard", async () => {
+    const listed = await invokeAndReadToolScope(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s10', 'bogus' as never),
+    );
+    expect(listed.allowedTools).toEqual(['file.read', 'search_catalog', 'request_capability']);
+    expect('disallowedTools' in listed).toBe(false);
+
+    const wildcard = await invokeAndReadToolScope(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s11', 'bogus' as never),
+    );
+    expect(wildcard.allowedTools).toEqual([]);
+    expect(wildcard.disallowedTools).toEqual(['skill_propose', 'connector_propose']);
+  });
+
+  it.each(['routine', 'user'] as const)(
+    'TASK-1091: a %s turn still sees both proposal tools, listed or wildcard',
+    async (source) => {
+      const listed = await invokeAndReadToolScope(
+        { allowedTools: ['file.read'], mcpConfigIds: [] },
+        sourcedCtx('s8', source),
+      );
+      expect(listed.allowedTools).toEqual(expect.arrayContaining(['skill_propose', 'connector_propose']));
+      expect('disallowedTools' in listed).toBe(false);
+
+      const wildcard = await invokeAndReadToolScope(
+        { allowedTools: [], mcpConfigIds: [] },
+        sourcedCtx('s9', source),
+      );
+      expect(wildcard.allowedTools).toEqual([]);
+      expect('disallowedTools' in wildcard).toBe(false);
+    },
+  );
 
   it('agents:resolve throwing a non-PluginError → terminated outcome with the bus-wrapped code', async () => {
     // The bus wraps non-PluginError throws as PluginError(code='unknown').
@@ -2754,14 +3049,25 @@ describe('chat-orchestrator', () => {
       sessionId: string,
       attached: Record<string, ReturnType<typeof oauthConnector>> = { gmail: GMAIL },
       opts: {
-        /** Stamp `source:'routine'` on the turn ctx (routines' fire.ts does). */
-        routine?: boolean;
+        /**
+         * Stamp this host-set `source` on the turn ctx (routines' fire.ts
+         * stamps `'routine'`; TASK-1091's `'external'` is a person with no
+         * access to the agent).
+         */
+        source?: AgentContextSource;
         /** Extra services (e.g. `mcp-oauth:status-batch`). */
         extra?: Record<string, ServiceHandler>;
         /** Extra plugin config (e.g. the subscriber / status bounds). */
         config?: Record<string, unknown>;
         /** Subscribers registered BEFORE the event observer. */
         preSubscribe?: (bus: HookBus) => void;
+        /**
+         * Stamp a conversation on a sourced turn ctx (the user's message is
+         * then saved through `conversations:append-event`, when registered).
+         */
+        conversationId?: string;
+        /** Collects a sourced turn ctx's log lines (JSON, one per entry). */
+        logLines?: string[];
       } = {},
     ) {
       const busRef: { current: HookBus | null } = { current: null };
@@ -2800,14 +3106,20 @@ describe('chat-orchestrator', () => {
       });
       const reqId = `r-${sessionId}`;
       const turnCtx =
-        opts.routine === true
+        opts.source !== undefined
           ? makeAgentContext({
               sessionId,
               agentId: 'test-agent',
               userId: 'test-user',
               reqId,
-              source: 'routine',
-              logger: createLogger({ reqId, writer: () => undefined }),
+              source: opts.source,
+              ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
+              logger: createLogger({
+                reqId,
+                writer: (line) => {
+                  opts.logLines?.push(line);
+                },
+              }),
             })
           : turnErrorCtx(sessionId, reqId);
       const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -3005,7 +3317,8 @@ describe('chat-orchestrator', () => {
       }
     });
 
-    describe('slice 6: a ROUTINE turn goes without a connector whose sign-in needs doing again', () => {
+    // TASK-1091: an EXTERNAL turn too — nobody present can sign in again.
+    describe('slice 6: an UNATTENDED turn (routine or external) goes without a connector whose sign-in needs doing again', () => {
       function statusBatch(answer: () => Promise<unknown>) {
         const asked: unknown[] = [];
         const services: Record<string, ServiceHandler> = {
@@ -3019,14 +3332,15 @@ describe('chat-orchestrator', () => {
       const marksGmail = () =>
         statusBatch(async () => ({ needsReconnect: ['gmail'], shared: ['gmail'], signIns: {} }));
 
-      it('routine + expired Gmail → skipped, the turn completes, the event says needs-reconnect', async () => {
+      it.each(['routine', 'external'] as const)('%s + expired Gmail → skipped, the turn completes, the event says needs-reconnect', async (source) => {
         const vault = buildVaultHooks({ rows: [PROVIDER_REF, LINEAR_REF], rejected: [GMAIL_REF] });
         const sb = marksGmail();
+        const sessionId = `${source}-expired`;
         const { outcome, turnErrors, sandboxIn, skippedEvents, mocks } = await invoke(
           vault,
-          'rt-expired',
+          sessionId,
           { gmail: GMAIL, linear: LINEAR },
-          { routine: true, extra: sb.services },
+          { source, extra: sb.services },
         );
         expect(outcome.kind).toBe('complete');
         expect(turnErrors).toEqual([]);
@@ -3039,14 +3353,63 @@ describe('chat-orchestrator', () => {
         expect(vault.state.openRefs).not.toContain(GMAIL_REF);
         expect(vault.state.openRefs).toContain(LINEAR_REF);
         expect(mcpKeys(sandboxIn)).toEqual(['c0456abcdef']);
-        // The agent is told, by name, with "sign in again" wording.
+        // What the agent is TOLD depends on who is present: the two tests below.
+        expect(skippedEvents).toEqual([
+          { reqId: `r-${sessionId}`, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
+        ]);
+        expect(JSON.stringify(skippedEvents)).not.toContain('account:');
+      });
+
+      it('a routine is told which connector, with "sign in again" wording', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF, LINEAR_REF], rejected: [GMAIL_REF] });
+        const { outcome, sandboxIn } = await invoke(vault, 'rt-told', { gmail: GMAIL, linear: LINEAR }, {
+          source: 'routine',
+          extra: marksGmail().services,
+        });
+        expect(outcome.kind).toBe('complete');
         expect(sandboxIn?.owner.agentConfig.systemPromptAugment).toMatch(
           /^Connectors whose sign-in expired, off for this chat .*: "Gmail"\. .*sign in to it again/,
         );
+      });
+
+      // TASK-1091 — someone without access to the agent is present. Naming the
+      // owner's connectors, saying whose sign-in lapsed, or sending "them" to
+      // the Connectors tab would tell an outsider about the owner's accounts,
+      // and only the owner could act on it. Both reasons (Gmail expired,
+      // Linear never signed in) get the same fixed line. An unknown source
+      // fails closed to the same answer (`isOutsiderTurn`).
+      it.each([
+        ['an external turn', 'external'],
+        ["a turn whose source this build doesn't know", 'bogus'],
+      ] as const)('%s: the session prompt names no connector and gives no sign-in steps', async (_label, source) => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+        const { outcome, sandboxIn, skippedEvents } = await invoke(vault, `outsider-${source}`, { gmail: GMAIL, linear: LINEAR }, {
+          source: source as never,
+          extra: marksGmail().services,
+        });
+        expect(outcome.kind).toBe('complete');
+        // Both were skipped (the owner-side event still says which and why).
         expect(skippedEvents).toEqual([
-          { reqId: 'r-rt-expired', connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
+          {
+            reqId: `r-outsider-${source}`,
+            connectors: [
+              { connectorId: 'linear', name: 'Linear', reason: 'not-signed-in' },
+              { connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' },
+            ],
+          },
         ]);
-        expect(JSON.stringify(skippedEvents)).not.toContain('account:');
+        const augment = sandboxIn?.owner.agentConfig.systemPromptAugment ?? '';
+        expect(augment).toBe("Some tools aren't available in this conversation. Don't name them or say why.");
+        expect(augment).not.toMatch(/Gmail|Linear|sign in|sign-in|Connectors tab/i);
+      });
+
+      it('a user turn with a never-signed-in connector is still told its name and the Connectors tab', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
+        const { outcome, sandboxIn } = await invoke(vault, 'user-told', { gmail: GMAIL }, { source: 'user' });
+        expect(outcome.kind).toBe('complete');
+        const augment = sandboxIn?.owner.agentConfig.systemPromptAugment ?? '';
+        expect(augment).toMatch(/^Connectors not signed in for this chat .*: "Gmail"\. /);
+        expect(augment).toContain("on this agent's Connectors tab");
       });
 
       it('routine with BOTH reasons → one event naming each with its reason', async () => {
@@ -3056,7 +3419,7 @@ describe('chat-orchestrator', () => {
           vault,
           'rt-mixed',
           { gmail: GMAIL, linear: LINEAR },
-          { routine: true, extra: sb.services },
+          { source: 'routine', extra: sb.services },
         );
         expect(outcome.kind).toBe('complete');
         // Linear was skipped by presence first, so only Gmail is asked about.
@@ -3098,13 +3461,76 @@ describe('chat-orchestrator', () => {
       ])('status-batch %s → the connector is kept (today\'s routine behaviour: the open fails)', async (_label, extra) => {
         const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
         const { outcome, skippedEvents } = await invoke(vault, `rt-keep-${_label}`, { gmail: GMAIL }, {
-          routine: true,
+          source: 'routine',
           ...(extra !== undefined ? { extra } : {}),
           config: { signInStatusTimeoutMs: 20 },
         });
         expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
         expect(vault.state.openRefs).toContain(GMAIL_REF);
         expect(skippedEvents).toEqual([]);
+      });
+
+      // TASK-1091 — the same degraded path on an OUTSIDER's turn. It still
+      // fails (the expired sign-in was kept, and nobody present can sign in
+      // again), but nothing that leaves the host names the owner's connectors:
+      // not the turn error (@ax/conversations saves its payload into the
+      // thread as-is, and a channel relays it), not the outcome the caller
+      // answers the room from. The host log keeps the
+      // names (chat:end, the host's audit record, keeps the raw error).
+      async function outsiderTurn(
+        label: string,
+        source: AgentContextSource,
+        rejected: string[],
+        attached: Record<string, ReturnType<typeof oauthConnector>>,
+        extra: Record<string, ServiceHandler> | undefined,
+      ) {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected });
+        const logLines: string[] = [];
+        const r = await invoke(vault, `outsider-keep-${label}`, attached, {
+          source,
+          conversationId: `conv-${label}`,
+          logLines,
+          ...(extra !== undefined ? { extra } : {}),
+          config: { signInStatusTimeoutMs: 20 },
+        });
+        const turnErrorLog = logLines
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .find((l) => l.msg === 'chat_turn_error');
+        return { ...r, vault, turnErrorLog };
+      }
+
+      it.each([
+        ['missing', undefined],
+        [
+          'throwing',
+          statusBatch(async () => {
+            throw new Error('marker table blip');
+          }).services,
+        ],
+        ['hanging', statusBatch(() => new Promise<never>(() => {})).services],
+      ])('an external turn whose status-batch is %s still fails, naming no connector to the room', async (label, extra) => {
+        const r = await outsiderTurn(label, 'external', [GMAIL_REF], { gmail: GMAIL }, extra);
+        // Kept, so the open failed on it, with the code an owner's turn gets.
+        expect(r.vault.state.openRefs).toContain(GMAIL_REF);
+        expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+        expect(r.turnErrors).toEqual([
+          { reqId: `r-outsider-keep-${label}`, reason: 'connector-needs-reconnect' },
+        ]);
+        expect(JSON.stringify([r.outcome, r.turnErrors])).not.toMatch(/gmail/i);
+        // The host log keeps the name, and says the room didn't get it.
+        expect(r.turnErrorLog).toMatchObject({
+          reason: 'connector-needs-reconnect',
+          detail: 'Connector: Gmail',
+          detailWithheld: true,
+        });
+      });
+
+      it("a turn whose source this build doesn't know fails closed the same way, with several connectors", async () => {
+        const r = await outsiderTurn('bogus', 'bogus' as never, [GMAIL_REF, LINEAR_REF], { gmail: GMAIL, linear: LINEAR }, undefined);
+        expect(r.outcome).toEqual({ kind: 'terminated', reason: 'connectors-need-reconnect' });
+        expect(r.turnErrors).toEqual([{ reqId: 'r-outsider-keep-bogus', reason: 'connectors-need-reconnect' }]);
+        expect(JSON.stringify([r.outcome, r.turnErrors])).not.toMatch(/gmail|linear/i);
+        expect(r.turnErrorLog).toMatchObject({ detail: 'Connectors: Gmail, Linear', detailWithheld: true });
       });
     });
 
@@ -7052,6 +7478,108 @@ describe('withBrokerDefaults', () => {
       ...BROKER,
     ]);
   });
+
+  // TASK-1091 — an external turn (a person with no access to the agent is
+  // present) gets the read-only broker tools but neither proposal tool.
+  it('an external turn of a non-wildcard agent gets no skill_propose or connector_propose', () => {
+    expect(withBrokerDefaults(['file.read'], [], { external: true })).toEqual([
+      'file.read',
+      'search_catalog',
+      'request_capability',
+    ]);
+    expect(withBrokerDefaults([], ['mcp-1'], { external: true })).toEqual([
+      'search_catalog',
+      'request_capability',
+    ]);
+  });
+
+  it('an external turn of a wildcard agent is unchanged (proposalToolScope hides them there)', () => {
+    expect(withBrokerDefaults([], [], { external: true })).toEqual([]);
+  });
+
+  it('an external turn keeps a proposal tool the agent lists itself (it is hidden, never removed)', () => {
+    expect(withBrokerDefaults(['skill_propose'], [], { external: true })).toEqual([
+      'skill_propose',
+      'search_catalog',
+      'request_capability',
+    ]);
+  });
+
+  it('external: false, and a routine run, keep both proposal tools', () => {
+    expect(withBrokerDefaults(['file.read'], [], { external: false })).toEqual(['file.read', ...BROKER]);
+    expect(withBrokerDefaults(['file.read'], [], { routineRun: true, external: false })).toEqual([
+      'file.read',
+      ...BROKER,
+      'routine_report',
+      'routine_read_update',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposalToolScope — TASK-1091. An external turn is not offered skill_propose
+// or connector_propose. withBrokerDefaults leaves them out of a listed scope;
+// this hides them where they would otherwise still show — a wildcard agent's
+// whole catalog, or an agent that lists one itself — through disallowedTools,
+// never by shrinking allowedTools. Any other turn is untouched. The
+// integration tests next to 'TASK-908' prove it is wired into session-open.
+// ---------------------------------------------------------------------------
+describe('proposalToolScope (TASK-1091)', () => {
+  const WILDCARD = { allowedTools: [] as string[], mcpConfigIds: [] as string[] };
+  const BASH_ONLY = { allowedTools: ['Bash'], mcpConfigIds: [] as string[] };
+  const EXTERNAL = { external: true };
+  const NOT_EXTERNAL = { external: false };
+
+  it('an external turn of a wildcard agent hides both', () => {
+    expect(proposalToolScope(WILDCARD, [], undefined, EXTERNAL)).toEqual([
+      'skill_propose',
+      'connector_propose',
+    ]);
+  });
+
+  it('any other turn of a wildcard agent hides nothing', () => {
+    expect(proposalToolScope(WILDCARD, [], undefined, NOT_EXTERNAL)).toBeUndefined();
+  });
+
+  it('an external turn of a listed agent that names neither needs nothing hidden', () => {
+    expect(
+      proposalToolScope(BASH_ONLY, ['Bash', 'search_catalog', 'request_capability'], undefined, EXTERNAL),
+    ).toBeUndefined();
+  });
+
+  it('an external turn hides a proposal tool the agent lists itself', () => {
+    const agent = { allowedTools: ['Bash', 'connector_propose'], mcpConfigIds: [] as string[] };
+    expect(proposalToolScope(agent, ['Bash', 'connector_propose'], undefined, EXTERNAL)).toEqual([
+      'connector_propose',
+    ]);
+  });
+
+  it('keeps an existing disallowedTools first and adds no duplicate', () => {
+    expect(proposalToolScope(WILDCARD, [], ['Bash', 'skill_propose'], EXTERNAL)).toEqual([
+      'Bash',
+      'skill_propose',
+      'connector_propose',
+    ]);
+  });
+
+  it('returns disallowedTools unchanged when it hides nothing', () => {
+    expect(proposalToolScope(WILDCARD, [], ['x'], NOT_EXTERNAL)).toEqual(['x']);
+    expect(proposalToolScope(BASH_ONLY, ['Bash'], ['x'], EXTERNAL)).toEqual(['x']);
+  });
+
+  it('treats an mcpConfigIds-only agent as non-wildcard', () => {
+    const agent = { allowedTools: [] as string[], mcpConfigIds: ['mcp-1'] };
+    expect(proposalToolScope(agent, ['search_catalog'], undefined, EXTERNAL)).toBeUndefined();
+  });
+
+  it('does not mutate its inputs', () => {
+    const allowed = ['Bash', 'skill_propose'];
+    const denied = ['x'];
+    proposalToolScope(BASH_ONLY, allowed, denied, EXTERNAL);
+    proposalToolScope(WILDCARD, [], denied, EXTERNAL);
+    expect(allowed).toEqual(['Bash', 'skill_propose']);
+    expect(denied).toEqual(['x']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -7239,8 +7767,13 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     sessionId: string;
     conversationId?: string;
     reqId: string;
-    /** Host-set origin; `'routine'` marks a run with no person present. */
-    source?: 'routine' | 'user';
+    /**
+     * Host-set origin; `'routine'` marks a run with no person present,
+     * `'external'` (TASK-1091) one whose person present has no access.
+     */
+    source?: AgentContextSource;
+    /** Host-set: who sees the replies (TASK-1091). Absent means private. */
+    audience?: AgentContextAudience;
     /** When given, every log line the turn writes is pushed here. */
     lines?: string[];
   }) {
@@ -7251,6 +7784,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       userId: 'test-user',
       ...(o.conversationId !== undefined ? { conversationId: o.conversationId } : {}),
       ...(o.source !== undefined ? { source: o.source } : {}),
+      ...(o.audience !== undefined ? { audience: o.audience } : {}),
       reqId: o.reqId,
       logger: createLogger({
         reqId: o.reqId,
@@ -7277,9 +7811,15 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
   }
 
   // What the orchestrator handed `sandbox:open-session` — the part these tests
-  // read (the frozen config and the conversation the runner resumes).
+  // read (the frozen config, the conversation the runner resumes, and the
+  // turn mode the session record is written with — TASK-1091).
   interface KeepaliveOpenInput {
-    owner: { agentConfig: AgentConfig; conversationId?: string };
+    owner: {
+      agentConfig: AgentConfig;
+      conversationId?: string;
+      source?: AgentContextSource;
+      audience?: AgentContextAudience;
+    };
   }
 
   // A keepalive harness: one conversation, one warm sandbox handle, a
@@ -8184,11 +8724,16 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       );
     }
 
-    async function routineTurn(h: { bus: HookBus }, reqId: string) {
+    /** A turn nobody with access attends: a routine fire, or (TASK-1091) an external turn. */
+    async function unattendedTurn(
+      h: { bus: HookBus },
+      reqId: string,
+      source: 'routine' | 'external' = 'routine',
+    ) {
       fireTurnEnd(h.bus, 's-1', reqId);
       await h.bus.call<unknown, AgentOutcome>(
         'agent:invoke',
-        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId, source: 'routine' }),
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId, source }),
         { message: { role: 'user', content: 'Scheduled check-in.' } },
       );
     }
@@ -8259,7 +8804,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       const store = identityStore({ bootstrap: 'pending' });
       const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
 
-      await routineTurn(h, 'req-r1');
+      await unattendedTurn(h, 'req-r1');
 
       const cfg = counters.openInputs[0]!.owner.agentConfig;
       // The people's Instructions still reach an unattended run; bootstrap
@@ -8286,11 +8831,60 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         'agents:identity:get': store.service,
       });
 
-      await routineTurn(h, 'req-r1');
+      await unattendedTurn(h, 'req-r1');
 
       const cfg = counters.openInputs[0]!.owner.agentConfig;
       expect(cfg.allowedTools).toEqual([]); // still the wildcard
       expect(cfg.disallowedTools).toEqual(['update_identity', 'complete_bootstrap']);
+    });
+
+    // TASK-1091 — an external turn (a person with no access to the agent is
+    // present) is unattended: no first-run setup, and no identity tools, so
+    // nobody without access can rewrite the agent. @ax/agents' executors
+    // refuse such a call anyway; this is the catalog side.
+    it('an external turn never bootstraps and is offered neither identity tool', async () => {
+      const store = identityStore({ bootstrap: 'pending' });
+      const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
+
+      await unattendedTurn(h, 'req-e1', 'external');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      // The people's Instructions still reach it; bootstrap mode never does.
+      expect(cfg.identity).toEqual({
+        identity: 'I am Pip',
+        soul: 'Kind',
+        instructions: 'Be brief',
+        bootstrapMode: false,
+      });
+      expect(cfg.allowedTools).not.toContain('update_identity');
+      expect(cfg.allowedTools).not.toContain('complete_bootstrap');
+      // Unattended is not a routine run: no routine-only tools either.
+      expect(cfg.allowedTools).not.toContain('routine_report');
+      expect(store.reads.map((r) => r.source)).toEqual(['external']);
+    });
+
+    it('an external turn of a wildcard agent hides both identity tools from its whole catalog', async () => {
+      const store = identityStore({ bootstrap: 'pending' });
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({
+          agent: { ...TEST_AGENT, allowedTools: [], mcpConfigIds: [] },
+        }),
+        'agents:identity:get': store.service,
+      });
+
+      await unattendedTurn(h, 'req-e1', 'external');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.allowedTools).toEqual([]); // still the wildcard
+      // The identity tools, then the two proposal tools an external turn is
+      // not offered either (proposalToolScope). A routine's wildcard catalog,
+      // above, hides only the identity tools.
+      expect(cfg.disallowedTools).toEqual([
+        'update_identity',
+        'complete_bootstrap',
+        'skill_propose',
+        'connector_propose',
+      ]);
     });
 
     it('a wildcard agent keeps its catalog and hides complete_bootstrap after the tool-policy denies', async () => {
@@ -8472,6 +9066,337 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         withBrokerDefaults(TEST_AGENT.allowedTools, TEST_AGENT.mcpConfigIds),
       );
       expect('disallowedTools' in cfg).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1091 — a warm session serves only turns of its own mode. The runner's
+  // rebuilt ctx reads `source` and `audience` from the session record, which
+  // is written once at spawn, so a turn queued into a session spawned for
+  // another mode runs in THAT mode: an external turn would get the owner's
+  // identity tools and attended approvals, and a private turn's words would be
+  // captured as shared. An idle session of another mode is retired
+  // (`turn-mode-changed`) and the turn spawns fresh; a busy one refuses the
+  // turn (`conversation:busy`), and nothing is queued, spawned or terminated.
+  // -------------------------------------------------------------------------
+  describe('TASK-1091: a warm session serves only turns of its own mode', () => {
+    type Mode = { source?: AgentContextSource; audience?: AgentContextAudience };
+
+    /** One turn on conv-1 in `mode`, ended by its runner turn-end. */
+    async function modeTurn(
+      h: { bus: HookBus },
+      sessionId: string,
+      reqId: string,
+      mode: Mode,
+      lines?: string[],
+    ) {
+      fireTurnEnd(h.bus, sessionId, reqId);
+      return h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({
+          sessionId,
+          conversationId: 'conv-1',
+          reqId,
+          ...mode,
+          ...(lines !== undefined ? { lines } : {}),
+        }),
+        { message: { role: 'user', content: reqId } },
+      );
+    }
+
+    /** The `stale_session_respawn` reason the turn logged, if any. */
+    function respawnReason(lines: string[]): unknown {
+      return lines
+        .map((l) => JSON.parse(l) as { msg: string; reason?: unknown })
+        .find((r) => r.msg === 'stale_session_respawn')?.reason;
+    }
+
+    /** A `session:queue-work` stub recording each queued user message. */
+    function queueRecorder() {
+      const queued: Array<{ sessionId: string; reqId: string }> = [];
+      const service: ServiceHandler = async (_c, input: unknown) => {
+        const i = input as { sessionId: string; entry: { type: string; reqId?: string } };
+        if (i.entry.type === 'user-message') {
+          queued.push({ sessionId: i.sessionId, reqId: i.entry.reqId ?? '?' });
+        }
+        return { cursor: 0 };
+      };
+      return { queued, service };
+    }
+
+    it('an external turn on a conversation whose warm session was spawned for its owner retires it and spawns fresh', async () => {
+      const { h, counters } = await makeKeepaliveHarness();
+      const lines: string[] = [];
+
+      await modeTurn(h, 's-1', 'req-1', {});
+      const outcome = await modeTurn(h, 's-2', 'req-2', { source: 'external' }, lines);
+
+      expect(outcome.kind).toBe('complete');
+      expect(counters.opens).toBe(2);
+      expect(counters.terminates).toContain('s-1');
+      expect('source' in counters.openInputs[0]!.owner).toBe(false);
+      // The fresh session's record is written for the external turn.
+      expect(counters.openInputs[1]!.owner.source).toBe('external');
+      expect(respawnReason(lines)).toBe('turn-mode-changed');
+    });
+
+    it('a shared turn on a conversation whose warm session is private retires it', async () => {
+      const { h, counters } = await makeKeepaliveHarness();
+      const lines: string[] = [];
+
+      await modeTurn(h, 's-1', 'req-1', {});
+      const outcome = await modeTurn(h, 's-2', 'req-2', { audience: 'shared' }, lines);
+
+      expect(outcome.kind).toBe('complete');
+      expect(counters.opens).toBe(2);
+      expect(counters.terminates).toContain('s-1');
+      expect(counters.openInputs[1]!.owner.audience).toBe('shared');
+      expect('source' in counters.openInputs[1]!.owner).toBe(false);
+      expect(respawnReason(lines)).toBe('turn-mode-changed');
+    });
+
+    it('a second external turn routes into the external warm session', async () => {
+      const q = queueRecorder();
+      const { h, counters } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
+      const lines: string[] = [];
+      const external: Mode = { source: 'external', audience: 'shared' };
+
+      await modeTurn(h, 's-1', 'req-1', external);
+      const outcome = await modeTurn(h, 's-2', 'req-2', external, lines);
+
+      expect(outcome.kind).toBe('complete');
+      expect(counters.opens).toBe(1);
+      expect(counters.terminates).toEqual([]);
+      expect(q.queued).toEqual([
+        { sessionId: 's-1', reqId: 'req-1' },
+        { sessionId: 's-1', reqId: 'req-2' },
+      ]);
+      expect(respawnReason(lines)).toBeUndefined();
+    });
+
+    // A failed open must not leave the session's mode behind: the entry is
+    // written before the open, and only the invoke `finally` drops it when the
+    // open throws. If it stayed, the failed session would still carry its mode
+    // (and leak). Observable through routing: if the failed session id is
+    // still the conversation's alive active session (the terminate the failure
+    // path fires did not take), a default turn must be judged against a
+    // record-less session, not against the mode the failed open recorded.
+    it('a failed sandbox:open-session leaves no mode behind: a later default turn is not judged against the failed session', async () => {
+      const q = queueRecorder();
+      let failOpen = true;
+      let rowPointsAtFailed = false;
+      const { h } = await makeKeepaliveHarness({
+        'session:queue-work': q.service,
+        'session:is-alive': async (_c, input: unknown) => ({
+          alive: rowPointsAtFailed && (input as { sessionId: string }).sessionId === 's-1',
+        }),
+        'conversations:get': async (_c, input: unknown) => {
+          const i = input as { conversationId: string; userId: string };
+          return {
+            conversation: {
+              conversationId: i.conversationId,
+              userId: i.userId,
+              agentId: 'test-agent',
+              activeSessionId: rowPointsAtFailed ? 's-1' : null,
+              activeReqId: null,
+            },
+          };
+        },
+        'sandbox:open-session': async () => {
+          if (failOpen) throw new Error('boom');
+          return {
+            runnerEndpoint: 'unix:///tmp/m.sock',
+            handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+          };
+        },
+      });
+      const lines: string[] = [];
+
+      const failed = await modeTurn(h, 's-1', 'req-1', { source: 'external', audience: 'shared' });
+      expect(failed.kind).toBe('terminated');
+      expect(failed.kind === 'terminated' ? failed.reason : '').toBe('sandbox-open-failed');
+
+      failOpen = false;
+      rowPointsAtFailed = true;
+      const outcome = await modeTurn(h, 's-2', 'req-2', {}, lines);
+
+      // The failed session never warmed, so the turn retires it for what it
+      // is, a lost host session. With the mode left behind it would instead
+      // read 'turn-mode-changed'.
+      expect(outcome.kind).toBe('complete');
+      expect(respawnReason(lines)).toBe('host-session-lost');
+    });
+
+    // The retire path must keep the old session's mode until it is gone. It
+    // rebinds the conversation first, then awaits the proxy close and
+    // session:terminate; a default turn that read the conversation row before
+    // the rebind still sees the old session, alive, and used to find its mode
+    // already forgotten ("unknown" serves default turns).
+    it('a retiring session keeps its mode while it is torn down: a stale-row default turn is not routed into it', async () => {
+      const q = queueRecorder();
+      let releaseTerminate!: () => void;
+      const terminateGate = new Promise<void>((res) => { releaseTerminate = res; });
+      let terminateStarted!: () => void;
+      const terminateStartedP = new Promise<void>((res) => { terminateStarted = res; });
+      let staleRow = false;
+      const { h, counters } = await makeKeepaliveHarness({
+        'session:queue-work': q.service,
+        'conversations:get': async (_c, input: unknown) => {
+          const i = input as { conversationId: string; userId: string };
+          return {
+            conversation: {
+              conversationId: i.conversationId,
+              userId: i.userId,
+              agentId: 'test-agent',
+              activeSessionId: staleRow ? 's-1' : 's-2',
+              activeReqId: null,
+            },
+          };
+        },
+        'session:terminate': async (_c, input: unknown) => {
+          counters.terminates.push((input as { sessionId: string }).sessionId);
+          terminateStarted();
+          await terminateGate;
+          return {};
+        },
+      });
+
+      // s-1 is an external session, warm and idle.
+      staleRow = false;
+      await modeTurn(h, 's-1', 'req-1', { source: 'external', audience: 'shared' });
+
+      // The owner's turn retires s-1; its terminate is held open.
+      staleRow = true;
+      const retiring = h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-2', conversationId: 'conv-1', reqId: 'req-2' }),
+        { message: { role: 'user', content: 'req-2' } },
+      );
+      await terminateStartedP;
+      q.queued.length = 0;
+
+      // A default turn that read the row before the rebind still sees s-1.
+      const concurrent = h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-3', conversationId: 'conv-1', reqId: 'req-3' }),
+        { message: { role: 'user', content: 'req-3' } },
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      expect(q.queued.filter((e) => e.sessionId === 's-1')).toEqual([]);
+
+      // Release: the retirement finishes and the stale-row turn spawns its own.
+      releaseTerminate();
+      await new Promise((r) => setTimeout(r, 50));
+      fireTurnEnd(h.bus, 's-2', 'req-2');
+      fireTurnEnd(h.bus, 's-3', 'req-3');
+      await Promise.all([retiring, concurrent]);
+    });
+
+    // The refused turn never ran, so it fires neither chat:end nor
+    // chat:turn-error: the caller gets the outcome and that is all. Every
+    // subscriber to those two keys off the conversation, the agent or the
+    // session, not the request: @ax/memory's incremental scheduler runs its
+    // FINAL pass on a chat:end for the conversation (and drops the idle timer
+    // of the turn still running), @ax/agent-activity clears the agent's
+    // "right now" on either, @ax/conversations saves an error card into the
+    // thread on chat:turn-error, and the orchestrator's own chat:end
+    // subscriber resolves a waiter by session when the reqId has none. So
+    // `ends` must stay empty: any chat:end would trigger one of those.
+    function busyHarnessObservers(bus: HookBus) {
+      const turnErrors: unknown[] = [];
+      const ends: Array<{ reqId: string; payload: unknown }> = [];
+      bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
+        turnErrors.push(p);
+        return undefined;
+      });
+      bus.subscribe('chat:end', 'obs', async (c, p: unknown) => {
+        ends.push({ reqId: c.reqId, payload: p });
+        return undefined;
+      });
+      return { turnErrors, ends };
+    }
+
+    it.each([
+      ['an external turn while the owner’s turn runs', {}, { source: 'external' }],
+      ['the owner’s turn while an external, shared turn runs', { source: 'external', audience: 'shared' }, {}],
+      ['a shared turn while a private turn runs', {}, { audience: 'shared' }],
+    ] as ReadonlyArray<readonly [string, Mode, Mode]>)(
+      'a different-mode turn while the session is busy ends terminated conversation:busy, queues nothing and reports nothing: %s',
+      async (_label, first, second) => {
+        const q = queueRecorder();
+        const { h, counters } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
+        const obs = busyHarnessObservers(h.bus);
+
+        // The first turn spawns s-1 and stays in flight (no turn-end yet).
+        let firstSettled = false;
+        const firstTurn = h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1', ...first }),
+          { message: { role: 'user', content: 'first' } },
+        );
+        void firstTurn.then(() => {
+          firstSettled = true;
+        });
+        await vi.waitFor(() => expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]));
+
+        const outcome = await h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-2', conversationId: 'conv-1', reqId: 'req-2', ...second }),
+          { message: { role: 'user', content: 'second' } },
+        );
+
+        // The caller gets the outcome directly; nothing else hears of it.
+        expect(outcome).toEqual({ kind: 'terminated', reason: 'conversation:busy' });
+        expect(obs.turnErrors).toEqual([]);
+        expect(obs.ends).toEqual([]);
+        // Nothing queued, spawned or terminated.
+        expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]);
+        expect(counters.opens).toBe(1);
+        expect(counters.terminates).toEqual([]);
+
+        // The running turn is untouched: still in flight, then completes.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(firstSettled).toBe(false);
+        fireTurnEnd(h.bus, 's-1', 'req-1');
+        expect((await firstTurn).kind).toBe('complete');
+        expect(obs.turnErrors).toEqual([]);
+        expect(obs.ends).toEqual([]);
+      },
+    );
+
+    // The strongest form: the refused turn's ctx carries the LIVE session's
+    // id. A chat:end for it reached the orchestrator's own subscriber, found
+    // no waiter for req-2, fell back to the session's oldest waiter and ended
+    // the running turn with the refusal's outcome.
+    it('a busy refusal whose ctx carries the live session id still leaves the running turn alone', async () => {
+      const q = queueRecorder();
+      const { h } = await makeKeepaliveHarness({ 'session:queue-work': q.service });
+      const obs = busyHarnessObservers(h.bus);
+
+      const firstTurn = h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+        { message: { role: 'user', content: 'first' } },
+      );
+      let firstSettled = false;
+      void firstTurn.then(() => {
+        firstSettled = true;
+      });
+      await vi.waitFor(() => expect(q.queued).toEqual([{ sessionId: 's-1', reqId: 'req-1' }]));
+
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2', source: 'external' }),
+        { message: { role: 'user', content: 'second' } },
+      );
+      expect(outcome).toEqual({ kind: 'terminated', reason: 'conversation:busy' });
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(firstSettled).toBe(false);
+      fireTurnEnd(h.bus, 's-1', 'req-1');
+      expect(await firstTurn).toMatchObject({ kind: 'complete' });
+      expect(obs.turnErrors).toEqual([]);
+      expect(obs.ends).toEqual([]);
     });
   });
 });

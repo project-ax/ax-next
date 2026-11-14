@@ -1,4 +1,5 @@
 import {
+  audienceOf,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -7,6 +8,8 @@ import {
 } from '@ax/core';
 
 import { resolveMemoryAccess } from './access.js';
+import { isPersonSubject, recordFacts } from './audience.js';
+import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -83,6 +86,12 @@ const KEYS_MESSAGE = 'unexpected field(s) — only about, relation, value, when 
 const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
+const PERSON_IN_SHARED_MESSAGE = "Notes about a person aren't saved in a shared conversation.";
+// The same words whoever refused and why: that goes to the log, not the
+// model. True for every refusal (TASK-1094 PR B review F4): a switch turned
+// off, a conversation memory never learns from, a check that failed or timed
+// out, a task check-in. So it names no cause, and never says memory is off.
+const NOT_SAVED_HERE_MESSAGE = "Notes aren't being saved in this conversation right now.";
 
 const FAILURE_MESSAGES: Record<MemoryNoteErrorCode, string> = {
   // Engine-side rejection: deliberately generic — the engine's own error text
@@ -95,12 +104,12 @@ const FAILURE_MESSAGES: Record<MemoryNoteErrorCode, string> = {
 
 // A refusal authored by this tool. Its message is one of the fixed strings
 // above and never carries caller-supplied keys or values, so it is safe to
-// return to the model.
+// return to the model. `forbidden` for a note the turn may not save at all.
 class NoteInputError extends PluginError {
   readonly toolMessage: string;
-  constructor(toolMessage: string) {
+  constructor(toolMessage: string, code: 'invalid-payload' | 'forbidden' = 'invalid-payload') {
     super({
-      code: 'invalid-payload',
+      code,
       plugin: PLUGIN_NAME,
       hookName: MEMORY_NOTE_TOOL_HOOK,
       message: `memory_note refused its input: ${toolMessage}`,
@@ -210,6 +219,32 @@ export async function registerMemoryNote(
           }
         }
         const when = input.when === undefined ? undefined : normalizeWhen(input.when);
+        // TASK-1091: in a turn people without access to the agent can read,
+        // the person a note calls `user` could be anyone in the room. Refused
+        // on the subject AS WRITTEN, before the speaker rewrite and before
+        // any bus call, so nothing is read or written. `recordFacts` would
+        // refuse it anyway; refusing here says why, in words the model can
+        // pass on.
+        if (audienceOf(ctx) === 'shared' && isPersonSubject(input.about as string)) {
+          throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
+        }
+        // TASK-1094: ask `memory:pre-capture` first, as every extraction
+        // pass does (`captureRefusal`). A plugin that keeps a conversation
+        // out of memory keeps the agent's own notes in it out too; otherwise
+        // the agent could write down what memory was told not to learn.
+        // After the input and person checks, so those refusals still say
+        // what's wrong; before access and the engine, so a refused note
+        // reads nothing and writes nothing.
+        const refusal = await captureRefusal(bus, ctx);
+        if (refusal !== undefined) {
+          ctx.logger.info(CAPTURE_REFUSED_EVENT, {
+            agentId: ctx.agentId,
+            refusedBy: refusal.source,
+            reason: refusal.reason,
+            tool: MEMORY_NOTE_DESCRIPTOR.name,
+          });
+          throw new NoteInputError(NOT_SAVED_HERE_MESSAGE, 'forbidden');
+        }
 
         const access = await resolveMemoryAccess(bus, ctx);
         const about = rewriteSpeaker(input.about as string, access.userId);
@@ -221,24 +256,28 @@ export async function registerMemoryNote(
           return { ok: true };
         }
         const slot = deriveSlot(input.relation as string);
-        const result = await bus.call<
-          { statements: Array<Record<string, unknown>> },
-          { records?: Array<{ id?: unknown }> } | null
-        >('memory:facts:record', ctx, {
-          statements: [
-            {
-              about,
-              relation: input.relation,
-              value: input.value,
-              when: when ?? new Date().toISOString(),
-              ...(slot !== null ? { slot } : {}),
-              provenance: 'agent',
-              ownerUserId: access.userId,
-              // Not a routine run's hidden conversation (TASK-616).
-              ...conversationField(ctx),
-            },
-          ],
-        });
+        // `recordFacts`, like every engine write: it stamps the turn's
+        // audience on the note (TASK-1091).
+        const result = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
+          bus,
+          ctx,
+          'memory:facts:record',
+          {
+            statements: [
+              {
+                about,
+                relation: input.relation,
+                value: input.value,
+                when: when ?? new Date().toISOString(),
+                ...(slot !== null ? { slot } : {}),
+                provenance: 'agent',
+                ownerUserId: access.userId,
+                // Not a routine run's hidden conversation (TASK-616).
+                ...conversationField(ctx),
+              },
+            ],
+          },
+        );
         const records = result === null || typeof result !== 'object' ? undefined : result.records;
         if (
           !Array.isArray(records) ||
@@ -262,8 +301,13 @@ export async function registerMemoryNote(
             : err instanceof PluginError && err.code === 'forbidden'
               ? 'forbidden'
               : 'memory-unavailable';
+        // A refusal this tool makes on purpose (a person in a shared turn, a
+        // conversation memory may not learn from) is a decision, not a
+        // failure: info, so a "remember off" channel isn't a stream of warns.
+        // Everything else, a resolver's own `forbidden` included, stays warn.
+        const deliberate = err instanceof NoteInputError && err.code === 'forbidden';
         try {
-          ctx.logger[isMissingCredential(err) ? 'error' : 'warn'](
+          ctx.logger[isMissingCredential(err) ? 'error' : deliberate ? 'info' : 'warn'](
             memoryFailureEvent(err, NOTE_FAILED_EVENT),
             { agentId: ctx.agentId, path: 'note', reason: error },
           );

@@ -13,6 +13,10 @@ import type {
   DeleteInput,
   FindOrCreateInput,
   FindOrCreateOutput,
+  GetInput,
+  GetMetadataInput,
+  GetMetadataOutput,
+  GetOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -216,6 +220,68 @@ describe('conversations:find-or-create (Phase A routines foundation)', () => {
     );
     expect(result.created).toBe(true);
     expect(result.conversation.hidden).toBe(true);
+  });
+
+  // TASK-1093: channel-slack opens a conversation per DM thread with origin
+  // 'slack'. Through the bus, so get-metadata's return schema is in the path.
+  it('find-or-create stores origin slack and both get and get-metadata return it', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+    const input: FindOrCreateInput = {
+      userId: 'u1',
+      agentId: 'agt_a',
+      externalKey: 'dm-thread:D1:1763035200.000100',
+      fallback: { origin: 'slack' },
+    };
+    const first = await h.bus.call<FindOrCreateInput, FindOrCreateOutput>(
+      'conversations:find-or-create',
+      ctx,
+      input,
+    );
+    expect(first.created).toBe(true);
+    expect(first.conversation.origin).toBe('slack');
+    const conversationId = first.conversation.conversationId;
+
+    const got = await h.bus.call<GetInput, GetOutput>('conversations:get', ctx, {
+      conversationId,
+      userId: 'u1',
+    });
+    expect(got.conversation.origin).toBe('slack');
+    const md = await h.bus.call<GetMetadataInput, GetMetadataOutput>(
+      'conversations:get-metadata',
+      ctx,
+      { conversationId, userId: 'u1' },
+    );
+    expect(md.origin).toBe('slack');
+
+    // The next message in the thread finds the same row, still 'slack'.
+    const again = await h.bus.call<FindOrCreateInput, FindOrCreateOutput>(
+      'conversations:find-or-create',
+      ctx,
+      { ...input, fallback: {} },
+    );
+    expect(again.created).toBe(false);
+    expect(again.conversation.conversationId).toBe(conversationId);
+    expect(again.conversation.origin).toBe('slack');
+  });
+
+  it('rejects an origin outside the known channels with invalid-payload', async () => {
+    const h = await makeHarness();
+    for (const origin of ['Slack', 'carrier-pigeon', '']) {
+      await expect(
+        h.bus.call<FindOrCreateInput, FindOrCreateOutput>(
+          'conversations:find-or-create',
+          h.ctx({ userId: 'u1' }),
+          {
+            userId: 'u1',
+            agentId: 'agt_a',
+            externalKey: `bad-origin:${origin}`,
+            fallback: { origin: origin as unknown as 'web' },
+          },
+        ),
+        origin,
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
   });
 
   it('rejects non-boolean fallback.hidden with invalid-payload', async () => {

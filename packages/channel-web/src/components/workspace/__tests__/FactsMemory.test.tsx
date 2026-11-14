@@ -93,6 +93,21 @@ describe('MemorySurface', () => {
     expect(screen.queryByText('Project')).toBeNull();
   });
 
+  it.each([false, true])('a shared memory shows the Shared badge beside its kind; a private one does not (compact=%s)', async (compact) => {
+    recallMock.mockResolvedValue({ statements: [
+      fact({ id: 'shared', value: 'Boston', kind: 'world', audience: 'shared' }),
+      fact({ id: 'private', value: 'Paris', kind: 'world' }),
+    ], degraded: [] });
+    render(<CompactSurfaceContext.Provider value={compact}>
+      <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
+    </CompactSurfaceContext.Provider>);
+    const badge = await screen.findByText('Shared');
+    expect(screen.getAllByText('Shared')).toHaveLength(1);
+    expect(badge).toHaveAttribute('title', 'Learned in a shared conversation. Anyone there could see it.');
+    // Beside its kind: the same container as the shared row's Fact badge.
+    expect(badge.parentElement).toContainElement(within(badge.parentElement!).getByText('Fact'));
+  });
+
   it.each([0, 1, 3])('shows the current-memory footer for %s memories', async (count) => {
     recallMock.mockResolvedValue({ statements: Array.from({ length: count }, (_, i) => fact({ id: `m${i}` })), degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);

@@ -3,7 +3,7 @@ import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
-import type { AgentContext } from '@ax/core';
+import type { AgentContext, AgentContextAudience, AgentContextSource } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -65,7 +65,9 @@ interface Harness {
 
 async function makeHarness(opts: {
   sessionId: string;
-  source: 'routine' | 'user' | undefined;
+  source: AgentContextSource | undefined;
+  /** TASK-1091 — host-stamped like `source`; omitted = a private session. */
+  audience?: AgentContextAudience;
   onChatEnd: (ctx: AgentContext, payload: unknown) => void;
 }): Promise<Harness> {
   const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
@@ -89,6 +91,7 @@ async function makeHarness(opts: {
       owner: {
         ...OWNER,
         ...(opts.source !== undefined ? { source: opts.source } : {}),
+        ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
       },
     },
   );
@@ -269,5 +272,70 @@ describe('@ax/ipc-server: AgentContext.source propagation through token resoluti
     expect(capturedCtx).not.toBeNull();
     // The forged routine source did NOT take — the host's known user origin wins.
     expect((capturedCtx as AgentContext | null)?.source).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1091 — `'external'` and `audience` ride the same host-only chain.
+  // A shared session's runner-side tool call (memory_recall) runs on this
+  // rebuilt ctx; if `audience` were lost here, it would recall private rows.
+  // -------------------------------------------------------------------------
+
+  /** POSTs a chat-end body and returns the ctx the chat:end subscriber saw. */
+  async function chatEndCtx(
+    opts: { sessionId: string; source: AgentContextSource | undefined; audience?: AgentContextAudience },
+    body: Record<string, unknown>,
+  ): Promise<AgentContext> {
+    let capturedCtx: AgentContext | null = null;
+    let resolveFire: (() => void) | null = null;
+    const fired = new Promise<void>((resolve) => {
+      resolveFire = resolve;
+    });
+    const h = await makeHarness({
+      ...opts,
+      onChatEnd: (ctx) => {
+        capturedCtx = ctx;
+        resolveFire?.();
+      },
+    });
+    harnesses.push(h);
+    const res = await postJson(h.socketPath, '/event.chat-end', h.token, JSON.stringify(body));
+    expect(res.status).toBe(202);
+    await fired;
+    expect(capturedCtx).not.toBeNull();
+    return capturedCtx as unknown as AgentContext;
+  }
+
+  it('stamps source "external" and audience "shared" onto ctx for the happy-path runner-completed chat:end', async () => {
+    const ctx = await chatEndCtx(
+      { sessionId: 's-src-external', source: 'external', audience: 'shared' },
+      HAPPY_PATH_CHAT_END,
+    );
+    expect(ctx.source).toBe('external');
+    expect(ctx.audience).toBe('shared');
+    expect(ctx.sessionId).toBe('s-src-external');
+  });
+
+  it('leaves ctx.audience absent for a session created without one', async () => {
+    const ctx = await chatEndCtx({ sessionId: 's-aud-absent', source: undefined }, HAPPY_PATH_CHAT_END);
+    // Absent, not `undefined`: a private turn behaves exactly as before.
+    expect('audience' in ctx).toBe(false);
+    expect('source' in ctx).toBe(false);
+  });
+
+  it('SECURITY: a runner cannot forge source or audience via the chat-end frame', async () => {
+    // The host stamped this session external + shared. A compromised runner
+    // claims the owner's private mode in the frame body, trying to get its
+    // turn treated as attended and its memory read as private.
+    const ctx = await chatEndCtx(
+      { sessionId: 's-aud-forge', source: 'external', audience: 'shared' },
+      {
+        ...HAPPY_PATH_CHAT_END,
+        source: 'user',
+        audience: 'private',
+        owner: { source: 'user', audience: 'private' },
+      },
+    );
+    expect(ctx.source).toBe('external');
+    expect(ctx.audience).toBe('shared');
   });
 });

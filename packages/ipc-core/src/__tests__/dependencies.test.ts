@@ -60,6 +60,30 @@ describe('DISPATCHER_DEPENDENCIES', () => {
     expect(DISPATCHER_DEPENDENCIES.dynamicCallPatterns).toContain('tool:execute:');
   });
 
+  it('no ipc-core handler calls an auth: hook directly (channel-slack design §6)', () => {
+    // dependency-sync.test.ts fails any ipc-core handler whose bus.call /
+    // bus.hasService these lists don't cover, so no auth: hook among them
+    // means no handler calls one directly. auth:find-user-by-email would tell
+    // a sandboxed agent whether an address has an AX account, and
+    // auth:get-user returns the email and the admin flag.
+    //
+    // This is NOT every hook a runner request can reach: tool:execute:<name>
+    // dispatches into host tool plugins, and those can call any hook. Keeping
+    // auth:find-user-by-email out of them is the caller allowlist's job
+    // (scripts/__tests__/channel-slack-boundaries.test.js), not this test's.
+    const hooks = [
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+      ...DISPATCHER_DEPENDENCIES.optionalCalls.map((oc) => oc.hook),
+      ...DISPATCHER_DEPENDENCIES.dynamicCallPatterns,
+    ];
+    expect(hooks.filter((h) => h.startsWith('auth:'))).toEqual([]);
+    // A dynamic prefix shorter than the namespace ('auth', 'a') would reach
+    // every auth: hook too.
+    expect(
+      DISPATCHER_DEPENDENCIES.dynamicCallPatterns.filter((p) => 'auth:'.startsWith(p)),
+    ).toEqual([]);
+  });
+
   it('does NOT list any dynamic-pattern hook in requiredCalls or optionalCalls', () => {
     // tool:execute:<name> can't be enumerated at manifest time; it must live
     // in dynamicCallPatterns only, never in the named-hook lists (verifyCalls

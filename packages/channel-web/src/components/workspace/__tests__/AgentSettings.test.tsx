@@ -31,6 +31,11 @@ vi.mock('@/lib/workspace-api', async () => {
   };
 });
 
+vi.mock('@/lib/agent-slack', async (original) => ({
+  ...(await original<typeof import('@/lib/agent-slack')>()),
+  fetchAgentSlack: vi.fn(async () => ({ state: 'personal-agent', botName: 'canopy', answersDms: false })),
+}));
+
 const quill: WorkspaceAgent = {
   id: 'a-quill',
   name: 'Quill',
@@ -90,6 +95,7 @@ describe('AgentSettings — desktop', () => {
       'Instructions',
       'Model',
       'Connectors',
+      'Slack',
       'Memory',
       'Skills',
       'Housekeeping',
@@ -99,6 +105,12 @@ describe('AgentSettings — desktop', () => {
       'aria-current',
       'page',
     );
+  });
+
+  it("the Slack section doesn't promise channels: a personal agent has none", () => {
+    render(<Harness initial="slack" />);
+    expect(screen.queryByText(/The Slack channels Quill answers in/)).toBeNull();
+    expect(screen.getByText('How Quill works in Slack.')).toBeTruthy();
   });
 
   it('names the section in the breadcrumb', () => {

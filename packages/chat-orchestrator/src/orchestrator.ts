@@ -1,5 +1,8 @@
 import {
+  audienceOf,
   faultLogFields,
+  isAttendedTurn,
+  isOutsiderTurn,
   toWellFormedValue,
   PluginError,
   PROVIDER_ENDPOINTS,
@@ -11,6 +14,8 @@ import {
   SYSTEM_PROMPT_LANDED_HOOK,
   SystemPromptAugmentOutputSchema,
   type AgentContext,
+  type AgentContextAudience,
+  type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
   type FireResult,
@@ -1009,9 +1014,18 @@ interface OpenSessionInput {
      * stores a routine turn's rows, but with no conversation, so a scheduled
      * run never counts toward the skill-reflection recurrence gate (TASK-616).
      * SECURITY: never sourced from a runner-supplied frame — only from
-     * ctx.source on the host.
+     * ctx.source on the host. TASK-1091 added `'external'` (a person with no
+     * access to the agent is present).
      */
-    source?: 'routine' | 'user';
+    source?: AgentContextSource;
+    /**
+     * TASK-1091 — who sees the session's replies, from `ctx.audience`,
+     * normalized by `audienceOf` (an unknown value forwards as `'shared'`).
+     * Rides the same host-only path as `source` into the session record, so
+     * the runner's tool calls (memory_recall) see it on their rebuilt ctx.
+     * Absent for a turn whose ctx has none (a private turn).
+     */
+    audience?: AgentContextAudience;
   };
   /**
    * Per-session proxy blob from `proxy:open-session`. REQUIRED (TASK-838):
@@ -1136,6 +1150,24 @@ interface Deferred<T> {
   resolve(value: T): void;
   reject(err: unknown): void;
   readonly settled: boolean;
+}
+
+/**
+ * TASK-1091 — the `reason` an outsider's turn may show. When the runner
+ * reports a failure itself, `reason` is the runner's own text
+ * (`${err.name}: ${err.message}`, up to 4096 chars): untrusted, and able to
+ * name the owner's setup. Every host code has the shape below; anything else
+ * becomes `runner-error`. The raw reason stays in the host log and on
+ * chat:end (the audit record).
+ *
+ * Copied from @ax/routines' `HOST_REASON_RE` (packages/routines/src/fire.ts,
+ * `terminatedRunText`), which explains why one such token can't spell a
+ * sentence, URL, path or dotted host. Change both together; no cross-plugin
+ * import.
+ */
+const HOST_REASON_RE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
+function outsiderReason(reason: string): string {
+  return HOST_REASON_RE.test(reason) ? reason : 'runner-error';
 }
 
 function newDeferred<T>(): Deferred<T> {
@@ -1454,12 +1486,24 @@ const ALWAYS_ON_BROKER_TOOLS = [
   'connector_propose',
 ] as const;
 
+// TASK-1091 — the two broker tools that act for the agent's people: a clean
+// authored skill goes live with no human, and a connector request lands in the
+// admins' queue in the owner's name. An EXTERNAL turn (a person with no access
+// to the agent is present) is offered neither: withBrokerDefaults leaves them
+// out of a listed scope and proposalToolScope hides them from the rest. The
+// host refuses both from such a turn anyway (the `skill.propose` IPC handler
+// and the `connector_propose` executor); this is catalog hygiene. A routine
+// keeps both: the skill-reflection routine's whole job is proposing skills.
+const PROPOSAL_TOOLS: readonly string[] = ['skill_propose', 'connector_propose'];
+
 // TASK-908/983: a ROUTINE run of a non-wildcard agent also sees
 // `routine_report` and `routine_read_update`.
 // "Routine run" means `ctx.source === 'routine'` on `agent:invoke`. Only
 // @ax/routines' fire.ts sets that there, host-side. A chat request has no way
 // to set it. (@ax/decisions' replay also says 'routine', but it calls
-// `tool:execute:<name>` directly and never reaches agent:invoke.)
+// `tool:execute:<name>` directly and never reaches agent:invoke.) An external
+// turn (TASK-1091) is unattended too, but it is not a routine run: these
+// tools stay routine-only.
 //
 // - A task check-in's brief tells the agent to finish with one routine_report
 //   call, so the tool has to be in the catalog the check-in sees.
@@ -1509,14 +1553,20 @@ const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
  * (TASK-46 — surfacing org-defaults as skill-list rows — was closed).
  *
  * `opts.routineRun` (TASK-908) is true only for a routine run: the call site
- * passes `ctx.source === 'routine'`. It also unions in ROUTINE_RUN_TOOLS,
- * after the broker tools, under the same wildcard rule. Anything but `true`
- * adds nothing.
+ * passes `ctx.source === 'routine'` (never "unattended": an external turn is
+ * not a routine run). It also unions in ROUTINE_RUN_TOOLS, after the broker
+ * tools, under the same wildcard rule. Anything but `true` adds nothing.
+ *
+ * `opts.external` (TASK-1091) is true only for an outsider's turn: the call
+ * site passes `isOutsiderTurn(ctx)` (external, or a source this build doesn't
+ * know). It leaves PROPOSAL_TOOLS out of the union. A proposal tool the agent
+ * lists itself stays listed (removing it could empty the list into the
+ * wildcard); proposalToolScope hides it.
  */
 export function withBrokerDefaults(
   allowedTools: readonly string[],
   mcpConfigIds: readonly string[],
-  opts: { routineRun?: boolean } = {},
+  opts: { routineRun?: boolean; external?: boolean } = {},
 ): string[] {
   // Wildcard sentinel — leave it alone (see above). Mirrors the empty-empty
   // check in `@ax/mcp-client` `filterByAgentScope`.
@@ -1525,10 +1575,12 @@ export function withBrokerDefaults(
   }
   const out = [...allowedTools];
   const present = new Set(allowedTools);
-  const defaults: readonly string[] =
-    opts.routineRun === true
-      ? [...ALWAYS_ON_BROKER_TOOLS, ...ROUTINE_RUN_TOOLS]
+  const broker: readonly string[] =
+    opts.external === true
+      ? ALWAYS_ON_BROKER_TOOLS.filter((tool) => !PROPOSAL_TOOLS.includes(tool))
       : ALWAYS_ON_BROKER_TOOLS;
+  const defaults: readonly string[] =
+    opts.routineRun === true ? [...broker, ...ROUTINE_RUN_TOOLS] : broker;
   for (const tool of defaults) {
     if (!present.has(tool)) {
       out.push(tool);
@@ -1549,9 +1601,10 @@ const COMPLETE_BOOTSTRAP_TOOL = 'complete_bootstrap';
  * Which identity tools a session is offered, computed at session-open
  * (TASK-989) and applied only when `agents:identity:get` exists.
  *
- * - `update_identity` is offered iff a person is present (`attended`): an
- *   unattended run (`ctx.source === 'routine'` — routines and task check-ins)
- *   never rewrites the agent's identity.
+ * - `update_identity` is offered iff a person with access is present
+ *   (`attended`, `isAttendedTurn(ctx)`): an unattended run — a routine, a task
+ *   check-in, or an external turn (TASK-1091) — never rewrites the agent's
+ *   identity.
  * - `complete_bootstrap` is offered iff `attended && bootstrapMode`: there is
  *   nothing to finish outside a first-run chat.
  *
@@ -1612,6 +1665,39 @@ export function identityToolScope(
 }
 
 /**
+ * The `disallowedTools` an EXTERNAL turn's session needs so it is offered
+ * neither proposal tool (TASK-1091; see PROPOSAL_TOOLS), computed at
+ * session-open after identityToolScope.
+ *
+ * withBrokerDefaults already left both out of a listed scope. They are hidden
+ * here where they would otherwise still show — a wildcard agent (it sees the
+ * whole catalog), or one whose `allowedTools` names one itself — the
+ * identityToolScope rule: never by shrinking `allowedTools`. Only
+ * `opts.external` hides anything; the call site passes
+ * `isOutsiderTurn(ctx)`, so a routine keeps both.
+ *
+ * Existing entries stay first with no duplicates, and the input comes back
+ * unchanged (possibly `undefined`) when nothing is hidden, so a frozen
+ * snapshot that needed nothing is byte-identical to before.
+ */
+export function proposalToolScope(
+  agent: { allowedTools: readonly string[]; mcpConfigIds: readonly string[] },
+  allowedTools: readonly string[],
+  disallowedTools: readonly string[] | undefined,
+  opts: { external: boolean },
+): string[] | undefined {
+  // Mirrors the empty-empty check in withBrokerDefaults / `filterByAgentScope`.
+  const wildcard = agent.allowedTools.length === 0 && agent.mcpConfigIds.length === 0;
+  const listed = new Set(allowedTools);
+  const denied = new Set(disallowedTools ?? []);
+  const hidden = opts.external
+    ? PROPOSAL_TOOLS.filter((tool) => (wildcard || listed.has(tool)) && !denied.has(tool))
+    : [];
+  if (hidden.length > 0) return [...(disallowedTools ?? []), ...hidden];
+  return disallowedTools === undefined ? undefined : [...disallowedTools];
+}
+
+/**
  * I10 — does this session need per-turn credential rotation?
  *
  * A session is armed for rotation iff ANY credential in its FINAL merged set
@@ -1632,6 +1718,22 @@ export function sessionNeedsCredentialRotation(
   creds: Record<string, { kind: string }>,
 ): boolean {
   return Object.values(creds).some((c) => c.kind !== 'api-key');
+}
+
+/**
+ * TASK-1091 — a turn's mode: who is present (`source`) and who sees the
+ * replies (`audience`), defaults filled in. A session is spawned for exactly
+ * one mode, because the session record carries both and every runner call's
+ * ctx is rebuilt from it.
+ */
+interface SpawnMode {
+  source: AgentContextSource;
+  audience: AgentContextAudience;
+}
+
+/** Absent `source` is `'user'`; `audienceOf` fails closed (unknown → `'shared'`). */
+function spawnModeOf(ctx: AgentContext): SpawnMode {
+  return { source: ctx.source ?? 'user', audience: audienceOf(ctx) };
 }
 
 export function createOrchestrator(
@@ -1828,11 +1930,33 @@ export function createOrchestrator(
     // couldn't write /opt/kafka …"). Already bounded + sanitized upstream
     // (formatServiceDiagnosis); we forward it verbatim and the renderer treats
     // it as untrusted text. Omitted for ordinary errors so the wire stays lean.
-    ctx.logger.info('chat_turn_error', { reqId, reason, ...(detail !== undefined ? { detail } : {}) });
-    await fireChatEvent('chat:turn-error', ctx, {
+    //
+    // TASK-1091 — every `detail` is written for the agent's owner: which of
+    // their connectors needs signing in again (TASK-783/828), which of their
+    // dev services failed and where (TASK-160). On an outsider's turn
+    // (`isOutsiderTurn`: someone without access to the agent is present) the
+    // frame carries the `reason` code only, because it leaves the host:
+    // @ax/conversations saves it into the thread as-is, and a channel relays
+    // it to whoever is there. None of it is theirs to act on. The log line
+    // keeps the detail, for whoever runs the host.
+    //
+    // The `reason` too: a runner-reported failure (onChatEnd) carries the
+    // runner's own text as its reason, so an outsider's frame gets a host code
+    // only (`outsiderReason`). The log keeps the raw reason.
+    const outsider = isOutsiderTurn(ctx);
+    const shown = outsider ? undefined : detail;
+    const shownReason = outsider ? outsiderReason(reason) : reason;
+    ctx.logger.info('chat_turn_error', {
       reqId,
       reason,
+      ...(shownReason !== reason ? { shownReason } : {}),
       ...(detail !== undefined ? { detail } : {}),
+      ...(detail !== undefined && shown === undefined ? { detailWithheld: true } : {}),
+    });
+    await fireChatEvent('chat:turn-error', ctx, {
+      reqId,
+      reason: shownReason,
+      ...(shown !== undefined ? { detail: shown } : {}),
     });
   }
 
@@ -1872,6 +1996,7 @@ export function createOrchestrator(
     // be consumed and would leak indefinitely.
     respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
+    spawnModeBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
     skippedConnectorsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
@@ -2131,6 +2256,34 @@ export function createOrchestrator(
   // bounded by the agent population.
   const augmentGenByAgent = new Map<string, number>();
   const augmentGenBySession = new Map<string, number>();
+
+  // TASK-1091 — the mode each session was spawned for. The IPC listeners
+  // rebuild every runner call's ctx with `source` and `audience` from the
+  // session record, written once at spawn, so a turn routed into a warm
+  // session runs in the SESSION's mode, not its own: an external turn queued
+  // into the owner's session would get the owner's identity tools and attended
+  // approvals, and a private turn queued into a shared session would have its
+  // words captured as shared. The routing decision therefore never lets a
+  // session serve a turn of another mode (`turnModeChanged`). Recorded when the
+  // open starts, not after it: the session is alive from `session:create`
+  // inside `sandbox:open-session`, and a retire has already bound the
+  // conversation to it, so a turn routed while it opens must see its mode.
+  // Dropped wherever `augmentGenBySession` is. Same single-replica posture.
+  const spawnModeBySession = new Map<string, SpawnMode>();
+
+  /**
+   * TASK-1091 — true when `sessionId` must not serve this turn: it was spawned
+   * for another mode. A session with no record (this process didn't open it:
+   * opened before a restart, or its record is already dropped) serves only a
+   * default turn (`'user'`, `'private'`), which keeps today's routing; any
+   * other turn fails closed.
+   */
+  function turnModeChanged(sessionId: string, ctx: AgentContext): boolean {
+    const turn = spawnModeOf(ctx);
+    const known = spawnModeBySession.get(sessionId);
+    if (known === undefined) return !(turn.source === 'user' && turn.audience === 'private');
+    return known.source !== turn.source || known.audience !== turn.audience;
+  }
 
   // TASK-806 — the third reason a warm session is retired at its next turn: it
   // spawned with a connector SKIPPED because this caller had never signed in to
@@ -2519,10 +2672,24 @@ export function createOrchestrator(
       // a message carrying one could never be sent. Done once, here, so every
       // writer and the runner see the same text. Same reference when clean.
       const message = toWellFormedValue(input.message);
-      return await runAgentInvokeTurn(
+      const outcome = await runAgentInvokeTurn(
         ctx,
         message === input.message ? input : { ...input, message },
       );
+      // TASK-1091 — a terminated outcome's raw `error` is the host's audit
+      // record (it stays on chat:end); only the `reason` code is meant to
+      // reach a client. An outsider's turn (`isOutsiderTurn`) is answered by a
+      // channel that tells the room from THIS value, and the error can name
+      // the owner's setup: a failed proxy open names each credential that
+      // failed by our env key (`connector:<id>:<slot>`), a fold collision its
+      // connectors, a sandbox failure the dev service and path. So that
+      // caller gets the kind and the code only. The `reason` itself may be a
+      // runner's own text when the runner reported the failure (onChatEnd), so
+      // it passes only as a host code (`outsiderReason`).
+      if (outcome.kind === 'terminated' && isOutsiderTurn(ctx)) {
+        return { kind: 'terminated', reason: outsiderReason(outcome.reason) };
+      }
+      return outcome;
     } finally {
       pendingMessageReqIds.delete(ctx.reqId);
       stopRequestedReqIds.delete(ctx.reqId);
@@ -2646,9 +2813,14 @@ export function createOrchestrator(
       // already sees the whole catalog. See withBrokerDefaults.
       // TASK-908: a routine run also gets routine_report. ctx.source is
       // host-set (only @ax/routines' fire.ts stamps 'routine'); see
-      // ROUTINE_RUN_TOOLS.
+      // ROUTINE_RUN_TOOLS. Routine-only feature: `=== 'routine'`, not
+      // `!isAttendedTurn` (an external turn gets nothing extra).
+      // TASK-1091: an outsider's turn (`isOutsiderTurn`: external, or a
+      // source this build doesn't know) gets neither proposal tool (see
+      // PROPOSAL_TOOLS); proposalToolScope, below, hides them from the rest.
       allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds, {
         routineRun: ctx.source === 'routine',
+        external: isOutsiderTurn(ctx),
       }),
       mcpConfigIds: agent.mcpConfigIds,
       model: agent.model,
@@ -2737,6 +2909,10 @@ export function createOrchestrator(
     //    source of truth: the conversation row's active_session_id IS
     //    "which sandbox is in flight").
     let routedSessionId: string | null = null;
+    // TASK-1091 — set when the live session runs a turn of another mode and is
+    // busy; the turn is refused right after this block (outside the lookup's
+    // catch, so a fault in the refusal can never fall through to a spawn).
+    let busyInOtherMode = false;
     // Gate on the peer hooks being actually registered. CLI canary and
     // mcp-client e2e drive the orchestrator without @ax/conversations
     // loaded; in those presets we skip routing entirely. See
@@ -2764,7 +2940,16 @@ export function createOrchestrator(
             SessionIsAliveInput,
             SessionIsAliveOutput
           >('session:is-alive', ctx, { sessionId: candidate });
-          if (aliveResult.alive) {
+          // TASK-1091 — a session serves only turns of the mode it was spawned
+          // for (see spawnModeBySession). Asked first: a BUSY session of
+          // another mode can be neither retired (that would cut the turn it
+          // is running) nor joined (this turn would run in that turn's mode),
+          // so this turn is refused below. An IDLE one is retired like the
+          // other reasons here, and the turn spawns fresh in its own mode.
+          const modeChanged = aliveResult.alive && turnModeChanged(candidate, ctx);
+          if (modeChanged && sessionBusy(candidate)) {
+            busyInOtherMode = true;
+          } else if (aliveResult.alive) {
             const skillsDirty = respawnSessions.has(candidate);
             const augmentStale = isAugmentStale(candidate, ctx.agentId);
             // A database row can outlive the host's runner handle and proxy
@@ -2780,6 +2965,8 @@ export function createOrchestrator(
             // retired for this: that would cut the running fire and pull its
             // credentials. The turn queues into it instead, and the routed
             // path below announces the session's spawn-time skips.
+            // Routine-only feature (`=== 'routine'`, not `!isAttendedTurn`): it
+            // serves routines' run warnings, which an external turn has none of.
             const routineRetire = ctx.source === 'routine' && !sessionBusy(candidate);
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
@@ -2794,6 +2981,7 @@ export function createOrchestrator(
               connectorDeletedSessions.has(candidate) ||
               connectorSelectionChanged(candidate, agent) ||
               (!(
+                modeChanged ||
                 routineRetire ||
                 skillsDirty ||
                 augmentStale ||
@@ -2803,6 +2991,7 @@ export function createOrchestrator(
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
             const connectorSignedIn =
               !(
+                modeChanged ||
                 routineRetire ||
                 skillsDirty ||
                 augmentStale ||
@@ -2816,6 +3005,7 @@ export function createOrchestrator(
             // proxy session anyway. A failure retires it (secure direction).
             if (
               !(
+                modeChanged ||
                 routineRetire ||
                 skillsDirty ||
                 augmentStale ||
@@ -2829,6 +3019,7 @@ export function createOrchestrator(
               rotationFailed = true;
             }
             if (
+              modeChanged ||
               routineRetire ||
               skillsDirty ||
               augmentStale ||
@@ -2866,21 +3057,27 @@ export function createOrchestrator(
               // Its proxy session is closed below (TASK-871: directly, not only
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
+              //
+              // TASK-1091: and when it is idle and was spawned for another turn
+              // mode (see modeChanged above). The fresh spawn writes this
+              // turn's source and audience onto its own session record.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: routineRetire
-                  ? 'routine-turn'
-                  : hostSessionMissing
-                    ? 'host-session-lost'
-                    : skillsDirty
-                      ? 'skills-proposed'
-                      : augmentStale
-                        ? 'system-prompt-augment-changed'
-                        : rotationFailed
-                          ? 'credential-rotation-failed'
-                          : connectorsChanged
-                            ? 'connectors-changed'
-                            : 'connector-signed-in',
+                reason: modeChanged
+                  ? 'turn-mode-changed'
+                  : routineRetire
+                    ? 'routine-turn'
+                    : hostSessionMissing
+                      ? 'host-session-lost'
+                      : skillsDirty
+                        ? 'skills-proposed'
+                        : augmentStale
+                          ? 'system-prompt-augment-changed'
+                          : rotationFailed
+                            ? 'credential-rotation-failed'
+                            : connectorsChanged
+                              ? 'connectors-changed'
+                              : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -2896,6 +3093,11 @@ export function createOrchestrator(
               );
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
+              // NOT spawnModeBySession: the old session stays alive across the
+              // awaits below, and a turn that read the conversation row before
+              // the rebind above can still route into it. Its mode must stay
+              // known (a record-less session serves default turns) until the
+              // terminate resolves.
               skippedConnectorRefsBySession.delete(candidate);
               skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
@@ -2916,7 +3118,13 @@ export function createOrchestrator(
               }
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
+                // Gone: drop its mode now (the session:terminate subscriber
+                // also does, but returns early for a session with no waiters).
+                spawnModeBySession.delete(candidate);
               } catch (err) {
+                // The runner may have survived, so keep the mode: a turn that
+                // still reaches it is judged against what it really is. Its
+                // handle.exited cleanup drops the entry when it does exit.
                 ctx.logger.warn('respawn_terminate_failed', {
                   sessionId: candidate,
                   err: err instanceof Error ? err.message : String(err),
@@ -2941,6 +3149,55 @@ export function createOrchestrator(
           err: err instanceof Error ? err : new Error(String(err)),
         });
       }
+    }
+
+    // TASK-1091 — this conversation's live session is busy with a turn of
+    // another mode (decided above). The turn ends here, before anything is
+    // queued, spawned or terminated, and it is the one terminated exit that
+    // fires NEITHER chat:turn-error NOR chat:end: it never ran, and those two
+    // would end the turn that IS running. Their subscribers key off the
+    // conversation, the agent or the session, not this request: @ax/memory's
+    // incremental scheduler would run its final pass for the conversation
+    // (dropping the running turn's idle timer), @ax/agent-activity would
+    // clear the agent's "right now", @ax/conversations would save an error
+    // card into the thread, @ax/usage-limits would bill the assumed cost of a
+    // turn that never ran, and our own chat:end subscriber, finding no waiter
+    // for this reqId, would end the session's oldest one (the running turn)
+    // when this ctx carries the live session's id.
+    //
+    // So the returned outcome is the ONLY signal, and only a caller that reads
+    // it may reach this. channel-web dispatches fire-and-forget and waits on
+    // chat:turn-error, but its turns are always the default mode, so it never
+    // meets a session of another mode.
+    //
+    // It is not free. By this line the refused turn has already cost three
+    // things, all reachable only by a channel that mixes modes in one
+    // conversation:
+    //  1. A turn of usage. chat:start ran, and @ax/usage-limits' admission
+    //     counted it in the user's hourly `turns` bucket, which the per-hour
+    //     turn limit reads. (Its assumed cost is never billed: no chat:end.)
+    //  2. An unanswered message. persistUserDisplayTurn (above) saved it to
+    //     the thread's display log, and nothing will answer it. A retry saves
+    //     it again.
+    //  3. The running turn's activity line. @ax/agent-activity's chat:start
+    //     replaced the agent's "right now" (start time, trigger, current
+    //     tool) with this turn's, and this reqId never gets a turn-end, so the
+    //     line reads Working until the session's chat:end, an idle window
+    //     after the running turn finishes.
+    // Deciding "busy" before chat:start would avoid all three, but it needs
+    // the conversation's live session, so the lookup (conversations:get +
+    // session:is-alive) would have to run ahead of the gates. A second,
+    // earlier lookup can be overtaken (a turn of another mode starts between
+    // it and this routing), so this refusal and its costs would stay for that
+    // race. Moving the one lookup there instead makes every routed turn act on
+    // an alive/busy answer that is older by chat:start, agents:resolve and the
+    // save. Neither is worth it before a mixed-mode channel exists.
+    //
+    // TASK-1094, the first caller that can reach this, must serialize its
+    // turns per conversation, and on conversation:busy tell the room the agent
+    // is busy and back off. Never a hot retry: each one pays all three again.
+    if (busyInOtherMode) {
+      return { kind: 'terminated', reason: 'conversation:busy' };
     }
 
     if (routedSessionId !== null) {
@@ -3014,6 +3271,7 @@ export function createOrchestrator(
       // registerWaiter, so this turn already counts as busy while the fire is
       // awaited (a third fire can't see the session idle and retire it), and
       // BEFORE queue-work, so a subscriber has seen it before the turn ends.
+      // Routine-only feature (`=== 'routine'`): only routines record skips.
       const spawnSkips = ctx.source === 'routine' ? skippedConnectorsBySession.get(sessionId) : undefined;
       if (spawnSkips !== undefined && spawnSkips.length > 0) {
         try {
@@ -3121,11 +3379,12 @@ export function createOrchestrator(
     // first-run state, read from @ax/agents and frozen into
     // `agentConfig.identity`; the runner composes the prompt from it. The host
     // decides bootstrap mode here, once: the first-run setup is pending AND a
-    // person is present. An unattended run (`ctx.source === 'routine'`, stamped
-    // host-side only — routines and task check-ins) never bootstraps, and still
-    // gets the Instructions. The identity tools the session is offered follow
-    // from the same two facts (identityToolScope, applied after the tool-policy
-    // denies below).
+    // person with access is present (`isAttendedTurn`). An unattended run —
+    // `ctx.source` `'routine'` (routines and task check-ins) or `'external'`
+    // (TASK-1091: the person present has no access to the agent), both stamped
+    // host-side only — never bootstraps, and still gets the Instructions. The
+    // identity tools the session is offered follow from the same two facts
+    // (identityToolScope, applied after the tool-policy denies below).
     //
     // A failed read — a throw, or a reply that isn't three texts and a known
     // first-run state — ENDS THE TURN, unlike an augment provider's failure: a
@@ -3135,7 +3394,7 @@ export function createOrchestrator(
     // landed veto below). Without the hook (a preset with no identity store)
     // there is no identity and no scope change: the runner composes normal
     // mode with the display-name line.
-    const attended = ctx.source !== 'routine';
+    const attended = isAttendedTurn(ctx);
     if (bus.hasService(AGENTS_IDENTITY_GET_HOOK)) {
       let read: AgentIdentityAtSpawn | null = null;
       try {
@@ -3295,6 +3554,21 @@ export function createOrchestrator(
       if (scoped.disallowedTools !== undefined) {
         agentConfig.disallowedTools = scoped.disallowedTools;
       }
+    }
+
+    // TASK-1091 — an outsider's turn (`isOutsiderTurn`) is offered neither
+    // proposal tool (see proposalToolScope). Last, so the tool-policy denies
+    // and the identity tools keep their places in `disallowedTools`. Not
+    // gated on the identity read: these tools exist whatever the identity
+    // store.
+    const proposalDenies = proposalToolScope(
+      agent,
+      agentConfig.allowedTools,
+      agentConfig.disallowedTools,
+      { external: isOutsiderTurn(ctx) },
+    );
+    if (proposalDenies !== undefined) {
+      agentConfig.disallowedTools = proposalDenies;
     }
 
     // 4.5 — proxy:open-session. Fresh-spawn path only: a routed
@@ -3755,17 +4029,19 @@ export function createOrchestrator(
     // (see partitionConnectorsBySignIn). A rejected refresh still has a row,
     // so it is kept and surfaces as connector-needs-reconnect below.
     //
-    // Slice 6 — EXCEPT on a routine turn (`ctx.source` is stamped host-side by
-    // routines' fire.ts): there nobody is watching to sign in again, and one
-    // expired connector would fail the whole run. So a routine also goes
-    // without a connector whose sign-in needs doing again (status-batch's
-    // marker; any fault keeps it, today's behaviour). An interactive chat
-    // keeps failing with connector-needs-reconnect: that error is what tells
-    // the person to sign in again. (@ax/decisions' replay also stamps
-    // source:'routine', but it calls `tool:execute:<name>` directly and never
-    // reaches agent:invoke, so it never gets here.)
+    // Slice 6 — EXCEPT on an unattended turn (`!isAttendedTurn(ctx)`: a
+    // routine, stamped host-side by routines' fire.ts, or — TASK-1091 — an
+    // external turn): there nobody present can sign in again, and one expired
+    // connector would fail the whole run. So such a turn also goes without a
+    // connector whose sign-in needs doing again (status-batch's marker; any
+    // fault keeps it, today's behaviour). On an external turn, failing would
+    // also show the owner's connector state to someone without access.
+    // An interactive chat keeps failing with connector-needs-reconnect: that
+    // error is what tells the person to sign in again. (@ax/decisions' replay
+    // also stamps source:'routine', but it calls `tool:execute:<name>` directly
+    // and never reaches agent:invoke, so it never gets here.)
     let connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
-    if (ctx.source === 'routine') {
+    if (!isAttendedTurn(ctx)) {
       connectorSignIn = await skipConnectorsNeedingReconnect(
         bus,
         ctx,
@@ -3799,8 +4075,14 @@ export function createOrchestrator(
       // Tell the agent, so it can say "sign in to Gmail first" instead of
       // acting as if the tool never existed. Normal mode only: the bootstrap
       // augment admits person-authored content alone (TASK-524), and this line
-      // carries connector names, which are not.
-      const line = skippedConnectorsPromptLine(connectorSignIn.skipped);
+      // carries connector names, which are not. TASK-1091: on an outsider's
+      // turn (`isOutsiderTurn`) the line names nothing and gives no steps:
+      // the owner's connectors and their sign-in state are not the outsider's
+      // to hear about. The chat:connectors-skipped event above still names
+      // them, for the owner's side.
+      const line = skippedConnectorsPromptLine(connectorSignIn.skipped, {
+        outsider: isOutsiderTurn(ctx),
+      });
       agentConfig.systemPromptAugment =
         agentConfig.systemPromptAugment.length > 0
           ? `${agentConfig.systemPromptAugment}\n\n${line}`
@@ -4074,6 +4356,11 @@ export function createOrchestrator(
       // `err` stays on the audit chat:end outcome (no credential/decryption
       // detail leaks). TASK-783: plus, for a connector failure, the connector's
       // label as the detail line — host-sanitized text, never the error's.
+      // TASK-1091: an outsider's turn reaches this too, when the slice-6 skip
+      // couldn't ask about sign-ins (status-batch missing, failing or slow,
+      // so the expired connector was kept). Its frame and its outcome carry
+      // the code only (fireTurnError, runAgentInvoke); the names stay in the
+      // host log.
       await fireTurnError(ctx, ctx.reqId, outcome.reason, failure.detail);
       await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
@@ -4091,6 +4378,11 @@ export function createOrchestrator(
     const sessionId = ctx.sessionId;
     const deferred = newDeferred<AgentOutcome>();
     registerWaiter(sessionId, ctx.reqId, deferred);
+    // TASK-1091 — the mode this session is opened for, recorded BEFORE the
+    // open (see spawnModeBySession): it is alive from inside the open, so a
+    // turn of another mode routed here meanwhile is refused, not queued in.
+    // The finally below drops it if the open fails.
+    spawnModeBySession.set(sessionId, spawnModeOf(ctx));
 
     // 6. Open the sandbox. sandbox:open-session internally calls
     //    session:create (minting the session + token AND writing the v2
@@ -4135,6 +4427,12 @@ export function createOrchestrator(
           // spread keeps the key ABSENT (not `undefined`) for user turns, matching
           // the exactOptionalPropertyTypes posture.
           ...(ctx.source !== undefined ? { source: ctx.source } : {}),
+          // TASK-1091 — forward the HOST-DERIVED audience the same way, so the
+          // IPC listeners stamp it onto every runner-rebuilt ctx and a shared
+          // session's memory reads stay shared. `audienceOf` fails closed: a
+          // value this build doesn't know forwards as 'shared'. Absent stays
+          // absent, so a private turn's session record is unchanged.
+          ...(ctx.audience !== undefined ? { audience: audienceOf(ctx) } : {}),
         },
         // Phase 6: credential-proxy is mandatory; proxyConfig is always set
         // by the time we reach this point (the !proxyOpenLoaded gate above
@@ -4157,12 +4455,14 @@ export function createOrchestrator(
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
-      // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
+      // Only not-signed-in skips carry refs: a needs-reconnect skip (unattended
       // turns, slice 6) has a row, so re-asking presence would answer yes and
-      // retire the session on every turn. Harmless: only a routine turn makes
-      // a needs-reconnect skip, and the next routine turn retires an idle
+      // retire the session on every turn. Harmless: only an unattended turn
+      // makes a needs-reconnect skip. The next routine turn retires an idle
       // session anyway (see routineRetire); a queued one into a busy session
-      // is told the spawn-time skips instead (skippedConnectorsBySession).
+      // is told the spawn-time skips instead (skippedConnectorsBySession). An
+      // external session (TASK-1091) goes on without the connector until it is
+      // retired for another reason or idles out: less reach, the safe side.
       const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
       if (skippedRefs.length > 0) {
         skippedConnectorRefsBySession.set(sessionId, skippedRefs);
@@ -4199,6 +4499,7 @@ export function createOrchestrator(
             // rotating credentials; we drop it only once the runner exits.
             sessionsNeedingRotation.delete(sessionId);
             augmentGenBySession.delete(sessionId);
+            spawnModeBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
             skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
@@ -4457,7 +4758,9 @@ export function createOrchestrator(
         sessionsNeedingRotation.delete(ctx.sessionId);
         // Same lifetime rule for the augment generation (TASK-612): a warm
         // session drops it in handle.exited; a one-shot session is done now.
+        // Likewise its spawn mode (TASK-1091), also on a failed open.
         augmentGenBySession.delete(ctx.sessionId);
+        spawnModeBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
         skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);

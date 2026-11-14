@@ -331,6 +331,20 @@ describe('@ax/memory — a malformed statements is an error, not an empty memory
     expect((caught as Error).message).toContain('malformed statement');
     expect((caught as Error).message).not.toContain(String(kind));
   });
+
+  // TASK-1091. On a private read too, where nothing else looks at the stamp:
+  // a value nobody can classify is a row nobody can say who saw.
+  it.each(['public', 'SHARED', '', null, 1])('rejects a malformed engine `audience` (%j)', async (audience) => {
+    const { bus } = await busWithEngine({
+      recall: { statements: [{ ...GOOD_ROW, audience }], degraded: [] },
+    });
+    await expect(
+      bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
+    ).rejects.toMatchObject({
+      code: 'invalid-return',
+      message: expect.stringContaining('audience is present but not a known audience'),
+    });
+  });
 });
 
 describe('@ax/memory — boot', () => {

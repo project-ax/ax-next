@@ -6,6 +6,8 @@ import type { Readable } from 'node:stream';
 import {
   PluginError,
   type AgentContext,
+  type AgentContextAudience,
+  type AgentContextSource,
   type HookBus,
 } from '@ax/core';
 // Shared `sandbox:open-session` contract — single source of truth for the
@@ -193,10 +195,14 @@ interface SessionCreateInput {
         | undefined;
     };
     conversationId?: string;
-    // TASK-181 — host-derived session origin ('routine' | 'user'), forwarded
-    // verbatim into session:create. Host-only: it arrives on the
-    // sandbox:open-session hook (orchestrator → here), never from the runner.
-    source?: 'routine' | 'user';
+    // TASK-181 — host-derived session origin ('routine' | 'user' | 'external'
+    // since TASK-1091), forwarded verbatim into session:create. Host-only: it
+    // arrives on the sandbox:open-session hook (orchestrator → here), never
+    // from the runner.
+    source?: AgentContextSource;
+    // TASK-1091 — host-derived audience ('private' | 'shared'), forwarded
+    // verbatim into session:create on the same host-only path as `source`.
+    audience?: AgentContextAudience;
   };
 }
 interface SessionCreateOutput {
@@ -488,6 +494,11 @@ export async function openSessionImpl(
         // persists it. Conditional-spread keeps the key absent for user turns.
         ...(input.owner.source !== undefined
           ? { source: input.owner.source }
+          : {}),
+        // TASK-1091 — forward the host-derived audience the same way; the key
+        // stays absent when the orchestrator stamped none (a private turn).
+        ...(input.owner.audience !== undefined
+          ? { audience: input.owner.audience }
           : {}),
       };
     }

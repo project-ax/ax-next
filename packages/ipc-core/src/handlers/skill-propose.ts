@@ -10,7 +10,7 @@ import { zodSummary,
   mapPluginError,
   validationError,
 } from '../errors.js';
-import { clampCodeUnits, isOwnerlessId, PluginError } from '@ax/core';
+import { clampCodeUnits, isOutsiderTurn, isOwnerlessId, PluginError } from '@ax/core';
 import type { ManifestCode } from '@ax/skills-parser';
 import type { ActionHandler } from './types.js';
 
@@ -114,6 +114,23 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
   // "this caller has no owner", so there is no per-transport set to keep.
   if (isOwnerlessId(ctx.userId) || isOwnerlessId(ctx.agentId)) {
     return validationError('skill.propose: session is not bound to a user+agent');
+  }
+
+  // TASK-1091: an external turn can't author a skill. Someone with no access
+  // to this agent is present, and an authored skill with a clean scan goes
+  // ACTIVE with no human (@ax/skills' propose gate). That would let an
+  // outsider permanently change the agent's instructions: the same kind of
+  // change @ax/agents refuses for identity. `source` is host-stamped by the
+  // IPC listener from the session record, never read off this payload.
+  // `isOutsiderTurn` also refuses a source this build doesn't know (fail
+  // closed). A routine keeps proposing, because the skill-reflection
+  // routine's whole job is to propose skills. The orchestrator also leaves
+  // skill_propose out of an external session's catalog; this is the gate.
+  // A fixed sentence the runner relays, so the model knows nothing was saved.
+  if (isOutsiderTurn(ctx)) {
+    return hookRejected(
+      "skill.propose: skills can't be saved from a conversation with people who don't have access to this agent. Nothing was saved.",
+    );
   }
 
   let out: SkillsProposeHookOutput;

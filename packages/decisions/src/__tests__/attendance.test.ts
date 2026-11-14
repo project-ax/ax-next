@@ -173,10 +173,57 @@ describe('attendanceFor', () => {
     const bus = new HookBus();
     withConversations(bus, {
       'conv-a': { origin: undefined },
-      'conv-b': { origin: 'slack' },
+      'conv-b': { origin: 'carrier-pigeon' },
     });
     expect(await attendanceFor(bus, ctx(), 'conv-a')).toBe('unattended');
     expect(await attendanceFor(bus, ctx(), 'conv-b')).toBe('unattended');
+  });
+
+  it('a slack conversation is unattended until approval buttons exist (TASK-1095)', async () => {
+    // TASK-1093. A Slack DM is the owner's own turn (`source: 'user'`), but
+    // Slack can't show an approval card yet: read as attended, a held call
+    // would park on a button nobody can see. Unattended, it waits in Today and
+    // the host replays it on approval. TASK-1095 adds the buttons and must
+    // flip this (and this test) on purpose.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-slack': { origin: 'slack' } });
+    expect(await attendanceFor(bus, ctx({ source: 'user' }), 'conv-slack')).toBe('unattended');
+    expect(await attendanceFor(bus, ctx(), 'conv-slack')).toBe('unattended');
+  });
+
+  it('an external turn is unattended even in a web conversation', async () => {
+    // TASK-1091. The person in an external turn has no access to the agent,
+    // so they can't approve anything: the hold waits in Today for the turn's
+    // user, and the host replays the call once they say yes. That is a fact
+    // about the TURN. One conversation can mix it with the owner's own turns,
+    // so no origin can express it.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-web': { origin: 'web' } });
+    // The channel alone would say someone is watching.
+    expect(await attendanceFor(bus, ctx(), 'conv-web')).toBe('attended');
+    expect(await attendanceFor(bus, ctx({ source: 'external' }), 'conv-web')).toBe('unattended');
+  });
+
+  it("a source this build doesn't know is unattended even in a web conversation (fails closed)", async () => {
+    // An unknown source may be an outsider, who can't approve anything. Read
+    // as attended, the host would never replay the approved call: it would
+    // wait for a warm agent that is already gone.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-web': { origin: 'web' } });
+    expect(await attendanceFor(bus, ctx({ source: 'bogus' as never }), 'conv-web')).toBe('unattended');
+  });
+
+  it("a routine turn in a web conversation stays attended: routine attendance is the channel's (AW-6)", async () => {
+    // Pins the deliberate `isOutsiderTurn(ctx)` (not `!isAttendedTurn(ctx)`): a
+    // scheduled fire into a thread somebody is watching is still watched.
+    const bus = new HookBus();
+    withConversations(bus, {
+      'conv-web': { origin: 'web' },
+      'conv-tick': { origin: 'routine' },
+    });
+    expect(await attendanceFor(bus, ctx({ source: 'routine' }), 'conv-web')).toBe('attended');
+    expect(await attendanceFor(bus, ctx({ source: 'routine' }), 'conv-tick')).toBe('unattended');
+    expect(await attendanceFor(bus, ctx({ source: 'user' }), 'conv-web')).toBe('attended');
   });
 });
 

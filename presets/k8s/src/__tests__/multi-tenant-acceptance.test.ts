@@ -226,6 +226,14 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Blob GC, report mode (TASK-777): same reason. Static wiring in
   // preset.test.ts, the real sweep in blob-gc-report-acceptance.test.ts.
   '@ax/blob-gc',
+  // TASK-1093: @ax/channel-slack is postgres-backed (database:get-instance)
+  // and hard-calls http:register-route + auth:require-user, all dropped above,
+  // so leaving it in would fail the kernel's verifyCalls. Not on a chat path.
+  // It boots for real over HTTP in the memory canary
+  // (presets/memory/src/__tests__/canary.test.ts) and against the shared
+  // database in prod-bootstrap.test.ts. Its DM path runs end to end against
+  // real agents, conversations and vault in channel-slack-composition.test.ts.
+  '@ax/channel-slack',
 ]);
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';

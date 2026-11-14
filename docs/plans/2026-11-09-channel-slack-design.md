@@ -22,11 +22,17 @@ the owner chose to put there.
    a coworker. They don't have to exist in AX.
 2. **A company email gets you in.** A Slack user may talk to an agent only if
    they are a full member of the workspace (not a guest, not a bot, not
-   deactivated) with a verified `@<approved domain>` email. That's the same
-   domain AX's Google sign-in allows. We fetch the email ourselves through
+   deactivated) with a verified email on an approved domain. The approved
+   domains come from AX's sign-in settings: the *Allowed email domains* lists
+   of the Google and GitHub sign-in providers. An email on any non-blank list
+   counts; a blank list adds nothing; with no list at all, any domain counts,
+   as at sign-in. It isn't exactly sign-in's rule (since TASK-1116 each
+   provider enforces only its own list), and differs both ways: a disabled
+   provider's list still counts, and a blank list never opens the others. We
+   fetch the email ourselves through
    `users.info`. Anything in the message text is ignored for identity.
 3. **A company email doesn't get you someone else's agent.** Being an employee
-   is the same bar as signing up for AX. AX still runs `agents:resolve` so one
+   is about the same bar as signing up for AX (§1.2 has the differences). AX still runs `agents:resolve` so one
    employee can't use another's agent, and Slack must not become a way around
    that.
 4. **Personal agents answer only their owner, only in a 1:1 DM.** We route by
@@ -65,11 +71,36 @@ a real person who answers for it, the way a routine runs as its owner
 who connected the channel**. A team has no user id, and memory refuses made-up
 owners (`packages/memory/src/owner.ts`). Connector calls that need approval wait
 for that person in Today. The bot says in the thread that it's waiting for its
-owner. No identity edits are allowed.
+owner. No identity edits, skill authoring or connector requests are allowed,
+and both proposal tools are hidden from external turns.
 
 The Slack sender's name and ID go into the message *content*, for example
-`[Slack · #support · Alice (U123)]: …`. That label is untrusted text the model
-reads. Nothing ever treats it as permission to do something.
+`[Slack · #support · Alice (U123)]: …`. In a 1:1 DM (TASK-1093) it reads
+`[Slack · DM · Alice (U123)]: <text>`: the sender's Slack display name (else
+their real name), with brackets and parentheses removed so a name can't close
+the label early. `<text>` is the message as its sender typed it: Slack's
+`&amp;`, `&lt;` and `&gt;` escaping is undone, and nothing else (a `<@U…>` or
+`<url|label>` reference stays as Slack wrote it). That label is untrusted text
+the model reads. Nothing ever treats it as permission to do something.
+
+**Mention-only.** In a channel the bot answers a message that mentions it, and
+nothing else: a follow-up in the same thread needs a new mention. A bare
+`@bot` with no other text runs no turn. A reply can't broadcast: `@channel`,
+`@here` or `@everyone` in the agent's text gets a zero-width space after the
+`@`, whatever comes before it (so an address on such a domain,
+`me@channel.com`, gets an invisible one too: a letter before the `@` can
+vanish at a message edge or in a decoder, so it exempts nothing), and so
+does the `&` of an HTML character reference that could decode into a
+mention's characters (`&#64;channel`, `&commat;here`, `&lt;!everyone&gt;`,
+`<&excl;channel>`: any numeric one, and the only HTML names that decode to
+`<`, `@`, `!` or `#`: `&lt;`, `&nvlt;`, `&commat;`, `&excl;`, `&num;`, plus
+`&lt` without its `;`) and a `<` before an `&`. Every other `&` is left
+alone: code (`let r = &s;`), prose entities (`&rarr;`, `&copy;`) and a
+link's query string (`&page=2`) can't decode into a mention, and a mark
+would break them. Both are held back across
+chunk and edit boundaries, and each stream append is judged on its own, so a
+split can't sneak one through. A user-group handle such as `@engineering` is
+left alone, and may notify that whole group (§6, known gaps).
 
 ## 2a. Memory: decided by who sees the reply
 
@@ -94,17 +125,43 @@ DMs. Everything else (the web app, routines) is `private`, as today.
 | | Private turn (DM, web) | Shared turn (channel) |
 |---|---|---|
 | **Recall** | Everything, as today | Only statements learned in `shared` turns, plus the agent's instructions and files |
-| **Capture** | As today, stamped `private` | Stamped `shared` |
+| **Capture** | As today, stamped `private` | Stamped `shared`; in a Slack channel, only what members say (below) |
 | **Facts about the speaker** | As today | **Not captured.** Only facts about the work: projects, decisions, processes, who owns what. |
 
 Knowledge flows one way: shared → private, never back. What the agent learned
 in #support can be recalled anywhere. What someone said privately is never
 recalled in a channel.
 
-- The owner's memory view labels shared statements ("learned in #support") so
-  they can be deleted.
+- The owner's memory view labels shared statements so they can be deleted. It
+  says "Shared" for now. Naming the channel ("learned in #support") is not done
+  by TASK-1094: memory never sees a channel name, and showing one needs memory
+  to expose where a statement came from. A later card.
+- A shared session gets no `/memory` file view. The export holds every fact the
+  agent has, so it would walk around the recall filter.
+- The speaker rule is a filter, not a prompt change. In a shared turn, any
+  statement whose subject is `user` or starts with `user:` is dropped.
+- Known gaps, accepted: the extractor may name the speaker from the sender
+  label; closing a slot is tenant-wide, so a private statement can close a
+  shared one; a Fix on a shared memory saves as private.
+- **What outsiders say is never remembered.** An external turn's conversation
+  (the connector's, key suffix `:external`) is refused by channel-slack's
+  capture veto whatever the switch says, and so is the agent's own
+  `memory_note` in it. The switch decides only for attended turns: what
+  people who can use the agent say. Why: integrity, not privacy. A team
+  agent recalls shared memory in every turn, members' private web chats
+  included, with full attended authority, so an outsider's words captured
+  as a shared statement would come back later as a fact in the most trusted
+  context: a lasting prompt-injection path from the least-trusted speaker.
+  Privacy is the audience rule's job, and it holds either way. Reversible:
+  it is one rule in channel-slack's `capture-veto.ts` (TASK-1094 PR B review
+  F1, a product call flagged for Vinay).
 - Each connected channel has a "Let the agent remember this channel" switch,
-  on by default.
+  on by default, for what members say. It works through `memory:pre-capture`,
+  so it also stops `memory_note`. It is read in the same statement that
+  records the thread, and once a thread has had a turn while the switch was
+  off, that thread stays unremembered: turning the switch back on doesn't
+  capture it, and disconnecting Slack keeps that. The switch stops learning,
+  not recall: the agent still recalls memory it learned elsewhere.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
@@ -154,30 +211,67 @@ and it **outlives both renewal and `auth.revoke`** (§7, configuration tokens),
 so AX can't retire it through the API. Hence:
 
 - It's admin-only to set, and nobody can ever read it back.
-- Admin settings shows whose token it is, since configuration tokens belong to
-  one person, and lets another admin replace it.
+- Admin settings shows who added the token (an AX admin; configuration tokens
+  belong to one person). Replacing it comes with the rename card (TASK-1096).
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
   can't do that last step itself.
 
 ### Scopes (smallest set)
 
-`app_mentions:read`, `chat:write`, `chat:write.customize` (replies show the
-agent's own name and avatar), `im:history` and `im:write` (DMs), `channels:history`
-(threads the bot is in), `users:read` and `users:read.email` (the identity check),
-and `commands` (connecting a channel). Reading files waits until we support
-them.
+Nine bot scopes, each for one job:
+
+- `app_mentions:read`: hear an @mention in a channel.
+- `chat:write`: reply in the thread.
+- `im:history`: read a DM sent to the bot.
+- `reactions:write`: put a 👀 on a message while the agent works on it.
+- `users:read` and `users:read.email`: the identity check (who is this, and is
+  that email an AX account).
+- `channels:read`: look up a channel's flags and list the public ones to pick
+  from (TASK-1094).
+- `channels:join`: the bot joins the public channel itself at connect, so
+  nobody has to invite it (TASK-1094).
+- `commands`: the `/ax` slash command (TASK-1094).
+
+Events stay `app_mention` and `message.im`; the App Home messages tab is on
+(without it nobody can DM the app); no interactivity until TASK-1095.
+
+Two scopes are deliberately **not** requested. `channels:history`: a channel
+is mention-only, so a follow-up in a thread needs an @mention again and the
+bot never reads anything it wasn't addressed in. `chat:write.customize`: a
+streamed reply can't carry a custom name or avatar; phase-2 bots carry their
+own. Reading files waits until we support them.
+
+TASK-1093 (DMs) shipped the first six scopes and no slash commands. TASK-1094
+adds the last three. An existing install has none of them, so it reconnects:
+Disconnect, then Connect, in Admin › Slack.
 
 ### Connecting a channel to a team agent
 
 Two ways in, one stored record:
 
 - **AX side:** agent settings → **Slack** → pick a channel.
-- **Slack side:** run `/ax connect <agent>` in the channel.
+- **Slack side:** run `/ax connect <agent name>` in the channel; `/ax
+  disconnect` undoes it.
 
-Either way, the person must pass `agents:resolve` for the agent with *manage*
-rights, meaning its owner or a team admin. One agent per channel. The binding
-belongs to `@ax/channel-slack`. Agents get no Slack-specific fields.
+Rules, the same on both sides:
+
+- **Who may:** a team admin of the agent's team
+  (`agents:can-set-shared-credential`, always asked with `isAdmin: false`).
+  Workspace admins don't count. A personal agent can't be connected. A person
+  who can't see the agent is told nothing about it.
+- **The channel:** public only. Private, archived and Slack Connect channels
+  (including a pending one) are refused. The bot joins the channel itself, after
+  those checks pass.
+- **Shape:** one agent per channel; one agent may serve several channels. The
+  binding belongs to `@ax/channel-slack`; agents get no Slack-specific fields.
+- **Reconnecting** a connected channel (by another team admin) takes over as
+  the run-as person and keeps the remember setting.
+- **Disconnecting:** an agent that no longer exists is cleared by anyone
+  admitted; a live one only by a team admin.
+- **Which install:** `/ax` acts on the install that signed the request.
+- **Admin › Slack › Disconnect** (and a reset) removes every channel
+  connection with the install, so channels are connected again after Slack is.
 
 ## 4. Dedicated bots (phase 2)
 
@@ -232,9 +326,12 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
 2. **Admit.** Run the checks in §1.2 and §1.6, and choose the agent and the
    attended or external mode from §2.
 3. **Conversation.** `conversations:find-or-create` with the key
-   `slack:<installId>:<channel>:<thread_ts>`. One Slack thread is one
-   conversation, owned by the agent's owner, and the owner can read it in the
-   web app.
+   `slack:<installId>:<channel>:<thread_ts>`. One Slack thread has
+   one conversation per AX identity: an attended sender gets their own, and
+   external turns share one owned by the person who connected the channel (key
+   suffix `:external`). Why: conversations have a single owner, an outsider's
+   text never enters a member's attended transcript, and `(source, audience)`
+   stays constant per conversation. Each owner can read theirs in the web app.
 4. **Invoke.** `agent:invoke` with the context from step 2.
 5. **Reply.** Subscribe to `chat:stream-chunk`, `chat:phase`, `chat:turn-end`,
    `chat:turn-error` and `chat:permission-request` filtered by `reqId`, the way
@@ -242,32 +339,68 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - Stream into the thread with `chat.startStream` / `appendStream` /
      `stopStream`. They work in channel threads (pass `recipient_user_id` and
      `recipient_team_id`) and need only `chat:write`. A stream lasts at most
-     10 minutes, the same as our default chat timeout, so a turn still running
-     at 10 minutes falls back to throttled `chat.update` (Tier 3, about
-     50 a minute).
-   - Convert Markdown to mrkdwn and split long replies.
-   - Collapse tool calls into one status line, matching the web's #1156.
-   - Artifacts and charts become a link to the web app.
+     10 minutes and holds at most 12,000 characters, so a long reply closes
+     the stream and starts a new one in the same thread (Slack's own advice).
+     If a stream call fails, the rest of the reply is posted with
+     `chat.postMessage`.
+   - Send the reply as Markdown (`markdown_text` chunks); Slack renders it. No
+     mrkdwn conversion.
+   - Collapse tool calls into one status line, matching the web's #1156 (one
+     `task_update` card that changes in place).
+   - While the agent works, the owner's message wears 👀 (`reactions.add`, from
+     the turn's start), taken off once the reply first shows: its stream has
+     started (text, its status card, or the failure line) or its first post
+     landed, and again at the turn's end in case nothing could be shown. The
+     reactions run on their own queue, add then remove, which the reply never
+     waits on; taking it off is one try. An add that timed out may still have
+     landed, so it is taken off too. If Slack refuses the 👀 (an install from
+     before `reactions:write`, say), the reply opens with the `Working` card
+     instead, unless its text is already showing.
+     Chosen on the kind walk (2026-11-13) over a `Working` card up front (it
+     stays on every reply, and Slack can't remove a task card from a stream) and
+     Slack's "is thinking…" line (`assistant.threads.setStatus`, which does work
+     in plain DMs).
+   - Known gap: running DM turns aren't awaited at shutdown, and Slack never
+     removes a reaction by itself, so a deploy or crash mid-turn leaves that
+     message's 👀 on for good.
+   - Artifacts and charts become a link to the agent's page in the web app (no
+     per-artifact or per-conversation page exists yet).
+   - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its
+     conversation (matched the way channel-web matches it), `chat:turn-error`,
+     a `terminated` invoke outcome, 60 seconds after a complete invoke outcome
+     with no turn-end, or a 15-minute hard cap. At the cap the turn itself is
+     also stopped (`agent:interrupt`, best-effort), not only its reply. Up to 3
+     turns per conversation run or wait in order; a fourth message gets a
+     "still working" reply.
 6. **Approvals.**
    - **Attended:** Block Kit buttons. The interactivity route checks the clicker
      is the turn's person, then calls `agent:apply-capability-grant`, the same
      hook `/api/chat/permission-decision` uses (`routes-chat.ts:825`).
-   - **External:** a "waiting for my owner" note, and the call waits in Today.
+   - **External:** a "waiting for my owner" note, and the call waits in the
+     connector's Today.
+   - **Attended and DM:** a link to approve it in Today, until TASK-1095's
+     buttons.
+   - Until TASK-1095, a Slack conversation (origin `'slack'`) is unattended for
+     decisions, so held calls wait in Today.
 
 ## 6. Hooks, and the boundary review
 
 **`ctx.source` gains `'external'`** (`packages/core/src/context.ts:226`). This is
-the most important change in the design. The 8 packages that test
-`source === 'routine'` have been treating "not a routine" as "the owner is
-here":
+the most important change in the design. Code that tests
+`source === 'routine'` has been treating "not a routine" as "the owner is
+here". The real surface is wider than a list of packages:
 
-- `chat-orchestrator`
-- `decisions` (`attendance.ts`, `pre-call.ts`, `plugin.ts`)
-- `memory` (`plugin.ts`, `conversation.ts`)
-- `conversations`
-- `agents/identity/tools`
+- the session, IPC and sandbox chain, whose enums rejected `'external'` and
+  whose schemas would have dropped `audience`
+- the orchestrator (attended turns, slice 6 connector skips, warm-session reuse)
+- the identity tools and `skill.propose`
+- decisions' attendance, and memory's conversation attribution
+- the routines gates, which already refuse non-routine turns
 
-Each one needs an explicit answer for `'external'`, plus a test.
+decisions and conversations only mention `source` in comments (decisions has
+used conversation origin since 2026-08-21). The full audit table lives in
+`docs/plans/2026-11-12-task-1091-ctx-external-audience-plan.md`. Each consumer
+needs an explicit answer for `'external'`, plus a test.
 
 - **Alternate implementation:** any channel where the person present isn't the
   agent's owner, such as email-in or a public web widget.
@@ -284,6 +417,11 @@ approvals; `audience` says who sees the reply and decides memory.
 - Memory stamps each statement with the audience it was captured in.
 - A `shared` turn recalls only `shared` statements and captures no facts about
   the speaker.
+- Memory reads go through one wrapper that adds the filter last. It throws if a
+  shared read returns a row not stamped shared, so an engine that ignores the
+  filter fails loudly.
+- Audience must be constant per conversation, because extraction batches turns
+  under the latest turn's context. TASK-1094 keys conversations so.
 - **Alternate implementation:** any channel with more than one reader, such as a
   mailing list or a shared web room.
 - **Leaky field names:** none. It describes the readers, not the transport.
@@ -291,17 +429,51 @@ approvals; `audience` says who sees the reply and decides memory.
   which leaks in exactly the case this field exists for. So memory's recall
   **must** branch on it, and a test pins that.
 
-**Finding a user by verified email** is a new service hook on the auth plugin
-(for example `auth:find-user-by-email`). Tier-3 attended turns and personal-agent
-DMs need it.
+**Finding a user by verified email** is a new service hook on the auth plugin,
+`auth:find-user-by-email`: `{ email } → { userId } | null` (TASK-1092).
+Attended channel turns (§2) and personal-agent DMs need it.
 
+- **Rules:** the match is ASCII case-insensitive and otherwise exact, and an
+  address with any non-ASCII character matches nobody (no Unicode lookalikes).
+  Only verified accounts count, and only on an approved domain (§1.2: on any
+  non-blank Google or GitHub list; no list at all means any domain).
+  A disabled provider's list still counts both ways: it keeps other domains
+  out and keeps its own approved. Deleting the provider removes its list from
+  this lookup, so an admin who deletes the only restricted provider widens who
+  Slack can map. Accounts that differ only in case match nobody.
+  `null` never says why.
 - **Alternate implementation:** an OIDC or SCIM directory.
 - **Leaky field names:** none.
 - **Risk:** it can be used to check whether someone has an AX account. Keep it
-  internal to the host, never an IPC action, and return only the id.
+  internal to the host, never an IPC action, and return only the id. An
+  ipc-core test pins that no ipc-core handler calls an `auth:` hook directly.
+  That isn't everything a runner can reach: `tool:execute:` dispatches into
+  host tool plugins, which can call any hook. So TASK-1093 adds a caller
+  allowlist, the repo-scan test `scripts/__tests__/channel-slack-boundaries.test.js`:
+  only auth-better and channel-slack may name this hook (plus three listed
+  preset tests), and only channel-slack may build a `slack:` vault ref. It's a
+  scan, not a runtime check: a name built at runtime gets past it. Callers
+  pass only an email they fetched from the identity provider themselves.
+**Approved email domains** are a second service hook on the auth plugin,
+`auth:is-approved-email`: `{ email } → { approved }`. Admitting a company member
+who has no AX account as external (§2) needs this answer, and channel-slack
+can't read the domains itself (don't copy the list into it).
 
-**No other new hooks.** `@ax/channel-slack` uses existing hooks, like
-channel-web and routines do. It registers routes and subscribes to chat events.
+- **Rules:** same domain rule as `auth:find-user-by-email` (§1.2). Only plain
+  ASCII addresses can pass. It reads no user rows and logs nothing.
+- **Caller allowlist:** the same repo scan, `channel-slack-boundaries.test.js`.
+- **Alternate implementation:** an OIDC or SCIM directory.
+- **Leaky field names:** none.
+- **Caller risk:** reading `approved` as "has an account". It says nothing of
+  the sort.
+
+**No other new hooks** (apart from `auth:is-approved-email` above).
+`@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
+registers routes and subscribes to chat events. Two existing surfaces widen:
+conversations' `origin` gains `'slack'` (a Slack thread is read-only in the web
+app), and `credentials:get` gains an optional `scope: 'global'` that reads only
+the workspace-wide row, so a user-scoped row can't shadow an install's signing
+secret.
 
 **Security:** the `security-checklist` walk is required. This opens a new path
 for untrusted input (anyone in a channel) into an agent that has its owner's
@@ -313,6 +485,32 @@ connectors. The protections are:
 - No Slack Connect channels.
 - The identity check reads Slack's API, never the message.
 - Secrets are readable only by this plugin.
+
+**Known gaps, accepted (TASK-1094):**
+
+- **The switch is read when a turn starts.** A thread stays out of memory
+  only once a turn STARTS while the switch is off. Turned off during a turn
+  and back on before that turn's memory pass, that turn can be captured.
+  Left off, every pass is refused while it stays off.
+- **No allowed-domains list means a wide circle.** With no non-blank allowed
+  domains on any sign-in provider, any domain counts (§1.2), so every full
+  member of the Slack workspace who has no AX account is approved: each one
+  gets external turns in every connected channel (tier C), as the person who
+  connected it, with that person's access and turn budget. An admin who
+  wants a tighter circle sets an allowed-domains list.
+- **Broadcasts we can't measure without real Slack** (checks for the TASK-1097
+  walk): whether Slack reads a stream's appends as one text (each is treated
+  as its own edge, and a broadcast word is marked whatever comes before its
+  `@`, so a letter, a flush, then `@channel` is caught); whether
+  `markdown_text` decodes HTML character references before it looks for
+  mentions, and which ones (`&#64;channel`, `&commat;here`,
+  `&lt;!everyone&gt;`, `<&excl;channel>` are marked anyway: defense in
+  depth); whether a bare `@channel` broadcasts at all.
+- **User-group handles aren't neutralized.** A reply that names `@engineering`
+  may notify that whole group: a bare `@name` is not "one person at most" when
+  the name is a group's. Only the three broadcast words are marked. The
+  TASK-1097 walk checks whether Slack's Markdown turns a typed handle into a
+  mention.
 
 ## 7. Spike results (TASK-1090, 2026-11-12)
 
@@ -330,7 +528,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 | 3 | Name rules | Accepted: ASCII letters, digits, spaces, `-`, `_`, `.`, and long names. Rejected by `apps.manifest.validate`: reserved words (`slackbot`, `here`, `channel`, `everyone` → `invalid_reserved_word`), non-ASCII (`Café` → `bad_username`), and other symbols (`!!` → `invalid_name_specials`). The handle drops hyphens: `ax-spike-a` became `axspikea`. Docs: at most 21 characters for the handle, 35 for the app name, 80 for the bot's display name. | Tested + docs |
 | 4 | App approval | An admin installing a manifest-created app saw only Slack's normal Allow screen: no request, no wait. Slack's approval API (`admin.apps.approve`) is Enterprise-only. **Not seen:** what a regular member gets; the docs say members can't install restricted apps. The design needs no member installs. | Tested (admin only) + docs |
 | 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got handle `axspikea2`. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
-| 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API, falling back to `chat.update` after 10 minutes (§5). | Docs |
+| 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API; past 10 minutes or 12,000 characters, a new stream in the same thread (§5). | Docs |
 | 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
 | — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair, and **the old refresh token and earlier access tokens keep working**. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). | Tested |
 | — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
@@ -340,7 +538,9 @@ and the configuration token revoked. "Tested" means we watched it happen;
 1. ~~**Memory on external turns.**~~ **Decided 2026-11-12 (Vinay):** decide by
    who sees the reply. See §2a.
 2. **Choosing a personal agent.** Recommendation: the default is the owner's
-   personal agent, and a slash command can switch to another.
+   personal agent, and a slash command can switch to another. Until then
+   (TASK-1093), a DM goes to the owner's OLDEST personal agent, so creating a
+   new one doesn't silently move their Slack thread.
 3. **Who counts as a Slack admin for phase 2 approvals?** Recommendation: the
    person who connected the workspace, plus admins added in AX settings,
    following Slack's `is_admin` if it turns out to be reliable.
@@ -356,17 +556,19 @@ and the configuration token revoked. "Tested" means we watched it happen;
 **Phase 1: shared app**
 
 - **0. Spike** on the §7 questions (TASK-1090). **Done 2026-11-12.**
-- **1. `ctx.source: 'external'` + `ctx.audience`** (TASK-1091): the audit of all
-  8 `source` consumers, plus memory's audience stamping, recall filter and
-  speaker rule (§2a, §6). Has a boundary review. Must merge before anything is
-  switched on.
+- **1. `ctx.source: 'external'` + `ctx.audience`** (TASK-1091): the audit of every
+  `source` consumer, plus memory's audience stamping, recall filter and
+  speaker rule (§2a, §6). Has a boundary review. Merges as one stack
+  with TASK-1094, the first card that produces `'external'` and `'shared'`.
+  Must land before anything is switched on.
 - **2. Find a user by verified email** (auth service hook). Has a boundary
   review.
 - **3. `@ax/channel-slack`: connect a workspace and DM a personal agent.** Covers:
   - admin Connect Slack, using the branding name as the default bot name
   - the events route and identity checks
   - personal-agent DMs with streamed replies
-  - presets, canary acceptance test, and Helm secrets
+  - presets and the canary acceptance test. No Helm secrets: they live in the
+    credentials store. Host egress on 443 is already open.
 
   Depends on 1 and 2.
 - **4. Channels:** connecting a channel to a team agent (AX side and slash

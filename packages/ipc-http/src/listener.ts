@@ -187,6 +187,10 @@ export async function createHttpListener(
     // record (set at session:create from the orchestrator's ctx.source), NEVER
     // from a runner-supplied frame — it's absent from @ax/ipc-protocol and
     // never read off the inbound payload. Null ⇒ field off (user turn).
+    //
+    // TASK-1091: `source` may now be 'external', and `audience` rides the same
+    // chain with the same SECURITY posture as @ax/ipc-server: from the session
+    // record, never from the request or frame body. Null ⇒ field off (private).
     const ctx = makeAgentContext({
       sessionId: auth.sessionId,
       agentId: auth.agentId ?? ownerlessIdFor(auth.sessionId),
@@ -198,6 +202,7 @@ export async function createHttpListener(
         ? { conversationId: auth.conversationId }
         : {}),
       ...(auth.source !== null ? { source: auth.source } : {}),
+      ...(auth.audience !== null ? { audience: auth.audience } : {}),
     });
     await dispatch(req, res, ctx, opts.bus);
   };

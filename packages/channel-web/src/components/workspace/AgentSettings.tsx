@@ -30,6 +30,7 @@ import {
   ChevronRight,
   Clock,
   Cpu,
+  MessageSquare,
   Plug,
   ScrollText,
   Sparkles,
@@ -62,6 +63,7 @@ import {
 } from '@/lib/workspace-route';
 import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
+import { AgentSlack } from './AgentSlack';
 import { ConnectorsTab } from './ConnectorsTab';
 
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
@@ -95,6 +97,13 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
     // Connectors supplies visible guidance alongside its Add action.
     description: () => null,
     summary: (name) => `Tools ${name} can work in`,
+  },
+  slack: {
+    label: 'Slack',
+    Icon: MessageSquare,
+    // Personal agents have no channels, so this can't promise any.
+    description: (name) => `How ${name} works in Slack.`,
+    summary: (name) => `How ${name} works in Slack`,
   },
   memory: {
     label: 'Memory',
@@ -295,6 +304,8 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
       return <>{instructions}</>;
     case 'connectors':
       return <ConnectorsSection agent={agent} busy={busy} />;
+    case 'slack':
+      return <AgentSlack key={agent.id} agentId={agent.id} agentName={agent.name} />;
     case 'memory':
       return memory !== null && memory !== undefined ? (
         <>{memory}</>

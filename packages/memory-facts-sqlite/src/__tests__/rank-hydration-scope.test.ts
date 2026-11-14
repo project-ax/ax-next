@@ -30,16 +30,21 @@ const BOB = 'user-bob';
 let dir: string;
 let driver: BetterSqliteDb;
 
-function insert(id: string, agentKey: string, ownerUserId: string | null): void {
+function insert(
+  id: string,
+  agentKey: string,
+  ownerUserId: string | null,
+  audience: string | null = null,
+): void {
   driver
     .prepare(
       `INSERT INTO ${TABLE}
          (id, agent_key, about, relation, value,
-          valid_start, valid_end, transaction_time, provenance, owner_user_id)
+          valid_start, valid_end, transaction_time, provenance, owner_user_id, audience)
        VALUES (?, ?, 'user', 'lives_in', ?,
-               '2026-01-01T00:00:00.000Z', ?, '2026-01-01T00:00:00.000Z', 'human', ?)`,
+               '2026-01-01T00:00:00.000Z', ?, '2026-01-01T00:00:00.000Z', 'human', ?, ?)`,
     )
-    .run(id, agentKey, `city-${id}`, INFINITY_SENTINEL, ownerUserId);
+    .run(id, agentKey, `city-${id}`, INFINITY_SENTINEL, ownerUserId, audience);
 }
 
 beforeEach(async () => {
@@ -69,7 +74,9 @@ describe('rowsInRankOrder — the owner predicate is in the SQL', () => {
   });
 
   it("drops another OWNER's id rather than hydrating it", () => {
-    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ['alice-1', 'bob-1'], ALICE);
+    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ['alice-1', 'bob-1'], {
+      ownerUserId: ALICE,
+    });
     expect(rows.map((r) => r.id)).toEqual(['alice-1']);
   });
 
@@ -77,7 +84,9 @@ describe('rowsInRankOrder — the owner predicate is in the SQL', () => {
     // Strict `=`, so SQL's three-valued logic makes `owner_user_id IS NULL`
     // simply not match. Fail-closed is the only direction a scope may be
     // wrong in (Invariant 5).
-    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ['alice-1', 'unowned-1'], ALICE);
+    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ['alice-1', 'unowned-1'], {
+      ownerUserId: ALICE,
+    });
     expect(rows.map((r) => r.id)).toEqual(['alice-1']);
   });
 
@@ -86,7 +95,7 @@ describe('rowsInRankOrder — the owner predicate is in the SQL', () => {
       driver,
       AGENT,
       ['alice-1', 'other-tenant-1'],
-      ALICE,
+      { ownerUserId: ALICE },
     );
     expect(rows.map((r) => r.id)).toEqual(['alice-1']);
   });
@@ -106,8 +115,61 @@ describe('rowsInRankOrder — the owner predicate is in the SQL', () => {
       insert(id, AGENT, i === 550 ? BOB : ALICE);
       ids.push(id);
     }
-    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ids, ALICE);
+    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ids, { ownerUserId: ALICE });
     expect(rows).toHaveLength(599);
     expect(rows.some((r) => r.id === 'bulk-550')).toBe(false);
+  });
+});
+
+// TASK-1091. The audience clause is a second scope on the same last step, and
+// for the same reason it is asserted here directly: every id a shared recall
+// hands this function already came out of an audience-filtered channel, so
+// dropping the clause from the hydration would redden nothing else.
+describe('rowsInRankOrder — the audience predicate is in the SQL', () => {
+  beforeEach(() => {
+    insert('shared-1', AGENT, ALICE, 'shared');
+    insert('private-1', AGENT, ALICE, 'private');
+    insert('other-tenant-shared-1', OTHER_AGENT, ALICE, 'shared');
+  });
+
+  it('drops a private row AND an unstamped one from a shared hydration', () => {
+    // `alice-1` was inserted with no audience at all — the shape of every row
+    // stored before the stamp existed. Strict `=` means NULL never matches.
+    const rows = rowsInRankOrder<{ id: string }>(
+      driver,
+      AGENT,
+      ['private-1', 'shared-1', 'alice-1'],
+      { audience: 'shared' },
+    );
+    expect(rows.map((r) => r.id)).toEqual(['shared-1']);
+  });
+
+  it('composes with the owner and tenant predicates — each one only narrows', () => {
+    insert('bob-shared-1', AGENT, BOB, 'shared');
+    const rows = rowsInRankOrder<{ id: string }>(
+      driver,
+      AGENT,
+      ['bob-shared-1', 'other-tenant-shared-1', 'shared-1', 'private-1'],
+      { ownerUserId: ALICE, audience: 'shared' },
+    );
+    expect(rows.map((r) => r.id)).toEqual(['shared-1']);
+  });
+
+  it('rank hydration applies the audience clause across the 500-id chunk boundary', () => {
+    // Same trap as the owner case above: the clause is bound per chunk, and a
+    // predicate spliced into only the first prepared statement would leak on
+    // the 501st id.
+    const ids: string[] = [];
+    for (let i = 0; i < 600; i += 1) {
+      const id = `aud-bulk-${i}`;
+      insert(id, AGENT, ALICE, i === 550 ? 'private' : i === 575 ? null : 'shared');
+      ids.push(id);
+    }
+    const rows = rowsInRankOrder<{ id: string }>(driver, AGENT, ids, { audience: 'shared' });
+    expect(rows).toHaveLength(598);
+    expect(rows.some((r) => r.id === 'aud-bulk-550' || r.id === 'aud-bulk-575')).toBe(false);
+    // Order is still the ranking's, not the planner's.
+    expect(rows[0]!.id).toBe('aud-bulk-0');
+    expect(rows[597]!.id).toBe('aud-bulk-599');
   });
 });

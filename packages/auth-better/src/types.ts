@@ -73,6 +73,91 @@ export interface GetUserInput {
 
 export type GetUserOutput = User | null;
 
+/**
+ * `auth:find-user-by-email` input: an email address an identity provider
+ * verified (for @ax/channel-slack, the Slack sender's `users.info` email).
+ *
+ * CONTRACT — every auth implementation registering this hook MUST keep all of
+ * these. The hook maps an outside identity to an AX account, so returning the
+ * wrong person's id would hand one person's agent to another:
+ *
+ *   - Host-internal only. Never an HTTP route or an IPC action.
+ *   - The match is ASCII case-insensitive (only A-Z fold to a-z) and otherwise
+ *     exact: no wildcard, prefix or substring match, no Unicode case folding
+ *     or normalization, and no trimming. An address with any character
+ *     outside printable ASCII is never found.
+ *   - Verified accounts only. An account whose email no provider has verified
+ *     is never found. (One operator path keeps the flag across an email
+ *     change: the deploy/GKE.md 4i runbook, `packages/auth-better/sql/change-account-email.sql`,
+ *     which requires confirming who the person is first. Sign-in trusts the
+ *     same flag.)
+ *   - Approved sign-in domains only: the given address and the account's
+ *     email must both be on an approved domain. In @ax/auth-better that means
+ *     on at least one sign-in provider's non-blank allowed-domain list (Google
+ *     or GitHub), each read whether or not the provider is enabled
+ *     (`isOnApprovedDomain` in identity-gate.ts). A blank list adds nothing;
+ *     with no list anywhere, any domain is approved, the same as sign-in. A
+ *     disabled provider's list still counts both ways: it keeps other domains
+ *     out and keeps its own approved. To stop mapping a domain, remove it from
+ *     the list or delete the provider.
+ *   - `null` for no match, for more than one match (accounts that differ only
+ *     in case), or for any failed rule. `null` never says which rule failed.
+ *   - Returns only the id: no email, name or admin flag.
+ *
+ * Callers pass only an email they fetched from the identity provider
+ * themselves, never one taken from message text or a command argument. `null`
+ * means "no AX account we can vouch for", not "not an employee".
+ */
+export interface FindUserByEmailInput {
+  email: string;
+}
+
+/** `auth:find-user-by-email` output. See `FindUserByEmailInput` for the contract. */
+export type FindUserByEmailOutput = { userId: string } | null;
+
+/**
+ * `auth:is-approved-email` input (TASK-1094): an email address an identity
+ * provider verified (for @ax/channel-slack, the `users.info` email of a Slack
+ * member it found no AX account for).
+ *
+ * CONTRACT — every auth implementation registering this hook MUST keep all of
+ * these. A yes lets that person reach a team's agent as an outsider, and the
+ * hook must never become a way to learn who has an account:
+ *
+ *   - Host-internal only. Never an HTTP route or an IPC action.
+ *   - `approved` is true only when the address is printable ASCII (no space,
+ *     no control character, nothing beyond ASCII), has exactly one `@` with
+ *     something before and after it, and its domain is approved. Anything else
+ *     is `false`, and `false` never says which rule failed.
+ *   - Approved domains follow the same rule as auth:find-user-by-email. In
+ *     @ax/auth-better that means on at least one sign-in provider's non-blank
+ *     allowed-domain list (Google or GitHub), each read whether or not the
+ *     provider is enabled (`isOnApprovedDomain` in identity-gate.ts). A blank
+ *     list adds nothing; with no list anywhere, any domain is approved. The
+ *     domain must equal a listed one up to ASCII case: a subdomain is another
+ *     domain.
+ *   - Reads no account. The answer comes from the domain lists alone, so
+ *     `approved` never means "has an account", and `false` never means "has
+ *     none".
+ *   - No log line, whatever the answer: the address is personal data from
+ *     another system, and the caller logs its own code-only outcome.
+ *   - A missing, non-string, empty or over-320-character `email` is a caller
+ *     bug: `invalid-payload`, with a fixed message that never contains it.
+ *
+ * Callers pass only an email they fetched from the identity provider
+ * themselves, never one taken from message text or a command argument.
+ * `approved` means "on one of the install's company domains", not "a person we
+ * know".
+ */
+export interface IsApprovedEmailInput {
+  email: string;
+}
+
+/** `auth:is-approved-email` output. See `IsApprovedEmailInput` for the contract. */
+export interface IsApprovedEmailOutput {
+  approved: boolean;
+}
+
 export interface CreateBootstrapUserInput {
   displayName: string;
   email?: string;

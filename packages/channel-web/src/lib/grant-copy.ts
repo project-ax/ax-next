@@ -215,6 +215,19 @@ export const GRANT_NOT_RESUMED =
   'and we could not start it again from here — send it a message and it will ' +
   'carry on with this connection in place.';
 
+/**
+ * TASK-1093 — the same moment, when the conversation the grant was raised on
+ * is a Slack DM thread and refused the re-send. "Send it a message" would be
+ * wrong here: a message from this app into that conversation is refused too.
+ * Only a Slack thread gets this sentence (`resumeParkedTurn` checks the
+ * conversation's origin); a routine's conversation is refused the same way but
+ * there is nowhere to go and reply, so it keeps `GRANT_NOT_RESUMED`.
+ */
+export const GRANT_NOT_RESUMED_ELSEWHERE =
+  'Connected. The agent had already stopped by the time you answered, though, ' +
+  'and this conversation is in Slack. Reply to it there and it will carry on ' +
+  'with this connection in place.';
+
 /** Clears the stopped-agent row. It is an acknowledgement, not an action. */
 export const GRANT_NOT_RESUMED_DISMISS = 'Got it';
 

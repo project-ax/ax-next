@@ -63,6 +63,7 @@ import { toWorkspaceTaskKind as toTaskKind } from './task-kinds';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch, REQUEST_TIMEOUT_MS, withRequestTimeout } from './http';
 import { readStorageFull } from './storage-full';
+import { readConversationReadOnly } from './conversation-read-only';
 /*
   The Fault A reason-code → authored-label table, read rather than re-declared.
   A second copy here would be invariant 4 violated in the one place the drift is
@@ -288,6 +289,14 @@ export interface AgentDetail {
    * Optional: an older host omits it, which reads as nothing in flight.
    */
   liveReqId?: string | null;
+  /**
+   * TASK-1093 — where that conversation takes its messages: its stored origin
+   * (`'web'`, `'routine'`, `'slack'`). A Slack DM thread is read-only here, so
+   * the page shows where to reply instead of a composer. `null` with no
+   * conversation. Optional: an older host omits it, which reads as a
+   * conversation that started here.
+   */
+  origin?: string | null;
   /** Reconstructed from the real turns of that conversation. */
   thread: ThreadMessage[];
   /**
@@ -879,6 +888,7 @@ function isFactMemoryStatement(v: unknown): v is FactMemoryStatement {
   if (v.savedBy !== undefined && v.savedBy !== 'person' && v.savedBy !== 'agent') {
     return false;
   }
+  if (v.audience !== undefined && v.audience !== 'shared') return false;
   return true;
 }
 
@@ -2132,10 +2142,12 @@ export const workspaceApi = {
    * landed in (the server mints one when `conversationId` is null) and the
    * `reqId` to stream from.
    *
-   * Throws a bare `HttpError` on a non-ok status, with ONE exception: a 413
-   * `storage-full` (committing an attachment would put the person over their
-   * storage limit) throws a `StorageFullError`, an `HttpError` that also
-   * carries the sentence to show. Surfaces branch on it with `instanceof`.
+   * Throws a bare `HttpError` on a non-ok status, with TWO exceptions that
+   * also carry the sentence to show: a 413 `storage-full` (committing an
+   * attachment would put the person over their storage limit) throws a
+   * `StorageFullError`, and a 409 `conversation-read-only` (a Slack DM thread
+   * or a routine's conversation, TASK-1093) a `ConversationReadOnlyError`.
+   * Both are `HttpError`s; surfaces branch on them with `instanceof`.
    */
   async sendMessage({
     agentId,
@@ -2156,11 +2168,15 @@ export const workspaceApi = {
       }),
     });
     if (!res.ok) {
-      // A 413 `storage-full` is the one refusal whose CODE we read (TASK-690):
-      // it carries a kind sentence, and a bare status would read as a network
-      // problem. Everything else stays status-only, as it always was.
+      // Two refusals whose CODE we read, because each has a kind sentence and
+      // a bare status would read as a network problem: a 413 `storage-full`
+      // (TASK-690), and a 409 `conversation-read-only` (TASK-1093: a Slack DM
+      // thread or a routine's conversation; it used to be a 404 that read
+      // "it may have been deleted"). Everything else stays status-only.
       const full = await readStorageFull('/api/chat/messages', res);
       if (full !== null) throw full;
+      const readOnly = await readConversationReadOnly('/api/chat/messages', res);
+      if (readOnly !== null) throw readOnly;
       // Was `send message → ${res.status}`, which `AgentView` rendered.
       throw new HttpError('/api/chat/messages', res.status);
     }

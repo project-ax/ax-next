@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, ownerlessIdFor, PluginError } from '@ax/core';
+import {
+  HookBus,
+  makeAgentContext,
+  ownerlessIdFor,
+  PluginError,
+  type AgentContextSource,
+} from '@ax/core';
 import { createToolConnectorProposePlugin } from '../plugin.js';
 import { CONNECTOR_PROPOSE_TOOL_NAME } from '../descriptor.js';
 
@@ -237,5 +243,69 @@ describe('@ax/tool-connector-propose — plugin', () => {
     await expect(
       callTool(bus, { connectorId: 'ok-id', name: 'X', keyMode: 'personal' }),
     ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  // TASK-1091: an external turn (a person with no access to this agent is
+  // present) can't file a connector request: it would land in the admins'
+  // queue in the owner's name, worded by someone outside the agent. `source`
+  // is stamped by the IPC listener from the session record, never from the
+  // tool input. The answer is a RESULT, not a throw: tool.execute-host
+  // redacts a thrown message, so only a result can tell the model, in words,
+  // that nothing was sent.
+  describe('TASK-1091: external turns', () => {
+    const EXTERNAL_REFUSAL = {
+      ok: false,
+      error: 'not-available',
+      message:
+        "Connector requests can't be made from a conversation with people who don't have access to this agent. Nothing was sent.",
+    };
+    const valid = { connectorId: 'salesforce', name: 'Salesforce', keyMode: 'workspace' };
+
+    function callAs(bus: HookBus, source: AgentContextSource, input: unknown): Promise<unknown> {
+      const sourced = makeAgentContext({ sessionId: 's', agentId: 'agent_1', userId: 'user_1', source });
+      return bus.call(EXECUTE_HOOK, sourced, { id: 't1', name: CONNECTOR_PROPOSE_TOOL_NAME, input });
+    }
+
+    it('files no request and answers with a fixed sentence', async () => {
+      const { bus, installCalls } = busWithStubs();
+      await init(bus);
+      expect(await callAs(bus, 'external', valid)).toEqual(EXTERNAL_REFUSAL);
+      expect(installCalls).toHaveLength(0);
+    });
+
+    it('refuses before reading the draft: a malformed one gets the same answer, never a field error', async () => {
+      // A field error would invite the model to fix the draft and try again.
+      const { bus, installCalls } = busWithStubs();
+      await init(bus);
+      const out = await callAs(bus, 'external', {
+        connectorId: 'authored',
+        name: '',
+        keyMode: 'bogus',
+        usageNote: 'MODEL-ECHO',
+        mcpServers: [{ name: 'local', transport: 'stdio', command: 'MODEL-ECHO' }],
+      });
+      expect(out).toEqual(EXTERNAL_REFUSAL);
+      expect(JSON.stringify(out)).not.toContain('MODEL-ECHO');
+      expect(installCalls).toHaveLength(0);
+    });
+
+    it("files no request from a turn whose source this build doesn't know (fails closed)", async () => {
+      const { bus, installCalls } = busWithStubs();
+      await init(bus);
+      expect(await callAs(bus, 'bogus' as never, valid)).toEqual(EXTERNAL_REFUSAL);
+      expect(installCalls).toHaveLength(0);
+    });
+
+    it.each(['routine', 'user'] as const)('a %s turn still files the request', async (source) => {
+      const { bus, installCalls } = busWithStubs();
+      await init(bus);
+      expect(await callAs(bus, source, valid)).toEqual({
+        connectorId: 'salesforce',
+        status: 'pending',
+        message:
+          'Sent to your workspace admin for approval. Once they set it up, add it to this agent from the Connectors tab.',
+      });
+      expect(installCalls).toHaveLength(1);
+    });
   });
 });

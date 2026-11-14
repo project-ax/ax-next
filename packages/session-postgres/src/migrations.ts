@@ -135,6 +135,24 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE session_postgres_v2_session_agent
       ADD COLUMN IF NOT EXISTS source TEXT
   `.execute(db);
+
+  // ----- TASK-1091: audience on the v2 row --------------------------------
+  //
+  // Same shape and reasoning as `source` above. The orchestrator populates it
+  // from `ctx.audience` ('private' | 'shared'); `resolveToken` reads it back so
+  // the IPC listeners can stamp it onto every runner-rebuilt ctx, where memory
+  // reads it to decide what the session may recall. Existing rows are NULL →
+  // treated as private. TASK-1091 also widened the values `source` may hold to
+  // include 'external'; that needed no DDL because the column is plain TEXT.
+  //
+  // No CHECK constraint, like `source`: the store only writes host-derived
+  // literals, and the read side normalizes anything else to the least
+  // privileged value ('shared'), so a value from an older or newer build can
+  // neither wedge a deploy nor widen what a session can read.
+  await sql`
+    ALTER TABLE session_postgres_v2_session_agent
+      ADD COLUMN IF NOT EXISTS audience TEXT
+  `.execute(db);
 }
 
 export interface SessionRow {
@@ -177,11 +195,18 @@ export interface SessionAgentRow {
   conversation_id: string | null;
   /**
    * TASK-181: host-derived session origin — `'routine'` for a scheduled
-   * @ax/routines fire, NULL for an interactive user turn (and for every
+   * @ax/routines fire, `'external'` (TASK-1091) when a person with no access
+   * to the agent is present, NULL for an interactive user turn (and for every
    * pre-TASK-181 row). Stored as plain TEXT; the store only ever writes the
-   * two host-derived literals.
+   * host-derived literals and narrows on read (`normalizeSource`).
    */
   source: string | null;
+  /**
+   * TASK-1091: host-derived audience — `'private'` or `'shared'`, NULL when
+   * the session was opened without one (and for every pre-TASK-1091 row).
+   * Plain TEXT, narrowed on read (`normalizeAudience`).
+   */
+  audience: string | null;
   created_at: Date;
 }
 

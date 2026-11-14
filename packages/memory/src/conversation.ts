@@ -1,4 +1,4 @@
-import type { AgentContext } from '@ax/core';
+import type { AgentContext, AgentContextSource } from '@ax/core';
 
 /**
  * The conversation a statement written under `ctx` is attributed to — or
@@ -27,6 +27,16 @@ import type { AgentContext } from '@ax/core';
  * through the session, never taken from a runner frame (`ipc-server`'s
  * listener), so an untrusted runner cannot use it to reattribute rows.
  *
+ * ## An external turn is a real conversation (TASK-1091)
+ *
+ * `'external'` (someone without access to the agent is present, as in a
+ * channel) is a real thread the owner can read, not a hidden per-fire one, so
+ * its rows keep their conversation, and the owner's per-conversation feed
+ * shows what was learned there. The residual: external threads count toward
+ * the recurrence gate like any other conversation. A source this build does
+ * not know is attributed to nothing, the least a row can claim. An explicit
+ * switch, so a new source has to be decided here rather than fall through.
+ *
  * This is the STORED provenance only. The observer's batch idempotency key
  * still hashes `ctx.conversationId` itself, so two routine fires with a
  * byte-identical transcript remain two batches (see `buildBatchKey`).
@@ -41,8 +51,20 @@ import type { AgentContext } from '@ax/core';
 export function conversationOf(
   ctx: Pick<AgentContext, 'conversationId' | 'source'>,
 ): string | undefined {
-  if (ctx.source === 'routine') return undefined;
-  return ctx.conversationId;
+  const source: AgentContextSource | undefined = ctx.source;
+  switch (source) {
+    case undefined:
+    case 'user':
+    case 'external':
+      return ctx.conversationId;
+    case 'routine':
+      return undefined;
+    default: {
+      const _exhaustive: never = source;
+      void _exhaustive;
+      return undefined;
+    }
+  }
 }
 
 /**

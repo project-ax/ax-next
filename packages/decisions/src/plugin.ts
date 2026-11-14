@@ -373,7 +373,8 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         idGen,
         ttlMs,
         // AW-6: attendance is the conversation's channel, resolved through the
-        // bus. AW-4's `ctx.source === 'routine'` default is gone — it answered
+        // bus (an external turn is the one exception: see attendance.ts).
+        // AW-4's `ctx.source === 'routine'` default is gone — it answered
         // "was this a scheduled fire", which is a different question that
         // happened to have the same answer while `packages/` held exactly two
         // channels.

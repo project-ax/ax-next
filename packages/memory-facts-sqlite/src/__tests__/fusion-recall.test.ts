@@ -164,6 +164,59 @@ describe('@ax/memory-facts-sqlite — sparse channel', () => {
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(out.records[0]!.id);
   });
+
+  // TASK-1091 — the sparse channel's own audience predicate. A bus-level recall
+  // cannot pin it: the temporal channel also scopes, so the one shared row would
+  // be proposed THERE even if this channel forgot the clause (and hydration
+  // drops private rows afterwards), masking the omission. So drive the channel
+  // directly. CHANNEL_LIMIT + 5 private rows that match the query BETTER (short
+  // rows, term carries most of each) would fill every bm25 slot; only a scope
+  // pushed into THIS query reaches the older, longer, shared row.
+  it('counts its slots against shared rows on a shared recall, not a widened pool', async () => {
+    const databasePath = join(dir, 'facts.db');
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    const ctx = makeAgentContext({
+      sessionId: 's',
+      agentId: 'a',
+      userId: 'u',
+      workspace: { rootPath: '/tmp' },
+    });
+    const shared = await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+      statements: [
+        {
+          about: 'user',
+          relation: 'stated',
+          value:
+            'a rambling note about many unrelated things and places and people and Khalid and yet more words besides',
+          when: JAN,
+          audience: 'shared',
+        },
+      ],
+    });
+    await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+      statements: Array.from({ length: CHANNEL_LIMIT + 5 }, () => ({
+        about: 'user',
+        relation: 'likes_artist',
+        value: 'Khalid',
+        when: SEP,
+        audience: 'private' as const,
+      })),
+    });
+    await plugin.shutdown?.();
+
+    const db = openDatabase(databasePath).driver;
+    toClose.push(db);
+    const ids = sparseChannel(db, {
+      agentKey: AGENT_A,
+      match: buildFtsMatchQuery('Khalid')!,
+      activeOnly: true,
+      limit: CHANNEL_LIMIT,
+      audience: 'shared',
+    });
+    expect(ids).toEqual([shared.records[0]!.id]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -226,6 +279,53 @@ describe('@ax/memory-facts-sqlite — temporal channel', () => {
     // Under `valid_start DESC` Acme leads; under `transaction_time DESC` Khalid
     // does. Asserting the full array pins the whole order, not just the head.
     expect(ids).toEqual([khalid, acme]);
+  });
+
+  // TASK-1091 — "never post-filter a widened pool", on the `query` path. The
+  // channel admits the CHANNEL_LIMIT most recent rows whatever the query says,
+  // so it is where a missing audience predicate costs a shared reply its
+  // answer: 45 NEWER private rows would take every slot, the rank hydration
+  // would then (correctly) drop them all, and the one shared row — older, and
+  // matching no query term — would never have been a candidate. Only a scope
+  // pushed INTO the channel finds it, so this fails whether the channel or
+  // `fusionRecall`'s scope object is the one that forgot it.
+  it('counts its slots against shared rows on a shared recall, not a widened pool', async () => {
+    const databasePath = join(dir, 'facts.db');
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    try {
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+        workspace: { rootPath: '/tmp' },
+      });
+      // An older `when` as well as an older record call: if both calls land in
+      // one millisecond, `valid_start DESC` still puts this row behind every
+      // private one rather than leaving the order to random ids.
+      const shared = await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+        statements: [{ about: 'user', relation: 'uses_tool', value: 'Jira', when: JAN, audience: 'shared' }],
+      });
+      await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+        statements: Array.from({ length: CHANNEL_LIMIT + 5 }, (_, i) => ({
+          about: 'user',
+          relation: 'stated',
+          value: `private note number ${i}`,
+          when: SEP,
+          audience: 'private' as const,
+        })),
+      });
+
+      const out = await bus.call<RecallInput, RecallOutput>('memory:facts:recall', ctx, {
+        query: 'zzq_absent_term',
+        limit: 10,
+        audience: 'shared',
+      });
+      expect(out.statements.map((s) => s.id)).toEqual([shared.records[0]!.id]);
+    } finally {
+      await plugin.shutdown?.();
+    }
   });
 });
 
@@ -326,6 +426,26 @@ describe('@ax/memory-facts-sqlite — dense channel', () => {
       hashVector('Khalid'),
     );
     expect(ids).toEqual([b.records[0]!.id]);
+  });
+
+  // TASK-1091. `vec0` cannot take the audience predicate any more than it can
+  // take the tenant one, so it rides the same base-table lookup — the step
+  // that gets forgotten. All three rows carry IDENTICAL text, so distance
+  // cannot be what keeps the private and unstamped ones out; only the scope can.
+  it('the dense channel never surfaces a private row to a shared query', async () => {
+    const privateRow = await record({ statements: [{ ...KHALID, audience: 'private' }] });
+    const unstamped = await record({ statements: [KHALID] });
+    const shared = await record({ statements: [{ ...KHALID, audience: 'shared' }] });
+    const db = openReader();
+    const scope = { agentKey: AGENT_A, activeOnly: true, limit: 40 };
+
+    // Unscoped, every one of them is a perfect neighbour.
+    expect(denseChannel(db, scope, hashVector('Khalid')).sort()).toEqual(
+      [privateRow.records[0]!.id, unstamped.records[0]!.id, shared.records[0]!.id].sort(),
+    );
+    expect(denseChannel(db, { ...scope, audience: 'shared' }, hashVector('Khalid'))).toEqual([
+      shared.records[0]!.id,
+    ]);
   });
 
   it('applies the activeOnly filter after the neighbour search', async () => {

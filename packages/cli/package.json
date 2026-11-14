@@ -29,6 +29,7 @@
     "@ax/storage-postgres": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/agents": "workspace:*",
+    "@ax/channel-slack": "workspace:*",
     "@ax/auth-better": "workspace:*",
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",

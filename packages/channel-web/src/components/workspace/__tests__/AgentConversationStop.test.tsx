@@ -13,7 +13,7 @@
  */
 import { useLayoutEffect, type ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 import { decisionFixture } from './decision-fixture';
@@ -295,5 +295,95 @@ describe('AgentConversation — the "you stopped this" note', () => {
     renderConversation({ thread: [stoppedRow] });
     expect(announcer().textContent).toBe('Stopped.');
     expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
+});
+
+/*
+  TASK-1093 — a Slack DM thread has no composer here, so Stop rides in the
+  "reply in Slack" note while a turn runs. The composer's Stop announces
+  "Stopping."/"Stopped." on a live region that is in the DOM the whole time and
+  puts the keyboard back in the field when the button goes; the note's Stop
+  owes the reader the same two things. There is no field to return to, so focus
+  goes to New chat (the next thing a person here can do), or the note itself.
+*/
+describe('AgentConversation — Stop inside the read-only note', () => {
+  const NOTE = 'This conversation is in Slack. Reply there.';
+  const stoppedRow: ThreadMessage = {
+    kind: 'stopped',
+    id: 'stopped-notice',
+    text: STOPPED_SENTENCE,
+  };
+  const slackProps = (over: Partial<ComponentProps<typeof AgentConversation>> = {}) =>
+    propsFor({ readOnly: true, readOnlyNote: NOTE, onStop: vi.fn(), onNewChat: vi.fn(), ...over });
+  const slackNote = () => screen.getByText(NOTE).closest('[role="note"]') as HTMLElement;
+  const noteAnnouncer = () => within(slackNote()).getByRole('status');
+
+  it('has a polite live region in the note from the start, saying nothing while nothing is stopping', () => {
+    renderConversation(slackProps({ busy: true }));
+    const live = noteAnnouncer();
+    expect(live).toHaveAttribute('aria-live', 'polite');
+    expect(live.textContent).toBe('');
+  });
+
+  it('says "Stopping." on that same node while a Stop is on its way', () => {
+    const { rerender } = renderConversation(slackProps({ busy: true }));
+    const live = noteAnnouncer();
+    rerender(<AgentConversation {...slackProps({ busy: true, stopping: true })} />);
+    // The same node, so the change is announced rather than a region inserted
+    // with its text already in it.
+    expect(noteAnnouncer()).toBe(live);
+    expect(live.textContent).toBe('Stopping.');
+  });
+
+  it('says "Stopped." once the stop note is in the thread', () => {
+    renderConversation(slackProps({ busy: false, thread: [stoppedRow] }));
+    expect(noteAnnouncer().textContent).toBe('Stopped.');
+  });
+
+  it('moves focus to New chat when the Stop button it was on goes away', () => {
+    const props = slackProps({ busy: true });
+    const { rerender } = render(<AgentConversation {...props} />);
+    const stop = within(slackNote()).getByRole('button', { name: 'Stop' });
+    stop.focus();
+    fireEvent.click(stop);
+
+    rerender(<AgentConversation {...props} busy={false} />);
+    expect(within(slackNote()).queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(document.activeElement).toBe(
+      within(slackNote()).getByRole('button', { name: 'New chat' }),
+    );
+  });
+
+  it('moves focus to the note itself when there is no New chat to land on', () => {
+    const props = slackProps({ busy: true });
+    delete props.onNewChat;
+    const { rerender } = render(<AgentConversation {...props} />);
+    const stop = within(slackNote()).getByRole('button', { name: 'Stop' });
+    stop.focus();
+    fireEvent.click(stop);
+
+    rerender(<AgentConversation {...props} busy={false} />);
+    expect(document.activeElement).toBe(slackNote());
+  });
+
+  it('does not take focus from someone who has moved on', () => {
+    const props = slackProps({ busy: true });
+    const { rerender } = render(
+      <>
+        <button type="button">elsewhere</button>
+        <AgentConversation {...props} />
+      </>,
+    );
+    fireEvent.click(within(slackNote()).getByRole('button', { name: 'Stop' }));
+    const elsewhere = screen.getByRole('button', { name: 'elsewhere' });
+    elsewhere.focus();
+
+    rerender(
+      <>
+        <button type="button">elsewhere</button>
+        <AgentConversation {...props} busy={false} />
+      </>,
+    );
+    expect(document.activeElement).toBe(elsewhere);
   });
 });

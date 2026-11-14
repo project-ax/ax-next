@@ -3,6 +3,8 @@ import {
   faultLogFields,
   PluginError,
   type AgentContext,
+  type AgentContextAudience,
+  type AgentContextSource,
   type Logger,
   type Plugin,
 } from '@ax/core';
@@ -162,11 +164,18 @@ export interface SessionCreateInput {
     conversationId?: string | null;
     /**
      * TASK-181: host-derived session origin — `'routine'` for a scheduled
-     * @ax/routines fire, `'user'`/absent for a user turn. Persisted on the v2
-     * row; echoed back by `session:resolve-token`. Host-only — never from the
-     * runner wire.
+     * @ax/routines fire, `'user'`/absent for a user turn, `'external'`
+     * (TASK-1091) when a person with no access to the agent is present.
+     * Persisted on the v2 row; echoed back by `session:resolve-token`.
+     * Host-only — never from the runner wire.
      */
-    source?: 'routine' | 'user' | null;
+    source?: AgentContextSource | null;
+    /**
+     * TASK-1091: host-derived audience (`ctx.audience`) — `'private'`/absent
+     * or `'shared'`. Persisted and echoed exactly like `source`, and host-only
+     * for the same reason: it decides what memory the runner's calls may read.
+     */
+    audience?: AgentContextAudience | null;
   };
 }
 export interface SessionCreateOutput {
@@ -194,9 +203,17 @@ export type SessionResolveTokenOutput =
        * TASK-181: host-derived session origin. The IPC server stamps it onto
        * the per-request AgentContext so the happy-path runner-completed
        * `chat:end` carries `source: 'routine'` for scheduled fires. Null ≡
-       * user / canary / pre-TASK-181.
+       * user / canary / pre-TASK-181. A stored value this build doesn't know
+       * reads as `'external'` (TASK-1091, fail closed).
        */
-      source: 'routine' | 'user' | null;
+      source: AgentContextSource | null;
+      /**
+       * TASK-1091: host-derived audience, stamped like `source`. REQUIRED on
+       * the reply (null when unset) so a resolver that forgot it fails at the
+       * bus instead of reading as private. Null ≡ private; a stored value this
+       * build doesn't know reads as `'shared'` (fail closed).
+       */
+      audience: AgentContextAudience | null;
     }
   | null;
 export type SessionGetConfigInput = Record<string, never>;
@@ -280,7 +297,12 @@ export const SessionResolveTokenOutputSchema = z
     agentId: z.string().nullable(),
     conversationId: z.string().nullable(),
     // TASK-181 — host-derived session origin echoed onto the resolve result.
-    source: z.enum(['routine', 'user']).nullable(),
+    // TASK-1091 widened it: a stored 'external' must pass, or every IPC call
+    // of that session would fail at this schema.
+    source: z.enum(['routine', 'user', 'external']).nullable(),
+    // TASK-1091 — required + nullable: a z.object strips an undeclared key,
+    // which would make a shared session's IPC ctx look private.
+    audience: z.enum(['private', 'shared']).nullable(),
   })
   .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
 
@@ -439,7 +461,8 @@ function validateOwner(
       agentId: string;
       agentConfig: AgentConfig;
       conversationId: string | null;
-      source: 'routine' | 'user' | null;
+      source: AgentContextSource | null;
+      audience: AgentContextAudience | null;
     }
   | undefined {
   if (raw === undefined) return undefined;
@@ -456,6 +479,7 @@ function validateOwner(
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
   const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
   const sourceRaw = (raw as { source?: unknown }).source;
+  const audienceRaw = (raw as { audience?: unknown }).audience;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -541,21 +565,38 @@ function validateOwner(
       message: `'owner.conversationId' must be a non-empty string or null/undefined`,
     });
   }
-  // source — TASK-181 — optional, accepts 'routine' | 'user' | null | undefined.
-  // Reject anything else so a wiring bug (or a smuggled value) fails loud. The
-  // runner never reaches this hook; the only writers are the orchestrator
-  // (forwarding ctx.source) and test harnesses. Mirrors the inmemory backend.
-  let source: 'routine' | 'user' | null;
+  // source — TASK-181, widened by TASK-1091 — optional, accepts 'routine' |
+  // 'user' | 'external' | null | undefined. Reject anything else so a wiring
+  // bug (or a smuggled value) fails loud. The runner never reaches this hook;
+  // the only writers are the orchestrator (forwarding ctx.source) and test
+  // harnesses. Mirrors the inmemory backend.
+  let source: AgentContextSource | null;
   if (sourceRaw === undefined || sourceRaw === null) {
     source = null;
-  } else if (sourceRaw === 'routine' || sourceRaw === 'user') {
+  } else if (sourceRaw === 'routine' || sourceRaw === 'user' || sourceRaw === 'external') {
     source = sourceRaw;
   } else {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
       hookName,
-      message: `'owner.source' must be 'routine', 'user', or null/undefined`,
+      message: `'owner.source' must be 'routine', 'user', 'external', or null/undefined`,
+    });
+  }
+  // audience — TASK-1091 — optional, accepts 'private' | 'shared' | null |
+  // undefined, and rejects anything else, for the same reasons as `source`.
+  // Mirrors the inmemory backend.
+  let audience: AgentContextAudience | null;
+  if (audienceRaw === undefined || audienceRaw === null) {
+    audience = null;
+  } else if (audienceRaw === 'private' || audienceRaw === 'shared') {
+    audience = audienceRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.audience' must be 'private', 'shared', or null/undefined`,
     });
   }
   return {
@@ -578,6 +619,7 @@ function validateOwner(
     },
     conversationId,
     source,
+    audience,
   };
 }
 

@@ -5,10 +5,13 @@ import {
   makeAgentContext,
   reject,
   type AgentContext,
+  type AgentContextSource,
   type MemoryPreCapturePayload,
 } from '@ax/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { conversationOf } from '../conversation.js';
+import { MEMORY_NOTE_TOOL_HOOK } from '../note-tool.js';
 import { CAPTURE_REFUSED_EVENT, createMemoryPlugin } from '../plugin.js';
 import { buildBatchKey } from '../observer.js';
 import { EXTRACTION_SYSTEM_PROMPT } from '../extraction-prompt.js';
@@ -914,6 +917,54 @@ describe('a routine run is not a conversation the person had (TASK-616)', () => 
     expect(new Set(readRows(h.databasePath).map((r) => r.conversation_id))).toEqual(
       new Set(['conv-u', 'conv-unset']),
     );
+  });
+
+  it("an external turn's statements keep their conversation; a routine's stay unattributed (TASK-1091)", async () => {
+    // An external turn is a real thread the owner can read (a channel), not a
+    // hidden per-fire one. A source this build does not know is attributed
+    // to nothing: the least a statement can claim.
+    const h = await withLlm(() =>
+      reply(extraction([fact({ subject: 'billing_service', predicate: 'owner', object: 'Dana' })])),
+    );
+    const external = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+    const turn = (n: number) => [
+      { role: 'user', content: `Dana owns the billing service (${n}).` },
+      { role: 'assistant', content: 'Noted.' },
+    ];
+    await chatEnd(h, { ctx: external, messages: turn(1) });
+    await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-routine', source: 'routine' }), messages: turn(2) });
+    await chatEnd(h, {
+      ctx: h.ctx({ conversationId: 'conv-odd', source: 'satellite' as AgentContextSource }),
+      messages: turn(3),
+    });
+    // The note tool is a writer too: one rule at every writer.
+    expect(
+      await h.bus.call(MEMORY_NOTE_TOOL_HOOK, external, {
+        input: { about: 'standup', relation: 'held_at', value: '9am' },
+      }),
+    ).toEqual({ ok: true });
+
+    expect(readRows(h.databasePath).map((r) => [r.value, r.conversation_id])).toEqual([
+      ['Dana', 'conv-ext'],
+      ['Dana', null],
+      ['Dana', null],
+      ['9am', 'conv-ext'],
+    ]);
+  });
+
+  it.each([
+    ['an absent source keeps the conversation', undefined, 'conv-1'],
+    ['`user` keeps it', 'user', 'conv-1'],
+    ['`external` keeps it', 'external', 'conv-1'],
+    ['`routine` drops it', 'routine', undefined],
+    ['an unknown source drops it', 'satellite', undefined],
+  ] as const)('conversationOf: %s', (_label, source, expected) => {
+    expect(
+      conversationOf({
+        conversationId: 'conv-1',
+        ...(source !== undefined ? { source: source as AgentContextSource } : {}),
+      }),
+    ).toBe(expected);
   });
 });
 

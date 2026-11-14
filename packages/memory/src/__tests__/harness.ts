@@ -6,6 +6,8 @@ import {
   makeAgentContext,
   PluginError,
   type AgentContext,
+  type AgentContextAudience,
+  type AgentContextSource,
   type LlmCallInput,
   type LlmCallOutput,
   type Logger,
@@ -61,7 +63,15 @@ export interface LoggedEvent {
 
 export interface MemoryHarness {
   bus: HookBus;
-  ctx: (opts?: { agentId?: string; userId?: string; conversationId?: string; source?: 'routine' | 'user'; sessionId?: string }) => AgentContext;
+  ctx: (opts?: {
+    agentId?: string;
+    userId?: string;
+    conversationId?: string;
+    source?: AgentContextSource;
+    /** Absent by default, which reads as `'private'` (TASK-1091). */
+    audience?: AgentContextAudience;
+    sessionId?: string;
+  }) => AgentContext;
   recall: (input: MemoryRecallInput, ctx?: AgentContext) => Promise<MemoryRecallOutput>;
   remember: (input: MemoryRememberInput, ctx?: AgentContext) => Promise<MemoryRememberOutput>;
   forget: (input: MemoryForgetInput, ctx?: AgentContext) => Promise<MemoryForgetOutput>;
@@ -177,6 +187,7 @@ export async function makeMemoryHarness(
       logger,
       ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
       ...(opts.source !== undefined ? { source: opts.source } : {}),
+      ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
     });
 
   return {
@@ -316,6 +327,11 @@ export async function engineRecord(
     conversationId?: string;
     sourceTurnId?: string;
     sourceRole?: 'user' | 'assistant';
+    /**
+     * The engine's audience stamp (TASK-1091). Omitted, the row is stored
+     * unstamped, the way every row written before the field existed is.
+     */
+    audience?: 'private' | 'shared';
   }>,
 ): Promise<{ records: Array<{ id: string }> }> {
   return bus.call('memory:facts:record', ctx, { statements });

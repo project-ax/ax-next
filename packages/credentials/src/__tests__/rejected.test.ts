@@ -9,7 +9,7 @@ import { createCredentialsPlugin } from '../plugin.js';
 // read share an in-flight ordinary read (which would hand back the same
 // refused value).
 
-function memStoragePlugin() {
+function memStoragePlugin(beforeGet: () => Promise<void> = async () => {}) {
   const store = new Map<string, Uint8Array>();
   return {
     manifest: {
@@ -20,9 +20,10 @@ function memStoragePlugin() {
       subscribes: [],
     },
     async init({ bus }: { bus: HookBus }) {
-      bus.registerService('storage:get', 'mem-storage', async (_ctx, { key }: { key: string }) => ({
-        value: store.get(key),
-      }));
+      bus.registerService('storage:get', 'mem-storage', async (_ctx, { key }: { key: string }) => {
+        await beforeGet();
+        return { value: store.get(key) };
+      });
       bus.registerService(
         'storage:set',
         'mem-storage',
@@ -60,7 +61,10 @@ function memStoragePlugin() {
 const ctx = () => makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 const bytes = (s: string) => new TextEncoder().encode(s);
 
-async function setup(resolve: (input: Record<string, unknown>) => Promise<{ value: string }>) {
+async function setup(
+  resolve: (input: Record<string, unknown>) => Promise<{ value: string }>,
+  beforeGet?: () => Promise<void>,
+) {
   const bus = new HookBus();
   const resolver = {
     manifest: {
@@ -80,7 +84,7 @@ async function setup(resolve: (input: Record<string, unknown>) => Promise<{ valu
   };
   await bootstrap({
     bus,
-    plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin(), resolver],
+    plugins: [memStoragePlugin(beforeGet), createCredentialsStoreDbPlugin(), createCredentialsPlugin(), resolver],
     config: {},
   });
   await bus.call('credentials:set', ctx(), {
@@ -236,5 +240,139 @@ describe('credentials:get {rejected} (TASK-817)', () => {
     expect(await rejected).toBe('fresh');
     expect(await ordinary).toBe('fresh');
     expect(calls).toBe(1);
+  });
+});
+
+// `rejected: true` beside `scope: 'global'`: a renewal must stay on the
+// install's own row. The person's same-named row (seeded by setup()) must
+// never stand in for it, not even after the renewal waited for an ordinary
+// read and re-reads the row (plugin.ts's post-wait walk).
+describe("credentials:get {rejected, scope: 'global'}", () => {
+  beforeEach(() => {
+    process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
+  });
+
+  const decode = (input: Record<string, unknown>): string =>
+    new TextDecoder().decode(input.payload as Uint8Array);
+
+  async function setupWithGlobal(
+    resolve: (input: Record<string, unknown>) => Promise<{ value: string }>,
+    beforeGet?: () => Promise<void>,
+  ) {
+    const bus = await setup(resolve, beforeGet);
+    await bus.call('credentials:set', ctx(), {
+      scope: 'global',
+      ownerId: null,
+      ref: 'oauth1',
+      kind: 'fake-oauth',
+      payload: bytes('blob-global'),
+    });
+    return bus;
+  }
+
+  it("renews the global row, not the person's", async () => {
+    const renewedFrom: string[] = [];
+    const bus = await setupWithGlobal(async (input) => {
+      if (input.rejected === true) renewedFrom.push(`${String(input.scope)}:${decode(input)}`);
+      return { value: 'fresh' };
+    });
+    const global = { ref: 'oauth1', userId: 'u', scope: 'global' };
+    expect(await bus.call('credentials:get', ctx(), { ...global, rejected: true })).toBe('fresh');
+    expect(renewedFrom).toEqual(['global:blob-global']);
+  });
+
+  it('after waiting for an in-flight ordinary global read, renews the global row', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const renewedFrom: string[] = [];
+    const bus = await setupWithGlobal(async (input) => {
+      if (input.rejected === true) {
+        renewedFrom.push(`${String(input.scope)}:${decode(input)}`);
+        return { value: 'fresh' };
+      }
+      await gate;
+      return { value: 'old' };
+    });
+    const global = { ref: 'oauth1', userId: 'u', scope: 'global' };
+    const ordinary = bus.call<unknown, string>('credentials:get', ctx(), global);
+    await new Promise((r) => setTimeout(r, 10));
+    const rejected = bus.call<unknown, string>('credentials:get', ctx(), { ...global, rejected: true });
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    expect(await ordinary).toBe('old');
+    expect(await rejected).toBe('fresh');
+    expect(renewedFrom).toEqual(['global:blob-global']);
+  });
+
+  it("a global row deleted while the renewal waited is not-found, never the person's row", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const bus = await setupWithGlobal(async (input) => {
+      if (input.rejected === true) return { value: `fresh-${decode(input)}` };
+      await gate;
+      return { value: 'old' };
+    });
+    const global = { ref: 'oauth1', userId: 'u', scope: 'global' };
+    const ordinary = bus.call<unknown, string>('credentials:get', ctx(), global);
+    await new Promise((r) => setTimeout(r, 10));
+    const rejected = bus.call<unknown, string>('credentials:get', ctx(), { ...global, rejected: true });
+    await new Promise((r) => setTimeout(r, 10));
+    await bus.call('credentials:delete', ctx(), { scope: 'global', ownerId: null, ref: 'oauth1' });
+    release();
+    expect(await ordinary).toBe('old');
+    await expect(rejected).rejects.toMatchObject({ code: 'credential-not-found' });
+  });
+
+  it('a renewal that finds yet another ordinary read in flight after its wait waits again, and renews the global row', async () => {
+    const gates: Array<() => void> = [];
+    const hold = (): Promise<void> => new Promise<void>((r) => gates.push(r));
+    // One storage read is held when armed: the renewal's post-wait re-read.
+    let holdNextGet = false;
+    let releaseGet!: () => void;
+    const renewedFrom: string[] = [];
+    const bus = await setupWithGlobal(
+      async (input) => {
+        if (input.rejected === true) {
+          renewedFrom.push(`${String(input.scope)}:${decode(input)}`);
+          return { value: 'fresh' };
+        }
+        await hold();
+        return { value: 'old' };
+      },
+      async () => {
+        if (!holdNextGet) return;
+        holdNextGet = false;
+        await new Promise<void>((r) => {
+          releaseGet = r;
+        });
+      },
+    );
+    const global = { ref: 'oauth1', userId: 'u', scope: 'global' };
+    const tick = () => new Promise((r) => setTimeout(r, 10));
+
+    const first = bus.call<unknown, string>('credentials:get', ctx(), global);
+    await tick();
+    const rejected = bus.call<unknown, string>('credentials:get', ctx(), { ...global, rejected: true });
+    await tick();
+    // The first ordinary read settles; the renewal's re-read of the row is held...
+    holdNextGet = true;
+    gates[0]!();
+    expect(await first).toBe('old');
+    await tick();
+    // ...while a second ordinary read of the global row starts and stays in flight.
+    const second = bus.call<unknown, string>('credentials:get', ctx(), global);
+    await tick();
+    expect(gates).toHaveLength(2);
+    releaseGet();
+    await tick();
+    expect(renewedFrom).toEqual([]);
+    gates[1]!();
+    expect(await second).toBe('old');
+    expect(await rejected).toBe('fresh');
+    expect(renewedFrom).toEqual(['global:blob-global']);
   });
 });

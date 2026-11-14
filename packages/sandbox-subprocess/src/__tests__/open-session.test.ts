@@ -1166,6 +1166,90 @@ describe('sandbox:open-session', () => {
     await fs.rm(filesRoot, { recursive: true, force: true });
   });
 
+  // TASK-1091 — owner.source / owner.audience are host-stamped by the
+  // orchestrator and must reach session:create unchanged (the session record
+  // is where the IPC listeners read them back from). Stubbed lifecycle hooks so
+  // the test sees exactly what this backend forwards.
+  describe('forwards owner.source and owner.audience into session:create (TASK-1091)', () => {
+    const OWNER = {
+      userId: 'u-1',
+      agentId: 'agt-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+    };
+
+    async function openWithOwner(
+      owner: Record<string, unknown>,
+    ): Promise<{ createdOwner: Record<string, unknown>; resolverOwner: Record<string, unknown> }> {
+      const ws = await mkWorkspace();
+      const filesRoot = await mkWorkspace();
+      const sessionCreate = vi.fn(
+        async (_ctx: unknown, input: { sessionId: string; owner?: Record<string, unknown> }) => ({
+          sessionId: input.sessionId,
+          token: 'tok-' + input.sessionId,
+        }),
+      );
+      const resolverOwners: Array<Record<string, unknown>> = [];
+      const resolver = userFilesResolver(filesRoot)['sandbox:resolve-mounts']!;
+      const h = await createTestHarness({
+        services: {
+          'session:create': sessionCreate as never,
+          'session:terminate': vi.fn(async () => ({})) as never,
+          'ipc:start': vi.fn(async () => ({ running: true })) as never,
+          'ipc:stop': vi.fn(async () => ({})) as never,
+          'sandbox:resolve-mounts': async (ctx, input) => {
+            resolverOwners.push((input as { owner: Record<string, unknown> }).owner);
+            return resolver(ctx, input);
+          },
+        },
+        plugins: [createSandboxSubprocessPlugin()],
+      });
+      try {
+        const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+          sessionId: 'sub-mode',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: TEST_PROXY_CONFIG,
+          owner: { ...OWNER, ...owner },
+        });
+        await result.handle.kill();
+        await result.handle.exited;
+      } finally {
+        await h.close();
+        await fs.rm(ws, { recursive: true, force: true });
+        await fs.rm(filesRoot, { recursive: true, force: true });
+      }
+      expect(sessionCreate).toHaveBeenCalledTimes(1);
+      return {
+        createdOwner: sessionCreate.mock.calls[0]![1].owner!,
+        resolverOwner: resolverOwners[0]!,
+      };
+    }
+
+    it('an external, shared owner reaches session:create (and the mount resolver) with both keys', async () => {
+      const { createdOwner, resolverOwner } = await openWithOwner({
+        source: 'external',
+        audience: 'shared',
+      });
+      expect(createdOwner.source).toBe('external');
+      expect(createdOwner.audience).toBe('shared');
+      // The mount resolvers key off the same owner (memory reads it, TASK-1091).
+      expect(resolverOwner.audience).toBe('shared');
+    });
+
+    it('both keys stay absent when the input omits them', async () => {
+      const { createdOwner } = await openWithOwner({});
+      expect('source' in createdOwner).toBe(false);
+      expect('audience' in createdOwner).toBe(false);
+    });
+  });
+
   // TASK-992 — the durable /files home is REQUIRED. An owned session that would
   // come up without a user-files directory is refused BEFORE session:create
   // mints a token: nothing is minted, no listener binds, nothing spawns, and the

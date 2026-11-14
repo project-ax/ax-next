@@ -41,7 +41,7 @@ import { tasksForToday, useTasks } from '@/lib/workspace-tasks';
 import { useSelfChanges } from '@/lib/workspace-self-changes';
 import { waitingOnYou } from '@/lib/today-queue';
 import { continuationActions } from '@/lib/continuation-actions';
-import { resumeParkedTurn } from '@/lib/workspace-resume';
+import { resumeParkedTurn, type GrantResume } from '@/lib/workspace-resume';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import {
   useWorkspaceGrants,
@@ -705,7 +705,7 @@ function Inner({
    * that completed perfectly well.
    */
   const resumeAfterGrant = useCallback(
-    async (grant: WorkspaceGrant): Promise<boolean> => {
+    async (grant: WorkspaceGrant): Promise<GrantResume> => {
       /*
         Unreachable from the shipped row — `GrantRow` disables Connect and says
         `GRANT_NO_CONVERSATION` when there is no conversation — but the type
@@ -716,7 +716,7 @@ function Inner({
         agentId: grant.agentId,
         conversationId: grant.conversationId,
       });
-      if (!result.resumed) return false;
+      if (!result.resumed) return result.reason === 'read-only' ? 'reply-elsewhere' : false;
       /*
         IS THAT AGENT'S PANEL MOUNTED? That is the whole question, and it is a
         different one from `grantBelongsInThread` — which asks whether the

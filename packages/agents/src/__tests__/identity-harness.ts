@@ -24,6 +24,7 @@ import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import {
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
   type AgentContext,
+  type AgentContextSource,
   type SystemPromptAugmentChangedPayload,
   type ToolDescriptor,
 } from '@ax/core';
@@ -59,7 +60,7 @@ export interface IdentityHarness {
   descriptors: ToolDescriptor[];
   /** Replace the scan stub's answer for the rest of the case. */
   setScan(answer: ScanAnswer): void;
-  ctx(agentId: string, userId: string, extra?: { source?: 'routine' | 'user' }): AgentContext;
+  ctx(agentId: string, userId: string, extra?: { source?: AgentContextSource }): AgentContext;
   /** `agents:create` as `userId`; returns the new agent id. */
   createAgent(
     userId: string,

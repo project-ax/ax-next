@@ -256,6 +256,10 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // TASK-1100 -- the connector directory. Loaded unconditionally; disabled in
     // this lane's env, so it boots with no database call and no network.
     '@ax/connector-directory',
+    // TASK-1093 -- the Slack channel. Unconditional: with nothing connected it
+    // only mounts its routes and creates its table (the boot test below checks
+    // the table), and it never reaches Slack until an admin connects.
+    '@ax/channel-slack',
   ] as const;
 
   it(
@@ -353,6 +357,12 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
             "SELECT to_regclass('public.mcp_client_v1_tool_inventory')::text AS t",
           );
           expect(inventory.rows[0]?.t).toBe('mcp_client_v1_tool_inventory');
+          // TASK-1093: @ax/channel-slack's init ran against the shared database
+          // in the full production graph.
+          const slack = await probe.query<{ t: string | null }>(
+            "SELECT to_regclass('public.channel_slack_v1_installs')::text AS t",
+          );
+          expect(slack.rows[0]?.t).toBe('channel_slack_v1_installs');
         } finally {
           await probe.end();
         }

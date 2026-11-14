@@ -28,6 +28,17 @@ it('rechecks the live update binding after a delayed blob read before returning 
   expect(readTaskEvent).toHaveBeenCalledTimes(2);
 });
 
+it('refuses routine_read_update from an external turn, before any store or blob read', async () => {
+  const bus = new HookBus();
+  const blobGet = vi.fn(async () => ({ bytes: Buffer.from('PRIVATE') }));
+  bus.registerService('blob:get', 'test', blobGet);
+  const store = { readTaskEvent: vi.fn(async () => null), readRepeatUpdate: vi.fn(async () => null) };
+  registerRoutineServices({ bus, store: store as unknown as RoutinesStore, now: () => new Date(0) });
+  const ctx = makeAgentContext({ agentId: 'a', userId: 'owner', conversationId: 'c', source: 'external', sessionId: 's' });
+  await expect(bus.call('routines:read-update', ctx, { agentId: 'a', eventId: 'update_1' })).rejects.toMatchObject({ toolCode: 'forbidden' });
+  expect(blobGet).not.toHaveBeenCalled();
+}, 10_000);
+
 describe('the app update that started a repeat run (TASK-1050)', () => {
   type Scope = { agentId: string; conversationId: string; actorUserId: string; eventId: string };
   const ctx = makeAgentContext({ agentId: 'a', userId: 'owner', conversationId: 'c', source: 'routine', sessionId: 's' });

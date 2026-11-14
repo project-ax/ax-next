@@ -8,7 +8,8 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
+import { z } from 'zod';
 // Type-only import from `@ax/http-server` — we never import a runtime value
 // from a peer plugin (Invariant I2 — no cross-plugin imports). TypeScript's
 // `verbatimModuleSyntax: true` plus `import type {...}` guarantees the
@@ -26,7 +27,11 @@ import type {
   CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
+  FindUserByEmailInput,
+  FindUserByEmailOutput,
   HttpRequestLike,
+  IsApprovedEmailInput,
+  IsApprovedEmailOutput,
   User,
 } from './types.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from './migrations.js';
@@ -37,7 +42,7 @@ import {
   type ProviderRow,
 } from './handler.js';
 import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
-import { isPlainAscii } from './identity-gate.js';
+import { GATED_KINDS, isOnApprovedDomain, isPlainAscii, parseDomains } from './identity-gate.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -58,6 +63,15 @@ const AUTH_ROUTE = '/auth/*';
 const MAX_DISPLAY_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 320;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+$/;
+
+// `auth:find-user-by-email` returns the id and nothing else. `.strict()` makes
+// a future edit that returns more (the email, the admin flag) fail loudly as
+// `invalid-return` instead of having the extra keys quietly stripped.
+const FindUserByEmailOutputSchema = z.object({ userId: z.string().min(1) }).strict().nullable();
+
+// `auth:is-approved-email` answers yes or no and nothing else: an edit that
+// adds a key (a user id, the matched domain) fails as `invalid-return`.
+const IsApprovedEmailOutputSchema = z.object({ approved: z.boolean() }).strict();
 
 /**
  * Config surface for `@ax/auth-better`. All fields optional; defaults
@@ -103,6 +117,10 @@ export interface AuthBetterConfig {
 //
 // What's new vs. 1.3:
 //   - Real impls for auth:require-user, auth:get-user, auth:create-bootstrap-user
+//   - auth:find-user-by-email (TASK-1092): host-internal verified-email lookup
+//     for @ax/channel-slack; returns only `{ userId }` or null
+//   - auth:is-approved-email (TASK-1094): host-internal "is this email on an
+//     approved domain?" for @ax/channel-slack; reads no account
 //   - `/auth/*` splat route forwards to better-auth's WebStandards handler
 //   - auth:providers-changed subscriber rebuilds the handler in place
 //
@@ -149,6 +167,8 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
       registers: [
         'auth:require-user',
         'auth:get-user',
+        'auth:find-user-by-email',
+        'auth:is-approved-email',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -287,6 +307,26 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:get-user',
         PLUGIN_NAME,
         async (_ctx, input) => getUserById(localDb, input.userId),
+      );
+
+      // Host-internal identity mapping for @ax/channel-slack (TASK-1092):
+      // never an HTTP route or an IPC action. The contract is on
+      // FindUserByEmailInput in types.ts.
+      bus.registerService<FindUserByEmailInput, FindUserByEmailOutput>(
+        'auth:find-user-by-email',
+        PLUGIN_NAME,
+        (ctx, input) => findUserByEmail(localDb, ctx, input),
+        { returns: FindUserByEmailOutputSchema },
+      );
+
+      // Host-internal approved-domain check for @ax/channel-slack (TASK-1094):
+      // never an HTTP route or an IPC action. The contract is on
+      // IsApprovedEmailInput in types.ts.
+      bus.registerService<IsApprovedEmailInput, IsApprovedEmailOutput>(
+        'auth:is-approved-email',
+        PLUGIN_NAME,
+        (_ctx, input) => isApprovedEmail(localDb, input),
+        { returns: IsApprovedEmailOutputSchema },
       );
 
       bus.registerService<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
@@ -559,6 +599,149 @@ async function getUserById(
     .select(['id', 'email', 'name', 'role'])
     .executeTakeFirst();
   return row === undefined ? null : rowToUser(row);
+}
+
+/**
+ * `auth:find-user-by-email`: the one verified account that owns `email`, on an
+ * approved sign-in domain, or null. The contract is on FindUserByEmailInput in
+ * types.ts. Every rule fails closed, and the address never reaches an error
+ * message or a log line (it's PII from an outside system).
+ */
+async function findUserByEmail(
+  db: Kysely<AuthBetterDatabase>,
+  ctx: AgentContext,
+  input: FindUserByEmailInput,
+): Promise<FindUserByEmailOutput> {
+  // The address arrives from another system through host code. A wrong type is
+  // a caller bug, so it throws; a malformed string of the right type simply
+  // finds nobody.
+  const email: unknown = input?.email;
+  if (typeof email !== 'string' || email.length === 0 || email.length > MAX_EMAIL_LEN) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'auth:find-user-by-email',
+      message: `email must be a non-empty string of at most ${MAX_EMAIL_LEN} characters`,
+    });
+  }
+
+  // Printable ASCII only (U+0021 to U+007E, the sign-in gate's own test),
+  // checked before any query: nothing outside ASCII can be folded onto an
+  // ASCII address, and no byte the database would reject reaches it.
+  if (!isPlainAscii(email)) return null;
+
+  // ASCII case-insensitive, otherwise exact: emailEqualsAsciiFold folds A-Z
+  // and nothing else, on both sides, compared with `=`. Never LIKE/ILIKE: they
+  // read `%` and `_` as wildcards. No trimming. The UNIQUE on email is
+  // case-sensitive, and auth:create-bootstrap-user stored the address as typed
+  // until TASK-1116 made it lowercase, so rows written before that can still
+  // differ only in case; we fetch at most two to tell that
+  // apart. The verified rule is part of the match itself, so an unverified row
+  // is never returned and never counts toward ambiguity.
+  const rows = await db
+    .selectFrom('auth_better_v1_users')
+    .select(['id', 'email'])
+    .where(emailEqualsAsciiFold(email))
+    .where('email_verified', '=', true)
+    .limit(2)
+    .execute();
+  const row = rows[0];
+  if (row === undefined) {
+    // On a miss only, one more parameterized lookup with the same match and no
+    // verified rule, so an operator can tell "not verified yet" (e.g. the
+    // wizard admin before a Google sign-in) from "no account". Code-only line:
+    // never the address, never its domain. The caller still gets plain null.
+    const unverified = await db
+      .selectFrom('auth_better_v1_users')
+      .select('id')
+      .where(emailEqualsAsciiFold(email))
+      .limit(1)
+      .executeTakeFirst();
+    if (unverified !== undefined) ctx.logger.info('auth_find_user_by_email_unverified_only');
+    return null;
+  }
+  if (rows.length > 1) {
+    // Never pick one: that could hand one person's agent to another. Code-only
+    // line, never the address. (The query stops at two.)
+    ctx.logger.warn('auth_find_user_by_email_ambiguous', { matches: 2 });
+    return null;
+  }
+
+  // Approved domains, read now (never a cached copy) by readApprovedDomainLists:
+  // see isOnApprovedDomain for the rule. Both the input's domain and the STORED
+  // verified email's are checked: after the ASCII-only match they are the same
+  // domain up to case, and checking both keeps this rule from resting on the
+  // match alone.
+  const lists = await readApprovedDomainLists(db);
+  if (!isOnApprovedDomain(email, lists) || !isOnApprovedDomain(row.email, lists)) {
+    // A verified account matched, on a domain the lists exclude. Code-only.
+    ctx.logger.info('auth_find_user_by_email_off_domain');
+    return null;
+  }
+  return { userId: row.id };
+}
+
+/**
+ * `auth:is-approved-email`: is `email` a plain, well-formed address on one of
+ * the install's approved domains? The contract is on IsApprovedEmailInput in
+ * types.ts. It reads the providers' domain lists and nothing else, never a user
+ * row, so its answer can't say whether anyone has an account. It takes no ctx,
+ * so it can't log, and the address never reaches the database.
+ */
+async function isApprovedEmail(
+  db: Kysely<AuthBetterDatabase>,
+  input: IsApprovedEmailInput,
+): Promise<IsApprovedEmailOutput> {
+  // A wrong type is a caller bug, so it throws, with a fixed message.
+  const email: unknown = input?.email;
+  if (typeof email !== 'string' || email.length === 0 || email.length > MAX_EMAIL_LEN) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'auth:is-approved-email',
+      message: `email must be a non-empty string of at most ${MAX_EMAIL_LEN} characters`,
+    });
+  }
+
+  // The address's own shape comes first: with no domain list at all, every
+  // domain is approved. Printable ASCII only, so the domain compare below folds
+  // nothing but A-Z (toLowerCase() would turn the Kelvin sign into 'k'). Then
+  // exactly one @ with something on both sides: the domain check reads the
+  // part after the LAST @, so 'a@b@canopyworks.com' and '@canopyworks.com'
+  // would pass it.
+  if (!isPlainAscii(email)) return { approved: false };
+  const parts = email.split('@');
+  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') return { approved: false };
+
+  return { approved: isOnApprovedDomain(email, await readApprovedDomainLists(db)) };
+}
+
+/**
+ * Every sign-in provider's allowed-domain list, parsed, for `isOnApprovedDomain`.
+ * Read WHETHER OR NOT a provider is enabled: turning a sign-in method off
+ * neither widens nor narrows who counts as on an approved domain (its list
+ * still keeps other domains out, and still approves its own). Only the kinds
+ * the sign-in gate enforces (`GATED_KINDS`); any other row configures nothing.
+ */
+async function readApprovedDomainLists(
+  db: Kysely<AuthBetterDatabase>,
+): Promise<string[][]> {
+  const rows = await db
+    .selectFrom('auth_providers')
+    .select('allowed_domains')
+    .where('kind', 'in', [...GATED_KINDS])
+    .execute();
+  return rows.map((r) => parseDomains(r.allowed_domains));
+}
+
+/**
+ * `email` equals `input` up to ASCII case. Under COLLATE "C", lower() folds
+ * A-Z and nothing else. Plain lower() follows the database locale, which folds
+ * lookalikes onto ASCII (U+0130 dotted capital I to 'i', U+212A Kelvin sign to
+ * 'k'), so 'al\u0130ce@…' would find alice. `input` is a bound parameter.
+ */
+function emailEqualsAsciiFold(input: string): RawBuilder<boolean> {
+  return sql<boolean>`lower(${sql.ref('email')} COLLATE "C") = lower(${input} COLLATE "C")`;
 }
 
 async function createBootstrapUser(

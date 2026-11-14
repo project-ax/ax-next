@@ -1,4 +1,9 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import type {
+  AgentContext,
+  AgentContextAudience,
+  AgentContextSource,
+  HookBus,
+} from '@ax/core';
 import type { IpcErrorEnvelope } from '@ax/ipc-protocol';
 
 // ---------------------------------------------------------------------------
@@ -44,7 +49,13 @@ export type AuthResult =
       // token is the only thing the runner controls, and it only selects WHICH
       // session record to read; it cannot influence the stored `source`. Null
       // for user / canary / pre-TASK-181 sessions.
-      source: 'routine' | 'user' | null;
+      source: AgentContextSource | null;
+      // TASK-1091: the resolved session's HOST-DERIVED audience, carried the
+      // same way and for the same reason as `source` (memory reads it on the
+      // runner's calls to decide what the session may recall). Same SECURITY
+      // posture: from the session record only, never from the request. Null
+      // for private / canary / pre-TASK-1091 sessions.
+      audience: AgentContextAudience | null;
     }
   | { ok: false; status: number; body: IpcErrorEnvelope };
 
@@ -64,9 +75,46 @@ type SessionResolveTokenOutput =
       // TASK-181 — host-derived session origin echoed by session:resolve-token.
       // Optional here for back-compat with any resolver that predates TASK-181;
       // the listener treats a missing value as null (user) — see authenticate().
-      source?: 'routine' | 'user' | null;
+      source?: AgentContextSource | null;
+      // TASK-1091 — host-derived audience echoed by session:resolve-token.
+      // Optional here for the same back-compat reason; missing ⇒ null (private).
+      audience?: AgentContextAudience | null;
     }
   | null;
+
+// TASK-1091 — the values this build knows. A `Record` over each union, so a
+// new member is a compile error here until someone decides how it reads.
+const KNOWN_SOURCES: Readonly<Record<AgentContextSource, true>> = {
+  routine: true,
+  user: true,
+  external: true,
+};
+const KNOWN_AUDIENCES: Readonly<Record<AgentContextAudience, true>> = {
+  private: true,
+  shared: true,
+};
+
+/**
+ * The resolved session's origin. Absent stays `null` (a user turn); a value
+ * this build doesn't know reads as `'external'`, the least privileged.
+ */
+function sessionSource(raw: unknown): AgentContextSource | null {
+  if (raw === undefined || raw === null) return null;
+  return typeof raw === 'string' && Object.hasOwn(KNOWN_SOURCES, raw)
+    ? (raw as AgentContextSource)
+    : 'external';
+}
+
+/**
+ * The resolved session's audience. Absent stays `null` (private); a value
+ * this build doesn't know reads as `'shared'`, the least recall.
+ */
+function sessionAudience(raw: unknown): AgentContextAudience | null {
+  if (raw === undefined || raw === null) return null;
+  return typeof raw === 'string' && Object.hasOwn(KNOWN_AUDIENCES, raw)
+    ? (raw as AgentContextAudience)
+    : 'shared';
+}
 
 export async function authenticate(
   authHeader: string | undefined,
@@ -124,7 +172,14 @@ export async function authenticate(
     userId: resolved.userId ?? null,
     agentId: resolved.agentId ?? null,
     conversationId: resolved.conversationId ?? null,
-    // TASK-181 — host-derived; absent/unknown ⇒ null (treated as a user turn).
-    source: resolved.source ?? null,
+    // TASK-181 — host-derived; absent ⇒ null (treated as a user turn). Both
+    // session stores' returns schemas reject a value outside the enum
+    // (session-postgres maps it to 'external' first, TASK-1091), and this
+    // hop fails closed on its own as well: it is the last one before the
+    // value becomes `ctx.source` on every runner call.
+    source: sessionSource(resolved.source),
+    // TASK-1091 — host-derived; absent ⇒ null (treated as private). Same
+    // posture: an unknown value reads as 'shared'.
+    audience: sessionAudience(resolved.audience),
   };
 }

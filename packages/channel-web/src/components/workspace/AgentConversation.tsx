@@ -28,6 +28,8 @@ import {
   CircleStop,
   Hand,
   Layers,
+  Plus,
+  Square,
   type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -74,6 +76,7 @@ import type {
   WorkspaceReadStatus,
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import type { GrantResume } from '@/lib/workspace-resume';
 import { AgentTile } from './bits';
 import {
   CONSENT_REGION_ATTR,
@@ -231,6 +234,20 @@ interface Props {
   conversationId: string | null;
   decisions: Decision[];
   readOnly: boolean;
+  /**
+   * TASK-1093 — said where the composer would be, when `readOnly` because the
+   * conversation takes its messages somewhere else (a Slack DM thread: "Reply
+   * there"). A neutral note, not an alarm: nothing went wrong. Without it a
+   * read-only thread simply has no composer.
+   */
+  readOnlyNote?: string;
+  /**
+   * TASK-1093 — a "New chat" button inside the read-only note, so the reader
+   * who landed on a thread they can't write to has the way out right where
+   * they went to type. The same action as the sidebar's New chat. Only drawn
+   * with the note.
+   */
+  onNewChat?: () => void;
   /** True while a reply is streaming — the composer waits it out. */
   busy?: boolean;
   /**
@@ -326,7 +343,7 @@ interface Props {
    * Forwarded to the same `GrantRow` Today uses, so a grant answered in the
    * thread and one answered in the queue do the same thing.
    */
-  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
   /**
    * WHICH conversation the `thread` above is (TASK-418) — scroll position is
    * meaningless across a change of it.
@@ -373,6 +390,8 @@ export function AgentConversation({
   conversationId,
   decisions,
   readOnly,
+  readOnlyNote,
+  onNewChat,
   busy = false,
   onStop,
   stopping = false,
@@ -491,6 +510,14 @@ export function AgentConversation({
   const fieldRef = useRef<HTMLInputElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const stopClicked = useRef(false);
+  /*
+    TASK-1093 — a read-only (Slack) thread has no field: Stop rides in the
+    "reply in Slack" note and is simply removed when the turn ends, dropping
+    focus on <body>. There the next thing a person can do is start a New chat,
+    so focus goes to that button, or to the note itself when there is none.
+  */
+  const noteRef = useRef<HTMLDivElement>(null);
+  const noteNewChatRef = useRef<HTMLButtonElement>(null);
   // A layout effect, not a passive one (TASK-790): the field takes focus in
   // the same commit that turns Stop back into Send, so there is no tick where
   // focus sits on the button or <body> and a fast typist's key goes nowhere.
@@ -498,9 +525,9 @@ export function AgentConversation({
     if (busy || !stopClicked.current) return;
     stopClicked.current = false;
     const at = document.activeElement;
-    if (at === null || at === document.body || at === actionRef.current) {
-      fieldRef.current?.focus();
-    }
+    if (at !== null && at !== document.body && at !== actionRef.current) return;
+    if (fieldRef.current !== null) fieldRef.current.focus();
+    else (noteNewChatRef.current ?? noteRef.current)?.focus();
   }, [busy]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -642,15 +669,13 @@ export function AgentConversation({
             is where the reader is looking for them.
 
             `!readOnly` IS THE HONESTY GATE, not a style choice. `AgentView`
-            passes `readOnly={past !== null}`, and its `pastThread` renders
-            `[]` while `pastError` is set — see the comment on `pastThread`
-            in that file, which keeps that pane deliberately blank so the
-            alert above it is the only thing speaking. So a past
-            conversation whose excerpt read FAILED arrives here as an empty
-            thread, and "Nothing here yet" over it would be a claim about the
-            CONTENT built from a fact about the FETCH: the same substitution
-            the approval notice below exists to stop. A read-only thread with
-            zero messages therefore keeps rendering nothing.
+            passes `readOnly={inSlack}` (TASK-1093): a Slack DM thread, which
+            takes its messages in Slack and has no composer here — the
+            read-only note sits in the composer's slot instead. The welcome
+            copy invites the reader to type below, so over a read-only thread
+            it would point at a box that is not there and contradict the note
+            that says to reply in Slack. A read-only thread with zero messages
+            therefore keeps rendering nothing but that note.
 
             The live side has no matching hole: `AgentView` renders "Loading…"
             while `detail` is null, so `liveThread` reaches zero length only
@@ -671,8 +696,8 @@ export function AgentConversation({
             gets "send something below, {name} picks it up from there"
             directly above a card that is BLOCKING {name} until they answer
             it: an invitation to start, over the thing actually waiting. The
-            grant card then speaks alone, which is what the blank read-only
-            pane above does for the same reason.
+            grant card then speaks alone, which is what the read-only note
+            does over an empty Slack thread for the same reason.
 
             No suggestions, no example prompts, nothing about what the agent
             can do. It names where the reader is and what the box below is
@@ -767,11 +792,11 @@ export function AgentConversation({
         reduced renderer on the surface most people use is how the two would
         drift into asking the same question two different ways.
 
-        NOT gated on `readOnly`. The composer is hidden while a past
-        conversation is open, but a grant is not about the transcript being
-        read — it is a live question that stops this agent until it is answered,
-        and hiding it because somebody scrolled into history is exactly the
-        orphaning this card exists to prevent.
+        NOT gated on `readOnly`. The composer is hidden while a Slack thread
+        is open, but a grant is not about the transcript being read — it is a
+        live question that stops this agent until it is answered, and hiding it
+        because the thread on screen takes its messages elsewhere is exactly
+        the orphaning this card exists to prevent.
 
         Capped and scrollable, as chat's approval stack is: two grants each
         asking for a key are tall enough to push the composer off screen, and a
@@ -822,6 +847,72 @@ export function AgentConversation({
         )}
       </div>
 
+      {readOnly && readOnlyNote !== undefined && (
+        /*
+          In the composer's own slot, so the reader finds the answer where
+          they went to type. `role="note"`, not the Alert's default `alert`:
+          an assertive announcement on every open of a thread that is simply
+          read-only here would be noise.
+
+          Stop rides along while a reply runs. The composer is where Stop
+          lived, and a turn that came in from Slack is still this person's to
+          stop from here — the interrupt route asks whose conversation it is,
+          not where it came from. Without this, replacing the composer quietly
+          took away a control that worked.
+        */
+        <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
+          <Alert
+            ref={noteRef}
+            role="note"
+            tabIndex={-1}
+            className={cn("max-w-[720px]", RESOLUTION_FOCUS_RING)}
+          >
+            {/*
+              The composer announcer's twin, for the composer's Stop that lives
+              here now: in the DOM for as long as the note is, so "Stopping."
+              and "Stopped." are changes to a live region rather than a region
+              inserted with its text (the announcement screen readers drop).
+              Scoped to the note, so it never doubles the composer's — the two
+              are never on screen together.
+            */}
+            <span className="sr-only" role="status" aria-live="polite">
+              {stopping ? 'Stopping.' : stoppedShown ? 'Stopped.' : ''}
+            </span>
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span>{readOnlyNote}</span>
+              <span className="flex gap-2">
+                {showStop && onStop !== undefined && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={stopping}
+                    onClick={() => {
+                      stopClicked.current = true;
+                      onStop();
+                    }}
+                  >
+                    <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
+                    {stopping ? 'Stopping' : 'Stop'}
+                  </Button>
+                )}
+                {onNewChat !== undefined && (
+                  <Button
+                    ref={noteNewChatRef}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onNewChat()}
+                  >
+                    <Plus aria-hidden="true" data-icon="inline-start" />
+                    New chat
+                  </Button>
+                )}
+              </span>
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
       {!readOnly && (
         <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
           {attachments.length > 0 && (

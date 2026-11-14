@@ -50,7 +50,7 @@ const failureOf = (promise: Promise<unknown>) => promise.then(() => null, (error
  * IPC listener mints it: a fresh reqId, and the session's own person, agent,
  * conversation and source. `over` stands in for a session that differs.
  */
-const runner = (ctx: AgentContext, over: { userId?: string; conversationId?: string } = {}): AgentContext => makeAgentContext({
+const runner = (ctx: AgentContext, over: { userId?: string; conversationId?: string; source?: 'routine' | 'user' | 'external' } = {}): AgentContext => makeAgentContext({
   userId: ctx.userId, agentId: ctx.agentId, sessionId: 'check-in', conversationId: ctx.conversationId!, source: 'routine', ...over,
 });
 
@@ -391,6 +391,7 @@ describe('routine_report (TASK-907)', () => {
     }
     await checkIn(task, 'task-run', async ctx => {
       await refused('an ordinary chat', makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'chat', conversationId: 'chat' }), 'no-source');
+      await refused('an external turn in the run’s conversation', runner(ctx, { source: 'external' }), 'no-source');
       await refused('a routine run with no conversation', makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'check-in', source: 'routine' }), 'no-conversation');
       await refused('a conversation no run is in', runner(ctx, { conversationId: 'elsewhere' }), 'no-open-run');
       await refused("someone other than the task's owner", runner(ctx, { userId: 'intruder' }), 'wrong-owner');

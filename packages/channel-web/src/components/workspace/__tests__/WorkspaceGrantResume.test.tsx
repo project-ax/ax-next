@@ -24,7 +24,12 @@ import {
   getWorkspaceGrantSnapshot,
   workspaceGrantActions,
 } from '@/lib/workspace-grant-store';
-import { GRANT_NOT_RESUMED, grantResumedTitle } from '@/lib/grant-copy';
+import {
+  GRANT_NOT_RESUMED,
+  GRANT_NOT_RESUMED_ELSEWHERE,
+  grantResumedTitle,
+} from '@/lib/grant-copy';
+import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
 import { toastActions } from '@/lib/toast-store';
 import type { StreamHandlers } from '@/lib/workspace-api';
 import type { PermissionRequest } from '@/server/types';
@@ -391,5 +396,53 @@ describe('a grant answered on Today, for an agent nobody is looking at', () => {
       from several agents and "your agent" would not say which one started.
     */
     expect(toastSpy).toHaveBeenCalledWith({ title: grantResumedTitle('Scout') });
+  });
+
+  /*
+    TASK-1093 — the send route refuses every conversation that did not start
+    here, Slack threads and routine runs alike. Only a Slack thread is
+    somewhere the person can go and reply, so only a Slack thread gets the
+    "reply to it in Slack" sentence. A routine's grant,
+    answered here on Today, keeps the plain could-not-start-it sentence it had
+    before the Slack copy existed.
+  */
+  async function answerTodayGrantOn(origin: string): Promise<void> {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) => ({
+      ...detailFor(SCOUT, conversationId ?? 'cnv-2', threads['cnv-2'] ?? []),
+      origin,
+    }));
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-2', agentId: 'a-scout', request: linearSkill() },
+      ],
+    });
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+
+    renderAt('/workspace');
+    await screen.findByTestId('grant-skill:linear');
+    connect();
+  }
+
+  it('says to reply in Slack when the grant was raised in a Slack thread', async () => {
+    await answerTodayGrantOn('slack');
+
+    expect(await screen.findByText(GRANT_NOT_RESUMED_ELSEWHERE)).toBeInTheDocument();
+    expect(screen.queryByText(GRANT_NOT_RESUMED)).toBeNull();
+    expect(GRANT_NOT_RESUMED_ELSEWHERE).toMatch(/Slack/);
+    expect(GRANT_NOT_RESUMED_ELSEWHERE).not.toMatch(/send it a message/);
+    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
+    await waitFor(() =>
+      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
+    );
+  });
+
+  it('keeps the plain sentence when the grant was raised in a routine run', async () => {
+    await answerTodayGrantOn('routine');
+
+    expect(await screen.findByText(GRANT_NOT_RESUMED)).toBeInTheDocument();
+    expect(screen.queryByText(GRANT_NOT_RESUMED_ELSEWHERE)).toBeNull();
+    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
   });
 });

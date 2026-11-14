@@ -183,22 +183,40 @@ describe('store + migrations round-trip', () => {
     expect((await store.getMetadata(c.conversationId))!.origin).toBe('routine');
   });
 
-  it('reads a stored value it does not recognise as web, not as itself', async () => {
+  it('records a slack origin (TASK-1093)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const c = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+      origin: 'slack',
+    });
+    expect(c.origin).toBe('slack');
+    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('slack');
+    expect((await store.getMetadata(c.conversationId))!.origin).toBe('slack');
+  });
+
+  it('an unknown stored origin still reads as web', async () => {
     // A hand-edited row (or a future channel talking to an old host) must not
-    // widen the union that everything downstream switches on. Narrowing to the
-    // permissive-but-safe default beats leaking an unknown string.
+    // widen the union that everything downstream switches on: it reads as
+    // `'web'`, not as itself. No case folding either: 'Slack' isn't 'slack'.
     const db = makeKysely();
     await runConversationsMigration(db);
     const store = createConversationStore(db);
     const c = await store.create({ userId: 'u1', agentId: 'agt_x', title: null });
-    await db
-      .updateTable('conversations_v1_conversations')
-      .set({ origin: 'slack' })
-      .where('conversation_id', '=', c.conversationId)
-      .execute();
+    for (const stored of ['carrier-pigeon', 'Slack', '']) {
+      await db
+        .updateTable('conversations_v1_conversations')
+        .set({ origin: stored })
+        .where('conversation_id', '=', c.conversationId)
+        .execute();
 
-    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('web');
-    expect((await store.getMetadata(c.conversationId))!.origin).toBe('web');
+      expect((await store.getByIdNotDeleted(c.conversationId))!.origin, stored).toBe('web');
+      expect((await store.getMetadata(c.conversationId))!.origin, stored).toBe('web');
+    }
   });
 
   it('backfills a pre-existing hidden row to a routine origin', async () => {

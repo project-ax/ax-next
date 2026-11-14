@@ -9,8 +9,8 @@
 // Architecturally this CLI is the kernel host (same pattern as
 // `credentials.ts`): it bootstraps the same plugin set that owns
 // bootstrap-installed state — database-postgres, storage-postgres,
-// credentials, credentials-store-db, auth-better, agents, onboarding —
-// so subscribers to `bootstrap:reset-cleanup` are active when the hook
+// credentials, credentials-store-db, auth-better, agents, channel-slack,
+// onboarding — so subscribers to `bootstrap:reset-cleanup` are active when the hook
 // fires. Without those subscribers on the bus, the cascade no-ops and
 // the next wizard run trips over leftover admin/agent/credential rows.
 // All onboarding state shape lives inside @ax/onboarding (Invariant I4
@@ -29,7 +29,10 @@
 //   No HTTP. The CLI talks directly to the database via @ax/database-postgres.
 //   Each loaded plugin still calls http:register-route for its routes; the
 //   CLI registers a no-op stub for that hook so verifyCalls passes without
-//   standing up a real listener.
+//   standing up a real listener. channel-slack also calls
+//   conversations:find-or-create and agent:invoke for Slack DMs, which can't
+//   reach this process (its events route lands on that stub), so the CLI
+//   stubs those two with services that refuse if anything ever calls them.
 
 import {
   HookBus,
@@ -43,6 +46,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createAuthBetterPlugin } from '@ax/auth-better';
 import { createAgentsPlugin } from '@ax/agents';
+import { createChannelSlackPlugin } from '@ax/channel-slack';
 import {
   createOnboardingPlugin,
   printTokenToStdout,
@@ -141,7 +145,8 @@ export async function runAdminResetBootstrapCommand(
     return 2;
   }
 
-  const baseUrl = env.AX_PUBLIC_BASE_URL ?? DEFAULT_BASE_URL;
+  // Same semantics as the host: blank (empty or whitespace) means unset.
+  const baseUrl = env.AX_PUBLIC_BASE_URL?.trim() || DEFAULT_BASE_URL;
 
   const bus = new HookBus();
 
@@ -154,6 +159,20 @@ export async function runAdminResetBootstrapCommand(
     'admin-reset-bootstrap-stub',
     async () => ({ unregister: () => {} }),
   );
+  // channel-slack is loaded only for its bootstrap:reset-cleanup subscriber.
+  // Its DM path calls these two, and a Slack DM can't reach this process (the
+  // events route above goes nowhere), so they are never called here. Each
+  // refuses rather than pretend, should that ever change.
+  for (const hook of ['conversations:find-or-create', 'agent:invoke'] as const) {
+    bus.registerService(hook, 'admin-reset-bootstrap-stub', async () => {
+      throw new PluginError({
+        code: 'not-available',
+        plugin: PLUGIN_NAME,
+        hookName: hook,
+        message: `${hook} is not available in admin reset-bootstrap`,
+      });
+    });
+  }
 
   let handle;
   try {
@@ -177,6 +196,11 @@ export async function runAdminResetBootstrapCommand(
         createCredentialsStoreDbPlugin(),
         createAuthBetterPlugin(),
         createAgentsPlugin(),
+        // The reset wipes channel-slack's slack:* secrets from the vault
+        // (credentials-store-db); its own subscriber removes the install
+        // rows, which would otherwise still read as "connected". Its routes
+        // land on the no-op stub above, so publicOrigin only has to parse.
+        createChannelSlackPlugin({ publicOrigin: baseUrl }),
         // Silent writers: onboarding's first-boot init prints a token +
         // writes a token file when the row is missing. We're about to
         // OVERWRITE that token via bootstrap:reset, so suppress the

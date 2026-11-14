@@ -74,6 +74,7 @@ afterEach(async () => {
     await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);
     await sql`DROP TABLE IF EXISTS agents_v1_agents`.execute(k);
     await sql`DROP TABLE IF EXISTS storage_postgres_v1_kv`.execute(k);
+    await sql`DROP TABLE IF EXISTS channel_slack_v1_installs`.execute(k);
   } finally {
     await k.destroy().catch(() => {});
   }
@@ -191,6 +192,24 @@ describe('admin reset-bootstrap — happy paths', () => {
     expect(urlLine).toBeDefined();
     expect(urlLine).toMatch(/http:\/\/localhost:8080\/setup\?token=ax_bs_/);
   });
+
+  it.each([['empty', ''], ['whitespace-only', '   ']])(
+    'an %s AX_PUBLIC_BASE_URL is treated as unset: the reset succeeds and prints the default URL',
+    async (_label, value) => {
+      const cap = captureStreams();
+      const code = await runAdminResetBootstrapCommand({
+        argv: [],
+        env: { AX_PUBLIC_BASE_URL: value },
+        stdout: cap.stdout,
+        stderr: cap.stderr,
+        databaseOverride: { connectionString },
+      });
+      expect(code).toBe(0);
+      expect(cap.err.join('\n')).not.toContain('publicOrigin');
+      const urlLine = cap.out.find((l) => l.includes('/setup?token='));
+      expect(urlLine).toMatch(/http:\/\/localhost:8080\/setup\?token=ax_bs_/);
+    },
+  );
 
   it('Branch 2: pre-completed row, no flags → refuses with exit 1 and "completed" error', async () => {
     await seedCompletedRow();
@@ -317,12 +336,18 @@ describe('admin reset-bootstrap — happy paths', () => {
     // tables. The next wizard run would then hit
     // "admin already exists; bootstrap refused".
     //
-    // Pre-seed the three table sets the cascade is supposed to wipe,
-    // run reset-bootstrap --force, and assert all three are empty.
+    // Pre-seed the table sets the cascade is supposed to wipe, run
+    // reset-bootstrap --force, and assert all of them are empty.
+    //
+    // channel-slack is one of them: the reset wipes its slack:* secrets
+    // from the vault, so an install row left `active` would read as
+    // "connected" with nothing behind it. Its subscriber only runs if
+    // the CLI loads the plugin.
 
     // Run a no-op reset first to provision schemas (auth-better's
     // migration creates auth_better_v1_users, agents'  creates
-    // agents_v1_agents, storage-postgres' creates storage_postgres_v1_kv).
+    // agents_v1_agents, storage-postgres' creates storage_postgres_v1_kv,
+    // channel-slack's creates channel_slack_v1_installs).
     const seedCap = captureStreams();
     const seedCode = await runAdminResetBootstrapCommand({
       argv: [],
@@ -365,6 +390,23 @@ describe('admin reset-bootstrap — happy paths', () => {
         INSERT INTO storage_postgres_v1_kv (key, value, updated_at)
         VALUES ('credential:v2:user:usr_test:anthropic-api', 'cipher'::bytea, NOW())
       `.execute(k);
+      // A connected Slack app. If channel-slack isn't on the CLI's bus its
+      // migration never ran, so say so plainly instead of failing on
+      // "relation does not exist".
+      const slackTable = await sql<{ t: string | null }>`
+        SELECT to_regclass('channel_slack_v1_installs')::text AS t
+      `.execute(k);
+      expect(slackTable.rows[0]?.t).toBe('channel_slack_v1_installs');
+      await sql`
+        INSERT INTO channel_slack_v1_installs (
+          install_id, status, app_id, client_id, bot_name, team_id,
+          team_name, bot_user_id, connected_by_user_id, installed_at
+        )
+        VALUES (
+          'inst_test', 'active', 'A_TEST', 'cid_test', 'ax', 'T_TEST',
+          'Test Team', 'U_TEST', 'usr_test', NOW()
+        )
+      `.execute(k);
       // Note: we deliberately don't seed an auth_providers row here as a
       // "survivor" guard. auth-better's loadProviders runs at boot and
       // AES-GCM-decrypts every row's client_secret_encrypted; a fake
@@ -395,6 +437,7 @@ describe('admin reset-bootstrap — happy paths', () => {
       auth_better_v1_sessions: { id: string };
       agents_v1_agents: { agent_id: string };
       storage_postgres_v1_kv: { key: string };
+      channel_slack_v1_installs: { install_id: string };
     }>({
       dialect: new PostgresDialect({
         pool: new pg.Pool({ connectionString, max: 1 }),
@@ -411,6 +454,11 @@ describe('admin reset-bootstrap — happy paths', () => {
       expect(sessions).toEqual([]);
       expect(agents).toEqual([]);
       expect(credentialKeys.rows).toEqual([]);
+      const slackInstalls = await k2
+        .selectFrom('channel_slack_v1_installs')
+        .selectAll()
+        .execute();
+      expect(slackInstalls).toEqual([]);
     } finally {
       await k2.destroy().catch(() => {});
     }

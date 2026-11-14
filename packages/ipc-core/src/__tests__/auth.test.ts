@@ -94,6 +94,95 @@ describe('authenticate', () => {
     expect(result.body.error.message).not.toContain(h.token);
   });
 
+  // TASK-1091 — source and audience come from the session record the token
+  // selects, never from the request. authenticate() only carries them over.
+  it("carries the session record's source and audience onto the auth result", async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      {
+        sessionId: 's-ext',
+        workspaceRoot: '/tmp/ws',
+        owner: {
+          userId: 'u-1',
+          agentId: 'a-1',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          source: 'external',
+          audience: 'shared',
+        },
+      },
+    );
+    const result = await authenticate(`Bearer ${token}`, h.bus, h.ctx());
+    expect(result).toMatchObject({ ok: true, source: 'external', audience: 'shared' });
+  });
+
+  it('reports null source and audience for a session stamped with neither', async () => {
+    const h = await makeHarnessWithSession('s-plain', '/tmp/ws');
+    const result = await authenticate(`Bearer ${h.token}`, h.bus, h.ctx());
+    expect(result).toMatchObject({ ok: true, source: null, audience: null });
+  });
+
+  it('reports audience null when the resolver predates it (key absent)', async () => {
+    const h = await createTestHarness({
+      services: {
+        'session:resolve-token': async () => ({
+          sessionId: 's-old',
+          workspaceRoot: '/tmp/ws',
+          userId: 'u-1',
+          agentId: 'a-1',
+          conversationId: null,
+          source: null,
+        }),
+      },
+    });
+    const result = await authenticate('Bearer tok', h.bus, h.ctx());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Present and null (never undefined), so the listeners' `!== null` spread
+    // leaves ctx.audience off and the turn stays private.
+    expect('audience' in result).toBe(true);
+    expect(result.audience).toBeNull();
+  });
+
+  // Both session stores refuse or remap an unknown stored value today, but
+  // this is the last hop before the value becomes `ctx.source` on every
+  // runner call, so it fails closed on its own: an unknown source reads as
+  // 'external' (least privilege), an unknown audience as 'shared' (least
+  // recall).
+  it.each([
+    { label: 'an unknown source', resolved: { source: 'bogus' }, want: { source: 'external', audience: null } },
+    { label: 'an empty source', resolved: { source: '' }, want: { source: 'external', audience: null } },
+    { label: 'an unknown audience', resolved: { audience: 'public' }, want: { source: null, audience: 'shared' } },
+    {
+      label: 'known values',
+      resolved: { source: 'routine', audience: 'private' },
+      want: { source: 'routine', audience: 'private' },
+    },
+  ])('fails closed on what the resolver returns: $label', async ({ resolved, want }) => {
+    const h = await createTestHarness({
+      services: {
+        'session:resolve-token': async () => ({
+          sessionId: 's-odd',
+          workspaceRoot: '/tmp/ws',
+          userId: 'u-1',
+          agentId: 'a-1',
+          conversationId: null,
+          ...resolved,
+        }),
+      },
+    });
+    const result = await authenticate('Bearer tok', h.bus, h.ctx());
+    expect(result).toMatchObject({ ok: true, ...want });
+  });
+
   it('matches the Bearer scheme case-insensitively', async () => {
     const h = await makeHarnessWithSession('s-6', '/tmp/ws-6');
     const result = await authenticate(`bearer ${h.token}`, h.bus, h.ctx());

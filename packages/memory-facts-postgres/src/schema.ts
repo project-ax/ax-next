@@ -18,6 +18,15 @@ export interface FactRow {
   conversation_id: string | null;
   source_turn_id: string | null;
   source_role: 'user' | 'assistant' | null;
+  /**
+   * Who could see the turn this row was learned in (TASK-1091), as stamped by
+   * the producer: `'private'` or `'shared'`, validated at `record`. NULL on
+   * every row stored without a stamp, including every row that predates the
+   * column — and NULL never matches a shared recall, because the predicate is
+   * a strict `audience = 'shared'`. No CHECK constraint, matching the other
+   * enum-ish provenance columns, so a forward deploy cannot wedge on it.
+   */
+  audience: 'private' | 'shared' | null;
   kind: FactKind | null;
   /**
    * ⚠ `TEXT`, not `timestamptz` — and so is {@link FactRow.valid_end}. See the
@@ -132,6 +141,7 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       conversation_id  TEXT,
       source_turn_id   TEXT,
       source_role      TEXT,
+      audience         TEXT,
       kind             TEXT,
       valid_start      TEXT NOT NULL,
       valid_end        TEXT NOT NULL DEFAULT ${sql.lit(INFINITY_SENTINEL)},
@@ -158,6 +168,11 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS source_turn_id TEXT`.execute(db);
   // TASK-648 — same additive story: an older row's speaker is simply unknown.
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS source_role TEXT`.execute(db);
+  // TASK-1091 — the audience stamp. Same additive story, and here the NULL is
+  // load-bearing rather than merely honest: an older row was never stamped
+  // shared, and a shared recall's strict `audience = 'shared'` never matches
+  // NULL.
+  await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS audience TEXT`.execute(db);
   // TASK-624. Same shape: nullable, no default, no backfill — every older row
   // was closed (if at all) by a rule or a plain retraction, and NULL says
   // exactly "not never-true".

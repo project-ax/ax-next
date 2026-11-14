@@ -1,4 +1,10 @@
-import { PluginError, type AgentContext, type HookBus, type ToolDescriptor } from '@ax/core';
+import {
+  PluginError,
+  isAttendedTurn,
+  type AgentContext,
+  type HookBus,
+  type ToolDescriptor,
+} from '@ax/core';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
@@ -18,9 +24,12 @@ import {
 //
 // Both act on `ctx.agentId` — the session's agent, stamped by the host from
 // the session record — and never on an id from the tool input (an extra input
-// key is refused). Both refuse an unattended run (`ctx.source === 'routine'`:
-// a routine or a task check-in, no person present); the orchestrator also
-// keeps them out of such a session's catalog, so this is defence in depth.
+// key is refused). Both refuse any turn that isn't attended
+// (`!isAttendedTurn(ctx)`): a routine or a task check-in, where no person is
+// present, and an external turn (TASK-1091), where the person present has no
+// access to the agent and so doesn't get to change who it is. The
+// orchestrator also keeps them out of such a session's catalog, so this is
+// defence in depth.
 //
 // They call the `agents:identity:*` hooks on the bus — the same registered
 // surface, checks and `returns` schemas a person's editor goes through — so
@@ -148,7 +157,7 @@ const UPDATE_MESSAGES: Record<
     'Your Instructions come from your people, and only they can change them. ' +
     'update_identity changes only your identity or your soul.',
   changed: 'your identity kept changing while you edited it. Try again.',
-  'not-available': "you can't change your identity in a run with no person present.",
+  'not-available': "you can't change your identity in a run where nobody with access to this agent is present.",
   'not-allowed': "you can't change this agent's identity from here.",
   unavailable: "your identity couldn't be saved right now; you may retry later.",
 };
@@ -159,7 +168,7 @@ const COMPLETE_MESSAGES: Record<CompleteBootstrapError, string> = {
   'already-done': 'Already done: your first-run setup was completed earlier.',
   'not-bootstrapping': "You're not in first-run setup, so there's nothing to finish.",
   'needs-identity-and-soul': 'NOT DONE: save both your identity and your soul with update_identity first.',
-  'not-available': "NOT DONE: first-run setup can't be finished in a run with no person present.",
+  'not-available': "NOT DONE: first-run setup can't be finished in a run where nobody with access to this agent is present.",
   'not-allowed': "NOT DONE: you can't finish this agent's first-run setup from here.",
   unavailable: "NOT DONE: this couldn't be completed right now; you may retry later.",
   'invalid-input': 'NOT DONE: complete_bootstrap takes no input; call it with {}.',
@@ -238,7 +247,7 @@ async function runUpdateIdentity(
   ctx: AgentContext,
   call: ToolCallInput | undefined,
 ): Promise<UpdateIdentityResult> {
-  if (ctx.source === 'routine') return notSaved('not-available');
+  if (!isAttendedTurn(ctx)) return notSaved('not-available');
   const request = parseUpdateInput(call?.input);
   if (typeof request === 'string') return notSaved(request);
   const { section } = request;
@@ -332,7 +341,7 @@ async function runCompleteBootstrap(
   ctx: AgentContext,
   call: ToolCallInput | undefined,
 ): Promise<CompleteBootstrapResult> {
-  if (ctx.source === 'routine') return completeFailure('not-available');
+  if (!isAttendedTurn(ctx)) return completeFailure('not-available');
   const input = call?.input;
   // No input is the only input: absent, null or {}.
   if (!(input === undefined || input === null || (isPlainObject(input) && Object.keys(input).length === 0))) {

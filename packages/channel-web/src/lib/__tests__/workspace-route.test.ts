@@ -259,6 +259,15 @@ describe('agent settings (TASK-888)', () => {
     expect(parseWorkspaceRoute(path)).toEqual({ kind: 'agent-settings', id: 'a1', section });
   });
 
+  it('accepts the Slack section after Connectors', () => {
+    expect(parseWorkspaceRoute('/workspace/agents/a1/settings/slack')).toEqual({
+      kind: 'agent-settings',
+      id: 'a1',
+      section: 'slack',
+    });
+    expect(AGENT_SETTINGS_SECTIONS.indexOf('slack')).toBe(AGENT_SETTINGS_SECTIONS.indexOf('connectors') + 1);
+  });
+
   it('reads a bare /settings as Instructions', () => {
     expect(parseWorkspaceRoute('/workspace/agents/a1/settings')).toEqual({
       kind: 'agent-settings',

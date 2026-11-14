@@ -6,9 +6,11 @@ import {
   ownerlessIdFor,
   PluginError,
   type AgentContext,
+  type AgentContextSource,
 } from '@ax/core';
 import { SKILL_PROPOSE_REASON_MAX, SkillProposeResponseSchema } from '@ax/ipc-protocol';
 import { MANIFEST_CODES } from '@ax/skills-parser';
+import { hookRejected } from '../errors.js';
 import { skillProposeHandler } from '../handlers/skill-propose.js';
 
 const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
@@ -326,5 +328,55 @@ describe('skill.propose handler (TASK-74)', () => {
     const errors = entries.filter((e) => e.level === 'error');
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ pluginErrorCode: 'invalid-new-parser-code' });
+  });
+
+  // TASK-1091: an external turn (a person with no access to this agent is
+  // present) can't author a skill. A clean authored skill goes active with no
+  // human, a lasting change to the agent like an identity edit. `source` is
+  // stamped by the IPC listener from the session record, never read off this
+  // payload. A routine keeps proposing: the skill-reflection routine depends
+  // on it.
+  describe('TASK-1091: external turns', () => {
+    const EXTERNAL_REFUSAL =
+      "skill.propose: skills can't be saved from a conversation with people who don't have access to this agent. Nothing was saved.";
+
+    function sourcedCtx(source: AgentContextSource): AgentContext {
+      return makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1', source });
+    }
+
+    function countingBus(): { bus: HookBus; calls: () => number } {
+      let n = 0;
+      const bus = busWithPropose(async () => {
+        n += 1;
+        return { skillId: 'commit-style', status: 'active' };
+      });
+      return { bus, calls: () => n };
+    }
+
+    it("refuses an external session's proposal without calling skills:propose", async () => {
+      const { bus, calls } = countingBus();
+      const r = await skillProposeHandler(validPayload, sourcedCtx('external'), bus);
+      expect(calls()).toBe(0);
+      expect(r).toEqual(hookRejected(EXTERNAL_REFUSAL));
+      // A fixed sentence the runner relays to the model, so pin the wire too.
+      expect(r).toEqual({
+        status: 409,
+        body: { error: { code: 'HOOK_REJECTED', message: EXTERNAL_REFUSAL } },
+      });
+    });
+
+    it("refuses a session whose source this build doesn't know (fails closed)", async () => {
+      const { bus, calls } = countingBus();
+      const r = await skillProposeHandler(validPayload, sourcedCtx('bogus' as never), bus);
+      expect(calls()).toBe(0);
+      expect(r).toEqual(hookRejected(EXTERNAL_REFUSAL));
+    });
+
+    it.each(['routine', 'user'] as const)("still forwards a %s session's proposal", async (source) => {
+      const { bus, calls } = countingBus();
+      const r = await skillProposeHandler(validPayload, sourcedCtx(source), bus);
+      expect(calls()).toBe(1);
+      expect(r).toEqual({ status: 200, body: { skillId: 'commit-style', status: 'active' } });
+    });
   });
 });

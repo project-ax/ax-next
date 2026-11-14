@@ -67,7 +67,7 @@ export interface LocalUserFacts {
 }
 
 /** The provider kinds ax wires into better-auth. Any other kind configures nothing. */
-const GATED_KINDS: ReadonlySet<string> = new Set(['google', 'github']);
+export const GATED_KINDS: ReadonlySet<string> = new Set(['google', 'github']);
 
 /** Parse the provider's allowed_domains (comma-separated) into lowercased bare domains. */
 export function parseDomains(raw: string | null | undefined): string[] {
@@ -80,6 +80,48 @@ export function emailDomain(email: string): string {
   const at = email.lastIndexOf('@');
   if (at < 0 || at === email.length - 1) return '';
   return email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * THE approved-domain predicate. An empty `allowed` list means any domain
+ * (blank = open). Otherwise the email's domain must equal a listed one exactly:
+ * a subdomain is not a match, and an email with no domain never is. `allowed`
+ * is expected from `parseDomains` (lowercased, trimmed).
+ *
+ * The sign-in gate (`decideIdentity` rule 5) applies it to the list of the
+ * provider being used. `isOnApprovedDomain` applies it across every
+ * provider's list, for checks that aren't a sign-in.
+ */
+export function isDomainAllowed(email: string, allowed: readonly string[]): boolean {
+  if (allowed.length === 0) return true;
+  return allowed.includes(emailDomain(email));
+}
+
+/**
+ * Is `email` on an approved sign-in domain, for a check that isn't itself a
+ * sign-in (`auth:find-user-by-email`, TASK-1092; `auth:is-approved-email`,
+ * TASK-1094)? `lists` holds every gated provider's parsed list, enabled or not.
+ * The email must be on at least one non-blank list. A blank list adds nothing,
+ * and only when no provider has a list at all is every domain approved, the
+ * same as sign-in with no lists. It reads only the domain (after the last @):
+ * with no list, any string passes, so a caller that needs a well-formed
+ * address checks that first.
+ *
+ * This is the install's list of company domains, not a replay of sign-in, and
+ * it differs from sign-in both ways. Narrower: with Google limited to
+ * canopyworks.com and GitHub enabled with a blank list, a gmail GitHub member
+ * can sign in but is not on an approved domain here; nor is an off-domain
+ * admin, whom sign-in lets through. Wider: a disabled provider's list still
+ * counts, so its own domains stay approved even though nobody signs in
+ * through it (and its list still keeps other domains out).
+ */
+export function isOnApprovedDomain(
+  email: string,
+  lists: ReadonlyArray<readonly string[]>,
+): boolean {
+  const set = lists.filter((l) => l.length > 0);
+  if (set.length === 0) return true;
+  return set.some((l) => isDomainAllowed(email, l));
 }
 
 /**
@@ -155,7 +197,7 @@ export function decideIdentity(
   //    the operator (the setup wizard or SQL), never admitted by a sign-up, and
   //    the list must not lock the operator out of their own install.
   const existingAdmin = attempt.action !== 'create-user' && local?.role === 'admin';
-  if (list.length > 0 && !list.includes(emailDomain(email)) && !existingAdmin) {
+  if (!isDomainAllowed(email, list) && !existingAdmin) {
     return 'email_domain_not_allowed';
   }
 

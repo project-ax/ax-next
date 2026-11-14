@@ -297,6 +297,14 @@ const PLUGINS_TO_DROP = new Set<string>([
   // pinned in preset.test.ts and the real sweep (real postgres, real fs blob
   // store, real holders) by the blob-gc-report-acceptance.test.ts canary.
   '@ax/blob-gc',
+  // TASK-1093: @ax/channel-slack is postgres-backed (database:get-instance)
+  // and hard-calls http:register-route + auth:require-user, all dropped above,
+  // so leaving it in would fail the kernel's verifyCalls. Not on a chat path.
+  // It boots for real over HTTP in the memory canary
+  // (presets/memory/src/__tests__/canary.test.ts) and against the shared
+  // database in prod-bootstrap.test.ts. Its DM path runs end to end against
+  // real agents, conversations and vault in channel-slack-composition.test.ts.
+  '@ax/channel-slack',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

@@ -99,6 +99,17 @@ describe('shared Agent Sandbox pool', () => {
     expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ plural: 'sandboxclaims',
       body: { propagationPolicy: 'Foreground', preconditions: { uid: uid.claim } } }));
   });
+  // TASK-1091 — a shared session's pod has no /memory mount (memory withholds
+  // the view). The pool binds only the roles the pod names, so the helper
+  // mounts no memory and the bootstrap names no memory root.
+  it('binds no memory for a session pod without a /memory mount', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });
+    const { roles, bootstrap } = vi.mocked(f.storage.assign).mock.calls[0]![1] as {
+      roles: string[]; bootstrap: BootstrapAssignment };
+    expect(roles).toEqual(['user-files']);
+    expect(bootstrap.env).not.toHaveProperty('AX_MEMORY_ROOT');
+  });
   // TASK-994 — the standby template replaces the runner env, so a pooled runner
   // learns its transcripts root only from the bootstrap; the standby must still
   // carry the disk /tmp that root lives on.

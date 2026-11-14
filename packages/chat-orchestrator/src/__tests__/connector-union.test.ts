@@ -1358,4 +1358,30 @@ describe('skippedConnectorsPromptLine (TASK-806)', () => {
     expect(line).toContain('"C9" and 2 more.');
     expect(line).not.toContain('"C10"');
   });
+
+  // TASK-1091 — an outsider's turn: the person present has no access to the
+  // agent, so the owner's connectors, their sign-in state and the steps to
+  // fix them are none of theirs. One fixed sentence, whatever was skipped.
+  it('an outsider turn gets one fixed line: no names, no sign-in state, no steps', () => {
+    const line = skippedConnectorsPromptLine(
+      [
+        { ...skipped('Gmail', 'gmail'), reason: 'needs-reconnect' as const },
+        { ...skipped('Linear', 'linear'), reason: 'not-signed-in' as const },
+        skipped(undefined, 'notion'),
+      ],
+      { outsider: true },
+    );
+    expect(line).toBe("Some tools aren't available in this conversation. Don't name them or say why.");
+    expect(line).not.toMatch(/gmail|linear|notion|sign|Connectors tab/i);
+  });
+
+  it('an outsider turn with nothing skipped is still empty', () => {
+    expect(skippedConnectorsPromptLine([], { outsider: true })).toBe('');
+  });
+
+  it('outsider: false keeps the owner wording', () => {
+    const line = skippedConnectorsPromptLine([skipped('Gmail')], { outsider: false });
+    expect(line).toBe(skippedConnectorsPromptLine([skipped('Gmail')]));
+    expect(line).toContain('"Gmail"');
+  });
 });

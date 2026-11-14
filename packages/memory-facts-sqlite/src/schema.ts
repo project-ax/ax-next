@@ -63,6 +63,15 @@ export interface FactRow {
   conversation_id: string | null;
   source_turn_id: string | null;
   source_role: 'user' | 'assistant' | null;
+  /**
+   * Who could see the turn this row was learned in (TASK-1091), as stamped by
+   * the producer: `'private'` or `'shared'`, validated at `record`. NULL on
+   * every row stored without a stamp, including every row that predates the
+   * column — and NULL never matches a shared recall, because the predicate is
+   * a strict `audience = 'shared'`. No CHECK constraint, matching the other
+   * enum-ish provenance columns, so a forward deploy cannot wedge on it.
+   */
+  audience: 'private' | 'shared' | null;
   kind: FactKind | null;
   valid_start: string;
   valid_end: string;
@@ -193,6 +202,7 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
       conversation_id TEXT,
       source_turn_id TEXT,
       source_role TEXT,
+      audience TEXT,
       kind TEXT,
       valid_start TEXT NOT NULL,
       valid_end TEXT NOT NULL DEFAULT '${INFINITY_SENTINEL}',
@@ -294,6 +304,14 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
   // TASK-648 — same additive story: an older row's speaker is simply unknown.
   if (!present.has('source_role')) {
     driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN source_role TEXT`);
+  }
+  // TASK-1091 — the audience stamp. Same additive story, and here the NULL is
+  // load-bearing rather than merely honest: an older row was never stamped
+  // shared, and a shared recall's strict `audience = ?` never matches NULL.
+  // The FTS5/vec0 shadow tables are untouched: every channel reaches this
+  // column through the base table, never through a copy of it.
+  if (!present.has('audience')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN audience TEXT`);
   }
   // TASK-624. Nullable, no default, no backfill: every row that predates the
   // column was closed (if at all) by a rule or a plain retraction, and NULL

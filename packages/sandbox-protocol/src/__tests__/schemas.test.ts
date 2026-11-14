@@ -647,6 +647,58 @@ describe('OpenSessionInputSchema', () => {
     ).toBe(true);
   });
 
+  // --- TASK-1091 owner.source / owner.audience (host-stamped) ---------------
+  // Both ride this HOST-INTERNAL hook into session:create, so the session
+  // record carries them and the IPC listeners can stamp them back onto the
+  // runner-rebuilt ctx. A `z.object` strips an undeclared key, so a missing
+  // `audience` here would make every IPC-rebuilt ctx look private.
+  function ownedInput(owner: Record<string, unknown>): unknown {
+    return {
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          displayName: 'Helper',
+          systemPromptAugment: '',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude',
+          runner: 'claude-sdk',
+        },
+        ...owner,
+      },
+    };
+  }
+
+  it('keeps owner.source "external" and owner.audience "shared" after parse', () => {
+    const input = ownedInput({ source: 'external', audience: 'shared' }) as {
+      owner: Record<string, unknown>;
+    };
+    const parsed = OpenSessionInputSchema.parse(input);
+    expect(parsed.owner).toEqual(input.owner);
+  });
+
+  it('leaves owner.audience absent when the input omits it', () => {
+    const parsed = OpenSessionInputSchema.parse(ownedInput({}));
+    expect(parsed.owner !== undefined && 'audience' in parsed.owner).toBe(false);
+    expect(parsed.owner !== undefined && 'source' in parsed.owner).toBe(false);
+  });
+
+  it.each([
+    ['audience', 'public'],
+    ['audience', ''],
+    ['source', 'admin'],
+  ])('rejects owner.%s %j', (key, value) => {
+    const result = OpenSessionInputSchema.safeParse(ownedInput({ [key]: value }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues.map((i) => i.path.join('.'))).toEqual([`owner.${key}`]);
+  });
+
   // --- TASK-150 services (wire re-validation) -------------------------------
   it('accepts an input carrying a well-formed services array', () => {
     const result = OpenSessionInputSchema.safeParse({

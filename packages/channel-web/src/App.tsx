@@ -57,6 +57,12 @@ import {
   oauthFullPageErrorMessage,
 } from './lib/oauth-full-page-return';
 import { toastActions } from './lib/toast-store';
+import {
+  SLACK_INSTALL_RETURN_MESSAGES,
+  readSlackInstallReturn,
+  withoutSlackInstallReturn,
+  type SlackInstallOutcome,
+} from './lib/slack-install-return';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { redirectRetiredChatPath } from './lib/retired-chat-path';
 import { applyShareReferrerPolicy, parseShareRoute } from './lib/share-route';
@@ -127,6 +133,22 @@ export const App = () => {
       toastActions.error(oauthFullPageErrorMessage(result.reason));
     }
   }, []);
+
+  // TASK-1093 — back from Slack's Allow page. @ax/channel-slack's OAuth
+  // callback sends the admin to `/?slack=connected|cancelled|failed`. Read it
+  // once and take it out of the address bar, so a reload says nothing again.
+  // What it means is AppContent's to act on: only there do we know whether
+  // this person is an admin (see `lib/slack-install-return.ts`).
+  const [slackReturn] = useState(() => readSlackInstallReturn(window.location.search));
+  useEffect(() => {
+    if (slackReturn === null) return;
+    const { pathname, search, hash } = window.location;
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${pathname}${withoutSlackInstallReturn(search)}${hash}`,
+    );
+  }, [slackReturn]);
 
   useEffect(() => {
     // `/chat` and `/chat/*` land on `/` (TASK-360). First thing, before any
@@ -216,18 +238,42 @@ export const App = () => {
       </>
     );
   }
-  return <AppContent user={mode.user} />;
+  return <AppContent user={mode.user} slackReturn={slackReturn} />;
 };
 
-const AppContent = ({ user }: { user: AuthUser }) => {
+const AppContent = ({
+  user,
+  slackReturn = null,
+}: {
+  user: AuthUser;
+  /** TASK-1093 — what Slack's Allow page sent this person back with, if anything. */
+  slackReturn?: SlackInstallOutcome | null;
+}) => {
   useHydrateAgents(); // before the first-run gate, which reads the result
   const { agents, agentsStatus } = useAgentStore();
+  // TASK-1093 — only an admin can have started a Slack install, so for anyone
+  // else a `?slack=` (a link someone sent round, say) means nothing at all.
+  const slackOutcome = user.role === 'admin' ? slackReturn : null;
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
-  // (admin-gated). AdminSettings renders in the main pane when true.
-  const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
+  // (admin-gated). AdminSettings renders in the main pane when true. An
+  // admin back from Slack lands in it, on Admin › Slack.
+  const [adminSettingsOpen, setAdminSettingsOpen] = useState(slackOutcome !== null);
   // Which tab Settings opens on — set only by a caller that knows where the
-  // person needs to go (the rail's paused-memory "Fix this", TASK-627).
-  const [adminSettingsTab, setAdminSettingsTab] = useState<AdminTabId | undefined>(undefined);
+  // person needs to go (the rail's paused-memory "Fix this", TASK-627; Slack's
+  // install return, TASK-1093).
+  const [adminSettingsTab, setAdminSettingsTab] = useState<AdminTabId | undefined>(
+    slackOutcome !== null ? 'slack' : undefined,
+  );
+  // And says what happened, once (a ref, so StrictMode's second effect run
+  // doesn't say it twice). A fixed sentence per outcome, nothing from the URL.
+  const slackReturnToasted = useRef(false);
+  useEffect(() => {
+    if (slackOutcome === null || slackReturnToasted.current) return;
+    slackReturnToasted.current = true;
+    const message = SLACK_INSTALL_RETURN_MESSAGES[slackOutcome];
+    if (slackOutcome === 'failed') toastActions.error(message);
+    else toastActions.show({ title: message, kind: 'info' });
+  }, [slackOutcome]);
   // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
   //
   // Settings is a PANE SWAP, not an overlay: the branches below render either

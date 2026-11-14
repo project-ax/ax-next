@@ -16,7 +16,7 @@
  */
 import { useCallback, useRef, useState, type ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   workspaceApi,
   WorkspaceApiError,
@@ -32,6 +32,11 @@ import {
 } from '../decision-copy';
 import { uploadAttachment } from '@/lib/attachment-upload';
 import { StorageFullError } from '@/lib/storage-full';
+import {
+  CONVERSATION_IN_SLACK,
+  CONVERSATION_READ_ONLY,
+  ConversationReadOnlyError,
+} from '@/lib/conversation-read-only';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { ERROR_LABELS } from '@/lib/turn-error-labels';
 import { rail as railFixture } from './rail-fixture';
@@ -2297,5 +2302,308 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     expect(onChatCommandConsumed).not.toHaveBeenCalled();
     expect(screen.queryByText('the March question')).toBeNull();
     expect(agentMock.mock.calls.some(([, c]) => c === 'c-old')).toBe(false);
+  });
+});
+
+/*
+  TASK-1093 — a Slack DM thread is listed in the web app (it is the person's
+  own conversation with their agent), but its turns belong to Slack and the
+  send route refuses it (`409 conversation-read-only`). It used to show a live
+  composer, and every message sent from it came back as "We could not find
+  that. It may have been deleted." So the page says where to reply instead,
+  and a refusal that still gets through says what it is.
+*/
+describe('a Slack DM thread', () => {
+  function renderPlain(over: Partial<ComponentProps<typeof AgentView>> = {}) {
+    const props = viewProps(over);
+    const r = render(<AgentView {...props} />);
+    return { ...r, rerenderWith: (more: Partial<ComponentProps<typeof AgentView>>) =>
+      r.rerender(<AgentView {...props} {...more} />) };
+  }
+
+  it('shows "reply in Slack" where the composer would be, and no composer', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    renderPlain();
+    await screen.findByText('what is on today');
+
+    const said = await screen.findByText(CONVERSATION_IN_SLACK);
+    // A note, not an alarm: nothing went wrong.
+    expect(said.closest('[role="note"]')).not.toBeNull();
+    expect(screen.queryByPlaceholderText('Message Quill')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    expect(CONVERSATION_IN_SLACK).toBe('This conversation is in Slack. Reply there.');
+  });
+
+  it('keeps the composer for a conversation that started here', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'web' }));
+    renderPlain();
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+  });
+
+  it('"New chat" from a Slack thread brings the composer back', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    const view = renderPlain();
+    await screen.findByText(CONVERSATION_IN_SLACK);
+
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+  });
+
+  /*
+    The workspace opens an agent on its newest chat, so someone who talks to
+    their agent mostly in Slack lands on a read-only Slack thread on every
+    visit. The way out is right in the note — the same New chat the sidebar
+    offers — rather than a trip to the sidebar they may not have open.
+  */
+  it('"New chat" inside the note starts an empty chat here, with a composer', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    renderPlain();
+    const said = await screen.findByText(CONVERSATION_IN_SLACK);
+    const note = said.closest('[role="note"]') as HTMLElement;
+    const fresh = within(note).getByRole('button', { name: 'New chat' });
+
+    fireEvent.click(fresh);
+    const box = await screen.findByPlaceholderText('Message Quill');
+    expect(screen.queryByText(CONVERSATION_IN_SLACK)).toBeNull();
+    // The Slack thread is left behind, not written to.
+    expect(screen.queryByText('what is on today')).toBeNull();
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-fresh', reqId: 'r9' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(box, { target: { value: 'hello from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({ conversationId: null });
+  });
+
+  it('a send refused as read-only says so: never "deleted", and no Resend', async () => {
+    // A page that still offers a composer (an older host named no origin).
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(CONVERSATION_READ_ONLY)).toBeTruthy();
+    expect(screen.queryByText(/deleted|no longer available|didn’t finish/)).toBeNull();
+    // Resend would only be refused again.
+    expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/409|conversation-read-only|→/);
+  });
+
+  /*
+    The refusal is about THAT conversation, and the composer is still aimed at
+    it. Left aimed there, every next message is refused the same way — the
+    composer becomes a control that cannot work. So the next send starts a
+    fresh chat, which is what the copy tells them to do.
+  */
+  it('after a read-only refusal, the next message starts a fresh chat instead of hitting the same wall', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'c-now' });
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-fresh', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(box, { target: { value: 'trying again' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({ conversationId: null, text: 'trying again' });
+  });
+
+  /*
+    A re-read lands between the refusal and the next message — a turn ending
+    elsewhere, the shell's version bump. It reads the conversation on screen
+    and re-aims the composer at whatever it read, so an intent kept only by
+    clearing the conversation id was quietly undone, and the next message hit
+    the same wall again. The intent holds until a send goes out.
+  */
+  it('a re-read after a read-only refusal does not re-aim the next message at the same wall', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    const readsBefore = agentMock.mock.calls.length;
+    view.rerenderWith({ version: 1 });
+    await waitFor(() => expect(agentMock.mock.calls.length).toBeGreaterThan(readsBefore));
+    // The refused thread is still what is on screen: the re-read did not snap
+    // the pane to some other chat.
+    expect(screen.getByText('what is on today')).toBeTruthy();
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-fresh', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(box, { target: { value: 'trying again' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({ conversationId: null, text: 'trying again' });
+  });
+
+  /*
+    "Start fresh" belongs to the chat that refused, not to the view. A grant
+    raised in this agent's web chat shows in every thread of the agent, so it
+    can be answered from the refused one; its re-send lands and THAT chat
+    streams in, and the composer is now aimed at it. A follow-up there is a
+    reply in that chat — starting yet another empty one would yank the view
+    away from the conversation they are in.
+  */
+  it('after a read-only refusal, a chat that then streams in keeps its follow-up', async () => {
+    agentMock.mockImplementation(async (_agent: string, conversationId?: string) =>
+      conversationId === 'c-web-b'
+        ? detail({
+            conversationId: 'c-web-b',
+            origin: 'web',
+            thread: [{ kind: 'user', id: 'tb', text: 'check my linear' }],
+          })
+        : detail(),
+    );
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    // The grant's re-send landed in chat B, and B streams into this view.
+    streamMock.mockImplementationOnce(async (_reqId: string, h: { onDone: () => void }) => {
+      h.onDone();
+    });
+    view.rerenderWith({
+      pendingReply: {
+        reqId: 'r-grant',
+        text: 'check my linear',
+        conversationId: 'c-web-b',
+        attachments: [],
+      },
+    });
+    await waitFor(() => expect(streamMock).toHaveBeenCalledWith('r-grant', expect.anything()));
+    // Chat B is what is on screen now (the turn's end re-read it).
+    await screen.findByText('check my linear');
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-web-b', reqId: 'r3' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const composer = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(composer, { target: { value: 'and the follow-up' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({
+      conversationId: 'c-web-b',
+      text: 'and the follow-up',
+    });
+  });
+
+  /*
+    The refusal can ARRIVE after the view has moved on. The refused send is
+    still posting when a grant's re-send streams another web chat B into this
+    view; only then does the 409 come back. The refusal names the chat that was
+    posted to, which is no longer the one the composer is aimed at, so it must
+    not turn the follow-up in B into a fresh chat.
+  */
+  it('a read-only refusal that lands after the view moved to another chat keeps the follow-up in that chat', async () => {
+    agentMock.mockImplementation(async (_agent: string, conversationId?: string) =>
+      conversationId === 'c-web-b'
+        ? detail({
+            conversationId: 'c-web-b',
+            origin: 'web',
+            thread: [{ kind: 'user', id: 'tb', text: 'check my linear' }],
+          })
+        : detail(),
+    );
+    // Hold the refused POST open: it settles only after the view has moved.
+    let refuse: (e: unknown) => void = () => {};
+    sendMock.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject; }),
+    );
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'c-now' });
+
+    // While it is still posting, the grant's re-send streams chat B in.
+    streamMock.mockImplementationOnce(async (_reqId: string, h: { onDone: () => void }) => {
+      h.onDone();
+    });
+    view.rerenderWith({
+      pendingReply: {
+        reqId: 'r-grant',
+        text: 'check my linear',
+        conversationId: 'c-web-b',
+        attachments: [],
+      },
+    });
+    await waitFor(() => expect(streamMock).toHaveBeenCalledWith('r-grant', expect.anything()));
+    await screen.findByText('check my linear');
+
+    // NOW the refusal for the first chat arrives.
+    await act(async () => {
+      refuse(new ConversationReadOnlyError('/api/chat/messages'));
+    });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-web-b', reqId: 'r3' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const composer = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(composer, { target: { value: 'and the follow-up' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({
+      conversationId: 'c-web-b',
+      text: 'and the follow-up',
+    });
+  });
+
+  /*
+    The same by the re-read's other road: the refused chat is deleted
+    elsewhere, and the re-read falls back to the agent's newest chat. That one
+    is what is on screen now, so the next message goes into it.
+  */
+  it('after a read-only refusal, a re-read that falls back to another chat sends into that chat', async () => {
+    let deleted = false;
+    agentMock.mockImplementation(async (_agent: string, conversationId?: string) => {
+      if (deleted && conversationId === 'c-now') {
+        throw new WorkspaceApiError('/agents/a-quill', 404);
+      }
+      return deleted
+        ? detail({
+            conversationId: 'c-other',
+            origin: 'web',
+            thread: [{ kind: 'user', id: 'to', text: 'the other chat' }],
+          })
+        : detail();
+    });
+    sendMock.mockRejectedValueOnce(new ConversationReadOnlyError('/api/chat/messages'));
+    const view = renderPlain();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'answering from the browser' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(CONVERSATION_READ_ONLY);
+
+    deleted = true;
+    view.rerenderWith({ version: 1 });
+    await screen.findByText('the other chat');
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'c-other', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const composer = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(composer, { target: { value: 'into the other one' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1]?.[0]).toMatchObject({
+      conversationId: 'c-other',
+      text: 'into the other one',
+    });
   });
 });

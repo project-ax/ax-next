@@ -604,3 +604,49 @@ describe('a Stop pressed while a new agent is greeting (hidden kickoff)', () => 
     expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
   });
 });
+
+/*
+  TASK-1093 — a Slack DM thread has no composer here (its turns belong to
+  Slack), and the composer is where Stop lived. But the interrupt route asks
+  only "is this your conversation", not where it came from, so a web Stop of a
+  live Slack turn worked before the read-only note replaced the composer. The
+  note carries Stop while a turn runs, so that still works.
+*/
+describe('a live turn in a Slack DM thread', () => {
+  async function openLiveSlackTurn(): Promise<void> {
+    agentMock.mockResolvedValue(detail({ origin: 'slack', liveReqId: 'r1' }));
+    streamMock.mockImplementation(async (_reqId, h) => {
+      const signal = h.signal ?? new AbortController().signal;
+      live = { h, signal };
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        signal.addEventListener('abort', () => resolve());
+      });
+    });
+    renderView();
+    await waitFor(() => expect(live).not.toBeNull());
+  }
+
+  it('offers Stop inside the "reply in Slack" note, and it stops THIS conversation', async () => {
+    await openLiveSlackTurn();
+    const stop = await screen.findByRole('button', { name: 'Stop' });
+    expect(stop.closest('[role="note"]')).not.toBeNull();
+    // Still no composer: Stop is the only control a Slack thread gets here.
+    expect(screen.queryByPlaceholderText('Message Quill')).toBeNull();
+
+    interruptMock.mockResolvedValue({ interrupted: true });
+    await act(async () => {
+      fireEvent.click(stop);
+    });
+    expect(interruptMock).toHaveBeenCalledTimes(1);
+    expect(interruptMock).toHaveBeenCalledWith('c1');
+    expect(screen.getByRole('button', { name: 'Stopping' })).toBeDisabled();
+  });
+
+  it('has no Stop once nothing is running', async () => {
+    agentMock.mockResolvedValue(detail({ origin: 'slack' }));
+    renderView();
+    await screen.findByText('This conversation is in Slack. Reply there.');
+    expect(stopBtn()).toBeNull();
+  });
+});

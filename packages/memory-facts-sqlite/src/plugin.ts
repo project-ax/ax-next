@@ -211,6 +211,17 @@ function validateStatement(input: unknown): FactStatementInput {
       message: "statement.sourceRole must be 'user' or 'assistant' when set",
     });
   }
+  // TASK-1091. The two spellings or nothing — `''`, `null` and other cases are
+  // rejected, never coerced. A stamp that quietly became "no stamp" would drop
+  // the row out of every shared read without a trace; one that quietly became
+  // `shared` would publish it.
+  if (s.audience !== undefined && s.audience !== 'private' && s.audience !== 'shared') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: "statement.audience must be 'private' or 'shared' when set",
+    });
+  }
   if (s.kind !== undefined && !KINDS.includes(s.kind as FactKind)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -353,6 +364,7 @@ function validateRecallInput(input: RecallInput): {
   about?: string;
   query?: string;
   ownerUserId?: string;
+  audience?: 'shared';
   slots?: string[];
   conversationId?: string;
   limit: number;
@@ -403,6 +415,19 @@ function validateRecallInput(input: RecallInput): {
       message: 'ownerUserId must be a non-empty string when set',
     });
   }
+  // Audience scope (TASK-1091). `'shared'` is the only value: `'private'`
+  // would have to decide what an unstamped row means, and every other value
+  // treated as absent would hand a caller who ASKED for a shared-only read the
+  // whole tenant — the one direction a scope must never fail in. Unlike
+  // `slots` and `conversationId` it composes with `query`: every channel and
+  // the rank hydration carry it.
+  if (input.audience !== undefined && input.audience !== 'shared') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: "audience must be 'shared' when set",
+    });
+  }
   if (
     input.poolSize !== undefined &&
     (typeof input.poolSize !== 'number' || !Number.isFinite(input.poolSize) || input.poolSize < 1)
@@ -426,6 +451,7 @@ function validateRecallInput(input: RecallInput): {
     ...(input.about !== undefined ? { about: input.about } : {}),
     ...(input.query !== undefined ? { query: input.query } : {}),
     ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+    ...(input.audience !== undefined ? { audience: input.audience } : {}),
     ...(input.slots !== undefined ? { slots: [...input.slots] } : {}),
     ...(input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
@@ -579,6 +605,8 @@ function rowToFactRecord(row: FactRow): FactRecord {
     ...(row.source_turn_id !== null ? { sourceTurnId: row.source_turn_id } : {}),
     // TASK-648 — who spoke that turn; provenance only, echoed as stored.
     ...(row.source_role !== null ? { sourceRole: row.source_role } : {}),
+    // TASK-1091 — who could see that turn; echoed as stored, absent on NULL.
+    ...(row.audience !== null ? { audience: row.audience } : {}),
     ...(row.kind !== null ? { kind: row.kind } : {}),
   };
 }
@@ -802,23 +830,26 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
       query: string;
       about?: string;
       ownerUserId?: string;
+      audience?: 'shared';
       limit: number;
       poolSize: number;
       activeOnly: boolean;
     },
   ): Promise<RecallOutput> {
-    // One scope object, every channel. The owner predicate goes in HERE rather
-    // than being applied to the fused result for the reason design §6.1 states
-    // as a rule: a channel contributes at most `CHANNEL_LIMIT` candidates, so
-    // filtering after the fact silently shrinks an owner's answer by however
-    // many of those slots another owner's rows took. Never post-filter a
-    // widened pool.
+    // One scope object, every channel AND the hydration. The owner and
+    // audience predicates go in HERE rather than being applied to the fused
+    // result for the reason design §6.1 states as a rule: a channel
+    // contributes at most `CHANNEL_LIMIT` candidates, so filtering after the
+    // fact silently shrinks a scoped answer by however many of those slots
+    // out-of-scope rows took — for a shared recall, by every slot a private
+    // row took. Never post-filter a widened pool.
     const scope: ChannelScope = {
       agentKey: args.agentKey,
       activeOnly: args.activeOnly,
       limit: CHANNEL_LIMIT,
       ...(args.about !== undefined ? { about: args.about } : {}),
       ...(args.ownerUserId !== undefined ? { ownerUserId: args.ownerUserId } : {}),
+      ...(args.audience !== undefined ? { audience: args.audience } : {}),
     };
 
     // No vec0 on this host means no dense channel whatever the embedder says,
@@ -847,11 +878,13 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
       // nothing while implying it might come back.
       const fused = reciprocalRankFusion([sparse, dense, temporal]);
       return {
+        // The SAME scope object the channels ran with, so the hydration
+        // cannot disagree with them about who is reading.
         fusedRows: rowsInRankOrder<FactRow>(
           db,
           args.agentKey,
           fused.map((c) => c.id),
-          args.ownerUserId,
+          scope,
         ),
         pendingFlags: pendingStatus(db, args.agentKey).degraded,
         // A query vector is not the same thing as a dense contribution
@@ -1310,6 +1343,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                     ? { sourceTurnId: statement.sourceTurnId }
                     : {}),
                   ...(statement.sourceRole !== undefined ? { sourceRole: statement.sourceRole } : {}),
+                  ...(statement.audience !== undefined ? { audience: statement.audience } : {}),
                   ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
                 });
 
@@ -1347,6 +1381,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                     ? { sourceTurnId: statement.sourceTurnId }
                     : {}),
                   ...(statement.sourceRole !== undefined ? { sourceRole: statement.sourceRole } : {}),
+                  ...(statement.audience !== undefined ? { audience: statement.audience } : {}),
                 };
               });
             });
@@ -1377,8 +1412,17 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, query, ownerUserId, slots, conversationId, limit, poolSize, activeOnly } =
-            validateRecallInput(input);
+          const {
+            about,
+            query,
+            ownerUserId,
+            audience,
+            slots,
+            conversationId,
+            limit,
+            poolSize,
+            activeOnly,
+          } = validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
           if (query !== undefined) {
@@ -1390,6 +1434,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               activeOnly,
               ...(about !== undefined ? { about } : {}),
               ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+              ...(audience !== undefined ? { audience } : {}),
             });
           }
 
@@ -1428,6 +1473,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             if (ownerUserId !== undefined) {
               conditions.push('owner_user_id = ?');
               params.push(ownerUserId);
+            }
+            // Audience scope (TASK-1091), in the WHERE for the owner scope's
+            // exact reason: `LIMIT` has to count rows a shared reply may see,
+            // not a page of newer private rows cut before the filter ran.
+            // Strict `=`, so an unstamped row (`audience IS NULL`, which is
+            // every row older than the column) never answers a shared read.
+            if (audience !== undefined) {
+              conditions.push('audience = ?');
+              params.push(audience);
             }
             // Slot filter in the WHERE, for the same reason the owner scope
             // is: a profile is ≤ ~10 rows out of a tenant that may hold

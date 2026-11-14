@@ -59,6 +59,7 @@ import {
 } from './decision-copy';
 import { Elapsed, StateDot } from './bits';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import type { GrantResume } from '@/lib/workspace-resume';
 
 /*
   The heading's job is a COUNT, not a taxonomy — the rows below say what each
@@ -102,7 +103,7 @@ interface Props {
    * straight to `GrantRow`, which owns the difference between approving and
    * turning down; see there for why the seam is on the row and not here.
    */
-  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
   agents: WorkspaceAgent[];
   filter: 'needs' | 'working';
   expandedId: string | null;

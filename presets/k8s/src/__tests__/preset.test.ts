@@ -321,6 +321,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/auth-better',
         '@ax/blob-store-fs',
         '@ax/branding',
+        '@ax/channel-slack',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
         '@ax/connector-directory',
@@ -1281,6 +1282,61 @@ describe('@ax/preset-k8s wiring', () => {
         connectorDirectory: { enabled: true, registryUrl: 'http://registry.test' },
       }),
     ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
+  });
+
+  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, branding and the cap interrupt optional (TASK-1093)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const slack = plugins.find((p) => p.manifest.name === '@ax/channel-slack');
+    expect(slack).toBeDefined();
+    expect(slack!.manifest.registers).toEqual([]);
+    expect(slack!.manifest.calls).toEqual([
+      'http:register-route',
+      'auth:require-user',
+      'auth:get-user',
+      'database:get-instance',
+      'credentials:get',
+      'credentials:set',
+      'credentials:delete',
+      // A Slack DM becomes a turn of the sender's own personal agent.
+      'auth:find-user-by-email',
+      // A channel mention from a member with no account: is their email on an approved domain?
+      'auth:is-approved-email',
+      'agents:list-for-user',
+      // Connecting a channel to a team agent: who may see it, who may manage it.
+      'agents:resolve',
+      'agents:can-set-shared-credential',
+      'conversations:find-or-create',
+      'agent:invoke',
+    ]);
+    expect(slack!.manifest.optionalCalls).toEqual([
+      { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
+      // A Slack turn at the 15-minute cap is stopped, not only its reply.
+      {
+        hook: 'agent:interrupt',
+        degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+      },
+      // /ax connect looks a person's teams up; without @ax/teams it finds none.
+      {
+        hook: 'teams:list-for-user',
+        degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
+      },
+    ]);
+    expect(slack!.manifest.subscribes).toEqual([
+      'bootstrap:reset-cleanup',
+      // A deleted agent's channels are freed.
+      'agents:deleted',
+      // A channel's "remember" switch: memory is refused a thread that had a turn while it was off.
+      // Its producer (@ax/memory) comes with @ax/preset-memory.
+      'memory:pre-capture',
+      'chat:stream-chunk',
+      'chat:turn-end',
+      'chat:turn-error',
+    ]);
+    // Every hard call has a producer in this preset, and so do the optional ones.
+    const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+    for (const hook of [...slack!.manifest.calls, 'branding:get', 'agent:interrupt', 'teams:list-for-user']) {
+      expect(registered.has(hook), hook).toBe(true);
+    }
   });
 
   it('names the OAuth client after the branding: @ax/branding registers branding:get for @ax/mcp-oauth', () => {

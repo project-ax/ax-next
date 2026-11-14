@@ -122,6 +122,7 @@ describe('routines:report (TASK-907)', () => {
       ['a conversation no run is bound to', checkInCtx('c-elsewhere'), 'not-bound'],
       ["the run's conversation, from no routine run", makeAgentContext({ userId: 'owner', agentId: 'a', sessionId: 's', conversationId: run.conversationId }), 'no-source'],
       ["the run's conversation, from a person's chat", checkInCtx(run.conversationId, { source: 'user' }), 'no-source'],
+      ["the run's conversation, from an external turn", checkInCtx(run.conversationId, { source: 'external' }), 'no-source'],
       ['a routine run with no conversation', makeAgentContext({ userId: 'owner', agentId: 'a', sessionId: 's', source: 'routine' }), 'no-conversation'],
       ['a routine run with an empty conversation id', checkInCtx(''), 'no-conversation'],
       ["another agent's routine run, in the run's conversation", checkInCtx(run.conversationId, { agentId: 'b' }), 'not-bound'],

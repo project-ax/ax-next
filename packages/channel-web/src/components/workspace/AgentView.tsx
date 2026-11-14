@@ -43,6 +43,10 @@ import {
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { StorageFullError } from '@/lib/storage-full';
 import {
+  CONVERSATION_IN_SLACK,
+  ConversationReadOnlyError,
+} from '@/lib/conversation-read-only';
+import {
   readAlertVariant,
   toReadOutcome,
   type ReadOutcome,
@@ -100,6 +104,7 @@ import {
   workspaceGrantActions,
   type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
+import type { GrantResume } from '@/lib/workspace-resume';
 import {
   DEFAULT_SETTINGS_SECTION,
   type AgentSettingsSection,
@@ -158,7 +163,7 @@ interface Props {
    * the one this panel has open, and a grant answered on Today has no panel at
    * all. One implementation, both render sites.
    */
-  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
   onBack: () => void;
   /**
    * Opens Settings on AI model keys — the Memory panel's paused-memory "Fix
@@ -348,7 +353,16 @@ function hasDurableCopy(
 function asEmptyChat(d: AgentDetail): AgentDetail {
   // `liveReqId` is a turn running in the chat this read named, not in this
   // empty one: carried over, the reattach effect would stream it in here.
-  return { ...d, conversationId: null, thread: [], decisions: { status: 'ok' }, liveReqId: null };
+  // `origin` likewise (TASK-1093): a new chat starts here, whatever the last
+  // one was, so a Slack thread's "reply there" must not follow it.
+  return {
+    ...d,
+    conversationId: null,
+    thread: [],
+    decisions: { status: 'ok' },
+    liveReqId: null,
+    origin: null,
+  };
 }
 
 const SWITCH_COPY: Record<ReadOutcome, string> = {
@@ -664,6 +678,14 @@ export function AgentView({
      */
     refusal?: string;
     /**
+     * TASK-1093 — the send was refused because this conversation takes no new
+     * messages here (`409 conversation-read-only`: a routine's conversation,
+     * or a Slack thread on a page that still showed a composer). `refusal`
+     * carries the sentence; this takes Resend away, because it would only be
+     * refused again.
+     */
+    readOnly?: true;
+    /**
      * The failure is one the agent's Connectors tab fixes (TASK-796: a
      * connector nobody signed in to yet, or whose sign-in expired). The strip
      * then offers "Open Connectors", so the sentence's instruction is one
@@ -691,6 +713,27 @@ export function AgentView({
     chat list still refresh.
   */
   const draftRef = useRef(false);
+  /*
+    TASK-1093 — the chat whose last send was refused as read-only. While the
+    composer is still aimed at THAT chat, the next message starts a fresh one
+    instead. Kept as the refused chat's id rather than by clearing
+    `conversationRef`: any re-read (`load`) re-aims that ref at the chat it
+    read, which is the very chat that refused. The thread stays on screen (the
+    refusal is about it); only where the next message goes changes.
+
+    An id, not a flag, because the view can move to ANOTHER chat without an
+    explicit switch — a grant answered here whose re-send streams in a
+    different chat, a re-read falling back when the refused chat was deleted
+    elsewhere. A follow-up there belongs in that chat. So it is cleared
+    whenever the composer is re-aimed anywhere else (`aimAt`), once a send goes
+    out, and by any chat switch.
+  */
+  const refusedReadOnlyIdRef = useRef<string | null>(null);
+  /** Re-aims the composer; a read-only refusal's "start fresh" stays with its chat. */
+  const aimAt = useCallback((conversationId: string | null) => {
+    conversationRef.current = conversationId;
+    if (conversationId !== refusedReadOnlyIdRef.current) refusedReadOnlyIdRef.current = null;
+  }, []);
   /*
     Moves on every chat switch ("New chat" or a sidebar pick). A send or a
     switch that started before it moved is about a chat that has been left,
@@ -782,8 +825,9 @@ export function AgentView({
       // agent switch rather than remounted).
       if (conversationAgentRef.current !== agentId) {
         conversationAgentRef.current = agentId;
-        conversationRef.current = null;
+        aimAt(null);
         draftRef.current = false;
+        refusedReadOnlyIdRef.current = null;
       }
       /*
         Read the chat on screen — and read AGAIN if that changed while the
@@ -829,7 +873,7 @@ export function AgentView({
             }
           : next,
       );
-      conversationRef.current = next.conversationId;
+      aimAt(next.conversationId);
       setThreadReads((n) => n + 1);
       setLoadError(null);
     } catch (e) {
@@ -840,7 +884,7 @@ export function AgentView({
       logRequestFailure(e, 'workspace-agent');
       setLoadError(toReadOutcome(e));
     }
-  }, [agentId]);
+  }, [agentId, aimAt]);
 
   useEffect(() => {
     void load();
@@ -981,7 +1025,8 @@ export function AgentView({
       // Another chat was picked while this one was opening: that one wins.
       if (epoch !== viewEpochRef.current) return;
       draftRef.current = false;
-      conversationRef.current = next.conversationId;
+      refusedReadOnlyIdRef.current = null;
+      aimAt(next.conversationId);
       leaveChat();
       setDetail(next);
     } catch (e) {
@@ -990,6 +1035,20 @@ export function AgentView({
       setSwitchError({ outcome: toReadOutcome(e), conversationId });
     }
     onChanged();
+  };
+
+  /*
+    An empty chat to type into: the sidebar's New chat, and the one in a Slack
+    thread's "reply there" note (TASK-1093). One body, so the two can't drift.
+    Nothing is created until the first message is sent.
+  */
+  const startNewChat = () => {
+    viewEpochRef.current += 1;
+    draftRef.current = true;
+    refusedReadOnlyIdRef.current = null;
+    aimAt(null);
+    leaveChat();
+    setDetail((d) => (d === null ? d : asEmptyChat(d)));
   };
 
   /*
@@ -1007,11 +1066,7 @@ export function AgentView({
       conversation being left.
     */
     if (chatCommand.kind === 'new') {
-      viewEpochRef.current += 1;
-      draftRef.current = true;
-      conversationRef.current = null;
-      leaveChat();
-      setDetail((d) => (d === null ? d : asEmptyChat(d)));
+      startNewChat();
       return;
     }
     // The chat already on screen: nothing to switch, and a failed send's
@@ -1411,13 +1466,13 @@ export function AgentView({
           behind a conversation that no longer exists cannot be trusted to
           finish, so it is closed here rather than left holding the composer.
         */
-        conversationRef.current = null;
+        aimAt(null);
         abortRef.current?.abort();
         setStreaming(false);
       }
       setTurnError({ kind, sentence: null, source: 'stop' });
     }
-  }, [streaming, cancelStop, resetLiveTurn, load, onChanged]);
+  }, [streaming, cancelStop, resetLiveTurn, load, onChanged, aimAt]);
 
   /*
     THE POST-APPROVAL CONTINUATION (TASK-542). Approving a hold that a warm
@@ -1471,7 +1526,7 @@ export function AgentView({
       route requires one. The composer already knew the id; carrying it is
       cheaper and more certain than re-deriving it (TASK-350 review).
     */
-    conversationRef.current = pendingReply.conversationId;
+    aimAt(pendingReply.conversationId);
     /*
       The shell only mints a `pendingReply` AFTER its own POST resolved, so
       anything it attached is already committed into that turn and these ids
@@ -1487,7 +1542,7 @@ export function AgentView({
     });
     onPendingReplyConsumed?.();
     void streamFrom(pendingReply.reqId);
-  }, [pendingReply, streamFrom, onPendingReplyConsumed]);
+  }, [pendingReply, streamFrom, onPendingReplyConsumed, aimAt]);
 
   /*
     A page opened or reloaded mid-turn. The runner stores a reply only when it
@@ -1513,7 +1568,9 @@ export function AgentView({
       setTurnError(null);
       // The last turn's "you stopped this" is history the moment they say more.
       setStopNotice(null);
-      const target = conversationRef.current;
+      const aimed = conversationRef.current;
+      const target =
+        aimed !== null && aimed === refusedReadOnlyIdRef.current ? null : aimed;
       const epoch = viewEpochRef.current;
       setSending(true);
       try {
@@ -1525,6 +1582,9 @@ export function AgentView({
             ? { attachmentIds: files.map((a) => a.attachmentId) }
             : {}),
         });
+        // A send went out, so a read-only refusal's "start a fresh chat" is
+        // spent (if the view moved meanwhile, the switch already cleared it).
+        if (epoch === viewEpochRef.current) refusedReadOnlyIdRef.current = null;
         /*
           The POST landed, so every id it carried has been committed into that
           turn. The ids are not offered for a second send unless the turn is
@@ -1544,7 +1604,7 @@ export function AgentView({
         if (epoch !== viewEpochRef.current) return;
         setSent({ text, attachments: files, resendable: false });
         const started = target === null;
-        conversationRef.current = conversationId;
+        aimAt(conversationId);
         /*
           This message just created the chat. Read it now rather than when the
           reply lands, so the sidebar lists it — already named after the
@@ -1570,16 +1630,29 @@ export function AgentView({
           This is the same rule as the missing "Try again" one line down, applied
           to the control nobody thinks of as one.
         */
-        if (kind === 'gone') conversationRef.current = null;
+        /*
+          A read-only refusal (TASK-1093) is the same trap by another road: the
+          conversation is there but takes no messages from here, and every
+          following send would be turned away just the same. The copy says to
+          start a new chat, so the next message does — via `refusedReadOnlyIdRef`,
+          not by clearing the ref, because the conversation still exists and any
+          re-read would point the ref straight back at it. Only while the
+          composer is still aimed at the chat that refused.
+        */
+        if (kind === 'gone') aimAt(null);
+        if (e instanceof ConversationReadOnlyError) refusedReadOnlyIdRef.current = target;
         setTurnError({
           kind,
           sentence: null,
           source: 'turn',
           ...(e instanceof StorageFullError ? { refusal: e.sentence } : {}),
+          ...(e instanceof ConversationReadOnlyError
+            ? { refusal: e.sentence, readOnly: true }
+            : {}),
         });
       }
     },
-    [agentId, streamFrom, load],
+    [agentId, streamFrom, load, aimAt],
   );
 
   if (loadError !== null) {
@@ -1741,6 +1814,13 @@ export function AgentView({
     of the same two messages.
   */
   const liveThread: ThreadMessage[] = [...detail.thread];
+  /*
+    TASK-1093 — a Slack DM thread is the person's own conversation, so it is
+    listed and readable here, but its turns belong to Slack: the send route
+    refuses it. So no composer over it, and the note in its place says where
+    to reply. "New chat" starts one here (`asEmptyChat` clears the origin).
+  */
+  const inSlack = detail.origin === 'slack';
   // A hidden turn (TASK-689) is not the person's words, so it gets no bubble —
   // but `sent` stays set, because the failure strip below reads it. Nor does a
   // turn whose committed copy the read already returned: that would draw twice.
@@ -2069,7 +2149,8 @@ export function AgentView({
                         {sent !== null &&
                           sent.hidden !== true &&
                           turnError.kind === 'failed' &&
-                          turnError.source === 'turn' && (
+                          turnError.source === 'turn' &&
+                          turnError.readOnly !== true && (
                           <Button
                             size="sm"
                             /*
@@ -2163,7 +2244,8 @@ export function AgentView({
                 */
                 conversationId={detail.conversationId ?? liveVisuals?.conversationId ?? null}
                 decisions={decisions}
-                readOnly={false}
+                readOnly={inSlack}
+                {...(inSlack ? { readOnlyNote: CONVERSATION_IN_SLACK, onNewChat: startNewChat } : {})}
                 busy={streaming || sending}
                 {...(streaming ? { onStop: () => void stop() } : {})}
                 stopping={stopping}

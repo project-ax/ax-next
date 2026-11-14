@@ -1,0 +1,26 @@
+---
+'@ax/channel-slack': minor
+'@ax/conversations': minor
+'@ax/credentials': minor
+'@ax/preset-k8s': patch
+---
+
+Add `@ax/channel-slack`, so people can talk to their own AX agent from Slack. A Slack admin connects the workspace once from AX's admin settings by pasting a Slack configuration token; AX creates the Slack app itself, with only the permissions it needs. After that, anyone with an AX account can DM the bot and reach their own personal agent, and the reply streams into the Slack thread. The bot's name defaults to a Slack-safe form of your branding name, and AX checks a name against Slack's rules before asking Slack for it. AX talks to Slack with its own small client, not Slack's SDK: one address (`slack.com`), no redirects followed, a size cap and a time limit on every answer, and no token ever written to a log or an error.
+
+`credentials:get` can now be asked for the workspace-wide value only (`scope: 'global'`). The Slack install's secrets are read that way, so a key someone stored for themselves under the same name can never stand in for the install's own.
+
+Conversations can now come from Slack (origin `'slack'`). A Slack DM thread shows up in the web app but stays read-only there, so the conversation never forks: where the message box would be, it says "This conversation is in Slack. Reply there." Until Slack can show approval buttons, a tool call that needs your OK from a Slack DM waits in Today, the same as a routine's.
+
+A team admin can now connect a public Slack channel to a team agent, from the agent's settings or by typing `/ax connect` followed by the agent's name in the channel. `/ax disconnect` undoes it. Only a team admin of the agent's team can do either; being a workspace admin does not count, and a personal agent can't be connected at all. AX checks the channel first (public, not archived, not shared with another workspace) and only then has the bot join it. A person who can't see an agent is told nothing about it, and deleting an agent frees its channels.
+
+Once a channel is connected, mentioning the bot there talks to its agent. Someone who can use the agent is answered as themselves. Any other member of your Slack workspace is answered as the person who connected the channel, with the limits every outsider's turn has, if they have an AX account or their email is on one of your approved sign-in domains; anything that needs approval then waits in that person's Today, and the reply says so. Guests, bots and people from other workspaces or other domains get no answer at all. Each thread keeps one conversation per person the agent works as, so an outsider's words never end up in a member's conversation. If the person who connected the channel can no longer use the agent, outsiders are told privately that a team admin needs to connect it again, while members keep going.
+
+The Slack app asks for three more permissions, each for one job. `channels:read` lets AX look up a channel and list the public ones to pick from. `channels:join` lets the bot join the channel you pick, so nobody has to invite it. `commands` adds the `/ax` slash command, which Slack sends to AX at a signed address of its own (`/slack/commands/<install>`); AX checks the signature and who is asking before it does anything.
+
+An existing Slack connection has none of these, so it must be disconnected and connected again from AX's admin settings before channels can be connected.
+
+Mention-only, on purpose: the bot answers a message that mentions it and nothing else, so a follow-up in the same thread needs a new mention. A bare `@bot` with nothing else runs no turn. A reply can't broadcast: a bare `@channel`, `@here` or `@everyone` in the agent's text gets a zero-width space after the `@`, and so does the `&` of an HTML character reference that could spell one (`&#64;channel`, `&commat;here`, `<&excl;channel>`), even when the word is split across chunks. Plain text such as `R&D`, `&amp;` and a link's `&page=2` is left as written.
+
+Each connected channel has a "remember this channel" switch, for what people who can use the agent say there. What anyone else says is never remembered, switch or not: it would otherwise come back as fact in the agent's later turns, members' private chats included. The switch works through `memory:pre-capture`, so it also stops the agent's own `memory_note`. Once a thread has had a turn while the switch was off, it stays unremembered, even if the switch comes back on or Slack is disconnected. It stops learning, not recall: the agent still recalls what it learned elsewhere.
+
+When a call needs approval, an outsider's turn says the agent is waiting for its owner and the call waits in the connector's Today. A member's turn, or a DM, links to Today to approve it, until Slack gets approval buttons.

@@ -481,6 +481,67 @@ describe('sandbox:open-session (k8s)', () => {
     expect(cfg.conversationId).toBeNull();
   });
 
+  // TASK-1091 — owner.source / owner.audience are host-stamped by the
+  // orchestrator and must reach session:create unchanged: the session record is
+  // where the IPC listener reads them back for the runner's calls.
+  describe('forwards owner.source and owner.audience into session:create (TASK-1091)', () => {
+    const OWNER = {
+      userId: 'u-1',
+      agentId: 'agt-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+    };
+
+    /** Opens an owned session; returns the owner each hook received. */
+    async function openWithOwner(
+      owner: Record<string, unknown>,
+    ): Promise<{ createdOwner: Record<string, unknown>; resolverOwner: Record<string, unknown> }> {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api, USER_FILES_RESOLVER);
+      const spy = vi.spyOn(h.bus, 'call');
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-mode',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
+        owner: { ...OWNER, ...owner },
+      });
+      const ownerSentTo = (hook: string): Record<string, unknown> => {
+        const calls = spy.mock.calls.filter(([name]) => name === hook);
+        expect(calls).toHaveLength(1);
+        return (calls[0]![2] as { owner: Record<string, unknown> }).owner;
+      };
+      return {
+        createdOwner: ownerSentTo('session:create'),
+        resolverOwner: ownerSentTo('sandbox:resolve-mounts'),
+      };
+    }
+
+    it('an external, shared owner reaches session:create (and the mount resolver) with both keys', async () => {
+      const { createdOwner, resolverOwner } = await openWithOwner({
+        source: 'external',
+        audience: 'shared',
+      });
+      expect(createdOwner.source).toBe('external');
+      expect(createdOwner.audience).toBe('shared');
+      // The mount resolvers key off the same owner (memory reads it, TASK-1091).
+      expect(resolverOwner.audience).toBe('shared');
+    });
+
+    it('both keys stay absent when the input omits them', async () => {
+      const { createdOwner } = await openWithOwner({});
+      expect('source' in createdOwner).toBe(false);
+      expect('audience' in createdOwner).toBe(false);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // chat:phase producer — sandbox-k8s announces sandbox-starting BEFORE
   // calling createNamespacedPod so the UI can show "Starting sandbox…"
@@ -1198,6 +1259,40 @@ describe('sandbox:open-session (k8s)', () => {
       await h.close();
     });
 
+    // TASK-1091. Memory answers no mount at all to withhold the view from a
+    // shared session. That is a decision, not a malformed reply: the pod opens
+    // with its /files home and no /memory volume.
+    it('a resolver returning zero mounts opens the pod without a /memory volume', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await harnessWithMemory(api, []);
+      const spy = vi.spyOn(h.bus, 'call');
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), INPUT);
+      expect(api.creates).toHaveLength(1);
+      const body = api.creates[0]!.body as {
+        spec: {
+          containers: Array<{
+            env: Array<{ name: string; value: string }>;
+            volumeMounts?: Array<{ name: string; mountPath: string }>;
+          }>;
+          volumes?: Array<{ name: string; nfs?: { server: string; path: string } }>;
+        };
+      };
+      const runner = body.spec.containers[0]!;
+      expect((runner.volumeMounts ?? []).map((m) => m.mountPath)).toContain('/files');
+      expect((runner.volumeMounts ?? []).map((m) => m.mountPath)).not.toContain('/memory');
+      // The /files export is the pod's only NFS volume.
+      expect((body.spec.volumes ?? []).flatMap((v) => (v.nfs ? [v.nfs.server] : []))).toEqual([
+        'files.example.invalid',
+      ]);
+      const env = Object.fromEntries(runner.env.map((e) => [e.name, e.value]));
+      expect(env.AX_USERFILES_ROOT).toBe('/files');
+      expect('AX_MEMORY_ROOT' in env).toBe(false);
+      // Nothing rolled the session back.
+      expect(spy.mock.calls.some(([hook]) => hook === 'session:terminate')).toBe(false);
+      await h.close();
+    });
+
     it('a resolver failure terminates the session and aborts pod creation', async () => {
       const api = makeMockK8sApi();
       api.setReadResponses(readyPod());
@@ -1243,7 +1338,9 @@ describe('sandbox:open-session (k8s)', () => {
 
     it.each([
       ['two mounts', [MEMORY_MOUNT, MEMORY_MOUNT]],
-      ['zero mounts', []],
+      // Not zero mounts: only an empty list withholds the view.
+      ['a null entry alone', [null]],
+      ['a hole alone', new Array(1)],
       ['mounts not an array', { mounts: 'nope' }],
       ['mounts null', null],
       ['mounts undefined', undefined],

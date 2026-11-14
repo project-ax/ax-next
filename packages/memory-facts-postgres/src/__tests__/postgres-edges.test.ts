@@ -353,3 +353,45 @@ describe('the never_true-column migration (TASK-624)', () => {
     expect(history.statements[0]!.neverTrue).toBe(true);
   });
 });
+
+describe('the audience-column migration (TASK-1091)', () => {
+  // `record` writes the column and every shared recall filters on it, so a
+  // table that predates it would fail both with `column "audience" does not
+  // exist` — in production only.
+  it('re-running the migration after DROP COLUMN audience restores it', async () => {
+    await sql`ALTER TABLE memory_facts_v1 DROP COLUMN audience`.execute(db);
+    await sql`
+      INSERT INTO memory_facts_v1
+        (id, agent_key, about, relation, value, provenance,
+         valid_start, valid_end, transaction_time)
+      VALUES
+        ('legacy-1', ${agentScopeKey(ctx)}, 'user', 'likes_artist', 'Khalid', 'extracted',
+         '2023-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z', '2023-01-01T00:00:00.000Z')
+    `.execute(db);
+
+    await runFactsMigration(db);
+    // A second run is a no-op, not a "column already exists" throw.
+    await runFactsMigration(db);
+
+    const legacy = await sql<{ audience: string | null }>`
+      SELECT audience FROM memory_facts_v1 WHERE id = 'legacy-1'
+    `.execute(db);
+    expect(legacy.rows[0]!.audience).toBeNull();
+
+    const out = await record({
+      statements: [
+        { about: 'user', relation: 'uses_tool', value: 'Jira', when: JAN, audience: 'shared' },
+      ],
+    });
+    expect(out.records[0]!.audience).toBe('shared');
+
+    // The legacy row's NULL never answers a shared read; unscoped, it is
+    // still there and still unstamped.
+    const shared = await recall({ about: 'user', limit: 10, audience: 'shared' });
+    expect(shared.statements.map((s) => s.id)).toEqual([out.records[0]!.id]);
+    const unscoped = await recall({ about: 'user', limit: 10 });
+    const legacyRow = unscoped.statements.find((s) => s.id === 'legacy-1');
+    expect(legacyRow).toBeDefined();
+    expect(legacyRow).not.toHaveProperty('audience');
+  });
+});

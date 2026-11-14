@@ -1,12 +1,15 @@
 import {
   HookBus,
+  PluginError,
   isHold,
   isRejection,
   makeAgentContext,
   type AgentContext,
+  type Hold,
   type ToolCall,
 } from '@ax/core';
 import { describe, expect, it } from 'vitest';
+import { createAttendanceResolver } from '../attendance.js';
 import { callFingerprint } from '../fingerprint.js';
 import {
   createPreCallSubscriber,
@@ -331,6 +334,63 @@ describe('tool:pre-call subscriber — attendance', () => {
     const r = await sub(ctx(), CALL);
     expect(isRejection(r)).toBe(true);
     expect(isHold(r)).toBe(false);
+  });
+
+  it("an external turn's connector call is held for the turn's user, unattended", async () => {
+    // TASK-1091, the card's acceptance, through the REAL resolver. An external
+    // turn runs as the user who answers for it (for a channel agent, whoever
+    // connected the channel). The person actually present has no access to
+    // the agent and can't approve, so the call waits for that user in Today
+    // and the host replays it once they say yes. That holds even in a
+    // conversation whose channel says someone is watching.
+    const bus = new HookBus();
+    bus.registerService('conversations:get-metadata', 'stub-conversations', async (_c, input) => {
+      const { conversationId, userId } = input as { conversationId: string; userId: string };
+      // The real hook's posture: a row is visible to its owner only.
+      if (conversationId !== 'c1' || userId !== 'connector-user') {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: 'stub-conversations',
+          message: `conversation '${conversationId}' not found`,
+        });
+      }
+      return {
+        conversationId,
+        userId,
+        agentId: 'a1',
+        runnerType: null,
+        runnerSessionId: null,
+        title: null,
+        lastActivityAt: null,
+        createdAt: NOW.toISOString(),
+        origin: 'web',
+        activeSessionId: 'sess-1',
+      };
+    });
+    const resolver = createAttendanceResolver(bus);
+    // The control: on its own, this conversation reads as attended.
+    expect(await resolver(ctx({ userId: 'connector-user' }))).toBe('attended');
+
+    const SEND: ToolCall = {
+      id: 'call-send',
+      name: 'mcp__gmail__send',
+      input: { to: 'team@example.com', subject: 'Notes', body: 'Here they are.' },
+    };
+    // What tool-policy answers for a connector tool set to Ask first: a hold,
+    // with no table rule or capability clause behind it.
+    const ASK_FIRST: PolicyAnswer = { verdict: 'hold', ruleId: null, capability: null };
+    const { sub, store } = build(ASK_FIRST, createFakeStore(), resolver, bus);
+
+    const r = await sub(ctx({ userId: 'connector-user', source: 'external' }), SEND);
+    expect(isHold(r)).toBe(true);
+    const row = await store.get((r as Hold).hold.decisionId, 'connector-user');
+    expect(row).toMatchObject({
+      ownerUserId: 'connector-user',
+      attendance: 'unattended',
+      status: 'pending',
+      conversationId: 'c1',
+      call: SEND,
+    });
   });
 });
 

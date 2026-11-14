@@ -54,6 +54,8 @@ import {
   MEMORY_REPLACED_BY_UNKNOWN,
   MEMORY_TEAM_NOTICE,
   MEMORY_KIND_FACT,
+  MEMORY_SHARED_BADGE,
+  MEMORY_SHARED_BADGE_HINT,
   MEMORY_KIND_PREFERENCE,
   MEMORY_NOTED_TODAY,
   MEMORY_NOTED_YESTERDAY,
@@ -108,6 +110,17 @@ function kindLabel(row: FactMemoryStatement): string {
 
 function KindBadge({ row }: { row: FactMemoryStatement }) {
   return <Badge variant={row.kind === 'opinion' ? 'accent' : 'secondary'} size="compact">{kindLabel(row)}</Badge>;
+}
+
+/** Marks a memory learned in a shared conversation; absent for private ones. */
+function SharedBadge({ row }: { row: FactMemoryStatement }) {
+  if (row.audience !== 'shared') return null;
+  return <Badge variant="outline" size="compact" title={MEMORY_SHARED_BADGE_HINT}>{MEMORY_SHARED_BADGE}</Badge>;
+}
+
+/** The kind badge, with the Shared badge beside it when the memory is shared. */
+function RowBadges({ row }: { row: FactMemoryStatement }) {
+  return <span className="inline-flex flex-wrap items-center gap-1"><KindBadge row={row} /><SharedBadge row={row} /></span>;
 }
 
 /**
@@ -453,7 +466,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
             {rows.map((row) => <li key={row.id}>
               <Card>
                 <CardHeader className="flex flex-row items-start justify-between gap-3 p-4 pb-2">
-                  <CardTitle><KindBadge row={row} /></CardTitle>
+                  <CardTitle><RowBadges row={row} /></CardTitle>
                   {isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2 p-4 pt-0">
@@ -475,7 +488,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
                 </TableRow>
               </TableHeader>
               <TableBody>{rows.map((row) => <TableRow key={row.id} className="border-border">
-                <TableCell className="py-3"><KindBadge row={row} /></TableCell>
+                <TableCell className="py-3"><RowBadges row={row} /></TableCell>
                 <TableCell className="py-3">{statement(row)}</TableCell>
                 <TableCell className="py-3 text-muted-foreground"><NotedDate when={row.when} /></TableCell>
                 <TableCell className="py-3">{isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}</TableCell>

@@ -1,4 +1,5 @@
 import {
+  isOutsiderTurn,
   isOwnerlessId,
   makeAgentContext,
   PluginError,
@@ -65,12 +66,32 @@ interface ConnectorProposeReply extends ConnectorProposeOutput {
   message: string;
 }
 
+/**
+ * TASK-1091: the answer to an external turn, where nothing was sent. A RESULT,
+ * not a throw: tool.execute-host redacts a thrown message to a generic one
+ * (I9), so only a result can tell the model, in words, that nothing was sent.
+ * Same shape as @ax/agents' identity tools' refusals.
+ */
+interface ConnectorProposeRefusal {
+  ok: false;
+  error: 'not-available';
+  message: string;
+}
+
 // Fixed, host-written text the model relays. Adds no new trust: it only says
 // what the status already means and where the person goes next.
 const REPLY_MESSAGES: Record<ConnectorProposeOutput['status'], string> = {
   pending:
     'Sent to your workspace admin for approval. Once they set it up, add it to this agent from the Connectors tab.',
   active: 'This connector already exists. Add it to this agent from the Connectors tab.',
+};
+
+/** Fixed text; never echoes input. */
+const EXTERNAL_REFUSAL: ConnectorProposeRefusal = {
+  ok: false,
+  error: 'not-available',
+  message:
+    "Connector requests can't be made from a conversation with people who don't have access to this agent. Nothing was sent.",
 };
 
 // Structural-validation PluginError codes the connectors:install-authored hook
@@ -190,7 +211,10 @@ export function createToolConnectorProposePlugin(): Plugin {
         CONNECTOR_PROPOSE_DESCRIPTOR,
       );
 
-      bus.registerService<{ input?: unknown } & Partial<ToolCall>, ConnectorProposeReply>(
+      bus.registerService<
+        { input?: unknown } & Partial<ToolCall>,
+        ConnectorProposeReply | ConnectorProposeRefusal
+      >(
         EXECUTE_HOOK,
         PLUGIN_NAME,
         async (toolCtx, call) => {
@@ -208,6 +232,21 @@ export function createToolConnectorProposePlugin(): Plugin {
           // is no per-transport literal left to get half-right.
           if (isOwnerlessId(toolCtx.userId) || isOwnerlessId(toolCtx.agentId)) {
             rejectInput('connector_propose: session is not bound to a user+agent');
+          }
+
+          // TASK-1091: an external turn files no request. Someone with no
+          // access to this agent is present, and the request would land in
+          // the admins' queue in the owner's name, worded by an outsider.
+          // `source` is host-stamped by the IPC listener from the session
+          // record, never taken from the tool input. Checked BEFORE the draft
+          // is read, so a malformed draft gets this answer and not a field
+          // error that invites another try. `isOutsiderTurn` also refuses a
+          // source this build doesn't know (fail closed). A routine (and
+          // @ax/decisions' replay of a call the owner approved, which runs as
+          // one) still files. The orchestrator also leaves the tool out of an
+          // external session's catalog; this is the gate.
+          if (isOutsiderTurn(toolCtx)) {
+            return { ...EXTERNAL_REFUSAL };
           }
 
           const draft = normalizeInput(call?.input);

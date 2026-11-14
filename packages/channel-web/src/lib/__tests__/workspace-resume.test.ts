@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { workspaceApi, type ThreadMessage } from '@/lib/workspace-api';
+import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
 import { lastUserText, resumeParkedTurn } from '@/lib/workspace-resume';
 
 const userMsg = (id: string, text: string): ThreadMessage => ({
@@ -184,4 +185,45 @@ describe('every way it can fail to resume', () => {
       resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
     ).resolves.toEqual({ resumed: false, reason: 'send-failed' });
   });
+
+  /*
+    TASK-1093 — a conversation that takes its messages somewhere else refuses a
+    re-send from here. Only a SLACK thread gets its own reason: the row then
+    says to reply in Slack. A routine's conversation is refused by the same
+    route, but "reply to it in Slack" would be wrong
+    there, so it keeps the plain refused-send reason and its sentence.
+  */
+  it('reports a refused re-send on a Slack thread as read-only', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue({
+      ...detail(askedThread),
+      origin: 'slack',
+    });
+    vi.spyOn(workspaceApi, 'sendMessage').mockRejectedValue(
+      new ConversationReadOnlyError('/api/chat/messages'),
+    );
+
+    await expect(
+      resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
+    ).resolves.toEqual({ resumed: false, reason: 'read-only' });
+  });
+
+  // `undefined`: an older host that names no origin at all.
+  it.each<[string | null | undefined]>([['routine'], [null], [undefined]])(
+    'reports a read-only refusal on a non-Slack conversation (origin %s) as a refused send',
+    async (origin) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(workspaceApi, 'agent').mockResolvedValue({
+        ...detail(askedThread),
+        ...(origin === undefined ? {} : { origin }),
+      });
+      vi.spyOn(workspaceApi, 'sendMessage').mockRejectedValue(
+        new ConversationReadOnlyError('/api/chat/messages'),
+      );
+
+      await expect(
+        resumeParkedTurn({ agentId: 'a-quill', conversationId: 'cnv-1' }),
+      ).resolves.toEqual({ resumed: false, reason: 'send-failed' });
+    },
+  );
 });
