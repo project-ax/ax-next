@@ -108,7 +108,7 @@ export interface ReplyClock {
 
 /**
  * The real clock. Its timers don't hold the process open: a reply cut short
- * by a shutdown is finalized by Slack itself (decisions: running DM turns
+ * by a shutdown is finalized by Slack itself (decisions: running turns
  * aren't awaited).
  */
 export const systemClock: ReplyClock = {

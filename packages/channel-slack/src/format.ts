@@ -1,5 +1,6 @@
 import { clampCodeUnits } from '@ax/core';
 import { replaceSurfaceRewriters } from '@ax/core/surface-text';
+import { cleanChannelName } from './label.js';
 import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
 
 /**
@@ -10,8 +11,8 @@ import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
  * to ping people or a whole channel and keeps every message under Slack's
  * caps.
  *
- * And one thing for text coming IN: `decodeSlackEntities`, so the agent reads
- * a DM as its sender typed it.
+ * And for text coming IN: `decodeSlackEntities`, so the agent reads a
+ * message as its sender typed it, and the sender labels in front of it.
  */
 
 const ZERO_WIDTH_SPACE = '\u200B';
@@ -172,7 +173,8 @@ export function decodeSlackEntities(text: string): string {
 }
 
 /**
- * A Slack display name, made fit for the sender label (`dmSenderLabel`): no
+ * A Slack display name, made fit for the sender labels (`dmSenderLabel`,
+ * `channelSenderLabel`): no
  * control, bidi or invisible characters, no brackets or parentheses (so a
  * name can't close the label early and start a second one), single spaces,
  * at most SENDER_NAME_MAX code units. Empty when nothing printable is left.
@@ -196,6 +198,24 @@ export function cleanSenderName(raw: string): string {
  * the turn's identity comes from users.info and AX alone.
  */
 export function dmSenderLabel(name: string, slackUserId: string): string {
-  const who = name.length > 0 ? `${name} (${slackUserId})` : slackUserId;
-  return `[Slack · DM · ${who}]`;
+  return `[Slack · DM · ${senderOf(name, slackUserId)}]`;
+}
+
+/**
+ * Who a channel mention is from, and where, as the agent reads it at the
+ * start of the message content (design §2): `[Slack · #support · Alice Smith
+ * (U123)]`. `channel` is the binding's stored name, or the channel's
+ * ingress-checked id when it has none; it is cleaned again here
+ * (`cleanChannelName`: no brackets, parentheses, control, bidi or invisible
+ * characters), so a name can't close the label early whoever stored it. The
+ * sender as `dmSenderLabel` names them. Untrusted text in the CONTENT, never
+ * in the turn's context: who the turn runs as comes from users.info and AX.
+ */
+export function channelSenderLabel(channel: string, name: string, slackUserId: string): string {
+  return `[Slack · #${cleanChannelName(channel)} · ${senderOf(name, slackUserId)}]`;
+}
+
+/** `Alice Smith (U123)`, or the bare id when the sender has no name. */
+function senderOf(name: string, slackUserId: string): string {
+  return name.length > 0 ? `${name} (${slackUserId})` : slackUserId;
 }

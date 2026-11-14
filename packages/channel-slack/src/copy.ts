@@ -13,9 +13,11 @@ import { SLASH_COMMAND } from './manifest.js';
  * `@here`, `@channel` or `@everyone`: the bot never pings anyone, a name
  * from outside included (copy.test.ts).
  *
- * The `slash*` lines answer `/ax` (commands.ts). They are mrkdwn `text`, not
- * Markdown: a link is a bare URL, and no line holds a `<` or `>` of its own
- * (mrkdwn reads `<…>` as a link). A name from outside goes through `shown`.
+ * The `slash*` lines answer `/ax` (commands.ts), and the `channel*` lines
+ * (with `queueFull` and `turnFailed`) can reach a channel mention's sender
+ * privately before its turn starts (router.ts). Both go out as mrkdwn `text`,
+ * not Markdown: a link is a bare URL, and no line holds a `<` or `>` of its
+ * own (mrkdwn reads `<…>` as a link). A name from outside goes through `shown`.
  */
 
 /**
@@ -42,7 +44,6 @@ export const COPY = {
   noAgent: (origin: string) =>
     `You don't have a personal agent in [the web app](${origin}) yet. ` +
     'Make one there, then send your message again.',
-  mentionRefusal: 'I only answer direct messages for now. Send me a DM to talk to your own agent.',
   filesUnsupported:
     "I can't read files in Slack yet. Send your message as text, or share the file with me in the web app.",
   queueFull:
@@ -65,6 +66,23 @@ export const COPY = {
   heldForSender: (todayLink: string) =>
     `I need your OK before I can do part of this. Approve it in [Today](${todayLink}). Nothing will happen until you do.`,
   statusDefault: 'Working',
+
+  // ── Before a channel mention's turn (mrkdwn, shown only to its sender) ────
+  /*
+    One line for every conversation nothing is connected to: a mention can't
+    tell a group DM or a private channel from a public channel without more
+    scopes, so it says where an agent can be connected.
+  */
+  channelNotConnected:
+    'No agent is connected here. A team admin can connect one to a public channel ' +
+    `by typing ${CONNECT} there, followed by the agent's name. To talk to your own agent, send me a direct message.`,
+  /*
+    The channel's connection is broken: the person who connected it can't use
+    the agent anymore, or the agent is gone. Outsiders' turns would run as
+    that person, so none runs until a team admin connects the channel again.
+  */
+  channelUnavailable: "I can't answer here right now. A team admin needs to connect me to this channel again.",
+  channelBusy: "I'm busy with other questions in this channel. Try again in a minute.",
 
   // ── /ax replies (mrkdwn, shown only to whoever typed the command) ─────────
   slashUsage:

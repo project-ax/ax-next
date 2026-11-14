@@ -1,8 +1,8 @@
 import type { AgentContext, HookBus } from '@ax/core';
 
 /**
- * The DM turns running now, and the one plugin-level subscriber per chat
- * event that feeds them. A turn registers its sink BEFORE `agent:invoke`
+ * The Slack turns running now (DMs and channel mentions), and the one
+ * plugin-level subscriber per chat event that feeds them. A turn registers its sink BEFORE `agent:invoke`
  * (the first chunk can arrive before the call returns) and unregisters when
  * it ends. One subscription each, instead of one per turn: no churn.
  *

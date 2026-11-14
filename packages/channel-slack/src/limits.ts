@@ -138,9 +138,17 @@ export const REPLY_RATE_LIMIT_RETRIES = 5;
 
 // ── Turns ───────────────────────────────────────────────────────────────────
 
-/** Turns running or waiting in one conversation. */
+/** Turns running or waiting in one conversation: a DM thread, or one person's in a channel thread. */
 export const MAX_TURNS_PER_CONVERSATION = 3;
-/** The longest one DM turn may run: 15 minutes. */
+/**
+ * Outsiders' turns running or waiting in one channel, across all its threads
+ * (router.ts). Each one runs as the person who connected the channel, so this
+ * bounds how much of one person's identity, and turn budget, a channel's
+ * outsiders can spend at once: one runs, the rest wait, and one more is told
+ * the channel is busy.
+ */
+export const MAX_EXTERNAL_TURNS_PER_CHANNEL = 5;
+/** The longest one Slack turn may run: 15 minutes. */
 export const TURN_HARD_CAP_MS = 900_000;
 /**
  * After `agent:invoke` reports a complete turn, how long the reply waits for

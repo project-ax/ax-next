@@ -41,11 +41,13 @@ describe('COPY: everything the bot says in Slack', () => {
       [
         'artifactLink',
         'busy',
+        'channelBusy',
+        'channelNotConnected',
+        'channelUnavailable',
         'emptyReply',
         'filesUnsupported',
         'heldForOwner',
         'heldForSender',
-        'mentionRefusal',
         'noAgent',
         'notMapped',
         'queueFull',
@@ -97,6 +99,34 @@ describe('COPY: everything the bot says in Slack', () => {
   it("a held call's lines can't name the tool, its connector or the owner: they take nothing but Today's link", () => {
     expect(typeof COPY.heldForOwner).toBe('string');
     expect(COPY.heldForSender).toHaveLength(1);
+  });
+});
+
+describe('COPY: what a channel mention can get privately, before its turn (mrkdwn)', () => {
+  /** Every line router.ts sends a channel mention's sender as an ephemeral. */
+  const PRIVATE = ['channelNotConnected', 'channelUnavailable', 'channelBusy', 'queueFull', 'turnFailed'] as const;
+
+  it('is plain mrkdwn text: no < or >, no Markdown link', () => {
+    for (const key of PRIVATE) {
+      const line = COPY[key];
+      expect(typeof line, key).toBe('string');
+      expect(line, key).not.toMatch(/[<>]/);
+      expect(line, key).not.toMatch(/\]\(/);
+    }
+  });
+
+  it('no agent here: a team admin connects one to a public channel with /ax connect; your own agent is a DM away', () => {
+    expect(COPY.channelNotConnected).toContain('`/ax connect`');
+    expect(COPY.channelNotConnected).toMatch(/team admin/);
+    expect(COPY.channelNotConnected).toMatch(/public channel/);
+    expect(COPY.channelNotConnected).toMatch(/direct message/);
+  });
+
+  it("a broken connection says a team admin must connect it again; busy says try again soon; neither names anyone", () => {
+    expect(COPY.channelUnavailable).toMatch(/team admin/);
+    expect(COPY.channelUnavailable).toMatch(/connect/);
+    expect(COPY.channelBusy).toMatch(/try again/i);
+    expect(new Set([COPY.channelUnavailable, COPY.channelBusy, COPY.turnFailed, COPY.queueFull]).size).toBe(4);
   });
 });
 

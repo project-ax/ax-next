@@ -1,5 +1,4 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
-import { COPY } from './copy.js';
 import type { SlackEnvelope } from './events.js';
 import { cleanSenderName } from './format.js';
 import { EMAIL_MAX } from './limits.js';
@@ -8,27 +7,32 @@ import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
 
 /**
- * Who may talk to the bot, and where. Design §1.2, §1.4, §1.6.
+ * Who may talk to the bot, and where. Design §1.2, §1.4, §1.6, §2.
  *
- * A Slack sender reaches an agent only as an AX user: a full member of the
- * install's workspace (no guest, bot, deactivated, invited or other-workspace
- * account) whose email Slack has confirmed, mapped to a verified AX account by
- * `auth:find-user-by-email`. Identity comes ONLY from `users.info`, fetched
- * with the install's bot token for the event's Slack user id. Nothing in a
- * message's text is ever read for identity: the screened event carries the
- * sender's id, and admission takes nothing else.
+ * Every sender must first be a full member of the install's workspace (no
+ * guest, bot, deactivated, invited or other-workspace account) whose email
+ * Slack has confirmed. Identity comes ONLY from `users.info`, fetched with the
+ * install's bot token for the event's Slack user id. Nothing in a message's
+ * text is ever read for identity: the screened event carries the sender's id,
+ * and admission takes nothing else. Then the member's email decides who they
+ * are to AX: an account (`findSenderUser`, `auth:find-user-by-email`) or, in
+ * a connected channel only, an address on one of the install's approved
+ * domains (`isApprovedSender`, `auth:is-approved-email`).
  *
- * Where: only a 1:1 DM reaches an agent. A channel shared with another company
- * (Slack Connect) and anything a bot sent get silence. A message anywhere else
- * (a channel, a group DM) is ignored; a mention there gets one private
- * (ephemeral) refusal, and only an admitted member gets even that. A refused
- * sender always gets silence: a non-member learns nothing from the bot. A
- * users.info call that failed only because Slack was briefly unavailable
- * refuses nobody (`isTemporaryLookupFailure`): in a 1:1 DM, which only the
- * sender sees, the router says "try again".
+ * Where: a 1:1 DM reaches the sender's own personal agent, and an @mention in
+ * a channel connected to a team agent reaches that agent (router.ts says how,
+ * channel-route.ts as whom). A channel shared with another company (Slack
+ * Connect) and anything a bot sent get silence. Any other message outside a
+ * DM is ignored: the bot only hears what is addressed to it. A mention where
+ * no agent is connected gets one private (ephemeral) line, and only an
+ * admitted member gets even that. A refused sender always gets silence: a
+ * non-member learns nothing from the bot. A users.info call that failed only
+ * because Slack was briefly unavailable refuses nobody
+ * (`isTemporaryLookupFailure`): the router tells that sender, and only them,
+ * to try again (in a DM, or privately in a connected channel).
  *
  * The router (router.ts) runs these in order: screenEvent → the bot token →
- * admitSender (or answerMention) → findSenderUser.
+ * admitSender (or answerMention) → findSenderUser (→ isApprovedSender).
  */
 
 // ── Who: the sender, from users.info ────────────────────────────────────────
@@ -197,8 +201,17 @@ export interface Mention {
   kind: 'mention';
   sender: string;
   channel: string;
-  /** Present only when the mention was inside a thread. */
+  /** The mention itself: where 👀 goes, and outside a thread the root of the reply's. */
+  ts: string;
+  /**
+   * The event's `thread_ts`: present only when the mention was inside a
+   * thread. Lines for the sender alone go there and nowhere else: an
+   * ephemeral sent with a `thread_ts` that has no thread yet is never shown.
+   * The reply's thread is `threadTs ?? ts`.
+   */
   threadTs?: string;
+  /** The sender's words, the bot's own `<@U…>` included. Never read for identity. */
+  text: string;
 }
 
 export type ScreenedEvent = DirectMessage | Mention | { kind: 'ignore'; reason: IgnoreReason };
@@ -215,8 +228,8 @@ const ignore = (reason: IgnoreReason): ScreenedEvent => ({ kind: 'ignore', reaso
  *     private channel, a group DM) → ignore (not-dm);
  *   - a DM `subtype` other than `file_share` (an edit, a delete, a broadcast)
  *     → ignore;
- *   - a DM with no channel or ts, or a mention with no channel → ignore
- *     (nothing to answer in);
+ *   - a DM or a mention with no channel or ts → ignore (nothing to answer
+ *     in, nothing to put 👀 on);
  *   - an `app_mention` → a mention (it never fires in DMs); any other event
  *     type → ignore.
  */
@@ -245,38 +258,43 @@ export function screenEvent(
     };
   }
   if (event.type === 'app_mention') {
-    if (event.channel === undefined) return ignore('incomplete');
+    if (event.channel === undefined || event.ts === undefined) return ignore('incomplete');
     return {
       kind: 'mention',
       sender,
       channel: event.channel,
+      ts: event.ts,
       ...(event.threadTs !== undefined ? { threadTs: event.threadTs } : {}),
+      text: event.text ?? '',
     };
   }
   return ignore('other');
 }
 
-// ── The mention refusal ─────────────────────────────────────────────────────
+// ── A mention no agent takes ────────────────────────────────────────────────
 
 /**
- * A mention never reaches an agent (design §1.4: a personal agent answers its
- * owner only in a 1:1 DM). An admitted member gets one ephemeral refusal that
- * only they see, in the mention's thread when it was in one; a refused sender
- * gets silence. A refusal comes back for the caller to log; a failed post
- * throws.
+ * A mention no turn will come of, where the router has nothing to go on but
+ * the sender (no agent is connected, or the binding couldn't be read): an
+ * admitted member gets `text` once, ephemeral, so only they see it, in the
+ * mention's thread when it was in one (never a thread under the mention's
+ * own ts: one that doesn't exist yet hides the line); a refused sender gets
+ * silence. The line is the caller's, a COPY line. A refusal comes back for
+ * the caller to log; a failed post throws.
  */
 export async function answerMention(
   api: SlackApi,
   botToken: string,
   teamId: string,
   mention: Mention,
+  text: string,
 ): Promise<Admission> {
   const admission = await admitSender(api, botToken, mention.sender, teamId);
   if (!admission.ok) return admission;
   await api.postEphemeral(botToken, {
     channel: mention.channel,
     user: mention.sender,
-    text: COPY.mentionRefusal,
+    text,
     ...(mention.threadTs !== undefined ? { threadTs: mention.threadTs } : {}),
   });
   return admission;
@@ -315,4 +333,20 @@ export async function findSenderUser(
     // A log line never changes the answer.
   }
   return null;
+}
+
+const IS_APPROVED_EMAIL = 'auth:is-approved-email';
+
+/**
+ * Is an admitted sender AX has no account for on one of the install's
+ * approved domains? (A connected channel's tier C: a company member who never
+ * signed in.) The email goes to `auth:is-approved-email` exactly as admission
+ * returned it from users.info (its caller contract: never one from message
+ * text). Only `{ approved: true }` is a yes: an answer we can't read admits
+ * nobody. A failed call throws to the caller: an outage is not a "no". Logs
+ * nothing: the caller logs its own outcome, by code.
+ */
+export async function isApprovedSender(bus: HookBus, ctx: AgentContext, email: string): Promise<boolean> {
+  const answer = await bus.call<{ email: string }, unknown>(IS_APPROVED_EMAIL, ctx, { email });
+  return isRecord(answer) && answer['approved'] === true;
 }

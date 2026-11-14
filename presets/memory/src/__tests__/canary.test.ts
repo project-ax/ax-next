@@ -54,6 +54,7 @@ function authStub(): Plugin {
         'auth:require-user',
         'auth:get-user',
         'auth:find-user-by-email',
+        'auth:is-approved-email',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -87,6 +88,9 @@ function authStub(): Plugin {
       // @ax/channel-slack maps a Slack sender's verified email with this
       // (TASK-1092's hook). No canary identity has one, so every lookup misses.
       bus.registerService('auth:find-user-by-email', name, async () => null);
+      // ...and asks this about a channel mention's sender with no account
+      // (TASK-1094). No domain is approved here, so nobody gets in that way.
+      bus.registerService('auth:is-approved-email', name, async () => ({ approved: false }));
       bus.registerService('auth:create-bootstrap-user', name, async () => ({
         user: { id: 'bootstrap', isAdmin: true },
       }));

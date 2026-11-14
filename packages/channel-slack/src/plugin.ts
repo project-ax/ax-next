@@ -15,6 +15,7 @@ import {
   EVENT_DEDUPE_MAX,
   EVENT_DEDUPE_TTL_MS,
   EVENTS_MAX_BODY_BYTES,
+  MAX_EXTERNAL_TURNS_PER_CHANNEL,
   MAX_TURNS_PER_CONVERSATION,
   SIGNING_SECRET_CACHE_MAX,
   SIGNING_SECRET_CACHE_TTL_MS,
@@ -32,9 +33,11 @@ import { createKeyedQueue } from './turn-queue.js';
 import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './turn-registry.js';
 
 // ---------------------------------------------------------------------------
-// @ax/channel-slack — connect a Slack workspace from AX admin settings, and
-// (TASK-1093 PR B) let every AX user DM the shared bot to talk to their own
-// personal agent. Design: docs/plans/2026-11-09-channel-slack-design.md.
+// @ax/channel-slack — connect a Slack workspace from AX admin settings, let
+// every AX user DM the shared bot to talk to their own personal agent
+// (TASK-1093), and let a team admin connect a public channel to a team agent
+// that answers @mentions there (TASK-1094). Design:
+// docs/plans/2026-11-09-channel-slack-design.md.
 //
 // It registers no hooks. It mounts, through `http:register-route`:
 //
@@ -63,8 +66,13 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 // subscriber per event hands to the running turn (turn-registry.ts).
 //
 // A team admin connects a public channel to a team agent (channels.ts), from
-// the agent's settings or with `/ax connect`. That only records the binding:
-// the bot joins the channel and nothing answers in it yet.
+// the agent's settings or with `/ax connect`; the bot joins it. An @mention
+// there becomes a turn of that agent (router.ts, channel-route.ts): attended,
+// as the sender, when they can use the agent; external, as the person who
+// connected the channel, for any other admitted company member (an AX user
+// outside the team, or one with no account whose email is on an approved
+// domain, `auth:is-approved-email`). Members' turns queue per conversation;
+// outsiders' turns in one lane per channel.
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -87,8 +95,8 @@ export interface ChannelSlackConfig {
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
 const AGENTS_DELETED = 'agents:deleted';
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
-/** The subscriber name for the three chat events DM turns read. */
-export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/dm-turns`;
+/** The subscriber name for the three chat events Slack turns read. */
+export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/turns`;
 
 const RESET_LEFT_APP_HINT =
   'The reset removed this install from AX, not from Slack. Delete the app at ' +
@@ -147,6 +155,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         'credentials:set',
         'credentials:delete',
         'auth:find-user-by-email',
+        'auth:is-approved-email',
         'agents:list-for-user',
         'agents:resolve',
         'agents:can-set-shared-credential',
@@ -159,7 +168,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           // The Stop chat-orchestrator registers next to agent:invoke, so this
           // adds no new edge to the plugin graph.
           hook: 'agent:interrupt',
-          degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+          degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
         {
           hook: 'teams:list-for-user',
@@ -199,7 +208,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       const life = createLifetime();
       lifetime = life;
       const registry = createTurnRegistry();
+      // DM turns and members' channel turns, one lane per conversation.
       const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
+      // Outsiders' channel turns, one lane per channel (router.ts).
+      const externalQueue = createKeyedQueue({ maxPerKey: MAX_EXTERNAL_TURNS_PER_CHANNEL });
 
       // What the connect core and its two ways in (agent settings, `/ax`) share.
       const channelDeps: ChannelDeps = { bus, installs: store, channels: channelStore, secrets, api, logger };
@@ -239,6 +251,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
               secrets,
               installs: store,
               queue,
+              channels: channelStore,
+              externalQueue,
             }),
             logger,
             now,
@@ -278,13 +292,18 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         });
         undos.push(subscribeAgentsDeleted(bus, channelStore, logger));
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
-        // Undone first: turns not yet started are dropped, and each install's
-        // count is logged (those senders never get a reply). Running ones are
-        // left to finish (or be cut short by the exit); nothing awaits them.
+        // Undone first: turns not yet started are dropped from both lanes,
+        // and each install's count is logged once (those senders never get a
+        // reply). Running ones are left to finish (or be cut short by the
+        // exit); nothing awaits them.
         undos.push(() => {
-          for (const { group, count } of queue.close()) {
+          const dropped = new Map<string, number>();
+          for (const lane of [queue, externalQueue]) {
+            for (const { group, count } of lane.close()) dropped.set(group, (dropped.get(group) ?? 0) + count);
+          }
+          for (const [installId, count] of dropped) {
             try {
-              logger.warn('slack_turns_dropped', { installId: group, reason: 'shutting-down', count });
+              logger.warn('slack_turns_dropped', { installId, reason: 'shutting-down', count });
             } catch {
               // A log line never stops the shutdown.
             }

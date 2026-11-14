@@ -178,13 +178,13 @@ describe('createTurnRegistry', () => {
     const r = createTurnRegistry();
     const { sink, seen } = recordingSink();
     r.register(sink);
-    const undo = subscribeTurnEvents(bus, r, '@ax/channel-slack/dm-turns');
+    const undo = subscribeTurnEvents(bus, r, '@ax/channel-slack/turns');
     expect(TURN_EVENT_HOOKS).toEqual(['chat:stream-chunk', 'chat:turn-end', 'chat:turn-error']);
     await bus.fire('chat:stream-chunk', ctxFor(CONVERSATION), { reqId: REQ, kind: 'text', text: 'hi' });
     await bus.fire('chat:turn-error', ctxFor(CONVERSATION), { reqId: REQ });
     await bus.fire('chat:turn-end', ctxFor(CONVERSATION), { reqId: REQ });
     expect(seen).toEqual(['chunk text', 'error', 'end']);
     undo();
-    for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, '@ax/channel-slack/dm-turns')).toBe(0);
+    for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, '@ax/channel-slack/turns')).toBe(0);
   });
 });

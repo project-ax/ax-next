@@ -1,8 +1,10 @@
 /**
- * DM turns, one at a time per conversation (TASK-1091's contract for a
- * channel: serialize turns per conversation). Without it, a second message
- * sent mid-reply would be folded into the running turn, and the two replies
- * would interleave in one Slack thread.
+ * Slack turns, one at a time per lane (TASK-1091's contract for a channel:
+ * serialize turns per conversation). Without it, a second message sent
+ * mid-reply would be folded into the running turn, and the two replies would
+ * interleave in one Slack thread. The router keeps two of these: one lane per
+ * conversation for DMs and members' channel turns, and one lane per channel
+ * for outsiders' turns, which all run as one person (router.ts).
  *
  *   - Jobs with the same key run one after another; different keys run side
  *     by side.

@@ -131,6 +131,10 @@ function fakeServices(s: Services) {
     // The DM path. Only Alice's verified email maps, to one personal agent.
     'auth:find-user-by-email': async (_ctx: unknown, input: unknown) =>
       (input as { email: string }).email === 'alice@canopyworks.com' ? { userId: 'usr_alice' } : null,
+    // A channel mention from someone with no account: canopyworks.com is the approved domain.
+    'auth:is-approved-email': async (_ctx: unknown, input: unknown) => ({
+      approved: (input as { email: string }).email.toLowerCase().endsWith('@canopyworks.com'),
+    }),
     'agents:list-for-user': async (_ctx: unknown, input: unknown) => ({
       agents:
         (input as { userId: string }).userId === 'usr_alice'
@@ -409,6 +413,19 @@ function eventBody(type = 'message', text?: string): Buffer {
   );
 }
 
+/** An @mention of the bot in #support from Alice, with its own event id and ts. */
+function mentionBody(eventId: string, ts: string, text: string): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      type: 'event_callback',
+      team_id: TEAM_ID,
+      api_app_id: APP_ID,
+      event_id: eventId,
+      event: { type: 'app_mention', user: ALICE, channel: SUPPORT_CH, ts, text },
+    }),
+  );
+}
+
 /** A second DM in the first one's thread (DM_TS), with its own event id. */
 function threadReplyBody(eventId: string, ts: string, text: string): Buffer {
   return Buffer.from(
@@ -466,6 +483,7 @@ describe('@ax/channel-slack plugin', () => {
         'credentials:set',
         'credentials:delete',
         'auth:find-user-by-email',
+        'auth:is-approved-email',
         'agents:list-for-user',
         'agents:resolve',
         'agents:can-set-shared-credential',
@@ -476,7 +494,7 @@ describe('@ax/channel-slack plugin', () => {
         { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
         {
           hook: 'agent:interrupt',
-          degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+          degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
         {
           hook: 'teams:list-for-user',
@@ -715,6 +733,67 @@ describe('@ax/channel-slack plugin', () => {
     // jobs and refuses new ones; the running one finishes") pins that a closed
     // lane never starts it.
     await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+  });
+
+  /*
+    Outsiders' turns wait in a lane of their own, one per channel. Shutdown
+    drops what waits in both lanes, and says so once per install.
+  */
+  it("turns waiting in both lanes at shutdown are dropped, and the install's count is logged once", async () => {
+    const slack = fakeSlackFetch();
+    const { s, call, plugin } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    // Ada, a team admin, connected #support. Alice isn't on its team, so a
+    // mention from her runs as Ada.
+    await createChannelStore(probe).upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: ADMIN.id,
+      channelName: 'support',
+    });
+    const gate = deferred();
+    s.invokeGate = gate.promise;
+    const queuedBefore = turnQueue.queued;
+    const post = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+      );
+    // A DM and its follow-up; two mentions in #support, each starting a thread.
+    expect((await post(eventBody('message', 'first'))).status).toBe(200);
+    expect((await post(threadReplyBody('Ev07ABCDEF13', '1763035201.000200', 'second'))).status).toBe(200);
+    expect((await post(mentionBody('Ev07ABCDEF14', '1763035300.000300', 'one'))).status).toBe(200);
+    expect((await post(mentionBody('Ev07ABCDEF15', '1763035301.000301', 'two'))).status).toBe(200);
+    // One running and one waiting in each lane.
+    await vi.waitFor(() => {
+      expect(turnQueue.queued - queuedBefore).toBe(4);
+      expect(s.invokes).toHaveLength(2);
+    });
+    // The outsider's turn runs as the person who connected the channel, in
+    // its thread's external conversation, read from the bindings on Postgres.
+    // (Deliveries are dispatched side by side, so either mention may be the
+    // one running.)
+    const outsider = s.invokes!.find((i) => i.ctx.source === 'external');
+    expect(outsider?.ctx).toMatchObject({
+      userId: ADMIN.id,
+      agentId: TEAM_AGENT.id,
+      audience: 'shared',
+      conversationId: expect.stringMatching(
+        new RegExp(`^conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035(?:300\\.000300|301\\.000301):external$`),
+      ),
+    });
+
+    const logs = captureLogs();
+    await plugin.shutdown?.();
+    expect(logs.filter((l) => l['msg'] === 'slack_turns_dropped')).toEqual([
+      expect.objectContaining({ level: 'warn', installId: INSTALL_ID, reason: 'shutting-down', count: 2 }),
+    ]);
+    gate.release();
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(2));
   });
 
   it('a turn still waiting when the admin disconnects never reaches the agent', async () => {

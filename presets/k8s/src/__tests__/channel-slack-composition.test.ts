@@ -38,9 +38,10 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor),
-// `auth:get-user`, `auth:find-user-by-email` (two mapped people and nobody
-// else), `agent:invoke` (records the turn, then streams one line and ends it
-// on the bus, the way the orchestrator does) and `branding:get`.
+// `auth:get-user`, `auth:find-user-by-email` (the people in AX_USERS and
+// nobody else), `auth:is-approved-email` (APPROVED_DOMAINS), `agent:invoke`
+// (records the turn, then streams one line and ends it on the bus, the way
+// the orchestrator does) and `branding:get`.
 // ---------------------------------------------------------------------------
 
 const SLACK_PLUGIN = '@ax/channel-slack';
@@ -91,6 +92,9 @@ const MEL: SlackPerson = { slackId: 'U07MEL00001', name: 'Mel', email: 'mel@cano
 const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL];
 const SUPPORT_CHANNEL = 'C07SUPPORT1';
 
+/** The install's approved sign-in domains, as auth:is-approved-email answers for them. */
+const APPROVED_DOMAINS = new Set(['canopyworks.com']);
+
 /** auth's answer: Alice and Bob have AX accounts, Carol doesn't. */
 const AX_USERS: Record<string, string> = {
   [ALICE.email]: 'usr_alice',
@@ -133,6 +137,7 @@ function createStubsPlugin(): Plugin {
         'auth:require-user',
         'auth:get-user',
         'auth:find-user-by-email',
+        'auth:is-approved-email',
         'agent:invoke',
         'branding:get',
       ],
@@ -164,6 +169,12 @@ function createStubsPlugin(): Plugin {
         'auth:find-user-by-email',
         name,
         async (_ctx, { email }) => (AX_USERS[email] !== undefined ? { userId: AX_USERS[email] } : null),
+      );
+      // On an approved domain: the part after the last @, any ASCII case.
+      bus.registerService<{ email: string }, { approved: boolean }>(
+        'auth:is-approved-email',
+        name,
+        async (_ctx, { email }) => ({ approved: APPROVED_DOMAINS.has(email.slice(email.lastIndexOf('@') + 1).toLowerCase()) }),
       );
       // The orchestrator's: a turn streams on the bus for its own reqId and
       // ends with chat:turn-end carrying the turn's conversation. No deadline,
@@ -738,8 +749,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(String(calls[1]!.body['markdown_text'])).toContain(`](${PUBLIC_ORIGIN})`);
     expect(invokes).toHaveLength(3);
 
-    // A mention in a channel from a member gets one ephemeral refusal, to
-    // them alone, and no turn.
+    // A mention in a channel nothing is connected to: one private line, to
+    // the member alone, and no turn.
     const mentionTs = nextTs();
     mark = slackCalls.length;
     expect(

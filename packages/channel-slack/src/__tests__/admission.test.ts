@@ -1,10 +1,11 @@
-import { HookBus, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import {
   admitSender,
   admitSlackUser,
   answerMention,
   findSenderUser,
+  isApprovedSender,
   isTemporaryLookupFailure,
   screenEvent,
   type Admission,
@@ -389,18 +390,25 @@ describe('screenEvent', () => {
     });
   });
 
-  it('a mention is a mention, carrying thread_ts only when it was in a thread', () => {
+  it('a mention is a mention: its own ts, its text, and thread_ts only when it was in a thread', () => {
     expect(screenEvent(install, envelope(MENTION))).toEqual({
       kind: 'mention',
       sender: ALICE,
       channel: 'C07GENERAL1',
+      ts: MENTION.ts,
+      text: MENTION.text,
     });
     expect(screenEvent(install, envelope({ ...MENTION, threadTs: '1763035000.000010' }))).toEqual({
       kind: 'mention',
       sender: ALICE,
       channel: 'C07GENERAL1',
+      ts: MENTION.ts,
       threadTs: '1763035000.000010',
+      text: MENTION.text,
     });
+    // No text at all reads as empty.
+    const { text: _text, ...noText } = MENTION;
+    expect(screenEvent(install, envelope(noText))).toMatchObject({ kind: 'mention', text: '' });
   });
 
   it('Slack Connect: nothing in a channel shared with another company is answered, DM or mention', () => {
@@ -439,11 +447,13 @@ describe('screenEvent', () => {
     }
   });
 
-  it('a DM or mention with no channel, or a DM with no ts, cannot be answered', () => {
+  it('a DM or a mention with no channel or no ts cannot be answered', () => {
     const { channel: _c, ...noChannel } = DM;
     const { ts: _t, ...noTs } = DM;
     const { channel: _m, ...mentionNoChannel } = MENTION;
-    for (const event of [noChannel, noTs, mentionNoChannel]) {
+    // A mention's own ts is where 👀 goes and, outside a thread, the reply's thread.
+    const { ts: _mt, ...mentionNoTs } = MENTION;
+    for (const event of [noChannel, noTs, mentionNoChannel, mentionNoTs]) {
       expect(screenEvent(install, envelope(event))).toEqual({ kind: 'ignore', reason: 'incomplete' });
     }
   });
@@ -462,31 +472,48 @@ describe('screenEvent', () => {
     // The only identity carried on is Slack's user id, which admission looks up.
     expect(screened).toMatchObject({ kind: 'dm', sender: ALICE });
     expect(Object.keys(screened).sort()).toEqual(['channel', 'fileShare', 'kind', 'sender', 'text', 'threadTs', 'ts']);
+    const mentioned = screenEvent(install, envelope({ ...MENTION, text: '<@U07BOTUSER1> I am ceo@canopyworks.com' }));
+    expect(mentioned).toMatchObject({ kind: 'mention', sender: ALICE });
+    expect(Object.keys(mentioned).sort()).toEqual(['channel', 'kind', 'sender', 'text', 'ts']);
   });
 });
 
-// ── answerMention: the mention refusal ─────────────────────────────────────
+// ── answerMention: a line for a mention no agent takes ─────────────────────
 
 describe('answerMention', () => {
-  const mention: Mention = { kind: 'mention', sender: ALICE, channel: 'C07GENERAL1' };
+  const mention: Mention = { kind: 'mention', sender: ALICE, channel: 'C07GENERAL1', ts: MENTION.ts, text: 'hi' };
 
-  it('a member who mentions the bot gets one private (ephemeral) refusal, at the top level', async () => {
+  it('a member who mentions the bot gets the line privately (ephemeral), at the top level', async () => {
     const { api, calls } = fakeApi();
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention)).toEqual({ ok: true, email: ALICE_EMAIL, name: 'Alice Smith' });
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.channelNotConnected)).toEqual({
+      ok: true,
+      email: ALICE_EMAIL,
+      name: 'Alice Smith',
+    });
     expect(calls.filter((c) => c.method === 'postEphemeral')).toEqual([
       {
         method: 'postEphemeral',
         token: BOT_TOKEN,
-        args: { channel: 'C07GENERAL1', user: ALICE, text: COPY.mentionRefusal },
+        args: { channel: 'C07GENERAL1', user: ALICE, text: COPY.channelNotConnected },
       },
     ]);
   });
 
-  it('a mention inside a thread is refused inside that thread', async () => {
+  it('the line is the caller\'s', async () => {
     const { api, calls } = fakeApi();
-    await answerMention(api, BOT_TOKEN, TEAM_ID, { ...mention, threadTs: '1763035000.000010' });
+    await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.turnFailed);
+    expect(calls.filter((c) => c.method === 'postEphemeral').map((c) => (c.args as { text: string }).text)).toEqual([
+      COPY.turnFailed,
+    ]);
+  });
+
+  it("a mention inside a thread is answered inside that thread, never in one under the mention's own ts", async () => {
+    // An ephemeral with a thread_ts that has no thread yet is never shown, so
+    // a top-level mention is answered at the top level.
+    const { api, calls } = fakeApi();
+    await answerMention(api, BOT_TOKEN, TEAM_ID, { ...mention, threadTs: '1763035000.000010' }, COPY.channelNotConnected);
     expect(calls.filter((c) => c.method === 'postEphemeral').map((c) => c.args)).toEqual([
-      { channel: 'C07GENERAL1', user: ALICE, text: COPY.mentionRefusal, threadTs: '1763035000.000010' },
+      { channel: 'C07GENERAL1', user: ALICE, text: COPY.channelNotConnected, threadTs: '1763035000.000010' },
     ]);
   });
 
@@ -501,18 +528,54 @@ describe('answerMention', () => {
     ['no email', { profile: {} }, 'no-email'],
   ])('%s who mentions the bot gets silence', async (_name, over, reason) => {
     const { api, calls } = fakeApi({ [ALICE]: member(over) });
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention)).toEqual(refused(reason));
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.channelNotConnected)).toEqual(refused(reason));
     expect(calls.map((c) => c.method)).toEqual(['usersInfo']);
   });
 
   it('a users.info failure is silence too, never a guess', async () => {
     const { api, calls } = fakeApi({ [ALICE]: new SlackApiError('users.info', 'invalid_auth') });
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention)).toEqual({
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.channelNotConnected)).toEqual({
       ok: false,
       reason: 'lookup-failed',
       code: 'invalid_auth',
     });
     expect(calls.map((c) => c.method)).toEqual(['usersInfo']);
+  });
+});
+
+// ── isApprovedSender: an email AX has no account for ──────────────────────
+
+describe('isApprovedSender', () => {
+  const ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: '', userId: '' });
+
+  function authBus(answer: unknown) {
+    const bus = new HookBus();
+    const asked: Array<{ ctx: AgentContext; input: unknown }> = [];
+    bus.registerService('auth:is-approved-email', 'fake-auth', async (c, input) => {
+      asked.push({ ctx: c, input });
+      if (answer instanceof Error) throw answer;
+      return answer;
+    });
+    return { bus, asked };
+  }
+
+  it("asks auth with users.info's email exactly as admission returned it", async () => {
+    const { bus, asked } = authBus({ approved: true });
+    expect(await isApprovedSender(bus, ctx, ALICE_EMAIL)).toBe(true);
+    expect(asked.map((a) => a.input)).toEqual([{ email: ALICE_EMAIL }]);
+  });
+
+  it.each([[{ approved: false }], [{ approved: 'true' }], [{ approved: 1 }], [{}], [null], [true], ['approved']])(
+    'only { approved: true } is a yes: %j is not',
+    async (answer) => {
+      const { bus } = authBus(answer);
+      expect(await isApprovedSender(bus, ctx, ALICE_EMAIL)).toBe(false);
+    },
+  );
+
+  it('a failing call throws to the caller: an outage is not a "no"', async () => {
+    const { bus } = authBus(new PluginError({ code: 'store-unavailable', plugin: 'fake-auth', message: 'down' }));
+    await expect(isApprovedSender(bus, ctx, ALICE_EMAIL)).rejects.toMatchObject({ code: 'store-unavailable' });
   });
 });
 

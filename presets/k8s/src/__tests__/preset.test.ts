@@ -1299,6 +1299,8 @@ describe('@ax/preset-k8s wiring', () => {
       'credentials:delete',
       // A Slack DM becomes a turn of the sender's own personal agent.
       'auth:find-user-by-email',
+      // A channel mention from a member with no account: is their email on an approved domain?
+      'auth:is-approved-email',
       'agents:list-for-user',
       // Connecting a channel to a team agent: who may see it, who may manage it.
       'agents:resolve',
@@ -1308,10 +1310,10 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
     expect(slack!.manifest.optionalCalls).toEqual([
       { hook: 'branding:get', degradation: 'the default bot name is "ax"' },
-      // A DM turn at the 15-minute cap is stopped, not only its reply.
+      // A Slack turn at the 15-minute cap is stopped, not only its reply.
       {
         hook: 'agent:interrupt',
-        degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
+        degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
       },
       // /ax connect looks a person's teams up; without @ax/teams it finds none.
       {
