@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { COPY } from '../copy.js';
+import { decodeSlackEntities } from '../format.js';
+import { spellsMention } from './lenient-decoder.js';
 
 const ORIGIN = 'https://canopyworks.ai';
 const LINK = 'https://canopyworks.ai/workspace/agents/agt_123';
@@ -154,9 +156,11 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
     const line = COPY.slashConnected('a<b &#64;channel &commat;here', 'support');
     // The escape of the `<` is intact, so the reader sees `a<b`, not `a&lt;b`...
     expect(line).toContain('a&lt;b ');
-    // ...and the name's own entities can't decode: each `&` is escaped and marked.
-    expect(line).not.toMatch(/&(?:#[0-9]|#x|commat;)/i);
-    expect(line.split(ZWSP).join('')).toContain('a&lt;b &amp;#64;channel &amp;commat;here');
+    // ...and the name's own entities can't decode: each `&` is escaped, and marked right after its escape.
+    expect(line).toContain(`a&lt;b &amp;${ZWSP}#64;channel &amp;${ZWSP}commat;here`);
+    // Slack undoes mrkdwn's escapes; a lenient decoder after it finds no mention, though unmarked it would.
+    expect(spellsMention(decodeSlackEntities(line))).toBe(false);
+    expect(spellsMention(decodeSlackEntities(line.split(ZWSP).join('')))).toBe(true);
   });
 
   it('the not-mapped line links the web app as a bare URL', () => {

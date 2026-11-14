@@ -186,7 +186,7 @@ describe('neutralizeSlackControls: a broadcast spelled with HTML entities', () =
     '&hellip; &frac12; &trade;',
     // Named like a dangerous one, but another name (`&comma;` is `,`, `&numsp;` a space).
     '&comma; &numsp; &exclam; &nvltrie;',
-    // HTML's longest name, and longer: neither decodes to a mention's character.
+    // HTML's longest name (31 characters), and a made-up one as long: neither decodes to a mention's character.
     '&CounterClockwiseContourIntegral;',
     `&${'a'.repeat(31)}`,
   ])('%j is left alone: an & that starts none of those references', (input) => {

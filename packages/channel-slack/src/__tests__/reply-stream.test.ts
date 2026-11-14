@@ -1207,7 +1207,7 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       .map(markdownOf)
       .filter((text) => text.length > 0);
 
-  it("each append is judged alone: 'contact me', a flush, '@chan', a flush, 'nel now' can't append a live @channel", async () => {
+  it("a letter before the @ exempts nothing, across appends too: 'contact me', a flush, '@chan', a flush, 'nel now' marks the @", async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     s.text('contact me');
@@ -1222,7 +1222,7 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
     for (const piece of pieces(calls)) expect(BROADCAST.test(piece), JSON.stringify(piece)).toBe(false);
   });
 
-  it("'contact me' then '@channel now' split at every point, a flush after each part: no append carries a live word", async () => {
+  it("'contact me' then '@channel now' split at every point, a flush after each part: the letter before the @ exempts nothing", async () => {
     const rest = '@channel now';
     for (let k = 1; k < rest.length; k += 1) {
       const { api, calls } = fakeSlack();

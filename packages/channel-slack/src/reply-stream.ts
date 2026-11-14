@@ -154,8 +154,8 @@ interface OpenStream {
   /** The status card is in this message. */
   card: boolean;
   /**
-   * What this message's next text follows: its last two characters, '' after
-   * the card. The next append carries only a trailing `<` of it (buildBatch).
+   * What this message's next text follows: its last character, '' after the
+   * card. The next append carries it only if it is a `<` (buildBatch).
    */
   tail: string;
 }
@@ -216,12 +216,14 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   /** The agent sent a status of its own (working() alone doesn't count). */
   let agentStatus = false;
   /**
-   * Model text not yet decided: an `@` that may start a broadcast word and
-   * what followed it (`undecidedTail`), whatever came before the `@`. Not in
-   * the buffer, so no flush sends it; the next text() or `finish` decides it.
+   * Model text not yet decided (`undecidedTail`): an `@` that may start a
+   * broadcast word and what followed it, whatever came before the `@`, or an
+   * `&` that may start a character reference that spells a mention (`&#`,
+   * `&excl`: a `;` may still come). Not in the buffer, so no flush sends it;
+   * the next text() or `finish` decides it.
    */
   let waitingText = '';
-  /** The reply's decided text, its last two characters: what the next delta is judged against. */
+  /** The reply's decided text, its last character: what the next delta is judged against. */
   let textTail = '';
   let open: OpenStream | null = null;
   let streamsStarted = 0;
@@ -340,18 +342,20 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     let ops = 0;
     let chars = 0;
     let overflow = false;
-    // Across an append, only a `<` that ended the last one is carried: a `!`
-    // starting this one still needs its mark. Whether Slack reads a stream's
-    // appends as one text is unmeasured, so each is an edge, and nothing else
-    // before one decides anything at its start (a broadcast word is marked
-    // whatever comes before its `@`).
+    // Across an append, only a `<` that ended the last one is carried, so a
+    // `!` starting this one gets its mark. That is defense in depth: text()
+    // already marked it against the reply's own text, so the carry adds
+    // nothing today. Whether Slack reads a stream's appends as one text is
+    // unmeasured, so each is an edge, and nothing else before one decides
+    // anything at its start (a broadcast word is marked whatever comes
+    // before its `@`).
     let tail = open === null ? '' : open.tail.endsWith('<') ? '<' : '';
     const flushText = (): void => {
       if (text.length === 0) return;
       const out = neutralizeSlackControls(text, tail);
       chunks.push({ type: 'markdown_text', text: toWellFormedText(out) });
       textLength += out.length;
-      tail = (tail + out).slice(-2);
+      tail = (tail + out).slice(-1);
       text = '';
     };
     const addCard = (): void => {
@@ -538,7 +542,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       const ready = text.slice(0, text.length - wait);
       if (ready.length === 0) return;
       pending.push({ kind: 'text', text: neutralizeSlackControls(ready, textTail) });
-      textTail = (textTail + ready).slice(-2);
+      textTail = (textTail + ready).slice(-1);
       armFlush();
     },
 
