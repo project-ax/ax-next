@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BOT_EVENTS,
   BOT_SCOPES,
+  SLASH_COMMAND,
   buildAppManifest,
   buildInstallUrl,
   slackUrls,
@@ -16,7 +17,12 @@ describe('slackUrls', () => {
     expect(slackUrls(ORIGIN, INSTALL_ID)).toStrictEqual({
       eventsUrl: 'https://ax.example/slack/events/AAAAAAAAAAAAAAAAAAAAAA',
       redirectUrl: REDIRECT,
+      commandsUrl: 'https://ax.example/slack/commands/AAAAAAAAAAAAAAAAAAAAAA',
     });
+  });
+
+  it('percent-encodes the install id in the commands URL', () => {
+    expect(slackUrls(ORIGIN, 'a/b').commandsUrl).toBe('https://ax.example/slack/commands/a%2Fb');
   });
 
   it('does not double a slash when the origin ends in one', () => {
@@ -37,6 +43,15 @@ describe('buildAppManifest', () => {
     expect(buildAppManifest('ax', slackUrls(ORIGIN, INSTALL_ID))).toStrictEqual({
       display_information: { name: 'ax', description: 'Talk to your AX agent.' },
       features: {
+        slash_commands: [
+          {
+            command: '/ax',
+            url: 'https://ax.example/slack/commands/AAAAAAAAAAAAAAAAAAAAAA',
+            description: 'Connect this channel to a team agent',
+            usage_hint: 'connect <agent name> | disconnect',
+            should_escape: false,
+          },
+        ],
         app_home: {
           home_tab_enabled: false,
           messages_tab_enabled: true,
@@ -47,7 +62,7 @@ describe('buildAppManifest', () => {
       oauth_config: {
         redirect_urls: ['https://ax.example/admin/slack/oauth/callback'],
         scopes: {
-          bot: ['app_mentions:read', 'chat:write', 'im:history', 'reactions:write', 'users:read', 'users:read.email'],
+          bot: [...BOT_SCOPES],
         },
       },
       settings: {
@@ -71,19 +86,41 @@ describe('buildAppManifest', () => {
     expect(manifest.features.bot_user.display_name).toBe('Ada Bot');
   });
 
-  it('asks for exactly six bot scopes and two events', () => {
+  it('asks for exactly nine bot scopes and two events', () => {
     expect([...BOT_SCOPES]).toStrictEqual([
       'app_mentions:read',
       'chat:write',
       'im:history',
-      // 👀 on the owner's message while the agent works (walk on kind, 2026-11-13).
       'reactions:write',
       'users:read',
       'users:read.email',
+      'channels:read',
+      'channels:join',
+      'commands',
     ]);
     expect([...BOT_EVENTS]).toStrictEqual(['app_mention', 'message.im']);
     expect(Object.isFrozen(BOT_SCOPES)).toBe(true);
     expect(Object.isFrozen(BOT_EVENTS)).toBe(true);
+  });
+
+  it('asks for no history, public-write, private-channel or group-DM scope', () => {
+    for (const banned of ['channels:history', 'chat:write.public', 'groups:read', 'mpim:read']) {
+      expect(BOT_SCOPES).not.toContain(banned);
+    }
+  });
+
+  it('declares exactly one /ax slash command, unescaped, and no interactivity', () => {
+    const manifest = buildAppManifest('ax', slackUrls(ORIGIN, INSTALL_ID)) as {
+      features: { slash_commands: Array<{ command: string; url: string; should_escape: boolean }> };
+      settings: Record<string, unknown>;
+    };
+    expect(SLASH_COMMAND).toBe('/ax');
+    expect(manifest.features.slash_commands).toHaveLength(1);
+    const [cmd] = manifest.features.slash_commands;
+    expect(cmd!.command).toBe(SLASH_COMMAND);
+    expect(cmd!.url).toBe(`${ORIGIN}/slack/commands/${INSTALL_ID}`);
+    expect(cmd!.should_escape).toBe(false);
+    expect(manifest.settings).not.toHaveProperty('interactivity');
   });
 
   it('never shares its scope or event lists with the caller', () => {
@@ -93,7 +130,7 @@ describe('buildAppManifest', () => {
     };
     manifest.oauth_config.scopes.bot.push('channels:history');
     manifest.settings.event_subscriptions.bot_events.push('message.channels');
-    expect(BOT_SCOPES).toHaveLength(6);
+    expect(BOT_SCOPES).toHaveLength(9);
     expect(BOT_EVENTS).toHaveLength(2);
   });
 });
@@ -111,9 +148,7 @@ describe('buildInstallUrl', () => {
       'state',
     ]);
     expect(url.searchParams.get('client_id')).toBe('123.456');
-    expect(url.searchParams.get('scope')).toBe(
-      'app_mentions:read,chat:write,im:history,reactions:write,users:read,users:read.email',
-    );
+    expect(url.searchParams.get('scope')!.split(',')).toStrictEqual([...BOT_SCOPES]);
     expect(url.searchParams.get('state')).toBe('abc123');
     expect(url.hash).toBe('');
   });
