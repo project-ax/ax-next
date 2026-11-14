@@ -9,12 +9,15 @@ import {
   mrkdwnEscape,
   neutralizeSlackControls,
   splitForPost,
+  undecidedTail,
 } from '../format.js';
 import { POST_PART_LIMIT, SENDER_NAME_MAX, STATUS_TITLE_MAX } from '../limits.js';
 
 const ZWSP = '\u200B';
 /** Slack's control sequences: `<!channel>`, `<@U…>`, `<#C…>`. */
 const CONTROL = /<[!@#]/;
+/** A bare broadcast word as Slack could read it: an `@` after no letter or digit, the word followed by none. */
+const BROADCAST = /(?<![A-Za-z0-9])@(?:here|channel|everyone)(?![A-Za-z0-9])/i;
 
 describe('neutralizeSlackControls', () => {
   it("'<!channel> hi <@U1> <#C1>' keeps every character plus three U+200B", () => {
@@ -34,6 +37,101 @@ describe('neutralizeSlackControls', () => {
 
   it('a run of controls is neutralized one by one', () => {
     expect(neutralizeSlackControls('<!<@<#')).toBe(`<${ZWSP}!<${ZWSP}@<${ZWSP}#`);
+  });
+});
+
+describe('neutralizeSlackControls: a bare @here, @channel or @everyone', () => {
+  it.each<[string, string]>([
+    ['@channel', `@${ZWSP}channel`],
+    ['@Here!', `@${ZWSP}Here!`],
+    ['(@everyone)', `(@${ZWSP}everyone)`],
+    ['hi @channel.', `hi @${ZWSP}channel.`],
+    ['@HERE, @here and @EveryOne', `@${ZWSP}HERE, @${ZWSP}here and @${ZWSP}EveryOne`],
+    ['first line\n@channel', `first line\n@${ZWSP}channel`],
+    // Markdown's emphasis marks aren't letters: they exempt nothing.
+    ['_@here_ and *@channel*', `_@${ZWSP}here_ and *@${ZWSP}channel*`],
+    ['@@everyone', `@@${ZWSP}everyone`],
+    ['<@here>', `<${ZWSP}@${ZWSP}here>`],
+  ])('%j gets a zero-width space right after the @', (input, output) => {
+    const out = neutralizeSlackControls(input);
+    expect(out).toBe(output);
+    expect(BROADCAST.test(out)).toBe(false);
+    expect(out.split(ZWSP).join('')).toBe(input);
+  });
+
+  it.each([
+    // The word goes on: someone's name, not a broadcast.
+    '@channels',
+    '@everyones',
+    '@here2',
+    // An address: the @ follows a letter or a digit.
+    'me@channel.com',
+    'x@here.org',
+    'team2@everyone.example',
+    // Not a whole word, or no @ at all.
+    '@chan',
+    '@',
+    'here and channel',
+    'email @ here',
+  ])('%j is left alone', (input) => {
+    expect(neutralizeSlackControls(input)).toBe(input);
+  });
+});
+
+describe('neutralizeSlackControls(text, before): text that goes on from earlier text', () => {
+  it('reads the text before for context, and never marks inside it', () => {
+    // `me` + `@channel.com` is an address; `ping ` + `@channel` is a broadcast.
+    expect(neutralizeSlackControls('@channel.com', 'me')).toBe('@channel.com');
+    expect(neutralizeSlackControls('@channel now', 'ping ')).toBe(`@${ZWSP}channel now`);
+    // A `<` that ends the text before gets its mark at the start of this one.
+    expect(neutralizeSlackControls('!here>', 'see <')).toBe(`${ZWSP}!here>`);
+    // A mark the text before needed for itself is not this text's to add.
+    expect(neutralizeSlackControls('ok', '<!')).toBe('ok');
+    expect(neutralizeSlackControls('', 'x <')).toBe('');
+  });
+
+  it('two pieces neutralized in order are the whole neutralized, at every split that leaves nothing undecided', () => {
+    const wholes = ['ping @channel now', 'me@channel.com and <!here>', '@here@channel (@everyone) x@here', 'a<@U1> <#C1> <<!'];
+    let checked = 0;
+    for (const whole of wholes) {
+      for (let k = 0; k <= whole.length; k += 1) {
+        const first = whole.slice(0, k);
+        if (undecidedTail(first) > 0) continue;
+        const second = whole.slice(k);
+        expect(neutralizeSlackControls(first) + neutralizeSlackControls(second, first), `${whole} at ${k}`).toBe(
+          neutralizeSlackControls(whole),
+        );
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(60);
+  });
+});
+
+describe('undecidedTail', () => {
+  it('an @ that could still start a broadcast word waits, with whatever start of one follows it', () => {
+    expect(undecidedTail('ping @')).toBe(1);
+    expect(undecidedTail('ping @chan')).toBe(5);
+    expect(undecidedTail('ping (@EVERY')).toBe(6);
+    // A whole word waits too: the next character decides (`@channels` is a name).
+    expect(undecidedTail('ping @channel')).toBe(8);
+    for (const word of ['here', 'channel', 'everyone']) {
+      for (let n = 0; n <= word.length; n += 1) expect(undecidedTail(`@${word.slice(0, n)}`), word).toBe(n + 1);
+      // The same three words neutralizeSlackControls marks.
+      expect(neutralizeSlackControls(`@${word}`)).toBe(`@${ZWSP}${word}`);
+    }
+  });
+
+  it('nothing waits once the end is decided', () => {
+    for (const text of ['', 'ping', 'ping @channel ', 'ping @chat', '@heres', '@here!', '@channel.', 'me@', 'me@chan', '@he@', 'a@everyone']) {
+      expect(undecidedTail(text), text).toBe(0);
+    }
+  });
+
+  it('an @ at the very start reads the character before it from the text before', () => {
+    expect(undecidedTail('@chan', 'me')).toBe(0);
+    expect(undecidedTail('@chan', 'me ')).toBe(5);
+    expect(undecidedTail('@chan', '')).toBe(5);
   });
 });
 
@@ -77,6 +175,15 @@ describe('cleanStatusTitle', () => {
     const controls = cleanStatusTitle('<!x'.repeat(100));
     expect(controls.length).toBeLessThanOrEqual(STATUS_TITLE_MAX);
     expect(CONTROL.test(controls)).toBe(false);
+  });
+
+  it('a bare broadcast word is neutralized, even where the cap cuts the title right after one', () => {
+    expect(cleanStatusTitle('@here')).toBe(`@${ZWSP}here`);
+    // `@heres` is a name; cut after `@here`, it would be a broadcast.
+    const cut = cleanStatusTitle(`${'x'.repeat(STATUS_TITLE_MAX - 6)}(@heres`);
+    expect(cut.length).toBeLessThanOrEqual(STATUS_TITLE_MAX);
+    expect(BROADCAST.test(cut)).toBe(false);
+    expect(cut).toBe(`${'x'.repeat(STATUS_TITLE_MAX - 6)}(@${ZWSP}her`);
   });
 
   it('nothing printable left is the empty string', () => {

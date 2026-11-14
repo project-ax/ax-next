@@ -7,6 +7,8 @@ const LINK = 'https://canopyworks.ai/workspace/agents/agt_123';
 const TODAY = 'https://canopyworks.ai/workspace';
 /** A name from outside (an agent's, a channel's) that tries to ping, link and break the escaping. */
 const HOSTILE = '<!channel> & <@U1> @here';
+/** A bare broadcast word as Slack could read it: an `@` after no letter or digit, the word followed by none. */
+const BROADCAST = /(?<![A-Za-z0-9])@(?:here|channel|everyone)(?![A-Za-z0-9])/i;
 
 /**
  * The arguments every line that takes some is called with. A line missing
@@ -73,6 +75,10 @@ describe('COPY: everything the bot says in Slack', () => {
 
   it('never pings anyone or a channel: no <!, <@ or <# anywhere, even around a hostile name', () => {
     for (const [key, line] of everyLine()) expect(line, key).not.toMatch(/<[!@#]/);
+  });
+
+  it('never holds a bare @here, @channel or @everyone, even around a hostile name', () => {
+    for (const [key, line] of everyLine()) expect(line, key).not.toMatch(BROADCAST);
   });
 
   it('the sign-in and make-an-agent lines link to the web app', () => {

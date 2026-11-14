@@ -7,7 +7,8 @@ import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
  * anything a tool fetched), and Slack gives a few sequences meaning of their
  * own. Replies go out as Markdown (`markdown_text`), which Slack renders
  * itself, so nothing here converts formatting; it only takes away the power
- * to ping people and keeps every message under Slack's caps.
+ * to ping people or a whole channel and keeps every message under Slack's
+ * caps.
  *
  * And one thing for text coming IN: `decodeSlackEntities`, so the agent reads
  * a DM as its sender typed it.
@@ -16,30 +17,83 @@ import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
 const ZERO_WIDTH_SPACE = '\u200B';
 
 /**
- * `<!channel>`, `<!here>`, `<!everyone>`, `<@U…>` and `<#C…>` are Slack's
- * broadcast, user and channel references. A zero-width space after the `<`
- * keeps every character readable and makes none of them a reference: the bot
- * never pings anyone with words a model wrote. Harmless in a 1:1 DM, but this
- * is the boundary channel replies (TASK-1094) reuse.
- *
- * Per string. A reply stream also handles a `<` at the end of one delta
- * followed by `!`, `@` or `#` at the start of the next (reply-stream.ts).
+ * Slack's broadcast words. Typed bare, `@here`, `@channel` and `@everyone`
+ * may notify a whole channel (whether Slack's Markdown does is unmeasured:
+ * TASK-1097's walk checks), so they get the same treatment as `<!channel>`.
+ * SLACK_CONTROL spells the same three.
  */
-export function neutralizeSlackControls(text: string): string {
-  return text.replace(/<(?=[!@#])/g, `<${ZERO_WIDTH_SPACE}`);
+const BROADCAST_WORDS = ['here', 'channel', 'everyone'] as const;
+const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.length));
+
+/**
+ * What Slack could read as a reference or a broadcast. The zero-width space
+ * goes right after the match:
+ *   - a `<` before `!`, `@` or `#`: `<!channel>`, `<@U…>`, `<#C…>`;
+ *   - the `@` of a broadcast word, in any case, when no letter or digit comes
+ *     right before the `@` or right after the word: `hi @channel.` and
+ *     `(@Here)` are broadcasts, `me@channel.com` and `@channels` are not.
+ * Letters and digits are ASCII `[A-Za-z0-9]`, not `\w`: `_` is Markdown's
+ * emphasis mark (`_@here_`), so it exempts nothing. One pattern, lookarounds
+ * only: punctuation next to a word can't slip past it.
+ */
+const SLACK_CONTROL = /<(?=[!@#])|(?<![A-Za-z0-9])@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
+
+/**
+ * `<!channel>`, `<!here>`, `<!everyone>`, `<@U…>` and `<#C…>` are Slack's
+ * broadcast, user and channel references, and a bare `@here`, `@channel` or
+ * `@everyone` may broadcast too. A zero-width space after the `<` (or the
+ * `@`) keeps every character readable and makes none of them work: the bot
+ * never pings anyone with words a model wrote.
+ *
+ * `before` is text that comes right before `text` in the same Slack message
+ * (already decided, maybe already sent). It is only read, never marked: a `<`
+ * that ends it gets its mark at the start of `text` when a `!`, `@` or `#`
+ * follows, and an `@` that starts `text` right after a letter is an address,
+ * not a broadcast. The end of `text` counts as the end of the message, so
+ * text that may go on must not end with an `undecidedTail`.
+ */
+export function neutralizeSlackControls(text: string, before = ''): string {
+  // Two characters reach every decision: an `@` that ends `before` needs the one before it.
+  const context = before.slice(-2);
+  return (context + text)
+    .replace(SLACK_CONTROL, (mark: string, at: number) => (at + 1 < context.length ? mark : mark + ZERO_WIDTH_SPACE))
+    .slice(context.length);
+}
+
+/**
+ * How many code units at the end of `text` neutralizeSlackControls can't
+ * decide yet: an `@` that may start a broadcast word, followed by nothing but
+ * the start of one (or the whole word: `@channel` then `s` is a name). The
+ * next characters decide it, so a reply stream holds these back until they
+ * come (reply-stream.ts). At most nine (`@everyone`); 0 when nothing waits.
+ * `before` is the text right before `text`, read for an `@` at its start.
+ */
+export function undecidedTail(text: string, before = ''): number {
+  const at = text.lastIndexOf('@');
+  if (at < 0 || text.length - at - 1 > LONGEST_BROADCAST_WORD) return 0;
+  const start = text.slice(at + 1);
+  if (!/^[A-Za-z]*$/.test(start)) return 0;
+  const lower = start.toLowerCase();
+  if (!BROADCAST_WORDS.some((word) => word.startsWith(lower))) return 0;
+  const left = at > 0 ? text.charAt(at - 1) : before.slice(-1);
+  return /[A-Za-z0-9]/.test(left) ? 0 : text.length - at;
 }
 
 /**
  * A status line's title (a tool's activity phrase, a step summary) made fit
  * for Slack's task card: no control, bidi or invisible characters (they
- * become spaces), single spaces, no Slack references, at most
- * STATUS_TITLE_MAX code units and never half an emoji. Neutralized before
- * it's clamped, so the cap holds; a cut can only drop characters, so it can't
- * rebuild a reference. Empty when nothing printable is left.
+ * become spaces), single spaces, no Slack references or broadcast words, at
+ * most STATUS_TITLE_MAX code units and never half an emoji. Neutralized
+ * before it's clamped, so the cap holds. A cut can end the title right after
+ * a broadcast word whose next letter it took off (`@heres` becomes `@here`),
+ * so the cut title is neutralized again: that adds at most one mark, after
+ * the last word's `@`, and the second cut then takes the word's last letter,
+ * never the mark. Empty when nothing printable is left.
  */
 export function cleanStatusTitle(text: string): string {
   const flat = replaceSurfaceRewriters(text).replace(/\s+/g, ' ').trim();
-  return clampCodeUnits(neutralizeSlackControls(flat), STATUS_TITLE_MAX).trimEnd();
+  const cut = clampCodeUnits(neutralizeSlackControls(flat), STATUS_TITLE_MAX);
+  return clampCodeUnits(neutralizeSlackControls(cut), STATUS_TITLE_MAX).trimEnd();
 }
 
 function isHighSurrogate(code: number): boolean {

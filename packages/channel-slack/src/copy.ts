@@ -9,8 +9,9 @@ import { SLASH_COMMAND } from './manifest.js';
  * No line names the product. A deployment is white-labeled through Branding
  * (the bot's own name defaults to the branding name), so the place people
  * sign in and make agents is "the web app", linked to the public origin.
- * Every line is host-authored and never holds `<!`, `<@` or `<#`: the bot
- * never pings anyone (copy.test.ts).
+ * Every line is host-authored and never holds `<!`, `<@`, `<#` or a bare
+ * `@here`, `@channel` or `@everyone`: the bot never pings anyone, a name
+ * from outside included (copy.test.ts).
  *
  * The `slash*` lines answer `/ax` (commands.ts). They are mrkdwn `text`, not
  * Markdown: a link is a bare URL, and no line holds a `<` or `>` of its own

@@ -1,6 +1,6 @@
 import { toWellFormedText, type Logger } from '@ax/core';
 import { COPY } from './copy.js';
-import { cleanStatusTitle, cutIndex, neutralizeSlackControls, splitForPost } from './format.js';
+import { cleanStatusTitle, cutIndex, neutralizeSlackControls, splitForPost, undecidedTail } from './format.js';
 import {
   FLUSH_INTERVAL_MS,
   POST_PART_LIMIT,
@@ -22,8 +22,20 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  * queue of its own (add, then remove) that the reply never waits on.
  *
  *   - Text goes as `markdown_text` chunks: Slack renders the Markdown itself.
- *     Every `<` before `!`, `@` or `#` gets a zero-width space, also across a
- *     delta boundary, so model text never pings anyone (format.ts).
+ *     Model text never pings anyone (format.ts): every `<` before `!`, `@`
+ *     or `#`, and the `@` of a bare `@here`, `@channel` or `@everyone`, gets
+ *     a zero-width space. Each delta is judged with the text before it, so a
+ *     split can't hide one: a `<` that ends a delta gets its mark at the
+ *     start of the next, and an `@` that may start a broadcast word waits
+ *     (at most nine characters, `@everyone`) until the next text or `finish`
+ *     decides it, also past a status that arrives meanwhile, which goes out
+ *     first. A Slack message's own edges are judged again as each part goes
+ *     out, because the reply's text on the other side of an edge doesn't
+ *     reach Slack with it: the start of a message (a new stream, each posted
+ *     part), the text after the status card, and where a full stream or a
+ *     post is cut. A mark added there can take a message past
+ *     STREAM_TEXT_LIMIT or POST_PART_LIMIT by at most three characters;
+ *     Slack's own cap (12,000) has room.
  *   - The status line is ONE `task_update` card (id `status`) per stream
  *     message, updated in place, `complete` (or `error`) when the message ends.
  *     `working()` puts 👀 on the owner's message instead (it leaves no trace
@@ -137,6 +149,8 @@ interface OpenStream {
   sent: number;
   /** The status card is in this message. */
   card: boolean;
+  /** What this message's next text follows: its last two characters, '' after the card. */
+  tail: string;
 }
 
 /** What one stream call would carry, taken from the front of the buffer. */
@@ -151,6 +165,8 @@ interface Batch {
   card: boolean;
   /** Text was left behind because this stream has no room for it. */
   overflow: boolean;
+  /** The message's `tail` once this batch is in it. */
+  tail: string;
 }
 
 type Stage = 'start' | 'append' | 'stop' | 'post' | 'react' | 'unreact';
@@ -192,8 +208,14 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   let anyText = false;
   /** The agent sent a status of its own (working() alone doesn't count). */
   let agentStatus = false;
-  /** The last delta ended in `<`: a `!`, `@` or `#` starting the next is neutralized. */
-  let openAngle = false;
+  /**
+   * Model text not yet decided: an `@` that may start a broadcast word and
+   * what followed it (`undecidedTail`). Not in the buffer, so no flush sends
+   * it; the next text() or `finish` decides it.
+   */
+  let waitingText = '';
+  /** The reply's decided text, its last two characters: what the next delta is judged against. */
+  let textTail = '';
   let open: OpenStream | null = null;
   let streamsStarted = 0;
   let mode: 'stream' | 'post' = 'stream';
@@ -294,6 +316,13 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
    * text merged and every status op in it shown as one card holding the
    * latest title. Text stops where this stream runs out of room. While the
    * reply isn't finished, a trailing high surrogate waits for its other half.
+   *
+   * Each text chunk is judged again against this message alone (`tail`): a
+   * new stream's first text, the text after the card and the text before a
+   * full stream's cut are edges where the reply's text around them no longer
+   * reaches Slack with them, so an `@` the reply judged an address there
+   * (`me` + `@channel.com`, `@channels` cut after `@channel`) gets its mark.
+   * Anywhere else the text is already decided and nothing changes.
    */
   function buildBatch(final: boolean): Batch {
     let budget = open === null ? STREAM_TEXT_LIMIT : Math.max(0, STREAM_TEXT_LIMIT - open.sent);
@@ -304,24 +333,28 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     let ops = 0;
     let chars = 0;
     let overflow = false;
+    let tail = open === null ? '' : open.tail;
     const flushText = (): void => {
       if (text.length === 0) return;
-      chunks.push({ type: 'markdown_text', text: toWellFormedText(text) });
-      textLength += text.length;
+      const out = neutralizeSlackControls(text, tail);
+      chunks.push({ type: 'markdown_text', text: toWellFormedText(out) });
+      textLength += out.length;
+      tail = (tail + out).slice(-2);
       text = '';
     };
-    // A message that continues a reply still being worked on opens with its card.
-    if (open === null && streamsStarted > 0 && title !== null) {
+    const addCard = (): void => {
       chunks.push(card('in_progress'));
       hasCard = true;
-    }
+      tail = '';
+    };
+    // A message that continues a reply still being worked on opens with its card.
+    if (open === null && streamsStarted > 0 && title !== null) addCard();
     for (let i = 0; i < pending.length; i += 1) {
       const op = pending[i]!;
       if (op.kind === 'status') {
         if (!hasCard) {
           flushText();
-          chunks.push(card('in_progress'));
-          hasCard = true;
+          addCard();
         }
         ops = i + 1;
         continue;
@@ -341,7 +374,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       ops = i + 1;
     }
     flushText();
-    return { chunks, ops, chars, textLength, card: hasCard, overflow };
+    return { chunks, ops, chars, textLength, card: hasCard, overflow, tail };
   }
 
   /** Slack confirmed `b`: drop it from the front of the buffer. */
@@ -373,7 +406,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
         if (kind === 'start') {
           const startedAt = clock.now();
           const { ts } = await api.startStream(botToken, { ...target, chunks: b.chunks });
-          open = { ts, startedAt, sent: b.textLength, card: b.card };
+          open = { ts, startedAt, sent: b.textLength, card: b.card, tail: b.tail };
           unreact();
           streamsStarted += 1;
           if (!finished) armAge(startedAt);
@@ -382,6 +415,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
           await api.appendStream(botToken, { channel: target.channel, ts: s.ts, chunks: b.chunks });
           s.sent += b.textLength;
           if (b.card) s.card = true;
+          s.tail = b.tail;
         }
         consume(b);
         return b;
@@ -464,11 +498,17 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     }
   }
 
-  /** Posting mode's finish: everything Slack never confirmed, in parts. */
+  /**
+   * Posting mode's finish: everything Slack never confirmed, in parts. Each
+   * part is a message of its own, so it is judged again alone: a cut (or the
+   * stream that went before) can't leave a broadcast word at its edge.
+   */
   async function postRest(): Promise<void> {
     const rest = pending.map((op) => (op.kind === 'text' ? op.text : '')).join('');
     pending.length = 0;
-    const parts = splitForPost(toWellFormedText(rest), POST_PART_LIMIT).filter((p) => p.trim().length > 0);
+    const parts = splitForPost(toWellFormedText(rest), POST_PART_LIMIT)
+      .filter((p) => p.trim().length > 0)
+      .map((p) => neutralizeSlackControls(p));
     if (parts.length === 0 && !confirmed) parts.push(COPY.emptyReply);
     for (const part of parts) {
       // A failed post (a revoked token, a deleted channel) fails the rest too.
@@ -479,11 +519,14 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   return {
     text(delta) {
       if (finished || typeof delta !== 'string' || delta.length === 0) return;
-      let out = neutralizeSlackControls(delta);
-      if (openAngle && /^[!@#]/.test(delta)) out = `\u200B${out}`;
-      openAngle = delta.endsWith('<');
       anyText = true;
-      pending.push({ kind: 'text', text: out });
+      const text = waitingText + delta;
+      const wait = undecidedTail(text, textTail);
+      waitingText = text.slice(text.length - wait);
+      const ready = text.slice(0, text.length - wait);
+      if (ready.length === 0) return;
+      pending.push({ kind: 'text', text: neutralizeSlackControls(ready, textTail) });
+      textTail = (textTail + ready).slice(-2);
       armFlush();
     },
 
@@ -537,6 +580,11 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       finished = true;
       if (flushTimer !== null) clock.clearTimeout(flushTimer);
       flushTimer = null;
+      // Text that waited for what came next: nothing comes, so the reply's end decides it.
+      if (waitingText.length > 0) {
+        pending.push({ kind: 'text', text: neutralizeSlackControls(waitingText, textTail) });
+        waitingText = '';
+      }
       const lines: string[] = [];
       if (artifactSeen) lines.push(COPY.artifactLink(d.agentLink));
       // Only a sender's line links Today: anything else reads as the owner's.
