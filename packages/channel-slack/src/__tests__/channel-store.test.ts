@@ -164,7 +164,7 @@ describe('runMigrations', () => {
     expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread({ external: true }));
   });
 
-  it("adds `external` to a thread table made before it, every row a member's (none exist in production)", async () => {
+  it("adds `external` to a thread table made before it, every row an outsider's: fail closed (none exist in production)", async () => {
     // The table as Task 14 made it, with one row.
     await sql`DROP TABLE channel_slack_v1_threads`.execute(db);
     await sql`
@@ -185,10 +185,23 @@ describe('runMigrations', () => {
     await runMigrations(db);
     await runMigrations(db);
 
-    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+    // Nothing in the row says who spoke, so the veto treats it as outsiders' and refuses memory.
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true, external: true }));
     await connect();
     expect(await record(OTHER_CONV, { mode: 'external' })).toBe('recorded');
     expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread({ external: true }));
+  });
+
+  it("a thread row written without `external` is an outsider's: the column fails closed", async () => {
+    await sql`
+      INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id)
+      VALUES (${CONV}, ${INSTALL}, ${SUPPORT}, ${AGENT})
+    `.execute(db);
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ external: true }));
+    // recordThread names it every time, so a member's thread is still a member's.
+    await connect();
+    expect(await record(OTHER_CONV)).toBe('recorded');
+    expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread());
   });
 });
 

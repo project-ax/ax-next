@@ -161,11 +161,13 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
     CREATE INDEX IF NOT EXISTS channel_slack_v1_threads_agent
       ON channel_slack_v1_threads (agent_id)
   `.execute(db);
-  // Outsiders' threads are never remembered (capture-veto.ts). A row written
-  // before this column reads as a member's (false): none exist in
-  // production, and nothing in the row could tell.
+  // Outsiders' threads are never remembered (capture-veto.ts). The default
+  // fails closed: a row that doesn't say (one written before this column,
+  // none of which exist in production) reads as an outsider's, and the veto
+  // refuses memory for anything but `false`. recordThread, the only writer,
+  // always names it.
   await sql`
     ALTER TABLE channel_slack_v1_threads
-      ADD COLUMN IF NOT EXISTS external BOOLEAN NOT NULL DEFAULT false
+      ADD COLUMN IF NOT EXISTS external BOOLEAN NOT NULL DEFAULT true
   `.execute(db);
 }
