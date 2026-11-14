@@ -28,7 +28,15 @@ export interface SlackChannelRow {
 
 export type AgentSlackStatus =
   | { state: 'no-workspace' }
-  | { state: 'personal-agent'; botName: string }
+  | {
+      state: 'personal-agent';
+      botName: string;
+      /**
+       * Whether a direct message to the bot reaches this agent (its owner's
+       * oldest personal agent). An older host omits it; that reads as true.
+       */
+      answersDms: boolean;
+    }
   | {
       state: 'ready';
       botName: string;
@@ -112,8 +120,10 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
     case 'no-workspace':
       return { state: 'no-workspace' };
     case 'personal-agent': {
-      const botName = body['botName'];
-      return typeof botName === 'string' ? { state: 'personal-agent', botName } : null;
+      const { botName, answersDms = true } = body;
+      return typeof botName === 'string' && typeof answersDms === 'boolean'
+        ? { state: 'personal-agent', botName, answersDms }
+        : null;
     }
     case 'ready': {
       const { botName, workspaceName, canManage, channels } = body;
@@ -253,7 +263,9 @@ export const AGENT_SLACK_COPY = Object.freeze({
   archived: "That channel is archived. Pick one that's still in use.",
   shared: "Channels shared with another organization can't be connected.",
   channelNotAllowed: "That channel can't be connected.",
-  channelTaken: 'Another agent already answers in that channel. Disconnect it there first.',
+  channelTaken:
+    "That channel is already connected to another agent. A team admin of that agent's team can disconnect it.",
+  workspacePolicy: "Your Slack workspace doesn't let the bot join that channel. A Slack admin can change that.",
   needsReconnect: 'Slack needs to be reconnected before we can do that. An admin can do it in Admin settings.',
   slackError: "Slack didn't answer just now. Try again in a minute.",
   generic: 'Something went wrong. Try again in a minute.',
@@ -276,6 +288,8 @@ export function agentSlackErrorCopy(err: unknown): string {
             return AGENT_SLACK_COPY.archived;
           case 'shared':
             return AGENT_SLACK_COPY.shared;
+          case 'workspace-policy':
+            return AGENT_SLACK_COPY.workspacePolicy;
           default:
             return AGENT_SLACK_COPY.channelNotAllowed;
         }
@@ -286,11 +300,23 @@ export function agentSlackErrorCopy(err: unknown): string {
   return AGENT_SLACK_COPY.generic;
 }
 
-/** The refusals that mean the picture is stale (nothing to connect to): read it again. */
+/**
+ * A refused connect that means the picture is stale: this agent is personal or
+ * there is no workspace now (409), or it can't be managed (403) or seen (404)
+ * any more. Read it again. `channel-taken` and `needs-reconnect` are 409s too,
+ * but they are answers about the channel, shown as they are.
+ */
 export function agentSlackStateChanged(err: unknown): boolean {
-  return (
-    err instanceof AgentSlackError &&
-    err.status === 409 &&
-    (err.code === 'personal-agent' || err.code === 'no-workspace')
-  );
+  if (!(err instanceof AgentSlackError)) return false;
+  if (err.status === 403 || err.status === 404) return true;
+  return err.status === 409 && (err.code === 'personal-agent' || err.code === 'no-workspace');
+}
+
+/**
+ * A remember or disconnect the server refused because what we drew is gone or
+ * no longer ours to change (403, 404, 409): read it again. Only a 5xx or a
+ * dropped connection is worth "try again".
+ */
+export function agentSlackWriteStale(err: unknown): boolean {
+  return err instanceof AgentSlackError && (err.status === 403 || err.status === 404 || err.status === 409);
 }

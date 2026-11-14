@@ -84,9 +84,18 @@ describe('the states', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('a personal agent: one line about the direct message', async () => {
-    renderIt({ state: 'personal-agent', botName: 'canopy' });
+  it('a personal agent that answers direct messages: one line about the direct message', async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: true });
     expect(await screen.findByText(/Quill is a personal agent.*direct message with canopy/)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it("a personal agent that isn't the one a direct message reaches says so, without naming another agent", async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: false });
+    const line = await screen.findByText(/Quill is a personal agent, so it can't join channels/);
+    expect(line).toHaveTextContent('A direct message to canopy');
+    expect(line).toHaveTextContent('your first personal agent, not Quill');
+    expect(line.textContent).not.toMatch(/answers in a direct message/);
     expect(screen.queryByRole('button')).toBeNull();
   });
 
@@ -120,7 +129,8 @@ describe('the list', () => {
     expect(await screen.findByRole('switch', { name: 'Let Quill remember this channel' })).not.toBeChecked();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
     const note = screen.getByText(/Everyone in the channel can talk to Quill/);
-    expect(note).toHaveTextContent('instructions and files');
+    expect(note).toHaveTextContent("Its instructions and files can show up in its answers to anyone in the channel");
+    expect(note.textContent).not.toMatch(/they can see its instructions/);
     expect(note).toHaveTextContent("approvals wait in that person's Today");
   });
 
@@ -182,7 +192,8 @@ describe('connecting', () => {
 
   it.each([
     [new AgentSlackError(409, 'needs-reconnect'), /Slack needs to be reconnected/],
-    [new AgentSlackError(409, 'channel-taken'), /Another agent already answers in that channel/],
+    [new AgentSlackError(409, 'channel-taken'), /already connected to another agent.*team admin of that agent's team/],
+    [new AgentSlackError(422, 'channel-not-allowed', 'workspace-policy'), /doesn't let the bot join that channel.*Slack admin/],
     [new AgentSlackError(422, 'channel-not-allowed', 'not-public'), /private channel/],
     [new AgentSlackError(422, 'channel-not-allowed', 'archived'), /archived/],
     [new AgentSlackError(422, 'channel-not-allowed', 'shared'), /shared with another organization/],
@@ -195,7 +206,7 @@ describe('connecting', () => {
     fireEvent.click(await screen.findByRole('option', { name: /#sales/ }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(text);
-    expect(alert.textContent).not.toMatch(/channel-taken|channel-not-allowed|slack-error|needs-reconnect/);
+    expect(alert.textContent).not.toMatch(/channel-taken|channel-not-allowed|slack-error|needs-reconnect|workspace-policy/);
     expect(screen.queryByRole('list', { name: 'Connected channels' })).toBeNull();
   });
 });
@@ -227,6 +238,57 @@ describe('remember', () => {
   });
 });
 
+describe('a write on a stale picture re-reads the section', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it.each([
+    [403, 'forbidden'],
+    [404, 'not-connected'],
+    [409, 'personal-agent'],
+  ])('remember refused with %i re-reads, with no "try again" line', async (status, code) => {
+    remember.mockRejectedValueOnce(new AgentSlackError(status, code));
+    renderIt(ready([SUPPORT]));
+    const toggle = await screen.findByRole('switch', { name: 'Let Quill remember this channel' });
+    fetchStatus.mockResolvedValueOnce(ready([]));
+    fireEvent.click(toggle);
+    expect(await screen.findByText("Quill isn't answering in any channels yet.")).toBeInTheDocument();
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/nothing is different/)).toBeNull();
+  });
+
+  it('disconnect refused with 403 re-reads and closes the dialog', async () => {
+    disconnect.mockRejectedValueOnce(new AgentSlackError(403, 'forbidden'));
+    renderIt(ready([SUPPORT]));
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Disconnect #support?' });
+    fetchStatus.mockResolvedValueOnce(ready([SUPPORT], false));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull());
+    expect(screen.queryByText(/Try again/)).toBeNull();
+  });
+
+  it('a 5xx on remember keeps the "try again" line and does not re-read', async () => {
+    remember.mockRejectedValueOnce(new AgentSlackError(502, 'slack-error'));
+    renderIt(ready([SUPPORT]));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Let Quill remember this channel' }));
+    expect(await screen.findByText(/nothing is different. Try again/)).toBeInTheDocument();
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('connect refused with 404 re-reads', async () => {
+    connect.mockRejectedValueOnce(new AgentSlackError(404, 'not-found'));
+    renderIt(ready([]));
+    await openPicker();
+    fetchStatus.mockResolvedValueOnce({ state: 'unavailable' });
+    fireEvent.click(await screen.findByRole('option', { name: /#sales/ }));
+    expect(await screen.findByText("Slack isn't available here.")).toBeInTheDocument();
+  });
+});
+
 describe('disconnecting', () => {
   async function openDialog() {
     fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }));
@@ -252,7 +314,7 @@ describe('disconnecting', () => {
     expect(await screen.findByText("Quill isn't answering in any channels yet.")).toBeInTheDocument();
   });
 
-  it('a failure keeps the dialog and the row, with a sentence', async () => {
+  it('a server failure keeps the dialog and the row, with a sentence', async () => {
     disconnect.mockRejectedValueOnce(new AgentSlackError(500, 'internal'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     renderIt(ready([SUPPORT]));

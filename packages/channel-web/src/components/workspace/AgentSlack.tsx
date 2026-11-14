@@ -12,7 +12,7 @@
  * failed write leaves it there with a sentence saying nothing changed.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, Hash } from 'lucide-react';
+import { ChevronDown, Hash } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ import {
   AGENT_SLACK_COPY,
   agentSlackErrorCopy,
   agentSlackStateChanged,
+  agentSlackWriteStale,
   connectSlackChannel,
   disconnectSlackChannel,
   fetchAgentSlack,
@@ -132,8 +133,9 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
     case 'personal-agent':
       return (
         <p className="text-[13px] text-muted-foreground">
-          {agentName} is a personal agent, so it answers in a direct message with {state.botName} in Slack. Channels
-          are for team agents.
+          {state.answersDms
+            ? `${agentName} is a personal agent, so it answers in a direct message with ${state.botName} in Slack. Channels are for team agents.`
+            : `${agentName} is a personal agent, so it can't join channels. A direct message to ${state.botName} in Slack goes to your first personal agent, not ${agentName}.`}
         </p>
       );
     case 'ready':
@@ -208,7 +210,8 @@ function ReadySection({
       );
     } catch (err) {
       logRequestFailure(err, 'agent-slack');
-      setRowErrors((prev) => ({ ...prev, [row.channelId]: AGENT_SLACK_COPY.rememberFailed }));
+      if (agentSlackWriteStale(err)) onStale();
+      else setRowErrors((prev) => ({ ...prev, [row.channelId]: AGENT_SLACK_COPY.rememberFailed }));
     } finally {
       mark(row.channelId, false);
     }
@@ -276,6 +279,7 @@ function ReadySection({
         agentId={agentId}
         row={disconnecting}
         onClose={() => setDisconnecting(null)}
+        onStale={onStale}
         onDisconnected={(channelId) => {
           setDisconnecting(null);
           withRows(latest.current.channels.filter((c) => c.channelId !== channelId));
@@ -453,7 +457,6 @@ function ChannelPicker({
                           {taken && (
                             <span className="text-[12px] text-muted-foreground">Connected to another agent</span>
                           )}
-                          {c.connected === 'this-agent' && <Check aria-hidden="true" />}
                         </CommandItem>
                       );
                     })}
@@ -470,9 +473,9 @@ function ChannelPicker({
         </PopoverContent>
       </Popover>
       <FieldDescription>
-        Everyone in the channel can talk to {agentName}, and they can see its instructions and files. If someone
-        without access to {agentName} talks to it, it works with the access of whoever connected the channel, and any
-        approvals wait in that person&apos;s Today.
+        Everyone in the channel can talk to {agentName}. Its instructions and files can show up in its answers to
+        anyone in the channel. If someone without access to {agentName} talks to it, it works with the access of
+        whoever connected the channel, and any approvals wait in that person&apos;s Today.
       </FieldDescription>
     </Field>
   );
@@ -482,11 +485,14 @@ function DisconnectDialog({
   agentId,
   row,
   onClose,
+  onStale,
   onDisconnected,
 }: {
   agentId: string;
   row: SlackChannelRow | null;
   onClose: () => void;
+  /** The server says that row isn't ours to change any more: read it again. */
+  onStale: () => void;
   onDisconnected: (channelId: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -507,7 +513,13 @@ function DisconnectDialog({
       onDisconnected(row.channelId);
     } catch (err) {
       logRequestFailure(err, 'agent-slack');
-      setError(AGENT_SLACK_COPY.generic);
+      if (agentSlackWriteStale(err)) {
+        setError(null);
+        onClose();
+        onStale();
+      } else {
+        setError(AGENT_SLACK_COPY.generic);
+      }
     } finally {
       setBusy(false);
     }

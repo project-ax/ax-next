@@ -101,8 +101,9 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
   slack: {
     label: 'Slack',
     Icon: MessageSquare,
-    description: (name) => `The Slack channels ${name} answers in.`,
-    summary: (name) => `Where ${name} answers in Slack`,
+    // Personal agents have no channels, so this can't promise any.
+    description: (name) => `How ${name} works in Slack.`,
+    summary: (name) => `How ${name} works in Slack`,
   },
   memory: {
     label: 'Memory',

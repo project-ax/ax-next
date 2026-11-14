@@ -9,6 +9,7 @@ import {
   AgentSlackError,
   agentSlackErrorCopy,
   agentSlackStateChanged,
+  agentSlackWriteStale,
   connectSlackChannel,
   disconnectSlackChannel,
   fetchAgentSlack,
@@ -71,8 +72,17 @@ describe('fetchAgentSlack', () => {
 
     answer = () => json(200, { state: 'no-workspace' });
     await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace' });
+    answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: false });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: false });
+    answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: true });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true });
+  });
+
+  it('an older host that omits answersDms is read as true; a wrong-typed one is a bad response', async () => {
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy' });
-    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy' });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true });
+    answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: 'no' });
+    await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
   });
 
   it('a 404 or a page that is not JSON is unavailable', async () => {
@@ -156,7 +166,12 @@ describe('what an error says', () => {
     expect(agentSlackErrorCopy(e(422, 'channel-not-allowed', 'not-public'))).toBe(AGENT_SLACK_COPY.notPublic);
     expect(agentSlackErrorCopy(e(422, 'channel-not-allowed', 'archived'))).toBe(AGENT_SLACK_COPY.archived);
     expect(agentSlackErrorCopy(e(422, 'channel-not-allowed', 'shared'))).toBe(AGENT_SLACK_COPY.shared);
+    expect(agentSlackErrorCopy(e(422, 'channel-not-allowed', 'workspace-policy'))).toBe(AGENT_SLACK_COPY.workspacePolicy);
     expect(agentSlackErrorCopy(e(422, 'channel-not-allowed', 'weird'))).toBe(AGENT_SLACK_COPY.channelNotAllowed);
+    expect(AGENT_SLACK_COPY.workspacePolicy).toMatch(/Slack admin/);
+    expect(AGENT_SLACK_COPY.workspacePolicy).not.toMatch(/try again/i);
+    expect(AGENT_SLACK_COPY.channelTaken).toMatch(/team admin of that agent's team can disconnect it/);
+    expect(AGENT_SLACK_COPY.channelTaken).not.toMatch(/Disconnect it there first/);
     expect(agentSlackErrorCopy(e(502, 'slack-error'))).toBe(AGENT_SLACK_COPY.slackError);
     expect(agentSlackErrorCopy(e(400, 'invalid-body'))).toBe(AGENT_SLACK_COPY.generic);
     expect(agentSlackErrorCopy(new Error('boom'))).toBe(AGENT_SLACK_COPY.generic);
@@ -167,5 +182,19 @@ describe('what an error says', () => {
     expect(agentSlackStateChanged(new AgentSlackError(409, 'no-workspace'))).toBe(true);
     expect(agentSlackStateChanged(new AgentSlackError(409, 'channel-taken'))).toBe(false);
     expect(agentSlackStateChanged(new Error('x'))).toBe(false);
+  });
+
+  it('a connect that is no longer allowed or no longer found means the picture is stale', () => {
+    expect(agentSlackStateChanged(new AgentSlackError(403, 'forbidden'))).toBe(true);
+    expect(agentSlackStateChanged(new AgentSlackError(404, 'not-found'))).toBe(true);
+  });
+
+  it('a write on a row the server no longer has (403, 404, 409) means the picture is stale; 5xx and network do not', () => {
+    for (const status of [403, 404, 409]) {
+      expect(agentSlackWriteStale(new AgentSlackError(status, 'not-connected'))).toBe(true);
+    }
+    expect(agentSlackWriteStale(new AgentSlackError(500, 'internal'))).toBe(false);
+    expect(agentSlackWriteStale(new AgentSlackError(502, 'slack-error'))).toBe(false);
+    expect(agentSlackWriteStale(new Error('network'))).toBe(false);
   });
 });
