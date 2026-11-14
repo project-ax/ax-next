@@ -75,6 +75,11 @@ export const SLACK_TOKEN_MAX = 512;
  * 1000", and "We recommend no more than 200 results at a time".
  */
 export const CHANNEL_LIST_PAGE_LIMIT = 200;
+/**
+ * The longest channel name stored on a binding and shown, in UTF-16 code
+ * units (label.ts). Slack's own cap on a channel name is 80 characters.
+ */
+export const CHANNEL_NAME_MAX = 80;
 
 // ── Replies ─────────────────────────────────────────────────────────────────
 

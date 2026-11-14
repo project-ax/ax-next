@@ -22,7 +22,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE channel_slack_v1_installs`.execute(db);
+  await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels`.execute(db);
 });
 
 afterAll(async () => {
@@ -58,6 +58,53 @@ async function rawRow(installId: string) {
     .selectAll()
     .where('install_id', '=', installId)
     .executeTakeFirst();
+}
+
+/**
+ * A channel connected to an agent on an install. Written raw: this file tests
+ * the install store, and the bindings' own store has its own tests.
+ */
+async function bind(installId: string, channelId: string, agentId = 'agt_support'): Promise<void> {
+  await sql`
+    INSERT INTO channel_slack_v1_channels
+      (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
+    VALUES (${installId}, ${channelId}, ${agentId}, 'usr_admin1', 'support')
+  `.execute(db);
+}
+
+/** Every binding left, as `installId/channelId`, sorted. */
+async function bindings(): Promise<string[]> {
+  const r = await sql<{ install_id: string; channel_id: string }>`
+    SELECT install_id, channel_id FROM channel_slack_v1_channels
+  `.execute(db);
+  return r.rows.map((row) => `${row.install_id}/${row.channel_id}`).sort();
+}
+
+/**
+ * Run `fn` with a BEFORE DELETE row trigger on the installs table whose
+ * plpgsql body is `body`, then drop it whatever happens. TRUNCATE (the
+ * beforeEach cleanup) never fires it.
+ */
+async function withInstallDeleteTrigger(body: string, fn: () => Promise<void>): Promise<void> {
+  await sql
+    .raw(
+      `CREATE FUNCTION channel_slack_store_test_on_delete() RETURNS trigger LANGUAGE plpgsql AS $fn$
+         BEGIN ${body} END
+       $fn$;
+       CREATE TRIGGER channel_slack_store_test_on_delete BEFORE DELETE ON channel_slack_v1_installs
+         FOR EACH ROW EXECUTE FUNCTION channel_slack_store_test_on_delete();`,
+    )
+    .execute(db);
+  try {
+    await fn();
+  } finally {
+    await sql
+      .raw(
+        `DROP TRIGGER IF EXISTS channel_slack_store_test_on_delete ON channel_slack_v1_installs;
+         DROP FUNCTION IF EXISTS channel_slack_store_test_on_delete();`,
+      )
+      .execute(db);
+  }
 }
 
 describe('runMigrations', () => {
@@ -213,6 +260,80 @@ describe('install rows', () => {
     expect(await store.current()).toBeNull();
     // Nothing left: the next one removes, and says, nothing.
     expect(await store.removeAll()).toEqual([]);
+  });
+});
+
+/*
+  A binding names the person whose identity a channel's outsiders run as, so
+  it must never outlive its install (a disconnected workspace still looking
+  connected to an agent), and the install must never go while its bindings
+  stay half-deleted. Both deletes are one statement: all or nothing.
+*/
+describe("an install's channel bindings go with it", () => {
+  it("remove deletes the install's bindings, and no other install's", async () => {
+    const a = await pending();
+    const b = await pending();
+    await bind(a, 'C07SUPPORT1');
+    await bind(a, 'C07SALES002', 'agt_sales');
+    await bind(b, 'C07SUPPORT1');
+
+    await store.remove(a);
+    expect(await store.get(a)).toBeNull();
+    expect(await store.get(b)).not.toBeNull();
+    expect(await bindings()).toEqual([`${b}/C07SUPPORT1`]);
+  });
+
+  it("removeAll deletes every removed install's bindings and still returns exactly the installs", async () => {
+    const pendingId = await pending();
+    const activeId = await pending();
+    await store.activate(activeId, { ...TEAM, installedAt: new Date() });
+    await bind(pendingId, 'C07SUPPORT1');
+    await bind(activeId, 'C07SALES002');
+
+    const removed = await store.removeAll();
+    expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
+      [
+        { installId: pendingId, appId: PENDING.appId, teamId: null },
+        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId },
+      ].sort((x, y) => x.installId.localeCompare(y.installId)),
+    );
+    expect(await bindings()).toEqual([]);
+  });
+
+  it('a failing install delete keeps the bindings: remove and removeAll delete nothing at all', async () => {
+    const a = await pending();
+    const b = await pending();
+    await bind(a, 'C07SUPPORT1');
+    await bind(b, 'C07SALES002');
+    const before = await bindings();
+    expect(before).toHaveLength(2);
+
+    await withInstallDeleteTrigger(`RAISE EXCEPTION 'refused in test'; RETURN OLD;`, async () => {
+      await expect(store.remove(a)).rejects.toThrow();
+      await expect(store.removeAll()).rejects.toThrow();
+    });
+
+    expect(await store.get(a)).not.toBeNull();
+    expect(await store.get(b)).not.toBeNull();
+    expect(await bindings()).toEqual(before);
+  });
+
+  it("a delete that skips an install keeps that install's bindings, and takes the others'", async () => {
+    const kept = await pending();
+    const gone = await pending();
+    await bind(kept, 'C07SUPPORT1');
+    await bind(gone, 'C07SALES002');
+
+    // A row trigger returning NULL skips that row's delete without an error,
+    // as when what a read saw and what the delete removed differ.
+    await withInstallDeleteTrigger(`IF OLD.install_id = '${kept}' THEN RETURN NULL; END IF; RETURN OLD;`, async () => {
+      await store.remove(kept);
+      expect(await store.get(kept)).not.toBeNull();
+      expect(await bindings()).toEqual([`${kept}/C07SUPPORT1`, `${gone}/C07SALES002`].sort());
+
+      expect((await store.removeAll()).map((r) => r.installId)).toEqual([gone]);
+      expect(await bindings()).toEqual([`${kept}/C07SUPPORT1`]);
+    });
   });
 });
 

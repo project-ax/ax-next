@@ -60,12 +60,17 @@ export interface InstallStore {
     installId: string,
     a: { teamId: string; teamName: string; botUserId: string; installedAt: Date },
   ): Promise<void>;
+  /**
+   * Delete the install and its channel bindings in ONE statement: both go,
+   * or (when the install's delete fails or skips the row) neither does.
+   */
   remove(installId: string): Promise<void>;
   /**
-   * Delete every install, any status, in ONE statement, and return exactly
-   * the rows that statement deleted, in no particular order. A row inserted
-   * meanwhile is either deleted and returned or kept; a delete that fails
-   * deletes and returns nothing.
+   * Delete every install, any status, and their channel bindings, in ONE
+   * statement, and return exactly the installs that statement deleted, in no
+   * particular order. A row inserted meanwhile is either deleted and returned
+   * or kept; a delete that fails deletes and returns nothing. A binding goes
+   * only with an install this delete removed.
    */
   removeAll(): Promise<RemovedInstall[]>;
 }
@@ -234,16 +239,35 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-pending');
     },
 
+    // Bindings go in the same statement as their install, keyed on what the
+    // install delete RETURNED (data-modifying CTEs share one snapshot and
+    // see each other only through RETURNING): a delete that fails rolls the
+    // whole statement back, and one that skips an install keeps its bindings.
+    // channel-store.ts owns every other query against the bindings.
     async remove(installId) {
-      await db.deleteFrom(INSTALLS).where('install_id', '=', installId).execute();
+      await sql`
+        WITH removed AS (
+          DELETE FROM channel_slack_v1_installs
+           WHERE install_id = ${installId}
+          RETURNING install_id
+        )
+        DELETE FROM channel_slack_v1_channels
+         WHERE install_id IN (SELECT install_id FROM removed)
+      `.execute(db);
     },
 
     async removeAll() {
-      const rows = await db
-        .deleteFrom(INSTALLS)
-        .returning(['install_id', 'app_id', 'team_id'])
-        .execute();
-      return rows.map((r) => ({ installId: r.install_id, appId: r.app_id, teamId: r.team_id }));
+      const r = await sql<{ install_id: string; app_id: string; team_id: string | null }>`
+        WITH removed AS (
+          DELETE FROM channel_slack_v1_installs
+          RETURNING install_id, app_id, team_id
+        ), unbound AS (
+          DELETE FROM channel_slack_v1_channels
+           WHERE install_id IN (SELECT install_id FROM removed)
+        )
+        SELECT install_id, app_id, team_id FROM removed
+      `.execute(db);
+      return r.rows.map((row) => ({ installId: row.install_id, appId: row.app_id, teamId: row.team_id }));
     },
   };
 }
