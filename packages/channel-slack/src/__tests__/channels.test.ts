@@ -195,7 +195,7 @@ function world(o: { workspaceAdminsMayManage?: boolean } = {}) {
     logger,
   };
   const connect = (channelId: string, actorUserId = ADA, agentId = SUPPORT.id) =>
-    connectChannel(deps, { agentId, channelId, actorUserId });
+    connectChannel(deps, { install: state.install, agentId, channelId, actorUserId });
   return { bus, people, memory, slack, state, deps, lines, connect };
 }
 

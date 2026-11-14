@@ -45,8 +45,9 @@ import type { InstallRow, InstallStore } from './store.js';
  *   4. `connect` reaches only a team agent the invoker sees whose name
  *      matches (normalizeName), then only one they manage: a team admin of
  *      its team (channels.ts; workspace-admin status never counts). The
- *      channel is the one the command was typed in, and connectChannel does
- *      the rest, the same core as the agent settings.
+ *      channel is the one the command was typed in, the install the one it
+ *      was signed for, and connectChannel does the rest, the same core as
+ *      the agent settings.
  *   5. `disconnect` needs the same rights over the connected agent, except
  *      when that agent is gone: a binding nobody can manage any more is
  *      cleared for anyone who asks.
@@ -257,12 +258,13 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
     makeAgentContext({ sessionId: 'channel-slack', agentId: '', userId, logger: d.logger });
 
   async function handle(req: RouteRequest, res: RouteResponse): Promise<void> {
-    const install = await verifySignedRequest(d, req, res, {
+    const signed = await verifySignedRequest(d, req, res, {
       pathPrefix: COMMANDS_PATH_PREFIX,
       maxBodyBytes: COMMANDS_MAX_BODY_BYTES,
       logPrefix: 'slack_command',
     });
-    if (install === null) return;
+    if (signed === null) return;
+    const { install } = signed;
     const installId = install.installId;
 
     const contentType = Object.hasOwn(req.headers, 'content-type') ? req.headers['content-type'] : undefined;
@@ -430,8 +432,16 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
     if (chosen === undefined) return declined(installId, 'not-manager', COPY.slashNotManager);
     if (managed.length > 1) return declined(installId, 'ambiguous', COPY.slashAmbiguous);
 
+    // In the install this command was signed for, read again now: never
+    // another install row (`installs.current()` is the oldest one), and
+    // refused as `no-workspace` if it was removed while the command ran.
     // Logs `slack_channel_connected` / `slack_channel_refused` itself.
-    const outcome = await connectChannel(d, { agentId: chosen.agentId, channelId: c.channelId, actorUserId: userId });
+    const outcome = await connectChannel(d, {
+      install: await d.store.get(installId),
+      agentId: chosen.agentId,
+      channelId: c.channelId,
+      actorUserId: userId,
+    });
     if (!outcome.ok) return connectRefusal(outcome);
     return outcome.reconnected
       ? COPY.slashReconnected(chosen.agentName)
@@ -453,6 +463,11 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
     // to a gone agent may be cleared without rights (nobody can manage it).
     const access = await agentAccess(d.bus, ctx, binding.agentId, userId);
     if (access === 'agent-gone') return remove(binding, true);
+    // 'no': the invoker is outside the agent's team. 'not-team' never happens
+    // to a bound agent: only a team agent is ever connected (checkRights), and
+    // @ax/agents never changes an agent's visibility once it is made (an
+    // update refuses it). So it is an answer we can't read, and an answer we
+    // can't read never clears a binding.
     if (access !== 'yes') return declined(installId, 'not-manager', COPY.slashNotManager);
     const rights = await checkRights(d.bus, ctx, binding.agentId, userId, 'manage');
     if (!rights.ok) return declined(installId, 'not-manager', COPY.slashNotManager);

@@ -185,9 +185,14 @@ export async function checkRights(
 
 // ── Slack ───────────────────────────────────────────────────────────────────
 
-/** The active install and its bot token, or null when there is no workspace to work in. */
-async function workspace(d: ChannelDeps): Promise<{ install: InstallRow; botToken: string } | null> {
-  const install = await d.installs.current();
+/**
+ * The install to work in and its bot token, or null when there is no
+ * workspace to work in: no install, one that isn't active, or no bot token.
+ */
+async function workspace(
+  d: ChannelDeps,
+  install: InstallRow | null,
+): Promise<{ install: InstallRow; botToken: string } | null> {
   if (install === null || install.status !== 'active') return null;
   const botToken = await d.secrets.get(install, 'bot-token');
   return botToken === null ? null : { install, botToken };
@@ -200,17 +205,21 @@ function noWorkspace(d: ChannelDeps): { ok: false; reason: 'no-workspace' } {
 
 /**
  * Connect a channel to an agent the caller already checked `manage` rights
- * on: the active install → its bot token → `conversations.info` → the answer
- * is about this channel → public, live, not Slack Connect → the bot joins
- * (unless Slack says it's in) → the binding. Each step's failure is the named
- * reason and no step after it runs. The requested `channelId` is the one
- * joined and bound. A store, vault or non-Slack failure propagates.
+ * on, in `install`: it is active → its bot token → `conversations.info` →
+ * the answer is about this channel → public, live, not Slack Connect → the
+ * bot joins (unless Slack says it's in) → the binding. Each step's failure is
+ * the named reason and no step after it runs. The requested `channelId` is
+ * the one joined and bound. A store, vault or non-Slack failure propagates.
+ *
+ * The install is the caller's to choose, never a default: the agent settings
+ * work in `installs.current()`; `/ax` in the install its request was signed
+ * for, so another install row can't lend its bot token or take the binding.
  */
 export async function connectChannel(
   d: ChannelDeps,
-  i: { agentId: string; channelId: string; actorUserId: string },
+  i: { install: InstallRow | null; agentId: string; channelId: string; actorUserId: string },
 ): Promise<ConnectOutcome> {
-  const ws = await workspace(d);
+  const ws = await workspace(d, i.install);
   if (ws === null) return noWorkspace(d);
   const { install, botToken } = ws;
   const installId = install.installId;
@@ -291,7 +300,7 @@ function compare(a: string, b: string): number {
  * each id once, each name cleaned, each marked by who has it.
  */
 export async function listAvailableChannels(d: ChannelDeps, agentId: string): Promise<AvailableChannels> {
-  const ws = await workspace(d);
+  const ws = await workspace(d, await d.installs.current());
   if (ws === null) return noWorkspace(d);
   const { install, botToken } = ws;
   const installId = install.installId;

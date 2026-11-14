@@ -53,6 +53,17 @@ export interface IngressOptions {
   logPrefix: 'slack_event' | 'slack_command';
 }
 
+/** A request the checks let through. */
+export interface SignedRequest {
+  /** The install the request is signed for. */
+  install: InstallRow;
+  /**
+   * The one clock reading (epoch milliseconds) the signature was checked at.
+   * A route that needs the time again uses this, never a second reading.
+   */
+  nowMs: number;
+}
+
 /**
  * @ax/http-server's own answer for a path no route serves. Pinned against the
  * real router (plugin.test.ts) and the memory canary, not by a copy of it.
@@ -62,15 +73,16 @@ function notFound(res: RouteResponse): void {
 }
 
 /**
- * Steps 0 to 4 above. The install the request is signed for, or null when
- * the request was refused, in which case it has already been answered.
+ * Steps 0 to 4 above. The install the request is signed for and the instant
+ * it was checked at, or null when the request was refused, in which case it
+ * has already been answered.
  */
 export async function verifySignedRequest(
   d: IngressDeps,
   req: RouteRequest,
   res: RouteResponse,
   o: IngressOptions,
-): Promise<InstallRow | null> {
+): Promise<SignedRequest | null> {
   // A log line never changes the answer Slack gets.
   const log = (msg: string, fields: Record<string, string>): void => {
     try {
@@ -120,12 +132,13 @@ export async function verifySignedRequest(
     return null;
   }
 
-  if (!verifySlackSignature({ headers: req.headers, body: req.body, signingSecret, nowMs: d.now() })) {
+  const nowMs = d.now();
+  if (!verifySlackSignature({ headers: req.headers, body: req.body, signingSecret, nowMs })) {
     log(`${o.logPrefix}_refused`, { installId, reason: 'signature' });
     res.status(401).end();
     return null;
   }
-  return install;
+  return { install, nowMs };
 }
 
 /**

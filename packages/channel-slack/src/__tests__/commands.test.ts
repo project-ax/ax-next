@@ -71,6 +71,17 @@ const PENDING: InstallRow = {
   installedAt: null,
 };
 const NO_SECRET: InstallRow = { ...ACTIVE, installId: NO_SECRET_ID };
+/** A second active install, made before ACTIVE: the row `current()` answers with. */
+const OLDER_ID = 'Hn5bV1cX8zLk3Jq7Wd2PfA';
+const OLDER_BOT_TOKEN = fakeBotToken('OLDERINSTALLSECRET');
+const OLDER: InstallRow = {
+  ...ACTIVE,
+  installId: OLDER_ID,
+  appId: 'A07OLDAPP01',
+  botUserId: 'U07OLDBOT01',
+  createdAt: new Date('2026-11-12T11:00:00.000Z'),
+  installedAt: new Date('2026-11-12T11:05:00.000Z'),
+};
 
 /** Someone in the install's Slack workspace, and their AX account (null: none). */
 interface Person {
@@ -393,7 +404,15 @@ interface Line {
   fields: Record<string, unknown> | undefined;
 }
 
-function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {}) {
+function world(
+  o: {
+    teams?: boolean;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    seen?: ReturnType<typeof createSeenEvents>;
+  } = {},
+) {
+  const now = o.now ?? (() => NOW_MS);
   const bus = new HookBus();
   const people = fakeAgents(bus);
   for (const agent of [SUPPORT, RND, SUPPORT_EU, SALES, OTTOS]) people.addAgent(agent);
@@ -428,11 +447,13 @@ function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {
   };
   const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
 
-  const installs = new Map([ACTIVE, PENDING, NO_SECRET].map((i) => [i.installId, i]));
+  const installs = new Map([ACTIVE, PENDING, NO_SECRET, OLDER].map((i) => [i.installId, i]));
   const state = {
     botToken: BOT_TOKEN as string | null,
     vaultFault: undefined as unknown,
     storeFault: undefined as unknown,
+    /** What `installs.current()` answers: the oldest row. */
+    current: ACTIVE,
   };
   const secretReads: SecretName[] = [];
   const store = {
@@ -449,7 +470,8 @@ function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {
         return install.installId === NO_SECRET_ID ? null : SIGNING_SECRET;
       }
       if (state.vaultFault !== undefined) throw state.vaultFault;
-      return name === 'bot-token' ? state.botToken : null;
+      if (name !== 'bot-token') return null;
+      return install.installId === OLDER_ID ? OLDER_BOT_TOKEN : state.botToken;
     },
   };
 
@@ -458,7 +480,7 @@ function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {
   const lifetime = createLifetime();
   const handler = createCommandsHandler({
     bus,
-    installs: { current: async () => ({ ...ACTIVE }) },
+    installs: { current: async () => ({ ...state.current }) },
     channels: memory.store,
     secrets,
     api: slack.api,
@@ -466,7 +488,7 @@ function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {
     store,
     lifetime,
     publicOrigin: ORIGIN,
-    now: () => NOW_MS,
+    now,
     // By default the deadline never comes: every answer is the HTTP one.
     sleep: o.sleep ?? (() => new Promise<void>(() => {})),
   });
@@ -475,10 +497,10 @@ function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {
     store,
     secrets,
     lifetime: createLifetime(),
-    seen: createSeenEvents({ ttlMs: EVENT_DEDUPE_TTL_MS, max: EVENT_DEDUPE_MAX }),
+    seen: o.seen ?? createSeenEvents({ ttlMs: EVENT_DEDUPE_TTL_MS, max: EVENT_DEDUPE_MAX }),
     dispatch: async () => {},
     logger,
-    now: () => NOW_MS,
+    now,
   });
 
   async function send(req: RouteRequest, via = handler): Promise<Answered> {
@@ -500,6 +522,7 @@ function world(o: { teams?: boolean; sleep?: (ms: number) => Promise<void> } = {
     faults,
     lines,
     state,
+    installs,
     secretReads,
     memory,
     slack,
@@ -591,6 +614,40 @@ describe('the /ax route: what it checks before reading the form', () => {
     expect(await w2.send(slash({ text: 'connect Support' }))).toStrictEqual({ status: 503, how: 'end', body: undefined, headers: {} });
     expect(w2.secretReads).toEqual([]);
     expect(w2.slack.calls).toEqual([]);
+  });
+});
+
+describe('ingress.ts, which the events route shares', () => {
+  it('reads the clock once a request: the events route stamps its replay record with the instant it checked the signature at', async () => {
+    // A clock that moves on at every reading, as it does across a store read and a vault read.
+    const readings: number[] = [];
+    const now = (): number => {
+      const at = NOW_MS + readings.length * 60_000;
+      readings.push(at);
+      return at;
+    };
+    const stamped: number[] = [];
+    const w = world({
+      now,
+      seen: {
+        firstSighting: (_eventId, nowMs) => {
+          stamped.push(nowMs);
+          return true;
+        },
+      },
+    });
+    const mention = Buffer.from(
+      JSON.stringify({
+        type: 'event_callback',
+        team_id: TEAM_ID,
+        api_app_id: APP_ID,
+        event_id: 'Ev07ONECLOCK',
+        event: { type: 'app_mention', user: ADA.slack, channel: SUPPORT_CH, ts: '1763035200.000100', text: 'hello' },
+      }),
+    );
+    expect(await w.sendToEvents(signed(mention, {}, 'events'))).toStrictEqual(SILENT);
+    expect(stamped).toEqual([NOW_MS]);
+    expect(readings).toEqual([NOW_MS]);
   });
 });
 
@@ -788,6 +845,36 @@ describe('/ax connect', () => {
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
       { agentId: SUPPORT.id, actor: { userId: 'usr_ada', isAdmin: false } },
     ]);
+  });
+
+  it('connects in the install the command was signed for, with its bot token, even when an older install row exists', async () => {
+    // installs.current() answers with the OLDEST row: here, another install.
+    const w = world();
+    w.state.current = OLDER;
+    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(
+      said(COPY.slashConnected('Support', 'support-desk')),
+    );
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ installId: INSTALL_ID, agentId: SUPPORT.id });
+    expect(w.memory.row(OLDER_ID, SUPPORT_CH)).toBeUndefined();
+    expect(w.slack.calls).toEqual([
+      { method: 'users.info', args: [BOT_TOKEN, ADA.slack] },
+      { method: 'conversations.info', args: [BOT_TOKEN, SUPPORT_CH] },
+      { method: 'conversations.join', args: [BOT_TOKEN, SUPPORT_CH] },
+    ]);
+    expect(msgs(w.lines, 'slack_channel_connected')).toEqual([{ installId: INSTALL_ID, reconnected: false }]);
+  });
+
+  it('an install removed while the command runs → slashNeedsReconnect, and nothing is joined or bound', async () => {
+    const w = world();
+    // Admin › Slack › Disconnect lands after the signature was checked.
+    const lookUp = w.slack.on.usersInfo;
+    w.slack.on.usersInfo = async (id) => {
+      w.installs.delete(INSTALL_ID);
+      return lookUp(id);
+    };
+    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(said(COPY.slashNeedsReconnect));
+    expect(w.slack.methods()).toEqual(['users.info']);
+    expect(w.memory.rows.size).toBe(0);
   });
 
   it('a name matches however it is typed: case, spacing, straight quotes, Slack’s escaping', async () => {
@@ -989,6 +1076,17 @@ describe('/ax disconnect', () => {
     expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: 'agt_deleted', userId: 'usr_otto' }]);
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
     expect(msgs(w.lines, 'slack_channel_disconnected')).toEqual([{ installId: INSTALL_ID, reason: 'agent-gone' }]);
+  });
+
+  it('an answer that does not call the bound agent a team agent never clears the binding → slashNotManager', async () => {
+    // Never true of a real binding (only a team agent is connected, and an
+    // agent's visibility is fixed when it is made): bound here to Otto's
+    // personal agent, which agents:resolve hands Otto as personal.
+    const w = world();
+    await connected(w, OTTOS.id);
+    expect(await w.send(slash({ user: OTTO.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashNotManager));
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: OTTOS.id });
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
   });
 });
 

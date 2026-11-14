@@ -230,12 +230,13 @@ export function createEventsHandler(d: EventsHandlerDeps): RouteHandler {
   };
 
   async function handle(req: RouteRequest, res: RouteResponse): Promise<void> {
-    const install = await verifySignedRequest(d, req, res, {
+    const signed = await verifySignedRequest(d, req, res, {
       pathPrefix: EVENTS_PATH_PREFIX,
       maxBodyBytes: EVENTS_MAX_BODY_BYTES,
       logPrefix: 'slack_event',
     });
-    if (install === null) return;
+    if (signed === null) return;
+    const { install, nowMs } = signed;
     const installId = install.installId;
 
     let json: unknown;
@@ -279,7 +280,8 @@ export function createEventsHandler(d: EventsHandlerDeps): RouteHandler {
       res.status(200).end();
       return;
     }
-    if (!d.seen.firstSighting(`${install.installId}:${envelope.eventId}`, d.now())) {
+    // Stamped with the instant the signature was checked at: one reading for both.
+    if (!d.seen.firstSighting(`${install.installId}:${envelope.eventId}`, nowMs)) {
       ignored(installId, 'duplicate');
       res.status(200).end();
       return;

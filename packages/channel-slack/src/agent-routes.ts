@@ -200,7 +200,13 @@ export function createAgentSlackRoutes(d: ChannelDeps): RouteSpec[] {
     if (!rights.ok) return refused(rights.reason);
     const body = readBody(a.req, ['channelId']);
     if (!body.ok) return body.reply;
-    const out = await connectChannel(d, { agentId: a.agentId, channelId: body.channelId, actorUserId: a.userId });
+    const out = await connectChannel(d, {
+      // The settings have no signed request: they work in the one install.
+      install: await d.installs.current(),
+      agentId: a.agentId,
+      channelId: body.channelId,
+      actorUserId: a.userId,
+    });
     if (out.ok) {
       const b = out.binding;
       return json(200, {
