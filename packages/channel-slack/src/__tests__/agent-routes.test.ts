@@ -543,7 +543,7 @@ describe('rights', () => {
     const w = world();
     expect(await w.status(PATS.id, PAT)).toEqual({
       status: 200,
-      body: { state: 'personal-agent', botName: 'canopy-works' },
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true },
     });
     for (const r of WRITES) {
       const a = await w.call(r.method, r.suffix, PATS.id, PAT, r.body);
@@ -554,6 +554,38 @@ describe('rights', () => {
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
     // Someone else's personal agent is as unknown as a missing one.
     expect(await w.status(PATS.id, ADA)).toEqual(NOT_FOUND);
+  });
+
+  it("says whether a personal agent is the one its owner's DMs reach: the oldest, never naming another", async () => {
+    const w = world();
+    // PATS is Pat's first personal agent; this one came later.
+    const later: FakeAgent = {
+      id: 'agt_pat_later',
+      displayName: 'Pat later',
+      visibility: 'personal',
+      ownerType: 'user',
+      ownerId: PAT.id,
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
+    };
+    w.people.agents.set(PATS.id, { ...PATS, createdAt: new Date('2026-10-01T00:00:00.000Z') });
+    w.people.addAgent(later);
+
+    expect(await w.status(PATS.id, PAT)).toEqual({
+      status: 200,
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true },
+    });
+    // Exactly three keys: the agent a DM does reach is never named.
+    expect(await w.status(later.id, PAT)).toEqual({
+      status: 200,
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: false },
+    });
+    // The same question the DM router asks: Pat's own agents, no teams.
+    expect(w.people.inputs('agents:list-for-user')).toEqual([
+      { userId: PAT.id, teamIds: [] },
+      { userId: PAT.id, teamIds: [] },
+    ]);
+    // Slack is asked nothing to answer it.
+    expect(w.slack.sent).toEqual([]);
   });
 
   it('answers an agent id no agent could have with 404, without asking agents', async () => {
@@ -729,6 +761,39 @@ describe('connect', () => {
     },
   );
 
+  it.each(
+    ['conversations.info', 'conversations.join'].flatMap((method) =>
+      ['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive'].map((code) => [method, code] as const),
+    ),
+  )('answers a bot token Slack no longer takes (%s: %s) with 409 needs-reconnect, not "try again"', async (method, code) => {
+    const w = world();
+    w.slack.overrides.set(method, () => w.slack.refuse(code));
+    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 409, body: { error: 'needs-reconnect' } });
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it("answers a workspace policy that keeps the bot out (restricted_action) with 422 workspace-policy", async () => {
+    const w = world();
+    w.slack.overrides.set('conversations.join', () => w.slack.refuse('restricted_action'));
+    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({
+      status: 422,
+      body: { error: 'channel-not-allowed', reason: 'workspace-policy' },
+    });
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it('answers 404 when the agent is deleted while the channel is bound, and leaves no binding behind', async () => {
+    const w = world();
+    const write = w.memory.store.upsert;
+    w.memory.store.upsert = async (row) => {
+      const out = await write(row);
+      w.people.agents.delete(SUPPORT.id);
+      return out;
+    };
+    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual(NOT_FOUND);
+    expect(w.memory.rows.size).toBe(0);
+  });
+
   it("refuses another agent's channel with 409 channel-taken and leaves its binding alone", async () => {
     const w = world();
     expect(await w.connect(SALES.id, SUPPORT_CH, SAM)).toMatchObject({ status: 200 });
@@ -851,6 +916,15 @@ describe('available', () => {
     down.slack.overrides.set('conversations.list', () => new Response('', { status: 500 }));
     expect(await down.available(SUPPORT.id, ADA)).toEqual({ status: 502, body: { error: 'slack-error' } });
   });
+
+  it.each(['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive'])(
+    'answers a bot token Slack no longer takes (%s) with 409 needs-reconnect',
+    async (code) => {
+      const w = world();
+      w.slack.overrides.set('conversations.list', () => w.slack.refuse(code));
+      expect(await w.available(SUPPORT.id, ADA)).toEqual({ status: 409, body: { error: 'needs-reconnect' } });
+    },
+  );
 });
 
 // ── POST …/disconnect and …/remember ────────────────────────────────────────

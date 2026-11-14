@@ -12,6 +12,7 @@ import type { RouteRequest, RouteSpec } from './http-types.js';
 import { ADMIN_BODY_MAX_BYTES, AGENT_ID_MAX, SLACK_ID_RE } from './limits.js';
 import { logCode } from './log-code.js';
 import { personName } from './person-name.js';
+import { personalAgentFor } from './router.js';
 import { checkUser } from './user-auth.js';
 
 /**
@@ -39,7 +40,12 @@ import { checkUser } from './user-auth.js';
 
 export type AgentSlackStatus =
   | { state: 'no-workspace' }
-  | { state: 'personal-agent'; botName: string }
+  /**
+   * `answersDms`: a DM from the owner reaches THIS agent, their oldest
+   * personal agent (router.ts `personalAgentFor`). Which one it does reach
+   * otherwise is never said.
+   */
+  | { state: 'personal-agent'; botName: string; answersDms: boolean }
   | {
       state: 'ready';
       botName: string;
@@ -158,7 +164,12 @@ export function createAgentSlackRoutes(d: ChannelDeps): RouteSpec[] {
     if (install === null || install.status !== 'active') {
       return json(200, { state: 'no-workspace' } satisfies AgentSlackStatus);
     }
-    if (!rights.ok) return json(200, { state: 'personal-agent', botName: install.botName } satisfies AgentSlackStatus);
+    if (!rights.ok) {
+      // Only its owner sees a personal agent (agents:resolve), so the person
+      // asking is the one whose DMs are routed: asked exactly as the DM router asks.
+      const answersDms = (await personalAgentFor(d.bus, a.ctx, a.userId)) === a.agentId;
+      return json(200, { state: 'personal-agent', botName: install.botName, answersDms } satisfies AgentSlackStatus);
+    }
 
     const manage = await manages(a);
     // Deleted since the first question.
@@ -206,6 +217,7 @@ export function createAgentSlackRoutes(d: ChannelDeps): RouteSpec[] {
       agentId: a.agentId,
       channelId: body.channelId,
       actorUserId: a.userId,
+      ctx: a.ctx,
     });
     if (out.ok) {
       const b = out.binding;
@@ -225,6 +237,11 @@ export function createAgentSlackRoutes(d: ChannelDeps): RouteSpec[] {
       case 'archived':
       case 'shared':
         return json(422, { error: 'channel-not-allowed', reason: out.reason });
+      case 'not-allowed':
+        return json(422, { error: 'channel-not-allowed', reason: 'workspace-policy' });
+      case 'agent-gone':
+        // Deleted while this connect ran: the binding was taken back.
+        return NOT_FOUND;
       case 'slack-error':
         return json(502, { error: 'slack-error' });
       default:

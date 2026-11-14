@@ -24,8 +24,12 @@ import { SLASH_COMMAND } from './manifest.js';
  */
 const shown = (text: string): string => neutralizeSlackControls(mrkdwnEscape(text));
 
-/** Why a channel can't have an agent: channels.ts's refusals that are about the channel. */
-export type ChannelNotAllowed = 'not-public' | 'archived' | 'shared';
+/**
+ * Why a channel can't have an agent: channels.ts's refusals that are about
+ * the channel, and `workspace-policy` (its `not-allowed`: the workspace's
+ * settings keep the bot out).
+ */
+export type ChannelNotAllowed = 'not-public' | 'archived' | 'shared' | 'workspace-policy';
 
 const CONNECT = `\`${SLASH_COMMAND} connect\``;
 const DISCONNECT = `\`${SLASH_COMMAND} disconnect\``;
@@ -79,10 +83,14 @@ export const COPY = {
       ? "This channel is archived, so I can't connect an agent to it."
       : reason === 'shared'
         ? "This channel is shared with another organization, so I can't connect an agent to it."
-        : 'I can only connect an agent to a public channel, and this is a private channel or a direct message.',
+        : reason === 'workspace-policy'
+          ? "This workspace's settings don't let me join this channel, so I can't connect an agent to it. " +
+            'A Slack admin can change that.'
+          : 'I can only connect an agent to a public channel, and this is a private channel or a direct message.',
   slashNeedsReconnect:
     'Slack needs to be connected to the web app again before an agent can join a channel. ' +
     "An admin can do that in the web app's admin settings.",
-  slashWorking: "Working on it. I'll tell you here when it's done.",
+  slashWorking:
+    "I'm still working on it. If nothing shows up here, check the agent's Slack settings in the web app.",
   slashFailed: "Something went wrong and I couldn't finish that. Try again in a moment.",
 } as const;

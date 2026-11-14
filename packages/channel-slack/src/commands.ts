@@ -148,14 +148,26 @@ function subcommandOf(text: string): Subcommand {
 }
 
 /**
+ * The quotes someone may type around a name, by family: straight, and the
+ * curly ones Slack's smart punctuation turns them into (built from their
+ * code points: no literal curly quote in the source).
+ */
+const QUOTE_FAMILIES: ReadonlyArray<ReadonlySet<string>> = [
+  new Set(['"', String.fromCharCode(0x201c), String.fromCharCode(0x201d)]),
+  new Set(["'", String.fromCharCode(0x2018), String.fromCharCode(0x2019)]),
+];
+
+/**
  * An agent's name as `/ax connect` compares it, for both what was typed and
  * each agent's display name: NFC, trimmed, runs of whitespace as one space,
- * one pair of surrounding straight quotes dropped, lowercase.
+ * one pair of surrounding quotes of one family (straight or curly) dropped,
+ * lowercase.
  */
 export function normalizeName(raw: string): string {
   let name = raw.normalize('NFC').trim().replace(/\s+/g, ' ');
-  const quote = name[0];
-  if (name.length >= 2 && (quote === '"' || quote === "'") && name.endsWith(quote)) {
+  const first = name[0] ?? '';
+  const last = name[name.length - 1] ?? '';
+  if (name.length >= 2 && QUOTE_FAMILIES.some((q) => q.has(first) && q.has(last))) {
     name = name.slice(1, -1).trim();
   }
   return name.toLowerCase();
@@ -208,12 +220,21 @@ function connectRefusal(outcome: Extract<ConnectOutcome, { ok: false }>): string
     case 'archived':
     case 'shared':
       return COPY.slashChannelNotAllowed(outcome.reason);
-    case 'not-public':
-    // An install that has `/ax` has channels:read (one manifest), so Slack
-    // answering missing_scope here means a DM, a group DM or a private
-    // channel. Never "connect Slack again": that makes a new install and
-    // drops every channel's binding.
+    case 'not-allowed':
+      return COPY.slashChannelNotAllowed('workspace-policy');
+    case 'agent-gone':
+      // Deleted while this connect ran: there is no such agent any more.
+      return COPY.slashNoSuchAgent;
     case 'needs-reconnect':
+      // An install that has `/ax` has channels:read (one manifest), so Slack
+      // answering missing_scope here means a DM, a group DM or a private
+      // channel. Never "connect Slack again" for that: it makes a new
+      // install and drops every channel's binding. A bot token Slack no
+      // longer takes is the one thing connecting again does fix.
+      return outcome.code === 'missing_scope'
+        ? COPY.slashChannelNotAllowed('not-public')
+        : COPY.slashNeedsReconnect;
+    case 'not-public':
       return COPY.slashChannelNotAllowed('not-public');
     case 'no-workspace':
       return COPY.slashNeedsReconnect;
@@ -345,9 +366,11 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
       return failed('bot-token', err);
     }
     if (botToken === null) {
-      // Nobody can be admitted without it: silence, and a line for the operator.
+      // Nobody can be admitted without it. The request was signed by this
+      // install, so saying it needs connecting again tells the invoker
+      // nothing they couldn't see; and a line for the operator.
       log('error', 'slack_bot_token_missing', { installId });
-      return null;
+      return COPY.slashNeedsReconnect;
     }
     progress.botToken = botToken;
 
@@ -441,6 +464,7 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
       agentId: chosen.agentId,
       channelId: c.channelId,
       actorUserId: userId,
+      ctx,
     });
     if (!outcome.ok) return connectRefusal(outcome);
     return outcome.reconnected

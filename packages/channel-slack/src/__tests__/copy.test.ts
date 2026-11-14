@@ -17,7 +17,7 @@ const ARGS: Record<string, unknown[][]> = {
   slashNotMapped: [[ORIGIN]],
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
-  slashChannelNotAllowed: [['not-public'], ['archived'], ['shared']],
+  slashChannelNotAllowed: [['not-public'], ['archived'], ['shared'], ['workspace-policy']],
 };
 
 /** Every string the bot can say, with the ones that take arguments filled in. */
@@ -112,7 +112,18 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
   });
 
   it('each refusal reason has its own line', () => {
-    const lines = (['not-public', 'archived', 'shared'] as const).map((r) => COPY.slashChannelNotAllowed(r));
-    expect(new Set(lines).size).toBe(3);
+    const lines = (['not-public', 'archived', 'shared', 'workspace-policy'] as const).map((r) =>
+      COPY.slashChannelNotAllowed(r),
+    );
+    expect(new Set(lines).size).toBe(4);
+    // A workspace policy is not ours to change: a Slack admin's, and never "try again".
+    expect(COPY.slashChannelNotAllowed('workspace-policy')).toMatch(/Slack admin/);
+    expect(COPY.slashChannelNotAllowed('workspace-policy')).not.toMatch(/try again/i);
+  });
+
+  it('"working on it" promises no follow-up: the late private reply fails where the bot is not a member', () => {
+    expect(COPY.slashWorking).not.toMatch(/\bI'll\b|\bI will\b|\btell you\b|\blet you know\b/i);
+    // It says where to look instead.
+    expect(COPY.slashWorking).toMatch(/Slack settings in the web app/);
   });
 });

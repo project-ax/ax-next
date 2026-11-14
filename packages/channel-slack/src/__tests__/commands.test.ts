@@ -794,10 +794,10 @@ describe('the invoker', () => {
     expect(msgs(w.lines, 'slack_sender_not_mapped')).toEqual([{ installId: INSTALL_ID }, { installId: INSTALL_ID }]);
   });
 
-  it('no bot token → silence and a line for the operator; a vault fault → slashFailed', async () => {
+  it('no bot token → slashNeedsReconnect (the request is signed by this install) and a line for the operator; a vault fault → slashFailed', async () => {
     const w = world();
     w.state.botToken = null;
-    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(SILENT);
+    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(said(COPY.slashNeedsReconnect));
     expect(msgs(w.lines, 'slack_bot_token_missing')).toEqual([{ installId: INSTALL_ID }]);
 
     const w2 = world();
@@ -882,6 +882,9 @@ describe('/ax connect', () => {
     expect(await w.send(slash({ text: 'CONNECT   "support"  ' }))).toStrictEqual(
       said(COPY.slashConnected('Support', 'support-desk')),
     );
+    w.memory.rows.clear();
+    const curly = `connect ${String.fromCharCode(0x201c)}Support${String.fromCharCode(0x201d)}`;
+    expect(await w.send(slash({ text: curly }))).toStrictEqual(said(COPY.slashConnected('Support', 'support-desk')));
     // Slack sends `<`, `>` and `&` escaped; the reply escapes them again.
     w.memory.rows.clear();
     const reply = await w.send(slash({ text: 'connect &lt;b&gt;R&amp;D&lt;/b&gt;' }));
@@ -898,6 +901,13 @@ describe('/ax connect', () => {
     expect(normalizeName("' Support '")).toBe('support');
     expect(normalizeName('"Support')).toBe('"support');
     expect(normalizeName('Pat’s agent')).toBe('pat’s agent');
+    // Slack's smart punctuation curls the quotes someone types around a name.
+    const [ldq, rdq, lsq, rsq] = [0x201c, 0x201d, 0x2018, 0x2019].map((c) => String.fromCharCode(c));
+    expect(normalizeName(`${ldq}Support Desk${rdq}`)).toBe('support desk');
+    expect(normalizeName(`${lsq} Support ${rsq}`)).toBe('support');
+    // Only a pair is dropped, and only one: an apostrophe inside stays.
+    expect(normalizeName(`${ldq}Support`)).toBe(`${ldq}support`);
+    expect(normalizeName(`${lsq}Pat${rsq}s agent${rsq}`)).toBe(`pat${rsq}s agent`);
     // An e and a combining acute accent are the same name as the precomposed letter.
     expect(normalizeName(`Caf${String.fromCharCode(0x65, 0x301)}`)).toBe(normalizeName(`Caf${String.fromCharCode(0xe9)}`));
   });
@@ -977,6 +987,40 @@ describe('/ax connect', () => {
     });
     expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(said(COPY.slashChannelTaken));
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SALES.id, connectedByUserId: 'usr_sam' });
+    // Refused before the bot joins: no bot left behind in a channel it can't serve.
+    expect(w.slack.methods()).not.toContain('conversations.join');
+  });
+
+  it('an agent deleted while the channel is bound → slashNoSuchAgent, and the binding is taken back', async () => {
+    const w = world();
+    const write = w.memory.store.upsert;
+    w.memory.store.upsert = async (row) => {
+      const out = await write(row);
+      w.people.agents.delete(SUPPORT.id);
+      return out;
+    };
+    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(said(COPY.slashNoSuchAgent));
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it('a workspace policy that keeps the bot out (restricted_action) → its own line, not "try again"', async () => {
+    const w = world();
+    w.slack.on.join = async () => {
+      throw new SlackApiError('conversations.join', 'restricted_action');
+    };
+    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(
+      said(COPY.slashChannelNotAllowed('workspace-policy')),
+    );
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it('a bot token Slack no longer takes → slashNeedsReconnect, never "a private channel"', async () => {
+    for (const code of ['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive']) {
+      const w = world();
+      w.slack.infoRefusals.set(SUPPORT_CH, code);
+      expect(await w.send(slash({ text: 'connect Support' })), code).toStrictEqual(said(COPY.slashNeedsReconnect));
+      expect(w.memory.rows.size).toBe(0);
+    }
   });
 
   it('a private, archived or Slack Connect channel → slashChannelNotAllowed with the reason, never joined', async () => {

@@ -2,6 +2,7 @@ import { PluginError, type AgentContext, type HookBus, type Logger } from '@ax/c
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { cleanChannelName } from './label.js';
 import { CHANNEL_LIST_MAX_PAGES, CHANNEL_LIST_PAGE_LIMIT } from './limits.js';
+import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
 import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
@@ -55,9 +56,18 @@ export type ConnectRefusal =
   | 'not-public'
   | 'archived'
   | 'shared'
+  /** The workspace's own policy keeps the bot out of the channel: trying again changes nothing. */
+  | 'not-allowed'
+  /** The agent was deleted while its channel was being bound: the binding was taken back. */
+  | 'agent-gone'
   | 'slack-error';
 
-/** `code` comes with `slack-error` only: Slack's own code, or `id-mismatch`. */
+/**
+ * `code` is Slack's own code, and comes with the reasons a caller may need
+ * it to tell apart: `slack-error` (or `id-mismatch`), `needs-reconnect`
+ * (`missing_scope` is a scope, the rest a bot token Slack no longer takes)
+ * and `not-allowed`.
+ */
 export type ConnectOutcome =
   | { ok: true; binding: ChannelBinding; reconnected: boolean }
   | { ok: false; reason: ConnectRefusal; code?: string };
@@ -73,8 +83,21 @@ export type AvailableChannels =
   | { ok: true; channels: AvailableChannel[]; truncated: boolean }
   | { ok: false; reason: 'no-workspace' | 'needs-reconnect' | 'slack-error'; code?: string };
 
+/**
+ * A bot token Slack no longer takes (revoked, the app uninstalled, the bot
+ * deactivated): only connecting Slack again fixes it, so it is never
+ * `slack-error` ("try again").
+ */
+const TOKEN_REFUSED: ReadonlyArray<[string, 'needs-reconnect']> = [
+  'invalid_auth',
+  'not_authed',
+  'token_revoked',
+  'account_inactive',
+].map((code): [string, 'needs-reconnect'] => [code, 'needs-reconnect']);
+
 /** What Slack refusing `conversations.info` means for a connect. Any other code is `slack-error`. */
 const INFO_REFUSALS: ReadonlyMap<string, ConnectRefusal> = new Map([
+  ...TOKEN_REFUSED,
   // An install made before channels: no channels:read. Slack must be connected again.
   ['missing_scope', 'needs-reconnect'],
   // A private channel the bot isn't in, or nothing at all.
@@ -83,11 +106,23 @@ const INFO_REFUSALS: ReadonlyMap<string, ConnectRefusal> = new Map([
 
 /** What Slack refusing `conversations.join` means for a connect. Any other code is `slack-error`. */
 const JOIN_REFUSALS: ReadonlyMap<string, ConnectRefusal> = new Map([
+  ...TOKEN_REFUSED,
   ['missing_scope', 'needs-reconnect'],
   ['method_not_supported_for_channel_type', 'not-public'],
   ['channel_not_found', 'not-public'],
   ['is_archived', 'archived'],
+  // The workspace's settings don't let this bot join channels.
+  ['restricted_action', 'not-allowed'],
 ]);
+
+/** What Slack refusing `conversations.list` means for the picker. Any other code is `slack-error`. */
+const LIST_REFUSALS: ReadonlyMap<string, 'needs-reconnect'> = new Map([
+  ...TOKEN_REFUSED,
+  ['missing_scope', 'needs-reconnect'],
+]);
+
+/** The refusals whose outcome carries Slack's code. */
+const CODED: ReadonlySet<ConnectRefusal> = new Set(['slack-error', 'needs-reconnect', 'not-allowed']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -206,10 +241,11 @@ function noWorkspace(d: ChannelDeps): { ok: false; reason: 'no-workspace' } {
 /**
  * Connect a channel to an agent the caller already checked `manage` rights
  * on, in `install`: it is active → its bot token → `conversations.info` →
- * the answer is about this channel → public, live, not Slack Connect → the
- * bot joins (unless Slack says it's in) → the binding. Each step's failure is
- * the named reason and no step after it runs. The requested `channelId` is
- * the one joined and bound. A store, vault or non-Slack failure propagates.
+ * the answer is about this channel → public, live, not Slack Connect → not
+ * another agent's → the bot joins (unless Slack says it's in) → the binding
+ * → the agent still exists. Each step's failure is the named reason and no
+ * step after it runs. The requested `channelId` is the one joined and bound.
+ * A store, vault or non-Slack failure propagates.
  *
  * The install is the caller's to choose, never a default: the agent settings
  * work in `installs.current()`; `/ax` in the install its request was signed
@@ -217,7 +253,14 @@ function noWorkspace(d: ChannelDeps): { ok: false; reason: 'no-workspace' } {
  */
 export async function connectChannel(
   d: ChannelDeps,
-  i: { install: InstallRow | null; agentId: string; channelId: string; actorUserId: string },
+  i: {
+    install: InstallRow | null;
+    agentId: string;
+    channelId: string;
+    actorUserId: string;
+    /** For the closing `agents:resolve`: the caller's lookup ctx. */
+    ctx: AgentContext;
+  },
 ): Promise<ConnectOutcome> {
   const ws = await workspace(d, i.install);
   if (ws === null) return noWorkspace(d);
@@ -232,7 +275,7 @@ export async function connectChannel(
       stage,
       ...(code !== undefined ? { code } : {}),
     });
-    return reason === 'slack-error' && code !== undefined ? { ok: false, reason, code } : { ok: false, reason };
+    return CODED.has(reason) && code !== undefined ? { ok: false, reason, code } : { ok: false, reason };
   };
   /** Slack refusing one step, as the connect's reason. Anything that isn't Slack's refusal propagates. */
   const refusedBySlack = (err: unknown, stage: string, known: ReadonlyMap<string, ConnectRefusal>): ConnectOutcome => {
@@ -251,6 +294,12 @@ export async function connectChannel(
   if (!info.isChannel || info.isPrivate) return refuse('not-public', 'info');
   if (info.isArchived) return refuse('archived', 'info');
   if (info.isExtShared || info.isPendingExtShared) return refuse('shared', 'info');
+
+  // Another agent's channel is refused before the bot joins it, so a refused
+  // connect never leaves the bot in a channel it won't serve. The upsert
+  // below stays the final word on a connect racing this one.
+  const held = await d.channels.get(installId, i.channelId);
+  if (held !== null && held.agentId !== i.agentId) return refuse('channel-taken', 'pre-join');
 
   // Only now does the bot join. Slack's answer often leaves `is_member` out,
   // so this usually runs, and `already_in_channel` is a success.
@@ -271,6 +320,21 @@ export async function connectChannel(
   };
   const outcome = await d.channels.upsert(wrote);
   if (outcome === 'taken') return refuse('channel-taken', 'bind');
+  // The agent deleted while this connect ran: agents:deleted cleared its
+  // channels before this row landed, so nothing else ever would. Asked again
+  // now, as the person connecting; only "gone" takes the binding back. A
+  // re-check that fails leaves the connect as it is: the agent was there a
+  // moment ago, and an outage is not a deletion.
+  let access: AgentAccess | null = null;
+  try {
+    access = await agentAccess(d.bus, i.ctx, i.agentId, i.actorUserId);
+  } catch (err) {
+    quietly(d.logger, 'warn', 'slack_channel_recheck_failed', { installId, code: logCode(err) });
+  }
+  if (access === 'agent-gone') {
+    await d.channels.remove(installId, i.channelId, i.agentId);
+    return refuse('agent-gone', 'recheck');
+  }
   // Read back, so a reconnect answers with the memory switch it kept. A
   // disconnect landing between the two leaves nothing to read: the answer
   // is then what this connect wrote, and the next read shows it gone.
@@ -316,7 +380,7 @@ export async function listAvailableChannels(d: ChannelDeps, agentId: string): Pr
       });
     } catch (err) {
       if (!(err instanceof SlackApiError)) throw err;
-      const reason = err.code === 'missing_scope' ? 'needs-reconnect' : 'slack-error';
+      const reason = LIST_REFUSALS.get(err.code) ?? 'slack-error';
       quietly(d.logger, 'warn', 'slack_channel_refused', { installId, reason, stage: 'list', code: err.code });
       return reason === 'slack-error' ? { ok: false, reason, code: err.code } : { ok: false, reason };
     }

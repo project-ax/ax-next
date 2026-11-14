@@ -195,7 +195,7 @@ function world(o: { workspaceAdminsMayManage?: boolean } = {}) {
     logger,
   };
   const connect = (channelId: string, actorUserId = ADA, agentId = SUPPORT.id) =>
-    connectChannel(deps, { install: state.install, agentId, channelId, actorUserId });
+    connectChannel(deps, { install: state.install, agentId, channelId, actorUserId, ctx });
   return { bus, people, memory, slack, state, deps, lines, connect };
 }
 
@@ -382,11 +382,15 @@ describe('connectChannel', () => {
   });
 
   it.each([
-    ['missing_scope', { ok: false, reason: 'needs-reconnect' }],
+    ['missing_scope', { ok: false, reason: 'needs-reconnect', code: 'missing_scope' }],
     ['channel_not_found', { ok: false, reason: 'not-public' }],
     ['ratelimited', { ok: false, reason: 'slack-error', code: 'ratelimited' }],
     ['http-503', { ok: false, reason: 'slack-error', code: 'http-503' }],
-    ['invalid_auth', { ok: false, reason: 'slack-error', code: 'invalid_auth' }],
+    // A bot token Slack no longer takes: only connecting Slack again fixes it, never "try again".
+    ['invalid_auth', { ok: false, reason: 'needs-reconnect', code: 'invalid_auth' }],
+    ['not_authed', { ok: false, reason: 'needs-reconnect', code: 'not_authed' }],
+    ['token_revoked', { ok: false, reason: 'needs-reconnect', code: 'token_revoked' }],
+    ['account_inactive', { ok: false, reason: 'needs-reconnect', code: 'account_inactive' }],
   ])('conversations.info answering %s: nothing joined, nothing bound', async (code, outcome) => {
     const w = world();
     w.slack.on.info = async () => {
@@ -398,12 +402,18 @@ describe('connectChannel', () => {
   });
 
   it.each([
-    ['missing_scope', { ok: false, reason: 'needs-reconnect' }],
+    ['missing_scope', { ok: false, reason: 'needs-reconnect', code: 'missing_scope' }],
     ['method_not_supported_for_channel_type', { ok: false, reason: 'not-public' }],
     ['channel_not_found', { ok: false, reason: 'not-public' }],
     ['is_archived', { ok: false, reason: 'archived' }],
     ['ratelimited', { ok: false, reason: 'slack-error', code: 'ratelimited' }],
     ['timeout', { ok: false, reason: 'slack-error', code: 'timeout' }],
+    ['invalid_auth', { ok: false, reason: 'needs-reconnect', code: 'invalid_auth' }],
+    ['not_authed', { ok: false, reason: 'needs-reconnect', code: 'not_authed' }],
+    ['token_revoked', { ok: false, reason: 'needs-reconnect', code: 'token_revoked' }],
+    ['account_inactive', { ok: false, reason: 'needs-reconnect', code: 'account_inactive' }],
+    // The workspace's policy keeps the bot out: trying again changes nothing.
+    ['restricted_action', { ok: false, reason: 'not-allowed', code: 'restricted_action' }],
   ])('conversations.join answering %s: nothing bound', async (code, outcome) => {
     const w = world();
     w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
@@ -463,6 +473,62 @@ describe('connectChannel', () => {
     expect(await w.connect(SUPPORT_CH, ADA, SUPPORT.id)).toEqual({ ok: false, reason: 'channel-taken' });
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(before);
     expect(before).toMatchObject({ agentId: SALES.id, connectedByUserId: SAM });
+  });
+
+  it("refuses another agent's channel before the bot joins it: a refused connect leaves no bot behind", async () => {
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    await w.memory.store.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: SALES.id,
+      connectedByUserId: SAM,
+      channelName: 'support-desk',
+    });
+    const before = w.memory.row(INSTALL_ID, SUPPORT_CH);
+    expect(await w.connect(SUPPORT_CH, ADA, SUPPORT.id)).toEqual({ ok: false, reason: 'channel-taken' });
+    expect(w.slack.methods()).toEqual(['conversations.info']);
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(before);
+
+    // This agent's own channel is a reconnect, and joins as before.
+    w.slack.calls.length = 0;
+    expect(await w.connect(SUPPORT_CH, SAM, SALES.id)).toMatchObject({ ok: true, reconnected: true });
+    expect(w.slack.methods()).toEqual(['conversations.info', 'conversations.join']);
+  });
+
+  it('takes back a binding whose agent was deleted while it was written, and says the agent is gone', async () => {
+    // agents:deleted cleared this agent's channels before the upsert landed:
+    // nothing would ever clear the row this connect writes.
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    const write = w.memory.store.upsert;
+    w.memory.store.upsert = async (row) => {
+      const out = await write(row);
+      w.people.agents.delete(SUPPORT.id);
+      return out;
+    };
+    expect(await w.connect(SUPPORT_CH)).toEqual({ ok: false, reason: 'agent-gone' });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
+    // Asked as the person connecting.
+    expect(w.people.inputs('agents:resolve').at(-1)).toEqual({ agentId: SUPPORT.id, userId: ADA });
+  });
+
+  it("keeps a binding whose agent is still there, even when the re-check can't be answered", async () => {
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    const write = w.memory.store.upsert;
+    w.memory.store.upsert = async (row) => {
+      const out = await write(row);
+      w.people.faults.set('agents:resolve', new PluginError({ code: 'timeout', plugin: '@ax/agents', message: 'slow' }));
+      return out;
+    };
+    expect(await w.connect(SUPPORT_CH)).toMatchObject({ ok: true, reconnected: false });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SUPPORT.id });
+    expect(w.lines).toContainEqual({
+      level: 'warn',
+      msg: 'slack_channel_recheck_failed',
+      fields: { installId: INSTALL_ID, code: 'timeout' },
+    });
   });
 
   it('takes the same agent again as a reconnect: the connector and name change, remember is kept', async () => {
@@ -551,7 +617,7 @@ describe('connectChannel', () => {
       {
         level: 'info',
         msg: 'slack_channel_refused',
-        fields: { installId: INSTALL_ID, reason: 'channel-taken', stage: 'bind' },
+        fields: { installId: INSTALL_ID, reason: 'channel-taken', stage: 'pre-join' },
       },
       {
         level: 'warn',
@@ -651,6 +717,10 @@ describe('listAvailableChannels', () => {
 
   it.each([
     ['missing_scope', { ok: false, reason: 'needs-reconnect' }],
+    ['invalid_auth', { ok: false, reason: 'needs-reconnect' }],
+    ['not_authed', { ok: false, reason: 'needs-reconnect' }],
+    ['token_revoked', { ok: false, reason: 'needs-reconnect' }],
+    ['account_inactive', { ok: false, reason: 'needs-reconnect' }],
     ['ratelimited', { ok: false, reason: 'slack-error', code: 'ratelimited' }],
     ['constructor', { ok: false, reason: 'slack-error', code: 'constructor' }],
   ])('answers conversations.list refusing with %s', async (code, outcome) => {

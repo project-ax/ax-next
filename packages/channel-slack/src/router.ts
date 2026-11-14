@@ -1,4 +1,4 @@
-import { makeAgentContext, type AgentContext } from '@ax/core';
+import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import {
   admitSender,
   answerMention,
@@ -74,6 +74,19 @@ function agentsOf(answer: unknown) {
     if (typeof ownerId !== 'string' || typeof ownerType !== 'string' || typeof visibility !== 'string') return [];
     return [{ id, ownerId, ownerType, visibility, createdAt: createdAt instanceof Date ? createdAt : new Date(Number.NaN) }];
   });
+}
+
+/**
+ * The agent a DM from `userId` reaches: their oldest personal agent
+ * (dm-turn.ts `pickPersonalAgent`), or null when they have none. The agent
+ * settings ask it too, so the two can't disagree.
+ */
+export async function personalAgentFor(bus: HookBus, ctx: AgentContext, userId: string): Promise<string | null> {
+  const listed = await bus.call<{ userId: string; teamIds: string[] }, unknown>('agents:list-for-user', ctx, {
+    userId,
+    teamIds: [],
+  });
+  return pickPersonalAgent(agentsOf(listed), userId);
 }
 
 function conversationIdOf(answer: unknown): string {
@@ -200,12 +213,7 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
   const ctx = lookupCtx(userId);
   let agentId: string | null;
   try {
-    const listed = await d.bus.call<{ userId: string; teamIds: string[] }, unknown>(
-      'agents:list-for-user',
-      ctx,
-      { userId, teamIds: [] },
-    );
-    agentId = pickPersonalAgent(agentsOf(listed), userId);
+    agentId = await personalAgentFor(d.bus, ctx, userId);
   } catch (err) {
     await failed('agents', err);
     return;

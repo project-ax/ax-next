@@ -7,6 +7,8 @@ export interface FakeAgent {
   ownerType: 'user' | 'team';
   /** A user id for a personal agent, a team id for a team agent. */
   ownerId: string;
+  /** When it was made. Default: one fixed instant shared by every agent. */
+  createdAt?: Date;
 }
 
 type Role = 'admin' | 'member';
@@ -72,7 +74,7 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     skillAttachments: [],
     connectorAttachments: [],
     connectorExclusions: [],
-    createdAt: STAMP,
+    createdAt: agent.createdAt ?? STAMP,
     updatedAt: STAMP,
   });
 
