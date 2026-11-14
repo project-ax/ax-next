@@ -502,7 +502,8 @@ Security-checklist: memory capture boundary; fail-closed subscriber.
 - Test: `src/__tests__/capture-veto.test.ts`, `src/__tests__/channel-store.test.ts`, `src/__tests__/router.test.ts`, `src/__tests__/agents-deleted.test.ts`
 
 **Interfaces:**
-- ```sql
+- Table:
+  ```sql
   CREATE TABLE IF NOT EXISTS channel_slack_v1_threads (
     conversation_id TEXT PRIMARY KEY, install_id TEXT NOT NULL, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL,
     not_remembered BOOLEAN NOT NULL DEFAULT false, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
