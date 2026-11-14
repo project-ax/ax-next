@@ -104,7 +104,7 @@ export function neutralizeSlackControls(text: string, before = ''): string {
  * (or the whole word: `@channel` then `s` is a name), or an `&` followed by
  * nothing but the start of a reference it may mark (`&#`, `&excl`: a `;`
  * may still come). The next characters decide it, so a reply stream holds
- * these back until they come (reply-stream.ts). At most 8 (`@everyone`;
+ * these back until they come (reply-stream.ts). At most 9 (`@everyone`;
  * an `&` waits for at most 7, `&commat`); 0 when nothing waits.
  *
  * Whatever comes before the `@` is never read (it exempts nothing). The

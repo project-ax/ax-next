@@ -28,7 +28,7 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     comes before it, gets a zero-width space. Each delta is judged with the
  *     text before it, so a split can't hide one: a `<` that ends a delta gets
  *     its mark at the start of the next, and an `@` or `&` that may start a
- *     broadcast word or a reference waits (at most 8 characters) until the
+ *     broadcast word or a reference waits (at most 9 characters) until the
  *     next text or `finish` decides it, also past a status that arrives
  *     meanwhile, which goes out first. A Slack message's own edges are judged
  *     again as each part goes out, because the reply's text on the other side
