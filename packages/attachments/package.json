@@ -22,7 +22,7 @@
     "@ax/frame-guard": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "kysely": "0.28.17",
-    "zod": "^3.23.8"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@ax/conversations": "workspace:*",
