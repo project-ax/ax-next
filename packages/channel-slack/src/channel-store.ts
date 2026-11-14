@@ -76,12 +76,15 @@ export interface ChannelStore {
    */
   removeForAgent(agentId: string): Promise<{ channels: number; threads: number }>;
   /**
-   * Record that a turn is starting in this conversation, in ONE statement. A
+   * Record that a turn is starting in this conversation, in ONE statement
+   * that reads the channel's memory switch as it writes: a switch turned off
+   * after the caller read the binding still taints the thread. A
    * conversation's install, channel and agent are written the first time and
    * never change (its key names them); `notRemembered` is sticky: once true,
-   * a later `false` leaves it true.
+   * a turn with the switch on leaves it true. `no-binding`: the channel isn't
+   * this agent's (any more), nothing was written, and the turn must not run.
    */
-  recordThread(t: ChannelThread & { conversationId: string }): Promise<void>;
+  recordThread(t: Omit<ChannelThread, 'notRemembered'> & { conversationId: string }): Promise<'recorded' | 'no-binding'>;
   /** The thread a conversation is, or null when no channel turn ever ran in it (a web chat, a DM). */
   getThread(conversationId: string): Promise<ChannelThread | null>;
 }
@@ -200,17 +203,26 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     },
 
     async recordThread(t) {
-      // One statement: two turns starting at once in one thread can't lose a
-      // taint between a read and a write. The conflict only ever ORs the
-      // flag in, so nothing can turn a thread back to remembered.
-      await sql`
+      // One statement: the switch is read from the binding as the row is
+      // written, so an admin turning it off after the router's read can't
+      // leave a thread recorded clean; and two turns starting at once in one
+      // thread can't lose a taint between a read and a write. The conflict
+      // only ever ORs the flag in, so nothing can turn a thread back to
+      // remembered. No binding of this agent's, no row selected: nothing is
+      // inserted, nothing updated, nothing returned.
+      const r = await sql<{ conversation_id: string }>`
         INSERT INTO channel_slack_v1_threads
           (conversation_id, install_id, channel_id, agent_id, not_remembered)
-        VALUES
-          (${t.conversationId}, ${t.installId}, ${t.channelId}, ${t.agentId}, ${t.notRemembered})
+        SELECT ${t.conversationId}, c.install_id, c.channel_id, c.agent_id, NOT c.remember
+          FROM channel_slack_v1_channels c
+         WHERE c.install_id = ${t.installId}
+           AND c.channel_id = ${t.channelId}
+           AND c.agent_id = ${t.agentId}
         ON CONFLICT (conversation_id) DO UPDATE
            SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered
+        RETURNING conversation_id
       `.execute(db);
+      return r.rows.length === 0 ? 'no-binding' : 'recorded';
     },
 
     async getThread(conversationId) {

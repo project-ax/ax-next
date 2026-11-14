@@ -508,20 +508,24 @@ async function routeMention(
       await tell(COPY.turnFailed);
       return;
     }
-    // 9. The memory switch, before anything is said in the conversation: the
-    // switch as it is now, not as it was when the mention arrived. Without
-    // this row the veto wouldn't know the conversation is this channel's, and
-    // a pass could learn from a turn said while the switch was off.
+    // 9. The memory switch, before anything is said in the conversation. The
+    // store reads the switch in the same statement that records the thread,
+    // so it is the switch as it is at that write: not as it was when the
+    // mention arrived, nor when `now` was read above (an admin can turn it
+    // off in between). Without this row the veto wouldn't know the
+    // conversation is this channel's, and a pass could learn from a turn said
+    // while the switch was off. No binding of this agent's at that write: the
+    // channel was disconnected in the gap, so the turn is dropped like one
+    // that found it disconnected above.
+    let recorded: 'recorded' | 'no-binding';
     try {
-      await d.channels.recordThread({
-        conversationId,
-        installId,
-        channelId: m.channel,
-        agentId,
-        notRemembered: now.remember !== true,
-      });
+      recorded = await d.channels.recordThread({ conversationId, installId, channelId: m.channel, agentId });
     } catch (err) {
       await failed('thread', err);
+      return;
+    }
+    if (recorded === 'no-binding') {
+      log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
       return;
     }
     await runTurn(d, {

@@ -482,6 +482,15 @@ function captureLogs(): Array<Record<string, unknown>> {
 
 // ── The tests ───────────────────────────────────────────────────────────────
 
+
+/** A thread an earlier run kept out of memory, its binding long gone: written straight to the table. */
+async function keptOutThread(conversationId: string): Promise<void> {
+  await sql`
+    INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered)
+    VALUES (${conversationId}, ${INSTALL_ID}, ${SUPPORT_CH}, ${TEAM_AGENT.id}, true)
+  `.execute(probe);
+}
+
 describe('@ax/channel-slack plugin', () => {
   it('manifest pins: registers nothing, calls exactly what it uses, branding and the cap interrupt are optional', () => {
     const plugin = createChannelSlackPlugin({ publicOrigin: HTTPS_ORIGIN });
@@ -1087,13 +1096,7 @@ describe('@ax/channel-slack plugin', () => {
   it('the memory veto is on the bus before the database: a pass while init waits for it is answered once the store is ready', async () => {
     // A thread kept out of memory before this restart.
     await runMigrations(probe);
-    await createChannelStore(probe).recordThread({
-      conversationId: 'conv_kept_out',
-      installId: INSTALL_ID,
-      channelId: SUPPORT_CH,
-      agentId: TEAM_AGENT.id,
-      notRemembered: true,
-    });
+    await keptOutThread('conv_kept_out');
     const s: Services = { routes: [], vault: new Map(), credentialSets: 0, credentialGets: [] };
     const services = fakeServices(s);
     const inner = new HookBus();
@@ -1124,13 +1127,7 @@ describe('@ax/channel-slack plugin', () => {
 
   it('shutdown leaves the memory veto answering: a turn that ends during shutdown can still start a memory pass', async () => {
     const { plugin, harness } = await boot();
-    await createChannelStore(probe).recordThread({
-      conversationId: 'conv_kept_out',
-      installId: INSTALL_ID,
-      channelId: SUPPORT_CH,
-      agentId: TEAM_AGENT.id,
-      notRemembered: true,
-    });
+    await keptOutThread('conv_kept_out');
     await plugin.shutdown?.();
     expect(await askMemory(harness.bus, 'conv_kept_out')).toEqual(NOT_REMEMBERED);
   });

@@ -10,6 +10,8 @@ import { cleanChannelName } from '../label.js';
  * agent's binding; a name is stored cleaned; `listForAgent` is oldest first.
  * A thread is keyed by its conversation alone and written once: a later
  * `recordThread` changes only `notRemembered`, which never goes back to false.
+ * `recordThread` takes the flag from the named agent's binding as it is at
+ * the write, and answers `no-binding` (writing nothing) when there is none.
  * `removeForAgent` takes the agent's threads too; nothing else does.
  *
  * Each new binding is one second younger than the one before, so "oldest
@@ -101,13 +103,17 @@ export function memoryChannelStore() {
     },
     async recordThread(t) {
       calls.push('recordThread');
+      const binding = rows.get(key(t.installId, t.channelId));
+      if (binding === undefined || binding.agentId !== t.agentId) return 'no-binding';
+      const notRemembered = !binding.remember;
       const known = threads.get(t.conversationId);
       threads.set(
         t.conversationId,
         known === undefined
-          ? { installId: t.installId, channelId: t.channelId, agentId: t.agentId, notRemembered: t.notRemembered }
-          : { ...known, notRemembered: known.notRemembered || t.notRemembered },
+          ? { installId: t.installId, channelId: t.channelId, agentId: t.agentId, notRemembered }
+          : { ...known, notRemembered: known.notRemembered || notRemembered },
       );
+      return 'recorded';
     },
     async getThread(conversationId) {
       calls.push('getThread');

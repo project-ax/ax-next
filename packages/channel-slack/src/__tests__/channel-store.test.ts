@@ -109,6 +109,21 @@ const supportThread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
   ...o,
 });
 
+type ThreadIds = Omit<ChannelThread, 'notRemembered'>;
+
+/** A turn starting in `conversationId`, in #support of the support agent unless told otherwise, the switch as it is. */
+function record(conversationId: string, o: Partial<ThreadIds> = {}): ReturnType<ChannelStore['recordThread']> {
+  return channels.recordThread({ installId: INSTALL, channelId: SUPPORT, agentId: AGENT, ...o, conversationId });
+}
+
+/** A turn starting while its channel's switch is off; the switch is on again after. */
+async function recordOff(conversationId: string, o: Partial<ThreadIds> = {}): Promise<void> {
+  const ids = { installId: INSTALL, channelId: SUPPORT, agentId: AGENT, ...o };
+  expect(await channels.setRemember(ids.installId, ids.channelId, ids.agentId, false)).toBe(true);
+  expect(await record(conversationId, o)).toBe('recorded');
+  expect(await channels.setRemember(ids.installId, ids.channelId, ids.agentId, true)).toBe(true);
+}
+
 /** What memory:pre-capture gets for a pass on `conversationId`, from the veto over the real store. */
 function vetoFor(conversationId: string) {
   const ctx = makeAgentContext({ sessionId: 's', agentId: AGENT, userId: ADA, conversationId });
@@ -125,7 +140,7 @@ async function threadCount(): Promise<number> {
 describe('runMigrations', () => {
   it('a second run keeps every binding and thread (additive and idempotent)', async () => {
     await connect();
-    await channels.recordThread({ ...supportThread(), conversationId: CONV, notRemembered: true });
+    await recordOff(CONV);
     await runMigrations(db);
     await runMigrations(db);
     expect((await channels.get(INSTALL, SUPPORT))?.agentId).toBe(AGENT);
@@ -314,12 +329,9 @@ describe('removeForAgent', () => {
     await connect({ channelId: SALES });
     await connect({ installId: OTHER_INSTALL, channelId: SUPPORT });
     await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
-    await channels.recordThread({ ...supportThread(), conversationId: CONV });
-    await channels.recordThread({ ...supportThread({ installId: OTHER_INSTALL, notRemembered: true }), conversationId: OTHER_CONV });
-    await channels.recordThread({
-      ...supportThread({ channelId: GENERAL, agentId: OTHER_AGENT }),
-      conversationId: 'conv_general_thread',
-    });
+    expect(await record(CONV)).toBe('recorded');
+    await recordOff(OTHER_CONV, { installId: OTHER_INSTALL });
+    expect(await record('conv_general_thread', { channelId: GENERAL, agentId: OTHER_AGENT })).toBe('recorded');
 
     expect(await channels.removeForAgent(AGENT)).toEqual({ channels: 3, threads: 2 });
     expect(await channels.listAll(INSTALL)).toEqual([{ channelId: GENERAL, agentId: OTHER_AGENT }]);
@@ -334,7 +346,7 @@ describe('removeForAgent', () => {
 
   it('an agent whose channels were already disconnected still has its thread rows removed', async () => {
     await connect();
-    await channels.recordThread({ ...supportThread({ notRemembered: true }), conversationId: CONV });
+    await recordOff(CONV);
     expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
 
     expect(await channels.removeForAgent(AGENT)).toEqual({ channels: 0, threads: 1 });
@@ -344,35 +356,81 @@ describe('removeForAgent', () => {
 
 describe('the thread map behind the memory switch (TASK-1094)', () => {
   it('a conversation it never recorded is unknown; a recorded one reads back, keyed by the conversation alone', async () => {
+    await connect();
     expect(await channels.getThread(CONV)).toBeNull();
-    await channels.recordThread({ ...supportThread(), conversationId: CONV });
+    expect(await record(CONV)).toBe('recorded');
     expect(await channels.getThread(CONV)).toEqual(supportThread());
     expect(await channels.getThread(OTHER_CONV)).toBeNull();
   });
 
+  it("no binding, or another agent's: no-binding, and nothing is written", async () => {
+    expect(await record(CONV)).toBe('no-binding');
+    await connect({ agentId: OTHER_AGENT });
+    expect(await record(CONV)).toBe('no-binding');
+    expect(await threadCount()).toBe(0);
+  });
+
+  it('the switch is read in the same statement as the write: turned off after the caller read it, the thread is recorded not remembered', async () => {
+    await connect();
+    // The router read the binding with the switch on...
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+    // ...an admin turned it off before the turn was recorded...
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    // ...so the turn runs while it is off, and the thread says so.
+    expect(await record(CONV)).toBe('recorded');
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+  });
+
+  it('a binding removed or rebound between the read and the record: no-binding, and an earlier row is left as it was', async () => {
+    await connect();
+    await recordOff(CONV);
+    expect(await channels.get(INSTALL, SUPPORT)).not.toBeNull();
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await record(OTHER_CONV)).toBe('no-binding');
+    expect(await record(CONV)).toBe('no-binding');
+
+    expect(await connect({ agentId: OTHER_AGENT })).toBe('connected');
+    expect(await record(OTHER_CONV)).toBe('no-binding');
+    expect(await channels.getThread(OTHER_CONV)).toBeNull();
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+  });
+
+  it('two turns recorded at once in one conversation, one with the switch off and one on, in either order: not remembered', async () => {
+    // #support is on, #sales is off, both the support agent's: the two
+    // statements read different switches, and race on one conversation.
+    await connect();
+    await connect({ channelId: SALES });
+    expect(await channels.setRemember(INSTALL, SALES, AGENT, false)).toBe(true);
+    for (let i = 0; i < 16; i += 1) {
+      const conversationId = `conv_race_${i}`;
+      const on = () => record(conversationId);
+      const off = () => record(conversationId, { channelId: SALES });
+      const outcomes = await Promise.all(i % 2 === 0 ? [off(), on()] : [on(), off()]);
+      expect(outcomes).toEqual(['recorded', 'recorded']);
+      expect((await channels.getThread(conversationId))?.notRemembered, conversationId).toBe(true);
+    }
+  });
+
   it('not remembered is sticky: once a turn ran while the switch was off, a later clean turn never clears it', async () => {
-    await channels.recordThread({ ...supportThread(), conversationId: CONV, notRemembered: true });
-    await channels.recordThread({ ...supportThread(), conversationId: CONV, notRemembered: false });
+    await connect();
+    await recordOff(CONV);
+    expect(await record(CONV)).toBe('recorded');
     expect((await channels.getThread(CONV))?.notRemembered).toBe(true);
 
     // A clean thread is tainted by the first turn that runs while the switch is off.
-    await channels.recordThread({ ...supportThread(), conversationId: OTHER_CONV, notRemembered: false });
+    expect(await record(OTHER_CONV)).toBe('recorded');
     expect((await channels.getThread(OTHER_CONV))?.notRemembered).toBe(false);
-    await channels.recordThread({ ...supportThread(), conversationId: OTHER_CONV, notRemembered: true });
-    await channels.recordThread({ ...supportThread(), conversationId: OTHER_CONV, notRemembered: false });
+    await recordOff(OTHER_CONV);
+    expect(await record(OTHER_CONV)).toBe('recorded');
     expect((await channels.getThread(OTHER_CONV))?.notRemembered).toBe(true);
     expect(await threadCount()).toBe(2);
   });
 
   it("a conversation's thread is written once: a later record changes only the taint", async () => {
-    await channels.recordThread({ ...supportThread(), conversationId: CONV });
-    await channels.recordThread({
-      conversationId: CONV,
-      installId: OTHER_INSTALL,
-      channelId: SALES,
-      agentId: OTHER_AGENT,
-      notRemembered: true,
-    });
+    await connect();
+    await connect({ installId: OTHER_INSTALL, channelId: SALES, agentId: OTHER_AGENT });
+    expect(await record(CONV)).toBe('recorded');
+    await recordOff(CONV, { installId: OTHER_INSTALL, channelId: SALES, agentId: OTHER_AGENT });
     expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
   });
 
@@ -381,8 +439,8 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
       await installs.insertPending({ installId, appId: 'A07QF9ZK2MN', clientId: '1.2', botName: 'canopy', connectedByUserId: ADA });
       await connect({ installId });
     }
-    await channels.recordThread({ ...supportThread({ notRemembered: true }), conversationId: CONV });
-    await channels.recordThread({ ...supportThread({ installId: OTHER_INSTALL }), conversationId: OTHER_CONV });
+    await recordOff(CONV);
+    expect(await record(OTHER_CONV, { installId: OTHER_INSTALL })).toBe('recorded');
     expect(await vetoFor(CONV)).toEqual(REFUSED);
     expect(await vetoFor(OTHER_CONV)).toBeUndefined();
 
@@ -402,8 +460,8 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
 
   it('a disconnected channel keeps its threads; connected again, a remembered thread is remembered again and a tainted one never', async () => {
     await connect();
-    await channels.recordThread({ ...supportThread(), conversationId: CONV });
-    await channels.recordThread({ ...supportThread({ notRemembered: true }), conversationId: OTHER_CONV });
+    expect(await record(CONV)).toBe('recorded');
+    await recordOff(OTHER_CONV);
 
     expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
     expect(await threadCount()).toBe(2);
@@ -417,7 +475,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
 
   it('the switch, read at capture time: off refuses every thread of the channel, on again lets the clean ones through', async () => {
     await connect();
-    await channels.recordThread({ ...supportThread(), conversationId: CONV });
+    expect(await record(CONV)).toBe('recorded');
     expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
     expect(await vetoFor(CONV)).toEqual(REFUSED);
     expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);

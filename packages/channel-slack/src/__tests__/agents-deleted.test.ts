@@ -96,9 +96,16 @@ async function bind(installId: string, channelId: string, agentId: string): Prom
   expect(outcome).toBe('connected');
 }
 
-/** A thread of `channelId` on `installId`, in conversation `conversationId`, for `agentId`. */
+/**
+ * A thread of `channelId` on `installId`, in conversation `conversationId`, for
+ * `agentId`, as an earlier turn left it. Written straight to the table: a
+ * thread row outlives its binding, and some of these have none.
+ */
 async function thread(conversationId: string, installId: string, channelId: string, agentId: string): Promise<void> {
-  await channels.recordThread({ conversationId, installId, channelId, agentId, notRemembered: true });
+  await sql`
+    INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered)
+    VALUES (${conversationId}, ${installId}, ${channelId}, ${agentId}, true)
+  `.execute(db);
 }
 
 async function countFor(agentId: string): Promise<number> {

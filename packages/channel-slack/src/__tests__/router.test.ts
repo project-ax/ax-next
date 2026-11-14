@@ -1,6 +1,6 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChannelBinding, ChannelThread } from '../channel-store.js';
+import type { ChannelBinding, ChannelStore, ChannelThread } from '../channel-store.js';
 import { COPY } from '../copy.js';
 import { pickPersonalAgent } from '../turn.js';
 import type { SlackEnvelope, SlackInnerEvent } from '../events.js';
@@ -259,6 +259,11 @@ function world(o: {
   bindingReadFails?: (n: number) => boolean;
   /** The channel store fails to record a thread. */
   threadWriteFails?: boolean;
+  /**
+   * Runs after the router read the binding and just before the thread is
+   * recorded: what an admin could do in that gap.
+   */
+  beforeThreadWrite?: (store: ChannelStore) => Promise<void>;
   /** agents:resolve fails for this user (an outage, not a refusal). */
   resolveFails?: (userId: string) => boolean;
   /** auth:is-approved-email fails. */
@@ -416,8 +421,12 @@ function world(o: {
   };
   channels.rows.set(`${INSTALL_ID}/${SUPPORT}`, support);
   let bindingReads = 0;
-  /** Every thread a turn recorded, with how many agent:invokes had happened when it did. */
-  const threadWrites: Array<ChannelThread & { conversationId: string; invokesBefore: number }> = [];
+  /**
+   * Every thread a turn asked to record, with how many agent:invokes had
+   * happened when it did, and the thread's flag as stored after the write
+   * (absent when nothing was recorded).
+   */
+  const threadWrites: Array<Omit<ChannelThread, 'notRemembered'> & { conversationId: string; notRemembered?: boolean; invokesBefore: number }> = [];
   const bindings = {
     async get(installId: string, channelId: string): Promise<ChannelBinding | null> {
       bindingReads += 1;
@@ -426,12 +435,17 @@ function world(o: {
       }
       return channels.store.get(installId, channelId);
     },
-    async recordThread(t: ChannelThread & { conversationId: string }): Promise<void> {
-      threadWrites.push({ ...t, invokesBefore: invokes.length });
+    async recordThread(t: Parameters<ChannelStore['recordThread']>[0]): ReturnType<ChannelStore['recordThread']> {
+      const write: (typeof threadWrites)[number] = { ...t, invokesBefore: invokes.length };
+      threadWrites.push(write);
       if (o.threadWriteFails === true) {
         throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
       }
-      return channels.store.recordThread(t);
+      await o.beforeThreadWrite?.(channels.store);
+      const outcome = await channels.store.recordThread(t);
+      const stored = channels.threads.get(t.conversationId);
+      if (outcome === 'recorded' && stored !== undefined) write.notRemembered = stored.notRemembered;
+      return outcome;
     },
   };
   /** The install rows, as the store would answer a re-read. `disconnect()` removes ours. */
@@ -2118,6 +2132,32 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     expect(w.invokes).toHaveLength(2);
     // Sticky: the thread stays not remembered with the switch back on.
     expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
+  });
+
+  it('the switch turned off between the binding read and the record: the turn runs, its thread recorded not remembered', async () => {
+    const w = world({ beforeThreadWrite: (store) => store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false).then(() => {}) });
+    await w.dispatch(INSTALL, mention());
+    await w.idle();
+
+    expect(w.threadWrites.map((t) => [t.conversationId, t.notRemembered, t.invokesBefore])).toEqual([
+      [`conv:${memberKey(MENTION_TS)}`, true, 0],
+    ]);
+    expect(w.invokes).toHaveLength(1);
+    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
+  });
+
+  it('the binding removed between its read and the record: no turn, dropped as disconnected', async () => {
+    const w = world({ beforeThreadWrite: (store) => store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id).then(() => {}) });
+    await w.dispatch(INSTALL, mention({ user: BOB }));
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(w.channels.threads.size).toBe(0);
+    expect(w.slack.reactions).toEqual([]);
+    expect(methods(w.slack.calls).filter((m) => m !== 'usersInfo')).toEqual([]);
+    expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'disconnected', count: 1 } },
+    ]);
   });
 
   it('a turn dropped when its time comes records nothing: no turn ran in its conversation', async () => {
