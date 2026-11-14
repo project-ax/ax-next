@@ -22,10 +22,12 @@ import { SLASH_COMMAND } from './manifest.js';
 
 /**
  * A name from outside (an agent's, a channel's) or the configured origin, as
- * mrkdwn text: escaped, so it can't open a link, a mention or a broadcast,
- * then neutralized like any other outgoing text.
+ * mrkdwn text: neutralized like any other outgoing text, then escaped, so it
+ * can't open a link, a mention or a broadcast. In that order: escaped first,
+ * mrkdwn's own `&lt;` would reach the neutralizer as the start of an entity,
+ * and its mark would make Slack show `&lt;` where the name has a `<`.
  */
-const shown = (text: string): string => neutralizeSlackControls(mrkdwnEscape(text));
+const shown = (text: string): string => mrkdwnEscape(neutralizeSlackControls(text));
 
 /**
  * Why a channel can't have an agent: channels.ts's refusals that are about

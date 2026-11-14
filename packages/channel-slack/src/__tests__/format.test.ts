@@ -19,6 +19,12 @@ const ZWSP = '\u200B';
 const CONTROL = /<[!@#]/;
 /** A bare broadcast word as Slack could read it: an `@` after no letter or digit, the word followed by none. */
 const BROADCAST = /(?<![A-Za-z0-9])@(?:here|channel|everyone)(?![A-Za-z0-9])/i;
+/**
+ * An HTML entity that Markdown would decode into an `@` or a `<`: numeric
+ * (`&#64;`, `&#x40;`), `&commat;`, `&lt;`. If Slack decodes before it looks
+ * for mentions, it could become a broadcast.
+ */
+const DECODABLE = /&(?:#[0-9]|#x|commat;|lt;)/i;
 
 describe('neutralizeSlackControls', () => {
   it("'<!channel> hi <@U1> <#C1>' keeps every character plus three U+200B", () => {
@@ -79,6 +85,39 @@ describe('neutralizeSlackControls: a bare @here, @channel or @everyone', () => {
   });
 });
 
+describe('neutralizeSlackControls: a broadcast spelled with HTML entities', () => {
+  it.each<[string, string]>([
+    ['&#64;channel', `&${ZWSP}#64;channel`],
+    ['&commat;here', `&${ZWSP}commat;here`],
+    ['&lt;!everyone&gt;', `&${ZWSP}lt;!everyone&gt;`],
+    ['&#60;!here&#62;', `&${ZWSP}#60;!here&${ZWSP}#62;`],
+    ['&#x40;channel', `&${ZWSP}#x40;channel`],
+    ['&#X40;everyone', `&${ZWSP}#X40;everyone`],
+    ['&#0064;here', `&${ZWSP}#0064;here`],
+    // Any case: a decoder that folds case must find nothing either.
+    ['&COMMAT;channel and &LT;!here&GT;', `&${ZWSP}COMMAT;channel and &${ZWSP}LT;!here&GT;`],
+    ['mail me&#64;channel.io', `mail me&${ZWSP}#64;channel.io`],
+  ])('%j gets a zero-width space right after the &, so it decodes to nothing', (input, output) => {
+    const out = neutralizeSlackControls(input);
+    expect(out).toBe(output);
+    expect(DECODABLE.test(out)).toBe(false);
+    expect(out.split(ZWSP).join('')).toBe(input);
+  });
+
+  it.each(['R&D', 'a & b', 'Q&A', 'AT&T', '&amp;', '&gt;', '&quot;', '&apos;', '&#', '&# 64', '&co', '&l', '&ltx', '&amp;#64;channel'])(
+    '%j is left alone: an & that starts none of those entities',
+    (input) => {
+      expect(neutralizeSlackControls(input)).toBe(input);
+    },
+  );
+
+  it('an & that ends the text before gets its mark at the start of this one', () => {
+    expect(neutralizeSlackControls('#64;channel', 'mail &')).toBe(`${ZWSP}#64;channel`);
+    expect(neutralizeSlackControls('commat;here', 'x&')).toBe(`${ZWSP}commat;here`);
+    expect(neutralizeSlackControls('D and more', 'R&')).toBe('D and more');
+  });
+});
+
 describe('neutralizeSlackControls(text, before): text that goes on from earlier text', () => {
   it('reads the text before for context, and never marks inside it', () => {
     // `me` + `@channel.com` is an address; `ping ` + `@channel` is a broadcast.
@@ -92,7 +131,13 @@ describe('neutralizeSlackControls(text, before): text that goes on from earlier 
   });
 
   it('two pieces neutralized in order are the whole neutralized, at every split that leaves nothing undecided', () => {
-    const wholes = ['ping @channel now', 'me@channel.com and <!here>', '@here@channel (@everyone) x@here', 'a<@U1> <#C1> <<!'];
+    const wholes = [
+      'ping @channel now',
+      'me@channel.com and <!here>',
+      '@here@channel (@everyone) x@here',
+      'a<@U1> <#C1> <<!',
+      '&#64;channel, &commat;here, &lt;!everyone&gt; &#x40;here R&D &amp; Q&A',
+    ];
     let checked = 0;
     for (const whole of wholes) {
       for (let k = 0; k <= whole.length; k += 1) {
@@ -105,8 +150,9 @@ describe('neutralizeSlackControls(text, before): text that goes on from earlier 
         checked += 1;
       }
     }
-    // 51 of the 93 splits: an `@` waits after a letter too, so `me@` … `me@channel` and `x@` … `x@here` are skipped.
-    expect(checked).toBeGreaterThan(45);
+    // 104 of the 166 splits: an `@` waits after a letter too, so `me@` … `me@channel` and `x@` … `x@here` are
+    // skipped, and an `&` waits while it may start an entity (`&`, `&#`, `&c` … `&commat`, `&l`, `&lt`).
+    expect(checked).toBeGreaterThan(95);
   });
 });
 
@@ -136,6 +182,23 @@ describe('undecidedTail', () => {
 
   it('nothing waits once the end is decided', () => {
     for (const text of ['', 'ping', 'ping @channel ', 'ping @chat', '@heres', '@here!', '@channel.', 'me@channel.com', 'me@chat']) {
+      expect(undecidedTail(text), text).toBe(0);
+    }
+  });
+
+  it('an & that could still start an entity neutralizeSlackControls marks waits, with whatever start of one follows it', () => {
+    // `&#` then `64;` would split the entity where the text before can't take a mark any more.
+    expect(undecidedTail('mail &')).toBe(1);
+    expect(undecidedTail('mail &#')).toBe(2);
+    for (const name of ['commat', 'lt']) {
+      for (let n = 0; n <= name.length; n += 1) expect(undecidedTail(`x &${name.slice(0, n)}`), name).toBe(n + 1);
+    }
+    expect(undecidedTail('&LT')).toBe(3);
+    expect(undecidedTail('a@b &CoMm')).toBe(5);
+  });
+
+  it('an & already decided either way waits for nothing', () => {
+    for (const text of ['&#6', '&#x', '&#X', '&lt;', '&commat;', 'R&D', '&a', '&amp', '&amp;', '& ', '&#;', '&lx', '&commax']) {
       expect(undecidedTail(text), text).toBe(0);
     }
   });

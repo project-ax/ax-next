@@ -1023,6 +1023,8 @@ describe('createReplyStream: a call held for approval', () => {
 
 /** A bare broadcast word as Slack could read it: an `@` after no letter or digit, the word followed by none. */
 const BROADCAST = /(?<![A-Za-z0-9])@(?:here|channel|everyone)(?![A-Za-z0-9])/i;
+/** An HTML entity Markdown would decode into an `@` or a `<` (format.ts marks each). */
+const DECODABLE = /&(?:#[0-9]|#x|commat;|lt;)/i;
 
 /** Slack refuses every stream, so the whole reply is posted. */
 const POSTING = {
@@ -1319,6 +1321,25 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       ['postMessage', `@${ZWSP}channel.com`],
     ]);
   });
+
+  it.each(['&#64;channel now', '&commat;here now', '&lt;!everyone&gt; now', '&#x40;here now'])(
+    '%j split at every point across two text() calls, a flush between: nothing Slack gets decodes to a broadcast',
+    async (input) => {
+      for (let k = 0; k <= input.length; k += 1) {
+        const { api, calls } = fakeSlack();
+        const s = make(api);
+        s.text(input.slice(0, k));
+        await tick();
+        s.text(input.slice(k));
+        await finishNow(s);
+
+        // Read as one text, the way a decoder would if Slack joins a stream's appends.
+        const sent = delivered(calls);
+        expect(DECODABLE.test(sent), `split at ${k}: ${JSON.stringify(sent)}`).toBe(false);
+        expect(sent.split(ZWSP).join(''), `split at ${k}`).toBe(input);
+      }
+    },
+  );
 
   it.each<[string, string]>([
     ['Ping @here', `Ping @${ZWSP}here`],

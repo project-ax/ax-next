@@ -30,6 +30,12 @@ const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.le
  * What Slack could read as a reference or a broadcast. The zero-width space
  * goes right after the match:
  *   - a `<` before `!`, `@` or `#`: `<!channel>`, `<@U…>`, `<#C…>`;
+ *   - an `&` that starts an HTML entity Markdown decodes into an `@` or a `<`,
+ *     in any case: a numeric one (`&#64;`, `&#x40;`, any `&#` and a digit,
+ *     or `&#x`), `&commat;` or `&lt;`. Whether Slack decodes `markdown_text`
+ *     before it looks for mentions is unmeasured (TASK-1097's walk); if it
+ *     does, `&#64;channel` is `@channel`. Marked, it decodes to nothing.
+ *     `&amp;`, `&gt;` and a plain `R&D` stay as they are;
  *   - the `@` of a broadcast word, in any case, when no letter or digit comes
  *     right before the `@` or right after the word: `hi @channel.` and
  *     `(@Here)` are broadcasts, `me@channel.com` and `@channels` are not.
@@ -37,21 +43,31 @@ const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.le
  * emphasis mark (`_@here_`), so it exempts nothing. One pattern, lookarounds
  * only: punctuation next to a word can't slip past it.
  */
-const SLACK_CONTROL = /<(?=[!@#])|(?<![A-Za-z0-9])@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
+const SLACK_CONTROL = /<(?=[!@#])|&(?=#[0-9]|#x|commat;|lt;)|(?<![A-Za-z0-9])@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
+
+/**
+ * An `&` that ends the text with nothing after it but the start of an entity
+ * SLACK_CONTROL marks: `&`, `&#`, `&c` … `&commat`, `&l`, `&lt`, any case.
+ * The longest is seven code units (`&commat`).
+ */
+const UNDECIDED_ENTITY = /&(?:#|c(?:o(?:m(?:m(?:at?)?)?)?)?|lt?)?$/i;
+const LONGEST_UNDECIDED_ENTITY = '&commat'.length;
 
 /**
  * `<!channel>`, `<!here>`, `<!everyone>`, `<@U…>` and `<#C…>` are Slack's
  * broadcast, user and channel references, and a bare `@here`, `@channel` or
- * `@everyone` may broadcast too. A zero-width space after the `<` (or the
- * `@`) keeps every character readable and makes none of them work: the bot
- * never pings anyone with words a model wrote.
+ * `@everyone` may broadcast too, spelled out or in HTML entities
+ * (`&#64;channel`, `&lt;!here&gt;`). A zero-width space after the `<` (or
+ * the `@`, or the `&`) keeps every character readable and makes none of them
+ * work: the bot never pings anyone with words a model wrote.
  *
  * `before` is text that comes right before `text` in the same Slack message
  * (already decided, maybe already sent). It is only read, never marked: a `<`
  * that ends it gets its mark at the start of `text` when a `!`, `@` or `#`
- * follows, and an `@` that starts `text` right after a letter is an address,
- * not a broadcast. The end of `text` counts as the end of the message, so
- * text that may go on must not end with an `undecidedTail`.
+ * follows (an `&` the same, when the start of an entity follows), and an `@`
+ * that starts `text` right after a letter is an address, not a broadcast.
+ * The end of `text` counts as the end of the message, so text that may go
+ * on must not end with an `undecidedTail`.
  */
 export function neutralizeSlackControls(text: string, before = ''): string {
   // Two characters reach every decision: an `@` that ends `before` needs the one before it.
@@ -64,18 +80,27 @@ export function neutralizeSlackControls(text: string, before = ''): string {
 /**
  * How many code units at the end of `text` neutralizeSlackControls can't
  * decide yet: an `@` followed by nothing but the start of a broadcast word
- * (or the whole word: `@channel` then `s` is a name). The next characters
- * decide it, so a reply stream holds these back until they come
- * (reply-stream.ts). At most nine (`@everyone`); 0 when nothing waits.
+ * (or the whole word: `@channel` then `s` is a name), or an `&` followed by
+ * nothing but the start of an entity it marks (`&#`, `&comm`, `&lt`: the
+ * next character decides). The next characters decide it, so a reply stream
+ * holds these back until they come (reply-stream.ts). At most nine
+ * (`@everyone`); 0 when nothing waits.
  *
  * Whatever comes before the `@` is never read. A letter there makes the word
  * an address in the reply (`me@chan`), but Slack judges each message, and
  * the status card, a new stream or a cut can come between that letter and
  * the `@`: sent then, `@chan` would start the next run and `nel` complete a
  * live `@channel` in it. Held, the word reaches that run whole and is judged
- * there.
+ * there. An entity waits for the same reason: sent as `&#`, the `&` is
+ * already out when `64;` shows it needed a mark.
  */
 export function undecidedTail(text: string): number {
+  const entity = UNDECIDED_ENTITY.exec(text.slice(-LONGEST_UNDECIDED_ENTITY));
+  return Math.max(undecidedWord(text), entity === null ? 0 : entity[0].length);
+}
+
+/** undecidedTail's `@`: a broadcast word that may still be starting. */
+function undecidedWord(text: string): number {
   const at = text.lastIndexOf('@');
   if (at < 0 || text.length - at - 1 > LONGEST_BROADCAST_WORD) return 0;
   const start = text.slice(at + 1);

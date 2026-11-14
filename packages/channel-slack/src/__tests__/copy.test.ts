@@ -9,6 +9,8 @@ const TODAY = 'https://canopyworks.ai/workspace';
 const HOSTILE = '<!channel> & <@U1> @here';
 /** A bare broadcast word as Slack could read it: an `@` after no letter or digit, the word followed by none. */
 const BROADCAST = /(?<![A-Za-z0-9])@(?:here|channel|everyone)(?![A-Za-z0-9])/i;
+/** The mark that keeps a reference or a broadcast from working: invisible, so a name still reads as typed. */
+const ZWSP = String.fromCharCode(0x200b);
 
 /**
  * The arguments every line that takes some is called with. A line missing
@@ -141,10 +143,20 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
 
   it('show a name as typed, escaped: never a link, a mention or a broadcast', () => {
     for (const line of [COPY.slashConnected(HOSTILE, HOSTILE), COPY.slashReconnected(HOSTILE)]) {
-      expect(line).toContain('&lt;!channel&gt; &amp; &lt;@U1&gt;');
+      // As typed, apart from the invisible marks, with mrkdwn's three characters escaped.
+      expect(line.split(ZWSP).join('')).toContain('&lt;!channel&gt; &amp; &lt;@U1&gt;');
       expect(line).not.toContain('<!channel>');
     }
     expect(COPY.slashConnected('<b>R&D</b>', 'support')).toContain('&lt;b&gt;R&amp;D&lt;/b&gt;');
+  });
+
+  it("a name spelling a broadcast in entities shows as typed and decodes to nothing; mrkdwn's own escapes stay whole", () => {
+    const line = COPY.slashConnected('a<b &#64;channel &commat;here', 'support');
+    // The escape of the `<` is intact, so the reader sees `a<b`, not `a&lt;b`...
+    expect(line).toContain('a&lt;b ');
+    // ...and the name's own entities can't decode: each `&` is escaped and marked.
+    expect(line).not.toMatch(/&(?:#[0-9]|#x|commat;)/i);
+    expect(line.split(ZWSP).join('')).toContain('a&lt;b &amp;#64;channel &amp;commat;here');
   });
 
   it('the not-mapped line links the web app as a bare URL', () => {
