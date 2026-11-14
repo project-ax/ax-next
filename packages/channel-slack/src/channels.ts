@@ -4,7 +4,7 @@ import { cleanChannelName } from './label.js';
 import { CHANNEL_LIST_MAX_PAGES, CHANNEL_LIST_PAGE_LIMIT } from './limits.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
-import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js';
+import { SlackApiError, TOKEN_REFUSED_CODES, type SlackApi, type SlackChannel } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
 
 /**
@@ -88,12 +88,9 @@ export type AvailableChannels =
  * deactivated): only connecting Slack again fixes it, so it is never
  * `slack-error` ("try again").
  */
-const TOKEN_REFUSED: ReadonlyArray<[string, 'needs-reconnect']> = [
-  'invalid_auth',
-  'not_authed',
-  'token_revoked',
-  'account_inactive',
-].map((code): [string, 'needs-reconnect'] => [code, 'needs-reconnect']);
+const TOKEN_REFUSED: ReadonlyArray<[string, 'needs-reconnect']> = [...TOKEN_REFUSED_CODES].map(
+  (code): [string, 'needs-reconnect'] => [code, 'needs-reconnect'],
+);
 
 /** What Slack refusing `conversations.info` means for a connect. Any other code is `slack-error`. */
 const INFO_REFUSALS: ReadonlyMap<string, ConnectRefusal> = new Map([

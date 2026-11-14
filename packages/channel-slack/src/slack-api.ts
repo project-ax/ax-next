@@ -68,6 +68,24 @@ export class SlackApiError extends Error {
   }
 }
 
+/**
+ * Slack's codes for a bot token it no longer takes: revoked, the app
+ * uninstalled, the bot deactivated. Only connecting Slack again fixes one, so
+ * none is ever "try again". The one list: a connect (channels.ts) and `/ax`
+ * admitting its invoker (commands.ts) both read it.
+ */
+export const TOKEN_REFUSED_CODES: ReadonlySet<string> = new Set([
+  'invalid_auth',
+  'not_authed',
+  'token_revoked',
+  'account_inactive',
+]);
+
+/** Whether `code` is Slack refusing the bot token itself (`TOKEN_REFUSED_CODES`). */
+export function isTokenRefused(code: string | undefined): boolean {
+  return code !== undefined && TOKEN_REFUSED_CODES.has(code);
+}
+
 /** One element of a streamed reply. Every stream call sends these, never `markdown_text`. */
 export type StreamChunkOut =
   | { type: 'markdown_text'; text: string }

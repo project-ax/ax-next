@@ -16,6 +16,7 @@ import {
 } from './limits.js';
 import { logCode } from './log-code.js';
 import { SLASH_COMMAND } from './manifest.js';
+import { isTokenRefused } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
 
 /**
@@ -226,14 +227,13 @@ function connectRefusal(outcome: Extract<ConnectOutcome, { ok: false }>): string
       // Deleted while this connect ran: there is no such agent any more.
       return COPY.slashNoSuchAgent;
     case 'needs-reconnect':
-      // An install that has `/ax` has channels:read (one manifest), so Slack
-      // answering missing_scope here means a DM, a group DM or a private
-      // channel. Never "connect Slack again" for that: it makes a new
-      // install and drops every channel's binding. A bot token Slack no
-      // longer takes is the one thing connecting again does fix.
-      return outcome.code === 'missing_scope'
-        ? COPY.slashChannelNotAllowed('not-public')
-        : COPY.slashNeedsReconnect;
+      // A bot token Slack no longer takes is the one thing connecting again
+      // fixes, so only its codes say so. Anything else here is not public:
+      // an install that has `/ax` has channels:read (one manifest), so
+      // missing_scope means a DM, a group DM or a private channel. "Connect
+      // Slack again" makes a new install and drops every channel's binding,
+      // so it is never the default.
+      return isTokenRefused(outcome.code) ? COPY.slashNeedsReconnect : COPY.slashChannelNotAllowed('not-public');
     case 'not-public':
       return COPY.slashChannelNotAllowed('not-public');
     case 'no-workspace':
@@ -383,8 +383,13 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
         ...(admission.code !== undefined ? { code: admission.code } : {}),
       });
       // Slack was briefly unavailable, which says nothing about the invoker:
-      // "try again". A refusal is silence: they learn nothing from the bot.
-      return isTemporaryLookupFailure(admission) ? COPY.slashFailed : null;
+      // "try again". Slack refusing the bot token says nothing about them
+      // either, and the request was signed by this install, so (as with no
+      // token at all) it needs connecting again. A refusal is silence: they
+      // learn nothing from the bot.
+      if (isTemporaryLookupFailure(admission)) return COPY.slashFailed;
+      if (admission.reason === 'lookup-failed' && isTokenRefused(admission.code)) return COPY.slashNeedsReconnect;
+      return null;
     }
     progress.admitted = true;
 

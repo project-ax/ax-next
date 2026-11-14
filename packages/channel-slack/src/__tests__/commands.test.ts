@@ -743,10 +743,12 @@ describe('the invoker', () => {
     expect(w.memory.calls).toEqual([]);
   });
 
-  it('users.info failing because Slack was briefly unavailable → slashFailed; any other failure → silence', async () => {
+  it('users.info failing because Slack was briefly unavailable → slashFailed; a bot token Slack no longer takes → slashNeedsReconnect; any other failure → silence', async () => {
     const w = world();
     expect(await w.send(slash({ user: FLAKY, text: 'connect Support' }))).toStrictEqual(said(COPY.slashFailed));
-    expect(await w.send(slash({ user: REVOKED, text: 'connect Support' }))).toStrictEqual(SILENT);
+    // The request was signed by this install, so "connect Slack again" tells
+    // the invoker nothing about themselves.
+    expect(await w.send(slash({ user: REVOKED, text: 'connect Support' }))).toStrictEqual(said(COPY.slashNeedsReconnect));
     expect(await w.send(slash({ user: 'U07NOBODY01', text: 'connect Support' }))).toStrictEqual(SILENT);
     expect(w.axCalls()).toEqual([]);
     expect(msgs(w.lines, 'slack_sender_refused')).toEqual([
@@ -754,6 +756,21 @@ describe('the invoker', () => {
       { installId: INSTALL_ID, reason: 'lookup-failed', code: 'token_revoked' },
       { installId: INSTALL_ID, reason: 'lookup-failed', code: 'user_not_found' },
     ]);
+  });
+
+  it('every code for a bot token Slack no longer takes, from users.info → slashNeedsReconnect, and AX is asked nothing', async () => {
+    for (const code of ['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive']) {
+      const w = world();
+      w.slack.on.usersInfo = async () => {
+        throw new SlackApiError('users.info', code);
+      };
+      for (const text of ['connect Support', 'disconnect', 'help']) {
+        expect(await w.send(slash({ text })), `${code} ${text}`).toStrictEqual(said(COPY.slashNeedsReconnect));
+      }
+      expect(w.axCalls(), code).toEqual([]);
+      expect(new Set(w.slack.methods()), code).toEqual(new Set(['users.info']));
+      expect(w.memory.rows.size, code).toBe(0);
+    }
   });
 
   it('is the signed user_id: user_name and the text never change who is asking', async () => {
@@ -1011,6 +1028,22 @@ describe('/ax connect', () => {
     expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(
       said(COPY.slashChannelNotAllowed('workspace-policy')),
     );
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it('only a bot token Slack no longer takes says "connect Slack again": missing_scope from conversations.join is not public', async () => {
+    for (const code of ['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive']) {
+      const w = world();
+      w.slack.on.join = async () => {
+        throw new SlackApiError('conversations.join', code);
+      };
+      expect(await w.send(slash({ text: 'connect Support' })), code).toStrictEqual(said(COPY.slashNeedsReconnect));
+    }
+    const w = world();
+    w.slack.on.join = async () => {
+      throw new SlackApiError('conversations.join', 'missing_scope');
+    };
+    expect(await w.send(slash({ text: 'connect Support' }))).toStrictEqual(said(COPY.slashChannelNotAllowed('not-public')));
     expect(w.memory.rows.size).toBe(0);
   });
 

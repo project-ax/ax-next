@@ -496,6 +496,30 @@ describe('connectChannel', () => {
     expect(w.slack.methods()).toEqual(['conversations.info', 'conversations.join']);
   });
 
+  it("refuses as channel-taken when another agent's connect lands between the pre-join read and the write", async () => {
+    // The pre-join read saw nothing; the upsert is the final word.
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    const write = w.memory.store.upsert;
+    w.memory.store.upsert = async (row) => {
+      await write({
+        installId: INSTALL_ID,
+        channelId: SUPPORT_CH,
+        agentId: SALES.id,
+        connectedByUserId: SAM,
+        channelName: 'support-desk',
+      });
+      return write(row);
+    };
+    expect(await w.connect(SUPPORT_CH, ADA, SUPPORT.id)).toEqual({ ok: false, reason: 'channel-taken' });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SALES.id, connectedByUserId: SAM });
+    expect(w.lines).toContainEqual({
+      level: 'info',
+      msg: 'slack_channel_refused',
+      fields: { installId: INSTALL_ID, reason: 'channel-taken', stage: 'bind' },
+    });
+  });
+
   it('takes back a binding whose agent was deleted while it was written, and says the agent is gone', async () => {
     // agents:deleted cleared this agent's channels before the upsert landed:
     // nothing would ever clear the row this connect writes.
