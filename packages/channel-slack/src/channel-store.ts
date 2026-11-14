@@ -15,6 +15,14 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  *
  * Removing an install removes its bindings in the same statement (store.ts);
  * `removeForAgent` is the agents:deleted cleanup (agents-deleted.ts).
+ *
+ * It also keeps the memory switch's thread map (TASK-1094): which
+ * conversations are channel threads, of which channel and agent, and whether
+ * one ever had a turn while the switch was off. The capture veto
+ * (capture-veto.ts) reads it; the router writes it when a channel turn
+ * starts. Only `removeForAgent` deletes a thread row: an install's removal and
+ * a disconnect keep them, so what was said while the switch was off stays out
+ * of memory after Slack is gone.
  */
 export interface ChannelBinding {
   installId: string;
@@ -27,6 +35,18 @@ export interface ChannelBinding {
   /** The channel's memory switch. On for a new binding; a reconnect keeps it. */
   remember: boolean;
   createdAt: Date;
+}
+
+/**
+ * A conversation a channel turn ran in (TASK-1094). Written by the router
+ * before the turn's agent runs; read by the capture veto.
+ */
+export interface ChannelThread {
+  installId: string;
+  channelId: string;
+  agentId: string;
+  /** True once any turn started while the channel's memory switch was off. Never cleared. */
+  notRemembered: boolean;
 }
 
 export interface ChannelStore {
@@ -50,11 +70,24 @@ export interface ChannelStore {
   remove(installId: string, channelId: string, agentId: string): Promise<boolean>;
   /** Flip THIS agent's channel's memory switch. False when it isn't this agent's (or isn't bound at all). */
   setRemember(installId: string, channelId: string, agentId: string, remember: boolean): Promise<boolean>;
-  /** Delete the agent's bindings on every install, and say how many went. */
-  removeForAgent(agentId: string): Promise<number>;
+  /**
+   * Delete the agent's bindings and thread rows on every install, in one
+   * transaction (both go, or neither does), and say how many of each went.
+   */
+  removeForAgent(agentId: string): Promise<{ channels: number; threads: number }>;
+  /**
+   * Record that a turn is starting in this conversation, in ONE statement. A
+   * conversation's install, channel and agent are written the first time and
+   * never change (its key names them); `notRemembered` is sticky: once true,
+   * a later `false` leaves it true.
+   */
+  recordThread(t: ChannelThread & { conversationId: string }): Promise<void>;
+  /** The thread a conversation is, or null when no channel turn ever ran in it (a web chat, a DM). */
+  getThread(conversationId: string): Promise<ChannelThread | null>;
 }
 
 const CHANNELS = 'channel_slack_v1_channels';
+const THREADS = 'channel_slack_v1_threads';
 
 const COLUMNS = [
   'install_id',
@@ -159,8 +192,36 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     },
 
     async removeForAgent(agentId) {
-      const r = await db.deleteFrom(CHANNELS).where('agent_id', '=', agentId).executeTakeFirst();
-      return Number(r.numDeletedRows);
+      return db.transaction().execute(async (trx) => {
+        const channels = await trx.deleteFrom(CHANNELS).where('agent_id', '=', agentId).executeTakeFirst();
+        const threads = await trx.deleteFrom(THREADS).where('agent_id', '=', agentId).executeTakeFirst();
+        return { channels: Number(channels.numDeletedRows), threads: Number(threads.numDeletedRows) };
+      });
+    },
+
+    async recordThread(t) {
+      // One statement: two turns starting at once in one thread can't lose a
+      // taint between a read and a write. The conflict only ever ORs the
+      // flag in, so nothing can turn a thread back to remembered.
+      await sql`
+        INSERT INTO channel_slack_v1_threads
+          (conversation_id, install_id, channel_id, agent_id, not_remembered)
+        VALUES
+          (${t.conversationId}, ${t.installId}, ${t.channelId}, ${t.agentId}, ${t.notRemembered})
+        ON CONFLICT (conversation_id) DO UPDATE
+           SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered
+      `.execute(db);
+    },
+
+    async getThread(conversationId) {
+      const row = await db
+        .selectFrom(THREADS)
+        .select(['install_id', 'channel_id', 'agent_id', 'not_remembered'])
+        .where('conversation_id', '=', conversationId)
+        .executeTakeFirst();
+      return row === undefined
+        ? null
+        : { installId: row.install_id, channelId: row.channel_id, agentId: row.agent_id, notRemembered: row.not_remembered };
     },
   };
 }

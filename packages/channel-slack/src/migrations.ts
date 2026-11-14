@@ -20,6 +20,16 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     `channel_name` is Slack's, cleaned (label.ts) and read once per connect:
  *     a rename shows on the next connect.
  *
+ *   channel_slack_v1_threads — the memory switch's map (TASK-1094): every
+ *     conversation a channel turn ran in, with the install, channel and agent
+ *     it belongs to. Memory asks about a bare conversation id
+ *     (`memory:pre-capture`), so this is how the capture veto
+ *     (capture-veto.ts) knows a conversation is a Slack channel thread at
+ *     all. `not_remembered` is set by any turn that starts while the
+ *     channel's switch is off, and never cleared: memory leaves its cursor
+ *     where a refusal stopped it, so a thread with a turn said while the
+ *     switch was off must stay refused after it is turned back on.
+ *
  * The install's four secrets are NOT here: they live in the credentials vault
  * under `slack:<install_id>:<name>` (secrets.ts). Nor is anyone's name:
  * `connected_by_user_id` is an id in both tables, and the name is read from
@@ -30,9 +40,12 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * No foreign keys, between these tables or to any other plugin's: tests
  * TRUNCATE and DROP the installs table on its own, and an agent's row is the
  * agents plugin's (invariant 2). Cleanup is code instead: removing an install
- * deletes its bindings in the same statement (store.ts), and a deleted agent's
- * go when the agents plugin announces the delete (agents-deleted.ts). The
- * hook's name is left unquoted here on purpose: the repo guard
+ * deletes its bindings in the same statement (store.ts) but KEEPS its thread
+ * rows, so a thread kept out of memory stays out after Slack is disconnected
+ * (with no binding left, the veto refuses every thread it knows of that
+ * channel). A deleted agent's bindings and threads go together when the
+ * agents plugin announces the delete (agents-deleted.ts). The hook's name is
+ * left unquoted here on purpose: the repo guard
  * (scripts/__tests__/agent-keyed-tables-are-cleaned.test.js) counts a quoted
  * one as the subscription, and a comment is not one.
  *
@@ -69,9 +82,19 @@ export interface ChannelSlackChannelsTable {
   updated_at: ColumnType<Date, Date | undefined, Date>;
 }
 
+export interface ChannelSlackThreadsTable {
+  conversation_id: string;
+  install_id: string;
+  channel_id: string;
+  agent_id: string;
+  not_remembered: ColumnType<boolean, boolean | undefined, boolean>;
+  created_at: ColumnType<Date, Date | undefined, never>;
+}
+
 export interface ChannelSlackDatabase {
   channel_slack_v1_installs: ChannelSlackInstallsTable;
   channel_slack_v1_channels: ChannelSlackChannelsTable;
+  channel_slack_v1_threads: ChannelSlackThreadsTable;
 }
 
 export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
@@ -117,5 +140,20 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE INDEX IF NOT EXISTS channel_slack_v1_channels_agent
       ON channel_slack_v1_channels (agent_id)
+  `.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS channel_slack_v1_threads (
+      conversation_id        TEXT PRIMARY KEY,
+      install_id             TEXT NOT NULL,
+      channel_id             TEXT NOT NULL,
+      agent_id               TEXT NOT NULL,
+      not_remembered         BOOLEAN NOT NULL DEFAULT false,
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `.execute(db);
+  // A deleted agent's threads are removed by it.
+  await sql`
+    CREATE INDEX IF NOT EXISTS channel_slack_v1_threads_agent
+      ON channel_slack_v1_threads (agent_id)
   `.execute(db);
 }

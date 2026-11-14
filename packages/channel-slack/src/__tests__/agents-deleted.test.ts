@@ -17,6 +17,10 @@ import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
   Without it each channel stays "taken" by an agent that no longer exists, and
   a connect refuses it until someone runs `/ax disconnect` there.
 
+  It removes the agent's thread rows too (TASK-1094, the memory switch's
+  map), in the same transaction as its bindings: nothing else ever deletes
+  them, because they must outlive a disconnect.
+
   A real bus and a real Postgres. The store's own contract is
   channel-store.test.ts.
 */
@@ -35,7 +39,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE channel_slack_v1_channels`.execute(db);
+  await sql`TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads`.execute(db);
 });
 
 afterAll(async () => {
@@ -92,6 +96,11 @@ async function bind(installId: string, channelId: string, agentId: string): Prom
   expect(outcome).toBe('connected');
 }
 
+/** A thread of `channelId` on `installId`, in conversation `conversationId`, for `agentId`. */
+async function thread(conversationId: string, installId: string, channelId: string, agentId: string): Promise<void> {
+  await channels.recordThread({ conversationId, installId, channelId, agentId, notRemembered: true });
+}
+
 async function countFor(agentId: string): Promise<number> {
   const r = await sql<{ n: number }>`
     SELECT count(*)::int AS n FROM channel_slack_v1_channels WHERE agent_id = ${agentId}
@@ -99,8 +108,17 @@ async function countFor(agentId: string): Promise<number> {
   return r.rows[0]!.n;
 }
 
+async function threadsFor(agentId: string): Promise<number> {
+  const r = await sql<{ n: number }>`
+    SELECT count(*)::int AS n FROM channel_slack_v1_threads WHERE agent_id = ${agentId}
+  `.execute(db);
+  return r.rows[0]!.n;
+}
+
 async function total(): Promise<number> {
-  const r = await sql<{ n: number }>`SELECT count(*)::int AS n FROM channel_slack_v1_channels`.execute(db);
+  const r = await sql<{ n: number }>`
+    SELECT (SELECT count(*) FROM channel_slack_v1_channels)::int + (SELECT count(*) FROM channel_slack_v1_threads)::int AS n
+  `.execute(db);
   return r.rows[0]!.n;
 }
 
@@ -113,16 +131,20 @@ function fireDeleted(bus: HookBus, payload: unknown, ctxLogger: Logger) {
 const deleted = (agentId: string) => ({ agentId, ownerId: 'team_support', ownerType: 'team' });
 
 /**
- * Run `fn` with a BEFORE DELETE row trigger on the bindings table whose
- * plpgsql body is `body`, then drop it whatever happens.
+ * Run `fn` with a BEFORE DELETE row trigger on `table` (the bindings, unless
+ * told otherwise) whose plpgsql body is `body`, then drop it whatever happens.
  */
-async function withDeleteTrigger(body: string, fn: () => Promise<void>): Promise<void> {
+async function withDeleteTrigger(
+  body: string,
+  fn: () => Promise<void>,
+  table: 'channel_slack_v1_channels' | 'channel_slack_v1_threads' = 'channel_slack_v1_channels',
+): Promise<void> {
   await sql
     .raw(
       `CREATE FUNCTION channel_slack_test_bindings_on_delete() RETURNS trigger LANGUAGE plpgsql AS $fn$
          BEGIN ${body} END
        $fn$;
-       CREATE TRIGGER channel_slack_test_bindings_on_delete BEFORE DELETE ON channel_slack_v1_channels
+       CREATE TRIGGER channel_slack_test_bindings_on_delete BEFORE DELETE ON ${table}
          FOR EACH ROW EXECUTE FUNCTION channel_slack_test_bindings_on_delete();`,
     )
     .execute(db);
@@ -131,7 +153,7 @@ async function withDeleteTrigger(body: string, fn: () => Promise<void>): Promise
   } finally {
     await sql
       .raw(
-        `DROP TRIGGER IF EXISTS channel_slack_test_bindings_on_delete ON channel_slack_v1_channels;
+        `DROP TRIGGER IF EXISTS channel_slack_test_bindings_on_delete ON ${table};
          DROP FUNCTION IF EXISTS channel_slack_test_bindings_on_delete();`,
       )
       .execute(db);
@@ -140,8 +162,8 @@ async function withDeleteTrigger(body: string, fn: () => Promise<void>): Promise
 
 const subscriberFailures = (lines: LogLine[]): LogLine[] => lines.filter((l) => l.msg === 'hook_subscriber_failed');
 
-describe("agents:deleted removes the deleted agent's channel bindings", () => {
-  it("removes the agent's bindings on every install, keeps other agents', and logs the count alone", async () => {
+describe("agents:deleted removes the deleted agent's channel bindings and thread rows", () => {
+  it("removes the agent's bindings and threads on every install, keeps other agents', and logs the counts alone", async () => {
     const bus = new HookBus();
     const plugin = captureLogger();
     const ctxLog = captureLogger();
@@ -150,16 +172,36 @@ describe("agents:deleted removes the deleted agent's channel bindings", () => {
     await bind(INSTALL, SALES, AGENT);
     await bind(OTHER_INSTALL, SUPPORT, AGENT);
     await bind(INSTALL, GENERAL, OTHER_AGENT);
+    await thread('conv_1', INSTALL, SUPPORT, AGENT);
+    await thread('conv_2', OTHER_INSTALL, SUPPORT, AGENT);
+    await thread('conv_3', INSTALL, GENERAL, OTHER_AGENT);
 
     const fired = await fireDeleted(bus, deleted(AGENT), ctxLog.logger);
     expect(fired.rejected).toBe(false);
 
     expect(await countFor(AGENT)).toBe(0);
+    expect(await threadsFor(AGENT)).toBe(0);
     expect(await channels.listAll(INSTALL)).toEqual([{ channelId: GENERAL, agentId: OTHER_AGENT }]);
+    expect(await threadsFor(OTHER_AGENT)).toBe(1);
     expect(plugin.lines).toEqual([
-      { level: 'info', msg: 'slack_agent_channels_removed', bindings: { count: 3 } },
+      { level: 'info', msg: 'slack_agent_channels_removed', bindings: { channels: 3, threads: 2 } },
     ]);
     expect(subscriberFailures(ctxLog.lines)).toEqual([]);
+  });
+
+  it('an agent whose channels were disconnected before it was deleted still loses its thread rows', async () => {
+    const bus = new HookBus();
+    const plugin = captureLogger();
+    subscribeAgentsDeleted(bus, channels, plugin.logger);
+    await thread('conv_1', INSTALL, SUPPORT, AGENT);
+
+    const fired = await fireDeleted(bus, deleted(AGENT), captureLogger().logger);
+    expect(fired.rejected).toBe(false);
+
+    expect(await threadsFor(AGENT)).toBe(0);
+    expect(plugin.lines).toEqual([
+      { level: 'info', msg: 'slack_agent_channels_removed', bindings: { channels: 0, threads: 1 } },
+    ]);
   });
 
   it('an agent with no channels removes nothing and logs nothing', async () => {
@@ -184,23 +226,26 @@ describe("agents:deleted removes the deleted agent's channel bindings", () => {
     // text a number turns into on the way to Postgres.
     await bind(INSTALL, SUPPORT, '');
     await bind(INSTALL, SALES, '42');
+    await thread('conv_1', INSTALL, SUPPORT, '');
+    await thread('conv_2', INSTALL, SALES, '42');
 
     for (const payload of [undefined, null, {}, { agentId: '' }, { agentId: 42 }, 'agt_support']) {
       const fired = await fireDeleted(bus, payload, ctxLog.logger);
       expect(fired.rejected, JSON.stringify(payload)).toBe(false);
     }
 
-    expect(await total()).toBe(2);
+    expect(await total()).toBe(4);
     expect(plugin.lines).toEqual([]);
     expect(subscriberFailures(ctxLog.lines)).toEqual([]);
   });
 
-  it('a delete that fails is logged by its code alone, keeps the bindings, and never fails the agent delete', async () => {
+  it('a delete that fails is logged by its code alone, keeps the bindings and threads, and never fails the agent delete', async () => {
     const bus = new HookBus();
     const plugin = captureLogger();
     const ctxLog = captureLogger();
     subscribeAgentsDeleted(bus, channels, plugin.logger);
     await bind(INSTALL, SUPPORT, AGENT);
+    await thread('conv_1', INSTALL, SUPPORT, AGENT);
 
     await withDeleteTrigger(`RAISE EXCEPTION 'refused in test: ${FAILURE_CANARY}'; RETURN OLD;`, async () => {
       const fired = await fireDeleted(bus, deleted(AGENT), ctxLog.logger);
@@ -208,12 +253,37 @@ describe("agents:deleted removes the deleted agent's channel bindings", () => {
     });
 
     expect(await countFor(AGENT)).toBe(1);
+    // One transaction: the threads' delete didn't land without the bindings'.
+    expect(await threadsFor(AGENT)).toBe(1);
     // plpgsql's RAISE EXCEPTION: Postgres's code, never its message.
     expect(plugin.lines).toEqual([
       { level: 'warn', msg: 'slack_agent_cleanup_failed', bindings: { code: 'P0001' } },
     ]);
     expect(JSON.stringify(plugin.lines)).not.toContain(FAILURE_CANARY);
     expect(subscriberFailures(ctxLog.lines)).toEqual([]);
+  });
+
+  it("a thread delete that fails keeps the bindings too: both go, or neither does", async () => {
+    const bus = new HookBus();
+    const plugin = captureLogger();
+    subscribeAgentsDeleted(bus, channels, plugin.logger);
+    await bind(INSTALL, SUPPORT, AGENT);
+    await thread('conv_1', INSTALL, SUPPORT, AGENT);
+
+    await withDeleteTrigger(
+      `RAISE EXCEPTION 'refused in test'; RETURN OLD;`,
+      async () => {
+        const fired = await fireDeleted(bus, deleted(AGENT), captureLogger().logger);
+        expect(fired.rejected).toBe(false);
+      },
+      'channel_slack_v1_threads',
+    );
+
+    expect(await countFor(AGENT)).toBe(1);
+    expect(await threadsFor(AGENT)).toBe(1);
+    expect(plugin.lines).toEqual([
+      { level: 'warn', msg: 'slack_agent_cleanup_failed', bindings: { code: 'P0001' } },
+    ]);
   });
 
   it('a logger that throws while reporting the failure still never fails the agent delete', async () => {

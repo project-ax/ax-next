@@ -1325,6 +1325,9 @@ describe('@ax/preset-k8s wiring', () => {
       'bootstrap:reset-cleanup',
       // A deleted agent's channels are freed.
       'agents:deleted',
+      // A channel's "remember" switch: memory is refused a thread that had a turn while it was off.
+      // Its producer (@ax/memory) comes with @ax/preset-memory.
+      'memory:pre-capture',
       'chat:stream-chunk',
       'chat:turn-end',
       'chat:turn-error',

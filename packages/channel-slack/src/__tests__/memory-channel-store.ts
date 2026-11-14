@@ -1,4 +1,4 @@
-import type { ChannelBinding, ChannelStore } from '../channel-store.js';
+import type { ChannelBinding, ChannelStore, ChannelThread } from '../channel-store.js';
 import { cleanChannelName } from '../label.js';
 
 /**
@@ -8,12 +8,17 @@ import { cleanChannelName } from '../label.js';
  * connector and name replaced, remember and createdAt kept) or `taken`
  * (nothing changes); `remove` and `setRemember` act only on the named
  * agent's binding; a name is stored cleaned; `listForAgent` is oldest first.
+ * A thread is keyed by its conversation alone and written once: a later
+ * `recordThread` changes only `notRemembered`, which never goes back to false.
+ * `removeForAgent` takes the agent's threads too; nothing else does.
  *
  * Each new binding is one second younger than the one before, so "oldest
  * first" never hangs on a clock. `calls` records every method, in order.
  */
 export function memoryChannelStore() {
   const rows = new Map<string, ChannelBinding>();
+  /** The thread map, by conversation id. */
+  const threads = new Map<string, ChannelThread>();
   const calls: Array<keyof ChannelStore> = [];
   let created = Date.parse('2026-11-13T09:00:00.000Z');
   const key = (installId: string, channelId: string): string => `${installId}/${channelId}`;
@@ -80,13 +85,34 @@ export function memoryChannelStore() {
     },
     async removeForAgent(agentId) {
       calls.push('removeForAgent');
-      let count = 0;
+      let removed = 0;
       for (const [at, row] of rows) {
         if (row.agentId !== agentId) continue;
         rows.delete(at);
-        count += 1;
+        removed += 1;
       }
-      return count;
+      let threadsRemoved = 0;
+      for (const [conversationId, thread] of threads) {
+        if (thread.agentId !== agentId) continue;
+        threads.delete(conversationId);
+        threadsRemoved += 1;
+      }
+      return { channels: removed, threads: threadsRemoved };
+    },
+    async recordThread(t) {
+      calls.push('recordThread');
+      const known = threads.get(t.conversationId);
+      threads.set(
+        t.conversationId,
+        known === undefined
+          ? { installId: t.installId, channelId: t.channelId, agentId: t.agentId, notRemembered: t.notRemembered }
+          : { ...known, notRemembered: known.notRemembered || t.notRemembered },
+      );
+    },
+    async getThread(conversationId) {
+      calls.push('getThread');
+      const known = threads.get(conversationId);
+      return known === undefined ? null : { ...known };
     },
   };
 
@@ -96,5 +122,5 @@ export function memoryChannelStore() {
     return found === undefined ? undefined : copy(found);
   };
 
-  return { store, rows, calls, row };
+  return { store, rows, threads, calls, row };
 }

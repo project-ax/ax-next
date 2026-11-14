@@ -1,10 +1,18 @@
 import { randomBytes } from 'node:crypto';
-import { PluginError, makeAgentContext, type HookBus, type Logger, type Plugin } from '@ax/core';
+import {
+  MEMORY_PRE_CAPTURE_HOOK,
+  PluginError,
+  makeAgentContext,
+  type HookBus,
+  type Logger,
+  type Plugin,
+} from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createAdminRoutes } from './admin-routes.js';
 import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
-import { createChannelStore } from './channel-store.js';
+import { subscribeCaptureVeto } from './capture-veto.js';
+import { createChannelStore, type ChannelStore } from './channel-store.js';
 import type { ChannelDeps } from './channels.js';
 import { COMMANDS_ROUTE_PATH, createCommandsHandler } from './commands.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
@@ -73,6 +81,14 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 // outside the team, or one with no account whose email is on an approved
 // domain, `auth:is-approved-email`). Members' turns queue per conversation;
 // outsiders' turns in one lane per channel.
+//
+// Each connected channel has a "remember" switch. Before a channel turn's
+// agent runs, its conversation is recorded in `channel_slack_v1_threads` with
+// the switch as it is then (router.ts), and a `memory:pre-capture` subscriber
+// (capture-veto.ts) refuses memory any thread that had a turn while the
+// switch was off, for good, and any thread whose channel is switched off or
+// no longer connected to its agent. Memory asks before every extraction pass
+// and every `memory_note`, so the switch stops both.
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -175,7 +191,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
         },
       ],
-      subscribes: [RESET_CLEANUP, AGENTS_DELETED, ...TURN_EVENT_HOOKS],
+      subscribes: [RESET_CLEANUP, AGENTS_DELETED, MEMORY_PRE_CAPTURE_HOOK, ...TURN_EVENT_HOOKS],
     },
 
     async init({ bus }) {
@@ -186,98 +202,116 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       });
       const logger = initCtx.logger;
 
-      const { db: shared } = await bus.call<unknown, { db: Kysely<unknown> }>(
-        'database:get-instance',
-        initCtx,
-        {},
-      );
-      const db = shared as Kysely<ChannelSlackDatabase>;
-      await runMigrations(db);
-
-      const store = createInstallStore(db);
-      const channelStore = createChannelStore(db);
-      // One store for both the events route and the admin routes, so every
-      // change the admin routes make to an install's secrets (a disconnect, a
-      // failed connect's undo) drops the signing secret the events route keeps.
-      const secrets = cacheSigningSecrets(createSecretStore(bus, { logger }), {
-        ttlMs: SIGNING_SECRET_CACHE_TTL_MS,
-        max: SIGNING_SECRET_CACHE_MAX,
-        now,
+      // TASK-1094: the memory switch's veto (capture-veto.ts), subscribed
+      // FIRST, before the database is ready, as @ax/routines does with its
+      // own: ipc-http listens from its own init, so a runner reporting into a
+      // freshly restarted host can end a turn, and start a memory pass, while
+      // this plugin is still starting. Until the store is ready the lookup
+      // waits, inside the veto's deadline, so a slow start refuses instead
+      // of letting the pass through. It is the one subscription shutdown
+      // leaves on the bus (see shutdown below); a failed init takes it off.
+      let channelsReady!: (channels: ChannelStore) => void;
+      const ready = new Promise<ChannelStore>((resolve) => {
+        channelsReady = resolve;
       });
-      const api = createSlackApi({ fetchImpl });
-      const life = createLifetime();
-      lifetime = life;
-      const registry = createTurnRegistry();
-      // DM turns and members' channel turns, one lane per conversation.
-      const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
-      // Outsiders' channel turns, one lane per channel (router.ts).
-      const externalQueue = createKeyedQueue({ maxPerKey: MAX_EXTERNAL_TURNS_PER_CHANNEL });
-
-      // What the connect core and its two ways in (agent settings, `/ax`) share.
-      const channelDeps: ChannelDeps = { bus, installs: store, channels: channelStore, secrets, api, logger };
-
-      const routes: RouteSpec[] = [
-        ...createAdminRoutes({
-          bus,
-          store,
-          secrets,
-          api,
-          lock: createMutex(),
-          publicOrigin,
-          ...(config.iconUrl !== undefined ? { iconUrl: config.iconUrl } : {}),
-          logger,
-          now,
-          randomBytes,
-        }),
-        {
-          method: 'POST',
-          path: EVENTS_ROUTE_PATH,
-          // Slack can't send our CSRF header. The route is authenticated by
-          // the v0 signature over the raw body and the install id in the path.
-          bypassCsrf: true,
-          maxBodyBytes: EVENTS_MAX_BODY_BYTES,
-          handler: createEventsHandler({
-            store,
-            secrets,
-            lifetime: life,
-            seen: createSeenEvents({ ttlMs: EVENT_DEDUPE_TTL_MS, max: EVENT_DEDUPE_MAX }),
-            dispatch: createEventRouter({
-              bus,
-              api,
-              registry,
-              publicOrigin,
-              logger,
-              clock: systemClock,
-              secrets,
-              installs: store,
-              queue,
-              channels: channelStore,
-              externalQueue,
-            }),
-            logger,
-            now,
-          }),
-        },
-        {
-          method: 'POST',
-          path: COMMANDS_ROUTE_PATH,
-          // Same as the events route: Slack can't send our CSRF header, and
-          // the signature and the install id in the path authenticate it.
-          bypassCsrf: true,
-          maxBodyBytes: COMMANDS_MAX_BODY_BYTES,
-          handler: createCommandsHandler({
-            ...channelDeps,
-            store,
-            lifetime: life,
-            publicOrigin,
-            now,
-          }),
-        },
-        // These keep http-server's CSRF check: the caller is a signed-in browser.
-        ...createAgentSlackRoutes(channelDeps),
-      ];
+      const stopCaptureVeto = subscribeCaptureVeto(bus, {
+        getThread: async (conversationId) => (await ready).getThread(conversationId),
+        get: async (installId, channelId) => (await ready).get(installId, channelId),
+      });
 
       try {
+        const { db: shared } = await bus.call<unknown, { db: Kysely<unknown> }>(
+          'database:get-instance',
+          initCtx,
+          {},
+        );
+        const db = shared as Kysely<ChannelSlackDatabase>;
+        await runMigrations(db);
+
+        const store = createInstallStore(db);
+        const channelStore = createChannelStore(db);
+        channelsReady(channelStore);
+        // One store for both the events route and the admin routes, so every
+        // change the admin routes make to an install's secrets (a disconnect, a
+        // failed connect's undo) drops the signing secret the events route keeps.
+        const secrets = cacheSigningSecrets(createSecretStore(bus, { logger }), {
+          ttlMs: SIGNING_SECRET_CACHE_TTL_MS,
+          max: SIGNING_SECRET_CACHE_MAX,
+          now,
+        });
+        const api = createSlackApi({ fetchImpl });
+        const life = createLifetime();
+        lifetime = life;
+        const registry = createTurnRegistry();
+        // DM turns and members' channel turns, one lane per conversation.
+        const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
+        // Outsiders' channel turns, one lane per channel (router.ts).
+        const externalQueue = createKeyedQueue({ maxPerKey: MAX_EXTERNAL_TURNS_PER_CHANNEL });
+
+        // What the connect core and its two ways in (agent settings, `/ax`) share.
+        const channelDeps: ChannelDeps = { bus, installs: store, channels: channelStore, secrets, api, logger };
+
+        const routes: RouteSpec[] = [
+          ...createAdminRoutes({
+            bus,
+            store,
+            secrets,
+            api,
+            lock: createMutex(),
+            publicOrigin,
+            ...(config.iconUrl !== undefined ? { iconUrl: config.iconUrl } : {}),
+            logger,
+            now,
+            randomBytes,
+          }),
+          {
+            method: 'POST',
+            path: EVENTS_ROUTE_PATH,
+            // Slack can't send our CSRF header. The route is authenticated by
+            // the v0 signature over the raw body and the install id in the path.
+            bypassCsrf: true,
+            maxBodyBytes: EVENTS_MAX_BODY_BYTES,
+            handler: createEventsHandler({
+              store,
+              secrets,
+              lifetime: life,
+              seen: createSeenEvents({ ttlMs: EVENT_DEDUPE_TTL_MS, max: EVENT_DEDUPE_MAX }),
+              dispatch: createEventRouter({
+                bus,
+                api,
+                registry,
+                publicOrigin,
+                logger,
+                clock: systemClock,
+                secrets,
+                installs: store,
+                queue,
+                channels: channelStore,
+                externalQueue,
+              }),
+              logger,
+              now,
+            }),
+          },
+          {
+            method: 'POST',
+            path: COMMANDS_ROUTE_PATH,
+            // Same as the events route: Slack can't send our CSRF header, and
+            // the signature and the install id in the path authenticate it.
+            bypassCsrf: true,
+            maxBodyBytes: COMMANDS_MAX_BODY_BYTES,
+            handler: createCommandsHandler({
+              ...channelDeps,
+              store,
+              lifetime: life,
+              publicOrigin,
+              now,
+            }),
+          },
+          // These keep http-server's CSRF check: the caller is a signed-in browser.
+          ...createAgentSlackRoutes(channelDeps),
+        ];
+
         for (const route of routes) {
           const { unregister } = await bus.call<RouteSpec, { unregister(): void }>(
             'http:register-route',
@@ -310,7 +344,11 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           }
         });
       } catch (err) {
+        // A failed init fails the boot (the kernel shuts the other plugins
+        // down, memory with them), so it leaves nothing on the bus, its veto
+        // included.
         unwind(undos);
+        stopCaptureVeto();
         lifetime = undefined;
         throw err;
       }
@@ -322,6 +360,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
 
     async shutdown() {
       // No new deliveries first, then drain the dispatches already acked.
+      // The memory veto stays subscribed: a channel turn still running (nothing
+      // awaits it) can end after this, and memory, shut down in its own turn,
+      // can still run a pass on it. Until the database closes the veto answers
+      // as before; after that every lookup fails, and it refuses (fails closed).
       lifetime?.stopAdmission();
       unwind(undos);
       await lifetime?.drain();

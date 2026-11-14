@@ -73,6 +73,13 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      someone else meanwhile is dropped too (`reconnected`), and its sender
  *      told to try again: it was planned as the old connector, in their
  *      conversation, and must not run as anyone else.
+ *   9. Before the agent runs, the conversation is recorded as one of the
+ *      channel's threads, with the channel's memory switch as it is NOW
+ *      (channel-store.ts `recordThread`): a turn that starts while the switch
+ *      is off keeps that thread out of memory for good (capture-veto.ts). If
+ *      the record can't be written the turn doesn't run, and the sender is
+ *      told privately to try again. A DM records nothing: the switch is a
+ *      channel's.
  *   Lines before the turn are ephemeral, for the sender alone (in the
  *   mention's thread when it was in one); the reply goes in the thread.
  *
@@ -89,8 +96,12 @@ export interface RouterDeps extends TurnDeps {
   installs: Pick<InstallStore, 'get'>;
   /** DM turns and members' channel turns: one lane per conversation. */
   queue: KeyedQueue;
-  /** Which agent each channel is connected to; read when a mention arrives and again when its turn starts. */
-  channels: Pick<ChannelStore, 'get'>;
+  /**
+   * Which agent each channel is connected to, read when a mention arrives and
+   * again when its turn starts; and the thread map the memory switch's veto
+   * reads, written just before the turn's agent runs.
+   */
+  channels: Pick<ChannelStore, 'get' | 'recordThread'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
 }
@@ -480,6 +491,22 @@ async function routeMention(
       // else, it would be a cross-user turn. Sent again, it runs as the new one.
       log('info', 'slack_turns_dropped', { reason: 'reconnected', count: 1 });
       await tell(COPY.turnFailed);
+      return;
+    }
+    // 9. The memory switch, before anything is said in the conversation: the
+    // switch as it is now, not as it was when the mention arrived. Without
+    // this row the veto wouldn't know the conversation is this channel's, and
+    // a pass could learn from a turn said while the switch was off.
+    try {
+      await d.channels.recordThread({
+        conversationId,
+        installId,
+        channelId: m.channel,
+        agentId,
+        notRemembered: now.remember !== true,
+      });
+    } catch (err) {
+      await failed('thread', err);
       return;
     }
     await runTurn(d, {

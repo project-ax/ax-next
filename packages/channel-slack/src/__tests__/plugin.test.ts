@@ -1,6 +1,13 @@
 import { createHmac } from 'node:crypto';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { HookBus, PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import {
+  HookBus,
+  MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
+  PluginError,
+  makeAgentContext,
+  type AgentContext,
+  type Plugin,
+} from '@ax/core';
 import { createHttpServerPlugin } from '@ax/http-server';
 import {
   createTestHarness,
@@ -13,10 +20,11 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AGENTS_DELETED_KEY } from '../agents-deleted.js';
+import { CAPTURE_VETO_KEY } from '../capture-veto.js';
 import { createChannelStore } from '../channel-store.js';
 import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
 import { ADMIN_BODY_MAX_BYTES, COMMANDS_MAX_BODY_BYTES, EVENTS_MAX_BODY_BYTES } from '../limits.js';
-import type { ChannelSlackDatabase } from '../migrations.js';
+import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
   TURN_EVENTS_KEY,
@@ -304,7 +312,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   while (booted.length > 0) await booted.pop()!.close({ onError: () => {} });
   try {
-    await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels`.execute(probe);
+    await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_threads`.execute(probe);
   } catch {
     // Not created yet.
   }
@@ -447,6 +455,14 @@ function deferred() {
   return { promise, release };
 }
 
+/** Memory's question before it learns from a conversation, as @ax/memory fires it. */
+function askMemory(bus: HookBus, conversationId: string) {
+  const ctx = makeAgentContext({ sessionId: 'memory-pass', agentId: TEAM_AGENT.id, userId: ADMIN.id, conversationId });
+  return bus.fire('memory:pre-capture', ctx, { conversationId }, { subscriberTimeoutMs: MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS });
+}
+
+const NOT_REMEMBERED = { rejected: true, reason: 'channel-not-remembered', source: CAPTURE_VETO_KEY };
+
 /** Log lines the plugin's own logger writes (it writes JSON lines to stdout). */
 function captureLogs(): Array<Record<string, unknown>> {
   const lines: Array<Record<string, unknown>> = [];
@@ -504,6 +520,7 @@ describe('@ax/channel-slack plugin', () => {
       subscribes: [
         'bootstrap:reset-cleanup',
         'agents:deleted',
+        'memory:pre-capture',
         'chat:stream-chunk',
         'chat:turn-end',
         'chat:turn-error',
@@ -1019,6 +1036,105 @@ describe('@ax/channel-slack plugin', () => {
     expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual(['C07OTHER002']);
   });
 
+  it('the memory switch through the wiring: a turn while it is off keeps its thread out of memory for good; a new thread is remembered', async () => {
+    const slack = fakeSlackFetch();
+    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const channels = createChannelStore(probe);
+    await channels.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: ADMIN.id,
+      channelName: 'support',
+    });
+    expect(await channels.setRemember(INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id, false)).toBe(true);
+    const post = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+      );
+
+    // Alice isn't on the agent's team: her mention runs as Ada, in the thread's external conversation.
+    expect((await post(mentionBody('Ev07ABCDEF20', '1763035300.000300', 'remember my number is 4417'))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    const offThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035300.000300:external`;
+    expect(s.invokes![0]!.ctx.conversationId).toBe(offThread);
+    expect(await channels.getThread(offThread)).toEqual({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      notRemembered: true,
+    });
+    expect(await askMemory(harness.bus, offThread)).toEqual(NOT_REMEMBERED);
+
+    // On again: that thread stays out of memory; a conversation Slack never had gets no opinion.
+    expect(await channels.setRemember(INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id, true)).toBe(true);
+    expect(await askMemory(harness.bus, offThread)).toEqual(NOT_REMEMBERED);
+    expect(await askMemory(harness.bus, 'conv_web_chat')).toEqual({ rejected: false, payload: { conversationId: 'conv_web_chat' } });
+
+    // A new thread, started while the switch is on, is remembered.
+    expect((await post(mentionBody('Ev07ABCDEF21', '1763035400.000400', 'a new question'))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(2));
+    const onThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035400.000400:external`;
+    expect(s.invokes![1]!.ctx.conversationId).toBe(onThread);
+    expect(await askMemory(harness.bus, onThread)).toEqual({ rejected: false, payload: { conversationId: onThread } });
+  });
+
+  it('the memory veto is on the bus before the database: a pass while init waits for it is answered once the store is ready', async () => {
+    // A thread kept out of memory before this restart.
+    await runMigrations(probe);
+    await createChannelStore(probe).recordThread({
+      conversationId: 'conv_kept_out',
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      notRemembered: true,
+    });
+    const s: Services = { routes: [], vault: new Map(), credentialSets: 0, credentialGets: [] };
+    const services = fakeServices(s);
+    const inner = new HookBus();
+    const db: Plugin = createDatabasePostgresPlugin({ connectionString });
+    await db.init({ bus: inner, config: {} });
+    const bus = new HookBus();
+    const gate = deferred();
+    bus.registerService('database:get-instance', 'mock', async (ctx, input) => {
+      await gate.promise;
+      return inner.call('database:get-instance', ctx, input);
+    });
+    for (const hook of ['http:register-route', 'auth:require-user', 'credentials:get', 'credentials:set', 'credentials:delete'] as const) {
+      bus.registerService<unknown, unknown>(hook, 'mock', services[hook]);
+    }
+    const plugin = createChannelSlackPlugin({ publicOrigin: HTTPS_ORIGIN });
+    try {
+      const starting = plugin.init({ bus, config: {} });
+      // Memory asks while channel-slack is still waiting for its database.
+      const asked = askMemory(bus, 'conv_kept_out');
+      gate.release();
+      await starting;
+      expect(await asked).toEqual(NOT_REMEMBERED);
+    } finally {
+      await plugin.shutdown?.();
+      await db.shutdown?.();
+    }
+  });
+
+  it('shutdown leaves the memory veto answering: a turn that ends during shutdown can still start a memory pass', async () => {
+    const { plugin, harness } = await boot();
+    await createChannelStore(probe).recordThread({
+      conversationId: 'conv_kept_out',
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      notRemembered: true,
+    });
+    await plugin.shutdown?.();
+    expect(await askMemory(harness.bus, 'conv_kept_out')).toEqual(NOT_REMEMBERED);
+  });
+
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
@@ -1055,9 +1171,10 @@ describe('@ax/channel-slack plugin', () => {
       await expect(plugin.init({ bus, config: {} })).rejects.toThrow();
       expect(s.routes).toHaveLength(2);
       for (const r of s.routes) expect(r.unregister).toHaveBeenCalledTimes(1);
-      // No reset or chat subscriber is left behind either.
+      // No reset, chat or memory subscriber is left behind either: a plugin that never started vetoes nothing.
       for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
       expect(bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
+      expect(bus.unsubscribe('memory:pre-capture', CAPTURE_VETO_KEY)).toBe(0);
       await insertActiveInstall();
       await bus.fire('bootstrap:reset-cleanup', makeAgentContext({ sessionId: 't', agentId: 't', userId: 't' }), {});
       expect(await installCount()).toBe(1);

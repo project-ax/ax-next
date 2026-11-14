@@ -1,6 +1,6 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChannelBinding } from '../channel-store.js';
+import type { ChannelBinding, ChannelThread } from '../channel-store.js';
 import { COPY } from '../copy.js';
 import { pickPersonalAgent } from '../turn.js';
 import type { SlackEnvelope, SlackInnerEvent } from '../events.js';
@@ -257,6 +257,8 @@ function world(o: {
   installReadFails?: boolean;
   /** The channel store fails the n-th binding read (1-based) when this says so. */
   bindingReadFails?: (n: number) => boolean;
+  /** The channel store fails to record a thread. */
+  threadWriteFails?: boolean;
   /** agents:resolve fails for this user (an outage, not a refusal). */
   resolveFails?: (userId: string) => boolean;
   /** auth:is-approved-email fails. */
@@ -414,6 +416,8 @@ function world(o: {
   };
   channels.rows.set(`${INSTALL_ID}/${SUPPORT}`, support);
   let bindingReads = 0;
+  /** Every thread a turn recorded, with how many agent:invokes had happened when it did. */
+  const threadWrites: Array<ChannelThread & { conversationId: string; invokesBefore: number }> = [];
   const bindings = {
     async get(installId: string, channelId: string): Promise<ChannelBinding | null> {
       bindingReads += 1;
@@ -421,6 +425,13 @@ function world(o: {
         throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
       }
       return channels.store.get(installId, channelId);
+    },
+    async recordThread(t: ChannelThread & { conversationId: string }): Promise<void> {
+      threadWrites.push({ ...t, invokesBefore: invokes.length });
+      if (o.threadWriteFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
+      }
+      return channels.store.recordThread(t);
     },
   };
   /** The install rows, as the store would answer a re-read. `disconnect()` removes ours. */
@@ -493,6 +504,7 @@ function world(o: {
     channels,
     agents,
     approvals,
+    threadWrites,
   };
 }
 
@@ -1984,6 +1996,8 @@ describe('createEventRouter: a mention in a connected channel', () => {
     // The turn's own checks, when its time comes.
     ['install', { installReadFails: true }, ALICE, 'store-unavailable'],
     ['binding', { bindingReadFails: (n: number) => n === 2 }, BOB, 'store-unavailable'],
+    // The thread's record for the memory switch, made before the agent runs.
+    ['thread', { threadWriteFails: true }, ALICE, 'store-unavailable'],
   ] as const)('a failing %s lookup tells the sender privately, logged by code only, and runs no turn', async (stage, o, user, code) => {
     const w = world(o);
     await w.dispatch(INSTALL, mention({ user }));
@@ -2011,5 +2025,97 @@ describe('createEventRouter: a mention in a connected channel', () => {
     for (const leak of ['@', 'usr_', 'agt_', 'U07', 'C07', 'support', 'Support', 'secret', 'Alice', 'Carol', 'canopyworks']) {
       expect(all, leak).not.toContain(leak);
     }
+  });
+});
+
+describe('createEventRouter: the memory switch, recorded before each channel turn', () => {
+  const memberKey = (threadTs: string) => `slack:${INSTALL_ID}:${SUPPORT}:${threadTs}`;
+  const externalKey = (threadTs: string) => `slack:${INSTALL_ID}:${SUPPORT}:${threadTs}:external`;
+  const switchOff = (w: ReturnType<typeof world>) => w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false);
+
+  it("switch off: the turn's conversation is recorded as not remembered before the agent runs", async () => {
+    const w = world();
+    expect(await switchOff(w)).toBe(true);
+    await w.dispatch(INSTALL, mention());
+    await w.idle();
+
+    expect(w.threadWrites).toEqual([
+      {
+        conversationId: `conv:${memberKey(MENTION_TS)}`,
+        installId: INSTALL_ID,
+        channelId: SUPPORT,
+        agentId: SUPPORT_AGENT.id,
+        notRemembered: true,
+        invokesBefore: 0,
+      },
+    ]);
+    // The turn still runs: the switch is about memory, not about answering.
+    expect(w.invokes.map((i) => i.ctx.conversationId)).toEqual([`conv:${memberKey(MENTION_TS)}`]);
+    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
+  });
+
+  it("switch on: an outsider's turn records the external conversation it runs in, remembered", async () => {
+    const w = world();
+    await w.dispatch(INSTALL, mention({ user: BOB }));
+    await w.idle();
+
+    expect(w.threadWrites).toEqual([
+      {
+        conversationId: `conv:${externalKey(MENTION_TS)}`,
+        installId: INSTALL_ID,
+        channelId: SUPPORT,
+        agentId: SUPPORT_AGENT.id,
+        notRemembered: false,
+        invokesBefore: 0,
+      },
+    ]);
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.conversationId])).toEqual([['usr_ada', `conv:${externalKey(MENTION_TS)}`]]);
+  });
+
+  it('the switch as it is when the turn starts, not when the mention arrived: off while it waited taints the thread', async () => {
+    const w = world();
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    await w.dispatch(INSTALL, mention({ text: 'first' }));
+    await w.dispatch(INSTALL, mention({ ts: '1763035301.000301', threadTs: MENTION_TS, text: 'second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(1);
+
+    expect(await switchOff(w)).toBe(true);
+    first.release();
+    await w.idle();
+
+    expect(w.threadWrites.map((t) => [t.conversationId, t.notRemembered, t.invokesBefore])).toEqual([
+      [`conv:${memberKey(MENTION_TS)}`, false, 0],
+      [`conv:${memberKey(MENTION_TS)}`, true, 1],
+    ]);
+    expect(w.invokes).toHaveLength(2);
+    // Sticky: the thread stays not remembered with the switch back on.
+    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
+  });
+
+  it('a turn dropped when its time comes records nothing: no turn ran in its conversation', async () => {
+    const w = world();
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    await w.dispatch(INSTALL, mention({ user: BOB, ts: '1763035400.000400', text: 'first' }));
+    await w.dispatch(INSTALL, mention({ user: CAROL, ts: '1763035401.000401', text: 'second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(1);
+
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+    first.release();
+    await w.idle();
+
+    expect(w.threadWrites.map((t) => t.conversationId)).toEqual([`conv:${externalKey('1763035400.000400')}`]);
+  });
+
+  it('a DM records no thread: the conversation is the sender\'s own, and the switch is a channel\'s', async () => {
+    const w = world();
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(w.invokes).toHaveLength(1);
+    expect(w.threadWrites).toEqual([]);
+    expect(w.channels.threads.size).toBe(0);
   });
 });
