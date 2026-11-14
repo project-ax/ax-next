@@ -1184,7 +1184,7 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
     },
   );
 
-  it('word-sized deltas, a flush after each: an address keeps its @ as typed, and a broadcast word is still caught', async () => {
+  it('word-sized deltas, a flush after each: a name keeps its @ as typed, a broadcast word is caught, and so is an address a flush split', async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     for (const delta of ['Write to ', 'support', '@channel', '.io', ' or tell ', '@', 'every', 'one', ', ', 'team', '@here', 's.']) {
@@ -1192,7 +1192,49 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       await tick();
     }
     await finishNow(s);
-    expect(delivered(calls)).toBe(`Write to support@channel.io or tell @${ZWSP}everyone, team@heres.`);
+    // `support` and `@channel.io` went out in two appends, each judged alone: the address gets a mark
+    // (the cost of not trusting Slack to read a stream's appends as one text). `@heres` is a name either way.
+    expect(delivered(calls)).toBe(`Write to support@${ZWSP}channel.io or tell @${ZWSP}everyone, team@heres.`);
+  });
+
+  /** Each confirmed start or append, on its own: what Slack may judge one by one. */
+  const pieces = (calls: readonly Call[]): string[] =>
+    calls
+      .filter((c) => c.ok && (c.method === 'startStream' || c.method === 'appendStream'))
+      .map(markdownOf)
+      .filter((text) => text.length > 0);
+
+  it("each append is judged alone: 'contact me', a flush, '@chan', a flush, 'nel now' can't append a live @channel", async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('contact me');
+    await tick();
+    s.text('@chan');
+    await tick();
+    s.text('nel now');
+    await finishNow(s);
+
+    expect(streams(calls)).toHaveLength(1);
+    expect(pieces(calls)).toEqual(['contact me', `@${ZWSP}channel now`]);
+    for (const piece of pieces(calls)) expect(BROADCAST.test(piece), JSON.stringify(piece)).toBe(false);
+  });
+
+  it("'contact me' then '@channel now' split at every point, a flush after each part: no append carries a live word", async () => {
+    const rest = '@channel now';
+    for (let k = 1; k < rest.length; k += 1) {
+      const { api, calls } = fakeSlack();
+      const s = make(api);
+      s.text('contact me');
+      await tick();
+      s.text(rest.slice(0, k));
+      await tick();
+      s.text(rest.slice(k));
+      await finishNow(s);
+
+      expect(streams(calls), `split at ${k}`).toHaveLength(1);
+      for (const piece of pieces(calls)) expect(BROADCAST.test(piece), `split at ${k}: ${JSON.stringify(piece)}`).toBe(false);
+      expect(delivered(calls), `split at ${k}`).toBe(`contact me@${ZWSP}channel now`);
+    }
   });
 
   it('a status that arrives while an @ waits goes out first, and the word after it is still caught', async () => {

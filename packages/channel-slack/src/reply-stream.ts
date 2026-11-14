@@ -30,9 +30,11 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     (at most nine characters, `@everyone`) until the next text or `finish`
  *     decides it, also past a status that arrives meanwhile, which goes out
  *     first. A Slack message's own edges are judged again as each part goes
- *     out, because the reply's text on the other side of an edge doesn't
+ *     out, because the reply's text on the other side of an edge may not
  *     reach Slack with it: the start of a message (a new stream, each posted
- *     part), the text after the status card, and where a full stream or a
+ *     part), the start of each append (whether Slack reads a stream's appends
+ *     as one text is unmeasured; only a `<` ending the last one carries
+ *     over), the text after the status card, and where a full stream or a
  *     post is cut. So the `@` waits even right after a letter (`me@chan`):
  *     an edge can fall between the two, and the word must reach the run it
  *     lands in whole to be judged there. A mark added at an edge can take a
@@ -151,7 +153,10 @@ interface OpenStream {
   sent: number;
   /** The status card is in this message. */
   card: boolean;
-  /** What this message's next text follows: its last two characters, '' after the card. */
+  /**
+   * What this message's next text follows: its last two characters, '' after
+   * the card. The next append carries only a trailing `<` of it (buildBatch).
+   */
   tail: string;
 }
 
@@ -320,11 +325,12 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
    * reply isn't finished, a trailing high surrogate waits for its other half.
    *
    * Each text chunk is judged again against this message alone (`tail`): a
-   * new stream's first text, the text after the card and the text before a
-   * full stream's cut are edges where the reply's text around them no longer
-   * reaches Slack with them, so an `@` the reply judged an address there
-   * (`me` + `@channel.com`, `@channels` cut after `@channel`) gets its mark.
-   * Anywhere else the text is already decided and nothing changes.
+   * new stream's first text, the text after the card, the text before a
+   * full stream's cut and an append's first text are edges where the reply's
+   * text around them may not reach Slack with them, so an `@` the reply
+   * judged an address there (`me` + `@channel.com`, `@channels` cut after
+   * `@channel`) gets its mark. Anywhere else the text is already decided and
+   * nothing changes.
    */
   function buildBatch(final: boolean): Batch {
     let budget = open === null ? STREAM_TEXT_LIMIT : Math.max(0, STREAM_TEXT_LIMIT - open.sent);
@@ -335,7 +341,12 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     let ops = 0;
     let chars = 0;
     let overflow = false;
-    let tail = open === null ? '' : open.tail;
+    // Across an append, only a `<` that ended the last one is carried (a `!`
+    // starting this one still needs its mark). Whether Slack reads a stream's
+    // appends as one text is unmeasured, so each is an edge: a letter before
+    // it exempts no `@` at its start. The cost is a mark in an address a
+    // flush happened to split.
+    let tail = open === null ? '' : open.tail.endsWith('<') ? '<' : '';
     const flushText = (): void => {
       if (text.length === 0) return;
       const out = neutralizeSlackControls(text, tail);
