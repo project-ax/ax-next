@@ -40,7 +40,7 @@ import {
   type ProviderRow,
 } from './handler.js';
 import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
-import { isDomainAllowed, isPlainAscii, parseDomains } from './identity-gate.js';
+import { GATED_KINDS, isOnApprovedDomain, isPlainAscii, parseDomains } from './identity-gate.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -648,25 +648,35 @@ async function findUserByEmail(
     return null;
   }
 
-  // Approved domains = the Google provider's list, the one sign-in enforces,
-  // read now (never a cached copy) and WHETHER OR NOT the provider is enabled:
-  // turning Google sign-in off must not widen who is found. No row or a blank
-  // list means any domain, as at sign-in. Both the input's domain and the
-  // STORED verified email's are checked: after the ASCII-only match they are
-  // the same domain up to case, and checking both keeps this rule from
-  // resting on the match alone.
-  const google = await db
-    .selectFrom('auth_providers')
-    .select('allowed_domains')
-    .where('kind', '=', 'google')
-    .executeTakeFirst();
-  const allowed = parseDomains(google?.allowed_domains);
-  if (!isDomainAllowed(email, allowed) || !isDomainAllowed(row.email, allowed)) {
-    // A verified account matched, on a domain the list excludes. Code-only.
+  // Approved domains, read now (never a cached copy) by readApprovedDomainLists:
+  // see isOnApprovedDomain for the rule. Both the input's domain and the STORED
+  // verified email's are checked: after the ASCII-only match they are the same
+  // domain up to case, and checking both keeps this rule from resting on the
+  // match alone.
+  const lists = await readApprovedDomainLists(db);
+  if (!isOnApprovedDomain(email, lists) || !isOnApprovedDomain(row.email, lists)) {
+    // A verified account matched, on a domain the lists exclude. Code-only.
     ctx.logger.info('auth_find_user_by_email_off_domain');
     return null;
   }
   return { userId: row.id };
+}
+
+/**
+ * Every sign-in provider's allowed-domain list, parsed, for `isOnApprovedDomain`.
+ * Read WHETHER OR NOT a provider is enabled: turning a sign-in method off must
+ * not widen who counts as on an approved domain. Only the kinds the sign-in
+ * gate enforces (`GATED_KINDS`); any other row configures nothing.
+ */
+async function readApprovedDomainLists(
+  db: Kysely<AuthBetterDatabase>,
+): Promise<string[][]> {
+  const rows = await db
+    .selectFrom('auth_providers')
+    .select('allowed_domains')
+    .where('kind', 'in', [...GATED_KINDS])
+    .execute();
+  return rows.map((r) => parseDomains(r.allowed_domains));
 }
 
 /**

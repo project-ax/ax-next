@@ -87,12 +87,16 @@ export type GetUserOutput = User | null;
  *     or normalization, and no trimming. An address with any character
  *     outside printable ASCII is never found.
  *   - Verified accounts only. An account whose email no provider has verified
- *     is never found.
+ *     is never found. (One operator path keeps the flag across an email
+ *     change: the deploy/GKE.md 4i runbook, `sql/change-account-email.sql`,
+ *     which requires confirming who the person is first. Sign-in trusts the
+ *     same flag.)
  *   - Approved sign-in domains only: the given address and the account's
- *     email must both be on an approved domain. In @ax/auth-better that is
- *     the Google provider's allowed-domain list (the one Google sign-in
- *     enforces), read whether or not the provider is enabled. A blank list,
- *     or no Google provider, approves any domain, the same as sign-in.
+ *     email must both be on an approved domain. In @ax/auth-better that means
+ *     on at least one sign-in provider's non-blank allowed-domain list (Google
+ *     or GitHub), each read whether or not the provider is enabled
+ *     (`isOnApprovedDomain` in identity-gate.ts). A blank list adds nothing;
+ *     with no list anywhere, any domain is approved, the same as sign-in.
  *   - `null` for no match, for more than one match (accounts that differ only
  *     in case), or for any failed rule. `null` never says which rule failed.
  *   - Returns only the id: no email, name or admin flag.

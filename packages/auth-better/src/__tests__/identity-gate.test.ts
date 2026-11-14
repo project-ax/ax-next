@@ -5,6 +5,7 @@ import {
   decideIdentity,
   emailDomain,
   isDomainAllowed,
+  isOnApprovedDomain,
   parseDomains,
   type IdentityAttempt,
   type IdentityRefusal,
@@ -41,8 +42,8 @@ describe('emailDomain', () => {
   });
 });
 
-// The one domain predicate. The sign-in gate (decideIdentity rule 5) and
-// auth:find-user-by-email (TASK-1092) both answer through it, so the two can't drift.
+// The one domain predicate: the sign-in gate (decideIdentity rule 5) applies it to
+// one provider's list, isOnApprovedDomain across all of them.
 describe('isDomainAllowed', () => {
   it('allows any email when the list is empty (blank = open, as at sign-in)', () => {
     expect(isDomainAllowed('x@anywhere.com', [])).toBe(true);
@@ -58,6 +59,29 @@ describe('isDomainAllowed', () => {
   });
   it('rejects an address with no domain', () => {
     expect(isDomainAllowed('garbage', ['example.com'])).toBe(false);
+  });
+});
+
+// Approved domains for a check that isn't a sign-in (auth:find-user-by-email):
+// on at least one non-blank list; blank lists add nothing; no lists = any domain.
+describe('isOnApprovedDomain', () => {
+  it('approves any domain when no provider has a list', () => {
+    expect(isOnApprovedDomain('x@anywhere.com', [])).toBe(true);
+    expect(isOnApprovedDomain('x@anywhere.com', [[], []])).toBe(true);
+  });
+  it("approves a domain on either provider's list", () => {
+    const lists = [['canopyworks.com'], ['partner.org']];
+    expect(isOnApprovedDomain('a@canopyworks.com', lists)).toBe(true);
+    expect(isOnApprovedDomain('p@Partner.ORG', lists)).toBe(true);
+    expect(isOnApprovedDomain('c@gmail.com', lists)).toBe(false);
+  });
+  it("a blank list doesn't open a restricted one (fails closed)", () => {
+    expect(isOnApprovedDomain('c@gmail.com', [['canopyworks.com'], []])).toBe(false);
+    expect(isOnApprovedDomain('c@gmail.com', [[], ['canopyworks.com']])).toBe(false);
+  });
+  it('a subdomain or an address with no domain is never on a list', () => {
+    expect(isOnApprovedDomain('d@eng.canopyworks.com', [['canopyworks.com']])).toBe(false);
+    expect(isOnApprovedDomain('garbage', [['canopyworks.com']])).toBe(false);
   });
 });
 
