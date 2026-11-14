@@ -91,6 +91,19 @@ export function splitForPost(text: string, limit: number): string[] {
 }
 
 const SLACK_ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>' };
+const MRKDWN_ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
+
+/**
+ * Text from outside (an agent's or a channel's name) made fit for a mrkdwn
+ * `text` field, the `/ax` replies' format: the three characters Slack
+ * reserves become the entities Slack itself uses, in one pass, so an `&` is
+ * escaped exactly once. No `<` is left to open a link, a mention or a
+ * broadcast (`<!channel>`), and the reader sees the name as it was typed.
+ * The inverse of `decodeSlackEntities`.
+ */
+export function mrkdwnEscape(text: string): string {
+  return text.replace(/[&<>]/g, (c) => MRKDWN_ESCAPES[c] ?? c);
+}
 
 /**
  * A message's text as its sender typed it. Slack escapes exactly three

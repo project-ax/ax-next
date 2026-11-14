@@ -15,10 +15,11 @@ const PLUGIN = '@ax/agents';
 const STAMP = new Date('2026-10-01T00:00:00.000Z');
 
 /**
- * `agents:resolve` and `agents:can-set-shared-credential` answered the way
- * @ax/agents answers them, over an in-memory model of agents and team roles
- * (packages/agents/src/plugin.ts `resolveAgent`, `assertWriteAllowed`,
- * `sharedCredentialSetAllowed`; acl.ts `checkAccess`):
+ * `agents:resolve`, `agents:can-set-shared-credential` and
+ * `agents:list-for-user` answered the way @ax/agents answers them, over an
+ * in-memory model of agents and team roles (packages/agents/src/plugin.ts
+ * `resolveAgent`, `assertWriteAllowed`, `sharedCredentialSetAllowed`,
+ * `listForUser`; acl.ts `checkAccess`; scope.ts `scopedAgents`):
  *
  *   resolve        missing → `not-found`; personal: only its owner; team: any
  *                  member of the owning team; anyone else → `forbidden`. The
@@ -27,6 +28,10 @@ const STAMP = new Date('2026-10-01T00:00:00.000Z');
  *                  who can't write the agent (a workspace admin always can);
  *                  then true only for a TEAM agent and the actor's team role
  *                  `admin`. `actor.isAdmin` never grants it.
+ *   list-for-user  the user's own personal agents and every agent owned by a
+ *                  team in `teamIds`, newest first. Like the real one it takes
+ *                  `teamIds` on trust: the caller asks @ax/teams for them
+ *                  (`teamsOf` is that answer).
  *
  * `workspaceAdminsMayManage` models a later agents rule that WOULD let a
  * workspace admin set a team agent's shared credential (as
@@ -54,6 +59,20 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     if (fault !== undefined) throw fault;
   };
 
+  /** The whole agent record, as @ax/agents returns it. */
+  const record = (agent: FakeAgent) => ({
+    ...agent,
+    allowedTools: [],
+    mcpConfigIds: [],
+    model: 'default-model',
+    runner: 'claude-sdk',
+    skillAttachments: [],
+    connectorAttachments: [],
+    connectorExclusions: [],
+    createdAt: STAMP,
+    updatedAt: STAMP,
+  });
+
   bus.registerService('agents:resolve', PLUGIN, async (_ctx, raw) => {
     enter('agents:resolve', raw);
     const { agentId, userId } = raw as { agentId: string; userId: string };
@@ -67,20 +86,17 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
         message: `agent '${agentId}' not accessible to user '${userId}'`,
       });
     }
-    return {
-      agent: {
-        ...agent,
-        allowedTools: [],
-        mcpConfigIds: [],
-        model: 'default-model',
-        runner: 'claude-sdk',
-        skillAttachments: [],
-        connectorAttachments: [],
-        connectorExclusions: [],
-        createdAt: STAMP,
-        updatedAt: STAMP,
-      },
-    };
+    return { agent: record(agent) };
+  });
+
+  bus.registerService('agents:list-for-user', PLUGIN, async (_ctx, raw) => {
+    enter('agents:list-for-user', raw);
+    const { userId, teamIds = [] } = raw as { userId: string; teamIds?: string[] };
+    const listed = [...agents.values()].filter((a) =>
+      a.ownerType === 'user' ? a.ownerId === userId : teamIds.includes(a.ownerId),
+    );
+    // Added in age order, so the newest is last.
+    return { agents: listed.reverse().map(record) };
   });
 
   bus.registerService('agents:can-set-shared-credential', PLUGIN, async (_ctx, raw) => {
@@ -120,6 +136,10 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     /** Every input one hook was called with, in order. */
     inputs(hook: string): Array<Record<string, unknown>> {
       return calls.filter((c) => c.hook === hook).map((c) => c.input);
+    },
+    /** The teams `userId` has a role on, as @ax/teams would list them. */
+    teamsOf(userId: string): string[] {
+      return [...teams].filter(([, members]) => members.has(userId)).map(([teamId]) => teamId);
     },
   };
 }

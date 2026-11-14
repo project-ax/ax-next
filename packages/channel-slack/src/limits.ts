@@ -93,6 +93,24 @@ export const CHANNEL_LIST_MAX_PAGES = 5;
  */
 export const CHANNEL_NAME_MAX = 80;
 
+// ── The /ax command ─────────────────────────────────────────────────────────
+
+/** A slash command's request body: a short form (Slack's own fields come to well under 2 KiB). */
+export const COMMANDS_MAX_BODY_BYTES = 16_384;
+/** The longest `/ax` text read: a subcommand and an agent's name need far less. */
+export const SLASH_TEXT_MAX = 512;
+/**
+ * How long `/ax` waits for its own answer before saying "working on it" and
+ * sending the answer privately once it's ready. Slack wants the HTTP answer
+ * within 3,000 ms.
+ */
+export const SLASH_REPLY_DEADLINE_MS = 2_500;
+/**
+ * The longest agent name `/ax connect` matches, after normalizing: @ax/agents'
+ * own cap on a display name. Anything longer names no agent.
+ */
+export const AGENT_NAME_ARG_MAX = 128;
+
 // ── Agent settings ──────────────────────────────────────────────────────────
 
 /**

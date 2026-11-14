@@ -1,6 +1,7 @@
 import type { Logger } from '@ax/core';
 import type { RouteHandler, RouteRequest, RouteResponse } from './http-types.js';
-import { LifetimeClosedError, type Lifetime } from './lifetime.js';
+import { admittedHandler, verifySignedRequest } from './ingress.js';
+import type { Lifetime } from './lifetime.js';
 import {
   EVENT_TEXT_MAX,
   EVENTS_MAX_BODY_BYTES,
@@ -9,7 +10,6 @@ import {
 } from './limits.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
-import { verifySlackSignature } from './signature.js';
 import type { InstallRow, InstallStore } from './store.js';
 
 /**
@@ -17,23 +17,11 @@ import type { InstallRow, InstallStore } from './store.js';
  * install. The route is public, so it trusts nothing it hasn't checked, in
  * this order:
  *
- *   0. The body is at most EVENTS_MAX_BODY_BYTES (413). The route's own
- *      `maxBodyBytes` already refused anything larger; this is the backstop.
- *   1. The `installId` is 22 base64url characters AND the raw path spells it
- *      exactly (`params` are percent-decoded), else 404.
- *   2. The install exists, else 404.
- *   3. Its signing secret exists, else 404. Steps 1 to 3 give one answer,
- *      @ax/http-server's own 404 for a path nothing serves (status, headers
- *      and body; plugin.test.ts fetches the real router's to compare), so a
- *      guess can't tell which check refused it. The id's 128 random bits make
- *      the 404/401 split uninformative. Behind a GET catch-all such as
- *      @ax/static-files' `/*`, an unserved POST is a 405, so there this 404
- *      does say the route exists, as it does in every deployment.
- *      The plugin hands this route a store that remembers each install's
- *      signing secret for a minute (secret-cache.ts), so unsigned requests
- *      to a known install cost one vault read a minute, not one each.
- *   4. The v0 signature over the raw bytes, inside the five-minute replay
- *      window both ways, else 401. Nothing about the body is read before this.
+ *   0-4. The ingress checks every Slack route shares (ingress.ts): the body
+ *      cap (413, EVENTS_MAX_BODY_BYTES), the install id and its spelling in
+ *      the raw path, the install and its signing secret (one 404 for all
+ *      three), then the v0 signature (401). Nothing about the body is read
+ *      before the signature passes.
  *   5. The body is a JSON object of a shape we accept, else 400.
  *   6. `url_verification` → 200 with the challenge (any status of install).
  *   7. `event_callback` for another app, a pending install or another
@@ -55,7 +43,7 @@ import type { InstallRow, InstallStore } from './store.js';
  * body, a Slack id, message text or an error's message.
  */
 
-export const INSTALL_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+export { INSTALL_ID_RE } from './ingress.js';
 /** The path `http:register-route` serves the handler on. */
 export const EVENTS_ROUTE_PATH = '/slack/events/:installId';
 const EVENTS_PATH_PREFIX = '/slack/events/';
@@ -219,17 +207,8 @@ export interface EventsHandlerDeps {
 }
 
 type IgnoreReason = 'app' | 'status' | 'team' | 'duplicate' | 'other';
-type FailedStage = 'install' | 'secret' | 'dispatch';
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
-
-/**
- * @ax/http-server's own answer for a path no route serves. Pinned against the
- * real router (plugin.test.ts) and the memory canary, not by a copy of it.
- */
-function notFound(res: RouteResponse): void {
-  res.status(404).json({ error: 'not-found' });
-}
 
 export function createEventsHandler(d: EventsHandlerDeps): RouteHandler {
   // A log line never changes the answer Slack gets.
@@ -240,64 +219,24 @@ export function createEventsHandler(d: EventsHandlerDeps): RouteHandler {
       // Nothing left to report it with.
     }
   };
-  const failed = (installId: string, stage: FailedStage, err: unknown): void => {
+  const failed = (installId: string, stage: 'dispatch', err: unknown): void => {
     log('warn', 'slack_event_failed', { installId, stage, code: logCode(err) });
   };
   const ignored = (installId: string, reason: IgnoreReason): void => {
     log('info', 'slack_event_ignored', { installId, reason });
   };
-  const refused = (installId: string, reason: 'signature' | 'malformed'): void => {
+  const refused = (installId: string, reason: 'malformed'): void => {
     log('warn', 'slack_event_refused', { installId, reason });
   };
 
   async function handle(req: RouteRequest, res: RouteResponse): Promise<void> {
-    if (req.body.length > EVENTS_MAX_BODY_BYTES) {
-      res.status(413).json({ error: 'body-too-large' });
-      return;
-    }
-
-    const installId = Object.hasOwn(req.params, 'installId') ? req.params['installId'] : undefined;
-    if (
-      installId === undefined ||
-      !INSTALL_ID_RE.test(installId) ||
-      req.rawPath !== EVENTS_PATH_PREFIX + installId
-    ) {
-      notFound(res);
-      return;
-    }
-
-    let install: InstallRow | null;
-    try {
-      install = await d.store.get(installId);
-    } catch (err) {
-      failed(installId, 'install', err);
-      res.status(503).end();
-      return;
-    }
-    if (install === null) {
-      notFound(res);
-      return;
-    }
-
-    let signingSecret: string | null;
-    try {
-      signingSecret = await d.secrets.get(install, 'signing-secret');
-    } catch (err) {
-      failed(installId, 'secret', err);
-      res.status(503).end();
-      return;
-    }
-    if (signingSecret === null || signingSecret.length === 0) {
-      notFound(res);
-      return;
-    }
-
-    const nowMs = d.now();
-    if (!verifySlackSignature({ headers: req.headers, body: req.body, signingSecret, nowMs })) {
-      refused(installId, 'signature');
-      res.status(401).end();
-      return;
-    }
+    const install = await verifySignedRequest(d, req, res, {
+      pathPrefix: EVENTS_PATH_PREFIX,
+      maxBodyBytes: EVENTS_MAX_BODY_BYTES,
+      logPrefix: 'slack_event',
+    });
+    if (install === null) return;
+    const installId = install.installId;
 
     let json: unknown;
     try {
@@ -340,7 +279,7 @@ export function createEventsHandler(d: EventsHandlerDeps): RouteHandler {
       res.status(200).end();
       return;
     }
-    if (!d.seen.firstSighting(`${install.installId}:${envelope.eventId}`, nowMs)) {
+    if (!d.seen.firstSighting(`${install.installId}:${envelope.eventId}`, d.now())) {
       ignored(installId, 'duplicate');
       res.status(200).end();
       return;
@@ -358,19 +297,5 @@ export function createEventsHandler(d: EventsHandlerDeps): RouteHandler {
     }
   }
 
-  return async (req, res) => {
-    let admitted = false;
-    try {
-      await d.lifetime.admit(() => {
-        admitted = true;
-        return handle(req, res);
-      });
-    } catch (err) {
-      if (!admitted && err instanceof LifetimeClosedError) {
-        res.status(503).end();
-        return;
-      }
-      throw err;
-    }
-  };
+  return admittedHandler(d.lifetime, handle);
 }

@@ -6,6 +6,7 @@ import {
   cutIndex,
   decodeSlackEntities,
   dmSenderLabel,
+  mrkdwnEscape,
   neutralizeSlackControls,
   splitForPost,
 } from '../format.js';
@@ -33,6 +34,22 @@ describe('neutralizeSlackControls', () => {
 
   it('a run of controls is neutralized one by one', () => {
     expect(neutralizeSlackControls('<!<@<#')).toBe(`<${ZWSP}!<${ZWSP}@<${ZWSP}#`);
+  });
+});
+
+describe('mrkdwnEscape', () => {
+  it('escapes exactly the three characters mrkdwn reserves, & first', () => {
+    expect(mrkdwnEscape('<!channel> & <@U1> <#C1|x> a>b')).toBe('&lt;!channel&gt; &amp; &lt;@U1&gt; &lt;#C1|x&gt; a&gt;b');
+    // An entity typed as text stays text: its & is escaped too.
+    expect(mrkdwnEscape('&lt; &amp;')).toBe('&amp;lt; &amp;amp;');
+    expect(decodeSlackEntities(mrkdwnEscape('R&D <b> & <@U1>'))).toBe('R&D <b> & <@U1>');
+  });
+
+  it('leaves everything else alone', () => {
+    for (const text of ['', 'support-desk', '*bold* _it_ `code`', '@here', 'caf\u00e9 \u{1F600}']) {
+      expect(mrkdwnEscape(text), text).toBe(text);
+    }
+    expect(CONTROL.test(mrkdwnEscape('<!here>'))).toBe(false);
   });
 });
 
