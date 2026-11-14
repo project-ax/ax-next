@@ -1945,14 +1945,40 @@ describe('createEventRouter: a mention in a connected channel', () => {
     expect(w.conversations.map((c) => c.input.externalKey)).toEqual([memberKey(root)]);
   });
 
-  it('a mention with no words gets no turn and no reply', async () => {
+  // Slack's app_mention text always holds the bot's own `<@U…>`: a bare
+  // `@bot` is that token and nothing else, never a blank string.
+  for (const [what, text, user] of [
+    ['a bare @bot', `<@${BOT_USER_ID}>`, ALICE],
+    ['a bare @bot with spaces around it', `  <@${BOT_USER_ID}>  `, ALICE],
+    ['a bare @bot in the labelled form', `<@${BOT_USER_ID}|canopy-works>`, ALICE],
+    ['@bot twice and nothing else', `<@${BOT_USER_ID}> <@${BOT_USER_ID}|canopy-works>`, ALICE],
+    ["an outsider's bare @bot", `<@${BOT_USER_ID}>`, BOB],
+    ['blanks only', '   ', ALICE],
+  ] as const) {
+    it(`a mention with no words gets no turn, no reply and no 👀: ${what}`, async () => {
+      const w = world();
+      await w.dispatch(INSTALL, mention({ user, text }));
+      await w.idle();
+      expect(w.findUser).toEqual([]);
+      expect(w.invokes).toEqual([]);
+      expect(w.slack.reactions).toEqual([]);
+      expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+      expect(w.lines).toEqual([{ level: 'info', msg: 'slack_event_ignored', fields: { installId: INSTALL_ID, reason: 'empty' } }]);
+    });
+  }
+
+  it("a mention with words after @bot runs, the bot's own token kept in the content as typed", async () => {
     const w = world();
-    await w.dispatch(INSTALL, mention({ text: '   ' }));
+    await w.dispatch(INSTALL, mention({ text: `<@${BOT_USER_ID}> hi` }));
     await w.idle();
-    expect(w.findUser).toEqual([]);
-    expect(w.invokes).toEqual([]);
-    expect(methods(w.slack.calls)).toEqual(['usersInfo']);
-    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_event_ignored', fields: { installId: INSTALL_ID, reason: 'empty' } }]);
+    expect(w.invokes.map(contentOf)).toEqual([`[Slack · #support · Alice Smith (${ALICE})]: <@${BOT_USER_ID}> hi`]);
+  });
+
+  it("another person's mention alone is words: it runs, as typed", async () => {
+    const w = world();
+    await w.dispatch(INSTALL, mention({ text: `<@${BOB}>` }));
+    await w.idle();
+    expect(w.invokes.map(contentOf)).toEqual([`[Slack · #support · Alice Smith (${ALICE})]: <@${BOB}>`]);
   });
 
   it('a users.info that failed only for a moment: the sender is told privately to try again', async () => {

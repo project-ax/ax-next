@@ -342,6 +342,18 @@ async function routeDm(
   }
 }
 
+/**
+ * The text with every mention of this install's own bot user removed, in
+ * either form Slack writes it (`<@U…>` or `<@U…|name>`). Other mentions stay.
+ * The id comes from the install row, never from the text. An install with no
+ * bot user id on record has nothing to strip.
+ */
+function withoutOwnMention(text: string, botUserId: string | null): string {
+  if (botUserId === null || botUserId === '') return text;
+  const id = botUserId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`<@${id}(?:\\|[^>]*)?>`, 'g'), '');
+}
+
 async function routeMention(
   d: RouterDeps,
   install: InstallRow,
@@ -395,7 +407,10 @@ async function routeMention(
     if (isTemporaryLookupFailure(admission)) await tell(COPY.turnFailed);
     return;
   }
-  if (m.text.trim().length === 0) {
+  // Slack's app_mention text always holds the bot's own `<@U…>`, so a bare
+  // `@bot` is that token alone: words only once it is gone. The content sent
+  // on is still the text as typed, the token included.
+  if (withoutOwnMention(m.text, install.botUserId).trim().length === 0) {
     log('info', 'slack_event_ignored', { reason: 'empty' });
     return;
   }
