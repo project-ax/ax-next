@@ -1,13 +1,17 @@
-// Guard: two names belong to @ax/channel-slack (and auth), and nobody else
-// may spell them (TASK-1093; design docs/plans/2026-11-09-channel-slack-design.md §6).
+// Guard: two auth hooks and the `slack:` prefix belong to @ax/channel-slack (and
+// auth), and nobody else may spell them (TASK-1093, TASK-1094; design
+// docs/plans/2026-11-09-channel-slack-design.md §6).
 //
-// RULE 1 — `auth:find-user-by-email` is the caller allowlist TASK-1092 asked
-// for. The hook answers "which AX user owns this verified email?", so a
-// caller can learn whether an address has an account. Only auth-better (which
-// registers it) and channel-slack (which maps a Slack sender to their user) may
-// name it. ipc-core's dependencies test keeps the hook off the runner's direct
-// IPC actions, but `tool:execute:<name>` dispatches into host tool plugins and
-// those can call ANY hook. Nothing at runtime stops that, so this scan does.
+// RULE 1 — `auth:find-user-by-email` and `auth:is-approved-email` share the
+// caller allowlist TASK-1092 asked for. The first answers "which AX user owns
+// this verified email?", so a caller can learn whether an address has an
+// account. The second answers "is this email on one of the install's approved
+// domains?", so a caller can probe which domains count as the company's. Only
+// auth-better (which registers both) and channel-slack (which asks them about
+// a Slack sender) may name them. ipc-core's dependencies test keeps every
+// `auth:` hook off the runner's direct IPC actions, but `tool:execute:<name>`
+// dispatches into host tool plugins and those can call ANY hook. Nothing at
+// runtime stops that, so this scan does.
 //
 // RULE 2 — `slack:` strings. channel-slack keeps its four per-install secrets
 // in the credentials vault under `slack:<installId>:<name>`, and its DM
@@ -33,7 +37,7 @@
 // not a skip: a file we couldn't read is a file we didn't check.
 //
 // WHAT IT MATCHES. Rule 1: a string literal or a no-substitution template
-// whose text is exactly the hook name. Rule 2: a string literal, a
+// whose text is exactly one of the two hook names. Rule 2: a string literal, a
 // no-substitution template, or a template HEAD whose text starts with
 // `slack:`. Comments never count.
 //
@@ -58,11 +62,13 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ROOTS = ['packages', 'presets'];
 
-const FIND_USER_HOOK = 'auth:find-user-by-email';
+// Rule 1's names. Each answers a question about an email address, so they
+// share one caller allowlist.
+const AUTH_EMAIL_HOOKS = new Set(['auth:find-user-by-email', 'auth:is-approved-email']);
 const SLACK_PREFIX = 'slack:';
 
 const RULES = {
-  'find-user-by-email': {
+  'auth-email-hooks': {
     dirs: ['packages/auth-better/', 'packages/channel-slack/'],
     // Each file needs a one-line reason. Adding one is a reviewed decision.
     files: new Map([
@@ -109,8 +115,9 @@ function trackedSources() {
 }
 
 /**
- * Every mention in `text`, allowlist NOT applied: `{ rule, line }` per hit, or
- * `{ rule: 'unreadable', line, reason }` when the file can't be parsed.
+ * Every mention in `text`, allowlist NOT applied: `{ rule, line }` per hit (plus
+ * `hook`, the name it spelled, for rule 1), or `{ rule: 'unreadable', line,
+ * reason }` when the file can't be parsed.
  */
 function findMentions(fileName, text) {
   const kind = SCRIPT_KIND.get(extensionOf(fileName));
@@ -131,7 +138,7 @@ function findMentions(fileName, text) {
   const lineOf = (node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const visit = (node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-      if (node.text === FIND_USER_HOOK) hits.push({ rule: 'find-user-by-email', line: lineOf(node) });
+      if (AUTH_EMAIL_HOOKS.has(node.text)) hits.push({ rule: 'auth-email-hooks', hook: node.text, line: lineOf(node) });
       if (node.text.startsWith(SLACK_PREFIX)) hits.push({ rule: 'slack-prefix', line: lineOf(node) });
     } else if (ts.isTemplateHead(node)) {
       if (node.text.startsWith(SLACK_PREFIX)) hits.push({ rule: 'slack-prefix', line: lineOf(node) });
@@ -154,18 +161,18 @@ function offendersIn(file, text) {
     .map((h) =>
       h.rule === 'unreadable'
         ? `${file} — unreadable at line ${h.line}: ${h.reason}`
-        : `${file}:${h.line} — ${h.rule}`,
+        : `${file}:${h.line} — ${h.hook ?? h.rule}`,
     );
 }
 
-describe('only auth-better and channel-slack name auth:find-user-by-email or slack: refs', () => {
+describe('only auth-better and channel-slack name auth:find-user-by-email, auth:is-approved-email or slack: refs', () => {
   const files = trackedSources();
 
   it('no other tracked source names them', () => {
     const offenders = files.flatMap((f) => offendersIn(f, readFileSync(join(REPO_ROOT, f), 'utf8')));
     expect(
       offenders,
-      'auth:find-user-by-email has a caller allowlist and slack: refs belong to channel-slack — see this file\'s header',
+      'auth:find-user-by-email and auth:is-approved-email share a caller allowlist, and slack: refs belong to channel-slack — see this file\'s header',
     ).toEqual([]);
   });
 
@@ -186,12 +193,17 @@ describe('only auth-better and channel-slack name auth:find-user-by-email or sla
   });
 
   it('sees the real owners — the detector works on real code, not only on the fixtures', () => {
-    // Positive control: channel-slack IS the legitimate home of both names.
-    // If these go quiet, the scan above is vacuous.
-    const read = (f) => findMentions(f, readFileSync(join(REPO_ROOT, f), 'utf8')).map((h) => h.rule);
+    // Positive control: auth-better and channel-slack ARE the legitimate homes
+    // of these names. If these go quiet, the scan above is vacuous.
+    const read = (f) =>
+      findMentions(f, readFileSync(join(REPO_ROOT, f), 'utf8')).map((h) => h.hook ?? h.rule);
     expect(read('packages/channel-slack/src/secrets.ts')).toContain('slack-prefix');
-    expect(read('packages/channel-slack/src/plugin.ts')).toContain('find-user-by-email');
-    expect(read('presets/memory/src/__tests__/canary.test.ts')).toContain('find-user-by-email');
+    expect(read('packages/channel-slack/src/plugin.ts')).toContain('auth:find-user-by-email');
+    expect(read('presets/memory/src/__tests__/canary.test.ts')).toContain('auth:find-user-by-email');
+    // auth-better registers both rule-1 hooks, so each name is seen in real code.
+    expect(read('packages/auth-better/src/plugin.ts')).toEqual(
+      expect.arrayContaining(['auth:find-user-by-email', 'auth:is-approved-email']),
+    );
   });
 });
 
@@ -210,6 +222,12 @@ const CASES = [
   ['clean', 'a comment naming the hook', 'packages/agents/src/x.ts', "// auth:find-user-by-email is channel-slack's\n/* 'auth:find-user-by-email' */\nexport {};"],
   ['clean', 'the name inside a longer string', 'packages/agents/src/x.ts', "const s = 'never call auth:find-user-by-email';"],
   ['clean', 'a sibling auth hook', 'packages/agents/src/x.ts', "await bus.call('auth:get-user', ctx, { userId });"],
+  // --- rule 1, its second name: the same allowlist ---
+  ['offender', 'is-approved-email: a bus.call in another package', 'packages/agents/src/x.ts', "await bus.call('auth:is-approved-email', ctx, { email });"],
+  ['offender', 'is-approved-email: a preset file that is not on the list', 'presets/k8s/src/__tests__/acceptance.test.ts', 'calls: [`auth:is-approved-email`]'],
+  ['clean', 'is-approved-email: the call in channel-slack', 'packages/channel-slack/src/x.ts', "await bus.call('auth:is-approved-email', ctx, { email });"],
+  ['clean', 'is-approved-email: auth-better registers it', 'packages/auth-better/src/x.ts', "bus.registerService('auth:is-approved-email', 'auth', impl);"],
+  ['clean', 'is-approved-email: an allowlisted preset test stubs it', 'presets/memory/src/__tests__/canary.test.ts', "bus.registerService('auth:is-approved-email', name, async () => ({ approved: false }));"],
   // --- rule 2 ---
   ['offender', 'a template head building a secret ref', 'packages/memory/src/y.ts', 'const ref = `slack:${id}:bot-token`;'],
   ['offender', 'a plain string ref', 'packages/credentials/src/__tests__/y.test.ts', "await bus.call('credentials:get', ctx, { ref: 'slack:abc:signing-secret', userId });"],
@@ -228,7 +246,7 @@ const CASES = [
 
 describe('the detector, against hostile synthetic sources', () => {
   it('carries every row', () => {
-    expect(CASES).toHaveLength(22);
+    expect(CASES).toHaveLength(27);
   });
 
   it.each(CASES)('%s — %s', (expected, _label, path, source) => {
@@ -237,12 +255,15 @@ describe('the detector, against hostile synthetic sources', () => {
     else expect(offenders.length).toBeGreaterThan(0);
   });
 
-  it('names the rule and the line', () => {
+  it('names the hook (or the rule) and the line', () => {
     expect(offendersIn('packages/memory/src/y.ts', "export {};\nconst r = `slack:${id}:bot-token`;")).toEqual([
       'packages/memory/src/y.ts:2 — slack-prefix',
     ]);
     expect(offendersIn('packages/agents/src/x.ts', "bus.call('auth:find-user-by-email', c, {});")).toEqual([
-      'packages/agents/src/x.ts:1 — find-user-by-email',
+      'packages/agents/src/x.ts:1 — auth:find-user-by-email',
+    ]);
+    expect(offendersIn('packages/agents/src/x.ts', "export {};\n\nbus.call('auth:is-approved-email', c, {});")).toEqual([
+      'packages/agents/src/x.ts:3 — auth:is-approved-email',
     ]);
   });
 });

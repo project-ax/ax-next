@@ -99,10 +99,13 @@ export function isDomainAllowed(email: string, allowed: readonly string[]): bool
 
 /**
  * Is `email` on an approved sign-in domain, for a check that isn't itself a
- * sign-in (`auth:find-user-by-email`, TASK-1092)? `lists` holds every gated
- * provider's parsed list, enabled or not. The email must be on at least one
- * non-blank list. A blank list adds nothing, and only when no provider has a
- * list at all is every domain approved, the same as sign-in with no lists.
+ * sign-in (`auth:find-user-by-email`, TASK-1092; `auth:is-approved-email`,
+ * TASK-1094)? `lists` holds every gated provider's parsed list, enabled or not.
+ * The email must be on at least one non-blank list. A blank list adds nothing,
+ * and only when no provider has a list at all is every domain approved, the
+ * same as sign-in with no lists. It reads only the domain (after the last @):
+ * with no list, any string passes, so a caller that needs a well-formed
+ * address checks that first.
  *
  * This is the install's list of company domains, not a replay of sign-in, and
  * it differs from sign-in both ways. Narrower: with Google limited to

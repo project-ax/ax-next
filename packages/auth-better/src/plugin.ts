@@ -30,6 +30,8 @@ import type {
   FindUserByEmailInput,
   FindUserByEmailOutput,
   HttpRequestLike,
+  IsApprovedEmailInput,
+  IsApprovedEmailOutput,
   User,
 } from './types.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from './migrations.js';
@@ -66,6 +68,10 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+$/;
 // a future edit that returns more (the email, the admin flag) fail loudly as
 // `invalid-return` instead of having the extra keys quietly stripped.
 const FindUserByEmailOutputSchema = z.object({ userId: z.string().min(1) }).strict().nullable();
+
+// `auth:is-approved-email` answers yes or no and nothing else: an edit that
+// adds a key (a user id, the matched domain) fails as `invalid-return`.
+const IsApprovedEmailOutputSchema = z.object({ approved: z.boolean() }).strict();
 
 /**
  * Config surface for `@ax/auth-better`. All fields optional; defaults
@@ -113,6 +119,8 @@ export interface AuthBetterConfig {
 //   - Real impls for auth:require-user, auth:get-user, auth:create-bootstrap-user
 //   - auth:find-user-by-email (TASK-1092): host-internal verified-email lookup
 //     for @ax/channel-slack; returns only `{ userId }` or null
+//   - auth:is-approved-email (TASK-1094): host-internal "is this email on an
+//     approved domain?" for @ax/channel-slack; reads no account
 //   - `/auth/*` splat route forwards to better-auth's WebStandards handler
 //   - auth:providers-changed subscriber rebuilds the handler in place
 //
@@ -160,6 +168,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:require-user',
         'auth:get-user',
         'auth:find-user-by-email',
+        'auth:is-approved-email',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -308,6 +317,16 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         PLUGIN_NAME,
         (ctx, input) => findUserByEmail(localDb, ctx, input),
         { returns: FindUserByEmailOutputSchema },
+      );
+
+      // Host-internal approved-domain check for @ax/channel-slack (TASK-1094):
+      // never an HTTP route or an IPC action. The contract is on
+      // IsApprovedEmailInput in types.ts.
+      bus.registerService<IsApprovedEmailInput, IsApprovedEmailOutput>(
+        'auth:is-approved-email',
+        PLUGIN_NAME,
+        (_ctx, input) => isApprovedEmail(localDb, input),
+        { returns: IsApprovedEmailOutputSchema },
       );
 
       bus.registerService<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
@@ -660,6 +679,41 @@ async function findUserByEmail(
     return null;
   }
   return { userId: row.id };
+}
+
+/**
+ * `auth:is-approved-email`: is `email` a plain, well-formed address on one of
+ * the install's approved domains? The contract is on IsApprovedEmailInput in
+ * types.ts. It reads the providers' domain lists and nothing else, never a user
+ * row, so its answer can't say whether anyone has an account. It takes no ctx,
+ * so it can't log, and the address never reaches the database.
+ */
+async function isApprovedEmail(
+  db: Kysely<AuthBetterDatabase>,
+  input: IsApprovedEmailInput,
+): Promise<IsApprovedEmailOutput> {
+  // A wrong type is a caller bug, so it throws, with a fixed message.
+  const email: unknown = input?.email;
+  if (typeof email !== 'string' || email.length === 0 || email.length > MAX_EMAIL_LEN) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'auth:is-approved-email',
+      message: `email must be a non-empty string of at most ${MAX_EMAIL_LEN} characters`,
+    });
+  }
+
+  // The address's own shape comes first: with no domain list at all, every
+  // domain is approved. Printable ASCII only, so the domain compare below folds
+  // nothing but A-Z (toLowerCase() would turn the Kelvin sign into 'k'). Then
+  // exactly one @ with something on both sides: the domain check reads the
+  // part after the LAST @, so 'a@b@canopyworks.com' and '@canopyworks.com'
+  // would pass it.
+  if (!isPlainAscii(email)) return { approved: false };
+  const parts = email.split('@');
+  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') return { approved: false };
+
+  return { approved: isOnApprovedDomain(email, await readApprovedDomainLists(db)) };
 }
 
 /**

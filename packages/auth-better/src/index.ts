@@ -11,6 +11,8 @@ export type {
   CreateBootstrapUserOutput,
   FindUserByEmailInput,
   FindUserByEmailOutput,
+  IsApprovedEmailInput,
+  IsApprovedEmailOutput,
   GetUserInput,
   GetUserOutput,
   HttpRequestLike,

@@ -115,6 +115,49 @@ export interface FindUserByEmailInput {
 /** `auth:find-user-by-email` output. See `FindUserByEmailInput` for the contract. */
 export type FindUserByEmailOutput = { userId: string } | null;
 
+/**
+ * `auth:is-approved-email` input (TASK-1094): an email address an identity
+ * provider verified (for @ax/channel-slack, the `users.info` email of a Slack
+ * member it found no AX account for).
+ *
+ * CONTRACT — every auth implementation registering this hook MUST keep all of
+ * these. A yes lets that person reach a team's agent as an outsider, and the
+ * hook must never become a way to learn who has an account:
+ *
+ *   - Host-internal only. Never an HTTP route or an IPC action.
+ *   - `approved` is true only when the address is printable ASCII (no space,
+ *     no control character, nothing beyond ASCII), has exactly one `@` with
+ *     something before and after it, and its domain is approved. Anything else
+ *     is `false`, and `false` never says which rule failed.
+ *   - Approved domains follow the same rule as auth:find-user-by-email. In
+ *     @ax/auth-better that means on at least one sign-in provider's non-blank
+ *     allowed-domain list (Google or GitHub), each read whether or not the
+ *     provider is enabled (`isOnApprovedDomain` in identity-gate.ts). A blank
+ *     list adds nothing; with no list anywhere, any domain is approved. The
+ *     domain must equal a listed one up to ASCII case: a subdomain is another
+ *     domain.
+ *   - Reads no account. The answer comes from the domain lists alone, so
+ *     `approved` never means "has an account", and `false` never means "has
+ *     none".
+ *   - No log line, whatever the answer: the address is personal data from
+ *     another system, and the caller logs its own code-only outcome.
+ *   - A missing, non-string, empty or over-320-character `email` is a caller
+ *     bug: `invalid-payload`, with a fixed message that never contains it.
+ *
+ * Callers pass only an email they fetched from the identity provider
+ * themselves, never one taken from message text or a command argument.
+ * `approved` means "on one of the install's company domains", not "a person we
+ * know".
+ */
+export interface IsApprovedEmailInput {
+  email: string;
+}
+
+/** `auth:is-approved-email` output. See `IsApprovedEmailInput` for the contract. */
+export interface IsApprovedEmailOutput {
+  approved: boolean;
+}
+
 export interface CreateBootstrapUserInput {
   displayName: string;
   email?: string;
