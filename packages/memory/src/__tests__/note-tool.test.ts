@@ -565,9 +565,11 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
   // from a conversation. Extraction passes have always asked; a note asks too,
   // so a refusal is not a promise the agent's own notes can break.
   const NOTE = { about: 'billing_service', relation: 'owner', value: 'Dana' };
+  // One sentence for every refusal, true whoever refused and why: a switch
+  // turned off, an outsider's turn, a check that failed, a task check-in.
   const REFUSED_MESSAGE =
     'NOT SAVED: nothing was written to memory — do not tell the person it was saved. ' +
-    "Memory is turned off for this conversation, so notes aren't saved here.";
+    "Notes aren't being saved in this conversation right now.";
 
   /** Refuses one conversation, the way the plugin that owns it would. */
   function refuse(h: MemoryHarness, conversationId: string, reason: string): void {
@@ -617,6 +619,25 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
     expect(await note(h, NOTE, h.ctx({ conversationId: 'conv-on' }))).toEqual({ ok: true });
     expect(readRows(h.databasePath).map((row) => row.conversation_id)).toEqual(['conv-on']);
   });
+
+  it.each(['channel-not-remembered', 'channel-external-turn', 'capture-check-failed', 'task-check-in'])(
+    'a refusal for %j tells the model the same true sentence, never that memory is off; the log says why',
+    async (reason) => {
+      const h = await withHarness();
+      refuse(h, 'conv-refused', reason);
+
+      const result = await note(h, NOTE, h.ctx({ conversationId: 'conv-refused' }));
+
+      expect(result).toEqual({ ok: false, error: 'forbidden', message: REFUSED_MESSAGE });
+      // A failed check (a slow store) is no switch, and an outsider's turn is no setting someone turned off.
+      expect(JSON.stringify(result)).not.toMatch(/turned off|\boff\b|memory is/i);
+      expect(JSON.stringify(result)).not.toContain(reason);
+      expect(readRows(h.databasePath)).toHaveLength(0);
+      expect(eventsNamed(h.logs, CAPTURE_REFUSED_EVENT).map((e) => [e.level, e.bindings])).toEqual([
+        ['info', { agentId: DEFAULT_AGENT, refusedBy: 'test-refuser', reason, tool: 'memory_note' }],
+      ]);
+    },
+  );
 
   it("asks once, before the write, with the conversation and the turn's own context", async () => {
     const h = await withHarness();

@@ -87,9 +87,11 @@ const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
 const PERSON_IN_SHARED_MESSAGE = "Notes about a person aren't saved in a shared conversation.";
-// The same words whoever refused and why: that goes to the log, not the model.
-const NOT_SAVED_HERE_MESSAGE =
-  "Memory is turned off for this conversation, so notes aren't saved here.";
+// The same words whoever refused and why: that goes to the log, not the
+// model. True for every refusal (TASK-1094 PR B review F4): a switch turned
+// off, a conversation memory never learns from, a check that failed or timed
+// out, a task check-in. So it names no cause, and never says memory is off.
+const NOT_SAVED_HERE_MESSAGE = "Notes aren't being saved in this conversation right now.";
 
 const FAILURE_MESSAGES: Record<MemoryNoteErrorCode, string> = {
   // Engine-side rejection: deliberately generic — the engine's own error text
