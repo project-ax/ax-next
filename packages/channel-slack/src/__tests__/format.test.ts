@@ -105,7 +105,8 @@ describe('neutralizeSlackControls(text, before): text that goes on from earlier 
         checked += 1;
       }
     }
-    expect(checked).toBeGreaterThan(60);
+    // 51 of the 93 splits: an `@` waits after a letter too, so `me@` … `me@channel` and `x@` … `x@here` are skipped.
+    expect(checked).toBeGreaterThan(45);
   });
 });
 
@@ -123,16 +124,20 @@ describe('undecidedTail', () => {
     }
   });
 
-  it('nothing waits once the end is decided', () => {
-    for (const text of ['', 'ping', 'ping @channel ', 'ping @chat', '@heres', '@here!', '@channel.', 'me@', 'me@chan', '@he@', 'a@everyone']) {
-      expect(undecidedTail(text), text).toBe(0);
-    }
+  it('an @ right after a letter or a digit waits too: the word may start a Slack message, where that letter is not', () => {
+    // `me@chan` is an address in the reply, but the status card, a new stream or a cut can come
+    // between `me` and the `@`; then `nel` arriving next would start that message with `@channel`.
+    expect(undecidedTail('me@')).toBe(1);
+    expect(undecidedTail('me@chan')).toBe(5);
+    expect(undecidedTail('@he@')).toBe(1);
+    expect(undecidedTail('team2@here')).toBe(5);
+    expect(undecidedTail('a@everyone')).toBe(9);
   });
 
-  it('an @ at the very start reads the character before it from the text before', () => {
-    expect(undecidedTail('@chan', 'me')).toBe(0);
-    expect(undecidedTail('@chan', 'me ')).toBe(5);
-    expect(undecidedTail('@chan', '')).toBe(5);
+  it('nothing waits once the end is decided', () => {
+    for (const text of ['', 'ping', 'ping @channel ', 'ping @chat', '@heres', '@here!', '@channel.', 'me@channel.com', 'me@chat']) {
+      expect(undecidedTail(text), text).toBe(0);
+    }
   });
 });
 

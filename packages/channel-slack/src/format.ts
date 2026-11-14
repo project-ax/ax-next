@@ -63,21 +63,25 @@ export function neutralizeSlackControls(text: string, before = ''): string {
 
 /**
  * How many code units at the end of `text` neutralizeSlackControls can't
- * decide yet: an `@` that may start a broadcast word, followed by nothing but
- * the start of one (or the whole word: `@channel` then `s` is a name). The
- * next characters decide it, so a reply stream holds these back until they
- * come (reply-stream.ts). At most nine (`@everyone`); 0 when nothing waits.
- * `before` is the text right before `text`, read for an `@` at its start.
+ * decide yet: an `@` followed by nothing but the start of a broadcast word
+ * (or the whole word: `@channel` then `s` is a name). The next characters
+ * decide it, so a reply stream holds these back until they come
+ * (reply-stream.ts). At most nine (`@everyone`); 0 when nothing waits.
+ *
+ * Whatever comes before the `@` is never read. A letter there makes the word
+ * an address in the reply (`me@chan`), but Slack judges each message, and
+ * the status card, a new stream or a cut can come between that letter and
+ * the `@`: sent then, `@chan` would start the next run and `nel` complete a
+ * live `@channel` in it. Held, the word reaches that run whole and is judged
+ * there.
  */
-export function undecidedTail(text: string, before = ''): number {
+export function undecidedTail(text: string): number {
   const at = text.lastIndexOf('@');
   if (at < 0 || text.length - at - 1 > LONGEST_BROADCAST_WORD) return 0;
   const start = text.slice(at + 1);
   if (!/^[A-Za-z]*$/.test(start)) return 0;
   const lower = start.toLowerCase();
-  if (!BROADCAST_WORDS.some((word) => word.startsWith(lower))) return 0;
-  const left = at > 0 ? text.charAt(at - 1) : before.slice(-1);
-  return /[A-Za-z0-9]/.test(left) ? 0 : text.length - at;
+  return BROADCAST_WORDS.some((word) => word.startsWith(lower)) ? text.length - at : 0;
 }
 
 /**

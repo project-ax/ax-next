@@ -1037,14 +1037,52 @@ function messages(calls: readonly Call[]): string[] {
     : streams(calls).map((st) => st.text);
 }
 
+/**
+ * Slack takes the stream's start, then refuses to add to it: the text the
+ * start carried stays in that message, and the rest is posted at finish.
+ */
+const FALLS_BACK = {
+  fail: (method: Method) =>
+    method === 'appendStream' ? new SlackApiError('chat.appendStream', 'internal_error') : undefined,
+};
+
+/**
+ * The runs of text Slack may judge on their own, in order: each message's
+ * text, cut where its status card sits (Slack may render the card between
+ * them), and each post. A word is live if it is live in any one of them.
+ */
+function segments(calls: readonly Call[]): string[] {
+  const runsByTs = new Map<string, string[]>();
+  const out: string[][] = [];
+  for (const c of calls) {
+    if (!c.ok) continue;
+    if (c.method === 'postMessage') {
+      out.push([markdownOf(c)]);
+      continue;
+    }
+    if (c.method === 'startStream') {
+      const fresh = [''];
+      runsByTs.set(c.ts!, fresh);
+      out.push(fresh);
+    }
+    const runs = c.ts === undefined ? undefined : runsByTs.get(c.ts);
+    if (runs === undefined) continue;
+    for (const chunk of chunksOf(c)) {
+      if (chunk.type === 'task_update') runs.push('');
+      else if (chunk.type === 'markdown_text') runs[runs.length - 1] += chunk.text;
+    }
+  }
+  return out.flat().filter((text) => text.length > 0);
+}
+
 describe('createReplyStream: a bare @here, @channel or @everyone', () => {
-  it.each(['streamed', 'posted'] as const)(
+  it.each(['streamed', 'streamed, then posted'] as const)(
     "'ping @channel now' split at every point across two text() calls, a flush between (%s): Slack never gets a live @channel",
     async (how) => {
       const input = 'ping @channel now';
       const expected = `ping @${ZWSP}channel now`;
       for (let k = 0; k <= input.length; k += 1) {
-        const { api, calls } = fakeSlack(how === 'posted' ? POSTING : {});
+        const { api, calls } = fakeSlack(how === 'streamed' ? {} : FALLS_BACK);
         const s = make(api);
         s.text(input.slice(0, k));
         await tick();
@@ -1056,10 +1094,93 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
         for (const text of sent) expect(BROADCAST.test(text), `split at ${k}: ${JSON.stringify(text)}`).toBe(false);
         expect(sent.join(''), `split at ${k}`).toBe(expected);
         // The flush between sent no part of the word: `@`, `@c` … `@channel` waited for what came next.
-        if (how === 'streamed') {
-          expect(flushed, `split at ${k}`).toBe(k <= 5 ? input.slice(0, k) : k <= 13 ? 'ping ' : expected.slice(0, k + 1));
+        expect(flushed, `split at ${k}`).toBe(k <= 5 ? input.slice(0, k) : k <= 13 ? 'ping ' : expected.slice(0, k + 1));
+        // Posted: the stream's message keeps what that flush sent and the rest is a post of its own, so
+        // posting can't re-join the word for its own check (postRest judges only what it posts): what the
+        // first message holds is the holdback's doing alone.
+        if (how !== 'streamed' && k > 0 && k < input.length) {
+          expect(segments(calls), `split at ${k}`).toEqual([flushed, expected.slice(flushed.length)]);
         }
       }
+    },
+  );
+
+  // Where the reply's text goes on in a new Slack message, or past the status card, right after a letter:
+  // `me` makes an `@` that follows it an address in the reply, but not in the run Slack judges next.
+  // `say` sends `first`, crosses the edge and sends `piece`, the word's start.
+  const FULL = `${'a'.repeat(STREAM_TEXT_LIMIT - 2)}me`;
+  it.each<[string, string, (s: ReplyStream, first: string, piece: string) => Promise<void>]>([
+    [
+      'the status card',
+      'Write to me',
+      async (s, first, piece) => {
+        s.text(first);
+        s.status('Looking it up');
+        s.text(piece);
+      },
+    ],
+    [
+      'an age rotation',
+      'Write to me',
+      async (s, first, piece) => {
+        s.text(first);
+        await tick();
+        await tick(STREAM_MAX_AGE_MS);
+        s.text(piece);
+      },
+    ],
+    [
+      'a full stream',
+      FULL,
+      async (s, first, piece) => {
+        s.text(first);
+        s.text(piece);
+      },
+    ],
+    [
+      'a full stream cut inside one delta',
+      FULL,
+      async (s, first, piece) => {
+        s.text(first + piece);
+      },
+    ],
+  ])(
+    "a letter, then %s, then '@channel now' split at every point: the word starts the next run whole and is caught",
+    async (_edge, first, say) => {
+      const rest = '@channel now';
+      for (let k = 1; k < rest.length; k += 1) {
+        const { api, calls } = fakeSlack();
+        const s = make(api);
+        await say(s, first, rest.slice(0, k));
+        await tick();
+        s.text(rest.slice(k));
+        await finishNow(s);
+
+        const runs = segments(calls);
+        for (const text of runs) expect(BROADCAST.test(text), `split at ${k}: ${JSON.stringify(text)}`).toBe(false);
+        expect(runs, `split at ${k}`).toEqual([first, `@${ZWSP}channel now`]);
+      }
+    },
+  );
+
+  it.each<[string, string, (s: ReplyStream) => void, string[]]>([
+    ['in the same message', 'ping ', () => {}, ['ping @channels now']],
+    ['right after the status card', 'Write to me', (s) => s.status('Looking it up'), ['Write to me', '@channels now']],
+  ])(
+    'a whole word waits for the character after it (%s): `@channel` then `s` is the name `@channels`, kept as typed, and nothing live went out between',
+    async (_where, first, cross, runs) => {
+      const { api, calls } = fakeSlack();
+      const s = make(api);
+      s.text(first);
+      cross(s);
+      s.text('@channel');
+      await tick();
+      // The flush sent what came before the word, and nothing of the word.
+      expect(segments(calls)).toEqual([first]);
+      s.text('s now');
+      await finishNow(s);
+      expect(segments(calls)).toEqual(runs);
+      expect(delivered(calls)).not.toContain(ZWSP);
     },
   );
 

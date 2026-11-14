@@ -33,9 +33,11 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     out, because the reply's text on the other side of an edge doesn't
  *     reach Slack with it: the start of a message (a new stream, each posted
  *     part), the text after the status card, and where a full stream or a
- *     post is cut. A mark added there can take a message past
- *     STREAM_TEXT_LIMIT or POST_PART_LIMIT by at most three characters;
- *     Slack's own cap (12,000) has room.
+ *     post is cut. So the `@` waits even right after a letter (`me@chan`):
+ *     an edge can fall between the two, and the word must reach the run it
+ *     lands in whole to be judged there. A mark added at an edge can take a
+ *     message past STREAM_TEXT_LIMIT or POST_PART_LIMIT by at most three
+ *     characters; Slack's own cap (12,000) has room.
  *   - The status line is ONE `task_update` card (id `status`) per stream
  *     message, updated in place, `complete` (or `error`) when the message ends.
  *     `working()` puts 👀 on the owner's message instead (it leaves no trace
@@ -210,8 +212,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   let agentStatus = false;
   /**
    * Model text not yet decided: an `@` that may start a broadcast word and
-   * what followed it (`undecidedTail`). Not in the buffer, so no flush sends
-   * it; the next text() or `finish` decides it.
+   * what followed it (`undecidedTail`), whatever came before the `@`. Not in
+   * the buffer, so no flush sends it; the next text() or `finish` decides it.
    */
   let waitingText = '';
   /** The reply's decided text, its last two characters: what the next delta is judged against. */
@@ -521,7 +523,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       if (finished || typeof delta !== 'string' || delta.length === 0) return;
       anyText = true;
       const text = waitingText + delta;
-      const wait = undecidedTail(text, textTail);
+      const wait = undecidedTail(text);
       waitingText = text.slice(text.length - wait);
       const ready = text.slice(0, text.length - wait);
       if (ready.length === 0) return;
