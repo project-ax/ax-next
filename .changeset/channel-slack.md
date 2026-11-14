@@ -18,3 +18,9 @@ Once a channel is connected, mentioning the bot there talks to its agent. Someon
 The Slack app asks for three more permissions, each for one job. `channels:read` lets AX look up a channel and list the public ones to pick from. `channels:join` lets the bot join the channel you pick, so nobody has to invite it. `commands` adds the `/ax` slash command, which Slack sends to AX at a signed address of its own (`/slack/commands/<install>`); AX checks the signature and who is asking before it does anything.
 
 An existing Slack connection has none of these, so it must be disconnected and connected again from AX's admin settings before channels can be connected.
+
+Mention-only, on purpose: the bot answers a message that mentions it and nothing else, so a follow-up in the same thread needs a new mention. A bare `@bot` with nothing else runs no turn. A reply can't broadcast: a bare `@channel`, `@here` or `@everyone` in the agent's text gets a zero-width space after the `@`, even when the word is split across chunks.
+
+Each connected channel has a "remember this channel" switch. It works through `memory:pre-capture`, so it also stops the agent's own `memory_note`. Once a thread has had a turn while the switch was off, it stays unremembered, even if the switch comes back on or Slack is disconnected. It stops learning, not recall: the agent still recalls what it learned elsewhere.
+
+When a call needs approval, an outsider's turn says the agent is waiting for its owner and the call waits in the connector's Today. A member's turn, or a DM, links to Today to approve it, until Slack gets approval buttons.

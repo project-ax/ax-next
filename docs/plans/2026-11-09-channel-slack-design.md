@@ -83,6 +83,13 @@ the label early. `<text>` is the message as its sender typed it: Slack's
 `<url|label>` reference stays as Slack wrote it). That label is untrusted text
 the model reads. Nothing ever treats it as permission to do something.
 
+**Mention-only.** In a channel the bot answers a message that mentions it, and
+nothing else: a follow-up in the same thread needs a new mention. A bare
+`@bot` with no other text runs no turn. A reply can't broadcast: a bare
+`@channel`, `@here` or `@everyone` in the agent's text gets a zero-width space
+after the `@` (held back across chunk and edit boundaries, so a split can't
+sneak one through).
+
 ## 2a. Memory: decided by who sees the reply
 
 Two problems with today's memory once an agent sits in a channel:
@@ -114,8 +121,9 @@ in #support can be recalled anywhere. What someone said privately is never
 recalled in a channel.
 
 - The owner's memory view labels shared statements so they can be deleted. It
-  says "Shared" for now. Naming the channel ("learned in #support") waits for
-  TASK-1094, since memory never sees a channel name.
+  says "Shared" for now. Naming the channel ("learned in #support") is not done
+  by TASK-1094: memory never sees a channel name, and showing one needs memory
+  to expose where a statement came from. A later card.
 - A shared session gets no `/memory` file view. The export holds every fact the
   agent has, so it would walk around the recall filter.
 - The speaker rule is a filter, not a prompt change. In a shared turn, any
@@ -124,7 +132,12 @@ recalled in a channel.
   label; closing a slot is tenant-wide, so a private statement can close a
   shared one; a Fix on a shared memory saves as private.
 - Each connected channel has a "Let the agent remember this channel" switch,
-  on by default.
+  on by default. It works through `memory:pre-capture`, so it also stops
+  `memory_note`. It is read in the same statement that records the thread, and
+  once a thread has had a turn while the switch was off, that thread stays
+  unremembered: turning the switch back on doesn't capture it, and
+  disconnecting Slack keeps that. The switch stops learning, not recall: the
+  agent still recalls memory it learned elsewhere.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
@@ -289,9 +302,12 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
 2. **Admit.** Run the checks in §1.2 and §1.6, and choose the agent and the
    attended or external mode from §2.
 3. **Conversation.** `conversations:find-or-create` with the key
-   `slack:<installId>:<channel>:<thread_ts>`. One Slack thread is one
-   conversation, owned by the agent's owner, and the owner can read it in the
-   web app.
+   `slack:<installId>:<channel>:<thread_ts>`. One Slack thread has
+   one conversation per AX identity: an attended sender gets their own, and
+   external turns share one owned by the person who connected the channel (key
+   suffix `:external`). Why: conversations have a single owner, an outsider's
+   text never enters a member's attended transcript, and `(source, audience)`
+   stays constant per conversation. Each owner can read theirs in the web app.
 4. **Invoke.** `agent:invoke` with the context from step 2.
 5. **Reply.** Subscribe to `chat:stream-chunk`, `chat:phase`, `chat:turn-end`,
    `chat:turn-error` and `chat:permission-request` filtered by `reqId`, the way
@@ -336,7 +352,10 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - **Attended:** Block Kit buttons. The interactivity route checks the clicker
      is the turn's person, then calls `agent:apply-capability-grant`, the same
      hook `/api/chat/permission-decision` uses (`routes-chat.ts:825`).
-   - **External:** a "waiting for my owner" note, and the call waits in Today.
+   - **External:** a "waiting for my owner" note, and the call waits in the
+     connector's Today.
+   - **Attended and DM:** a link to approve it in Today, until TASK-1095's
+     buttons.
    - Until TASK-1095, a Slack conversation (origin `'slack'`) is unattended for
      decisions, so held calls wait in Today.
 
@@ -411,12 +430,20 @@ Attended channel turns (§2) and personal-agent DMs need it.
   preset tests), and only channel-slack may build a `slack:` vault ref. It's a
   scan, not a runtime check: a name built at runtime gets past it. Callers
   pass only an email they fetched from the identity provider themselves.
-- **Open for TASK-1094:** it says nothing about company members who have no AX
-  account, and channel-slack can't read the approved domains. Admitting them as
-  external (§2) needs that answer from auth. Add it with that card. Don't copy
-  the domain list into channel-slack.
+**Approved email domains** are a second service hook on the auth plugin,
+`auth:is-approved-email`: `{ email } → { approved }`. Admitting a company member
+who has no AX account as external (§2) needs this answer, and channel-slack
+can't read the domains itself (don't copy the list into it).
 
-**No other new hooks** (apart from the open question above).
+- **Rules:** same domain rule as `auth:find-user-by-email` (§1.2). Only plain
+  ASCII addresses can pass. It reads no user rows and logs nothing.
+- **Caller allowlist:** the same repo scan, `channel-slack-boundaries.test.js`.
+- **Alternate implementation:** an OIDC or SCIM directory.
+- **Leaky field names:** none.
+- **Caller risk:** reading `approved` as "has an account". It says nothing of
+  the sort.
+
+**No other new hooks** (apart from `auth:is-approved-email` above).
 `@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
 registers routes and subscribes to chat events. Two existing surfaces widen:
 conversations' `origin` gains `'slack'` (a Slack thread is read-only in the web
