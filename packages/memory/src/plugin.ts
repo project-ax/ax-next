@@ -1529,6 +1529,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // like any other. What governs its capture is `ctx.audience`, not
         // `source`: a shared turn's statements are stamped shared, and it
         // stores nothing about a person (`toStatements`, `recordFacts`).
+        // (From Slack none is captured: channel-slack's `memory:pre-capture`
+        // veto refuses every thread an outsider talks in, TASK-1094.)
         //
         // TASK-625: when this host extracts incrementally, `chat:end` is the
         // FINAL pass over the canonical transcript's remaining turns — queued
