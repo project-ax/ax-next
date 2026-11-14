@@ -132,6 +132,15 @@ describe('the list', () => {
     expect(note).toHaveTextContent("Its instructions and files can show up in its answers to anyone in the channel");
     expect(note.textContent).not.toMatch(/they can see its instructions/);
     expect(note).toHaveTextContent("approvals wait in that person's Today");
+    // What an outsider says is never remembered, whatever the switch says.
+    expect(note).toHaveTextContent('Quill never remembers what people without access say.');
+  });
+
+  it("the switch says what it covers: what people with access say, and never anyone else's words", async () => {
+    renderIt(ready([SUPPORT]));
+    expect(await screen.findByRole('switch', { name: 'Let Quill remember this channel' })).toHaveAccessibleDescription(
+      'When this is on, Quill remembers what people with access to it say here. It never remembers what anyone else says.',
+    );
   });
 
   it('a member reads the list: no switch, no Disconnect, no combobox', async () => {
@@ -142,7 +151,11 @@ describe('the list', () => {
     expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
     expect(screen.queryByRole('combobox')).toBeNull();
-    expect(screen.getByText('Quill remembers this channel.')).toBeInTheDocument();
+    // Only #ops remembers, and only what people with access say there.
+    expect(
+      screen.getAllByText('Quill remembers what people with access to it say here. It never remembers what anyone else says.'),
+    ).toHaveLength(1);
+    expect(screen.queryByText('Quill remembers this channel.')).toBeNull();
   });
 
   it('a member of an empty agent is told so', async () => {

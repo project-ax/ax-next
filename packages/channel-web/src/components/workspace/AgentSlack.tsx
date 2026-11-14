@@ -33,7 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
+import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -309,6 +309,7 @@ function ChannelRow({
   onDisconnect: () => void;
 }) {
   const switchId = `slack-remember-${row.channelId}`;
+  const rememberNote = `${agentName} remembers what people with access to it say here. It never remembers what anyone else says.`;
   return (
     <li className="flex flex-col gap-3 px-4 py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -340,6 +341,7 @@ function ChannelRow({
             : `Whoever connected this channel no longer has access to ${agentName}, so it can't answer here until a team admin reconnects it.`}
         </p>
       )}
+      {/* What people without access to the agent say is never remembered, whatever the switch says (channel-slack's capture veto). */}
       {canManage ? (
         <Field orientation="horizontal">
           <Switch
@@ -347,13 +349,17 @@ function ChannelRow({
             checked={row.remember}
             disabled={busy}
             onCheckedChange={onRemember}
+            aria-describedby={`${switchId}-note`}
           />
-          <FieldLabel htmlFor={switchId} className="font-normal">
-            Let {agentName} remember this channel
-          </FieldLabel>
+          <FieldContent>
+            <FieldLabel htmlFor={switchId} className="font-normal">
+              Let {agentName} remember this channel
+            </FieldLabel>
+            <FieldDescription id={`${switchId}-note`}>When this is on, {rememberNote}</FieldDescription>
+          </FieldContent>
         </Field>
       ) : (
-        row.remember && <p className="text-[12.5px] text-muted-foreground">{agentName} remembers this channel.</p>
+        row.remember && <p className="text-[12.5px] text-muted-foreground">{rememberNote}</p>
       )}
       {error !== null && (
         <p role="alert" className="text-[12.5px] text-destructive">
@@ -475,7 +481,8 @@ function ChannelPicker({
       <FieldDescription>
         Everyone in the channel can talk to {agentName}. Its instructions and files can show up in its answers to
         anyone in the channel. If someone without access to {agentName} talks to it, it works with the access of
-        whoever connected the channel, and any approvals wait in that person&apos;s Today.
+        whoever connected the channel, and any approvals wait in that person&apos;s Today. {agentName} never
+        remembers what people without access say.
       </FieldDescription>
     </Field>
   );
