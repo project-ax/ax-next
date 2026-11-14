@@ -12,10 +12,15 @@
  *     http-server's CSRF guard
  */
 
-export type AuthProviderKind = 'google' | 'github' | 'oidc';
+/** The sign-in providers an admin can add: the ones ax wires into sign-in. */
+export type AuthProviderKind = 'google' | 'github';
 
 export interface AuthProviderEntry {
-  kind: AuthProviderKind;
+  /**
+   * A string, not AuthProviderKind: the server can still list an old kind the
+   * form no longer offers (a leftover `oidc` row, TASK-1116).
+   */
+  kind: string;
   clientId: string;
   discoveryUrl: string | null;
   allowedDomains: string | null;
@@ -28,7 +33,6 @@ export interface UpsertAuthProviderInput {
   kind: AuthProviderKind;
   clientId: string;
   clientSecret: string;
-  discoveryUrl?: string;
   allowedDomains?: string;
 }
 
@@ -59,8 +63,9 @@ export async function upsertAuthProvider(input: UpsertAuthProviderInput): Promis
   }
 }
 
+// The toggle and the delete act on listed rows, which may be a leftover kind.
 export async function setAuthProviderEnabled(
-  kind: AuthProviderKind,
+  kind: string,
   enabled: boolean,
 ): Promise<void> {
   const res = await fetch(`/admin/auth/providers/${encodeURIComponent(kind)}`, {
@@ -75,7 +80,7 @@ export async function setAuthProviderEnabled(
   }
 }
 
-export async function deleteAuthProvider(kind: AuthProviderKind): Promise<void> {
+export async function deleteAuthProvider(kind: string): Promise<void> {
   const res = await fetch(`/admin/auth/providers/${encodeURIComponent(kind)}`, {
     method: 'DELETE',
     credentials: 'include',

@@ -21,11 +21,10 @@ const SELECT_CLASS =
  * `aria-describedby` so it reaches a screen reader rather than only a pair of
  * eyes.
  *
- * This form asked a non-technical admin for a Client ID, a Client secret and a
- * Discovery URL, and explained none of them. Those are not guessable: an admin
- * who has never registered an OAuth app has no way to know that two of the
- * three arrive together on one screen, or that "Discovery URL" is the same
- * thing their provider's docs call the well-known configuration.
+ * This form asked a non-technical admin for a Client ID and a Client secret,
+ * and explained neither. They are not guessable: an admin who has never
+ * registered an OAuth app has no way to know that the two arrive together on
+ * one screen.
  */
 function FieldHint({ id, children }: { id: string; children: React.ReactNode }) {
   return (
@@ -39,17 +38,12 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
   const [kind, setKind] = useState<AuthProviderKind>('google');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
-  const [discoveryUrl, setDiscoveryUrl] = useState('');
   const [allowedDomains, setAllowedDomains] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isOidc = kind === 'oidc';
   const canSave =
-    !saving &&
-    clientId.trim().length > 0 &&
-    clientSecret.trim().length > 0 &&
-    (!isOidc || discoveryUrl.trim().length > 0);
+    !saving && clientId.trim().length > 0 && clientSecret.trim().length > 0;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -61,7 +55,6 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
         kind,
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
-        ...(isOidc ? { discoveryUrl: discoveryUrl.trim() } : {}),
         ...(allowedDomains.trim().length > 0
           ? { allowedDomains: allowedDomains.trim() }
           : {}),
@@ -90,11 +83,9 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
         >
           <option value="google">Google</option>
           <option value="github">GitHub</option>
-          <option value="oidc">Generic OIDC</option>
         </select>
         <FieldHint id="auth-provider-kind-hint">
-          The service people will use to sign in. Pick Generic OIDC if your
-          company uses its own single sign-on.
+          The service people will use to sign in.
         </FieldHint>
       </div>
 
@@ -131,25 +122,6 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
           password.
         </FieldHint>
       </div>
-
-      {isOidc && (
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="auth-provider-discovery-url">Discovery URL</Label>
-          <Input
-            id="auth-provider-discovery-url"
-            value={discoveryUrl}
-            onChange={(e) => setDiscoveryUrl(e.target.value)}
-            disabled={saving}
-            placeholder="https://issuer.example.com/.well-known/openid-configuration"
-            aria-describedby="auth-provider-discovery-url-hint"
-          />
-          <FieldHint id="auth-provider-discovery-url-hint">
-            The address ax checks sign-ins against. Your provider's docs may call
-            it the discovery URL, the OIDC URL, or the well-known configuration —
-            they all mean this one.
-          </FieldHint>
-        </div>
-      )}
 
       <div className="flex flex-col gap-2">
         <Label htmlFor="auth-provider-allowed-domains">

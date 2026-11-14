@@ -1100,6 +1100,401 @@ kubectl --context "$KCTX" delete configmap run-error-scrub -n "$NS"
 
 ---
 
+### 4h. Audit accounts after TASK-1116 (sign-up gate)
+
+Until TASK-1116, the sign-in rules had holes. Anyone could sign up with any
+email and a password. A client could post a Google ID token straight to the
+server and get an account. And the Google email-domain check didn't actually
+run. Worse, a password account set up under someone's email was linked to that
+person when they first signed in with Google, so whoever set the password could
+sign in as them. And a GitHub account holding an unverified copy of someone's
+email could link itself to their account. This step lists the accounts those
+holes could have let in.
+
+**When.** Run it now, before the TASK-1116 deploy, to see what the open sign-up
+let in. Then run it once more after the deploy.
+
+**It changes nothing.** The session is read-only and the queries run in one
+read-only transaction that is rolled back. Any write in that session fails.
+So it needs no backup, and it's safe while the app is up.
+
+**Its output names people.** It prints account ids, emails, roles and
+timestamps (never a password hash, a token or a secret). Keep it out of tickets
+and chat. Record only the section 7 counts on the card.
+
+**Every `kubectl` command names its context**, as in 4f and 4g. The default
+context on our laptops is prod, so we never lean on it. Set it once, check,
+then copy-paste:
+
+```bash
+KCTX=<your GKE context>        # kubectl config get-contexts
+NS=ax-next
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
+```
+
+#### Step 1: load the script
+
+Work from the repo root of a checkout that has the script: the TASK-1116
+branch until it merges, `main` after.
+
+```bash
+git log -1 --oneline -- packages/auth-better/sql/audit-sign-ups.sql   # must print a commit
+kubectl --context "$KCTX" create configmap auth-sign-up-audit -n "$NS" \
+  --from-file=audit.sql=packages/auth-better/sql/audit-sign-ups.sql
+```
+
+`AlreadyExists` means an earlier try left one behind. Delete it (the last
+command in Step 2) and create it again, so the pod runs this checkout's script.
+
+#### Step 2: run it, read the log, clean up
+
+The pod reads the database URL from the existing `ax-next-db` Secret, as in 4g.
+The password stays inside the cluster: it never goes on your laptop's command
+line, into your shell history, or into the pod spec. The psql line passes the
+allowed domain as `-v domain=canopyworks.com`. On another install, change that
+one value (a comma-separated list works too: `-v domain=a.com,b.org`).
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: auth-sign-up-audit
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: audit
+      configMap: { name: auth-sign-up-audit }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: audit, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v domain=canopyworks.com -f /sql/audit.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/auth-sign-up-audit -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod auth-sign-up-audit -n "$NS"
+kubectl --context "$KCTX" logs auth-sign-up-audit -n "$NS" > audit-output.txt   # names people: delete when done
+kubectl --context "$KCTX" delete pod auth-sign-up-audit -n "$NS"
+kubectl --context "$KCTX" delete configmap auth-sign-up-audit -n "$NS"
+```
+
+The log starts with `SET` and `BEGIN` and ends with `ROLLBACK`: psql reporting
+each statement it ran. If it ends with an `ERROR:` line instead, nothing was
+read in full. The `describe` output (printed when the wait times out) and the
+log say why.
+
+**On kind**, the host image has psql and the database is in the cluster, so
+pipe the file in directly:
+
+```bash
+KCTX=kind-ax-next-dev
+kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-next -d ax-next -X -v ON_ERROR_STOP=1 -v domain=canopyworks.com -f - < packages/auth-better/sql/audit-sign-ups.sql
+```
+
+#### Step 3: read it
+
+Sections 1–6 list each account's `id`, `email`, `role`, `email_verified`,
+`created_at`, `sign_in_methods` (how it signs in, oldest first; `credential` is
+a password) and `live_sessions` (sessions that haven't expired yet).
+
+- **`== 0. Sign-in providers`.** Each enabled provider should show the domains
+  you expect. `(any domain)` means anyone with an account at that provider.
+- **`== 1. Accounts outside the allowed domain`.** Accounts whose email is
+  outside the domain you passed with `-v domain`. Matching is exact, so
+  `eng.canopyworks.com` is outside `canopyworks.com`. After the deploy, a
+  member (role `user`) here is turned away at its next sign-in through a
+  provider whose own list leaves its domain out. On canopyworks.ai, section 0
+  should show Google's list as exactly `canopyworks.com`, so that's every
+  member here. Elsewhere, compare with section 0: a provider showing
+  `(any domain)` turns nobody away. Sessions already issued last up to 7 days.
+  An admin here keeps access, because the list never turns an admin away.
+  Decide whether each one should be an admin.
+- **`== 2. Accounts with a password (ax never sets one)`.** Every row came in
+  through the old email sign-up, because nothing in ax sets a password. The
+  `verdict` column:
+  - `LINKED AFTER PASSWORD - treat as taken over`: someone set a password
+    before the real owner's first Google or GitHub sign-in, and could sign in
+    as them until this deploy. **That's an incident. Stop and ask a
+    developer.**
+  - `password only`: nobody can use it after the deploy, but it blocks the
+    real owner's email until the row is removed.
+  - `password added after a provider sign-in - ask a developer`: nothing in ax
+    does this. Ask a developer.
+- **`== 3. Unverified accounts (not counting a setup admin waiting for its first sign-in)`.**
+  A row whose `sign_in_methods` is `credential` or `(none)` can't sign in after
+  the deploy: passwords are off, and a new sign-in won't attach to an
+  unverified account. A row with a Google or GitHub method still can, through
+  that provider, when it vouches for the account's own email (and, for a
+  member, section 1's domain rule allows it). The account is marked verified
+  then.
+- **`== 4. Google sign-ins made with a client-posted ID token (no OAuth scope on file)`.**
+  Accounts made by posting a Google ID token straight to the server instead of
+  going through Google's sign-in page. Nothing in ax does that, so each row is
+  someone calling the API directly, and the domain check didn't run for them.
+  An account that's also in section 1 is an outsider. This is a strong hint,
+  not proof: a row someone added by hand looks the same. It can also miss
+  some: before 2026-10-27, a later normal Google sign-in hid the mark.
+- **`== 5. Accounts with a GitHub sign-in or 2+ provider sign-ins (confirm with the person)`.**
+  Before the fix, a Google or GitHub account could link itself to an existing
+  account with the same email even when the provider hadn't verified that
+  email (GitHub does report unverified ones). Nothing on file says whether a
+  link was made that way. So this lists every account that signs in with
+  GitHub, or with more than one provider, and `methods_added` says when each
+  sign-in method was added. The verdict is `confirm with the person`: ask them
+  whether every method listed is theirs. A method they don't recognize is an
+  incident: **stop and ask a developer.** Since the deploy, a link like that
+  only signs in while its provider vouches for the account's own email. That
+  also means someone whose provider email changed since they linked it is
+  turned away until the two match again, or until you change the account's
+  email ([4i](#4i-change-an-accounts-email-sign-in-recovery)).
+- **`== 6. Accounts whose email has a capital letter or a character beyond plain ASCII (fix with 4i)`.**
+  The sign-in only matches lowercase plain ASCII, and until TASK-1116 the
+  setup wizard saved the admin's email exactly as typed. The `verdict` column:
+  - `capital letters - lowercase it (4i)`: the account still signs in through
+    a method it already has, but a sign-in looks emails up in lowercase, so
+    nothing new can find it. A setup admin here with `sign_in_methods`
+    `(none)` can't sign in at all: their first sign-in makes a new account,
+    without admin rights, instead. Change the email to the same address in
+    lowercase with [4i](#4i-change-an-accounts-email-sign-in-recovery).
+    Lowercasing doesn't change whose address it is.
+  - `not plain ASCII - cannot sign in (4i)`: the sign-in refuses an address
+    like this, so nobody can sign in to this account. If the person has a
+    plain ASCII address their provider vouches for, 4i can move the account
+    to it, after you've confirmed it's them.
+- **`== 7. Counts`.** The numbers to record on the card: `outside_domain`,
+  `with_password`, `taken_over` (the `LINKED AFTER PASSWORD` rows),
+  `unverified`, `id_token_sign_in`, `to_confirm` (the section 5 rows) and
+  `email_to_fix` (the section 6 rows).
+
+If sections 1–6 are empty, there's nothing to do. Otherwise, change no data
+without a developer. When you're done, delete `audit-output.txt`.
+
+---
+
+### 4i. Change an account's email (sign-in recovery)
+
+Since TASK-1116, nobody signs in to an account unless Google or GitHub vouches
+for that account's own email. So someone whose address changed at their
+provider since they first signed in (a renamed Google account, or a new
+primary email on GitHub) gets "This account can't sign in here. Ask your admin
+for help." The host log has a `sign-in refused` line with
+`"code":"email_mismatch"` from the time they tried. There's no screen for
+fixing that. This step is the way back: it sets the account's email to the
+address their provider vouches for now.
+
+It's also the fix for the accounts in section 6 of
+[4h](#4h-audit-accounts-after-task-1116-sign-up-gate). Above all, a setup admin
+whose email the wizard saved with capital letters (it kept them until
+TASK-1116): sign-in looks emails up in lowercase, so it never finds that
+account, and their first sign-in makes a new account without admin rights
+instead. For them, the new email is the same address in lowercase.
+
+The script changes the email on one account, inside one transaction, and
+prints the account before and after the change. It touches nothing else: not
+the account's sign-in methods, not its sessions. Its output names a person,
+so keep it out of tickets and chat.
+
+**This changes who can sign in to the account.** Afterwards, whoever holds the
+new address at Google or GitHub can sign in as this person and see everything
+the account can see. Whoever holds the old address can't. Change it for the
+wrong person, or to the wrong address, and you've handed someone's account to
+a stranger. So before you run anything:
+
+1. **Confirm it's really them, through a channel you already trust.** Talk to
+   them in person or on a video call, or message them somewhere you already
+   know is them. Not by email to the new address, and not on the strength of a
+   message that only says it's them. Ask what address their Google or GitHub
+   account shows now, and write it down exactly.
+2. **Check the new address can sign in here.** For a member (not an admin), it
+   has to be inside that provider's allowed domains (4h, section 0 shows
+   them). And it has to be all lowercase plain ASCII. The sign-in compares
+   nothing else, so the script refuses anything else.
+
+**Every `kubectl` command names its context**, as in 4f to 4h. Set it once,
+check, then copy-paste:
+
+```bash
+KCTX=<your GKE context>        # kubectl config get-contexts
+NS=ax-next
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
+```
+
+#### Step 1: load the script and the two addresses
+
+Work from the repo root of a checkout that has the script: the TASK-1116
+branch until it merges, `main` after. `OLD_EMAIL` is the account's email
+exactly as it's stored, capitals included (4h prints it that way). `NEW_EMAIL`
+is the address you confirmed with the person, in lowercase.
+
+```bash
+OLD_EMAIL='<the account email now>'
+NEW_EMAIL='<the confirmed new address>'
+git log -1 --oneline -- packages/auth-better/sql/change-account-email.sql   # must print a commit
+kubectl --context "$KCTX" create configmap change-account-email -n "$NS" \
+  --from-file=change.sql=packages/auth-better/sql/change-account-email.sql \
+  --from-literal=old_email="$OLD_EMAIL" --from-literal=new_email="$NEW_EMAIL"
+```
+
+`AlreadyExists` means an earlier try left one behind. Delete it (the last
+command in Step 4) and create it again, so the pods read these two addresses.
+
+#### Step 2: dry run
+
+This changes nothing: the script makes the change inside a transaction, shows
+it, then rolls it back. The pod reads the database URL from the existing
+`ax-next-db` Secret, as in 4g and 4h, and the two addresses from the
+ConfigMap, so nobody edits the YAML below.
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: change-account-email-check
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: change
+      configMap: { name: change-account-email }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: change, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+        - name: OLD_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: old_email } }
+        - name: NEW_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: new_email } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v old_email="$OLD_EMAIL" -v new_email="$NEW_EMAIL" -f /sql/change.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/change-account-email-check -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod change-account-email-check -n "$NS"
+kubectl --context "$KCTX" logs change-account-email-check -n "$NS"
+kubectl --context "$KCTX" delete pod change-account-email-check -n "$NS"
+```
+
+Read the log before you go on:
+
+- `== The account now` shows exactly one account, and it's the person you
+  talked to: their name, the old address, the sign-in methods you'd expect.
+- Then `UPDATE 1`, then `== The account after the change` with the new
+  address and nothing else different.
+- It ends with `Dry run: nothing was changed. Run again with -v apply=1 to change it.`
+  and then `ROLLBACK`.
+
+If it has a line starting `Stopped:` instead, nothing was changed, the pod
+ends `Failed`, and the wait times out and prints the pod's `describe` output:
+
+- `Stopped: no account has exactly that email. Nothing was changed.` The old
+  address isn't spelled the way the account stores it. Copy it from the 4h
+  output, capitals included, and start again from Step 1.
+- `Stopped: the new email must be all lowercase plain ASCII with one @. Nothing was changed.`
+  Write the new address in lowercase and start again from Step 1. If it really
+  has a character beyond plain ASCII (an accented letter, say), this person
+  can't sign in here at all: the sign-in refuses such addresses.
+- `Stopped: another account already has that email. Nothing was changed. Ask a developer.`
+  Usually the person already signed in with the new address, and that made a
+  second, separate account (for a setup admin, one without admin rights).
+  Which account to keep, and what to move, is a developer's call. Stop here.
+
+#### Step 3: change it
+
+This is the Step 2 pod with two changes: it's named
+`change-account-email-apply`, and its psql line adds `-v apply=1`. It's written
+out in full so nobody edits YAML by hand against prod.
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: change-account-email-apply
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: change
+      configMap: { name: change-account-email }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: change, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+        - name: OLD_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: old_email } }
+        - name: NEW_EMAIL
+          valueFrom: { configMapKeyRef: { name: change-account-email, key: new_email } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v apply=1 -v old_email="$OLD_EMAIL" -v new_email="$NEW_EMAIL" -f /sql/change.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/change-account-email-apply -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod change-account-email-apply -n "$NS"
+kubectl --context "$KCTX" logs change-account-email-apply -n "$NS"
+kubectl --context "$KCTX" delete pod change-account-email-apply -n "$NS"
+```
+
+It worked only if the wait printed `pod/change-account-email-apply condition met`
+and the log has `UPDATE 1` and ends with `COMMIT`. If anything failed before
+the commit, the database rolled the whole change back, and nothing was
+written.
+
+#### Step 4: verify and clean up
+
+- Ask the person to sign in. They should land in their own account, with
+  their agents and conversations. If they're turned away again, the newest
+  `sign-in refused` line in the host log says why:
+
+```bash
+kubectl --context "$KCTX" logs deploy/ax-next-host -n "$NS" --since=1h | grep 'sign-in refused'
+```
+
+- Delete the ConfigMap, which holds both addresses:
+
+```bash
+kubectl --context "$KCTX" delete configmap change-account-email -n "$NS"
+```
+
+To undo, run all of 4i again (Steps 1 to 4) with the two addresses swapped,
+after the same check with the person.
+
+**On kind, instead of Steps 1 to 4**, the host image has psql and the
+database is in the cluster, so pipe the file in directly. Don't mix this with
+the prod steps above: it sets its own context. This is the dry run; add
+`-v apply=1` to change it:
+
+```bash
+KCTX=kind-ax-next-dev
+kubectl --context "$KCTX" exec -i -n ax-next deploy/ax-next-host -- psql -U ax-next -d ax-next -X -v ON_ERROR_STOP=1 -v old_email=old@example.com -v new_email=new@example.com -f - < packages/auth-better/sql/change-account-email.sql
+```
+
+---
+
 ## Step 5 — Static IP, DNS, and the managed certificate
 
 ### 5a. Reserve a global static IP
