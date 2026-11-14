@@ -1,10 +1,10 @@
 /**
  * channel-slack's only egress: a small Slack Web API client over an injected
- * `fetch`. No Slack SDK: about thirteen methods don't earn a dependency tree,
+ * `fetch`. No Slack SDK: about sixteen methods don't earn a dependency tree,
  * or retries and logging we don't control.
  *
  * The capability is as small as we could make it (invariant 5):
- *   - one destination, `https://slack.com/api/<method>`, POST, for the thirteen
+ *   - one destination, `https://slack.com/api/<method>`, POST, for the sixteen
  *     methods below and no others. Nothing a caller passes reaches the URL;
  *   - redirects are refused (`redirect: 'manual'`; any 3xx, or an answer a
  *     fetch followed a redirect to anyway, is `redirect`), so no token is
@@ -13,14 +13,19 @@
  *     signal, so one stuck call can't stall a reply stream that waits on it;
  *   - at most SLACK_RESPONSE_CAP_BYTES of decoded body per answer;
  *   - every field of an answer is narrowed with typeof checks before use, and
- *     ids and secrets must also have a plausible length and alphabet.
+ *     ids and secrets must also have a plausible length and alphabet. A
+ *     channel's refusing flags (private, archived, Slack Connect) fail
+ *     closed: any value but absent, null or `false` counts as set.
  *
  * Encoding, per method (MEASURED from docs.slack.dev, 2026-11-12):
  * `tooling.tokens.rotate`, `oauth.v2.access` and `users.info` take ONLY form
  * bodies ("arguments sent in a JSON body are ignored by methods that don't
- * list application/json"), and so do the `apps.*` calls here. Every `chat.*`
- * call is JSON, and so are `reactions.add` and `reactions.remove` (both list
- * JSON; MEASURED working on the kind walk, 2026-11-13). `oauth.v2.access` authenticates the app with HTTP Basic, so
+ * list application/json"), and so do the `apps.*` calls here,
+ * `conversations.info` and `conversations.list` (read 2026-11-13).
+ * `conversations.join` lists both and is sent as a form like its siblings.
+ * Every `chat.*` call is JSON, and so are `reactions.add` and
+ * `reactions.remove` (both list JSON; MEASURED working on the kind walk,
+ * 2026-11-13). `oauth.v2.access` authenticates the app with HTTP Basic, so
  * the client secret never rides in a body; `tooling.tokens.rotate` takes no
  * token at all; everything else sends `Authorization: Bearer <token>`.
  *
@@ -95,6 +100,24 @@ export interface OAuthInstall {
   enterpriseInstall: boolean;
 }
 
+/**
+ * A channel as `conversations.info` and `conversations.list` describe it,
+ * narrowed. `name` is Slack's raw text: whoever shows or stores it cleans it
+ * first. The flags that refuse a channel (`isPrivate`, `isArchived`,
+ * `isExtShared`, `isPendingExtShared`) fail closed; `isChannel` and
+ * `isMember` are true only when Slack says literally `true`.
+ */
+export interface SlackChannel {
+  id: string;
+  name: string;
+  isChannel: boolean;
+  isPrivate: boolean;
+  isArchived: boolean;
+  isExtShared: boolean;
+  isPendingExtShared: boolean;
+  isMember: boolean;
+}
+
 export interface SlackApi {
   rotateConfigToken(refreshToken: string): Promise<RotatedConfigToken>;
   createApp(configToken: string, manifest: Record<string, unknown>): Promise<CreatedApp>;
@@ -137,6 +160,18 @@ export interface SlackApi {
   /** An emoji reaction (by name, e.g. `eyes`) from the bot on one message. */
   addReaction(botToken: string, a: { channel: string; ts: string; name: string }): Promise<void>;
   removeReaction(botToken: string, a: { channel: string; ts: string; name: string }): Promise<void>;
+  /** One channel. An answer without a channel we can narrow is `bad-response`. */
+  conversationsInfo(botToken: string, channel: string): Promise<SlackChannel>;
+  /**
+   * One page of the workspace's public, unarchived channels. An entry we
+   * can't narrow is left out; `nextCursor` is null on the last page.
+   */
+  conversationsList(
+    botToken: string,
+    a: { cursor?: string; limit: number },
+  ): Promise<{ channels: SlackChannel[]; nextCursor: string | null }>;
+  /** The bot joins a public channel. Already being in it is a success. */
+  conversationsJoin(botToken: string, channel: string): Promise<void>;
 }
 
 type SlackMethod =
@@ -152,7 +187,10 @@ type SlackMethod =
   | 'chat.appendStream'
   | 'chat.stopStream'
   | 'reactions.add'
-  | 'reactions.remove';
+  | 'reactions.remove'
+  | 'conversations.info'
+  | 'conversations.list'
+  | 'conversations.join';
 
 type Auth =
   | { kind: 'none' }
@@ -193,6 +231,34 @@ function tokenOf(value: unknown): string | null {
 
 function codeOf(value: unknown): string {
   return typeof value === 'string' && SLACK_CODE.test(value) ? value : UNREADABLE_SLACK_CODE;
+}
+
+/**
+ * A channel flag that would refuse the channel. Absent, null and `false` are
+ * unset; anything else, a non-boolean included, is set, so a flag we can't
+ * read fails closed (admission.ts reads a sender's flags the same way).
+ */
+function flagged(channel: Record<string, unknown>, key: string): boolean {
+  const value = channel[key];
+  return value !== undefined && value !== null && value !== false;
+}
+
+/** A channel object, narrowed; null when it has no usable id or name. */
+function channelOf(raw: unknown): SlackChannel | null {
+  if (!isRecord(raw)) return null;
+  const id = idOf(raw['id']);
+  const name = raw['name'];
+  if (id === null || typeof name !== 'string') return null;
+  return {
+    id,
+    name,
+    isChannel: raw['is_channel'] === true,
+    isPrivate: flagged(raw, 'is_private'),
+    isArchived: flagged(raw, 'is_archived'),
+    isExtShared: flagged(raw, 'is_ext_shared'),
+    isPendingExtShared: flagged(raw, 'is_pending_ext_shared'),
+    isMember: raw['is_member'] === true,
+  };
 }
 
 /**
@@ -412,6 +478,47 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       const user = r['user'];
       if (!isRecord(user)) throw badResponse(method);
       return user;
+    },
+
+    async conversationsInfo(botToken, channel) {
+      const method = 'conversations.info';
+      const r = await call(method, bearer(botToken), form({ channel }));
+      const out = channelOf(r['channel']);
+      if (out === null) throw badResponse(method);
+      return out;
+    },
+
+    async conversationsList(botToken, a) {
+      const method = 'conversations.list';
+      const r = await call(
+        method,
+        bearer(botToken),
+        form({
+          types: 'public_channel',
+          exclude_archived: 'true',
+          limit: String(a.limit),
+          ...(a.cursor !== undefined ? { cursor: a.cursor } : {}),
+        }),
+      );
+      const raw = r['channels'];
+      if (!Array.isArray(raw)) throw badResponse(method);
+      const channels: SlackChannel[] = [];
+      for (const entry of raw) {
+        // An entry we can't narrow is left out; the rest of the page still counts.
+        const channel = channelOf(entry);
+        if (channel !== null) channels.push(channel);
+      }
+      // A cursor we can't read must not pass for the last page.
+      const meta = r['response_metadata'] ?? {};
+      if (!isRecord(meta)) throw badResponse(method);
+      const next = meta['next_cursor'] ?? '';
+      if (typeof next !== 'string') throw badResponse(method);
+      return { channels, nextCursor: next === '' ? null : next };
+    },
+
+    async conversationsJoin(botToken, channel) {
+      // `ok` with `warning: already_in_channel` is a success: the bot is in.
+      await call('conversations.join', bearer(botToken), form({ channel }));
     },
 
     async postMessage(botToken, a) {

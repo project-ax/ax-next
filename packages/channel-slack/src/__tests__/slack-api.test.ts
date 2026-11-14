@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOT_PREFIX, fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
-import { SLACK_RESPONSE_CAP_BYTES } from '../limits.js';
-import { SlackApiError, createSlackApi, type SlackApi } from '../slack-api.js';
+import { CHANNEL_LIST_PAGE_LIMIT, SLACK_RESPONSE_CAP_BYTES } from '../limits.js';
+import { SlackApiError, createSlackApi, type SlackApi, type SlackChannel } from '../slack-api.js';
 
 // Distinctive secrets, so a leak into an error is easy to spot.
 const BOT = fakeBotToken();
@@ -57,6 +57,59 @@ function slackError(error: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status: 200, ...init });
 }
 
+/**
+ * A public channel as conversations.info and conversations.list describe it:
+ * Slack's own example (docs.slack.dev), plus `is_member` as the bot sees it.
+ */
+const GENERAL = {
+  id: 'C012AB3CD',
+  name: 'general',
+  is_channel: true,
+  is_group: false,
+  is_im: false,
+  is_mpim: false,
+  is_private: false,
+  created: 1654868334,
+  is_archived: false,
+  is_general: true,
+  unlinked: 0,
+  name_normalized: 'general',
+  is_shared: false,
+  is_frozen: false,
+  is_org_shared: false,
+  is_ext_shared: false,
+  is_pending_ext_shared: false,
+  pending_shared: [],
+  context_team_id: 'T0TEAM',
+  parent_conversation: null,
+  creator: 'U0CREATOR',
+  shared_team_ids: ['T0TEAM'],
+  pending_connected_team_ids: [],
+  is_member: true,
+  topic: { value: 'For public discussion of generalities', creator: 'U0CREATOR', last_set: 1449709364 },
+  purpose: { value: 'This part of the workspace is for fun.', creator: 'U0CREATOR', last_set: 1449709364 },
+  previous_names: ['specifics', 'abstractions'],
+};
+
+/** GENERAL, narrowed: exactly these fields, nothing else Slack sent. */
+const GENERAL_OUT: SlackChannel = {
+  id: 'C012AB3CD',
+  name: 'general',
+  isChannel: true,
+  isPrivate: false,
+  isArchived: false,
+  isExtShared: false,
+  isPendingExtShared: false,
+  isMember: true,
+};
+
+/** A second public channel, one the bot is not in. */
+const RANDOM = { ...GENERAL, id: 'C061EG9T2', name: 'random', name_normalized: 'random', is_general: false, is_member: false };
+const RANDOM_OUT: SlackChannel = { ...GENERAL_OUT, id: 'C061EG9T2', name: 'random', isMember: false };
+
+/** A real-looking `next_cursor` (docs.slack.dev's example); the `=` must survive form encoding. */
+const CURSOR = 'dGVhbTpDMDYxRkE1UEI=';
+
 /** Enough fields for every method's success path. */
 const EVERY_FIELD = {
   token: NEW_ACCESS,
@@ -76,6 +129,8 @@ const EVERY_FIELD = {
   is_enterprise_install: false,
   user: { id: 'U1' },
   ts: '1700000000.000100',
+  channel: GENERAL,
+  channels: [GENERAL],
 };
 
 /** Every method, called with the secrets above. */
@@ -119,6 +174,9 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
     ['chat.stopStream', () => api.stopStream(BOT, { channel: 'D1', ts: '1.3' })],
     ['reactions.add', () => api.addReaction(BOT, { channel: 'D1', ts: '1.2', name: 'eyes' })],
     ['reactions.remove', () => api.removeReaction(BOT, { channel: 'D1', ts: '1.2', name: 'eyes' })],
+    ['conversations.info', () => api.conversationsInfo(BOT, 'C012AB3CD')],
+    ['conversations.list', () => api.conversationsList(BOT, { limit: CHANNEL_LIST_PAGE_LIMIT })],
+    ['conversations.join', () => api.conversationsJoin(BOT, 'C012AB3CD')],
   ];
 }
 
@@ -129,6 +187,9 @@ const FORM_METHODS = [
   'apps.icon.set',
   'oauth.v2.access',
   'users.info',
+  'conversations.info',
+  'conversations.list',
+  'conversations.join',
 ];
 
 /** The SlackApiError a call rejects with; fails the test on anything else. */
@@ -515,6 +576,242 @@ describe('requests', () => {
         `Bearer ${CFG}`,
       ],
     ]);
+  });
+});
+
+describe('conversations', () => {
+  /** A Slack refusal as Slack sends it; `missing_scope` also names the scopes. */
+  function refusal(code: string): Response {
+    const scopes = code === 'missing_scope' ? { needed: 'channels:read', provided: 'chat:write,users:read' } : {};
+    return new Response(JSON.stringify({ ok: false, error: code, ...scopes }), { status: 200 });
+  }
+
+  it('conversations.info sends the channel as a form with the bot token and returns only the narrowed fields', async () => {
+    const slack = fakeSlack(() => okJson({ channel: GENERAL }));
+    const out = await createSlackApi({ fetchImpl: slack.fetchImpl }).conversationsInfo(BOT, 'C012AB3CD');
+
+    expect(out).toStrictEqual(GENERAL_OUT);
+    const [req] = slack.sent;
+    expect(req!.url).toBe('https://slack.com/api/conversations.info');
+    expect(req!.headers.get('content-type')).toMatch(/^application\/x-www-form-urlencoded/);
+    expect(req!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(req!.body).toBe('channel=C012AB3CD');
+  });
+
+  it("conversations.list asks for public, unarchived channels with the caller's limit, and a cursor only when given", async () => {
+    const slack = fakeSlack(() => okJson({ channels: [] }));
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    await api.conversationsList(BOT, { limit: 150 });
+    await api.conversationsList(BOT, { limit: 150, cursor: CURSOR });
+
+    for (const req of slack.sent) {
+      expect(req.url).toBe('https://slack.com/api/conversations.list');
+      expect(req.headers.get('content-type')).toMatch(/^application\/x-www-form-urlencoded/);
+      expect(req.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    }
+    expect(slack.sent.map((req) => formOf(req))).toStrictEqual([
+      { types: 'public_channel', exclude_archived: 'true', limit: '150' },
+      { types: 'public_channel', exclude_archived: 'true', limit: '150', cursor: CURSOR },
+    ]);
+  });
+
+  it('conversations.list narrows every channel on the page and returns the next cursor', async () => {
+    // Odd on purpose: a string "true" is a private flag we can't read (set),
+    // and a member flag that isn't literally true (not a member).
+    const odd = { ...RANDOM, id: 'C0ODD', name: 'odd', is_private: 'true', is_member: 'true' };
+    const api = createSlackApi({
+      fetchImpl: fakeSlack(() =>
+        okJson({ channels: [GENERAL, odd, RANDOM], response_metadata: { next_cursor: CURSOR } }),
+      ).fetchImpl,
+    });
+
+    expect(await api.conversationsList(BOT, { limit: 200 })).toStrictEqual({
+      channels: [
+        GENERAL_OUT,
+        { ...RANDOM_OUT, id: 'C0ODD', name: 'odd', isPrivate: true, isMember: false },
+        RANDOM_OUT,
+      ],
+      nextCursor: CURSOR,
+    });
+  });
+
+  it("nextCursor is null on the last page; a cursor we can't read → bad-response, never the last page", async () => {
+    const lastPages: Array<Record<string, unknown>> = [
+      { channels: [], response_metadata: { next_cursor: '' } },
+      { channels: [], response_metadata: { next_cursor: null } },
+      { channels: [], response_metadata: {} },
+      { channels: [], response_metadata: null },
+      { channels: [] },
+    ];
+    for (const body of lastPages) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(body)).fetchImpl });
+      expect((await api.conversationsList(BOT, { limit: 200 })).nextCursor, JSON.stringify(body)).toBeNull();
+    }
+    for (const response_metadata of [
+      { next_cursor: 42 },
+      { next_cursor: true },
+      { next_cursor: ['dGVh'] },
+      { next_cursor: { cursor: 'dGVh' } },
+      'dGVh',
+      ['dGVh'],
+      7,
+    ]) {
+      const api = createSlackApi({
+        fetchImpl: fakeSlack(() => okJson({ channels: [GENERAL], response_metadata })).fetchImpl,
+      });
+      expect(
+        (await failure(api.conversationsList(BOT, { limit: 200 }))).code,
+        JSON.stringify(response_metadata),
+      ).toBe('bad-response');
+    }
+  });
+
+  it('conversations.join sends the channel as a form with the bot token; already_in_channel is a success', async () => {
+    const answers = [
+      okJson({ channel: GENERAL }),
+      okJson({ channel: GENERAL, warning: 'already_in_channel', response_metadata: { warnings: ['already_in_channel'] } }),
+    ];
+    const slack = fakeSlack(() => answers.shift()!);
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+
+    await expect(api.conversationsJoin(BOT, 'C012AB3CD')).resolves.toBeUndefined();
+    await expect(api.conversationsJoin(BOT, 'C012AB3CD')).resolves.toBeUndefined();
+    expect(slack.sent).toHaveLength(2);
+    for (const req of slack.sent) {
+      expect(req.url).toBe('https://slack.com/api/conversations.join');
+      expect(req.headers.get('content-type')).toMatch(/^application\/x-www-form-urlencoded/);
+      expect(req.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+      expect(req.body).toBe('channel=C012AB3CD');
+    }
+  });
+
+  it("Slack's refusals reject as SlackApiError with exactly `slack <method>: <code>`", async () => {
+    const methods: Array<[string, (api: SlackApi) => Promise<unknown>]> = [
+      ['conversations.info', (api) => api.conversationsInfo(BOT, 'C012AB3CD')],
+      ['conversations.list', (api) => api.conversationsList(BOT, { limit: 200 })],
+      ['conversations.join', (api) => api.conversationsJoin(BOT, 'C012AB3CD')],
+    ];
+    const codes = ['missing_scope', 'channel_not_found', 'is_archived', 'method_not_supported_for_channel_type'];
+    for (const [method, run] of methods) {
+      for (const code of codes) {
+        const err = await failure(run(createSlackApi({ fetchImpl: fakeSlack(() => refusal(code)).fetchImpl })));
+        expect(err.message, `${method} ${code}`).toBe(`slack ${method}: ${code}`);
+        expect(err.method).toBe(method);
+        expect(err.code).toBe(code);
+      }
+    }
+  });
+
+  it('a refusing flag (private, archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
+    const flags = [
+      ['is_private', 'isPrivate'],
+      ['is_archived', 'isArchived'],
+      ['is_ext_shared', 'isExtShared'],
+      ['is_pending_ext_shared', 'isPendingExtShared'],
+    ] as const;
+    // `undefined` is dropped by JSON.stringify: the field is absent.
+    const cases: Array<[unknown, boolean]> = [
+      [undefined, false],
+      [null, false],
+      [false, false],
+      [true, true],
+      ['true', true],
+      ['false', true],
+      [1, true],
+      [0, true],
+      ['', true],
+      [{}, true],
+    ];
+    for (const [key, field] of flags) {
+      for (const [value, set] of cases) {
+        const channel = { ...GENERAL, [key]: value };
+        const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson({ channel })).fetchImpl });
+        const out = await api.conversationsInfo(BOT, 'C012AB3CD');
+        expect(out[field], `${key}: ${JSON.stringify(value)}`).toBe(set);
+      }
+    }
+  });
+
+  it('isChannel and isMember are true only when Slack says literally true', async () => {
+    const fields = [
+      ['is_channel', 'isChannel'],
+      ['is_member', 'isMember'],
+    ] as const;
+    const cases: Array<[unknown, boolean]> = [
+      [true, true],
+      [undefined, false],
+      [null, false],
+      [false, false],
+      ['true', false],
+      [1, false],
+      [{}, false],
+    ];
+    for (const [key, field] of fields) {
+      for (const [value, want] of cases) {
+        const channel = { ...GENERAL, [key]: value };
+        const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson({ channel })).fetchImpl });
+        const out = await api.conversationsInfo(BOT, 'C012AB3CD');
+        expect(out[field], `${key}: ${JSON.stringify(value)}`).toBe(want);
+      }
+    }
+  });
+
+  it('an info answer without a usable channel → bad-response', async () => {
+    for (const body of [
+      {},
+      { channel: null },
+      { channel: 'C012AB3CD' },
+      { channel: [GENERAL] },
+      { channel: { ...GENERAL, id: undefined } },
+      { channel: { ...GENERAL, id: '' } },
+      { channel: { ...GENERAL, id: 'C012 AB3CD' } },
+      { channel: { ...GENERAL, id: 'C'.repeat(65) } },
+      { channel: { ...GENERAL, id: 42 } },
+      { channel: { ...GENERAL, name: undefined } },
+      { channel: { ...GENERAL, name: null } },
+      { channel: { ...GENERAL, name: ['general'] } },
+    ]) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(body)).fetchImpl });
+      expect((await failure(api.conversationsInfo(BOT, 'C012AB3CD'))).code, JSON.stringify(body)).toBe(
+        'bad-response',
+      );
+    }
+  });
+
+  it('a list entry that fails narrowing is left out, and its neighbours still count', async () => {
+    const page = [
+      GENERAL,
+      { ...GENERAL, id: 'C0 BAD' },
+      { ...GENERAL, id: undefined },
+      { ...GENERAL, id: 'C'.repeat(65) },
+      { ...GENERAL, name: 42 },
+      { ...GENERAL, name: undefined },
+      'C012AB3CD',
+      null,
+      [GENERAL],
+      RANDOM,
+    ];
+    const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson({ channels: page })).fetchImpl });
+
+    expect(await api.conversationsList(BOT, { limit: 200 })).toStrictEqual({
+      channels: [GENERAL_OUT, RANDOM_OUT],
+      nextCursor: null,
+    });
+  });
+
+  it('a list answer whose channels is not an array → bad-response', async () => {
+    for (const body of [
+      {},
+      { channels: null },
+      { channels: {} },
+      { channels: 'C012AB3CD' },
+      { channels: { 0: GENERAL, length: 1 } },
+    ]) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(body)).fetchImpl });
+      expect((await failure(api.conversationsList(BOT, { limit: 200 }))).code, JSON.stringify(body)).toBe(
+        'bad-response',
+      );
+    }
   });
 });
 

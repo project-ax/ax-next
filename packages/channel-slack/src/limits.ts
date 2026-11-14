@@ -68,6 +68,14 @@ export const SLACK_ID_MAX = 64;
 /** A Slack token or secret. Real ones are well under 200. */
 export const SLACK_TOKEN_MAX = 512;
 
+// ── Channels ────────────────────────────────────────────────────────────────
+
+/**
+ * Channels asked for per `conversations.list` page. Slack: "an integer under
+ * 1000", and "We recommend no more than 200 results at a time".
+ */
+export const CHANNEL_LIST_PAGE_LIMIT = 200;
+
 // ── Replies ─────────────────────────────────────────────────────────────────
 
 export const FLUSH_INTERVAL_MS = 1_000;
