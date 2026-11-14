@@ -125,11 +125,16 @@ interface SeedGoogle {
 const DEFAULT_GOOGLE: SeedGoogle = { allowedDomains: 'canopyworks.com', enabled: true };
 
 /**
- * Insert user rows and, unless `google` is null, the `google` provider row.
- * The secret is a dummy: nothing decrypts it, because the row lands after boot
- * and this test never fires auth:providers-changed.
+ * Insert user rows, the `google` provider row unless `google` is null, and the
+ * `github` row when `github` is given. The secrets are dummies: nothing
+ * decrypts them, because the rows land after boot and this test never fires
+ * auth:providers-changed.
  */
-async function seed(users: SeedUser[], google: SeedGoogle | null = DEFAULT_GOOGLE): Promise<void> {
+async function seed(
+  users: SeedUser[],
+  google: SeedGoogle | null = DEFAULT_GOOGLE,
+  github: SeedGoogle | null = null,
+): Promise<void> {
   await withDb(async (k) => {
     const now = new Date();
     if (users.length > 0) {
@@ -149,16 +154,17 @@ async function seed(users: SeedUser[], google: SeedGoogle | null = DEFAULT_GOOGL
         )
         .execute();
     }
-    if (google !== null) {
+    for (const [kind, row] of [['google', google], ['github', github]] as const) {
+      if (row === null) continue;
       await k
         .insertInto('auth_providers')
         .values({
-          kind: 'google',
+          kind,
           client_id: 'cid',
           client_secret_encrypted: Buffer.from('x'),
           discovery_url: null,
-          allowed_domains: google.allowedDomains,
-          enabled: google.enabled,
+          allowed_domains: row.allowedDomains,
+          enabled: row.enabled,
           created_at: now,
           updated_at: now,
         })
@@ -346,7 +352,7 @@ describe('auth:find-user-by-email contract', () => {
     ['a Google row with no list', { allowedDomains: null, enabled: true }],
     ['a Google row with a blank list', { allowedDomains: '  ', enabled: true }],
   ] as const)(
-    'with no approved domains configured (%s), any verified domain is found, as at sign-in',
+    'with no approved domains configured (%s), any verified domain is found',
     async (_label, google) => {
       harness = await bootHarness();
       await seed([CAROL], google);
@@ -359,6 +365,53 @@ describe('auth:find-user-by-email contract', () => {
     // Turning Google sign-in off must not widen who can be found.
     harness = await bootHarness();
     await seed([ALICE, CAROL], { allowedDomains: 'canopyworks.com', enabled: false });
+
+    expect(await find('carol@gmail.com')).toBeNull();
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+  });
+
+  // Since TASK-1116, sign-in checks each provider's own list, so a GitHub list
+  // restricts too. Before this, the lookup read Google's list only and found an
+  // off-domain GitHub member that sign-in refuses (merge review, 2026-11-13).
+  it.each([
+    ['no Google row', null],
+    ['a blank Google list', { allowedDomains: '  ', enabled: true }],
+  ] as const)(
+    "a GitHub provider's list limits the domains too (%s)",
+    async (_label, google) => {
+      harness = await bootHarness();
+      await seed([ALICE, CAROL], google, { allowedDomains: 'canopyworks.com', enabled: true });
+
+      expect(await find('carol@gmail.com')).toBeNull();
+      expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+    },
+  );
+
+  it('a disabled GitHub provider still limits the domains', async () => {
+    harness = await bootHarness();
+    await seed([ALICE, CAROL], null, { allowedDomains: 'canopyworks.com', enabled: false });
+
+    expect(await find('carol@gmail.com')).toBeNull();
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+  });
+
+  it("a domain on either provider's list is approved", async () => {
+    harness = await bootHarness();
+    await seed(
+      [ALICE, CAROL, { id: 'usr_pat', email: 'pat@partner.org', verified: true }],
+      { allowedDomains: 'canopyworks.com', enabled: true },
+      { allowedDomains: 'partner.org', enabled: true },
+    );
+
+    expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
+    expect(await find('pat@partner.org')).toEqual({ userId: 'usr_pat' });
+    expect(await find('carol@gmail.com')).toBeNull();
+  });
+
+  it("a blank GitHub list doesn't open a restricted Google list", async () => {
+    // Fails closed: a gmail GitHub member could sign in, but isn't found here.
+    harness = await bootHarness();
+    await seed([ALICE, CAROL], DEFAULT_GOOGLE, { allowedDomains: null, enabled: true });
 
     expect(await find('carol@gmail.com')).toBeNull();
     expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
