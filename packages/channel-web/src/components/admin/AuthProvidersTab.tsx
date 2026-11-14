@@ -2,7 +2,7 @@
  * AuthProvidersTab — admin OAuth identity provider CRUD.
  *
  * Lists `auth_providers` rows from `@ax/auth-better`, lets an admin add /
- * toggle / remove Google, GitHub, and generic OIDC identity providers.
+ * toggle / remove Google and GitHub identity providers.
  * Each mutation triggers `auth:providers-changed` server-side and the
  * better-auth handler hot-reloads — no kernel restart needed (I10).
  */
@@ -31,8 +31,22 @@ import { AddProviderForm } from './AddProviderForm';
 const KIND_LABEL: Record<AuthProviderKind, string> = {
   google: 'Google',
   github: 'GitHub',
-  oidc: 'Generic OIDC',
 };
+
+/**
+ * Google and GitHub are the only kinds the server signs anyone in with. The
+ * list can still hold another (a leftover `oidc` row, TASK-1116): the server
+ * skips it at sign-in whatever its switch says, refuses to toggle it, and
+ * still lets it be removed.
+ */
+function isWiredKind(kind: string): kind is AuthProviderKind {
+  return Object.hasOwn(KIND_LABEL, kind);
+}
+
+/** An unknown kind shows as stored. */
+function labelFor(kind: string): string {
+  return isWiredKind(kind) ? KIND_LABEL[kind] : kind;
+}
 
 export function AuthProvidersTab() {
   const [providers, setProviders] = useState<AuthProviderEntry[]>([]);
@@ -79,10 +93,14 @@ export function AuthProvidersTab() {
    *
    * So the last one asks first. Any other toggle still flips immediately: a
    * confirmation on every switch would train people to click through this one.
+   *
+   * Only Google and GitHub count. A leftover row of another kind signs nobody
+   * in, enabled or not, so counting it hid this warning on the real last
+   * method (TASK-1116).
    */
-  const enabledCount = providers.filter((p) => p.enabled).length;
+  const enabledCount = providers.filter((p) => p.enabled && isWiredKind(p.kind)).length;
   const isLastEnabled = (p: AuthProviderEntry): boolean =>
-    p.enabled && enabledCount === 1;
+    p.enabled && isWiredKind(p.kind) && enabledCount === 1;
 
   const applyToggle = async (p: AuthProviderEntry) => {
     setActionError(null);
@@ -157,38 +175,53 @@ export function AuthProvidersTab() {
       {!loading && !loadError && providers.length === 0 && !adding && (
         <PaneStatus variant="empty">
           No identity providers configured. Add one to let users sign in with
-          Google, GitHub, or any OIDC issuer.
+          Google or GitHub.
         </PaneStatus>
       )}
 
       <ul className="flex flex-col list-none m-0 p-0">
-        {providers.map((p) => (
-          <li
-            key={p.kind}
-            className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
-          >
-            <div className="flex flex-col min-w-0 flex-1 gap-0.5">
-              <span className="text-[13px] font-medium">{KIND_LABEL[p.kind]}</span>
-
-            </div>
-            {/* (D5) Was a hand-rolled switch — two divs and a translate. The
-                primitive is installed and brings its own keyboard handling. */}
-            <Switch
-              checked={p.enabled}
-              aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${KIND_LABEL[p.kind]}`}
-              onCheckedChange={() => void handleToggle(p)}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label={`Details for ${KIND_LABEL[p.kind]}`}
-              onClick={() => setSelected(p)}
+        {providers.map((p, i) => {
+          const wired = isWiredKind(p.kind);
+          // A leftover kind shows as off whatever its stored flag says:
+          // nobody signs in through it, so it must never look like a way in.
+          const on = wired && p.enabled;
+          const hintId = `auth-provider-unsupported-${i}`;
+          return (
+            <li
+              key={p.kind}
+              className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
             >
-              <ChevronRight aria-hidden="true" />
-            </Button>
-          </li>
-        ))}
+              <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                <span className="text-[13px] font-medium">{labelFor(p.kind)}</span>
+                {!wired && (
+                  <span id={hintId} className="text-xs text-muted-foreground">
+                    No longer supported, so it does nothing. You can remove it.
+                  </span>
+                )}
+              </div>
+              {/* (D5) Was a hand-rolled switch — two divs and a translate. The
+                  primitive is installed and brings its own keyboard handling.
+                  A leftover kind's switch is off and disabled: the server
+                  skips it at sign-in and refuses to toggle it. */}
+              <Switch
+                checked={on}
+                disabled={!wired}
+                aria-describedby={wired ? undefined : hintId}
+                aria-label={`${on ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
+                onCheckedChange={() => void handleToggle(p)}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`Details for ${labelFor(p.kind)}`}
+                onClick={() => setSelected(p)}
+              >
+                <ChevronRight aria-hidden="true" />
+              </Button>
+            </li>
+          );
+        })}
       </ul>
 
       {adding ? (
@@ -203,10 +236,10 @@ export function AuthProvidersTab() {
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
         <SheetContent className="w-full overflow-y-auto sm:max-w-[424px]">
-          <SheetHeader><SheetTitle>{selected ? KIND_LABEL[selected.kind] : 'Sign-in method'}</SheetTitle><SheetDescription>Manage this sign-in method.</SheetDescription></SheetHeader>
+          <SheetHeader><SheetTitle>{selected ? labelFor(selected.kind) : 'Sign-in method'}</SheetTitle><SheetDescription>Manage this sign-in method.</SheetDescription></SheetHeader>
           {selected && <div className="mt-6 flex flex-col gap-6">
             <p className="break-all text-sm text-muted-foreground">Client ID: {selected.clientId}</p>
-            <Button type="button" variant="destructive" onClick={() => { setPendingDelete(selected); setSelected(null); }} aria-label={`Remove ${KIND_LABEL[selected.kind]}`}>Remove {selected ? KIND_LABEL[selected.kind] : 'method'}</Button>
+            <Button type="button" variant="destructive" onClick={() => { setPendingDelete(selected); setSelected(null); }} aria-label={`Remove ${labelFor(selected.kind)}`}>Remove {selected ? labelFor(selected.kind) : 'method'}</Button>
           </div>}
         </SheetContent>
       </Sheet>
@@ -226,7 +259,7 @@ export function AuthProvidersTab() {
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
               <span className="font-medium text-foreground">
-                {KIND_LABEL[pendingDisable.kind]}
+                {labelFor(pendingDisable.kind)}
               </span>{' '}
               is the only sign-in method still switched on. Turning it off will
               lock everyone out — including you, and including this page. Add
@@ -259,7 +292,7 @@ export function AuthProvidersTab() {
             <p className="text-sm text-muted-foreground">
               Remove the{' '}
               <span className="font-medium text-foreground">
-                {KIND_LABEL[pendingDelete.kind]}
+                {labelFor(pendingDelete.kind)}
               </span>{' '}
               identity provider? Users will no longer be able to sign in with it.
             </p>

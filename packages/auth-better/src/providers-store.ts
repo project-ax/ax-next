@@ -42,8 +42,13 @@ export interface CredentialsEnvelope {
  * Bounded validation for untrusted CRUD input. Provider config arrives from
  * the admin UI — the user is authenticated (admin), but field-level validation
  * still applies (Invariant I5).
+ *
+ * Add and enable accept only the kinds ax wires into sign-in. `oidc` was
+ * offered by the admin form but never wired, and saving one took every
+ * sign-in down (TASK-1116). Delete still accepts it, so a leftover row can go.
  */
-const ALLOWED_KINDS: ReadonlySet<string> = new Set(['google', 'github', 'oidc']);
+const WRITABLE_KINDS: ReadonlySet<string> = new Set(['google', 'github']);
+const DELETABLE_KINDS: ReadonlySet<string> = new Set([...WRITABLE_KINDS, 'oidc']);
 const MAX_CLIENT_ID_LEN = 512;
 const MAX_CLIENT_SECRET_LEN = 1024;
 const MAX_DISCOVERY_URL_LEN = 2048;
@@ -101,7 +106,7 @@ export function createProvidersStore(
     },
 
     async upsert(input: UpsertProviderInput): Promise<void> {
-      validateKind(input.kind);
+      validateKind(input.kind, WRITABLE_KINDS);
       validateClientId(input.clientId);
       validateClientSecret(input.clientSecret);
       validateDiscoveryUrl(input.discoveryUrl);
@@ -137,7 +142,7 @@ export function createProvidersStore(
     },
 
     async setEnabled(kind: string, enabled: boolean): Promise<void> {
-      validateKind(kind);
+      validateKind(kind, WRITABLE_KINDS);
       if (typeof enabled !== 'boolean') {
         throw new PluginError({
           code: 'invalid-payload',
@@ -153,7 +158,7 @@ export function createProvidersStore(
     },
 
     async delete(kind: string): Promise<void> {
-      validateKind(kind);
+      validateKind(kind, DELETABLE_KINDS);
       await db.deleteFrom('auth_providers').where('kind', '=', kind).execute();
     },
   };
@@ -166,12 +171,12 @@ export function createProvidersStore(
 // never round-trip through a 4xx response body or a stderr log).
 // ---------------------------------------------------------------------------
 
-function validateKind(kind: unknown): void {
-  if (typeof kind !== 'string' || !ALLOWED_KINDS.has(kind)) {
+function validateKind(kind: unknown, allowed: ReadonlySet<string>): void {
+  if (typeof kind !== 'string' || !allowed.has(kind)) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
-      message: `kind must be one of ${[...ALLOWED_KINDS].join(', ')}`,
+      message: `kind must be one of ${[...allowed].join(', ')}`,
     });
   }
 }

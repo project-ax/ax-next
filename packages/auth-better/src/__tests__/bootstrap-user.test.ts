@@ -194,6 +194,41 @@ describe('auth:create-bootstrap-user contract', () => {
     ).rejects.toBeInstanceOf(PluginError);
   });
 
+  // TASK-1116 round-2 review, item 4. better-auth finds a user by the
+  // lowercased email, and the column compares case-sensitively, so an admin
+  // stored as typed (`Owner@CanopyWorks.com`) was never found at its first
+  // sign-in. And the sign-in gate refuses any address beyond plain ASCII.
+  it('stores the email in lowercase', async () => {
+    harness = await bootHarness();
+    const out = await harness.bus.call<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
+      'auth:create-bootstrap-user',
+      harness.ctx(),
+      { displayName: 'Owner', email: 'Owner@CanopyWorks.com' },
+    );
+    expect(out.user.email).toBe('owner@canopyworks.com');
+    const found = await harness.bus.call<{ userId: string }, User | null>(
+      'auth:get-user',
+      harness.ctx(),
+      { userId: out.user.id },
+    );
+    expect(found?.email).toBe('owner@canopyworks.com');
+  });
+
+  it('refuses an email with a character beyond plain ASCII, before lowercasing could hide one', async () => {
+    harness = await bootHarness();
+    // U+212A KELVIN SIGN lowercases to an ASCII "k": the check must see the email as typed.
+    for (const email of ['jos\u00e9@example.com', '\u212Aate@example.com']) {
+      await expect(
+        harness.bus.call<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
+          'auth:create-bootstrap-user',
+          harness.ctx(),
+          { displayName: 'Owner', email },
+        ),
+        email,
+      ).rejects.toBeInstanceOf(PluginError);
+    }
+  });
+
   it('rolls back the user insert if the session insert fails', async () => {
     // Regression test for the CR follow-up to f52f5bd. Without the
     // transaction wrap, a session-insert failure leaves an orphan
