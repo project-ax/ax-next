@@ -87,8 +87,16 @@ the model reads. Nothing ever treats it as permission to do something.
 nothing else: a follow-up in the same thread needs a new mention. A bare
 `@bot` with no other text runs no turn. A reply can't broadcast: a bare
 `@channel`, `@here` or `@everyone` in the agent's text gets a zero-width space
-after the `@` (held back across chunk and edit boundaries, so a split can't
-sneak one through).
+after the `@`, and so does the `&` of an HTML character reference that could
+decode into a mention's characters (`&#64;channel`, `&commat;here`,
+`&lt;!everyone&gt;`, `<&excl;channel>`: any numeric one, any name ended by
+`;` but five harmless ones such as `&amp;`, and `&lt` without its `;`) and a
+`<` before an `&`. A name without a `;` is left alone otherwise: no decoder
+reads it, and a link's query string (`&page=2`) looks like one. Both are held
+back across chunk and edit boundaries, and each stream append is judged on
+its own, so a split can't sneak one through. A user-group handle such as
+`@engineering` is left alone, and may notify that whole group (§6, known
+gaps).
 
 ## 2a. Memory: decided by who sees the reply
 
@@ -113,7 +121,7 @@ DMs. Everything else (the web app, routines) is `private`, as today.
 | | Private turn (DM, web) | Shared turn (channel) |
 |---|---|---|
 | **Recall** | Everything, as today | Only statements learned in `shared` turns, plus the agent's instructions and files |
-| **Capture** | As today, stamped `private` | Stamped `shared` |
+| **Capture** | As today, stamped `private` | Stamped `shared`; in a Slack channel, only what members say (below) |
 | **Facts about the speaker** | As today | **Not captured.** Only facts about the work: projects, decisions, processes, who owns what. |
 
 Knowledge flows one way: shared → private, never back. What the agent learned
@@ -131,13 +139,25 @@ recalled in a channel.
 - Known gaps, accepted: the extractor may name the speaker from the sender
   label; closing a slot is tenant-wide, so a private statement can close a
   shared one; a Fix on a shared memory saves as private.
+- **What outsiders say is never remembered.** An external turn's conversation
+  (the connector's, key suffix `:external`) is refused by channel-slack's
+  capture veto whatever the switch says, and so is the agent's own
+  `memory_note` in it. The switch decides only for attended turns: what
+  people who can use the agent say. Why: integrity, not privacy. A team
+  agent recalls shared memory in every turn, members' private web chats
+  included, with full attended authority, so an outsider's words captured
+  as a shared statement would come back later as a fact in the most trusted
+  context: a lasting prompt-injection path from the least-trusted speaker.
+  Privacy is the audience rule's job, and it holds either way. Reversible:
+  it is one rule in channel-slack's `capture-veto.ts` (TASK-1094 PR B review
+  F1, a product call flagged for Vinay).
 - Each connected channel has a "Let the agent remember this channel" switch,
-  on by default. It works through `memory:pre-capture`, so it also stops
-  `memory_note`. It is read in the same statement that records the thread, and
-  once a thread has had a turn while the switch was off, that thread stays
-  unremembered: turning the switch back on doesn't capture it, and
-  disconnecting Slack keeps that. The switch stops learning, not recall: the
-  agent still recalls memory it learned elsewhere.
+  on by default, for what members say. It works through `memory:pre-capture`,
+  so it also stops `memory_note`. It is read in the same statement that
+  records the thread, and once a thread has had a turn while the switch was
+  off, that thread stays unremembered: turning the switch back on doesn't
+  capture it, and disconnecting Slack keeps that. The switch stops learning,
+  not recall: the agent still recalls memory it learned elsewhere.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
@@ -461,6 +481,32 @@ connectors. The protections are:
 - No Slack Connect channels.
 - The identity check reads Slack's API, never the message.
 - Secrets are readable only by this plugin.
+
+**Known gaps, accepted (TASK-1094):**
+
+- **The switch is read when a turn starts.** A thread stays out of memory
+  only once a turn STARTS while the switch is off. Turned off during a turn
+  and back on before that turn's memory pass, that turn can be captured.
+  Left off, every pass is refused while it stays off.
+- **No allowed-domains list means a wide circle.** With no non-blank allowed
+  domains on any sign-in provider, any domain counts (§1.2), so every full
+  member of the Slack workspace who has no AX account is approved: each one
+  gets external turns in every connected channel (tier C), as the person who
+  connected it, with that person's access and turn budget. An admin who
+  wants a tighter circle sets an allowed-domains list.
+- **Broadcasts we can't measure without real Slack** (checks for the TASK-1097
+  walk): whether Slack reads a stream's appends as one text (each is treated
+  as its own edge, so an address a flush happens to split gets a mark, and a
+  letter, a flush, then `@channel` is caught); whether `markdown_text` decodes
+  HTML character references before it looks for mentions, and which ones
+  (`&#64;channel`, `&commat;here`, `&lt;!everyone&gt;`, `<&excl;channel>`
+  are marked anyway: defense in depth); whether a bare `@channel` broadcasts
+  at all.
+- **User-group handles aren't neutralized.** A reply that names `@engineering`
+  may notify that whole group: a bare `@name` is not "one person at most" when
+  the name is a group's. Only the three broadcast words are marked. The
+  TASK-1097 walk checks whether Slack's Markdown turns a typed handle into a
+  mention.
 
 ## 7. Spike results (TASK-1090, 2026-11-12)
 
