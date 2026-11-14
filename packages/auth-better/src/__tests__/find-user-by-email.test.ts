@@ -117,12 +117,12 @@ interface SeedUser {
   verified: boolean;
 }
 
-interface SeedGoogle {
+interface SeedProvider {
   allowedDomains: string | null;
   enabled: boolean;
 }
 
-const DEFAULT_GOOGLE: SeedGoogle = { allowedDomains: 'canopyworks.com', enabled: true };
+const DEFAULT_GOOGLE: SeedProvider = { allowedDomains: 'canopyworks.com', enabled: true };
 
 /**
  * Insert user rows, the `google` provider row unless `google` is null, and the
@@ -132,8 +132,8 @@ const DEFAULT_GOOGLE: SeedGoogle = { allowedDomains: 'canopyworks.com', enabled:
  */
 async function seed(
   users: SeedUser[],
-  google: SeedGoogle | null = DEFAULT_GOOGLE,
-  github: SeedGoogle | null = null,
+  google: SeedProvider | null = DEFAULT_GOOGLE,
+  github: SeedProvider | null = null,
 ): Promise<void> {
   await withDb(async (k) => {
     const now = new Date();
@@ -170,6 +170,26 @@ async function seed(
         })
         .execute();
     }
+  });
+}
+
+/** One more provider row, of a kind the sign-in gate doesn't wire. */
+async function insertProviderRow(kind: string, allowedDomains: string): Promise<void> {
+  await withDb(async (k) => {
+    const now = new Date();
+    await k
+      .insertInto('auth_providers')
+      .values({
+        kind,
+        client_id: 'cid',
+        client_secret_encrypted: Buffer.from('x'),
+        discovery_url: null,
+        allowed_domains: allowedDomains,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
   });
 }
 
@@ -371,8 +391,10 @@ describe('auth:find-user-by-email contract', () => {
   });
 
   // Since TASK-1116, sign-in checks each provider's own list, so a GitHub list
-  // restricts too. Before this, the lookup read Google's list only and found an
-  // off-domain GitHub member that sign-in refuses (merge review, 2026-11-13).
+  // restricts too. Before this, the lookup read Google's list only: with no
+  // Google row it found an off-domain GitHub member that sign-in refuses (merge
+  // review, 2026-11-13). The blank-Google row pins the fail-closed choice: there
+  // carol could sign in through Google, but a blank list adds nothing here.
   it.each([
     ['no Google row', null],
     ['a blank Google list', { allowedDomains: '  ', enabled: true }],
@@ -406,6 +428,39 @@ describe('auth:find-user-by-email contract', () => {
     expect(await find('alice@canopyworks.com')).toEqual({ userId: 'usr_alice' });
     expect(await find('pat@partner.org')).toEqual({ userId: 'usr_pat' });
     expect(await find('carol@gmail.com')).toBeNull();
+  });
+
+  it("a disabled provider's list still approves its own domains", async () => {
+    // Decided (TASK-1092 shard): the lists are the install's approved domains,
+    // and enabling says only which sign-in buttons show. So a disabled list
+    // keeps other domains out AND keeps its own approved, even though pat can't
+    // sign in through either provider here. To stop mapping a domain, remove it
+    // from the list or delete the provider.
+    harness = await bootHarness();
+    await seed(
+      [CAROL, { id: 'usr_pat', email: 'pat@partner.org', verified: true }],
+      { allowedDomains: 'canopyworks.com', enabled: true },
+      { allowedDomains: 'partner.org', enabled: false },
+    );
+
+    expect(await find('pat@partner.org')).toEqual({ userId: 'usr_pat' });
+    expect(await find('carol@gmail.com')).toBeNull();
+  });
+
+  it('a provider row of any other kind configures nothing', async () => {
+    // Only the kinds the sign-in gate enforces count. A leftover `oidc` row
+    // (the admin form once offered it) stays in the table until deleted.
+    harness = await bootHarness();
+    await seed([CAROL], DEFAULT_GOOGLE);
+    await insertProviderRow('oidc', 'gmail.com');
+    expect(await find('carol@gmail.com')).toBeNull();
+  });
+
+  it('a provider row of any other kind restricts nothing either', async () => {
+    harness = await bootHarness();
+    await seed([CAROL], null);
+    await insertProviderRow('oidc', 'canopyworks.com');
+    expect(await find('carol@gmail.com')).toEqual({ userId: 'usr_carol' });
   });
 
   it("a blank GitHub list doesn't open a restricted Google list", async () => {

@@ -104,10 +104,13 @@ export function isDomainAllowed(email: string, allowed: readonly string[]): bool
  * non-blank list. A blank list adds nothing, and only when no provider has a
  * list at all is every domain approved, the same as sign-in with no lists.
  *
- * This fails closed where sign-in is per provider: with Google limited to
- * canopyworks.com and GitHub left blank, a gmail GitHub member can sign in
- * but is not on an approved domain here. Sign-in also lets an existing admin
- * through an off-domain list; this doesn't.
+ * This is the install's list of company domains, not a replay of sign-in, and
+ * it differs from sign-in both ways. Narrower: with Google limited to
+ * canopyworks.com and GitHub enabled with a blank list, a gmail GitHub member
+ * can sign in but is not on an approved domain here; nor is an off-domain
+ * admin, whom sign-in lets through. Wider: a disabled provider's list still
+ * counts, so its own domains stay approved even though nobody signs in
+ * through it (and its list still keeps other domains out).
  */
 export function isOnApprovedDomain(
   email: string,
