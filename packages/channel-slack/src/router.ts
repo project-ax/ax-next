@@ -78,9 +78,11 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      (channel-store.ts `recordThread`): a turn that starts while the switch
  *      is off keeps that thread out of memory for good (capture-veto.ts). An
  *      outsider's turn records its conversation as outsiders', which memory
- *      never learns from, whatever the switch says. If the record can't be
- *      written the turn doesn't run, and the sender is told privately to try
- *      again. A DM records nothing: the switch is a channel's.
+ *      never learns from, whatever the switch says, and only while the
+ *      channel is still connected by the person it runs as: a reconnect
+ *      since step 8 drops it as there. If the record can't be written the
+ *      turn doesn't run, and the sender is told privately to try again. A DM
+ *      records nothing: the switch is a channel's.
  *   Lines before the turn are ephemeral, for the sender alone (in the
  *   mention's thread when it was in one); the reply goes in the thread.
  *
@@ -484,6 +486,16 @@ async function routeMention(
   // still this agent's, on a live install, and (for an outsider) still
   // connected by the person it was planned to run as.
   const job = async (): Promise<void> => {
+    /**
+     * An outsider's turn whose channel someone else connected since it was
+     * planned. Planned as the old connector, in their conversation: run as
+     * anyone else, it would be a cross-user turn. Sent again, it runs as the
+     * new one.
+     */
+    const droppedReconnected = async (): Promise<void> => {
+      log('info', 'slack_turns_dropped', { reason: 'reconnected', count: 1 });
+      await tell(COPY.turnFailed);
+    };
     let current: InstallRow | null;
     try {
       current = await d.installs.get(installId);
@@ -503,10 +515,7 @@ async function routeMention(
       return;
     }
     if (external && now.connectedByUserId !== runAs) {
-      // Planned as the old connector, in their conversation: run as anyone
-      // else, it would be a cross-user turn. Sent again, it runs as the new one.
-      log('info', 'slack_turns_dropped', { reason: 'reconnected', count: 1 });
-      await tell(COPY.turnFailed);
+      await droppedReconnected();
       return;
     }
     // 9. The memory switch, before anything is said in the conversation. The
@@ -517,8 +526,10 @@ async function routeMention(
     // conversation is this channel's, and a pass could learn from a turn said
     // while the switch was off. No binding of this agent's at that write: the
     // channel was disconnected in the gap, so the turn is dropped like one
-    // that found it disconnected above.
-    let recorded: 'recorded' | 'no-binding';
+    // that found it disconnected above. For an outsider's turn the same
+    // write checks the channel is still connected by the person it runs as:
+    // a reconnect in the gap drops it like one found above.
+    let recorded: 'recorded' | 'no-binding' | 'reconnected';
     try {
       recorded = await d.channels.recordThread({
         conversationId,
@@ -526,7 +537,7 @@ async function routeMention(
         channelId: m.channel,
         agentId,
         // An outsiders' thread is never remembered, whatever the switch says (capture-veto.ts).
-        mode: external ? 'external' : 'attended',
+        ...(external ? { mode: 'external' as const, runAs } : { mode: 'attended' as const }),
       });
     } catch (err) {
       await failed('thread', err);
@@ -534,6 +545,10 @@ async function routeMention(
     }
     if (recorded === 'no-binding') {
       log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
+      return;
+    }
+    if (recorded === 'reconnected') {
+      await droppedReconnected();
       return;
     }
     await runTurn(d, {

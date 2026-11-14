@@ -13,7 +13,9 @@ import { cleanChannelName } from '../label.js';
  * which ever goes back to false. `recordThread` takes `notRemembered` from
  * the named agent's binding as it is at the write and `external` from the
  * turn's mode (anything but `attended` is external), and answers
- * `no-binding` (writing nothing) when there is no binding.
+ * `no-binding` (writing nothing) when there is no binding, and
+ * `reconnected` (writing nothing) for an outsider's turn whose `runAs` no
+ * longer connects the channel.
  * `removeForAgent` takes the agent's threads too; nothing else does.
  *
  * Each new binding is one second younger than the one before, so "oldest
@@ -107,8 +109,9 @@ export function memoryChannelStore() {
       calls.push('recordThread');
       const binding = rows.get(key(t.installId, t.channelId));
       if (binding === undefined || binding.agentId !== t.agentId) return 'no-binding';
-      const notRemembered = !binding.remember;
       const external = t.mode !== 'attended';
+      if (external && binding.connectedByUserId !== (t.mode === 'external' ? t.runAs : undefined)) return 'reconnected';
+      const notRemembered = !binding.remember;
       const known = threads.get(t.conversationId);
       threads.set(
         t.conversationId,

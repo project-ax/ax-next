@@ -2108,6 +2108,7 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
         channelId: SUPPORT,
         agentId: SUPPORT_AGENT.id,
         mode: 'external',
+        runAs: 'usr_ada',
         notRemembered: false,
         invokesBefore: 0,
       },
@@ -2177,6 +2178,34 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
       { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'disconnected', count: 1 } },
     ]);
+  });
+
+  it("another team admin reconnects between the outsider's turn starting and its record: no turn, a private try-again, nothing recorded", async () => {
+    // Ben connects #support again after the job re-read the binding (Ada's), before the record.
+    const reconnect = (store: ChannelStore) =>
+      store
+        .upsert({ installId: INSTALL_ID, channelId: SUPPORT, agentId: SUPPORT_AGENT.id, connectedByUserId: 'usr_ben', channelName: 'support' })
+        .then(() => {});
+    const w = world({ beforeThreadWrite: reconnect });
+    await w.dispatch(INSTALL, mention({ user: BOB }));
+    await w.idle();
+
+    // Planned as Ada, in Ada's conversation: run as Ben, it would be a cross-user turn.
+    expect(w.threadWrites.map((t) => [t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([['external', 'usr_ada']]);
+    expect(w.invokes).toEqual([]);
+    expect(w.channels.threads.size).toBe(0);
+    expect(w.slack.reactions).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: BOB, text: COPY.turnFailed }]);
+    expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'reconnected', count: 1 } },
+    ]);
+
+    // A member's turn runs as herself, whoever connected the channel meanwhile.
+    const m = world({ beforeThreadWrite: reconnect });
+    await m.dispatch(INSTALL, mention({ user: ALICE }));
+    await m.idle();
+    expect(m.invokes.map((i) => [i.ctx.userId, i.ctx.source])).toEqual([['usr_alice', 'user']]);
+    expect(m.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([]);
   });
 
   it('a turn dropped when its time comes records nothing: no turn ran in its conversation', async () => {

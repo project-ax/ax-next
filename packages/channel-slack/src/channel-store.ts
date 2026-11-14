@@ -57,9 +57,9 @@ export interface ChannelThread {
 /**
  * Whose turn is starting, as the router decided it: a member's, run as
  * themselves (`attended`), or an outsider's, run as the person who connected
- * the channel (`external`).
+ * the channel when it was planned (`external`, `runAs`).
  */
-export type ThreadMode = 'attended' | 'external';
+export type ThreadTurn = { mode: 'attended' } | { mode: 'external'; runAs: string };
 
 export interface ChannelStore {
   get(installId: string, channelId: string): Promise<ChannelBinding | null>;
@@ -96,11 +96,14 @@ export interface ChannelStore {
    * a turn with the switch on leaves it true. `external` is the turn's mode
    * (anything but `attended` counts as external) and sticky the same way.
    * `no-binding`: the channel isn't this agent's (any more), nothing was
-   * written, and the turn must not run.
+   * written, and the turn must not run. `reconnected`: an outsider's turn,
+   * but the channel is connected by someone other than `runAs` now; nothing
+   * was written, and the turn must not run (it was planned as `runAs`, in
+   * their conversation). A member's turn doesn't depend on who connected.
    */
   recordThread(
-    t: Omit<ChannelThread, 'notRemembered' | 'external'> & { conversationId: string; mode: ThreadMode },
-  ): Promise<'recorded' | 'no-binding'>;
+    t: Omit<ChannelThread, 'notRemembered' | 'external'> & { conversationId: string } & ThreadTurn,
+  ): Promise<'recorded' | 'no-binding' | 'reconnected'>;
   /** The thread a conversation is, or null when no channel turn ever ran in it (a web chat, a DM). */
   getThread(conversationId: string): Promise<ChannelThread | null>;
 }
@@ -225,23 +228,37 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // thread can't lose a taint between a read and a write. The conflict
       // only ever ORs the flags in, so nothing can turn a thread back to
       // remembered, or an outsiders' thread into a member's. No binding of
-      // this agent's, no row selected: nothing is inserted, nothing updated,
-      // nothing returned.
+      // this agent's: `binding` is empty, and nothing is inserted or updated.
+      // An outsider's turn also needs the binding still connected by the
+      // person it runs as (a reconnect after the router's read): otherwise
+      // `binding` has its row but nothing is written, and that difference is
+      // the answer. Anything but `attended` is an outsider's turn, and one
+      // without a `runAs` matches no connector.
       const external = t.mode !== 'attended';
-      const r = await sql<{ conversation_id: string }>`
-        INSERT INTO channel_slack_v1_threads
-          (conversation_id, install_id, channel_id, agent_id, not_remembered, external)
-        SELECT ${t.conversationId}, c.install_id, c.channel_id, c.agent_id, NOT c.remember, CAST(${external} AS boolean)
-          FROM channel_slack_v1_channels c
-         WHERE c.install_id = ${t.installId}
-           AND c.channel_id = ${t.channelId}
-           AND c.agent_id = ${t.agentId}
-        ON CONFLICT (conversation_id) DO UPDATE
-           SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered,
-               external = channel_slack_v1_threads.external OR EXCLUDED.external
-        RETURNING conversation_id
+      const connector = t.mode === 'attended' ? sql`true` : sql`b.connected_by_user_id = ${t.runAs ?? null}`;
+      const r = await sql<{ bound: number; recorded: number }>`
+        WITH binding AS (
+          SELECT c.install_id, c.channel_id, c.agent_id, c.remember, c.connected_by_user_id
+            FROM channel_slack_v1_channels c
+           WHERE c.install_id = ${t.installId}
+             AND c.channel_id = ${t.channelId}
+             AND c.agent_id = ${t.agentId}
+        ), recorded AS (
+          INSERT INTO channel_slack_v1_threads
+            (conversation_id, install_id, channel_id, agent_id, not_remembered, external)
+          SELECT ${t.conversationId}, b.install_id, b.channel_id, b.agent_id, NOT b.remember, CAST(${external} AS boolean)
+            FROM binding b
+           WHERE ${connector}
+          ON CONFLICT (conversation_id) DO UPDATE
+             SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered,
+                 external = channel_slack_v1_threads.external OR EXCLUDED.external
+          RETURNING conversation_id
+        )
+        SELECT (SELECT count(*) FROM binding)::int AS bound, (SELECT count(*) FROM recorded)::int AS recorded
       `.execute(db);
-      return r.rows.length === 0 ? 'no-binding' : 'recorded';
+      const row = r.rows[0];
+      if (row === undefined || row.bound === 0) return 'no-binding';
+      return row.recorded > 0 ? 'recorded' : 'reconnected';
     },
 
     async getThread(conversationId) {

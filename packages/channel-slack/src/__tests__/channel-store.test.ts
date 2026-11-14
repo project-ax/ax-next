@@ -111,14 +111,23 @@ const supportThread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
 });
 
 type ThreadIds = Omit<ChannelThread, 'notRemembered' | 'external'>;
-type Turn = Partial<Pick<Parameters<ChannelStore['recordThread']>[0], 'mode'>>;
+/** Whose turn: a member's (the default), or an outsider's, run as `runAs` (Ada, who connects #support, by default). */
+type Turn = { mode?: 'attended' | 'external'; runAs?: string };
 
 /**
  * A turn starting in `conversationId`: a member's, in #support of the support
  * agent, unless told otherwise; the switch as it is.
  */
 function record(conversationId: string, o: Partial<ThreadIds> & Turn = {}): ReturnType<ChannelStore['recordThread']> {
-  return channels.recordThread({ installId: INSTALL, channelId: SUPPORT, agentId: AGENT, mode: 'attended', ...o, conversationId });
+  const { mode, runAs, ...ids } = o;
+  return channels.recordThread({
+    installId: INSTALL,
+    channelId: SUPPORT,
+    agentId: AGENT,
+    ...ids,
+    conversationId,
+    ...(mode === 'external' ? { mode, runAs: runAs ?? ADA } : { mode: 'attended' as const }),
+  });
 }
 
 /** A turn starting while its channel's switch is off; the switch is on again after. */
@@ -520,6 +529,31 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect((await channels.getThread(CONV))?.external).toBe(true);
     expect(await record(OTHER_CONV, { mode: 'external' })).toBe('recorded');
     expect((await channels.getThread(OTHER_CONV))?.external).toBe(true);
+  });
+
+  it("an outsider's turn is recorded only while the person it runs as still connects the channel; a member's whoever connected it", async () => {
+    await connect();
+    expect(await record(CONV, { mode: 'external', runAs: ADA })).toBe('recorded');
+
+    // Bob connects #support again between Ada's outsider turn starting and its record.
+    expect(await connect({ connectedByUserId: BOB })).toBe('reconnected');
+    expect(await record(OTHER_CONV, { mode: 'external', runAs: ADA })).toBe('reconnected');
+    expect(await channels.getThread(OTHER_CONV)).toBeNull();
+    // A thread Ada's turns were recorded in is left exactly as it was.
+    expect(await record(CONV, { mode: 'external', runAs: ADA })).toBe('reconnected');
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ external: true }));
+    expect(await threadCount()).toBe(1);
+
+    // Run as Bob, it records; a member's turn doesn't depend on who connected.
+    expect(await record(OTHER_CONV, { mode: 'external', runAs: BOB })).toBe('recorded');
+    expect(await record('conv_member_thread')).toBe('recorded');
+    expect(await threadCount()).toBe(3);
+
+    // No binding at all is still no-binding, for an outsider's turn too.
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await record('conv_after_disconnect', { mode: 'external', runAs: BOB })).toBe('no-binding');
+    expect(await record('conv_after_disconnect')).toBe('no-binding');
+    expect(await threadCount()).toBe(3);
   });
 
   it("the veto over the real store: an outsider's thread is refused with the switch on; a member's is remembered", async () => {
