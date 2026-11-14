@@ -103,8 +103,8 @@ async function bind(installId: string, channelId: string, agentId: string): Prom
  */
 async function thread(conversationId: string, installId: string, channelId: string, agentId: string): Promise<void> {
   await sql`
-    INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered)
-    VALUES (${conversationId}, ${installId}, ${channelId}, ${agentId}, true)
+    INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered, external)
+    VALUES (${conversationId}, ${installId}, ${channelId}, ${agentId}, true, false)
   `.execute(db);
 }
 

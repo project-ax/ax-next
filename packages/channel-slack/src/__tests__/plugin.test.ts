@@ -501,11 +501,11 @@ function captureLogs(): Array<Record<string, unknown>> {
 // ── The tests ───────────────────────────────────────────────────────────────
 
 
-/** A thread an earlier run kept out of memory, its binding long gone: written straight to the table. */
+/** A member's thread an earlier run kept out of memory, its binding long gone: written straight to the table. */
 async function keptOutThread(conversationId: string): Promise<void> {
   await sql`
-    INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered)
-    VALUES (${conversationId}, ${INSTALL_ID}, ${SUPPORT_CH}, ${TEAM_AGENT.id}, true)
+    INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered, external)
+    VALUES (${conversationId}, ${INSTALL_ID}, ${SUPPORT_CH}, ${TEAM_AGENT.id}, true, false)
   `.execute(probe);
 }
 
