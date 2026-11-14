@@ -4,7 +4,7 @@ import { LifetimeClosedError, type Lifetime } from './lifetime.js';
 import {
   EVENT_TEXT_MAX,
   EVENTS_MAX_BODY_BYTES,
-  SLACK_ID_MAX,
+  SLACK_ID_RE,
   URL_CHALLENGE_MAX,
 } from './limits.js';
 import { logCode } from './log-code.js';
@@ -90,13 +90,11 @@ export type EventDispatcher = (install: InstallRow, envelope: SlackEnvelope) => 
 
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
-/** Slack ids and message timestamps: `T07ABCDEF12`, `Ev07ABCDEF12`, `1763035200.000100`. */
-const SLACK_ID = new RegExp(`^[A-Za-z0-9._-]{1,${SLACK_ID_MAX}}$`);
 /** Event types and subtypes, channel types: `message`, `app_mention`, `file_share`, `im`. */
 const SLACK_NAME = /^[a-z0-9_.]{1,64}$/;
 
 type Check = (value: unknown) => value is string;
-const isId: Check = (v): v is string => typeof v === 'string' && SLACK_ID.test(v);
+const isId: Check = (v): v is string => typeof v === 'string' && SLACK_ID_RE.test(v);
 const isName: Check = (v): v is string => typeof v === 'string' && SLACK_NAME.test(v);
 const isText: Check = (v): v is string => typeof v === 'string' && v.length <= EVENT_TEXT_MAX;
 

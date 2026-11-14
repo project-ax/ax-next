@@ -63,8 +63,14 @@ export const SLACK_RESPONSE_CAP_BYTES = 1_048_576;
 export const RETRY_AFTER_DEFAULT_MS = 1_000;
 /** The longest we wait on a rate limit, whatever Retry-After says. */
 export const RETRY_AFTER_CAP_MS = 60_000;
-/** A Slack id (app, client, user, team) or message ts. Real ones are under 30. */
+/** A Slack id (app, client, user, team, channel) or message ts. Real ones are under 30. */
 export const SLACK_ID_MAX = 64;
+/**
+ * What every check in this package takes for a Slack id or message ts
+ * (`T07ABCDEF12`, `Ev07ABCDEF12`, `1763035200.000100`): one pattern, so the
+ * events ingress, the Slack client and the settings routes can't drift apart.
+ */
+export const SLACK_ID_RE = new RegExp(`^[A-Za-z0-9._-]{1,${SLACK_ID_MAX}}$`);
 /** A Slack token or secret. Real ones are well under 200. */
 export const SLACK_TOKEN_MAX = 512;
 
@@ -76,10 +82,24 @@ export const SLACK_TOKEN_MAX = 512;
  */
 export const CHANNEL_LIST_PAGE_LIMIT = 200;
 /**
+ * At most this many `conversations.list` pages per channel picker (1,000
+ * channels). A workspace with more gets a list marked truncated; a channel
+ * past it can still be connected with `/ax connect` from inside it.
+ */
+export const CHANNEL_LIST_MAX_PAGES = 5;
+/**
  * The longest channel name stored on a binding and shown, in UTF-16 code
  * units (label.ts). Slack's own cap on a channel name is 80 characters.
  */
 export const CHANNEL_NAME_MAX = 80;
+
+// ── Agent settings ──────────────────────────────────────────────────────────
+
+/**
+ * The longest agent id a settings route takes from its path (printable
+ * ASCII). Agent ids are opaque here; real ones are far shorter.
+ */
+export const AGENT_ID_MAX = 128;
 
 // ── Replies ─────────────────────────────────────────────────────────────────
 

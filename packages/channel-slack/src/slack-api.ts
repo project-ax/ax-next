@@ -47,7 +47,7 @@ import {
   RETRY_AFTER_CAP_MS,
   RETRY_AFTER_DEFAULT_MS,
   SLACK_API_TIMEOUT_MS,
-  SLACK_ID_MAX,
+  SLACK_ID_RE,
   SLACK_RESPONSE_CAP_BYTES,
   SLACK_TOKEN_MAX,
 } from './limits.js';
@@ -212,7 +212,6 @@ const JSON_TYPE = 'application/json; charset=utf-8';
  */
 const SLACK_CODE = /^[a-z_]{1,64}$/;
 const UNREADABLE_SLACK_CODE = 'slack-error';
-const SLACK_ID = new RegExp(`^[A-Za-z0-9._-]{1,${SLACK_ID_MAX}}$`);
 /** Printable ASCII with no space, so a secret can never break a header. */
 const SLACK_TOKEN = new RegExp(`^[\\x21-\\x7e]{1,${SLACK_TOKEN_MAX}}$`);
 const DIGITS = /^\d+$/;
@@ -222,7 +221,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function idOf(value: unknown): string | null {
-  return typeof value === 'string' && SLACK_ID.test(value) ? value : null;
+  return typeof value === 'string' && SLACK_ID_RE.test(value) ? value : null;
 }
 
 function tokenOf(value: unknown): string | null {

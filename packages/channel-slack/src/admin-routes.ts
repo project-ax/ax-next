@@ -3,7 +3,6 @@ import { makeAgentContext, type HookBus, type Logger } from '@ax/core';
 import { checkAdmin, type AdminActor } from './admin-auth.js';
 import { checkBotName, defaultBotName } from './bot-name.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
-import { cleanLabel } from './label.js';
 import {
   ADMIN_BODY_MAX_BYTES,
   INSTALL_ID_BYTES,
@@ -14,6 +13,7 @@ import {
 import { logCode } from './log-code.js';
 import { buildAppManifest, buildInstallUrl, slackUrls, withoutTrailingSlashes } from './manifest.js';
 import type { Mutex } from './mutex.js';
+import { personName } from './person-name.js';
 import type { SecretOwner, SecretStore } from './secrets.js';
 import { SlackApiError, type CreatedApp, type OAuthInstall, type SlackApi } from './slack-api.js';
 import { InstallStoreError, type InstallRow, type InstallStore } from './store.js';
@@ -446,19 +446,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * email (only admins see this), else "Administrator", which also stands in
    * for an account that's gone or an auth that can't answer.
    */
-  async function connectedByName(install: InstallRow): Promise<string> {
-    let user: unknown;
-    try {
-      user = await d.bus.call<{ userId: string }, unknown>('auth:get-user', ctx, {
-        userId: install.connectedByUserId,
-      });
-    } catch (err) {
-      failed('connected-by', err, install.installId, 'warn');
-      return FALLBACK_NAME;
-    }
-    if (!isRecord(user)) return FALLBACK_NAME;
-    const label = (value: unknown): string => (typeof value === 'string' ? cleanLabel(value) : '');
-    return label(user['displayName']) || label(user['email']) || FALLBACK_NAME;
+  function connectedByName(install: InstallRow): Promise<string> {
+    return personName(d.bus, ctx, install.connectedByUserId, {
+      allowEmail: true,
+      fallback: FALLBACK_NAME,
+      onFault: (err) => failed('connected-by', err, install.installId, 'warn'),
+    });
   }
 
   // ── The routes ────────────────────────────────────────────────────────────
