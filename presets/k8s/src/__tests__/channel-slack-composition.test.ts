@@ -9,7 +9,15 @@ import {
 
 import pg from 'pg';
 
-import { HookBus, PluginError, bootstrap, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import {
+  HookBus,
+  PluginError,
+  bootstrap,
+  isHold,
+  makeAgentContext,
+  type AgentContext,
+  type Plugin,
+} from '@ax/core';
 import type { CreateOutput as AgentCreateOutput } from '@ax/agents';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
 
@@ -24,7 +32,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // and `/ax` command), the real @ax/agents (the personal agents a Slack DM
 // reaches, and the team agents a channel connects to), the real @ax/teams
 // (who is a team admin), the real @ax/conversations (the
-// thread's conversation, origin 'slack'), and the real credentials vault
+// thread's conversation, origin 'slack'), the real @ax/decisions over the
+// real @ax/tool-policy (a held call becomes a pending row in somebody's
+// Today), and the real credentials vault
 // (@ax/credentials over @ax/credentials-store-db over @ax/storage-postgres),
 // all on one Postgres. Slack is a fake behind the preset's
 // `channelSlack.fetchImpl`, and the global `fetch` throws, so nothing can
@@ -53,6 +63,8 @@ const KEEP = new Set<string>([
   '@ax/agents',
   '@ax/teams',
   '@ax/conversations',
+  '@ax/decisions',
+  '@ax/tool-policy',
   SLACK_PLUGIN,
 ]);
 
@@ -89,7 +101,9 @@ const CAROL: SlackPerson = { slackId: 'U07CAROL001', name: 'Carol', email: 'caro
 /** A team admin of the support team, and a plain member of it. Both have AX accounts. */
 const ADA: SlackPerson = { slackId: 'U07ADA00001', name: 'Ada', email: 'ada@canopyworks.com' };
 const MEL: SlackPerson = { slackId: 'U07MEL00001', name: 'Mel', email: 'mel@canopyworks.com' };
-const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL];
+/** A full member with no AX account and an address off every approved domain. */
+const EVE: SlackPerson = { slackId: 'U07EVE00001', name: 'Eve', email: 'eve@evil.example' };
+const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL, EVE];
 const SUPPORT_CHANNEL = 'C07SUPPORT1';
 
 /** The install's approved sign-in domains, as auth:is-approved-email answers for them. */
@@ -124,6 +138,8 @@ interface CapturedRoute {
 const routes: CapturedRoute[] = [];
 let actor: { id: string; isAdmin: boolean } | null = null;
 const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
+/** When set, a turn runs this in place of the stub's one line of text; it ends the turn itself. */
+let invokeScript: ((ctx: AgentContext) => Promise<void>) | null = null;
 let theBus: HookBus | null = null;
 
 function createStubsPlugin(): Plugin {
@@ -184,6 +200,10 @@ function createStubsPlugin(): Plugin {
         name,
         async (ctx, input) => {
           invokes.push({ ctx, input });
+          if (invokeScript !== null) {
+            await invokeScript(ctx);
+            return { kind: 'complete', messages: [] };
+          }
           await bus.fire('chat:stream-chunk', ctx, {
             reqId: ctx.reqId,
             kind: 'text',
@@ -535,6 +555,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
   /** Connect the workspace as an admin: Slack makes the app, then Allow comes back to the callback. */
   async function connectWorkspace(): Promise<string> {
+    // One workspace per deployment: a test that finds it connected uses it.
+    const existing = await query("SELECT install_id FROM channel_slack_v1_installs WHERE status = 'active'");
+    if (existing.length > 0) return existing[0]!['install_id'] as string;
     actor = { id: ADMIN, isAdmin: true };
     const connect = await callRoute('POST', '/admin/slack/connect', {
       body: jsonBody({ accessToken: CONFIG_ACCESS_TOKEN, refreshToken: CONFIG_REFRESH_TOKEN }),
@@ -855,5 +878,308 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       { actor: { userId: 'usr_ada', isAdmin: false }, agentId },
     );
     await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
+  });
+
+  // ── Channel turns (TASK-1094) ──────────────────────────────────────────────
+
+  /** A signed `app_mention` in the support channel, the way Slack writes it: the bot's own `<@…>` first. */
+  function mention(from: SlackPerson, ts: string, text: string, threadTs?: string): Record<string, unknown> {
+    return {
+      type: 'app_mention',
+      user: from.slackId,
+      channel: SUPPORT_CHANNEL,
+      ts,
+      text: `<@${BOT_USER_ID}> ${text}`,
+      ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
+    };
+  }
+
+  /** The workspace connected, a support team (Ada its admin, Mel a member) with a team agent, and #support-desk connected to it by Ada. */
+  async function supportChannel(): Promise<{ installId: string; teamId: string; agentId: string }> {
+    const installId = await connectWorkspace();
+    const { teamId, agentId } = await teamWithAgent('usr_ada', 'usr_mel');
+    actor = { id: 'usr_ada', isAdmin: false };
+    const connected = await callRoute('POST', '/settings/slack/:agentId/connect', {
+      params: { agentId },
+      rawPath: `/settings/slack/${agentId}/connect`,
+      body: jsonBody({ channelId: SUPPORT_CHANNEL }),
+    });
+    actor = null;
+    expect(connected.status).toBe(200);
+    expect(await bindings()).toEqual([{ channelId: SUPPORT_CHANNEL, agentId, by: 'usr_ada' }]);
+    return { installId, teamId, agentId };
+  }
+
+  /** Delete the team agent: its channel is freed (agents:deleted), so the next test starts clean. */
+  async function dropAgent(agentId: string, byAdmin = 'usr_ada'): Promise<void> {
+    await theBus!.call('agents:delete', makeAgentContext({ sessionId: 'test', agentId: '', userId: byAdmin }), {
+      actor: { userId: byAdmin, isAdmin: false },
+      agentId,
+    });
+    await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
+  }
+
+  /** A channel turn's Slack calls, once its reply is closed and 👀 is off. */
+  const channelTurnCalls = (from: number): Promise<SlackCall[]> =>
+    slackCallsUntil(from, 'chat.startStream', 'chat.stopStream', 'reactions.remove');
+
+  /** Wait for `n` turns to have reached agent:invoke; the latest one. */
+  async function invokedTurn(n: number): Promise<{ ctx: AgentContext; input: unknown }> {
+    await vi.waitFor(() => expect(invokes).toHaveLength(n), { timeout: 10_000 });
+    return invokes[n - 1]!;
+  }
+
+  /** Every word the thread was sent: the stream's chunks and any plain post. */
+  function sentText(calls: SlackCall[]): string {
+    const parts: string[] = [];
+    for (const c of calls) {
+      const chunks = c.body['chunks'];
+      if (Array.isArray(chunks)) {
+        for (const chunk of chunks as Array<{ text?: unknown }>) if (typeof chunk.text === 'string') parts.push(chunk.text);
+      }
+      if (typeof c.body['markdown_text'] === 'string') parts.push(c.body['markdown_text']);
+    }
+    return parts.join('');
+  }
+
+  async function conversationRow(conversationId: string): Promise<{ owner: string; key: string }> {
+    const rows = await query(
+      'SELECT user_id, external_key FROM conversations_v1_conversations WHERE conversation_id = $1',
+      [conversationId],
+    );
+    expect(rows).toHaveLength(1);
+    return { owner: rows[0]!['user_id'] as string, key: rows[0]!['external_key'] as string };
+  }
+
+  const listDecisions = async (userId: string): Promise<Array<Record<string, unknown>>> =>
+    (
+      await theBus!.call<unknown, { decisions: Array<Record<string, unknown>> }>(
+        'decisions:list',
+        makeAgentContext({ sessionId: 'test', agentId: '', userId }),
+        { userId },
+      )
+    ).decisions;
+
+  it('a mention in a connected channel runs as the sender, or as whoever connected it; the rest get nothing (tiers A-E, TASK-1094)', async () => {
+    const { installId, teamId, agentId } = await supportChannel();
+    invokes.length = 0;
+    const keyOf = (thread: string, suffix = ''): string => `slack:${installId}:${SUPPORT_CHANNEL}:${thread}${suffix}`;
+
+    // A: Mel is on the team. Attended, as herself, in a conversation of her own.
+    const melTs = nextTs();
+    let mark = slackCalls.length;
+    expect((await deliver(installId, mention(MEL, melTs, 'what is the status?'))).status).toBe(200);
+    const melTurn = await invokedTurn(1);
+    expect(melTurn.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
+    expect(JSON.stringify(melTurn.input)).toContain(`[Slack · #support-desk · Mel (${MEL.slackId})]`);
+    expect(JSON.stringify(melTurn.input)).toContain('what is the status?');
+    expect(await conversationRow(melTurn.ctx.conversationId!)).toEqual({ owner: 'usr_mel', key: keyOf(melTs) });
+    let calls = await channelTurnCalls(mark);
+    expect(callOf(calls, 'chat.startStream').body).toMatchObject({
+      channel: SUPPORT_CHANNEL,
+      thread_ts: melTs,
+      recipient_user_id: MEL.slackId,
+    });
+
+    // B: Bob has an AX account but isn't on the team. External, as Ada, who connected the channel.
+    const bobTs = nextTs();
+    mark = slackCalls.length;
+    expect((await deliver(installId, mention(BOB, bobTs, 'can you help me?'))).status).toBe(200);
+    const bobTurn = await invokedTurn(2);
+    expect(bobTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
+    expect(JSON.stringify(bobTurn.input)).toContain(`[Slack · #support-desk · Bob (${BOB.slackId})]`);
+    expect(await conversationRow(bobTurn.ctx.conversationId!)).toEqual({ owner: 'usr_ada', key: keyOf(bobTs, ':external') });
+    await channelTurnCalls(mark);
+
+    // C: Carol has no AX account, on an approved domain. External too, and in Mel's own thread
+    // she gets a conversation of her own, not Mel's.
+    mark = slackCalls.length;
+    expect((await deliver(installId, mention(CAROL, nextTs(), 'me too, please', melTs))).status).toBe(200);
+    const carolTurn = await invokedTurn(3);
+    expect(carolTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
+    expect(carolTurn.ctx.conversationId).not.toBe(melTurn.ctx.conversationId);
+    expect(await conversationRow(carolTurn.ctx.conversationId!)).toEqual({ owner: 'usr_ada', key: keyOf(melTs, ':external') });
+    expect(JSON.stringify(melTurn.input)).not.toContain('me too');
+    await channelTurnCalls(mark);
+
+    // D: Eve has no AX account and her address is on no approved domain: silence, no turn.
+    const eveTs = nextTs();
+    const eveMark = slackCalls.length;
+    expect((await deliver(installId, mention(EVE, eveTs, 'let me in'))).status).toBe(200);
+    await slackCallsUntil(eveMark, 'users.info');
+
+    // E: Ada leaves the team (Zoe becomes its second admin first: a team keeps one). Her channel
+    // can no longer lend her access, so outsiders hear that privately and nothing runs.
+    const ctxFor = (userId: string) => makeAgentContext({ sessionId: 'test', agentId: '', userId });
+    await theBus!.call('teams:add-member', ctxFor('usr_ada'), {
+      actor: { userId: 'usr_ada' },
+      teamId,
+      userId: 'usr_zoe',
+      role: 'admin',
+    });
+    await theBus!.call('teams:remove-member', ctxFor('usr_zoe'), {
+      actor: { userId: 'usr_zoe' },
+      teamId,
+      userId: 'usr_ada',
+    });
+    for (const outsider of [BOB, CAROL]) {
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(outsider, nextTs(), 'anyone there?'))).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.postEphemeral');
+      expect(callOf(calls, 'chat.postEphemeral').body).toMatchObject({ channel: SUPPORT_CHANNEL, user: outsider.slackId });
+      expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toContain(
+        'A team admin needs to connect me to this channel again',
+      );
+      expect(calls.map((c) => c.method)).not.toContain('chat.startStream');
+    }
+    expect(invokes).toHaveLength(3);
+    // Members keep working: Mel doesn't depend on the connector.
+    mark = slackCalls.length;
+    expect((await deliver(installId, mention(MEL, nextTs(), 'still me'))).status).toBe(200);
+    const melAgain = await invokedTurn(4);
+    expect(melAgain.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
+    await channelTurnCalls(mark);
+
+    // Eve's mention went nowhere: nothing said to her or in her thread, no turn for her.
+    for (const c of slackCalls.slice(eveMark).filter((x) => x.method !== 'users.info')) {
+      expect(c.body['thread_ts']).not.toBe(eveTs);
+      expect(c.body['user']).not.toBe(EVE.slackId);
+      expect(c.body['recipient_user_id']).not.toBe(EVE.slackId);
+    }
+    expect(invokes.map((i) => JSON.stringify(i.input)).join('')).not.toContain('let me in');
+
+    // Ada is gone from the team: Zoe, its admin now, deletes the agent.
+    await dropAgent(agentId, 'usr_zoe');
+  });
+
+  it('a held call: the outsider thread says its owner was asked and the row waits in the connector\'s Today; a member\'s waits in their own (TASK-1094)', async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    const holds: unknown[] = [];
+    invokeScript = async (ctx) => {
+      // The runner's pre-call, on the real policy: request_capability is held. Then the held
+      // result and the turn's end, the way the runners send them.
+      const call = { id: `toolu_held_${invokes.length}`, name: 'request_capability', input: { capability: 'calendar' } };
+      holds.push(await theBus!.fire('tool:pre-call', ctx, call));
+      await theBus!.fire('chat:stream-chunk', ctx, {
+        reqId: ctx.reqId,
+        kind: 'tool-result',
+        held: true,
+        toolCallId: call.id,
+        output: 'held',
+      });
+      await theBus!.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+    try {
+      // External: Carol's turn runs as Ada. The thread says her owner was asked and links nowhere;
+      // the row waits in Ada's Today, for this agent and Carol's external conversation.
+      let mark = slackCalls.length;
+      expect((await deliver(installId, mention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
+      const external = await invokedTurn(1);
+      expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
+      expect(isHold(holds[0])).toBe(true);
+      let calls = await channelTurnCalls(mark);
+      let said = sentText(calls);
+      expect(said).toContain("I need my owner's OK before I can do part of this");
+      expect(said).not.toContain('/workspace');
+      const externalRows = await listDecisions('usr_ada');
+      expect(externalRows).toHaveLength(1);
+      expect(externalRows[0]).toMatchObject({
+        agentId,
+        conversationId: external.ctx.conversationId,
+        status: 'pending',
+        ownerUserId: 'usr_ada',
+      });
+      expect((await conversationRow(external.ctx.conversationId!)).key).toMatch(/:external$/);
+      expect(await listDecisions('usr_mel')).toEqual([]);
+
+      // Attended: Mel's turn runs as Mel. The thread links her own Today and the row is hers.
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(MEL, nextTs(), 'please book it'))).status).toBe(200);
+      const attended = await invokedTurn(2);
+      expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
+      expect(isHold(holds[1])).toBe(true);
+      calls = await channelTurnCalls(mark);
+      said = sentText(calls);
+      expect(said).toContain(`Approve it in [Today](${PUBLIC_ORIGIN}/workspace)`);
+      expect(said).not.toContain("my owner's OK");
+      const attendedRows = await listDecisions('usr_mel');
+      expect(attendedRows).toHaveLength(1);
+      expect(attendedRows[0]).toMatchObject({
+        agentId,
+        conversationId: attended.ctx.conversationId,
+        status: 'pending',
+        ownerUserId: 'usr_mel',
+      });
+      // Ada's Today still holds only the outsider's.
+      expect(await listDecisions('usr_ada')).toHaveLength(1);
+    } finally {
+      invokeScript = null;
+    }
+    await dropAgent(agentId);
+  });
+
+  it('the channel\'s memory switch: capture is refused while it is off, for any thread that had a turn then (TASK-1094)', async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    const preCapture = (conversationId: string) =>
+      theBus!.fire(
+        'memory:pre-capture',
+        makeAgentContext({ sessionId: 'test', agentId, userId: 'usr_ada', conversationId }),
+        { conversationId },
+      );
+    const switchTo = async (remember: boolean): Promise<void> => {
+      actor = { id: 'usr_ada', isAdmin: false };
+      const out = await callRoute('POST', '/settings/slack/:agentId/remember', {
+        params: { agentId },
+        rawPath: `/settings/slack/${agentId}/remember`,
+        body: jsonBody({ channelId: SUPPORT_CHANNEL, remember }),
+      });
+      actor = null;
+      expect(out.status).toBe(200);
+    };
+    const refused = { rejected: true, reason: 'channel-not-remembered' };
+
+    // On (the default): an outsider's thread is captured like any other.
+    const t1 = nextTs();
+    let mark = slackCalls.length;
+    expect((await deliver(installId, mention(CAROL, t1, 'first question'))).status).toBe(200);
+    const conv1 = (await invokedTurn(1)).ctx.conversationId!;
+    await channelTurnCalls(mark);
+    expect((await preCapture(conv1)).rejected).toBe(false);
+    // A conversation this plugin never recorded (a web chat) isn't its to refuse.
+    expect((await preCapture('cnv_a_web_chat')).rejected).toBe(false);
+
+    // Off: that thread is refused at once.
+    await switchTo(false);
+    expect(await preCapture(conv1)).toMatchObject(refused);
+
+    // A turn while it is off, in the same thread. Still the same conversation.
+    mark = slackCalls.length;
+    expect((await deliver(installId, mention(CAROL, nextTs(), 'second question', t1))).status).toBe(200);
+    expect((await invokedTurn(2)).ctx.conversationId).toBe(conv1);
+    await channelTurnCalls(mark);
+
+    // On again: the thread that had a turn while it was off stays out, for good. A new thread is captured.
+    await switchTo(true);
+    expect(await preCapture(conv1)).toMatchObject(refused);
+    mark = slackCalls.length;
+    expect((await deliver(installId, mention(CAROL, nextTs(), 'a new question'))).status).toBe(200);
+    const conv3 = (await invokedTurn(3)).ctx.conversationId!;
+    await channelTurnCalls(mark);
+    expect(conv3).not.toBe(conv1);
+    expect((await preCapture(conv3)).rejected).toBe(false);
+
+    // Disconnected: nothing the channel said is captured anymore.
+    actor = { id: 'usr_ada', isAdmin: false };
+    const disconnected = await callRoute('POST', '/settings/slack/:agentId/disconnect', {
+      params: { agentId },
+      rawPath: `/settings/slack/${agentId}/disconnect`,
+      body: jsonBody({ channelId: SUPPORT_CHANNEL }),
+    });
+    actor = null;
+    expect(disconnected).toMatchObject({ status: 200, body: { removed: true } });
+    expect(await preCapture(conv3)).toMatchObject(refused);
+    await dropAgent(agentId);
   });
 });
