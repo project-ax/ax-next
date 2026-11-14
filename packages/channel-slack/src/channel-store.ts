@@ -17,12 +17,12 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * `removeForAgent` is the agents:deleted cleanup (agents-deleted.ts).
  *
  * It also keeps the memory switch's thread map (TASK-1094): which
- * conversations are channel threads, of which channel and agent, and whether
- * one ever had a turn while the switch was off. The capture veto
- * (capture-veto.ts) reads it; the router writes it when a channel turn
- * starts. Only `removeForAgent` deletes a thread row: an install's removal and
- * a disconnect keep them, so what was said while the switch was off stays out
- * of memory after Slack is gone.
+ * conversations are channel threads, of which channel and agent, whether
+ * outsiders' turns run in it, and whether one ever had a turn while the
+ * switch was off. The capture veto (capture-veto.ts) reads it; the router
+ * writes it when a channel turn starts. Only `removeForAgent` deletes a
+ * thread row: an install's removal and a disconnect keep them, so what was
+ * said while the switch was off stays out of memory after Slack is gone.
  */
 export interface ChannelBinding {
   installId: string;
@@ -47,7 +47,19 @@ export interface ChannelThread {
   agentId: string;
   /** True once any turn started while the channel's memory switch was off. Never cleared. */
   notRemembered: boolean;
+  /**
+   * The conversation outsiders' (external) turns run in: memory never learns
+   * from it, whatever the switch says. Fixed by the conversation's key.
+   */
+  external: boolean;
 }
+
+/**
+ * Whose turn is starting, as the router decided it: a member's, run as
+ * themselves (`attended`), or an outsider's, run as the person who connected
+ * the channel (`external`).
+ */
+export type ThreadMode = 'attended' | 'external';
 
 export interface ChannelStore {
   get(installId: string, channelId: string): Promise<ChannelBinding | null>;
@@ -81,10 +93,14 @@ export interface ChannelStore {
    * after the caller read the binding still taints the thread. A
    * conversation's install, channel and agent are written the first time and
    * never change (its key names them); `notRemembered` is sticky: once true,
-   * a turn with the switch on leaves it true. `no-binding`: the channel isn't
-   * this agent's (any more), nothing was written, and the turn must not run.
+   * a turn with the switch on leaves it true. `external` is the turn's mode
+   * (anything but `attended` counts as external) and sticky the same way.
+   * `no-binding`: the channel isn't this agent's (any more), nothing was
+   * written, and the turn must not run.
    */
-  recordThread(t: Omit<ChannelThread, 'notRemembered'> & { conversationId: string }): Promise<'recorded' | 'no-binding'>;
+  recordThread(
+    t: Omit<ChannelThread, 'notRemembered' | 'external'> & { conversationId: string; mode: ThreadMode },
+  ): Promise<'recorded' | 'no-binding'>;
   /** The thread a conversation is, or null when no channel turn ever ran in it (a web chat, a DM). */
   getThread(conversationId: string): Promise<ChannelThread | null>;
 }
@@ -207,19 +223,22 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // written, so an admin turning it off after the router's read can't
       // leave a thread recorded clean; and two turns starting at once in one
       // thread can't lose a taint between a read and a write. The conflict
-      // only ever ORs the flag in, so nothing can turn a thread back to
-      // remembered. No binding of this agent's, no row selected: nothing is
-      // inserted, nothing updated, nothing returned.
+      // only ever ORs the flags in, so nothing can turn a thread back to
+      // remembered, or an outsiders' thread into a member's. No binding of
+      // this agent's, no row selected: nothing is inserted, nothing updated,
+      // nothing returned.
+      const external = t.mode !== 'attended';
       const r = await sql<{ conversation_id: string }>`
         INSERT INTO channel_slack_v1_threads
-          (conversation_id, install_id, channel_id, agent_id, not_remembered)
-        SELECT ${t.conversationId}, c.install_id, c.channel_id, c.agent_id, NOT c.remember
+          (conversation_id, install_id, channel_id, agent_id, not_remembered, external)
+        SELECT ${t.conversationId}, c.install_id, c.channel_id, c.agent_id, NOT c.remember, CAST(${external} AS boolean)
           FROM channel_slack_v1_channels c
          WHERE c.install_id = ${t.installId}
            AND c.channel_id = ${t.channelId}
            AND c.agent_id = ${t.agentId}
         ON CONFLICT (conversation_id) DO UPDATE
-           SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered
+           SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered,
+               external = channel_slack_v1_threads.external OR EXCLUDED.external
         RETURNING conversation_id
       `.execute(db);
       return r.rows.length === 0 ? 'no-binding' : 'recorded';
@@ -228,12 +247,18 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     async getThread(conversationId) {
       const row = await db
         .selectFrom(THREADS)
-        .select(['install_id', 'channel_id', 'agent_id', 'not_remembered'])
+        .select(['install_id', 'channel_id', 'agent_id', 'not_remembered', 'external'])
         .where('conversation_id', '=', conversationId)
         .executeTakeFirst();
       return row === undefined
         ? null
-        : { installId: row.install_id, channelId: row.channel_id, agentId: row.agent_id, notRemembered: row.not_remembered };
+        : {
+            installId: row.install_id,
+            channelId: row.channel_id,
+            agentId: row.agent_id,
+            notRemembered: row.not_remembered,
+            external: row.external,
+          };
     },
   };
 }

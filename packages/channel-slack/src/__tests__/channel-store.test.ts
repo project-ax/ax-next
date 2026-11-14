@@ -100,24 +100,29 @@ const byChannel = (a: { channelId: string }, b: { channelId: string }): number =
 const CONV = 'conv_support_thread_1';
 const OTHER_CONV = 'conv_support_thread_2';
 
-/** A #support thread of the support agent, remembered unless told otherwise. */
+/** A member's #support thread of the support agent, remembered, unless told otherwise. */
 const supportThread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
   installId: INSTALL,
   channelId: SUPPORT,
   agentId: AGENT,
   notRemembered: false,
+  external: false,
   ...o,
 });
 
-type ThreadIds = Omit<ChannelThread, 'notRemembered'>;
+type ThreadIds = Omit<ChannelThread, 'notRemembered' | 'external'>;
+type Turn = Partial<Pick<Parameters<ChannelStore['recordThread']>[0], 'mode'>>;
 
-/** A turn starting in `conversationId`, in #support of the support agent unless told otherwise, the switch as it is. */
-function record(conversationId: string, o: Partial<ThreadIds> = {}): ReturnType<ChannelStore['recordThread']> {
-  return channels.recordThread({ installId: INSTALL, channelId: SUPPORT, agentId: AGENT, ...o, conversationId });
+/**
+ * A turn starting in `conversationId`: a member's, in #support of the support
+ * agent, unless told otherwise; the switch as it is.
+ */
+function record(conversationId: string, o: Partial<ThreadIds> & Turn = {}): ReturnType<ChannelStore['recordThread']> {
+  return channels.recordThread({ installId: INSTALL, channelId: SUPPORT, agentId: AGENT, mode: 'attended', ...o, conversationId });
 }
 
 /** A turn starting while its channel's switch is off; the switch is on again after. */
-async function recordOff(conversationId: string, o: Partial<ThreadIds> = {}): Promise<void> {
+async function recordOff(conversationId: string, o: Partial<ThreadIds> & Turn = {}): Promise<void> {
   const ids = { installId: INSTALL, channelId: SUPPORT, agentId: AGENT, ...o };
   expect(await channels.setRemember(ids.installId, ids.channelId, ids.agentId, false)).toBe(true);
   expect(await record(conversationId, o)).toBe('recorded');
@@ -131,6 +136,7 @@ function vetoFor(conversationId: string) {
 }
 
 const REFUSED = { rejected: true, reason: 'channel-not-remembered' };
+const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn' };
 
 async function threadCount(): Promise<number> {
   const r = await sql<{ n: number }>`SELECT count(*)::int AS n FROM channel_slack_v1_threads`.execute(db);
@@ -141,10 +147,39 @@ describe('runMigrations', () => {
   it('a second run keeps every binding and thread (additive and idempotent)', async () => {
     await connect();
     await recordOff(CONV);
+    await record(OTHER_CONV, { mode: 'external' });
     await runMigrations(db);
     await runMigrations(db);
     expect((await channels.get(INSTALL, SUPPORT))?.agentId).toBe(AGENT);
     expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+    expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread({ external: true }));
+  });
+
+  it("adds `external` to a thread table made before it, every row a member's (none exist in production)", async () => {
+    // The table as Task 14 made it, with one row.
+    await sql`DROP TABLE channel_slack_v1_threads`.execute(db);
+    await sql`
+      CREATE TABLE channel_slack_v1_threads (
+        conversation_id TEXT PRIMARY KEY,
+        install_id      TEXT NOT NULL,
+        channel_id      TEXT NOT NULL,
+        agent_id        TEXT NOT NULL,
+        not_remembered  BOOLEAN NOT NULL DEFAULT false,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `.execute(db);
+    await sql`
+      INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, not_remembered)
+      VALUES (${CONV}, ${INSTALL}, ${SUPPORT}, ${AGENT}, true)
+    `.execute(db);
+
+    await runMigrations(db);
+    await runMigrations(db);
+
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+    await connect();
+    expect(await record(OTHER_CONV, { mode: 'external' })).toBe('recorded');
+    expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread({ external: true }));
   });
 });
 
@@ -471,6 +506,29 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect(await connect()).toBe('connected');
     expect(await vetoFor(CONV)).toBeUndefined();
     expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);
+  });
+
+  it("an outsider's turn records its thread external, a member's records theirs attended, and neither ever flips", async () => {
+    await connect();
+    expect(await record(CONV, { mode: 'external' })).toBe('recorded');
+    expect(await record(OTHER_CONV)).toBe('recorded');
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ external: true }));
+    expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread());
+
+    // A conversation's key fixes its mode; if one were ever recorded both ways, it stays external.
+    expect(await record(CONV)).toBe('recorded');
+    expect((await channels.getThread(CONV))?.external).toBe(true);
+    expect(await record(OTHER_CONV, { mode: 'external' })).toBe('recorded');
+    expect((await channels.getThread(OTHER_CONV))?.external).toBe(true);
+  });
+
+  it("the veto over the real store: an outsider's thread is refused with the switch on; a member's is remembered", async () => {
+    await connect();
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+    expect(await record(CONV, { mode: 'external' })).toBe('recorded');
+    expect(await record(OTHER_CONV)).toBe('recorded');
+    expect(await vetoFor(CONV)).toEqual(OUTSIDER_THREAD);
+    expect(await vetoFor(OTHER_CONV)).toBeUndefined();
   });
 
   it('the switch, read at capture time: off refuses every thread of the channel, on again lets the clean ones through', async () => {

@@ -15,11 +15,12 @@ import type { ChannelBinding, ChannelThread } from '../channel-store.js';
   The "Let the agent remember this channel" switch (TASK-1094), as memory
   sees it: `memory:pre-capture { conversationId }` before every extraction
   pass and every `memory_note`. channel-slack refuses a conversation of one of
-  its channel threads when the thread ever had a turn while the switch was
-  off (sticky), when the channel is no longer connected to the thread's agent,
-  or when the switch is off now. A conversation it never recorded (a web chat,
-  a DM) gets no opinion. It fails closed: a lookup that throws, or that misses
-  half of memory's own bound, refuses.
+  its channel threads when an outsider's (external) turn ran in it, whatever
+  the switch says; and a member's when the thread ever had a turn while the
+  switch was off (sticky), when the channel is no longer connected to the
+  thread's agent, or when the switch is off now. A conversation it never
+  recorded (a web chat, a DM) gets no opinion. It fails closed: a lookup that
+  throws, or that misses half of memory's own bound, refuses.
 */
 
 const INSTALL = 'q3VtZ0xH4kTn9Wb2LmPa1A';
@@ -28,12 +29,16 @@ const AGENT = 'agt_support';
 const THREAD = 'conv-support-thread';
 
 const REFUSED = { rejected: true, reason: 'channel-not-remembered' };
+/** An outsider's thread: never remembered, whatever the switch says. */
+const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn' };
 
+/** A member's thread of #support, remembered, unless told otherwise. */
 const thread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
   installId: INSTALL,
   channelId: SUPPORT,
   agentId: AGENT,
   notRemembered: false,
+  external: false,
   ...o,
 });
 
@@ -148,6 +153,55 @@ describe('channelCaptureVeto: what the switch refuses', () => {
     const channels = channelsWith({ threads: { [THREAD]: thread({ notRemembered: true }) }, binding: binding({ remember: true }) });
     expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toEqual(REFUSED);
     expect(channels.get).not.toHaveBeenCalled();
+  });
+});
+
+describe("channelCaptureVeto: an outsider's thread is never remembered", () => {
+  /*
+    An outsider's turn runs `audience: 'shared'`, and a team agent recalls
+    shared memory in every turn, a member's private chat included. Learned,
+    an outsider's words would come back as facts with a member's authority,
+    so the switch governs members' (attended) threads only.
+  */
+  it.each([
+    ['the switch on, the channel connected, never a turn while off', thread({ external: true })],
+    ['and a turn while the switch was off too', thread({ external: true, notRemembered: true })],
+    ['a flag that is anything but false (fails closed)', thread({ external: undefined as unknown as boolean })],
+  ] as const)('refuses it: %s, before any binding is read', async (_name, outsider) => {
+    const channels = channelsWith({ threads: { [THREAD]: outsider }, binding: binding({ remember: true }) });
+    expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toEqual(OUTSIDER_THREAD);
+    expect(channels.get).not.toHaveBeenCalled();
+  });
+
+  it("a member's thread of the same Slack thread is remembered while the switch is on", async () => {
+    // One Slack thread, two conversations: the member's own, and the connector's for outsiders.
+    const member = 'conv-support-thread-member';
+    const channels = channelsWith({ threads: { [THREAD]: thread({ external: true }), [member]: thread() } });
+    const memberPass = pass({ conversationId: member, source: 'user', userId: 'usr_alice' });
+    expect(await channelCaptureVeto(channels, memberPass, { conversationId: member })).toBeUndefined();
+    expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toEqual(OUTSIDER_THREAD);
+  });
+
+  it("memory_note in an outsider's turn asks as memory asks (the turn's own ctx and its conversation id) and is refused", async () => {
+    const bus = new HookBus();
+    subscribeCaptureVeto(bus, channelsWith({ threads: { [THREAD]: thread({ external: true }) } }));
+    // @ax/memory's captureRefusal: the tool call's ctx, its host-set conversationId as the payload, memory's bound.
+    const noteCtx = pass();
+    expect(
+      await bus.fire(MEMORY_PRE_CAPTURE_HOOK, noteCtx, { conversationId: noteCtx.conversationId }, {
+        subscriberTimeoutMs: MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
+      }),
+    ).toEqual({ ...OUTSIDER_THREAD, source: CAPTURE_VETO_KEY });
+  });
+
+  it("refuses when either id it asks about is an outsider's thread", async () => {
+    const channels = channelsWith({ threads: { [THREAD]: thread({ external: true }) } });
+    expect(await channelCaptureVeto(channels, pass({ conversationId: 'conv-web' }), { conversationId: THREAD })).toEqual(
+      OUTSIDER_THREAD,
+    );
+    expect(await channelCaptureVeto(channels, pass({ conversationId: THREAD }), { conversationId: 'conv-web' })).toEqual(
+      OUTSIDER_THREAD,
+    );
   });
 });
 

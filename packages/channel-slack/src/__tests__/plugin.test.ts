@@ -73,6 +73,8 @@ const TEAM_ID = 'T07ABCDEF12';
 const ADMIN = { id: 'usr_ada', displayName: 'Ada Admin', isAdmin: true };
 const BOT_TOKEN = fakeBotToken('PLUGINTESTSECRET');
 const ALICE = 'U07ALICE001';
+/** Ada's Slack user: she connected #support, and is a team admin of its agent. */
+const ADA_SLACK = 'U07ADA00001';
 const DM_CHANNEL = 'D07DMCHANNEL';
 const DM_TS = '1763035200.000100';
 const TEAM_AGENT = { id: 'agt_support', displayName: 'Support', visibility: 'team', ownerType: 'team', ownerId: 'team_support' };
@@ -136,9 +138,12 @@ function fakeServices(s: Services) {
     'credentials:delete': async (_ctx: unknown, input: unknown) => {
       s.vault.delete((input as { ref: string }).ref);
     },
-    // The DM path. Only Alice's verified email maps, to one personal agent.
-    'auth:find-user-by-email': async (_ctx: unknown, input: unknown) =>
-      (input as { email: string }).email === 'alice@canopyworks.com' ? { userId: 'usr_alice' } : null,
+    // The DM path: Alice's verified email maps, to one personal agent. Ada's maps to her
+    // account, so her mention in #support runs attended.
+    'auth:find-user-by-email': async (_ctx: unknown, input: unknown) => {
+      const { email } = input as { email: string };
+      return email === 'alice@canopyworks.com' ? { userId: 'usr_alice' } : email === 'ada@canopyworks.com' ? { userId: ADMIN.id } : null;
+    },
     // A channel mention from someone with no account: canopyworks.com is the approved domain.
     'auth:is-approved-email': async (_ctx: unknown, input: unknown) => ({
       approved: (input as { email: string }).email.toLowerCase().endsWith('@canopyworks.com'),
@@ -196,7 +201,8 @@ function fakeServices(s: Services) {
 
 /**
  * Slack, behind the plugin's own client: answers users.info for Alice and
- * every chat.* call, and records each method with its auth header and body.
+ * Ada and every chat.* call, and records each method with its auth header
+ * and body.
  */
 function fakeSlackFetch() {
   const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
@@ -221,7 +227,17 @@ function fakeSlackFetch() {
                 profile: { email: 'alice@canopyworks.com', real_name: 'Alice' },
               },
             }
-          : { ok: false, error: 'user_not_found' };
+          : body['user'] === ADA_SLACK
+            ? {
+                ok: true,
+                user: {
+                  id: ADA_SLACK,
+                  team_id: TEAM_ID,
+                  is_email_confirmed: true,
+                  profile: { email: 'ada@canopyworks.com', real_name: 'Ada' },
+                },
+              }
+            : { ok: false, error: 'user_not_found' };
     }
     if (method === 'chat.startStream') answer = { ok: true, ts: '1763039999.000001' };
     return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -421,15 +437,15 @@ function eventBody(type = 'message', text?: string): Buffer {
   );
 }
 
-/** An @mention of the bot in #support from Alice, with its own event id and ts. */
-function mentionBody(eventId: string, ts: string, text: string): Buffer {
+/** An @mention of the bot in #support, from Alice unless told otherwise, with its own event id and ts. */
+function mentionBody(eventId: string, ts: string, text: string, user = ALICE): Buffer {
   return Buffer.from(
     JSON.stringify({
       type: 'event_callback',
       team_id: TEAM_ID,
       api_app_id: APP_ID,
       event_id: eventId,
-      event: { type: 'app_mention', user: ALICE, channel: SUPPORT_CH, ts, text },
+      event: { type: 'app_mention', user, channel: SUPPORT_CH, ts, text },
     }),
   );
 }
@@ -462,6 +478,8 @@ function askMemory(bus: HookBus, conversationId: string) {
 }
 
 const NOT_REMEMBERED = { rejected: true, reason: 'channel-not-remembered', source: CAPTURE_VETO_KEY };
+/** What memory hears about an outsider's thread: never remembered, whatever the switch says. */
+const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn', source: CAPTURE_VETO_KEY };
 
 /** Log lines the plugin's own logger writes (it writes JSON lines to stdout). */
 function captureLogs(): Array<Record<string, unknown>> {
@@ -1067,16 +1085,19 @@ describe('@ax/channel-slack plugin', () => {
         request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
       );
 
-    // Alice isn't on the agent's team: her mention runs as Ada, in the thread's external conversation.
-    expect((await post(mentionBody('Ev07ABCDEF20', '1763035300.000300', 'remember my number is 4417'))).status).toBe(200);
+    // Ada is on the agent's team: her mention runs attended, as her, in her own conversation for the thread.
+    expect((await post(mentionBody('Ev07ABCDEF20', '1763035300.000300', 'remember my number is 4417', ADA_SLACK))).status).toBe(
+      200,
+    );
     await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
-    const offThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035300.000300:external`;
-    expect(s.invokes![0]!.ctx.conversationId).toBe(offThread);
+    const offThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035300.000300`;
+    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: offThread, userId: ADMIN.id, source: 'user' });
     expect(await channels.getThread(offThread)).toEqual({
       installId: INSTALL_ID,
       channelId: SUPPORT_CH,
       agentId: TEAM_AGENT.id,
       notRemembered: true,
+      external: false,
     });
     expect(await askMemory(harness.bus, offThread)).toEqual(NOT_REMEMBERED);
 
@@ -1086,11 +1107,20 @@ describe('@ax/channel-slack plugin', () => {
     expect(await askMemory(harness.bus, 'conv_web_chat')).toEqual({ rejected: false, payload: { conversationId: 'conv_web_chat' } });
 
     // A new thread, started while the switch is on, is remembered.
-    expect((await post(mentionBody('Ev07ABCDEF21', '1763035400.000400', 'a new question'))).status).toBe(200);
+    expect((await post(mentionBody('Ev07ABCDEF21', '1763035400.000400', 'a new question', ADA_SLACK))).status).toBe(200);
     await vi.waitFor(() => expect(s.invokesReturned).toBe(2));
-    const onThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035400.000400:external`;
+    const onThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035400.000400`;
     expect(s.invokes![1]!.ctx.conversationId).toBe(onThread);
     expect(await askMemory(harness.bus, onThread)).toEqual({ rejected: false, payload: { conversationId: onThread } });
+
+    // Alice isn't on the team: her mention runs as Ada, in the thread's external conversation, and
+    // what she says is never remembered, with the switch on.
+    expect((await post(mentionBody('Ev07ABCDEF22', '1763035500.000500', 'the refund window is 90 days'))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(3));
+    const outsiderThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035500.000500:external`;
+    expect(s.invokes![2]!.ctx).toMatchObject({ conversationId: outsiderThread, userId: ADMIN.id, source: 'external' });
+    expect((await channels.getThread(outsiderThread))?.external).toBe(true);
+    expect(await askMemory(harness.bus, outsiderThread)).toEqual(OUTSIDER_THREAD);
   });
 
   it('the memory veto is on the bus before the database: a pass while init waits for it is answered once the store is ready', async () => {

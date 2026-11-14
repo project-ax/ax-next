@@ -1,6 +1,6 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChannelBinding, ChannelStore, ChannelThread } from '../channel-store.js';
+import type { ChannelBinding, ChannelStore } from '../channel-store.js';
 import { COPY } from '../copy.js';
 import { pickPersonalAgent } from '../turn.js';
 import type { SlackEnvelope, SlackInnerEvent } from '../events.js';
@@ -426,7 +426,7 @@ function world(o: {
    * happened when it did, and the thread's flag as stored after the write
    * (absent when nothing was recorded).
    */
-  const threadWrites: Array<Omit<ChannelThread, 'notRemembered'> & { conversationId: string; notRemembered?: boolean; invokesBefore: number }> = [];
+  const threadWrites: Array<Parameters<ChannelStore['recordThread']>[0] & { notRemembered?: boolean; invokesBefore: number }> = [];
   const bindings = {
     async get(installId: string, channelId: string): Promise<ChannelBinding | null> {
       bindingReads += 1;
@@ -2085,16 +2085,18 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
         installId: INSTALL_ID,
         channelId: SUPPORT,
         agentId: SUPPORT_AGENT.id,
+        mode: 'attended',
         notRemembered: true,
         invokesBefore: 0,
       },
     ]);
+    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.external).toBe(false);
     // The turn still runs: the switch is about memory, not about answering.
     expect(w.invokes.map((i) => i.ctx.conversationId)).toEqual([`conv:${memberKey(MENTION_TS)}`]);
     expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
   });
 
-  it("switch on: an outsider's turn records the external conversation it runs in, remembered", async () => {
+  it("switch on: an outsider's turn records the external conversation it runs in as an outsider's, which memory never learns from", async () => {
     const w = world();
     await w.dispatch(INSTALL, mention({ user: BOB }));
     await w.idle();
@@ -2105,11 +2107,28 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
         installId: INSTALL_ID,
         channelId: SUPPORT,
         agentId: SUPPORT_AGENT.id,
+        mode: 'external',
         notRemembered: false,
         invokesBefore: 0,
       },
     ]);
+    expect(w.channels.threads.get(`conv:${externalKey(MENTION_TS)}`)?.external).toBe(true);
     expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.conversationId])).toEqual([['usr_ada', `conv:${externalKey(MENTION_TS)}`]]);
+  });
+
+  it("a member and an outsider in one Slack thread: the member's conversation is recorded attended, the outsider's external", async () => {
+    const w = world();
+    await w.dispatch(INSTALL, mention({ user: ALICE, ts: MENTION_TS, text: 'first' }));
+    await w.idle();
+    await w.dispatch(INSTALL, mention({ user: BOB, ts: '1763035301.000301', threadTs: MENTION_TS, text: 'me too' }));
+    await w.idle();
+
+    expect(w.threadWrites.map((t) => [t.conversationId, t.mode])).toEqual([
+      [`conv:${memberKey(MENTION_TS)}`, 'attended'],
+      [`conv:${externalKey(MENTION_TS)}`, 'external'],
+    ]);
+    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.external).toBe(false);
+    expect(w.channels.threads.get(`conv:${externalKey(MENTION_TS)}`)?.external).toBe(true);
   });
 
   it('the switch as it is when the turn starts, not when the mention arrived: off while it waited taints the thread', async () => {

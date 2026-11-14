@@ -29,6 +29,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     channel's switch is off, and never cleared: memory leaves its cursor
  *     where a refusal stopped it, so a thread with a turn said while the
  *     switch was off must stay refused after it is turned back on.
+ *     `external` marks the conversation outsiders' turns run in (the
+ *     connector's, key suffix `:external`): memory never learns from it,
+ *     whatever the switch says. A conversation's key fixes it, so it never
+ *     changes.
  *
  * The install's four secrets are NOT here: they live in the credentials vault
  * under `slack:<install_id>:<name>` (secrets.ts). Nor is anyone's name:
@@ -88,6 +92,7 @@ export interface ChannelSlackThreadsTable {
   channel_id: string;
   agent_id: string;
   not_remembered: ColumnType<boolean, boolean | undefined, boolean>;
+  external: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, Date | undefined, never>;
 }
 
@@ -155,5 +160,12 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE INDEX IF NOT EXISTS channel_slack_v1_threads_agent
       ON channel_slack_v1_threads (agent_id)
+  `.execute(db);
+  // Outsiders' threads are never remembered (capture-veto.ts). A row written
+  // before this column reads as a member's (false): none exist in
+  // production, and nothing in the row could tell.
+  await sql`
+    ALTER TABLE channel_slack_v1_threads
+      ADD COLUMN IF NOT EXISTS external BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
 }

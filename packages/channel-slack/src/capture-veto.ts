@@ -12,11 +12,12 @@ import { logCode } from './log-code.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1094 decisions row Q4: a connected channel's "Let the agent remember
-// this channel" switch. Memory asks `memory:pre-capture { conversationId }`
-// before every extraction pass and every `memory_note`; this answers it for
-// the conversations of Slack channel threads. The shape is @ax/routines'
-// `taskCaptureVeto` (routines/src/capture.ts), copied rather than imported:
-// plugins don't import each other (invariant 2).
+// this channel" switch, for what members say; what outsiders say is never
+// remembered at all (PR B review F1). Memory asks `memory:pre-capture
+// { conversationId }` before every extraction pass and every `memory_note`;
+// this answers it for the conversations of Slack channel threads. The shape
+// is @ax/routines' `taskCaptureVeto` (routines/src/capture.ts), copied
+// rather than imported: plugins don't import each other (invariant 2).
 // ---------------------------------------------------------------------------
 
 /** The subscriber's name on the bus. Memory logs it as the plugin that refused. */
@@ -30,20 +31,38 @@ export const CAPTURE_VETO_KEY = '@ax/channel-slack/capture-veto';
  */
 export const CAPTURE_CHECK_DEADLINE_MS = MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS / 2;
 
-/** What a pass on one conversation needs answered: is it a channel thread memory must stay out of? */
-async function keptOut(
+/**
+ * Why memory must stay out of a channel thread, most decisive first (the
+ * order a pass asking about two refused threads reports them in):
+ *   - `channel-external-turn`: outsiders' turns run in it. Memory never
+ *     learns from them, whatever the switch says (decisions shard, PR B
+ *     review F1): a team agent recalls shared memory in every turn, members'
+ *     private chats included, so an outsider's words, once learned, would
+ *     come back as facts with a member's authority. The switch is for what
+ *     members say. Reversible: this one rule.
+ *   - `channel-not-remembered`: the switch keeps it out.
+ */
+const REFUSALS = ['channel-external-turn', 'channel-not-remembered'] as const;
+type Refusal = (typeof REFUSALS)[number];
+
+/** What a pass on one conversation needs answered: is it a channel thread memory must stay out of, and why? */
+async function refusalFor(
   channels: Pick<ChannelStore, 'getThread' | 'get'>,
   conversationId: string,
-): Promise<boolean> {
+): Promise<Refusal | null> {
   const thread = await channels.getThread(conversationId);
   // Not a channel thread (a web chat, a DM): not this plugin's to refuse.
-  if (thread === null) return false;
+  if (thread === null) return null;
+  // Outsiders' turns run here: never, whatever the switch says now.
+  if (thread.external !== false) return 'channel-external-turn';
   // A turn ran while the switch was off. Sticky, whatever the switch says now.
-  if (thread.notRemembered !== false) return true;
+  if (thread.notRemembered !== false) return 'channel-not-remembered';
   const binding = await channels.get(thread.installId, thread.channelId);
   // Disconnected (or its install removed), connected to another agent since,
   // or switched off now.
-  return binding === null || binding.agentId !== thread.agentId || binding.remember !== true;
+  return binding === null || binding.agentId !== thread.agentId || binding.remember !== true
+    ? 'channel-not-remembered'
+    : null;
 }
 
 /**
@@ -56,9 +75,10 @@ async function keptOut(
  * thread under either is refused.
  *
  * A conversation channel-slack never recorded gets no opinion. One it did is
- * refused when any turn in it started while the channel's switch was off, or
- * when the channel is no longer connected to its agent, or when the switch is
- * off now.
+ * refused when outsiders' turns run in it (`channel-external-turn`), and a
+ * member's when any turn in it started while the channel's switch was off,
+ * or when the channel is no longer connected to its agent, or when the
+ * switch is off now (`channel-not-remembered`).
  *
  * Fails closed: a lookup that throws, or takes longer than `deadlineMs`,
  * refuses too. A refusal costs memory nothing but time (the cursor stays put,
@@ -72,7 +92,8 @@ export async function channelCaptureVeto(
   payload: unknown,
   deadlineMs = CAPTURE_CHECK_DEADLINE_MS,
 ): Promise<Rejection | undefined> {
-  const refusal = reject({ reason: 'channel-not-remembered' });
+  /** The answer when the check itself fails. */
+  const failed = reject({ reason: 'channel-not-remembered' });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // Read inside the try: a payload an earlier subscriber rewrote into
@@ -90,10 +111,11 @@ export async function channelCaptureVeto(
       timer.unref?.();
     });
     const answers = await Promise.race([
-      Promise.all([...ids].map((conversationId) => keptOut(channels, conversationId))),
+      Promise.all([...ids].map((conversationId) => refusalFor(channels, conversationId))),
       deadline,
     ]);
-    if (!answers.some(Boolean)) return undefined;
+    const reason = REFUSALS.find((r) => answers.includes(r));
+    return reason === undefined ? undefined : reject({ reason });
   } catch (err) {
     // Logged after the refusal is built: a logger that throws can't turn it into a skipped subscriber.
     try {
@@ -104,7 +126,7 @@ export async function channelCaptureVeto(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  return refusal;
+  return failed;
 }
 
 /**

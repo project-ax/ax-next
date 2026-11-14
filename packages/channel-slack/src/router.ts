@@ -76,10 +76,11 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads, with the channel's memory switch as it is NOW
  *      (channel-store.ts `recordThread`): a turn that starts while the switch
- *      is off keeps that thread out of memory for good (capture-veto.ts). If
- *      the record can't be written the turn doesn't run, and the sender is
- *      told privately to try again. A DM records nothing: the switch is a
- *      channel's.
+ *      is off keeps that thread out of memory for good (capture-veto.ts). An
+ *      outsider's turn records its conversation as outsiders', which memory
+ *      never learns from, whatever the switch says. If the record can't be
+ *      written the turn doesn't run, and the sender is told privately to try
+ *      again. A DM records nothing: the switch is a channel's.
  *   Lines before the turn are ephemeral, for the sender alone (in the
  *   mention's thread when it was in one); the reply goes in the thread.
  *
@@ -519,7 +520,14 @@ async function routeMention(
     // that found it disconnected above.
     let recorded: 'recorded' | 'no-binding';
     try {
-      recorded = await d.channels.recordThread({ conversationId, installId, channelId: m.channel, agentId });
+      recorded = await d.channels.recordThread({
+        conversationId,
+        installId,
+        channelId: m.channel,
+        agentId,
+        // An outsiders' thread is never remembered, whatever the switch says (capture-veto.ts).
+        mode: external ? 'external' : 'attended',
+      });
     } catch (err) {
       await failed('thread', err);
       return;

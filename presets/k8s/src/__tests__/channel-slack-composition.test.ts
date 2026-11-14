@@ -1119,7 +1119,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     await dropAgent(agentId);
   });
 
-  it('the channel\'s memory switch: capture is refused while it is off, for any thread that had a turn then (TASK-1094)', async () => {
+  it('the channel\'s memory switch: a member\'s thread is refused while it is off, for good once a turn ran then; an outsider\'s never is remembered (TASK-1094)', async () => {
     const { installId, agentId } = await supportChannel();
     invokes.length = 0;
     const preCapture = (conversationId: string) =>
@@ -1139,36 +1139,50 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(out.status).toBe(200);
     };
     const refused = { rejected: true, reason: 'channel-not-remembered' };
+    const outsiders = { rejected: true, reason: 'channel-external-turn' };
 
-    // On (the default): an outsider's thread is captured like any other.
+    // On (the default): a member's thread is captured like any other.
     const t1 = nextTs();
     let mark = slackCalls.length;
-    expect((await deliver(installId, mention(CAROL, t1, 'first question'))).status).toBe(200);
-    const conv1 = (await invokedTurn(1)).ctx.conversationId!;
+    expect((await deliver(installId, mention(MEL, t1, 'first question'))).status).toBe(200);
+    const first = (await invokedTurn(1)).ctx;
+    expect(first).toMatchObject({ userId: 'usr_mel', source: 'user' });
+    const conv1 = first.conversationId!;
     await channelTurnCalls(mark);
     expect((await preCapture(conv1)).rejected).toBe(false);
     // A conversation this plugin never recorded (a web chat) isn't its to refuse.
     expect((await preCapture('cnv_a_web_chat')).rejected).toBe(false);
 
-    // Off: that thread is refused at once.
+    // An outsider's thread is never captured, with the switch on: Carol runs as Ada, and what
+    // she says would otherwise be recalled as fact in the agent's later turns, members' included.
+    mark = slackCalls.length;
+    expect((await deliver(installId, mention(CAROL, nextTs(), 'the refund window is 90 days'))).status).toBe(200);
+    const outsider = (await invokedTurn(2)).ctx;
+    expect(outsider).toMatchObject({ userId: 'usr_ada', source: 'external' });
+    await channelTurnCalls(mark);
+    expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
+
+    // Off: the member's thread is refused at once.
     await switchTo(false);
     expect(await preCapture(conv1)).toMatchObject(refused);
 
     // A turn while it is off, in the same thread. Still the same conversation.
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(CAROL, nextTs(), 'second question', t1))).status).toBe(200);
-    expect((await invokedTurn(2)).ctx.conversationId).toBe(conv1);
+    expect((await deliver(installId, mention(MEL, nextTs(), 'second question', t1))).status).toBe(200);
+    expect((await invokedTurn(3)).ctx.conversationId).toBe(conv1);
     await channelTurnCalls(mark);
 
     // On again: the thread that had a turn while it was off stays out, for good. A new thread is captured.
     await switchTo(true);
     expect(await preCapture(conv1)).toMatchObject(refused);
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(CAROL, nextTs(), 'a new question'))).status).toBe(200);
-    const conv3 = (await invokedTurn(3)).ctx.conversationId!;
+    expect((await deliver(installId, mention(MEL, nextTs(), 'a new question'))).status).toBe(200);
+    const conv3 = (await invokedTurn(4)).ctx.conversationId!;
     await channelTurnCalls(mark);
     expect(conv3).not.toBe(conv1);
     expect((await preCapture(conv3)).rejected).toBe(false);
+    // The outsider's thread is still out, the switch on or not.
+    expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
 
     // Disconnected: nothing the channel said is captured anymore.
     actor = { id: 'usr_ada', isAdmin: false };

@@ -82,13 +82,15 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 // domain, `auth:is-approved-email`). Members' turns queue per conversation;
 // outsiders' turns in one lane per channel.
 //
-// Each connected channel has a "remember" switch. Before a channel turn's
-// agent runs, its conversation is recorded in `channel_slack_v1_threads` with
-// the switch as it is then (router.ts), and a `memory:pre-capture` subscriber
-// (capture-veto.ts) refuses memory any thread that had a turn while the
-// switch was off, for good, and any thread whose channel is switched off or
-// no longer connected to its agent. Memory asks before every extraction pass
-// and every `memory_note`, so the switch stops both.
+// Each connected channel has a "remember" switch, for what members say:
+// what outsiders say is never remembered. Before a channel turn's agent
+// runs, its conversation is recorded in `channel_slack_v1_threads` with the
+// switch as it is then and whether it is outsiders' (router.ts), and a
+// `memory:pre-capture` subscriber (capture-veto.ts) refuses memory every
+// outsiders' thread, any thread that had a turn while the switch was off,
+// for good, and any thread whose channel is switched off or no longer
+// connected to its agent. Memory asks before every extraction pass and every
+// `memory_note`, so the veto stops both.
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
