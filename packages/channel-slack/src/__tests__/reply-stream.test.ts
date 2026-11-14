@@ -874,15 +874,23 @@ describe('createReplyStream', () => {
     s.text('hi');
     const first = s.finish('complete');
     const second = s.finish('error');
+    // Said once finish was asked for, before it settled: none of it is sent.
     s.text(' more');
     s.status('late');
     s.artifact();
     s.held('sender');
     await vi.advanceTimersByTimeAsync(60_000);
     await Promise.all([first, second]);
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'stopStream']);
+
+    // A hold after the reply ended adds no line anywhere, and no message of its own.
+    s.held('owner');
+    s.held('sender');
     await finishNow(s, 'error');
     expect(calls.map((c) => c.method)).toEqual(['startStream', 'stopStream']);
     expect(delivered(calls)).toBe('hi');
+    expect(delivered(calls)).not.toContain(COPY.heldForOwner);
+    expect(delivered(calls)).not.toContain(COPY.heldForSender(TODAY_LINK));
   });
 
   it('a failure is logged by stage and code only, never with text or the token', async () => {
@@ -937,6 +945,20 @@ describe('createReplyStream: a call held for approval', () => {
     s.held('sender');
     await finishNow(s);
     expect(delivered(calls)).toBe(`Two things need an OK.\n\n${COPY.heldForSender(TODAY_LINK)}`);
+  });
+
+  it.each([
+    [['owner', 'sender'], COPY.heldForOwner],
+    [['sender', 'owner'], COPY.heldForSender(TODAY_LINK)],
+  ] as const)('holds for different people (%j): the first decides whose line, said once', async (order, line) => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('Two things need an OK.');
+    s.held(order[0]);
+    await tick();
+    s.held(order[1]);
+    await finishNow(s);
+    expect(delivered(calls)).toBe(`Two things need an OK.\n\n${line}`);
   });
 
   it('an artifact and a hold: the link first, then the held line, whichever came first', async () => {

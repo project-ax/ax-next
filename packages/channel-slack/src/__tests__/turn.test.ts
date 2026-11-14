@@ -250,4 +250,25 @@ describe('runTurn: a call held for approval ends the reply with one line saying 
     await h.run('attended');
     expect(h.reply()).toBe(`${COPY.heldForSender(TODAY)}\n\n${COPY.turnFailed}`);
   });
+
+  /*
+    `held` is read before anything that drops a result: a runner may mark the
+    held call's result as an error too (it never ran), and a result may come
+    without its call's id. Dropped as a failed call, the reply would end
+    without saying anything was waiting.
+  */
+  it.each([
+    ['also marked as an error', { toolCallId: 'c1', isError: true }],
+    ['with no call id', {}],
+  ] as const)('a held result %s: still the held line', async (_name, extra) => {
+    const h = harness({
+      chunks: [
+        { kind: 'text', text: 'Let me send that.' },
+        { kind: 'tool-use', toolCallId: 'c1', toolName: 'mcp__gmail__send_email', input: {} },
+        { kind: 'tool-result', output: 'Held for approval', held: true, ...extra },
+      ],
+    });
+    await h.run('attended');
+    expect(h.reply()).toBe(`Let me send that.\n\n${COPY.heldForSender(TODAY)}`);
+  });
 });
