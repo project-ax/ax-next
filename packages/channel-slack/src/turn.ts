@@ -1,6 +1,6 @@
 import { makeAgentContext, makeReqId, type AgentMessage, type HookBus, type Logger } from '@ax/core';
 import { COPY } from './copy.js';
-import { decodeSlackEntities, dmSenderLabel } from './format.js';
+import { decodeSlackEntities } from './format.js';
 import { TURN_END_GRACE_MS, TURN_HARD_CAP_MS } from './limits.js';
 import { logCode } from './log-code.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
@@ -9,15 +9,27 @@ import type { InstallRow } from './store.js';
 import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
 
 /**
- * One DM turn: the owner's message to their own personal agent, the reply
- * streamed back into the Slack thread (design §5).
+ * One Slack turn: a person's message to an agent, the reply streamed back
+ * into the Slack thread (design §5). A DM and a channel mention run the same
+ * turn; its `mode` says which:
+ *
+ *   - `dm`: the owner, in a 1:1 DM with their own personal agent.
+ *   - `attended`: a channel member who can use the channel's team agent.
+ *   - `external`: anyone else the channel admits, run as the person who
+ *     connected the channel.
  *
  * The turn's context is built here, by the host, from what admission and AX
- * decided (never from the message): the mapped user, their agent, the
- * thread's conversation, `source: 'user'` (the owner is present, so approvals
- * work as in web chat) and `audience: 'private'` (a 1:1 DM; constant for the
- * conversation, as memory requires). The Slack sender label is part of the
- * message CONTENT: untrusted text the model reads, nothing more.
+ * decided (never from the message): the user, the agent, the thread's
+ * conversation, and the mode's `source` and `audience` (`turnContextFields`,
+ * the only place they come from; constant for a conversation, as memory
+ * requires). The sender label is part of the message CONTENT, built by the
+ * caller: untrusted text the model reads, nothing more.
+ *
+ * A call the turn holds for approval never runs, and the runner ends the turn
+ * right after it, so the reply ends with one line saying whose approval it
+ * waits for (reply-stream.ts `held`): the person who wrote, in their own
+ * Today, when the turn runs as them; the agent's owner otherwise. The line
+ * never names the call, its tool or connector, or the person.
  *
  * The reply ends at the first of: the turn's `chat:turn-end` (complete), its
  * `chat:turn-error` (error), a `terminated` invoke outcome
@@ -31,7 +43,39 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  * doesn't run, and spend, on for hours.
  */
 
-export interface DmTurnDeps {
+/** Who a turn is from, and so whose context it runs under (`turnContextFields`). */
+export type TurnMode = 'dm' | 'attended' | 'external';
+
+/**
+ * A turn's `source` and `audience`, from its mode alone: the one place a
+ * Slack turn's identity context comes from. Approvals and memory both key
+ * off it.
+ *
+ *   mode       source     audience
+ *   dm         user       private    the owner, alone with their agent
+ *   attended   user       shared     present, in a room
+ *   external   external   shared     nobody with access to the agent
+ *
+ * Exact matches only: a mode this build doesn't know gets the most
+ * restricted context, an outsider in a shared room. It fails closed, as
+ * core's `isOutsiderTurn` and `audienceOf` do.
+ */
+export function turnContextFields(mode: TurnMode): {
+  source: 'user' | 'external';
+  audience: 'private' | 'shared';
+} {
+  switch (mode) {
+    case 'dm':
+      return { source: 'user', audience: 'private' };
+    case 'attended':
+      return { source: 'user', audience: 'shared' };
+    case 'external':
+    default:
+      return { source: 'external', audience: 'shared' };
+  }
+}
+
+export interface TurnDeps {
   bus: HookBus;
   api: SlackApi;
   registry: TurnRegistry;
@@ -41,22 +85,27 @@ export interface DmTurnDeps {
   clock: ReplyClock;
 }
 
-export interface DmTurnRequest {
+export interface TurnRequest {
+  mode: TurnMode;
+  /**
+   * Who wrote, as the agent reads it in front of the text: the whole label,
+   * built by the caller (format.ts `dmSenderLabel` for a DM). Display text
+   * only, never identity.
+   */
+  label: string;
   install: InstallRow;
   botToken: string;
   channel: string;
-  /** The owner's message: 👀 goes on it while the agent works. */
+  /** The message itself: 👀 goes on it while the agent works. */
   messageTs: string;
   threadTs: string;
-  /** The sender's Slack user id: the reply's recipient, and part of the label. */
+  /** The sender's Slack user id: the reply's recipient. */
   senderSlackId: string;
-  /** Their Slack display name, already cleaned ('' for none). Label text only. */
-  senderName: string;
   userId: string;
   agentId: string;
   conversationId: string;
   /**
-   * The owner's words as Slack sent them. The turn undoes Slack's `&amp;`,
+   * The sender's words as Slack sent them. The turn undoes Slack's `&amp;`,
    * `&lt;` and `&gt;` (format.ts `decodeSlackEntities`) and nothing else.
    */
   text: string;
@@ -135,8 +184,8 @@ function paragraphBreak(tail: string, next: string): string {
   return '\n'.repeat(Math.max(0, 2 - have));
 }
 
-/** Run one DM turn to the end of its reply. Never rejects. */
-export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> {
+/** Run one turn to the end of its reply. Never rejects. */
+export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
   const installId = r.install.installId;
   const quietly = (fn: () => void): void => {
     try {
@@ -146,6 +195,16 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     }
   };
 
+  const { source, audience } = turnContextFields(r.mode);
+  /*
+    Whose approval a held call waits for. @ax/decisions files a hold under
+    the turn's user. A turn with source 'user' runs as the person who wrote,
+    so it waits in their own Today. Any other turn runs as someone else for
+    them (the person who connected the channel: the agent's owner), whom
+    they can't reach.
+  */
+  const approver = source === 'user' ? 'sender' : 'owner';
+
   const reqId = makeReqId();
   const ctx = makeAgentContext({
     sessionId: makeReqId(),
@@ -153,8 +212,8 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     agentId: r.agentId,
     userId: r.userId,
     conversationId: r.conversationId,
-    source: 'user',
-    audience: 'private',
+    source,
+    audience,
   });
 
   let replyLogger = d.logger;
@@ -172,6 +231,8 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     },
     messageTs: r.messageTs,
     agentLink: `${d.publicOrigin}/workspace/agents/${encodeURIComponent(r.agentId)}`,
+    // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
+    todayLink: `${d.publicOrigin}/workspace`,
     logger: replyLogger,
     clock: d.clock,
   });
@@ -223,7 +284,13 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
         if (c.text !== undefined) stream.status(c.text);
         return;
       case 'tool-result': {
-        if (c.isError === true || c.held === true || c.toolCallId === undefined) return;
+        // Held: the call never ran and waits for someone's approval. The reply
+        // ends saying whose (once), and it is no artifact.
+        if (c.held === true) {
+          stream.held(approver);
+          return;
+        }
+        if (c.isError === true || c.toolCallId === undefined) return;
         const tool = toolNames.get(c.toolCallId);
         if (tool !== undefined && ARTIFACT_TOOLS.has(tool)) stream.artifact();
         return;
@@ -242,7 +309,7 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
   });
-  // 👀 on the owner's message while a cold runner starts, not a blank thread
+  // 👀 on the sender's message while a cold runner starts, not a blank thread
   // (walk on kind, 2026-11-13); it comes off once the reply shows.
   stream.working();
   /**
@@ -286,8 +353,8 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
 
   const message: AgentMessage = {
     role: 'user',
-    // As the owner typed it: `if x &lt; 3` reaches the model as `if x < 3`.
-    content: `${dmSenderLabel(r.senderName, r.senderSlackId)}: ${decodeSlackEntities(r.text)}`,
+    // As its sender typed it: `if x &lt; 3` reaches the model as `if x < 3`.
+    content: `${r.label}: ${decodeSlackEntities(r.text)}`,
   };
   void (async () => {
     try {
@@ -329,7 +396,7 @@ export async function runDmTurn(d: DmTurnDeps, r: DmTurnRequest): Promise<void> 
   try {
     await stream.finish(outcome);
   } finally {
-    // The owner has their reply; the lane waits for the stop (see `interrupting`).
+    // The sender has their reply; the lane waits for the stop (see `interrupting`).
     if (interrupting !== null) await interrupting;
   }
 }

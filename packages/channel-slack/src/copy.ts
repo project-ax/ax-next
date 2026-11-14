@@ -50,6 +50,19 @@ export const COPY = {
   turnFailed: "Something went wrong and I couldn't finish. Try again in a moment.",
   emptyReply: "I didn't have anything to add.",
   artifactLink: (link: string) => `I made something you can open in the web app: [Open it](${link})`,
+  /*
+    A call the turn held for approval (reply-stream.ts `held`). Neither line
+    names the tool, its connector or the person: they take nothing but the
+    Today link. `heldForOwner` ends an outsider's turn, which runs as the
+    person who connected the channel: the call waits in their Today, and the
+    reader can't approve it, so it links nowhere. `heldForSender` ends a turn
+    whose writer can use the agent (a DM, or an attended channel turn): the
+    call waits in their own Today.
+  */
+  heldForOwner:
+    "I need my owner's OK before I can do part of this. I've asked them, and nothing will happen until they approve it.",
+  heldForSender: (todayLink: string) =>
+    `I need your OK before I can do part of this. Approve it in [Today](${todayLink}). Nothing will happen until you do.`,
   statusDefault: 'Working',
 
   // ── /ax replies (mrkdwn, shown only to whoever typed the command) ─────────

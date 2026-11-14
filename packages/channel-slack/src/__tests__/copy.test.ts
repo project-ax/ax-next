@@ -3,6 +3,8 @@ import { COPY } from '../copy.js';
 
 const ORIGIN = 'https://canopyworks.ai';
 const LINK = 'https://canopyworks.ai/workspace/agents/agt_123';
+/** Today in the web app. */
+const TODAY = 'https://canopyworks.ai/workspace';
 /** A name from outside (an agent's, a channel's) that tries to ping, link and break the escaping. */
 const HOSTILE = '<!channel> & <@U1> @here';
 
@@ -14,6 +16,7 @@ const ARGS: Record<string, unknown[][]> = {
   notMapped: [[ORIGIN]],
   noAgent: [[ORIGIN]],
   artifactLink: [[LINK]],
+  heldForSender: [[TODAY]],
   slashNotMapped: [[ORIGIN]],
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
@@ -38,6 +41,8 @@ describe('COPY: everything the bot says in Slack', () => {
         'busy',
         'emptyReply',
         'filesUnsupported',
+        'heldForOwner',
+        'heldForSender',
         'mentionRefusal',
         'noAgent',
         'notMapped',
@@ -74,6 +79,18 @@ describe('COPY: everything the bot says in Slack', () => {
     expect(COPY.notMapped(ORIGIN)).toContain(`](${ORIGIN})`);
     expect(COPY.noAgent(ORIGIN)).toContain(`](${ORIGIN})`);
     expect(COPY.artifactLink(LINK)).toContain(`](${LINK})`);
+  });
+
+  it("a held call's lines: the sender's links Today, where it waits for them; the owner's links nothing", () => {
+    expect(COPY.heldForSender(TODAY)).toContain(`](${TODAY})`);
+    // Whoever reads the owner's line can't approve the call: no link to send them anywhere.
+    expect(COPY.heldForOwner).not.toMatch(/\]\(|https?:/);
+    expect(COPY.heldForOwner).not.toBe(COPY.heldForSender(TODAY));
+  });
+
+  it("a held call's lines can't name the tool, its connector or the owner: they take nothing but Today's link", () => {
+    expect(typeof COPY.heldForOwner).toBe('string');
+    expect(COPY.heldForSender).toHaveLength(1);
   });
 });
 

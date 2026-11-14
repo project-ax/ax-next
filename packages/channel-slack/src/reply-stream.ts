@@ -43,9 +43,11 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     posted with `chat.postMessage` in parts of at most POST_PART_LIMIT. A
  *     stream call that timed out may have landed anyway, so that text can show
  *     twice; nothing is ever dropped.
- *   - `finish` adds the closing lines (the artifact link once, the failure or
- *     busy line), flushes, and stops the stream. A reply with nothing at all
- *     to say posts COPY.emptyReply. It never rejects and runs once.
+ *   - `finish` adds the closing lines, in this order: the artifact link once,
+ *     the held line once (a call waits for someone's approval; it says whose,
+ *     and nothing about the call), the failure or busy line. Then it flushes
+ *     and stops the stream. A reply with nothing at all to say, not even a
+ *     closing line, posts COPY.emptyReply. It never rejects and runs once.
  *
  * Failures are logged as `slack_reply_failed` with a stage and a code, never
  * text, a token or Slack's words.
@@ -75,6 +77,14 @@ export interface ReplyStream {
   working(): void;
   /** The turn made an artifact or a visual: the reply ends with a link to the agent. */
   artifact(): void;
+  /**
+   * A call of the turn is held until someone approves it, and the reply ends
+   * saying who: `'sender'`, the person the reply is for (it waits in their
+   * Today, linked), or `'owner'`, someone the reader can't reach (the agent's
+   * owner was asked; no link). Said once, however many calls are held (the
+   * first hold decides whose), and it counts as something to say.
+   */
+  held(who: 'owner' | 'sender'): void;
   finish(outcome: ReplyOutcome): Promise<void>;
 }
 
@@ -109,6 +119,8 @@ export interface ReplyStreamDeps {
   messageTs: string;
   /** Where the artifact line points: the agent's page in the web app. Host-built. */
   agentLink: string;
+  /** Where the sender's held line points: Today in the web app. Host-built. */
+  todayLink: string;
   logger: Logger;
   clock: ReplyClock;
 }
@@ -175,6 +187,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   /** The card's latest title. Null until the turn reports any status. */
   let title: string | null = null;
   let artifactSeen = false;
+  /** Whose approval a held call waits for. Null until a call is held. */
+  let heldBy: 'owner' | 'sender' | null = null;
   let anyText = false;
   /** The agent sent a status of its own (working() alone doesn't count). */
   let agentStatus = false;
@@ -513,6 +527,11 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       artifactSeen = true;
     },
 
+    held(who) {
+      if (finished || heldBy !== null) return;
+      heldBy = who;
+    },
+
     finish(outcome) {
       if (finishing !== null) return finishing;
       finished = true;
@@ -520,6 +539,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       flushTimer = null;
       const lines: string[] = [];
       if (artifactSeen) lines.push(COPY.artifactLink(d.agentLink));
+      // Only a sender's line links Today: anything else reads as the owner's.
+      if (heldBy !== null) lines.push(heldBy === 'sender' ? COPY.heldForSender(d.todayLink) : COPY.heldForOwner);
       if (outcome === 'error') lines.push(COPY.turnFailed);
       if (outcome === 'busy') lines.push(COPY.busy);
       // Only the Working card was shown: say so in that message, not a second one.

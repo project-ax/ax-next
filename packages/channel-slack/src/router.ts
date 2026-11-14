@@ -8,12 +8,13 @@ import {
   type Admission,
 } from './admission.js';
 import { COPY } from './copy.js';
-import { pickPersonalAgent, runDmTurn, type DmTurnDeps } from './dm-turn.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
+import { dmSenderLabel } from './format.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
 import type { InstallRow, InstallStore } from './store.js';
 import type { KeyedQueue } from './turn-queue.js';
+import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
 
 /**
  * What a verified, new event for an active install becomes (the ingress's
@@ -43,7 +44,7 @@ import type { KeyedQueue } from './turn-queue.js';
  * when someone admitted is waiting, they are told something went wrong.
  */
 
-export interface RouterDeps extends DmTurnDeps {
+export interface RouterDeps extends TurnDeps {
   secrets: Pick<SecretStore, 'get'>;
   /** Read again when a queued turn starts: Disconnect may have removed the install meanwhile. */
   installs: Pick<InstallStore, 'get'>;
@@ -78,7 +79,7 @@ function agentsOf(answer: unknown) {
 
 /**
  * The agent a DM from `userId` reaches: their oldest personal agent
- * (dm-turn.ts `pickPersonalAgent`), or null when they have none. The agent
+ * (turn.ts `pickPersonalAgent`), or null when they have none. The agent
  * settings ask it too, so the two can't disagree.
  */
 export async function personalAgentFor(bus: HookBus, ctx: AgentContext, userId: string): Promise<string | null> {
@@ -255,14 +256,15 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
       log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
       return;
     }
-    await runDmTurn(d, {
+    await runTurn(d, {
+      mode: 'dm',
+      label: dmSenderLabel(admission.name, screened.sender),
       install,
       botToken: token,
       channel: screened.channel,
       messageTs: screened.ts,
       threadTs: screened.threadTs,
       senderSlackId: screened.sender,
-      senderName: admission.name,
       userId: mapped,
       agentId: chosen,
       conversationId,

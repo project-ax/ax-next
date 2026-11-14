@@ -25,6 +25,8 @@ const TARGET: ReplyTarget = {
   recipientTeamId: 'T07ABCDEF12',
 };
 const AGENT_LINK = 'https://ax.example/workspace/agents/agt_alice';
+/** Today: where a held call waits. */
+const TODAY_LINK = 'https://ax.example/workspace';
 const ZWSP = '\u200B';
 
 type Method = 'addReaction' | 'removeReaction' | 'startStream' | 'appendStream' | 'stopStream' | 'postMessage';
@@ -171,6 +173,7 @@ beforeEach(() => {
       target: TARGET,
       messageTs: MESSAGE_TS,
       agentLink: AGENT_LINK,
+      todayLink: TODAY_LINK,
       logger,
       clock: systemClock,
     });
@@ -874,6 +877,7 @@ describe('createReplyStream', () => {
     s.text(' more');
     s.status('late');
     s.artifact();
+    s.held('sender');
     await vi.advanceTimersByTimeAsync(60_000);
     await Promise.all([first, second]);
     await finishNow(s, 'error');
@@ -903,5 +907,92 @@ describe('createReplyStream', () => {
     s.text('hello');
     await tick();
     await expect(finishNow(s)).resolves.toBeUndefined();
+  });
+});
+
+describe('createReplyStream: a call held for approval', () => {
+  it.each([
+    // A DM, or a channel member who can use the agent: it waits in their own Today.
+    ['sender', () => COPY.heldForSender(TODAY_LINK)],
+    // An outsider's turn: it waits for the agent's owner, whom they can't reach.
+    ['owner', () => COPY.heldForOwner],
+  ] as const)('held(%j): the reply ends with the line that says who must approve', async (who, line) => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('Let me send that.');
+    await tick();
+    s.held(who);
+    await finishNow(s);
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
+    expect(delivered(calls)).toBe(`Let me send that.\n\n${line()}`);
+  });
+
+  it('however many calls are held, the line is said once', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('Two things need an OK.');
+    s.held('sender');
+    await tick();
+    s.held('sender');
+    s.held('sender');
+    await finishNow(s);
+    expect(delivered(calls)).toBe(`Two things need an OK.\n\n${COPY.heldForSender(TODAY_LINK)}`);
+  });
+
+  it('an artifact and a hold: the link first, then the held line, whichever came first', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('Here is the draft.');
+    s.held('owner');
+    s.artifact();
+    await finishNow(s);
+    expect(delivered(calls)).toBe(`Here is the draft.\n\n${COPY.artifactLink(AGENT_LINK)}\n\n${COPY.heldForOwner}`);
+  });
+
+  it('a hold with nothing else said: the held line alone, never emptyReply', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.held('owner');
+    await finishNow(s);
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'stopStream']);
+    expect(delivered(calls)).toBe(COPY.heldForOwner);
+  });
+
+  it('a hold when only the Working card showed: the line goes in that message, never emptyReply', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (m) => (m === 'addReaction' ? new SlackApiError('reactions.add', 'missing_scope') : undefined),
+    });
+    const s = make(api);
+    s.working();
+    await tick();
+    await tick();
+    s.held('sender');
+    await finishNow(s);
+    expect(calls.map((c) => c.method)).toEqual(['addReaction', 'startStream', 'appendStream', 'stopStream']);
+    expect(delivered(calls)).toBe(COPY.heldForSender(TODAY_LINK));
+  });
+
+  it('a hold, then the turn fails: the held line, then the failure line', async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('Sending it now.');
+    s.held('sender');
+    await finishNow(s, 'error');
+    expect(delivered(calls)).toBe(`Sending it now.\n\n${COPY.heldForSender(TODAY_LINK)}\n\n${COPY.turnFailed}`);
+  });
+
+  it('a reply that fell back to posting ends the same way: link, held line, failure line', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (method) => (method === 'startStream' ? new SlackApiError('chat.startStream', 'invalid_thread_ts') : undefined),
+    });
+    const s = make(api);
+    s.text('Hello');
+    s.artifact();
+    s.held('owner');
+    await finishNow(s, 'error');
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'postMessage']);
+    expect(markdownOf(calls[1]!)).toBe(
+      `Hello\n\n${COPY.artifactLink(AGENT_LINK)}\n\n${COPY.heldForOwner}\n\n${COPY.turnFailed}`,
+    );
   });
 });

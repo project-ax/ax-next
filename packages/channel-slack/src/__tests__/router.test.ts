@@ -1,7 +1,7 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
-import { pickPersonalAgent } from '../dm-turn.js';
+import { pickPersonalAgent } from '../turn.js';
 import type { SlackEnvelope, SlackInnerEvent } from '../events.js';
 import {
   FLUSH_INTERVAL_MS,
@@ -22,6 +22,8 @@ import { fakeBotToken } from './fake-slack-tokens.js';
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
 const PUBLIC_ORIGIN = 'https://ax.example';
+/** Today in the web app: where a held call waits for its approver. */
+const TODAY = 'https://ax.example/workspace';
 const INSTALL_ID = 'q3VtZ0xH4kTn9Wb2LmPa1A';
 const TEAM_ID = 'T07ABCDEF12';
 const BOT_USER_ID = 'U07BOTUSER1';
@@ -613,7 +615,10 @@ describe('createEventRouter: a DM from the owner', () => {
     await w.dispatch(INSTALL, dm());
     await w.idle();
     const reply = replyIn(w.slack.calls, DM_ALICE);
-    expect(reply).toBe(`Here it is.\n\n${COPY.artifactLink(`${PUBLIC_ORIGIN}/workspace/agents/agt_alice_old`)}`);
+    // c2 was held: no link for it, and the reply ends saying who must approve it, after the link.
+    expect(reply).toBe(
+      `Here it is.\n\n${COPY.artifactLink(`${PUBLIC_ORIGIN}/workspace/agents/agt_alice_old`)}\n\n${COPY.heldForSender(TODAY)}`,
+    );
     expect(reply).not.toContain('private reasoning');
     // Everything arrived before the first flush, so the one card holds the latest title.
     const titles = w.slack.calls.flatMap(chunksOf).flatMap((c) => (c.type === 'task_update' ? [[c.title, c.status]] : []));
@@ -647,9 +652,10 @@ describe('createEventRouter: a DM from the owner', () => {
   });
 
   it.each([
-    ['failed', { isError: true }],
-    ['held for approval', { held: true }],
-  ])('an artifact the tool %s is no link', async (_name, flags) => {
+    ['failed', { isError: true }, () => ''],
+    // A held call never ran: no link, and the reply ends saying who must approve it.
+    ['held for approval', { held: true }, () => `\n\n${COPY.heldForSender(TODAY)}`],
+  ] as const)('an artifact the tool %s is no link', async (_name, flags, tail) => {
     const w = world();
     w.scripts.push({
       chunks: [
@@ -662,7 +668,28 @@ describe('createEventRouter: a DM from the owner', () => {
     });
     await w.dispatch(INSTALL, dm());
     await w.idle();
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Sorry.');
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Sorry.${tail()}`);
+  });
+
+  /*
+    A held call never runs, and the runner ends the turn right after it. A DM
+    is attended: decisions files the hold under the owner, and Today is where
+    they approve it, so the reply ends by sending them there.
+  */
+  it('a call held for approval: the reply ends sending the owner to Today; the turn is a DM all the same', async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        { kind: 'text', text: 'Let me send that.' },
+        { kind: 'tool-use', toolCallId: 'c1', toolName: 'mcp__gmail__send_email', input: { to: 'bob@partner.example' } },
+        { kind: 'tool-result', toolCallId: 'c1', output: 'Held for approval: send_email to bob@partner.example', held: true },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Let me send that.\n\n${COPY.heldForSender(TODAY)}`);
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.audience])).toEqual([['usr_alice', 'user', 'private']]);
   });
 });
 
