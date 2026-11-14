@@ -38,13 +38,16 @@ const STAMP = new Date('2026-10-01T00:00:00.000Z');
  * agents:can-manage-connectors does): channel-slack must still refuse them,
  * because it always asks as a non-admin.
  *
- * `calls` records every input, `faults` makes a hook throw.
+ * `calls` records every input, `faults` makes a hook throw, `answers` makes
+ * `agents:can-set-shared-credential` return that value as is (a malformed
+ * answer, say) once the agent is known to exist.
  */
 export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean } = {}) {
   const agents = new Map<string, FakeAgent>();
   const teams = new Map<string, Map<string, Role>>();
   const calls: Array<{ hook: string; input: Record<string, unknown> }> = [];
   const faults = new Map<string, unknown>();
+  const answers = new Map<string, unknown>();
 
   const roleOf = (teamId: string, userId: string): Role | undefined => teams.get(teamId)?.get(userId);
   const canSee = (agent: FakeAgent, userId: string): boolean =>
@@ -110,6 +113,7 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
       (agent.visibility === 'personal'
         ? agent.ownerType === 'user' && agent.ownerId === actor.userId
         : roleOf(agent.ownerId, actor.userId) !== undefined);
+    if (answers.has('agents:can-set-shared-credential')) return answers.get('agents:can-set-shared-credential');
     if (!writes) return { allowed: false };
     if (o.workspaceAdminsMayManage === true && actor.isAdmin) return { allowed: true };
     // sharedCredentialSetAllowed: a team agent and a team admin, whatever isAdmin says.
@@ -123,6 +127,7 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     agents,
     calls,
     faults,
+    answers,
     addAgent(agent: FakeAgent): void {
       agents.set(agent.id, agent);
     },

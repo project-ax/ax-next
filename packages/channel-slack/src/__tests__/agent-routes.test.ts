@@ -468,6 +468,54 @@ describe('rights', () => {
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(before);
   });
 
+  it.each([
+    ['an empty object', {}],
+    ['allowed as a string', { allowed: 'true' }],
+    ['null', null],
+  ])('answers 403 on every write, and Slack is asked nothing, when agents answers the manage question with %s', async (_what, answer) => {
+    const w = world();
+    w.people.answers.set('agents:can-set-shared-credential', answer);
+    for (const r of WRITES) {
+      const a = await w.call(r.method, r.suffix, SUPPORT.id, ADA, r.body);
+      expect({ status: a.status, body: a.body }, r.suffix).toEqual(FORBIDDEN);
+    }
+    const a = await w.call('GET', '/available', SUPPORT.id, ADA);
+    expect({ status: a.status, body: a.body }).toEqual(FORBIDDEN);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.memory.calls).toEqual([]);
+    // The section itself still reads, without the manage controls.
+    expect(await w.status(SUPPORT.id, ADA)).toMatchObject({ status: 200, body: { state: 'ready', canManage: false } });
+  });
+
+  it('never reads a body for someone without rights: a bad or oversized body is the rights answer, not a 400 or 413', async () => {
+    const w = world();
+    const garbage = 'garbage';
+    const oversized = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
+    const arrayBody = JSON.stringify([SUPPORT_CH]);
+    const extraKey = JSON.stringify({ channelId: SUPPORT_CH, agentId: SALES.id });
+    for (const suffix of ['/connect', '/disconnect', '/remember'] as const) {
+      for (const body of [garbage, oversized, arrayBody, extraKey]) {
+        const label = `${suffix} ${typeof body === 'string' ? body : 'oversized'}`;
+        // Not a member of the team (or a workspace admin outside it): as unknown as a missing agent.
+        for (const outsider of [OTTO, WANDA]) {
+          const a = await w.call('POST', suffix, SUPPORT.id, outsider, body);
+          expect({ status: a.status, body: a.body }, `${label} ${outsider.id}`).toEqual(NOT_FOUND);
+        }
+        // A plain team member can see the agent but not manage it.
+        const m = await w.call('POST', suffix, SUPPORT.id, MEL, body);
+        expect({ status: m.status, body: m.body }, `${label} member`).toEqual(FORBIDDEN);
+        // A personal agent's owner learns it is one, not that the body is bad.
+        const p = await w.call('POST', suffix, PATS.id, PAT, body);
+        expect({ status: p.status, body: p.body }, `${label} personal`).toEqual({
+          status: 409,
+          body: { error: 'personal-agent' },
+        });
+      }
+    }
+    expect(w.slack.sent).toEqual([]);
+    expect(w.memory.calls).toEqual([]);
+  });
+
   it('treats a workspace admin who is a plain member of the team as a member: asked as a non-admin, 403 on writes', async () => {
     // Even under an agents rule that WOULD let a workspace admin through.
     const w = world({ workspaceAdminsMayManage: true });
@@ -840,6 +888,32 @@ describe('disconnect and remember', () => {
       status: 404,
       body: { error: 'not-connected' },
     });
+  });
+
+  it('disconnect and remember take no key but their own: an extra one, even naming another agent, is a 400 and changes nothing', async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    await w.connect(SALES.id, SALES_CH, SAM);
+    const mine = w.memory.row(INSTALL_ID, SUPPORT_CH);
+    const theirs = w.memory.row(INSTALL_ID, SALES_CH);
+    const writes = w.memory.calls.length;
+    const cases: Array<{ suffix: '/disconnect' | '/remember'; body: Record<string, unknown> }> = [
+      { suffix: '/disconnect', body: { channelId: SUPPORT_CH, agentId: 'agt_other' } },
+      { suffix: '/disconnect', body: { channelId: SALES_CH, agentId: SALES.id } },
+      { suffix: '/disconnect', body: { channelId: SUPPORT_CH, remember: false } },
+      { suffix: '/remember', body: { channelId: SUPPORT_CH, remember: false, agentId: 'agt_other' } },
+      { suffix: '/remember', body: { channelId: SALES_CH, remember: false, agentId: SALES.id } },
+    ];
+    for (const c of cases) {
+      const a = await w.call('POST', c.suffix, SUPPORT.id, ADA, JSON.stringify(c.body));
+      expect({ status: a.status, body: a.body }, `${c.suffix} ${JSON.stringify(c.body)}`).toEqual({
+        status: 400,
+        body: { error: 'invalid-body' },
+      });
+    }
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(mine);
+    expect(w.memory.row(INSTALL_ID, SALES_CH)).toEqual(theirs);
+    expect(w.memory.calls).toHaveLength(writes);
   });
 
   it('remember takes only a boolean', async () => {

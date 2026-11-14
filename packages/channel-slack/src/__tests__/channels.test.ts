@@ -289,6 +289,21 @@ describe('checkRights', () => {
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
   });
 
+  it.each([
+    ['an empty object', {}],
+    ['allowed as a string', { allowed: 'true' }],
+    ['allowed as a number', { allowed: 1 }],
+    ['null', null],
+    ['a bare true', true],
+    ['allowed missing beside other keys', { ok: true }],
+  ])('refuses manage when the allowed answer is %s: only an explicit true passes', async (_what, answer) => {
+    const w = world();
+    w.people.answers.set('agents:can-set-shared-credential', answer);
+    expect(await checkRights(w.bus, ctx, SUPPORT.id, ADA, 'manage')).toEqual({ ok: false, reason: 'forbidden' });
+    // Viewing doesn't ask the manage question at all.
+    expect(await checkRights(w.bus, ctx, SUPPORT.id, ADA, 'view')).toMatchObject({ ok: true });
+  });
+
   it('answers not-found for an agent deleted between the two questions', async () => {
     const w = world();
     w.people.faults.set(
