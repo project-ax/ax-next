@@ -136,10 +136,11 @@ describe('neutralizeSlackControls: a broadcast spelled with HTML entities', () =
     ['&commat;everyone', `&${ZWSP}commat;everyone`, true],
     ['<&num;C07GENERAL1>', `<${ZWSP}&${ZWSP}num;C07GENERAL1>`, true],
     ['&nvlt;!here>', `&${ZWSP}nvlt;!here>`, true],
+    ['&NVLT;!here>', `&${ZWSP}NVLT;!here>`, true],
+    ['&excl;', `&${ZWSP}excl;`, false],
+    ['&#X40;channel and &#x3C;!here>', `&${ZWSP}#X40;channel and &${ZWSP}#x3C;!here>`, true],
+    ['&LT;!here&GT; &lt;#C1&gt;', `&${ZWSP}LT;!here&GT; &${ZWSP}lt;#C1&gt;`, true],
     ['&ltx', `&${ZWSP}ltx`, false],
-    // HTML's longest name; and a name too long to be one, which a stream can't wait for (format.ts).
-    ['&CounterClockwiseContourIntegral;', `&${ZWSP}CounterClockwiseContourIntegral;`, false],
-    [`&${'a'.repeat(31)}`, `&${ZWSP}${'a'.repeat(31)}`, false],
   ])('%j: every character reference that could spell a mention is marked, and decodes to nothing', (input, output, spells) => {
     const out = neutralizeSlackControls(input);
     expect(out).toBe(output);
@@ -172,8 +173,25 @@ describe('neutralizeSlackControls: a broadcast spelled with HTML entities', () =
     '&amp;#64;channel',
     // A link's query string: no `;`, so no decoder reads `&page` or `&utm_source` as a reference.
     'https://x.example/r?id=5&page=2&utm_source=slack',
+    '?a=1&b=2',
+    // Code: an address-of or a reference, copied from Slack, must still compile.
+    'let r = &s;',
+    'int *p = &x;',
+    'return &obj;',
+    'fn f(v: &mut Vec<u8>) -> &str;',
+    // Prose entities whose characters spell no mention: a decoder turns them into what was meant.
+    '&rarr;',
+    '&mdash;',
+    '&copy;',
+    '&hellip; &frac12; &trade;',
+    // Named like a dangerous one, but another name (`&comma;` is `,`, `&numsp;` a space).
+    '&comma; &numsp; &exclam; &nvltrie;',
+    // HTML's longest name, and longer: neither decodes to a mention's character.
+    '&CounterClockwiseContourIntegral;',
+    `&${'a'.repeat(31)}`,
   ])('%j is left alone: an & that starts none of those references', (input) => {
     expect(neutralizeSlackControls(input)).toBe(input);
+    expect(spellsMention(input)).toBe(false);
   });
 
   it('an & that ends the text before gets its mark at the start of this one', () => {
@@ -217,9 +235,9 @@ describe('neutralizeSlackControls(text, before): text that goes on from earlier 
         checked += 1;
       }
     }
-    // 166 of the 333 splits: an `@` waits after a letter too, so `me@` … `me@channel` and `x@` … `x@here` are
-    // skipped, and an `&` waits while a `;` may still end its name (`&`, `&#`, `&excl`, `&b` … 30 `b`s).
-    expect(checked).toBeGreaterThan(150);
+    // 243 of the 333 splits: an `@` waits after a letter too, so `me@` … `me@channel` and `x@` … `x@here` are
+    // skipped, and an `&` waits while a `;` may still finish a dangerous name (`&`, `&#`, `&co` … `&commat`, `&excl`).
+    expect(checked).toBeGreaterThan(230);
   });
 });
 
@@ -257,27 +275,29 @@ describe('undecidedTail', () => {
     // `&#` then `64;` would split the reference where the text before can't take a mark any more.
     expect(undecidedTail('mail &')).toBe(1);
     expect(undecidedTail('mail &#')).toBe(2);
-    // Any name may still end in `;`: `&excl` waits for it, `&amp` too (`&ampx;` would be marked).
-    for (const name of ['commat', 'excl', 'amp']) {
+    // A dangerous name waits for its `;`: `&excl` then `;` is `!`, then `a` is nothing.
+    for (const name of ['commat', 'excl', 'num', 'nvlt']) {
       for (let n = 0; n <= name.length; n += 1) expect(undecidedTail(`x &${name.slice(0, n)}`), name).toBe(n + 1);
     }
     expect(undecidedTail('a@b &CoMm')).toBe(5);
-    expect(undecidedTail('R&D')).toBe(2);
-    expect(undecidedTail('&frac12')).toBe(7);
     expect(undecidedTail('x &l')).toBe(2);
+    expect(undecidedTail('R&')).toBe(1);
   });
 
-  it('an & already decided either way waits for nothing: `&lt` is marked whatever follows', () => {
-    for (const text of ['&#6', '&#x', '&#X', '&lt', '&LT', '&ltx', '&lt;', '&commat;', '&amp;', '&gt;', '& ', '&#;', '&1', 'R&D ', 'a&b.', '&a-', '&commax-']) {
+  it('an & already decided either way waits for nothing: `&lt` is marked whatever follows, other names never are', () => {
+    for (const text of [
+      '&#6', '&#x', '&#X', '&lt', '&LT', '&ltx', '&lt;', '&commat;', '&amp;', '&gt;', '& ', '&#;', '&1', 'R&D', 'R&D ', 'a&b.',
+      '&a-', '&commax-', '&amp', '&a', '&frac12', '&copy', '&rarr', '&s', '&x', '&obj', '&comma;', '&commas', '&numsp', '&nvltr', '&exclam',
+      `&${'a'.repeat(30)}`,
+    ]) {
       expect(undecidedTail(text), text).toBe(0);
     }
   });
 
-  it('a name waits for at most 30 characters: at 31, longer than any HTML name, it is marked whatever follows', () => {
-    expect(undecidedTail(`see &${'a'.repeat(30)}`)).toBe(31);
-    expect(undecidedTail(`see &${'a'.repeat(31)}`)).toBe(0);
-    expect(neutralizeSlackControls(`&${'a'.repeat(30)}`)).toBe(`&${'a'.repeat(30)}`);
-    expect(neutralizeSlackControls(`&${'a'.repeat(31)}`)).toBe(`&${ZWSP}${'a'.repeat(31)}`);
+  it('a held reference is at most 7 code units: `&commat`, the longest dangerous name before its `;`', () => {
+    expect(undecidedTail('see &commat')).toBe(7);
+    expect(neutralizeSlackControls('&commat')).toBe('&commat');
+    expect(neutralizeSlackControls('&commat;')).toBe(`&${ZWSP}commat;`);
   });
 });
 

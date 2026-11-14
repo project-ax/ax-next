@@ -1342,7 +1342,7 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
     },
   );
 
-  it.each(['<&excl;channel> now', '&LT;!here&GT; now', '&lt!everyone now', '&commat;everyone now'])(
+  it.each(['<&excl;channel> now', '&LT;!here&GT; now', '&lt!everyone now', '&commat;everyone now', '&nvlt;!here> now', '&#X40;channel now', '<&num;C1> now'])(
     '%j split at every point across two text() calls, a flush between: decoded, nothing Slack gets is a live mention',
     async (input) => {
       expect(spellsMention(input)).toBe(true);
@@ -1361,6 +1361,20 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       }
     },
   );
+
+  it('code and prose entities stream as written at every split: no & in them spells a mention, so none gets a mark', async () => {
+    const input = 'let r = &s; int *p = &x; return &obj; a &rarr; b &mdash; &copy; ?a=1&b=2 R&D &amp; &comma; &numsp;';
+    expect(spellsMention(input)).toBe(false);
+    for (let k = 0; k <= input.length; k += 1) {
+      const { api, calls } = fakeSlack();
+      const s = make(api);
+      s.text(input.slice(0, k));
+      await tick();
+      s.text(input.slice(k));
+      await finishNow(s);
+      expect(delivered(calls), `split at ${k}`).toBe(input);
+    }
+  });
 
   it("a link's query string streams as written: `&page=2&utm_source=x` is no reference, so it gets no mark", async () => {
     const { api, calls } = fakeSlack();

@@ -92,10 +92,12 @@ nothing else: a follow-up in the same thread needs a new mention. A bare
 vanish at a message edge or in a decoder, so it exempts nothing), and so
 does the `&` of an HTML character reference that could decode into a
 mention's characters (`&#64;channel`, `&commat;here`, `&lt;!everyone&gt;`,
-`<&excl;channel>`: any numeric one, any name ended by `;` but five harmless
-ones such as `&amp;`, and `&lt` without its `;`) and a `<` before an `&`. A
-name without a `;` is left alone otherwise: no decoder reads it, and a
-link's query string (`&page=2`) looks like one. Both are held back across
+`<&excl;channel>`: any numeric one, and the only HTML names that decode to
+`<`, `@`, `!` or `#`: `&lt;`, `&nvlt;`, `&commat;`, `&excl;`, `&num;`, plus
+`&lt` without its `;`) and a `<` before an `&`. Every other `&` is left
+alone: code (`let r = &s;`), prose entities (`&rarr;`, `&copy;`) and a
+link's query string (`&page=2`) can't decode into a mention, and a mark
+would break them. Both are held back across
 chunk and edit boundaries, and each stream append is judged on its own, so a
 split can't sneak one through. A user-group handle such as `@engineering` is
 left alone, and may notify that whole group (§6, known gaps).
