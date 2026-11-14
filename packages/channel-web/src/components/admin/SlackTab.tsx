@@ -336,7 +336,7 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
 const DIALOG_COPY = {
   connected: {
     title: 'Disconnect Slack?',
-    body: "The bot leaves Slack and people can't reach their agents there. Their conversations stay here.",
+    body: "The bot leaves Slack and people can't reach their agents there. Every channel connected to an agent is disconnected too. Their conversations stay here.",
     keep: 'Keep connected',
     confirm: 'Disconnect',
     working: 'Disconnecting…',

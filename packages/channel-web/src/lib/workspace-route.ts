@@ -37,6 +37,7 @@ export const AGENT_SETTINGS_SECTIONS = [
   'instructions',
   'model',
   'connectors',
+  'slack',
   'memory',
   'skills',
   'routines',

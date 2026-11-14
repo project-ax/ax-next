@@ -90,6 +90,7 @@ describe('AgentSettings — desktop', () => {
       'Instructions',
       'Model',
       'Connectors',
+      'Slack',
       'Memory',
       'Skills',
       'Housekeeping',

@@ -308,7 +308,7 @@ describe('Disconnect', () => {
     renderTab(CONNECTED);
     const dialog = await openDialog();
     expect(dialog).toHaveTextContent(
-      "The bot leaves Slack and people can't reach their agents there. Their conversations stay here.",
+      "The bot leaves Slack and people can't reach their agents there. Every channel connected to an agent is disconnected too. Their conversations stay here.",
     );
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep connected' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
