@@ -253,7 +253,9 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
     });
 
     expect(await countFor(AGENT)).toBe(1);
-    // One transaction: the threads' delete didn't land without the bindings'.
+    // The bindings' delete failed first, so the threads' never ran. (The
+    // other order, a threads' delete that fails after the bindings' went, is
+    // the next test: that one is what the transaction is for.)
     expect(await threadsFor(AGENT)).toBe(1);
     // plpgsql's RAISE EXCEPTION: Postgres's code, never its message.
     expect(plugin.lines).toEqual([
