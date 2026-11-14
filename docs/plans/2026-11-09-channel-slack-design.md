@@ -182,27 +182,59 @@ so AX can't retire it through the API. Hence:
 
 ### Scopes (smallest set)
 
-`app_mentions:read`, `chat:write`, `chat:write.customize` (replies show the
-agent's own name and avatar), `im:history` and `im:write` (DMs), `channels:history`
-(threads the bot is in), `users:read` and `users:read.email` (the identity check),
-`reactions:write` (👀 on a message while the agent works on it), and `commands`
-(connecting a channel). Reading files waits until we support them.
+Nine bot scopes, each for one job:
 
-TASK-1093 (DMs) ships only `app_mentions:read`, `chat:write`, `im:history`,
-`reactions:write`, `users:read` and `users:read.email`, with the App Home messages tab on (without
-it nobody can DM the app), no interactivity and no slash commands. TASK-1094 and
-TASK-1095 add the rest when they need it; a dev install reconnects.
+- `app_mentions:read`: hear an @mention in a channel.
+- `chat:write`: reply in the thread.
+- `im:history`: read a DM sent to the bot.
+- `reactions:write`: put a 👀 on a message while the agent works on it.
+- `users:read` and `users:read.email`: the identity check (who is this, and is
+  that email an AX account).
+- `channels:read`: look up a channel's flags and list the public ones to pick
+  from (TASK-1094).
+- `channels:join`: the bot joins the public channel itself at connect, so
+  nobody has to invite it (TASK-1094).
+- `commands`: the `/ax` slash command (TASK-1094).
+
+Events stay `app_mention` and `message.im`; the App Home messages tab is on
+(without it nobody can DM the app); no interactivity until TASK-1095.
+
+Two scopes are deliberately **not** requested. `channels:history`: a channel
+is mention-only, so a follow-up in a thread needs an @mention again and the
+bot never reads anything it wasn't addressed in. `chat:write.customize`: a
+streamed reply can't carry a custom name or avatar; phase-2 bots carry their
+own. Reading files waits until we support them.
+
+TASK-1093 (DMs) shipped the first six scopes and no slash commands. TASK-1094
+adds the last three. An existing install has none of them, so it reconnects:
+Disconnect, then Connect, in Admin › Slack.
 
 ### Connecting a channel to a team agent
 
 Two ways in, one stored record:
 
 - **AX side:** agent settings → **Slack** → pick a channel.
-- **Slack side:** run `/ax connect <agent>` in the channel.
+- **Slack side:** run `/ax connect <agent name>` in the channel; `/ax
+  disconnect` undoes it.
 
-Either way, the person must pass `agents:resolve` for the agent with *manage*
-rights, meaning its owner or a team admin. One agent per channel. The binding
-belongs to `@ax/channel-slack`. Agents get no Slack-specific fields.
+Rules, the same on both sides:
+
+- **Who may:** a team admin of the agent's team
+  (`agents:can-set-shared-credential`, always asked with `isAdmin: false`).
+  Workspace admins don't count. A personal agent can't be connected. A person
+  who can't see the agent is told nothing about it.
+- **The channel:** public only. Private, archived and Slack Connect channels
+  (including a pending one) are refused. The bot joins the channel itself, after
+  those checks pass.
+- **Shape:** one agent per channel; one agent may serve several channels. The
+  binding belongs to `@ax/channel-slack`; agents get no Slack-specific fields.
+- **Reconnecting** a connected channel (by another team admin) takes over as
+  the run-as person and keeps the remember setting.
+- **Disconnecting:** an agent that no longer exists is cleared by anyone
+  admitted; a live one only by a team admin.
+- **Which install:** `/ax` acts on the install that signed the request.
+- **Admin › Slack › Disconnect** (and a reset) removes every channel
+  connection with the install, so channels are connected again after Slack is.
 
 ## 4. Dedicated bots (phase 2)
 
