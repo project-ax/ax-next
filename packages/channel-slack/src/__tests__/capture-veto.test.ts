@@ -31,6 +31,11 @@ const THREAD = 'conv-support-thread';
 const REFUSED = { rejected: true, reason: 'channel-not-remembered' };
 /** An outsider's thread: never remembered, whatever the switch says. */
 const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn' };
+/**
+ * The check itself failed (a lookup threw or ran out of time): refused, and
+ * saying so, never that the switch is off. Memory logs the reason.
+ */
+const CHECK_FAILED = { rejected: true, reason: 'capture-check-failed' };
 
 /** A member's thread of #support, remembered, unless told otherwise. */
 const thread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
@@ -235,11 +240,11 @@ describe('channelCaptureVeto: which conversation it asks about', () => {
         throw new Error('unreadable');
       },
     };
-    expect(await channelCaptureVeto(channelsWith(), pass({ conversationId: 'conv-web' }), poisoned)).toEqual(REFUSED);
+    expect(await channelCaptureVeto(channelsWith(), pass({ conversationId: 'conv-web' }), poisoned)).toEqual(CHECK_FAILED);
   });
 });
 
-describe('channelCaptureVeto: fails closed', () => {
+describe('channelCaptureVeto: fails closed, and says the check failed', () => {
   it.each([
     ['the thread lookup', { threadLookup: Object.assign(new Error('PRIVATE pg text at 10.0.0.7 conv-support-thread'), { code: '57P01' }) }, '57P01'],
     [
@@ -252,7 +257,7 @@ describe('channelCaptureVeto: fails closed', () => {
     ],
   ] as const)('refuses when %s throws, and logs its code alone', async (_name, world, code) => {
     const { logger, lines } = recordingLogger();
-    expect(await channelCaptureVeto(channelsWith(world), pass({ logger }), { conversationId: THREAD })).toEqual(REFUSED);
+    expect(await channelCaptureVeto(channelsWith(world), pass({ logger }), { conversationId: THREAD })).toEqual(CHECK_FAILED);
     expect(lines).toEqual([{ level: 'warn', msg: 'slack_capture_check_failed', fields: { code } }]);
     // No conversation, channel, install or agent id, and none of the failure's text.
     const all = JSON.stringify(lines);
@@ -271,7 +276,7 @@ describe('channelCaptureVeto: fails closed', () => {
     expect(settled).toBe('pending');
     await vi.advanceTimersByTimeAsync(1);
     await asked;
-    expect(settled).toEqual(REFUSED);
+    expect(settled).toEqual(CHECK_FAILED);
     expect(lines).toEqual([{ level: 'warn', msg: 'slack_capture_check_failed', fields: { code: 'timeout' } }]);
   });
 
@@ -280,13 +285,15 @@ describe('channelCaptureVeto: fails closed', () => {
     const slow = { getThread: vi.fn(async () => thread()), get: vi.fn(() => new Promise<never>(() => {})) };
     const asked = channelCaptureVeto(slow, pass(), { conversationId: THREAD }, 50);
     await vi.advanceTimersByTimeAsync(50);
-    expect(await asked).toEqual(REFUSED);
+    expect(await asked).toEqual(CHECK_FAILED);
   });
 
   it('leaves no timer behind once it has answered', async () => {
     vi.useFakeTimers();
     expect(await channelCaptureVeto(channelsWith({ threads: { [THREAD]: thread() } }), pass(), { conversationId: THREAD })).toBeUndefined();
-    expect(await channelCaptureVeto(channelsWith({ threadLookup: new Error('down') }), pass(), { conversationId: THREAD })).toEqual(REFUSED);
+    expect(await channelCaptureVeto(channelsWith({ threadLookup: new Error('down') }), pass(), { conversationId: THREAD })).toEqual(
+      CHECK_FAILED,
+    );
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -298,8 +305,20 @@ describe('channelCaptureVeto: fails closed', () => {
   it("a logger that throws doesn't stop the refusal", async () => {
     const { logger } = recordingLogger({ throws: true });
     expect(await channelCaptureVeto(channelsWith({ threadLookup: new Error('down') }), pass({ logger }), { conversationId: THREAD })).toEqual(
-      REFUSED,
+      CHECK_FAILED,
     );
+  });
+
+  it("a web chat's pass while the store is down is refused as a failed check, never as a switch that is off", async () => {
+    // A slow or not-ready store refuses EVERY conversation's pass, a web chat's
+    // included: the reason must not claim a Slack switch decided it.
+    const { logger } = recordingLogger();
+    const down = channelsWith({ threadLookup: Object.assign(new Error('not ready'), { code: 'ECONNREFUSED' }) });
+    const asked = await channelCaptureVeto(down, pass({ conversationId: 'conv-web', source: 'user', logger }), {
+      conversationId: 'conv-web',
+    });
+    expect(asked).toEqual(CHECK_FAILED);
+    expect(asked).not.toEqual(REFUSED);
   });
 });
 

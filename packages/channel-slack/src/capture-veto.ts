@@ -81,10 +81,11 @@ async function refusalFor(
  * switch is off now (`channel-not-remembered`).
  *
  * Fails closed: a lookup that throws, or takes longer than `deadlineMs`,
- * refuses too. A refusal costs memory nothing but time (the cursor stays put,
- * so a later pass reads those turns), which is why refusing an ordinary
- * chat's pass while the database is slow is the cheap mistake. Logs a
- * failure by its code alone.
+ * refuses too, as `capture-check-failed` (never a switch's reason). For an
+ * extraction pass a refusal costs nothing but time (the cursor stays put, so
+ * a later pass reads those turns), which is why refusing an ordinary chat's
+ * pass while the database is slow is the cheap mistake; a `memory_note`
+ * refused then is not saved. Logs a failure by its code alone.
  */
 export async function channelCaptureVeto(
   channels: Pick<ChannelStore, 'getThread' | 'get'>,
@@ -92,8 +93,12 @@ export async function channelCaptureVeto(
   payload: unknown,
   deadlineMs = CAPTURE_CHECK_DEADLINE_MS,
 ): Promise<Rejection | undefined> {
-  /** The answer when the check itself fails. */
-  const failed = reject({ reason: 'channel-not-remembered' });
+  /**
+   * The answer when the check itself fails: a refusal, saying only that. A
+   * slow or not-ready store refuses every conversation's pass (a web chat's
+   * too), so it must not claim a switch decided it.
+   */
+  const failed = reject({ reason: 'capture-check-failed' });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // Read inside the try: a payload an earlier subscriber rewrote into
