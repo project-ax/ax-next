@@ -67,7 +67,7 @@ export interface LocalUserFacts {
 }
 
 /** The provider kinds ax wires into better-auth. Any other kind configures nothing. */
-const GATED_KINDS: ReadonlySet<string> = new Set(['google', 'github']);
+export const GATED_KINDS: ReadonlySet<string> = new Set(['google', 'github']);
 
 /** Parse the provider's allowed_domains (comma-separated) into lowercased bare domains. */
 export function parseDomains(raw: string | null | undefined): string[] {
@@ -88,14 +88,34 @@ export function emailDomain(email: string): string {
  * a subdomain is not a match, and an email with no domain never is. `allowed`
  * is expected from `parseDomains` (lowercased, trimmed).
  *
- * The sign-in gate (`decideIdentity` rule 5) and `auth:find-user-by-email`
- * both answer through this one function, so "who may sign in" and "who Slack
- * may map to an account" can't drift apart. The one difference is deliberate:
- * the gate also lets an existing admin through; the Slack lookup doesn't.
+ * The sign-in gate (`decideIdentity` rule 5) applies it to the list of the
+ * provider being used. `isOnApprovedDomain` applies it across every
+ * provider's list, for checks that aren't a sign-in.
  */
 export function isDomainAllowed(email: string, allowed: readonly string[]): boolean {
   if (allowed.length === 0) return true;
   return allowed.includes(emailDomain(email));
+}
+
+/**
+ * Is `email` on an approved sign-in domain, for a check that isn't itself a
+ * sign-in (`auth:find-user-by-email`, TASK-1092)? `lists` holds every gated
+ * provider's parsed list, enabled or not. The email must be on at least one
+ * non-blank list. A blank list adds nothing, and only when no provider has a
+ * list at all is every domain approved, the same as sign-in with no lists.
+ *
+ * This fails closed where sign-in is per provider: with Google limited to
+ * canopyworks.com and GitHub left blank, a gmail GitHub member can sign in
+ * but is not on an approved domain here. Sign-in also lets an existing admin
+ * through an off-domain list; this doesn't.
+ */
+export function isOnApprovedDomain(
+  email: string,
+  lists: ReadonlyArray<readonly string[]>,
+): boolean {
+  const set = lists.filter((l) => l.length > 0);
+  if (set.length === 0) return true;
+  return set.some((l) => isDomainAllowed(email, l));
 }
 
 /**
