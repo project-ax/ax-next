@@ -67,15 +67,37 @@ describe('neutralizeSlackControls: a bare @here, @channel or @everyone', () => {
     expect(out.split(ZWSP).join('')).toBe(input);
   });
 
+  /*
+    Whatever comes before the `@` exempts nothing. A letter there once made
+    the word an address, but every way that letter can vanish before Slack
+    reads the word (a message edge, a lenient decoder turning `&copy` into
+    `©`) made the word live again. The price: an address on a domain that
+    starts with one of the words gets an invisible mark after its `@`.
+  */
+  it.each<[string, string]>([
+    ['&copy@here', `&copy@${ZWSP}here`],
+    ['&nbsp@channel', `&nbsp@${ZWSP}channel`],
+    ['&amp@everyone', `&amp@${ZWSP}everyone`],
+    ['x&lt@channel', `x&${ZWSP}lt@${ZWSP}channel`],
+    ['me@channel.com', `me@${ZWSP}channel.com`],
+    ['x@here.org', `x@${ZWSP}here.org`],
+    ['team2@everyone.example', `team2@${ZWSP}everyone.example`],
+    ['caf\u00e9@here', `caf\u00e9@${ZWSP}here`],
+  ])('%j: the word is marked whatever comes before its @', (input, output) => {
+    const out = neutralizeSlackControls(input);
+    expect(out).toBe(output);
+    expect(out.split(ZWSP).join('')).toBe(input);
+    // However a decoder reads what came before, the word can't go live.
+    expect(/@(?:here|channel|everyone)(?![A-Za-z0-9])/i.test(out)).toBe(false);
+  });
+
   it.each([
     // The word goes on: someone's name, not a broadcast.
     '@channels',
     '@everyones',
     '@here2',
-    // An address: the @ follows a letter or a digit.
-    'me@channel.com',
-    'x@here.org',
-    'team2@everyone.example',
+    '@hereafter',
+    'me@channels.com',
     // Not a whole word, or no @ at all.
     '@chan',
     '@',
@@ -163,8 +185,8 @@ describe('neutralizeSlackControls: a broadcast spelled with HTML entities', () =
 
 describe('neutralizeSlackControls(text, before): text that goes on from earlier text', () => {
   it('reads the text before for context, and never marks inside it', () => {
-    // `me` + `@channel.com` is an address; `ping ` + `@channel` is a broadcast.
-    expect(neutralizeSlackControls('@channel.com', 'me')).toBe('@channel.com');
+    // What comes before an `@` exempts nothing: `me` + `@channel.com` is marked like `ping ` + `@channel`.
+    expect(neutralizeSlackControls('@channel.com', 'me')).toBe(`@${ZWSP}channel.com`);
     expect(neutralizeSlackControls('@channel now', 'ping ')).toBe(`@${ZWSP}channel now`);
     // A `<` that ends the text before gets its mark at the start of this one.
     expect(neutralizeSlackControls('!here>', 'see <')).toBe(`${ZWSP}!here>`);

@@ -46,14 +46,21 @@ const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.le
  *     it is how a link's query string looks (`&page=2&utm_source=x`): a mark
  *     there would break the link. So is a lone letter (`R&D`, `a&b`);
  *   - the `@` of a broadcast word, in any case, when no letter or digit comes
- *     right before the `@` or right after the word: `hi @channel.` and
- *     `(@Here)` are broadcasts, `me@channel.com` and `@channels` are not.
+ *     right after the word, WHATEVER comes before the `@`: `hi @channel.`,
+ *     `(@Here)` and `me@channel.com` are marked, `@channels` and
+ *     `me@channels.com` are not. A letter before the `@` used to exempt the
+ *     word as an address, but every way that letter can vanish before Slack
+ *     reads the word (a message edge, a decoder turning `&copy` into `©`)
+ *     made the word live again; marking it whatever precedes ends that
+ *     whole class. The price: an address on a domain that starts with one
+ *     of the words (`me@channel.com`) gets an invisible mark after its `@`
+ *     (it shows the same; a copy and paste carries the mark). Rare.
  * Letters and digits are ASCII `[A-Za-z0-9]`, not `\w`: `_` is Markdown's
- * emphasis mark (`_@here_`), so it exempts nothing. One pattern, lookarounds
- * only: punctuation next to a word can't slip past it.
+ * emphasis mark (`_@here_`), so it doesn't continue a word. One pattern,
+ * lookarounds only: punctuation next to a word can't slip past it.
  */
 const SLACK_CONTROL =
-  /<(?=[!@#&])|&(?=#[0-9x]|lt|[a-z][a-z0-9]{30}|(?!(?:amp|gt|quot|apos|nbsp);)[a-z][a-z0-9]{0,30};)|(?<![A-Za-z0-9])@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
+  /<(?=[!@#&])|&(?=#[0-9x]|lt|[a-z][a-z0-9]{30}|(?!(?:amp|gt|quot|apos|nbsp);)[a-z][a-z0-9]{0,30};)|@(?=(?:here|channel|everyone)(?![A-Za-z0-9]))/gi;
 
 /**
  * An `&` that ends the text with nothing after it but the start of a
@@ -75,19 +82,19 @@ const LONGEST_UNDECIDED_ENTITY = 31;
  * work: the bot never pings anyone with words a model wrote.
  *
  * `before` is text that comes right before `text` in the same Slack message
- * (already decided, maybe already sent). It is only read, never marked: a `<`
- * that ends it gets its mark at the start of `text` when a `!`, `@` or `#`
- * follows (an `&` the same, when the start of an entity follows), and an `@`
- * that starts `text` right after a letter is an address, not a broadcast.
- * The end of `text` counts as the end of the message, so text that may go
- * on must not end with an `undecidedTail`.
+ * (already decided, maybe already sent). Only its last character is read,
+ * and never marked: no rule looks behind what it marks any more, so the one
+ * thing `before` can still decide is a `<` that ends it, which gets its mark
+ * at the start of `text` when a `!`, `@`, `#` or `&` follows (the `<!` rule
+ * across chunks). An `&` or `@` that ends decided text would get the same,
+ * but a reply never decides one: `undecidedTail` holds them back. The end of
+ * `text` counts as the end of the message, so text that may go on must not
+ * end with an `undecidedTail`.
  */
 export function neutralizeSlackControls(text: string, before = ''): string {
-  // Two characters reach every decision: an `@` that ends `before` needs the one before it.
-  const context = before.slice(-2);
-  return (context + text)
-    .replace(SLACK_CONTROL, (mark: string, at: number) => (at + 1 < context.length ? mark : mark + ZERO_WIDTH_SPACE))
-    .slice(context.length);
+  // Every match is marked: one on `before`'s last character puts its mark at the start of `text`.
+  const context = before.slice(-1);
+  return (context + text).replace(SLACK_CONTROL, (mark: string) => mark + ZERO_WIDTH_SPACE).slice(context.length);
 }
 
 /**
@@ -99,13 +106,12 @@ export function neutralizeSlackControls(text: string, before = ''): string {
  * these back until they come (reply-stream.ts). At most 31 (`&` and a
  * 30-character name; at 31 the name is marked); 0 when nothing waits.
  *
- * Whatever comes before the `@` is never read. A letter there makes the word
- * an address in the reply (`me@chan`), but Slack judges each message, and
- * the status card, a new stream or a cut can come between that letter and
- * the `@`: sent then, `@chan` would start the next run and `nel` complete a
- * live `@channel` in it. Held, the word reaches that run whole and is judged
- * there. A reference waits for the same reason: sent as `&#` or `&excl`, the
- * `&` is already out when `64;` or `;` shows it needed a mark.
+ * Whatever comes before the `@` is never read (it exempts nothing). The
+ * word waits because its own end decides it: sent as `@chan`, the `@` is
+ * already out when `nel` shows it needed a mark (and `nel` alone is
+ * nothing), while `@channels` is a name. A reference waits for the same
+ * reason: sent as `&#` or `&excl`, the `&` is already out when `64;` or `;`
+ * shows it needed a mark.
  */
 export function undecidedTail(text: string): number {
   const entity = UNDECIDED_ENTITY.exec(text.slice(-LONGEST_UNDECIDED_ENTITY));

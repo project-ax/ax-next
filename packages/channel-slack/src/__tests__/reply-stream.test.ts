@@ -1108,8 +1108,8 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
     },
   );
 
-  // Where the reply's text goes on in a new Slack message, or past the status card, right after a letter:
-  // `me` makes an `@` that follows it an address in the reply, but not in the run Slack judges next.
+  // Where the reply's text goes on in a new Slack message, or past the status card, right after a letter.
+  // A letter before an `@` exempts nothing (format.ts), so the word is caught wherever the edge falls.
   // `say` sends `first`, crosses the edge and sends `piece`, the word's start.
   const FULL = `${'a'.repeat(STREAM_TEXT_LIMIT - 2)}me`;
   it.each<[string, string, (s: ReplyStream, first: string, piece: string) => Promise<void>]>([
@@ -1187,7 +1187,7 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
     },
   );
 
-  it('word-sized deltas, a flush after each: a name keeps its @ as typed, a broadcast word is caught, and so is an address a flush split', async () => {
+  it('word-sized deltas, a flush after each: a name keeps its @ as typed, and a broadcast word is caught, in an address too', async () => {
     const { api, calls } = fakeSlack();
     const s = make(api);
     for (const delta of ['Write to ', 'support', '@channel', '.io', ' or tell ', '@', 'every', 'one', ', ', 'team', '@here', 's.']) {
@@ -1195,8 +1195,8 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       await tick();
     }
     await finishNow(s);
-    // `support` and `@channel.io` went out in two appends, each judged alone: the address gets a mark
-    // (the cost of not trusting Slack to read a stream's appends as one text). `@heres` is a name either way.
+    // A broadcast word is marked whatever comes before its `@`, so the address gets a mark (invisible; the
+    // price of no left-context exemption anywhere). `@heres` is a name either way.
     expect(delivered(calls)).toBe(`Write to support@${ZWSP}channel.io or tell @${ZWSP}everyone, team@heres.`);
   });
 
@@ -1275,7 +1275,7 @@ describe('createReplyStream: a bare @here, @channel or @everyone', () => {
       const limit = how === 'streamed' ? STREAM_TEXT_LIMIT : POST_PART_LIMIT;
       const { api, calls } = fakeSlack(how === 'posted' ? POSTING : {});
       const s = make(api);
-      // One letter before the @ makes it an address, until the cut takes the letter away.
+      // The word starts the next message; it is marked wherever it starts.
       s.text(`${'a'.repeat(limit)}@channel hi`);
       await finishNow(s);
       expect(messages(calls)).toEqual(['a'.repeat(limit), `@${ZWSP}channel hi`]);

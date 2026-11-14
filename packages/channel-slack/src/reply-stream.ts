@@ -22,22 +22,22 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  * queue of its own (add, then remove) that the reply never waits on.
  *
  *   - Text goes as `markdown_text` chunks: Slack renders the Markdown itself.
- *     Model text never pings anyone (format.ts): every `<` before `!`, `@`
- *     or `#`, and the `@` of a bare `@here`, `@channel` or `@everyone`, gets
- *     a zero-width space. Each delta is judged with the text before it, so a
- *     split can't hide one: a `<` that ends a delta gets its mark at the
- *     start of the next, and an `@` that may start a broadcast word waits
- *     (at most nine characters, `@everyone`) until the next text or `finish`
- *     decides it, also past a status that arrives meanwhile, which goes out
- *     first. A Slack message's own edges are judged again as each part goes
- *     out, because the reply's text on the other side of an edge may not
- *     reach Slack with it: the start of a message (a new stream, each posted
- *     part), the start of each append (whether Slack reads a stream's appends
- *     as one text is unmeasured; only a `<` ending the last one carries
- *     over), the text after the status card, and where a full stream or a
- *     post is cut. So the `@` waits even right after a letter (`me@chan`):
- *     an edge can fall between the two, and the word must reach the run it
- *     lands in whole to be judged there. A mark added at an edge can take a
+ *     Model text never pings anyone (format.ts): every `<` before `!`, `@`,
+ *     `#` or `&`, every `&` that starts a character reference that could
+ *     spell one, and the `@` of `@here`, `@channel` or `@everyone`, whatever
+ *     comes before it, gets a zero-width space. Each delta is judged with the
+ *     text before it, so a split can't hide one: a `<` that ends a delta gets
+ *     its mark at the start of the next, and an `@` or `&` that may start a
+ *     broadcast word or a reference waits (at most 31 characters) until the
+ *     next text or `finish` decides it, also past a status that arrives
+ *     meanwhile, which goes out first. A Slack message's own edges are judged
+ *     again as each part goes out, because the reply's text on the other side
+ *     of an edge may not reach Slack with it: the start of a message (a new
+ *     stream, each posted part), the start of each append (whether Slack
+ *     reads a stream's appends as one text is unmeasured; only a `<` ending
+ *     the last one carries over), the text after the status card, and where a
+ *     full stream or a post is cut (`@channels` cut after `@channel` is a
+ *     broadcast in the message it ends). A mark added at an edge can take a
  *     message past STREAM_TEXT_LIMIT or POST_PART_LIMIT by at most three
  *     characters; Slack's own cap (12,000) has room.
  *   - The status line is ONE `task_update` card (id `status`) per stream
@@ -327,10 +327,9 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
    * Each text chunk is judged again against this message alone (`tail`): a
    * new stream's first text, the text after the card, the text before a
    * full stream's cut and an append's first text are edges where the reply's
-   * text around them may not reach Slack with them, so an `@` the reply
-   * judged an address there (`me` + `@channel.com`, `@channels` cut after
-   * `@channel`) gets its mark. Anywhere else the text is already decided and
-   * nothing changes.
+   * text around them may not reach Slack with them, so a word the reply
+   * judged a name there (`@channels` cut after `@channel`) gets its mark.
+   * Anywhere else the text is already decided and nothing changes.
    */
   function buildBatch(final: boolean): Batch {
     let budget = open === null ? STREAM_TEXT_LIMIT : Math.max(0, STREAM_TEXT_LIMIT - open.sent);
@@ -341,11 +340,11 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
     let ops = 0;
     let chars = 0;
     let overflow = false;
-    // Across an append, only a `<` that ended the last one is carried (a `!`
-    // starting this one still needs its mark). Whether Slack reads a stream's
-    // appends as one text is unmeasured, so each is an edge: a letter before
-    // it exempts no `@` at its start. The cost is a mark in an address a
-    // flush happened to split.
+    // Across an append, only a `<` that ended the last one is carried: a `!`
+    // starting this one still needs its mark. Whether Slack reads a stream's
+    // appends as one text is unmeasured, so each is an edge, and nothing else
+    // before one decides anything at its start (a broadcast word is marked
+    // whatever comes before its `@`).
     let tail = open === null ? '' : open.tail.endsWith('<') ? '<' : '';
     const flushText = (): void => {
       if (text.length === 0) return;

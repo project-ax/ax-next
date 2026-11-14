@@ -85,18 +85,20 @@ the model reads. Nothing ever treats it as permission to do something.
 
 **Mention-only.** In a channel the bot answers a message that mentions it, and
 nothing else: a follow-up in the same thread needs a new mention. A bare
-`@bot` with no other text runs no turn. A reply can't broadcast: a bare
-`@channel`, `@here` or `@everyone` in the agent's text gets a zero-width space
-after the `@`, and so does the `&` of an HTML character reference that could
-decode into a mention's characters (`&#64;channel`, `&commat;here`,
-`&lt;!everyone&gt;`, `<&excl;channel>`: any numeric one, any name ended by
-`;` but five harmless ones such as `&amp;`, and `&lt` without its `;`) and a
-`<` before an `&`. A name without a `;` is left alone otherwise: no decoder
-reads it, and a link's query string (`&page=2`) looks like one. Both are held
-back across chunk and edit boundaries, and each stream append is judged on
-its own, so a split can't sneak one through. A user-group handle such as
-`@engineering` is left alone, and may notify that whole group (§6, known
-gaps).
+`@bot` with no other text runs no turn. A reply can't broadcast: `@channel`,
+`@here` or `@everyone` in the agent's text gets a zero-width space after the
+`@`, whatever comes before it (so an address on such a domain,
+`me@channel.com`, gets an invisible one too: a letter before the `@` can
+vanish at a message edge or in a decoder, so it exempts nothing), and so
+does the `&` of an HTML character reference that could decode into a
+mention's characters (`&#64;channel`, `&commat;here`, `&lt;!everyone&gt;`,
+`<&excl;channel>`: any numeric one, any name ended by `;` but five harmless
+ones such as `&amp;`, and `&lt` without its `;`) and a `<` before an `&`. A
+name without a `;` is left alone otherwise: no decoder reads it, and a
+link's query string (`&page=2`) looks like one. Both are held back across
+chunk and edit boundaries, and each stream append is judged on its own, so a
+split can't sneak one through. A user-group handle such as `@engineering` is
+left alone, and may notify that whole group (§6, known gaps).
 
 ## 2a. Memory: decided by who sees the reply
 
@@ -496,12 +498,12 @@ connectors. The protections are:
   wants a tighter circle sets an allowed-domains list.
 - **Broadcasts we can't measure without real Slack** (checks for the TASK-1097
   walk): whether Slack reads a stream's appends as one text (each is treated
-  as its own edge, so an address a flush happens to split gets a mark, and a
-  letter, a flush, then `@channel` is caught); whether `markdown_text` decodes
-  HTML character references before it looks for mentions, and which ones
-  (`&#64;channel`, `&commat;here`, `&lt;!everyone&gt;`, `<&excl;channel>`
-  are marked anyway: defense in depth); whether a bare `@channel` broadcasts
-  at all.
+  as its own edge, and a broadcast word is marked whatever comes before its
+  `@`, so a letter, a flush, then `@channel` is caught); whether
+  `markdown_text` decodes HTML character references before it looks for
+  mentions, and which ones (`&#64;channel`, `&commat;here`,
+  `&lt;!everyone&gt;`, `<&excl;channel>` are marked anyway: defense in
+  depth); whether a bare `@channel` broadcasts at all.
 - **User-group handles aren't neutralized.** A reply that names `@engineering`
   may notify that whole group: a bare `@name` is not "one person at most" when
   the name is a group's. Only the three broadcast words are marked. The
