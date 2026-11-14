@@ -20,8 +20,10 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // half-wired plugins).
 //
 // One flow through the preset's OWN plugins: the real @ax/channel-slack (its
-// admin routes, OAuth callback and events route), the real @ax/agents (the
-// personal agents a Slack DM reaches), the real @ax/conversations (the
+// admin routes, OAuth callback, events route, and the TASK-1094 channel routes
+// and `/ax` command), the real @ax/agents (the personal agents a Slack DM
+// reaches, and the team agents a channel connects to), the real @ax/teams
+// (who is a team admin), the real @ax/conversations (the
 // thread's conversation, origin 'slack'), and the real credentials vault
 // (@ax/credentials over @ax/credentials-store-db over @ax/storage-postgres),
 // all on one Postgres. Slack is a fake behind the preset's
@@ -48,6 +50,7 @@ const KEEP = new Set<string>([
   '@ax/credentials',
   '@ax/credentials-store-db',
   '@ax/agents',
+  '@ax/teams',
   '@ax/conversations',
   SLACK_PLUGIN,
 ]);
@@ -82,12 +85,18 @@ const ALICE: SlackPerson = { slackId: 'U07ALICE001', name: 'Alice', email: 'alic
 const BOB: SlackPerson = { slackId: 'U07BOB00001', name: 'Bob', email: 'bob@canopyworks.com' };
 /** A confirmed full member of the workspace with no AX account. */
 const CAROL: SlackPerson = { slackId: 'U07CAROL001', name: 'Carol', email: 'carol@canopyworks.com' };
-const PEOPLE = [ALICE, BOB, CAROL];
+/** A team admin of the support team, and a plain member of it. Both have AX accounts. */
+const ADA: SlackPerson = { slackId: 'U07ADA00001', name: 'Ada', email: 'ada@canopyworks.com' };
+const MEL: SlackPerson = { slackId: 'U07MEL00001', name: 'Mel', email: 'mel@canopyworks.com' };
+const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL];
+const SUPPORT_CHANNEL = 'C07SUPPORT1';
 
 /** auth's answer: Alice and Bob have AX accounts, Carol doesn't. */
 const AX_USERS: Record<string, string> = {
   [ALICE.email]: 'usr_alice',
   [BOB.email]: 'usr_bob',
+  [ADA.email]: 'usr_ada',
+  [MEL.email]: 'usr_mel',
 };
 
 // ── Captured routes, the actor, and the turns agent:invoke saw ──────────────
@@ -234,6 +243,41 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
       answer = person !== undefined ? { ok: true, user: slackUser(person) } : { ok: false, error: 'user_not_found' };
       break;
     }
+    case 'conversations.info':
+    case 'conversations.join':
+      answer =
+        body['channel'] === SUPPORT_CHANNEL
+          ? {
+              ok: true,
+              channel: {
+                id: SUPPORT_CHANNEL,
+                name: 'support-desk',
+                is_channel: true,
+                is_private: false,
+                is_archived: false,
+                is_ext_shared: false,
+                is_pending_ext_shared: false,
+              },
+            }
+          : { ok: false, error: 'channel_not_found' };
+      break;
+    case 'conversations.list':
+      answer = {
+        ok: true,
+        channels: [
+          {
+            id: SUPPORT_CHANNEL,
+            name: 'support-desk',
+            is_channel: true,
+            is_private: false,
+            is_archived: false,
+            is_ext_shared: false,
+            is_pending_ext_shared: false,
+          },
+        ],
+        response_metadata: { next_cursor: '' },
+      };
+      break;
     case 'tooling.tokens.rotate':
       answer = { ok: true, token: ROTATED_ACCESS_TOKEN, exp: 4_102_444_800 };
       break;
@@ -351,6 +395,26 @@ async function deliver(installId: string, event: Record<string, unknown>): Promi
   });
 }
 
+/** A signed `/ax` slash command, as Slack posts it: a form, signed over its raw bytes. */
+async function slash(installId: string, from: SlackPerson, channel: string, text: string): Promise<Captured> {
+  const body = Buffer.from(
+    new URLSearchParams({
+      command: '/ax',
+      text,
+      team_id: TEAM_ID,
+      api_app_id: APP_ID,
+      user_id: from.slackId,
+      channel_id: channel,
+    }).toString(),
+  );
+  return callRoute('POST', '/slack/commands/:installId', {
+    params: { installId },
+    rawPath: `/slack/commands/${installId}`,
+    headers: { ...signedHeaders(body), 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+}
+
 function dm(from: SlackPerson, channel: string, ts: string, text: string): Record<string, unknown> {
   return { type: 'message', channel_type: 'im', user: from.slackId, channel, ts, text };
 }
@@ -429,6 +493,60 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       },
     );
     return out.agent.id;
+  }
+
+  /** A team whose creator `adminId` is its admin, with `memberId` a plain member, and one team agent. */
+  async function teamWithAgent(adminId: string, memberId: string): Promise<{ teamId: string; agentId: string }> {
+    const ctxFor = (userId: string) => makeAgentContext({ sessionId: 'test', agentId: '', userId });
+    const { team } = await theBus!.call<unknown, { team: { id: string } }>('teams:create', ctxFor(adminId), {
+      actor: { userId: adminId },
+      displayName: 'Support',
+    });
+    await theBus!.call('teams:add-member', ctxFor(adminId), {
+      actor: { userId: adminId },
+      teamId: team.id,
+      userId: memberId,
+      role: 'member',
+    });
+    const out = await theBus!.call<unknown, AgentCreateOutput>('agents:create', ctxFor(adminId), {
+      actor: { userId: adminId, isAdmin: false },
+      input: {
+        displayName: 'Support',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-opus-4-7',
+        visibility: 'team',
+        teamId: team.id,
+      },
+    });
+    return { teamId: team.id, agentId: out.agent.id };
+  }
+
+  /** Connect the workspace as an admin: Slack makes the app, then Allow comes back to the callback. */
+  async function connectWorkspace(): Promise<string> {
+    actor = { id: ADMIN, isAdmin: true };
+    const connect = await callRoute('POST', '/admin/slack/connect', {
+      body: jsonBody({ accessToken: CONFIG_ACCESS_TOKEN, refreshToken: CONFIG_REFRESH_TOKEN }),
+    });
+    expect(connect.status).toBe(200);
+    const state = new URL((connect.body as { installUrl: string }).installUrl).searchParams.get('state')!;
+    const callback = await callRoute('GET', '/admin/slack/oauth/callback', { query: { code: OAUTH_CODE, state } });
+    expect(callback.status).toBe(302);
+    actor = null;
+    const installs = await query("SELECT install_id FROM channel_slack_v1_installs WHERE status = 'active'");
+    expect(installs).toHaveLength(1);
+    return installs[0]!['install_id'] as string;
+  }
+
+  async function bindings(): Promise<Array<{ channelId: string; agentId: string; by: string }>> {
+    const rows = await query(
+      'SELECT channel_id, agent_id, connected_by_user_id FROM channel_slack_v1_channels ORDER BY channel_id',
+    );
+    return rows.map((r) => ({
+      channelId: r['channel_id'] as string,
+      agentId: r['agent_id'] as string,
+      by: r['connected_by_user_id'] as string,
+    }));
   }
 
   async function readSecret(installId: string, name: string): Promise<string> {
@@ -655,5 +773,76 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(await readSecret(installId, name), name).toMatch(/^error:/);
     }
     expect(await callRoute('GET', '/admin/slack')).toMatchObject({ body: { state: 'not-connected' } });
+  });
+
+  it('a team admin connects a channel to a team agent, from settings and from /ax; members and personal agents cannot; deleting the agent frees it (TASK-1094)', async () => {
+    const installId = await connectWorkspace();
+    const { agentId } = await teamWithAgent('usr_ada', 'usr_mel');
+    const personal = await personalAgent('usr_alice');
+    const settings = (suffix: string) => ({ params: { agentId }, rawPath: `/settings/slack/${agentId}${suffix}` });
+    const connectBody = { body: jsonBody({ channelId: SUPPORT_CHANNEL }) };
+
+    // The settings routes, over the real agents and teams. A member reads the
+    // section and may not write; a personal agent is refused before Slack is asked.
+    actor = { id: 'usr_mel', isAdmin: false };
+    let mark = slackCalls.length;
+    expect(await callRoute('GET', '/settings/slack/:agentId', settings(''))).toMatchObject({
+      status: 200,
+      body: { state: 'ready', canManage: false, channels: [] },
+    });
+    expect(await callRoute('POST', '/settings/slack/:agentId/connect', { ...settings('/connect'), ...connectBody })).toMatchObject({
+      status: 403,
+    });
+    actor = { id: 'usr_alice', isAdmin: false };
+    expect(
+      await callRoute('POST', '/settings/slack/:agentId/connect', {
+        params: { agentId: personal },
+        rawPath: `/settings/slack/${personal}/connect`,
+        ...connectBody,
+      }),
+    ).toMatchObject({ status: 409, body: { error: 'personal-agent' } });
+    expect(slackCalls.slice(mark)).toEqual([]);
+    expect(await bindings()).toEqual([]);
+
+    // The team admin connects #support: Slack is asked about it, then the bot joins, then the row.
+    actor = { id: 'usr_ada', isAdmin: false };
+    mark = slackCalls.length;
+    const connected = await callRoute('POST', '/settings/slack/:agentId/connect', {
+      ...settings('/connect'),
+      ...connectBody,
+    });
+    expect(connected).toMatchObject({
+      status: 200,
+      body: { channel: { channelId: SUPPORT_CHANNEL, name: 'support-desk', connectedBy: 'usr_ada' }, reconnected: false },
+    });
+    expect(slackCalls.slice(mark).map((c) => c.method)).toEqual(['conversations.info', 'conversations.join']);
+    expect(await bindings()).toEqual([{ channelId: SUPPORT_CHANNEL, agentId, by: 'usr_ada' }]);
+    actor = null;
+
+    // /ax: the member is told it is a team admin's to do; the admin can disconnect, and connect again by name.
+    const memberTries = await slash(installId, MEL, SUPPORT_CHANNEL, 'disconnect');
+    expect(memberTries.status).toBe(200);
+    expect(String((memberTries.body as { text: string }).text)).toContain('Only a team admin');
+    expect(await bindings()).toHaveLength(1);
+
+    const memberConnects = await slash(installId, MEL, SUPPORT_CHANNEL, 'connect Support');
+    expect(String((memberConnects.body as { text: string }).text)).toContain('Only a team admin');
+
+    const disconnected = await slash(installId, ADA, SUPPORT_CHANNEL, 'disconnect');
+    expect(String((disconnected.body as { text: string }).text)).toContain('Disconnected');
+    expect(await bindings()).toEqual([]);
+
+    const slashConnected = await slash(installId, ADA, SUPPORT_CHANNEL, 'connect Support');
+    expect(slashConnected.status).toBe(200);
+    expect(String((slashConnected.body as { text: string }).text)).toContain('Connected *Support* to #support-desk');
+    expect(await bindings()).toEqual([{ channelId: SUPPORT_CHANNEL, agentId, by: 'usr_ada' }]);
+
+    // Deleting the agent frees its channel (agents:deleted → channel-slack).
+    await theBus!.call(
+      'agents:delete',
+      makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_ada' }),
+      { actor: { userId: 'usr_ada', isAdmin: false }, agentId },
+    );
+    await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
   });
 });

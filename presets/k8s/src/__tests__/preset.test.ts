@@ -1300,6 +1300,9 @@ describe('@ax/preset-k8s wiring', () => {
       // A Slack DM becomes a turn of the sender's own personal agent.
       'auth:find-user-by-email',
       'agents:list-for-user',
+      // Connecting a channel to a team agent: who may see it, who may manage it.
+      'agents:resolve',
+      'agents:can-set-shared-credential',
       'conversations:find-or-create',
       'agent:invoke',
     ]);
@@ -1310,16 +1313,23 @@ describe('@ax/preset-k8s wiring', () => {
         hook: 'agent:interrupt',
         degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
       },
+      // /ax connect looks a person's teams up; without @ax/teams it finds none.
+      {
+        hook: 'teams:list-for-user',
+        degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
+      },
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',
+      // A deleted agent's channels are freed.
+      'agents:deleted',
       'chat:stream-chunk',
       'chat:turn-end',
       'chat:turn-error',
     ]);
     // Every hard call has a producer in this preset, and so do the optional ones.
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
-    for (const hook of [...slack!.manifest.calls, 'branding:get', 'agent:interrupt']) {
+    for (const hook of [...slack!.manifest.calls, 'branding:get', 'agent:interrupt', 'teams:list-for-user']) {
       expect(registered.has(hook), hook).toBe(true);
     }
   });

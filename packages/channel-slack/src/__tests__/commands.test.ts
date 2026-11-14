@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { HookBus, PluginError, type Logger } from '@ax/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { COMMANDS_ROUTE_PATH, createCommandsHandler, normalizeName } from '../commands.js';
 import { COPY } from '../copy.js';
 import { createEventsHandler, createSeenEvents } from '../events.js';
@@ -382,8 +382,7 @@ function deferred<T = void>() {
 
 /** Let queued work run until `check` holds. */
 async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 200 && !check(); i += 1) await new Promise((r) => setImmediate(r));
-  if (!check()) throw new Error('until: the condition never held');
+  await vi.waitFor(() => expect(check()).toBe(true), { timeout: 5_000, interval: 1 });
 }
 
 // ── The handler's surroundings ──────────────────────────────────────────────

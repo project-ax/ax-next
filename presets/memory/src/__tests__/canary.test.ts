@@ -731,7 +731,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events route skips CSRF (TASK-1093)', async () => {
+  it('channel-slack: admin status over the real route; only the events and commands routes skip CSRF (TASK-1093, TASK-1094)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -775,7 +775,27 @@ describe('@ax/preset-memory canary', () => {
     });
     expect(delivery.status).toBe(unserved.status);
     expect(delivery.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
-    expect(await delivery.text()).toBe(await unserved.text());
+    const unservedText = await unserved.text();
+    expect(await delivery.text()).toBe(unservedText);
+    // The `/ax` route is mounted too: an unknown install gets the route's own
+    // 404, the same as the events route. A 405 would mean it is NOT mounted.
+    const command = await fetch(url('/slack/commands/AAAAAAAAAAAAAAAAAAAAAA'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'command=%2Fax&text=connect',
+    });
+    expect(command.status).toBe(unserved.status);
+    expect(command.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
+    expect(await command.text()).toBe(unservedText);
+
+    // A team agent's channel settings are mounted too (TASK-1094): signed out
+    // is the route's 401, and an agent nobody here can see is its own 404.
+    // Unmounted, the static-files fallback would answer neither.
+    expect((await apiJson('GET', '/settings/slack/agt_nobody', null)).status).toBe(401);
+    expect(await apiJson('GET', '/settings/slack/agt_nobody', ALICE)).toEqual({
+      status: 404,
+      json: { error: 'not-found' },
+    });
   });
 
   it('Undo after Forget over the real routes brings an agent note back as the same agent row (TASK-630)', async () => {

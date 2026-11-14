@@ -12,8 +12,10 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { AGENTS_DELETED_KEY } from '../agents-deleted.js';
+import { createChannelStore } from '../channel-store.js';
 import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
-import { ADMIN_BODY_MAX_BYTES, EVENTS_MAX_BODY_BYTES } from '../limits.js';
+import { ADMIN_BODY_MAX_BYTES, COMMANDS_MAX_BODY_BYTES, EVENTS_MAX_BODY_BYTES } from '../limits.js';
 import type { ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
@@ -65,6 +67,8 @@ const BOT_TOKEN = fakeBotToken('PLUGINTESTSECRET');
 const ALICE = 'U07ALICE001';
 const DM_CHANNEL = 'D07DMCHANNEL';
 const DM_TS = '1763035200.000100';
+const TEAM_AGENT = { id: 'agt_support', displayName: 'Support', visibility: 'team', ownerType: 'team', ownerId: 'team_support' };
+const SUPPORT_CH = 'C07SUPPORT1';
 
 // ── Fakes for the hooks channel-slack calls, other than the database ───────
 
@@ -140,6 +144,21 @@ function fakeServices(s: Services) {
               },
             ]
           : [],
+    }),
+    // The agent settings path. Ada is a team admin of the one team agent;
+    // everyone else is outside it.
+    'agents:resolve': async (_ctx: unknown, input: unknown) => {
+      const { agentId, userId } = input as { agentId: string; userId: string };
+      if (agentId !== TEAM_AGENT.id) {
+        throw new PluginError({ code: 'not-found', plugin: 'mock', message: 'no such agent' });
+      }
+      if (userId !== ADMIN.id) {
+        throw new PluginError({ code: 'forbidden', plugin: 'mock', message: 'not yours' });
+      }
+      return { agent: TEAM_AGENT };
+    },
+    'agents:can-set-shared-credential': async (_ctx: unknown, input: unknown) => ({
+      allowed: (input as { actor: { userId: string } }).actor.userId === ADMIN.id,
     }),
     'conversations:find-or-create': async (_ctx: unknown, input: unknown) => {
       s.found = (s.found ?? 0) + 1;
@@ -281,7 +300,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   while (booted.length > 0) await booted.pop()!.close({ onError: () => {} });
   try {
-    await sql`TRUNCATE channel_slack_v1_installs`.execute(probe);
+    await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels`.execute(probe);
   } catch {
     // Not created yet.
   }
@@ -448,6 +467,8 @@ describe('@ax/channel-slack plugin', () => {
         'credentials:delete',
         'auth:find-user-by-email',
         'agents:list-for-user',
+        'agents:resolve',
+        'agents:can-set-shared-credential',
         'conversations:find-or-create',
         'agent:invoke',
       ],
@@ -457,8 +478,18 @@ describe('@ax/channel-slack plugin', () => {
           hook: 'agent:interrupt',
           degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
+        {
+          hook: 'teams:list-for-user',
+          degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
+        },
       ],
-      subscribes: ['bootstrap:reset-cleanup', 'chat:stream-chunk', 'chat:turn-end', 'chat:turn-error'],
+      subscribes: [
+        'bootstrap:reset-cleanup',
+        'agents:deleted',
+        'chat:stream-chunk',
+        'chat:turn-end',
+        'chat:turn-error',
+      ],
     });
   });
 
@@ -470,7 +501,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the six routes, and only the events route bypasses CSRF', async () => {
+  it('init registers the twelve routes, and only the events and commands routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -485,6 +516,17 @@ describe('@ax/channel-slack plugin', () => {
       { method: 'POST', path: '/admin/slack/disconnect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
+      { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
+      { method: 'GET', path: '/settings/slack/:agentId', bypassCsrf: false, maxBodyBytes: undefined },
+      { method: 'GET', path: '/settings/slack/:agentId/available', bypassCsrf: false, maxBodyBytes: undefined },
+      { method: 'POST', path: '/settings/slack/:agentId/connect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/disconnect',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      { method: 'POST', path: '/settings/slack/:agentId/remember', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
     ]);
     // Nothing is written to the vault just by booting.
     expect(s.credentialSets).toBe(0);
@@ -560,6 +602,8 @@ describe('@ax/channel-slack plugin', () => {
     expect(unserved.status).toBe(404);
     for (const id of [UNKNOWN_ID, INSTALL_ID.slice(1), INSTALL_ID]) {
       expect(await answer(`/slack/events/${id}`), id).toEqual(unserved);
+      // The commands route answers an unknown or secretless install the same way.
+      expect(await answer(`/slack/commands/${id}`), `commands ${id}`).toEqual(unserved);
     }
   });
 
@@ -862,12 +906,47 @@ describe('@ax/channel-slack plugin', () => {
     );
   });
 
+  it('the settings routes are mounted behind the person and the agent: 401 signed out, 404 to an outsider, the section to a team admin', async () => {
+    const { call } = await boot();
+    const path = '/settings/slack/:agentId';
+    const get = (as?: string, agentId: string = TEAM_AGENT.id) =>
+      call('GET', path, request('GET', `/settings/slack/${agentId}`, { ...(as !== undefined ? { as } : {}), params: { agentId } }));
+    expect((await get()).status).toBe(401);
+    expect(await get('usr_bob')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
+    expect(await get(ADMIN.id, 'agt_nobody')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
+    // No workspace is connected yet.
+    expect(await get(ADMIN.id)).toEqual({ status: 200, body: { state: 'no-workspace' }, done: true });
+    await insertActiveInstall();
+    expect(await get(ADMIN.id)).toMatchObject({
+      status: 200,
+      body: { state: 'ready', canManage: true, channels: [] },
+    });
+  });
+
+  it('deleting an agent removes its channel bindings, through the real store on Postgres', async () => {
+    const { harness } = await boot();
+    await insertActiveInstall();
+    const channels = createChannelStore(probe);
+    const bound = { installId: INSTALL_ID, agentId: TEAM_AGENT.id, connectedByUserId: ADMIN.id, channelName: 'support-desk' };
+    await channels.upsert({ ...bound, channelId: SUPPORT_CH });
+    await channels.upsert({ ...bound, agentId: 'agt_other', channelId: 'C07OTHER002' });
+
+    await harness.bus.fire('agents:deleted', harness.ctx(), {
+      agentId: TEAM_AGENT.id,
+      ownerId: 'team_support',
+      ownerType: 'team',
+    });
+
+    expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual(['C07OTHER002']);
+  });
+
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(6);
+    expect(s.routes).toHaveLength(12);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
+    expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
 
     await insertActiveInstall();
     await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
@@ -899,6 +978,7 @@ describe('@ax/channel-slack plugin', () => {
       for (const r of s.routes) expect(r.unregister).toHaveBeenCalledTimes(1);
       // No reset or chat subscriber is left behind either.
       for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
+      expect(bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
       await insertActiveInstall();
       await bus.fire('bootstrap:reset-cleanup', makeAgentContext({ sessionId: 't', agentId: 't', userId: 't' }), {});
       expect(await installCount()).toBe(1);

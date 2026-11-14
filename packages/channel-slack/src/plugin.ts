@@ -2,10 +2,16 @@ import { randomBytes } from 'node:crypto';
 import { PluginError, makeAgentContext, type HookBus, type Logger, type Plugin } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createAdminRoutes } from './admin-routes.js';
+import { createAgentSlackRoutes } from './agent-routes.js';
+import { subscribeAgentsDeleted } from './agents-deleted.js';
+import { createChannelStore } from './channel-store.js';
+import type { ChannelDeps } from './channels.js';
+import { COMMANDS_ROUTE_PATH, createCommandsHandler } from './commands.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
 import type { RouteSpec } from './http-types.js';
 import { createLifetime, type Lifetime } from './lifetime.js';
 import {
+  COMMANDS_MAX_BODY_BYTES,
   EVENT_DEDUPE_MAX,
   EVENT_DEDUPE_TTL_MS,
   EVENTS_MAX_BODY_BYTES,
@@ -34,12 +40,19 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 //
 //   GET  /admin/slack, POST /admin/slack/{connect,install-url,disconnect},
 //   GET  /admin/slack/oauth/callback  — admin only, CSRF-checked (admin-routes.ts)
-//   POST /slack/events/:installId     — Slack's deliveries: the ONE route that
-//        bypasses CSRF, because its caller is Slack, authenticated by the
-//        signature over the raw body and the install id in the path (events.ts)
+//   POST /slack/events/:installId     — Slack's deliveries, and
+//   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts):
+//        the TWO routes that bypass CSRF, because their caller is Slack,
+//        authenticated by the signature over the raw body and the install id
+//        in the path (ingress.ts)
+//   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
+//        remember}  — a team agent's channels, from its settings: any member
+//        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
 //
 // It keeps one install row in its own `channel_slack_v1_installs` table and
-// the install's four secrets in the credentials vault. Its only egress is
+// the install's four secrets in the credentials vault, and one binding row per
+// connected channel in `channel_slack_v1_channels` (channel-store.ts), removed
+// when its agent is deleted (agents-deleted.ts). Its only egress is
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
 //
 // A verified event goes to the router (router.ts): a 1:1 DM from an admitted
@@ -48,6 +61,10 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 // queued behind any other turn in it (turn-queue.ts). The reply streams into
 // the Slack thread (reply-stream.ts) from the turn's chat events, which one
 // subscriber per event hands to the running turn (turn-registry.ts).
+//
+// A team admin connects a public channel to a team agent (channels.ts), from
+// the agent's settings or with `/ax connect`. That only records the binding:
+// the bot joins the channel and nothing answers in it yet.
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -68,6 +85,7 @@ export interface ChannelSlackConfig {
 }
 
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
+const AGENTS_DELETED = 'agents:deleted';
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 /** The subscriber name for the three chat events DM turns read. */
 export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/dm-turns`;
@@ -130,6 +148,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         'credentials:delete',
         'auth:find-user-by-email',
         'agents:list-for-user',
+        'agents:resolve',
+        'agents:can-set-shared-credential',
         'conversations:find-or-create',
         'agent:invoke',
       ],
@@ -141,8 +161,12 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           hook: 'agent:interrupt',
           degradation: 'a DM turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
+        {
+          hook: 'teams:list-for-user',
+          degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
+        },
       ],
-      subscribes: [RESET_CLEANUP, ...TURN_EVENT_HOOKS],
+      subscribes: [RESET_CLEANUP, AGENTS_DELETED, ...TURN_EVENT_HOOKS],
     },
 
     async init({ bus }) {
@@ -162,6 +186,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       await runMigrations(db);
 
       const store = createInstallStore(db);
+      const channelStore = createChannelStore(db);
       // One store for both the events route and the admin routes, so every
       // change the admin routes make to an install's secrets (a disconnect, a
       // failed connect's undo) drops the signing secret the events route keeps.
@@ -175,6 +200,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       lifetime = life;
       const registry = createTurnRegistry();
       const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
+
+      // What the connect core and its two ways in (agent settings, `/ax`) share.
+      const channelDeps: ChannelDeps = { bus, installs: store, channels: channelStore, secrets, api, logger };
 
       const routes: RouteSpec[] = [
         ...createAdminRoutes({
@@ -216,6 +244,23 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             now,
           }),
         },
+        {
+          method: 'POST',
+          path: COMMANDS_ROUTE_PATH,
+          // Same as the events route: Slack can't send our CSRF header, and
+          // the signature and the install id in the path authenticate it.
+          bypassCsrf: true,
+          maxBodyBytes: COMMANDS_MAX_BODY_BYTES,
+          handler: createCommandsHandler({
+            ...channelDeps,
+            store,
+            lifetime: life,
+            publicOrigin,
+            now,
+          }),
+        },
+        // These keep http-server's CSRF check: the caller is a signed-in browser.
+        ...createAgentSlackRoutes(channelDeps),
       ];
 
       try {
@@ -231,6 +276,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         undos.push(() => {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
+        undos.push(subscribeAgentsDeleted(bus, channelStore, logger));
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
         // Undone first: turns not yet started are dropped, and each install's
         // count is logged (those senders never get a reply). Running ones are
