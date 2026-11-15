@@ -12,16 +12,20 @@
  * which open row a new identical hold is folded into (TASK-286). Those are
  * `firstTriedTwin` and `reusableOpenRow`, imported from the real store, so the
  * two cannot disagree about them; only the selection (same key, answered at or
- * after this row was raised) is written out here. The two races the rule
- * depends on, the advisory lock and `FOR UPDATE`, stay Postgres-only in
- * `store.test.ts`: one JS thread cannot race itself.
+ * after this row was raised) is written out here. Likewise who counts as an
+ * outsider when a yes is taken (`takesOnlyUnattended`, TASK-1095). The two
+ * races the rule depends on, the advisory lock and `FOR UPDATE`, stay
+ * Postgres-only in `store.test.ts`: one JS thread cannot race itself.
  */
 import { RECEIPT_STATUSES } from '../receipts.js';
 import {
   DuplicateAuthorisationError,
   firstTriedTwin,
   IdenticalCallAlreadyTriedError,
+  outsiderConversation,
   reusableOpenRow,
+  takesOnlyUnattended,
+  type ApprovalTaker,
   type DecisionStore,
 } from '../store.js';
 import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js';
@@ -30,6 +34,13 @@ import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js'
 // about which rows are still answerable would let a caller's test pass over a
 // query that does not work.
 const OPEN = OPEN_STATUSES;
+
+/** The real store's outsider rule (TASK-1095 `ApprovalTaker`), over one row. */
+function outsiderMayTake(taker: ApprovalTaker, row: Decision): boolean {
+  if (!takesOnlyUnattended(taker)) return true;
+  const conversationId = outsiderConversation(taker);
+  return conversationId !== null && row.attendance === 'unattended' && row.conversationId === conversationId;
+}
 
 export interface FakeStore extends DecisionStore {
   rows: Map<string, Decision>;
@@ -59,10 +70,11 @@ export function createFakeStore(): FakeStore {
   function insert(decision: Decision): Decision {
     trip('create');
     // Mirrors the partial unique index closely enough to catch a caller that
-    // forgets it exists.
+    // forgets it exists. Keyed (agent, owner, call shape), as the index is.
     for (const row of rows.values()) {
       if (
         row.agentId === decision.agentId &&
+        row.ownerUserId === decision.ownerUserId &&
         row.callFingerprint === decision.callFingerprint &&
         AUTHORISING_STATUSES.includes(row.status) &&
         row.consumedAt === null &&
@@ -220,10 +232,12 @@ export function createFakeStore(): FakeStore {
       if (tried !== null) {
         throw new IdenticalCallAlreadyTriedError(decisionId, tried.twinId, tried.outcome);
       }
+      // The index's slot: one standing yes per (agent, owner, call shape).
       for (const other of rows.values()) {
         if (
           other.id !== decisionId &&
           other.agentId === row.agentId &&
+          other.ownerUserId === row.ownerUserId &&
           other.callFingerprint === row.callFingerprint &&
           AUTHORISING_STATUSES.includes(other.status) &&
           other.consumedAt === null &&
@@ -490,12 +504,15 @@ export function createFakeStore(): FakeStore {
       return reclaimed;
     },
 
-    async takeApproval(agentId, callFingerprint, nowIso) {
+    async takeApproval(agentId, callFingerprint, taker, nowIso) {
       trip('takeApproval');
       for (const [id, row] of rows) {
         if (
           row.agentId === agentId &&
           row.callFingerprint === callFingerprint &&
+          // TASK-1095: the real store's who-rule (`ApprovalTaker`).
+          row.ownerUserId === taker.userId &&
+          outsiderMayTake(taker, row) &&
           AUTHORISING_STATUSES.includes(row.status) &&
           row.consumedAt === null &&
           row.replayDueAt === null &&
@@ -510,12 +527,13 @@ export function createFakeStore(): FakeStore {
       return null;
     },
 
-    async findRoutineApproval(agentId, userId, fingerprint, nowIso) {
+    async findRoutineApproval(agentId, taker, fingerprint, nowIso) {
       return (
         [...rows.values()].find(
           (r) =>
             r.agentId === agentId &&
-            r.ownerUserId === userId &&
+            r.ownerUserId === taker.userId &&
+            outsiderMayTake(taker, r) &&
             r.callFingerprint === fingerprint &&
             AUTHORISING_STATUSES.includes(r.status) &&
             r.expiresAt > nowIso &&

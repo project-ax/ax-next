@@ -1515,8 +1515,10 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 
   // ----- 10b. channel-slack (TASK-1093) -----------------------------------
   // Admin > Slack connects a workspace (`/admin/slack*`), and Slack delivers
-  // events to `POST /slack/events/:installId`, the plugin's one route that
-  // skips CSRF (Slack signs each delivery instead). Hard-calls http-server, auth, the shared database and the
+  // events to `POST /slack/events/:installId`, its commands to
+  // `/slack/commands/:installId` and a click on an approval prompt to
+  // `/slack/interactions/:installId`: the plugin's three routes that skip CSRF
+  // (Slack signs each request instead). Hard-calls http-server, auth, the shared database and the
   // credentials vault, all loaded above; `branding:get` is optional (the bot's
   // default name).
   //
@@ -1525,8 +1527,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // branding's public light logo for the bot's avatar (Slack fetches it itself;
   // a missing or unsuitable logo just leaves Slack's default).
   //
-  // Single-replica: its event dedupe and admin lock are in-process, which the
-  // chart's one-host pin (ax-next.validateHostReplicas) keeps honest.
+  // Single-replica: its event dedupe, admin lock and open approval prompts are
+  // in-process, which the chart's one-host pin (ax-next.validateHostReplicas) keeps honest.
   const slackOrigin = presetPublicOrigin(config);
   plugins.push(
     createChannelSlackPlugin({

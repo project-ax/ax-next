@@ -25,6 +25,8 @@ import { createFakeStore } from './fake-store.js';
 
 const T0 = '2026-08-20T09:00:00.000Z';
 const EXPIRES = '2026-08-22T09:00:00.000Z';
+/** The rows' owner taking their own yes, in their own turn (TASK-1095 `ApprovalTaker`). */
+const OWNER = { userId: 'owner-1', outsider: false, conversationId: 'conv-1' } as const;
 
 const CALL: ToolCall = {
   id: 'call-1',
@@ -515,7 +517,7 @@ describe('settleReplay — a completed replay stops being a standing authorisati
 
   it('takeApproval no longer honours it, so an identical agent call is held again', async () => {
     const store = await replayOnce();
-    expect(await store.takeApproval('agent-1', 'fp-1', T0)).toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-1', OWNER, T0)).toBeNull();
   });
 
   it('undo refuses it — the call was made and cannot be un-made', async () => {
@@ -693,7 +695,7 @@ describe('settleReplay — an approved connector call the host makes (TASK-1046)
       error: null,
     });
     // The yes is spent: an identical agent call later is held again.
-    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-conn', OWNER, T_DONE)).toBeNull();
   });
 
   it('a definite connector failure stores the authored detail and the receipt is FAILED_RECEIPT', async () => {
@@ -710,7 +712,7 @@ describe('settleReplay — an approved connector call the host makes (TASK-1046)
       receipt: FAILED_RECEIPT,
       error: CONNECTOR_CALL_DETAIL.rejected,
     });
-    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-conn', OWNER, T_DONE)).toBeNull();
   });
 
   it('an unknown connector outcome is failed + replayAbandonedAt and the receipt is ABANDONED_RECEIPT', async () => {
@@ -730,7 +732,7 @@ describe('settleReplay — an approved connector call the host makes (TASK-1046)
     // to approve it again and post it twice.
     expect(receipt.receipt).not.toContain('Nothing was completed');
     // The yes is spent all the same: a later identical call holds again.
-    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-conn', OWNER, T_DONE)).toBeNull();
   });
 
   it('a tool-error is failed + abandoned under its closed code, and the receipt says the service said no (review F3)', async () => {
@@ -748,7 +750,7 @@ describe('settleReplay — an approved connector call the host makes (TASK-1046)
     expect(receipt.receipt).not.toContain('Nothing was completed');
     expect(receipt.receipt).not.toContain('interrupted');
     // The yes is spent: a later identical call holds again.
-    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-conn', OWNER, T_DONE)).toBeNull();
   });
 
   it('an attended connector row parks for the agent and the host never calls (review F1)', async () => {

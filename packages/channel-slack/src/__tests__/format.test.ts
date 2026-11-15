@@ -2,6 +2,7 @@ import { toWellFormedText } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import {
   channelSenderLabel,
+  cleanPromptSubject,
   cleanSenderName,
   cleanStatusTitle,
   cutIndex,
@@ -12,7 +13,7 @@ import {
   splitForPost,
   undecidedTail,
 } from '../format.js';
-import { POST_PART_LIMIT, SENDER_NAME_MAX, STATUS_TITLE_MAX } from '../limits.js';
+import { POST_PART_LIMIT, PROMPT_SUBJECT_MAX, SENDER_NAME_MAX, STATUS_TITLE_MAX } from '../limits.js';
 import { spellsMention } from './lenient-decoder.js';
 
 const ZWSP = '\u200B';
@@ -354,6 +355,75 @@ describe('cleanStatusTitle', () => {
 
   it('nothing printable left is the empty string', () => {
     expect(cleanStatusTitle(' \n\u202E\u200B ')).toBe('');
+  });
+});
+
+/*
+  An approval prompt's subject (blocks.ts): the same recipe as a status
+  title, at PROMPT_SUBJECT_MAX. Each case mirrors one of cleanStatusTitle's
+  above. Invisible characters are built with String.fromCharCode, never typed
+  (source-hygiene.test.ts).
+*/
+describe('cleanPromptSubject', () => {
+  const RLO = String.fromCharCode(0x202e);
+
+  it('a U+202E becomes a space, and a 400-character subject is clamped to its own cap, not the title cap', () => {
+    expect(cleanPromptSubject(`Reading${RLO}liame`)).toBe('Reading liame');
+    const long = cleanPromptSubject('x'.repeat(400));
+    expect(long).toBe('x'.repeat(PROMPT_SUBJECT_MAX));
+    expect(PROMPT_SUBJECT_MAX).toBeGreaterThan(STATUS_TITLE_MAX);
+  });
+
+  it('collapses whitespace and newlines to single spaces and trims', () => {
+    expect(cleanPromptSubject('  Wants to\n\n  send   an\temail  ')).toBe('Wants to send an email');
+  });
+
+  it('zero-width characters in the subject are gone, and controls are neutralized', () => {
+    const out = cleanPromptSubject(`Pinging <!here> and <${ZWSP}@U1>`);
+    expect(CONTROL.test(out)).toBe(false);
+    expect(out.split(ZWSP).join('')).toBe('Pinging <!here> and < @U1>');
+  });
+
+  it('never ends on half of an emoji, and never exceeds the cap even with neutralized controls', () => {
+    const emoji = String.fromCodePoint(0x1f600);
+    const out = cleanPromptSubject('a'.repeat(PROMPT_SUBJECT_MAX - 1) + emoji);
+    expect(out).toBe('a'.repeat(PROMPT_SUBJECT_MAX - 1));
+    const controls = cleanPromptSubject('<!x'.repeat(200));
+    expect(controls.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+    expect(CONTROL.test(controls)).toBe(false);
+  });
+
+  it('a bare broadcast word is neutralized, even where the cap cuts the subject right after one', () => {
+    expect(cleanPromptSubject('@here')).toBe(`@${ZWSP}here`);
+    // `@heres` is a name; cut after `@here`, it would be a broadcast.
+    const cut = cleanPromptSubject(`${'x'.repeat(PROMPT_SUBJECT_MAX - 6)}(@heres`);
+    expect(cut.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+    expect(BROADCAST.test(cut)).toBe(false);
+    expect(cut).toBe(`${'x'.repeat(PROMPT_SUBJECT_MAX - 6)}(@${ZWSP}her`);
+  });
+
+  it("neutralizes before the first cut: an earlier mark can't push a broadcast word to the end unmarked", () => {
+    // Exactly at the cap, so nothing is cut until the `<!` mark lengthens it; `@heres` is a name until then.
+    // Cut first and marked after, the last cut would take the `s` and leave a live `@here`.
+    const subject = `<!${'x'.repeat(PROMPT_SUBJECT_MAX - 8)}@heres`;
+    expect(subject).toHaveLength(PROMPT_SUBJECT_MAX);
+    const out = cleanPromptSubject(subject);
+    expect(out.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+    expect(BROADCAST.test(out)).toBe(false);
+    expect(out).toBe(`<${ZWSP}!${'x'.repeat(PROMPT_SUBJECT_MAX - 8)}@${ZWSP}her`);
+  });
+
+  it('a broadcast spelled in entities decodes to nothing: the mark, and only the mark, stops it', () => {
+    for (const subject of ['&#64;everyone', '&#x40;channel', '&commat;here', '&lt;!channel&gt;']) {
+      const out = cleanPromptSubject(subject);
+      expect(spellsMention(out), subject).toBe(false);
+      expect(spellsMention(out.split(ZWSP).join('')), subject).toBe(true);
+    }
+  });
+
+  it('nothing printable left is the empty string', () => {
+    expect(cleanPromptSubject(` \n${RLO}${ZWSP} `)).toBe('');
+    expect(cleanPromptSubject('')).toBe('');
   });
 });
 

@@ -153,6 +153,78 @@ export const TURN_HARD_CAP_MS = 900_000;
 /**
  * After `agent:invoke` reports a complete turn, how long the reply waits for
  * that turn's `chat:turn-end` before finishing anyway (the same grace
- * @ax/routines gives a fire).
+ * @ax/routines gives a fire). Counted again from each chunk of the turn's
+ * own that comes after the report (turn.ts `armGrace`).
  */
 export const TURN_END_GRACE_MS = 60_000;
+
+// ── Approval prompts ────────────────────────────────────────────────────────
+// Slack's numbers in this section were read on 2026-11-14 (see
+// `.claude/memory/decisions/2026-11-14-TASK-1095.md`).
+
+/**
+ * A button click's request body: one form field holding Slack's JSON about
+ * the click, which repeats the clicked message.
+ */
+export const INTERACTIONS_MAX_BODY_BYTES = 65_536;
+/**
+ * Random bytes in a prompt's id, the opaque value both of its buttons carry
+ * (base64url: 22 characters; Slack caps a button's value at 2,000).
+ */
+export const PROMPT_ID_BYTES = 16;
+/**
+ * How long a prompt can be answered in Slack: 24 hours. After that, or after
+ * a restart (open prompts live in memory), a click is pointed at Today, where
+ * the request still waits.
+ */
+export const PROMPT_TTL_MS = 86_400_000;
+/**
+ * At most this many prompts are open at once. Past it, the oldest one nobody
+ * is answering is forgotten, and a click on it is pointed at Today.
+ */
+export const PROMPT_MAX = 1_000;
+/**
+ * The most people told, once each, that a prompt isn't theirs to answer
+ * (prompts.ts `firstRefusal`). Anyone else who clicks it after that is
+ * refused without a word: each telling is a Slack call, and only the person
+ * who asked can answer anyway.
+ */
+export const PROMPT_REFUSALS_MAX = 20;
+/**
+ * The longest prompt subject shown (a decision's summary, a host, a skill's
+ * description), in UTF-16 code units (format.ts `cleanPromptSubject`).
+ * Slack's cap on a section's text is 3,000.
+ */
+export const PROMPT_SUBJECT_MAX = 300;
+/**
+ * How long a turn that held a call spends finding that call's decision
+ * before it ends with the Today link instead of a prompt.
+ */
+export const DECISION_LOOKUP_TIMEOUT_MS = 5_000;
+/**
+ * After an Allow, how long past the moment the agent is woken (the end of
+ * the decision's undo window) the thread waits for the agent to start
+ * answering. Nothing by then, and the thread stops waiting without a word.
+ */
+export const CONTINUATION_START_GRACE_MS = 60_000;
+/**
+ * The longest a thread waits for the moment the agent is woken, however far
+ * out the decision's `pendingUntil` says it is. decisions wakes it when the
+ * undo window closes (seconds); anything further out is not waited for (and
+ * a timer past 2^31-1 ms would fire at once).
+ */
+export const CONTINUATION_WAKE_MAX_MS = 300_000;
+/**
+ * How long each step of answering a click may take (answers.ts: the bot
+ * token's vault read, a Slack call, an AX lookup, the binding read, the
+ * answer itself) before it counts as failed. A step before the answer: the
+ * asker is told to try again, and the prompt can be answered again. The
+ * answer itself may still be running (an approve can land late), so a timed
+ * out answer is not retryable: the asker is told it is still going, and the
+ * prompt stays taken, every other click on it silent, until the answer lands
+ * and shows what it did. A hang backstop, not a latency goal. A step that
+ * hung with no deadline would keep the prompt taken for as long as it hung.
+ * Above SLACK_API_TIMEOUT_MS, so a Slack call's own deadline answers first,
+ * and well under the hook bus's own 120 s.
+ */
+export const PROMPT_STEP_TIMEOUT_MS = 30_000;

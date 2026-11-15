@@ -23,7 +23,12 @@ import { AGENTS_DELETED_KEY } from '../agents-deleted.js';
 import { CAPTURE_VETO_KEY } from '../capture-veto.js';
 import { createChannelStore } from '../channel-store.js';
 import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
-import { ADMIN_BODY_MAX_BYTES, COMMANDS_MAX_BODY_BYTES, EVENTS_MAX_BODY_BYTES } from '../limits.js';
+import {
+  ADMIN_BODY_MAX_BYTES,
+  COMMANDS_MAX_BODY_BYTES,
+  EVENTS_MAX_BODY_BYTES,
+  INTERACTIONS_MAX_BODY_BYTES,
+} from '../limits.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
@@ -99,6 +104,8 @@ interface Services {
   found?: number;
   /** How many agent:invoke calls have returned (past `invokeGate`, their turn streamed). */
   invokesReturned?: number;
+  /** When set, what each agent:invoke's turn says instead of "Hi Alice.". */
+  turnScript?: (bus: HookBus, ctx: AgentContext) => Promise<void>;
 }
 
 const newServices = (): Services => ({ routes: [], vault: new Map(), credentialSets: 0, credentialGets: [], invokes: [] });
@@ -166,6 +173,10 @@ function fakeServices(s: Services) {
     // everyone else is outside it.
     'agents:resolve': async (_ctx: unknown, input: unknown) => {
       const { agentId, userId } = input as { agentId: string; userId: string };
+      // Alice's own personal agent, as her DM turns use it (the click gate asks again).
+      if (agentId === 'agt_alice' && userId === 'usr_alice') {
+        return { agent: { id: 'agt_alice', displayName: 'Alice', visibility: 'personal', ownerType: 'user', ownerId: 'usr_alice' } };
+      }
       if (agentId !== TEAM_AGENT.id) {
         throw new PluginError({ code: 'not-found', plugin: 'mock', message: 'no such agent' });
       }
@@ -189,7 +200,9 @@ function fakeServices(s: Services) {
       s.invokes?.push({ ctx, input });
       if (s.invokeGate !== undefined) await s.invokeGate;
       const bus = s.bus;
-      if (bus !== undefined) {
+      if (bus !== undefined && s.turnScript !== undefined) {
+        await s.turnScript(bus, ctx);
+      } else if (bus !== undefined) {
         await bus.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Hi Alice.' });
         await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
       }
@@ -240,6 +253,7 @@ function fakeSlackFetch() {
             : { ok: false, error: 'user_not_found' };
     }
     if (method === 'chat.startStream') answer = { ok: true, ts: '1763039999.000001' };
+    if (method === 'chat.postMessage') answer = { ok: true, ts: '1763039999.000002' };
     return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   return { fetchImpl, calls };
@@ -543,6 +557,16 @@ describe('@ax/channel-slack plugin', () => {
           hook: 'teams:list-for-user',
           degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
         },
+        // The approval buttons (TASK-1095): optional, never hard.
+        ...[
+          'decisions:recent-for-conversation',
+          'decisions:get',
+          'decisions:approve',
+          'decisions:dismiss',
+        ].map((hook) => ({
+          hook,
+          degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
+        })),
       ],
       subscribes: [
         'bootstrap:reset-cleanup',
@@ -563,7 +587,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the twelve routes, and only the events and commands routes bypass CSRF', async () => {
+  it('init registers the thirteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -579,6 +603,12 @@ describe('@ax/channel-slack plugin', () => {
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
       { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
+      {
+        method: 'POST',
+        path: '/slack/interactions/:installId',
+        bypassCsrf: true,
+        maxBodyBytes: INTERACTIONS_MAX_BODY_BYTES,
+      },
       { method: 'GET', path: '/settings/slack/:agentId', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'GET', path: '/settings/slack/:agentId/available', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/settings/slack/:agentId/connect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
@@ -666,6 +696,8 @@ describe('@ax/channel-slack plugin', () => {
       expect(await answer(`/slack/events/${id}`), id).toEqual(unserved);
       // The commands route answers an unknown or secretless install the same way.
       expect(await answer(`/slack/commands/${id}`), `commands ${id}`).toEqual(unserved);
+      // And the interactions route (TASK-1095).
+      expect(await answer(`/slack/interactions/${id}`), `interactions ${id}`).toEqual(unserved);
     }
   });
 
@@ -725,6 +757,110 @@ describe('@ax/channel-slack plugin', () => {
     expect(input).toEqual({ message: { role: 'user', content: `[Slack \u00b7 DM \u00b7 Alice (${ALICE})]: Hello there` } });
     // Nothing went wrong, and nothing from the event was logged.
     expect(logs.filter((l) => String(l['msg']).startsWith('slack_'))).toEqual([]);
+  });
+
+  it("an Allow on a held call's prompt follows the woken agent's turn into the DM thread, through the plugin wiring (TASK-1095)", async () => {
+    // The follow-up's wiring (`createDecisionAnswer`'s `follow`) is plugin.ts's
+    // own: a no-op there leaves the Allow answered and the agent's reply nowhere.
+    const slack = fakeSlackFetch();
+    const { s, harness, call } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const bus = harness.bus;
+    const CALL_ID = 'toolu_send';
+    // Alice's turn holds a call; @ax/decisions has its pending row.
+    s.turnScript = async (b, ctx) => {
+      await b.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'tool-result', toolCallId: CALL_ID, output: 'held', held: true });
+      await b.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+    bus.registerService('decisions:recent-for-conversation', 'fake-decisions', async (ctx) => ({
+      decisions: [
+        {
+          id: 'dec_send',
+          status: 'pending',
+          summary: 'Wants to send an email',
+          call: { id: CALL_ID, name: 'send_email', input: {} },
+          ownerUserId: ctx.userId,
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        },
+      ],
+    }));
+    // decisions:approve hands the yes to the warm agent under the Allow's own continuation id.
+    const approves: Array<Record<string, unknown>> = [];
+    bus.registerService('decisions:approve', 'fake-decisions', async (ctx, input) => {
+      const i = input as Record<string, unknown>;
+      if (ctx.userId !== i['userId']) throw new Error('approve scope mismatch');
+      approves.push(i);
+      return {
+        decision: { id: 'dec_send', status: 'executed' },
+        executed: false,
+        path: 'agent-executes',
+        error: null,
+        pendingUntil: new Date(Date.now()).toISOString(),
+        streamReqId: i['continuationReqId'],
+      };
+    });
+
+    const dmBody = eventBody('message', 'Email Bob');
+    await call(
+      'POST',
+      '/slack/events/:installId',
+      request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body: dmBody, headers: signed(dmBody) }),
+    );
+    await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.postMessage'));
+    const posted = slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    const actions = (posted.body['blocks'] as Array<Record<string, unknown>>).find((b) => b['type'] === 'actions')!;
+    const promptId = (actions['elements'] as Array<{ value: string }>)[0]!.value;
+    const promptTs = '1763039999.000002';
+
+    // Alice clicks Allow, signed as Slack signs a click: a form with one `payload`.
+    const payload = {
+      type: 'block_actions',
+      api_app_id: APP_ID,
+      team: { id: TEAM_ID },
+      user: { id: ALICE },
+      channel: { id: DM_CHANNEL },
+      container: { type: 'message', message_ts: promptTs, channel_id: DM_CHANNEL },
+      message: { ts: promptTs, thread_ts: DM_TS },
+      actions: [{ type: 'button', action_id: 'ax_prompt_allow', value: promptId }],
+    };
+    const clickBody = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString());
+    const mark = slack.calls.length;
+    const clicked = await call(
+      'POST',
+      '/slack/interactions/:installId',
+      request('POST', `/slack/interactions/${INSTALL_ID}`, {
+        params: { installId: INSTALL_ID },
+        body: clickBody,
+        headers: { ...signed(clickBody), 'content-type': 'application/x-www-form-urlencoded' },
+      }),
+    );
+    expect(clicked.status).toBe(200);
+    await vi.waitFor(() => expect(slack.calls.slice(mark).map((c) => c.method)).toContain('chat.update'));
+    expect(approves).toHaveLength(1);
+    const continuation = approves[0]!['continuationReqId'];
+    expect(typeof continuation).toBe('string');
+
+    // The woken agent's turn, under that id, goes to Alice's DM thread.
+    const woken = makeAgentContext({
+      sessionId: 'sess_live',
+      agentId: 'agt_alice',
+      userId: 'usr_alice',
+      conversationId: `conv:slack:${INSTALL_ID}:${DM_CHANNEL}:${DM_TS}`,
+    });
+    await bus.fire('chat:stream-chunk', woken, { reqId: continuation, kind: 'text', text: 'Sent it to Bob.' });
+    await bus.fire('chat:turn-end', woken, { reqId: continuation, reason: 'user-message-wait' });
+    await vi.waitFor(() => expect(slack.calls.slice(mark).map((c) => c.method)).toContain('chat.stopStream'));
+    const started = slack.calls.slice(mark).find((c) => c.method === 'chat.startStream')!;
+    expect(started.body).toEqual({
+      channel: DM_CHANNEL,
+      thread_ts: DM_TS,
+      recipient_user_id: ALICE,
+      recipient_team_id: TEAM_ID,
+      chunks: [{ type: 'markdown_text', text: 'Sent it to Bob.' }],
+    });
   });
 
   /**
@@ -924,6 +1060,17 @@ describe('@ax/channel-slack plugin', () => {
       'POST',
       '/slack/events/:installId',
       request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body: eventBody() }),
+    );
+    expect(answer).toEqual({ status: 503, body: undefined, done: true });
+  });
+
+  it('stopAdmission makes the interactions route answer 503 before any lookup (TASK-1095)', async () => {
+    const { plugin, call } = await boot();
+    await plugin.stopAdmission?.();
+    const answer = await call(
+      'POST',
+      '/slack/interactions/:installId',
+      request('POST', `/slack/interactions/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body: eventBody() }),
     );
     expect(answer).toEqual({ status: 503, body: undefined, done: true });
   });
@@ -1165,7 +1312,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(12);
+    expect(s.routes).toHaveLength(13);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

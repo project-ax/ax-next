@@ -38,8 +38,8 @@ export type TurnRole = 'user' | 'assistant' | 'tool';
  * schema, so a value one of them knows can't be refused by another.
  *
  * One value per producer of conversations in `packages/`: channel-web, the
- * routines tick, and channel-slack's DM threads (TASK-1093). A fourth channel
- * adds a fourth value.
+ * routines tick, and channel-slack's threads (DMs since TASK-1093, connected
+ * channels since TASK-1094). A fourth channel adds a fourth value.
  */
 export const CONVERSATION_ORIGINS = ['web', 'routine', 'slack'] as const;
 
@@ -125,15 +125,15 @@ export interface Conversation {
    * deliberately not an `attendance` field, because attendance is derived and
    * a headless deployment would want "always unattended" regardless of channel.
    *
-   * `'slack'` (TASK-1093) is a DM thread with the Slack bot. channel-web
-   * refuses posts into any non-`'web'` conversation, so it is read-only in the
-   * web app, and decisions reads it as unattended (Slack can't show an
-   * approval card yet). TASK-1095 adds Slack approval buttons and must flip
-   * that attendance.
+   * `'slack'` (TASK-1093) is a Slack thread with the bot: a DM, or a thread
+   * in a connected channel (TASK-1094). channel-web refuses posts into any
+   * non-`'web'` conversation, so it is read-only in the web app. Decisions
+   * reads it as attended, like a web chat: Slack shows Allow and Deny in the
+   * thread (TASK-1095).
    *
    * Attendance is the channel's default. An `'external'` turn (nobody with
-   * access to the agent present) is unattended in any channel, because the
-   * decisions plugin checks `ctx.source` first.
+   * access to the agent present) is unattended in any channel, a Slack one
+   * included, because the decisions plugin checks `ctx.source` first.
    */
   origin: ConversationOrigin;
   /**

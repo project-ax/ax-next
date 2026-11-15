@@ -103,14 +103,68 @@ describe('createTurnRegistry', () => {
     expect(seen).toEqual([]);
   });
 
-  it('a turn-end with no reqId ends it (channel-web parity)', () => {
-    for (const payload of [{}, { reqId: '' }, { reqId: 42 }, undefined, null, 'text']) {
+  /** Turn-ends that name no turn: a turn run dark. */
+  const DARK_ENDS: unknown[] = [{}, { reqId: '' }, { reqId: 42 }, undefined, null, 'text'];
+
+  it('a turn-end with no reqId ends a turn that has begun: one whose own chunk came (a turn run dark)', () => {
+    for (const payload of DARK_ENDS) {
+      const r = createTurnRegistry();
+      const { sink, seen } = recordingSink();
+      r.register(sink);
+      r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'hi' });
+      r.onTurnEnd(ctxFor(CONVERSATION), payload);
+      expect(seen, JSON.stringify(payload)).toEqual(['chunk text', 'end']);
+    }
+  });
+
+  /*
+    A warm agent's reaction to a Deny runs dark (decisions:dismiss wakes it
+    with no continuation id), and its turn-end names no turn. The person's
+    next message, sent right after the Deny, has its turn registered by then
+    and not yet begun: ending it there ended their reply with nothing said,
+    and their real answer streamed to nobody.
+  */
+  it("a turn-end with no reqId before the turn has begun is another turn's: it doesn't end this one", () => {
+    for (const payload of DARK_ENDS) {
+      const r = createTurnRegistry();
+      const { sink, seen } = recordingSink();
+      r.register(sink);
+      r.onTurnEnd(ctxFor(CONVERSATION), payload);
+      // Another turn's chunk doesn't begin this one.
+      r.onStreamChunk({ reqId: 'req-someone-else', kind: 'text', text: 'not yours' });
+      r.onTurnEnd(ctxFor(CONVERSATION), payload);
+      expect(seen, JSON.stringify(payload)).toEqual([]);
+      expect(r.size()).toBe(1);
+      // Its own turn then runs, and ends, as any turn does.
+      r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'yours' });
+      r.onTurnEnd(ctxFor(CONVERSATION), { reqId: REQ, reason: 'complete' });
+      expect(seen, JSON.stringify(payload)).toEqual(['chunk text', 'end']);
+    }
+  });
+
+  it('a turn-end naming this reqId, or folding it, ends it before its first chunk', () => {
+    for (const payload of [{ reqId: REQ }, { reqId: 'req-the-turn-that-answered', foldedReqIds: [REQ] }, { foldedReqIds: [REQ] }]) {
       const r = createTurnRegistry();
       const { sink, seen } = recordingSink();
       r.register(sink);
       r.onTurnEnd(ctxFor(CONVERSATION), payload);
       expect(seen, JSON.stringify(payload)).toEqual(['end']);
     }
+  });
+
+  it('a sink registered again under the same reqId begins afresh: the one before it began, not this one', () => {
+    const r = createTurnRegistry();
+    const first = recordingSink();
+    const undo = r.register(first.sink);
+    r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'first' });
+    undo();
+    const second = recordingSink();
+    r.register(second.sink);
+    r.onTurnEnd(ctxFor(CONVERSATION), {});
+    expect(second.seen).toEqual([]);
+    r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'second' });
+    r.onTurnEnd(ctxFor(CONVERSATION), {});
+    expect(second.seen).toEqual(['chunk text', 'end']);
   });
 
   it('turn-error is matched by reqId only', () => {

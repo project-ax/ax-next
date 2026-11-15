@@ -11,26 +11,33 @@ import type { Kysely } from 'kysely';
 import { createAdminRoutes } from './admin-routes.js';
 import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
+import { createClickHandler } from './answers.js';
 import { subscribeCaptureVeto } from './capture-veto.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import type { ChannelDeps } from './channels.js';
 import { COMMANDS_ROUTE_PATH, createCommandsHandler } from './commands.js';
+import { createDecisionAnswer } from './decision-answer.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
 import type { RouteSpec } from './http-types.js';
+import { INTERACTIONS_ROUTE_PATH, createInteractionsHandler } from './interactions.js';
 import { createLifetime, type Lifetime } from './lifetime.js';
 import {
   COMMANDS_MAX_BODY_BYTES,
   EVENT_DEDUPE_MAX,
   EVENT_DEDUPE_TTL_MS,
   EVENTS_MAX_BODY_BYTES,
+  INTERACTIONS_MAX_BODY_BYTES,
   MAX_EXTERNAL_TURNS_PER_CHANNEL,
   MAX_TURNS_PER_CONVERSATION,
+  PROMPT_MAX,
+  PROMPT_TTL_MS,
   SIGNING_SECRET_CACHE_MAX,
   SIGNING_SECRET_CACHE_TTL_MS,
 } from './limits.js';
 import { logCode } from './log-code.js';
 import { runMigrations, type ChannelSlackDatabase } from './migrations.js';
 import { createMutex } from './mutex.js';
+import { createPromptRegistry } from './prompts.js';
 import { systemClock } from './reply-stream.js';
 import { createEventRouter } from './router.js';
 import { cacheSigningSecrets, type SigningSecretCache } from './secret-cache.js';
@@ -39,6 +46,7 @@ import { createSlackApi } from './slack-api.js';
 import { createInstallStore, type InstallStore } from './store.js';
 import { createKeyedQueue } from './turn-queue.js';
 import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './turn-registry.js';
+import { followContinuation, type TurnDeps } from './turn.js';
 
 // ---------------------------------------------------------------------------
 // @ax/channel-slack — connect a Slack workspace from AX admin settings, let
@@ -51,9 +59,11 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 //
 //   GET  /admin/slack, POST /admin/slack/{connect,install-url,disconnect},
 //   GET  /admin/slack/oauth/callback  — admin only, CSRF-checked (admin-routes.ts)
-//   POST /slack/events/:installId     — Slack's deliveries, and
-//   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts):
-//        the TWO routes that bypass CSRF, because their caller is Slack,
+//   POST /slack/events/:installId     — Slack's deliveries,
+//   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts), and
+//   POST /slack/interactions/:installId — a click on an approval prompt's
+//        Allow or Deny (interactions.ts, TASK-1095):
+//        the THREE routes that bypass CSRF, because their caller is Slack,
 //        authenticated by the signature over the raw body and the install id
 //        in the path (ingress.ts)
 //   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
@@ -91,6 +101,17 @@ import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './tur
 // for good, and any thread whose channel is switched off or no longer
 // connected to its agent. Memory asks before every extraction pass and every
 // `memory_note`, so the veto stops both.
+//
+// TASK-1095: when a DM or an attended turn's agent has a call held for the
+// sender's OK, the reply ends with the ask and a prompt follows it in the
+// thread (turn.ts, prompt-post.ts): the decision's summary, with Allow and
+// Deny. The open prompts live in one in-memory registry (prompts.ts). A click
+// comes in on the interactions route and goes through the click gate
+// (answers.ts), which lets only the person who asked answer, re-proving who
+// they are first; its answer for a decision (decision-answer.ts) calls
+// `decisions:approve` or `decisions:dismiss` as the asker, and after an Allow
+// the agent's next turn is followed into the thread (turn.ts
+// `followContinuation`). External turns never get buttons.
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -115,6 +136,8 @@ const AGENTS_DELETED = 'agents:deleted';
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 /** The subscriber name for the three chat events Slack turns read. */
 export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/turns`;
+
+const HELD_DEGRADATION = 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons';
 
 const RESET_LEFT_APP_HINT =
   'The reset removed this install from AX, not from Slack. Delete the app at ' +
@@ -192,6 +215,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           hook: 'teams:list-for-user',
           degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
         },
+        // The approval buttons (TASK-1095). Each is looked at with
+        // `bus.hasService` before it is called; without them a call held in
+        // a Slack turn links to Today, as before.
+        { hook: 'decisions:recent-for-conversation', degradation: HELD_DEGRADATION },
+        { hook: 'decisions:get', degradation: HELD_DEGRADATION },
+        { hook: 'decisions:approve', degradation: HELD_DEGRADATION },
+        { hook: 'decisions:dismiss', degradation: HELD_DEGRADATION },
       ],
       subscribes: [RESET_CLEANUP, AGENTS_DELETED, MEMORY_PRE_CAPTURE_HOOK, ...TURN_EVENT_HOOKS],
     },
@@ -245,6 +275,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const life = createLifetime();
         lifetime = life;
         const registry = createTurnRegistry();
+        // Approval prompts that are open, in memory: a restart closes them (the
+        // same request still waits in Today). Unguessable ids need real bytes.
+        const prompts = createPromptRegistry({ now, randomBytes, ttlMs: PROMPT_TTL_MS, max: PROMPT_MAX });
         // DM turns and members' channel turns, one lane per conversation.
         const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
         // Outsiders' channel turns, one lane per channel (router.ts).
@@ -252,6 +285,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
 
         // What the connect core and its two ways in (agent settings, `/ax`) share.
         const channelDeps: ChannelDeps = { bus, installs: store, channels: channelStore, secrets, api, logger };
+
+        // What a turn, and the follow-up to an Allow, run on: one set, so both
+        // post prompts into, and stream replies to, the same registries.
+        const turnDeps: TurnDeps = { bus, api, registry, prompts, publicOrigin, logger, clock: systemClock };
 
         const routes: RouteSpec[] = [
           ...createAdminRoutes({
@@ -279,12 +316,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
               lifetime: life,
               seen: createSeenEvents({ ttlMs: EVENT_DEDUPE_TTL_MS, max: EVENT_DEDUPE_MAX }),
               dispatch: createEventRouter({
-                bus,
-                api,
-                registry,
-                publicOrigin,
-                logger,
-                clock: systemClock,
+                ...turnDeps,
                 secrets,
                 installs: store,
                 queue,
@@ -308,6 +340,37 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
               lifetime: life,
               publicOrigin,
               now,
+            }),
+          },
+          {
+            method: 'POST',
+            path: INTERACTIONS_ROUTE_PATH,
+            // Same as the other two: Slack can't send our CSRF header, and the
+            // signature and the install id in the path authenticate it.
+            bypassCsrf: true,
+            maxBodyBytes: INTERACTIONS_MAX_BODY_BYTES,
+            handler: createInteractionsHandler({
+              store,
+              secrets,
+              lifetime: life,
+              logger,
+              now,
+              onClick: createClickHandler({
+                bus,
+                api,
+                secrets,
+                prompts,
+                channels: channelStore,
+                publicOrigin,
+                logger,
+                answers: {
+                  decision: createDecisionAnswer({
+                    bus,
+                    publicOrigin,
+                    follow: (c) => void followContinuation(turnDeps, c),
+                  }),
+                },
+              }),
             }),
           },
           // These keep http-server's CSRF check: the caller is a signed-in browser.

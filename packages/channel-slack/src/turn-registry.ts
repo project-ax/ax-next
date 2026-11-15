@@ -6,14 +6,26 @@ import type { AgentContext, HookBus } from '@ax/core';
  * (the first chunk can arrive before the call returns) and unregisters when
  * it ends. One subscription each, instead of one per turn: no churn.
  *
- * Matching copies channel-web's SSE stream (`server/sse.ts`):
+ * Matching copies channel-web's SSE stream (`server/sse.ts`), but for one
+ * rule:
  *   - `chat:stream-chunk` and `chat:turn-error`: the payload's `reqId` is
  *     the turn's. (The firing ctx's reqId is useless: the IPC listener
  *     restamps it per request.)
  *   - `chat:turn-end`: the firing ctx's conversation is the turn's, and then
- *     the payload's `reqId` is the turn's, OR absent or empty (a turn run
- *     dark), OR the turn's reqId is in `foldedReqIds` (a real array, exact
- *     matches: it's runner-written and untrusted).
+ *     the payload's `reqId` is the turn's, OR the turn's reqId is in
+ *     `foldedReqIds` (a real array, exact matches: it's runner-written and
+ *     untrusted), OR the payload names no turn (`reqId` absent, empty or not
+ *     a string: a turn run dark) and the turn has BEGUN: a chunk under its
+ *     reqId has come.
+ *
+ * That last condition is ours, not channel-web's. A dark turn-end before a
+ * turn has begun is another turn's: a warm agent's reaction to a Deny runs
+ * dark (decisions:dismiss wakes it with no continuation id), and the
+ * person's next message, sent right after the Deny, has its turn registered
+ * and waiting by then. Ended there, their reply said "I didn't have anything
+ * to add." and their real answer streamed to nobody. A turn whose own end
+ * came dark before it said anything still ends: runTurn's invoke grace ends
+ * it, and a woken turn's start deadline does (turn.ts).
  *
  * Payloads are runner output: every field is checked with typeof, and a
  * chunk is handed on with only the fields named in StreamChunkIn. A sink
@@ -89,10 +101,16 @@ function safely(fn: () => void): void {
   }
 }
 
-export function createTurnRegistry(): TurnRegistry {
-  const byReqId = new Map<string, TurnSink>();
+interface Entry {
+  readonly sink: TurnSink;
+  /** A chunk under the sink's reqId has come: its turn has begun. */
+  begun: boolean;
+}
 
-  const sinkFor = (payload: unknown): TurnSink | undefined => {
+export function createTurnRegistry(): TurnRegistry {
+  const byReqId = new Map<string, Entry>();
+
+  const entryFor = (payload: unknown): Entry | undefined => {
     if (!isRecord(payload)) return undefined;
     const reqId = payload['reqId'];
     return typeof reqId === 'string' ? byReqId.get(reqId) : undefined;
@@ -100,15 +118,18 @@ export function createTurnRegistry(): TurnRegistry {
 
   return {
     register(sink) {
-      byReqId.set(sink.reqId, sink);
+      const entry: Entry = { sink, begun: false };
+      byReqId.set(sink.reqId, entry);
       return () => {
-        if (byReqId.get(sink.reqId) === sink) byReqId.delete(sink.reqId);
+        if (byReqId.get(sink.reqId) === entry) byReqId.delete(sink.reqId);
       };
     },
 
     onStreamChunk(payload) {
-      const sink = sinkFor(payload);
-      if (sink === undefined) return;
+      const entry = entryFor(payload);
+      if (entry === undefined) return;
+      entry.begun = true;
+      const sink = entry.sink;
       const chunk = narrowChunk(sink.reqId, payload as Record<string, unknown>);
       safely(() => sink.chunk(chunk));
     },
@@ -119,16 +140,21 @@ export function createTurnRegistry(): TurnRegistry {
       const p = isRecord(payload) ? payload : {};
       const ended = p['reqId'];
       const folded = p['foldedReqIds'];
-      for (const sink of [...byReqId.values()]) {
+      const named = typeof ended === 'string' && ended.length > 0;
+      for (const { sink, begun } of [...byReqId.values()]) {
         if (sink.conversationId !== conversationId) continue;
         const foldedHere = Array.isArray(folded) && folded.includes(sink.reqId);
-        if (!foldedHere && typeof ended === 'string' && ended.length > 0 && ended !== sink.reqId) continue;
+        if (!foldedHere) {
+          if (named && ended !== sink.reqId) continue;
+          // Dark: a turn that hasn't begun isn't the one that ended (header).
+          if (!named && !begun) continue;
+        }
         safely(() => sink.end());
       }
     },
 
     onTurnError(payload) {
-      const sink = sinkFor(payload);
+      const sink = entryFor(payload)?.sink;
       if (sink !== undefined) safely(() => sink.error());
     },
 

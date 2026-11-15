@@ -19,6 +19,8 @@ import type { Decision } from '../types.js';
 import { createFakeStore, type FakeStore } from './fake-store.js';
 
 const NOW = new Date('2026-08-20T09:00:00.000Z');
+/** The rows' owner taking their own yes, in their own turn (TASK-1095 `ApprovalTaker`). */
+const OWNER = { userId: 'owner-1', outsider: false, conversationId: 'conv-1' } as const;
 const ONE_SEC = 1000;
 
 const CALL: ToolCall = {
@@ -377,8 +379,8 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
       replayedAt: null,
     });
     // The yes stands at the gate for the agent's own identical call, once.
-    expect(await store.takeApproval('agent-1', 'fp-1', NOW.toISOString())).not.toBeNull();
-    expect(await store.takeApproval('agent-1', 'fp-1', NOW.toISOString())).toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-1', OWNER, NOW.toISOString())).not.toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-1', OWNER, NOW.toISOString())).toBeNull();
   });
 
   it('a deferred connector replay is made through connectors:call-tool, as the decision’s owner and agent', async () => {

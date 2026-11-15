@@ -46,6 +46,10 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // the router picks from, and conversations accepts origin 'slack' through
 // find-or-create and reads it back.
 //
+// TASK-1095: a call held in a DM or an attended thread gets an Allow/Deny
+// prompt in the thread. The click comes back on the interactions route, signed
+// like a real one, and the real @ax/decisions answers it.
+//
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor),
 // `auth:get-user`, `auth:find-user-by-email` (the people in AX_USERS and
@@ -225,10 +229,13 @@ interface SlackCall {
   method: string;
   auth: string | null;
   body: Record<string, unknown>;
+  /** The `ts` Slack's answer gave a posted message. */
+  replyTs?: string;
 }
 
 const slackCalls: SlackCall[] = [];
 let streamSeq = 0;
+let promptSeq = 0;
 
 function slackUser(p: SlackPerson): Record<string, unknown> {
   return {
@@ -247,7 +254,8 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
   const body: Record<string, unknown> = (headers.get('content-type') ?? '').startsWith('application/json')
     ? (JSON.parse(raw) as Record<string, unknown>)
     : Object.fromEntries(new URLSearchParams(raw));
-  slackCalls.push({ method, auth: headers.get('authorization'), body });
+  const call: SlackCall = { method, auth: headers.get('authorization'), body };
+  slackCalls.push(call);
 
   let answer: Record<string, unknown>;
   switch (method) {
@@ -316,11 +324,21 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
       streamSeq += 1;
       answer = { ok: true, ts: `1763040000.${String(streamSeq).padStart(6, '0')}` };
       break;
+    case 'chat.postMessage':
+      // An approval prompt (TASK-1095) is a message with blocks: Slack answers its `ts`,
+      // which the bot keeps to redraw the prompt when it is answered.
+      if (Array.isArray(body['blocks'])) {
+        promptSeq += 1;
+        answer = { ok: true, ts: `1763050000.${String(promptSeq).padStart(6, '0')}` };
+      } else {
+        answer = { ok: true };
+      }
+      break;
     case 'apps.icon.set':
     case 'apps.manifest.delete':
     case 'chat.appendStream':
     case 'chat.stopStream':
-    case 'chat.postMessage':
+    case 'chat.update':
     case 'chat.postEphemeral':
     case 'reactions.add':
     case 'reactions.remove':
@@ -329,6 +347,7 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
     default:
       answer = { ok: false, error: 'unknown_method' };
   }
+  if (typeof answer['ts'] === 'string') call.replyTs = answer['ts'];
   return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
 }) as typeof fetch;
 
@@ -442,6 +461,70 @@ async function slash(installId: string, from: SlackPerson, channel: string, text
     params: { installId },
     rawPath: `/slack/commands/${installId}`,
     headers: { ...signedHeaders(body), 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+}
+
+/** A prompt the bot posted: where it is, and the id its buttons carry (read from the blocks it sent). */
+interface PostedPrompt {
+  channel: string;
+  messageTs: string;
+  threadTs: string;
+  promptId: string;
+  blocks: Array<Record<string, unknown>>;
+}
+
+/** The prompts (chat.postMessage with blocks) in `calls`; `messageTs` is the `ts` Slack's answer gave. */
+function promptsIn(calls: SlackCall[]): PostedPrompt[] {
+  return calls
+    .filter((c) => c.method === 'chat.postMessage' && Array.isArray(c.body['blocks']))
+    .map((c) => {
+      const blocks = c.body['blocks'] as Array<Record<string, unknown>>;
+      const actions = blocks.find((b) => b['type'] === 'actions');
+      const elements = (actions?.['elements'] ?? []) as Array<{ value: string }>;
+      return {
+        channel: String(c.body['channel']),
+        messageTs: c.replyTs!,
+        threadTs: String(c.body['thread_ts']),
+        promptId: elements[0]!.value,
+        blocks,
+      };
+    });
+}
+
+/**
+ * A signed click on a prompt's button, as Slack posts it: a form whose one `payload` is the
+ * interaction's JSON, signed over its raw bytes. `signWith` is the secret the signature uses.
+ */
+async function click(
+  installId: string,
+  from: SlackPerson,
+  prompt: PostedPrompt,
+  action: 'allow' | 'deny' = 'allow',
+  signWith: string = SIGNING_SECRET,
+): Promise<Captured> {
+  const messageTs = prompt.messageTs;
+  const payload = {
+    type: 'block_actions',
+    api_app_id: APP_ID,
+    team: { id: TEAM_ID },
+    user: { id: from.slackId },
+    channel: { id: prompt.channel },
+    container: { type: 'message', message_ts: messageTs, channel_id: prompt.channel },
+    message: { ts: messageTs, thread_ts: prompt.threadTs },
+    actions: [{ type: 'button', action_id: `ax_prompt_${action}`, value: prompt.promptId }],
+  };
+  const body = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString());
+  const ts = String(Math.floor(Date.now() / 1000));
+  const digest = createHmac('sha256', signWith).update(`v0:${ts}:`).update(body).digest('hex');
+  return callRoute('POST', '/slack/interactions/:installId', {
+    params: { installId },
+    rawPath: `/slack/interactions/${installId}`,
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'x-slack-request-timestamp': ts,
+      'x-slack-signature': `v0=${digest}`,
+    },
     body,
   });
 }
@@ -1082,6 +1165,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       let said = sentText(calls);
       expect(said).toContain("I need my owner's OK before I can do part of this");
       expect(said).not.toContain('/workspace');
+      // No buttons for an outsider's turn: it runs as Ada, and only she could answer it, in Today.
+      const externalMark = mark;
       const externalRows = await listDecisions('usr_ada');
       expect(externalRows).toHaveLength(1);
       expect(externalRows[0]).toMatchObject({
@@ -1093,16 +1178,26 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect((await conversationRow(external.ctx.conversationId!)).key).toMatch(/:external$/);
       expect(await listDecisions('usr_mel')).toEqual([]);
 
-      // Attended: Mel's turn runs as Mel. The thread links her own Today and the row is hers.
+      // Attended: Mel's turn runs as Mel. The reply ends with the ask, a prompt with Allow and Deny
+      // follows it in her thread (TASK-1095), and the row is hers.
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(MEL, nextTs(), 'please book it'))).status).toBe(200);
+      const melTs = nextTs();
+      expect((await deliver(installId, mention(MEL, melTs, 'please book it'))).status).toBe(200);
       const attended = await invokedTurn(2);
       expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
       expect(isHold(holds[1])).toBe(true);
-      calls = await channelTurnCalls(mark);
+      calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
       said = sentText(calls);
-      expect(said).toContain(`Approve it in [Today](${PUBLIC_ORIGIN}/workspace)`);
+      expect(said).toContain('I need your OK before I can do part of this.');
       expect(said).not.toContain("my owner's OK");
+      const asked = promptsIn(calls);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
+      // After the reply, not before it.
+      const methods = calls.map((c) => c.method);
+      expect(methods.indexOf('chat.postMessage')).toBeGreaterThan(methods.indexOf('chat.stopStream'));
+      // Nothing was posted with blocks for Carol, then or since: Mel's is the only prompt.
+      expect(promptsIn(slackCalls.slice(externalMark))).toHaveLength(1);
       const attendedRows = await listDecisions('usr_mel');
       expect(attendedRows).toHaveLength(1);
       expect(attendedRows[0]).toMatchObject({
@@ -1117,6 +1212,110 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       invokeScript = null;
     }
     await dropAgent(agentId);
+  });
+
+  it("an attended held call: the prompt in the thread is answered only by the person who asked, with the real decisions behind it; an outsider's turn gets none (TASK-1095)", async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    invokeScript = async (ctx) => {
+      const call = { id: `toolu_held_${invokes.length}`, name: 'request_capability', input: { capability: invokes.length > 1 ? 'drive' : 'calendar' } };
+      await theBus!.fire('tool:pre-call', ctx, call);
+      await theBus!.fire('chat:stream-chunk', ctx, {
+        reqId: ctx.reqId,
+        kind: 'tool-result',
+        held: true,
+        toolCallId: call.id,
+        output: 'held',
+      });
+      await theBus!.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+    try {
+      // Mel's mention holds a call: her reply ends with the ask, then the prompt.
+      const melTs = nextTs();
+      let mark = slackCalls.length;
+      expect((await deliver(installId, mention(MEL, melTs, 'please book it'))).status).toBe(200);
+      await invokedTurn(1);
+      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      expect(sentText(calls)).toContain('I need your OK before I can do part of this.');
+      const [prompt] = promptsIn(calls);
+      expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
+      const melRows = await listDecisions('usr_mel');
+      expect(melRows).toHaveLength(1);
+      expect(melRows[0]).toMatchObject({ agentId, status: 'pending', ownerUserId: 'usr_mel' });
+      const row = melRows[0]!;
+      // `decisions:list` shows what waits; the row itself says where it went.
+      const statusOf = async (id: unknown = row['id']): Promise<unknown> =>
+        (
+          await theBus!.call<unknown, { decision: { status: string } }>(
+            'decisions:get',
+            makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_mel' }),
+            { decisionId: id, userId: 'usr_mel' },
+          )
+        ).decision.status;
+
+      // Ada, a team admin, is not who asked: Slack gets its 200, she is told privately, nothing else moves.
+      mark = slackCalls.length;
+      expect((await click(installId, ADA, prompt!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.postEphemeral');
+      expect(calls.map((c) => c.method)).toEqual(['chat.postEphemeral']);
+      expect(calls[0]!.body).toMatchObject({ channel: SUPPORT_CHANNEL, user: ADA.slackId, thread_ts: melTs });
+      expect(String(calls[0]!.body['text'])).toBe('Only the person who asked can answer this.');
+      expect(await statusOf()).toBe('pending');
+
+      // A click Slack didn't sign is refused outright: no handler runs, no call goes out, nothing moves.
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, prompt!, 'allow', 'not-the-signing-secret')).status).toBe(401);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(slackCalls.slice(mark)).toEqual([]);
+      expect(await statusOf()).toBe('pending');
+
+      // Mel answers Allow: the real decisions:approve runs as her, and the prompt is redrawn without its buttons.
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.update');
+      const update = callOf(calls, 'chat.update');
+      expect(update.body).toMatchObject({ channel: SUPPORT_CHANNEL, ts: prompt!.messageTs });
+      expect(String(update.body['text'])).toBe("Allowed. Ask me again and I'll do it.");
+      const redrawn = update.body['blocks'] as Array<{ type: string }>;
+      expect(redrawn.map((b) => b.type)).toEqual(['section', 'context']);
+      expect(await statusOf()).not.toBe('pending');
+      expect(await statusOf()).toBe('approved-pending-agent');
+
+      // A second ask, answered Deny: the real decisions:dismiss runs as her.
+      const secondTs = nextTs();
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(MEL, secondTs, 'and my files'))).status).toBe(200);
+      await invokedTurn(2);
+      calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      const [second] = promptsIn(calls);
+      expect(second).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: secondTs });
+      expect(second!.promptId).not.toBe(prompt!.promptId);
+      const pendingRows = await listDecisions('usr_mel');
+      expect(pendingRows).toHaveLength(1);
+      expect(pendingRows[0]).toMatchObject({ status: 'pending' });
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, second!, 'deny')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.update');
+      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Denied. I won't do it.");
+      expect(await listDecisions('usr_mel')).toEqual([]);
+      expect(await statusOf(pendingRows[0]!['id'])).toBe('dismissed');
+
+      // Carol is no member: her turn runs as Ada, and gets no buttons. Ada's row waits in her Today.
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
+      const external = await invokedTurn(3);
+      expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
+      calls = await channelTurnCalls(mark);
+      expect(sentText(calls)).toContain("I need my owner's OK before I can do part of this");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
+      const adaRows = await listDecisions('usr_ada');
+      expect(adaRows).toHaveLength(1);
+      expect(adaRows[0]).toMatchObject({ status: 'pending', ownerUserId: 'usr_ada' });
+    } finally {
+      invokeScript = null;
+      await dropAgent(agentId);
+    }
   });
 
   it('the channel\'s memory switch: a member\'s thread is refused while it is off, for good once a turn ran then; an outsider\'s never is remembered (TASK-1094)', async () => {

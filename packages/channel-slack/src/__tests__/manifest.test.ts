@@ -18,7 +18,15 @@ describe('slackUrls', () => {
       eventsUrl: 'https://ax.example/slack/events/AAAAAAAAAAAAAAAAAAAAAA',
       redirectUrl: REDIRECT,
       commandsUrl: 'https://ax.example/slack/commands/AAAAAAAAAAAAAAAAAAAAAA',
+      interactionsUrl: 'https://ax.example/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA',
     });
+  });
+
+  it('builds the interactions URL with no double slash and a percent-encoded install id', () => {
+    expect(slackUrls('https://ax.example/', INSTALL_ID).interactionsUrl).toBe(
+      'https://ax.example/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA',
+    );
+    expect(slackUrls(ORIGIN, 'a/b').interactionsUrl).toBe('https://ax.example/slack/interactions/a%2Fb');
   });
 
   it('percent-encodes the install id in the commands URL', () => {
@@ -70,6 +78,10 @@ describe('buildAppManifest', () => {
           request_url: 'https://ax.example/slack/events/AAAAAAAAAAAAAAAAAAAAAA',
           bot_events: ['app_mention', 'message.im'],
         },
+        interactivity: {
+          is_enabled: true,
+          request_url: 'https://ax.example/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA',
+        },
         org_deploy_enabled: false,
         socket_mode_enabled: false,
         token_rotation_enabled: false,
@@ -109,7 +121,7 @@ describe('buildAppManifest', () => {
     }
   });
 
-  it('declares exactly one /ax slash command, unescaped, and no interactivity', () => {
+  it('declares exactly one /ax slash command, unescaped, and interactivity for approval buttons', () => {
     const manifest = buildAppManifest('ax', slackUrls(ORIGIN, INSTALL_ID)) as {
       features: { slash_commands: Array<{ command: string; url: string; should_escape: boolean }> };
       settings: Record<string, unknown>;
@@ -120,7 +132,10 @@ describe('buildAppManifest', () => {
     expect(cmd!.command).toBe(SLASH_COMMAND);
     expect(cmd!.url).toBe(`${ORIGIN}/slack/commands/${INSTALL_ID}`);
     expect(cmd!.should_escape).toBe(false);
-    expect(manifest.settings).not.toHaveProperty('interactivity');
+    expect(manifest.settings['interactivity']).toStrictEqual({
+      is_enabled: true,
+      request_url: `${ORIGIN}/slack/interactions/${INSTALL_ID}`,
+    });
   });
 
   it('never shares its scope or event lists with the caller', () => {

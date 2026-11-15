@@ -1,7 +1,7 @@
 import { clampCodeUnits } from '@ax/core';
 import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { cleanChannelName } from './label.js';
-import { SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
+import { PROMPT_SUBJECT_MAX, SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
 
 /**
  * Text that leaves AX for Slack. Model output is untrusted (it can quote
@@ -130,20 +130,44 @@ function undecidedWord(text: string): number {
 }
 
 /**
+ * One line of text from outside made fit for Slack: no control, bidi or
+ * invisible characters (they become spaces), single spaces, no Slack
+ * references or broadcast words, at most `max` code units and never half an
+ * emoji. Neutralized before it's clamped, so the cap holds. A cut can end the
+ * line right after a broadcast word whose next letter it took off (`@heres`
+ * becomes `@here`), so the cut line is neutralized again: that adds at most
+ * one mark, after the last word's `@`, and the second cut then takes the
+ * word's last letter, never the mark. Empty when nothing printable is left.
+ *
+ * Not idempotent: the marks are zero-width spaces, so a second pass turns
+ * them into spaces (`<!here>` reads `< !here>`). Clean text as composed.
+ */
+function cleanLine(text: string, max: number): string {
+  const flat = replaceSurfaceRewriters(text).replace(/\s+/g, ' ').trim();
+  const cut = clampCodeUnits(neutralizeSlackControls(flat), max);
+  return clampCodeUnits(neutralizeSlackControls(cut), max).trimEnd();
+}
+
+/**
  * A status line's title (a tool's activity phrase, a step summary) made fit
- * for Slack's task card: no control, bidi or invisible characters (they
- * become spaces), single spaces, no Slack references or broadcast words, at
- * most STATUS_TITLE_MAX code units and never half an emoji. Neutralized
- * before it's clamped, so the cap holds. A cut can end the title right after
- * a broadcast word whose next letter it took off (`@heres` becomes `@here`),
- * so the cut title is neutralized again: that adds at most one mark, after
- * the last word's `@`, and the second cut then takes the word's last letter,
- * never the mark. Empty when nothing printable is left.
+ * for Slack's task card: `cleanLine` at STATUS_TITLE_MAX.
  */
 export function cleanStatusTitle(text: string): string {
-  const flat = replaceSurfaceRewriters(text).replace(/\s+/g, ' ').trim();
-  const cut = clampCodeUnits(neutralizeSlackControls(flat), STATUS_TITLE_MAX);
-  return clampCodeUnits(neutralizeSlackControls(cut), STATUS_TITLE_MAX).trimEnd();
+  return cleanLine(text, STATUS_TITLE_MAX);
+}
+
+/**
+ * An approval prompt's subject (blocks.ts): words from outside COPY (a
+ * decision's host-authored summary, which can name a tool; a host; a skill's
+ * description) made fit for the prompt's `plain_text` section by the status
+ * title's recipe, `cleanLine`, at PROMPT_SUBJECT_MAX. Whether `plain_text`
+ * would read a reference or a broadcast at all is unmeasured (TASK-1097's
+ * walk), so the marks are defense in depth. Empty when nothing printable is
+ * left; blocks.ts shows the generic ask then, since Slack refuses a section
+ * with empty text.
+ */
+export function cleanPromptSubject(raw: string): string {
+  return cleanLine(raw, PROMPT_SUBJECT_MAX);
 }
 
 function isHighSurrogate(code: number): boolean {

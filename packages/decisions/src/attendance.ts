@@ -13,17 +13,31 @@
  * a routine that fires into a web thread is attended: someone IS watching
  * that thread.
  *
+ * WHICH CHANNELS ARE ATTENDED. The chats a person answers in: `web` (the card
+ * in the thread) and `slack` (Allow and Deny buttons in the thread, which only
+ * the turn's own person can answer, TASK-1095). A Slack thread is attended
+ * for the same reason a web one is, and an approval there is handled the same
+ * way. While the conversation's session is warm, the agent is told and
+ * re-issues its own call. Once that session is gone, the host replays the call
+ * where it can make it, but never a connector call: that parks for the
+ * agent's next identical call (review F1, `hostExecutorFor` in
+ * host-executor.ts). That park is a web chat's too, and it is intended: the
+ * host making the call would leave the agent to ask again, and a yes to that
+ * second card would send it twice.
+ * `routine` is unattended, and so is any value this build doesn't know.
+ *
  * WHY ONE KIND OF TURN OVERRIDES IT. A Slack channel plugin adds more than a
  * channel. It also adds a kind of turn: `ctx.source === 'external'`, a person
- * with no access to the agent (TASK-1091). They can't approve anything, so
- * the hold waits in Today for the turn's user, and the host replays the call
- * once that user says yes. That is a fact about the TURN. One thread can mix
- * the owner's turns with external ones, and no `origin` can say which is
- * which. So an external turn is `unattended` in every conversation. The check
- * is `isOutsiderTurn(ctx)` (`'external'`, or a source this build doesn't know)
- * and deliberately not `!isAttendedTurn(ctx)`, which would quietly move
- * routine attendance off the channel. It only ever moves a turn toward
- * `unattended`, the safe direction below.
+ * with no access to the agent (TASK-1091). They can't approve anything (Slack
+ * shows them no buttons), so the hold waits in Today for the turn's user, and
+ * the host replays the call once that user says yes. That is a fact about the
+ * TURN. One thread can mix the owner's turns with external ones, and no
+ * `origin` can say which is which. So an external turn is `unattended` in
+ * every conversation, a Slack one included. The check is `isOutsiderTurn(ctx)`
+ * (`'external'`, or a source this build doesn't know) and deliberately not
+ * `!isAttendedTurn(ctx)`, which would quietly move routine attendance off the
+ * channel. It runs before the channel is read, and it only ever moves a turn
+ * toward `unattended`, the safe direction below.
  *
  * WHY IT FAILS TO `unattended`. The two mistakes are not symmetric:
  *
@@ -60,7 +74,7 @@ interface ConversationChannel {
 }
 
 export interface ConversationLookup {
-  origin: 'web' | 'routine';
+  origin: 'web' | 'routine' | 'slack';
   activeSessionId: string | null;
 }
 
@@ -91,8 +105,13 @@ export async function conversationChannel(
     return {
       // Narrowed, not cast. An older producer that predates the field sends
       // nothing, and `'web'` — attended — would be the WRONG default for a
-      // value we were not told: see the asymmetry at the top of this file.
-      origin: md.origin === 'routine' || md.origin === 'web' ? md.origin : 'routine',
+      // value we were not told: see the asymmetry at the top of this file. A
+      // channel this build doesn't know reads as `'routine'` for the same
+      // reason.
+      origin:
+        md.origin === 'routine' || md.origin === 'web' || md.origin === 'slack'
+          ? md.origin
+          : 'routine',
       activeSessionId:
         typeof md.activeSessionId === 'string' && md.activeSessionId.length > 0
           ? md.activeSessionId
@@ -113,8 +132,9 @@ export async function conversationChannel(
 
 /**
  * An external turn (or one whose source this build doesn't know) →
- * unattended, whatever the channel. Otherwise the channel decides: `web` →
- * attended, `routine` → unattended, everything else → unattended.
+ * unattended, whatever the channel, and checked first. Otherwise the channel
+ * decides: `web` or `slack` → attended, `routine` → unattended, everything
+ * else → unattended.
  */
 export async function attendanceFor(
   bus: HookBus,
@@ -124,7 +144,7 @@ export async function attendanceFor(
   if (isOutsiderTurn(ctx)) return 'unattended';
   const channel = await conversationChannel(bus, ctx, conversationId);
   if (channel === null) return 'unattended';
-  return channel.origin === 'web' ? 'attended' : 'unattended';
+  return channel.origin === 'web' || channel.origin === 'slack' ? 'attended' : 'unattended';
 }
 
 /** Bind the bus once so the pre-call subscriber keeps its one-argument seam. */

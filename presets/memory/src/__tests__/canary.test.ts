@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events and commands routes skip CSRF (TASK-1093, TASK-1094)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -791,6 +791,16 @@ describe('@ax/preset-memory canary', () => {
     expect(command.status).toBe(unserved.status);
     expect(command.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
     expect(await command.text()).toBe(unservedText);
+    // And the interactions route (TASK-1095), where a click on an approval
+    // prompt's Allow or Deny arrives: the same 404 for an unknown install.
+    const interaction = await fetch(url('/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'payload=%7B%7D',
+    });
+    expect(interaction.status).toBe(unserved.status);
+    expect(interaction.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
+    expect(await interaction.text()).toBe(unservedText);
 
     // A team agent's channel settings are mounted too (TASK-1094): signed out
     // is the route's 401, and an agent nobody here can see is its own 404.

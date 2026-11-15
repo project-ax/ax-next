@@ -8,10 +8,13 @@ import {
   FLUSH_INTERVAL_MS,
   MAX_EXTERNAL_TURNS_PER_CHANNEL,
   MAX_TURNS_PER_CONVERSATION,
+  PROMPT_MAX,
+  PROMPT_TTL_MS,
   STREAM_MAX_AGE_MS,
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
+import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { createEventRouter } from '../router.js';
 import type { SecretName } from '../secrets.js';
@@ -167,7 +170,7 @@ function deferred() {
 
 // ── The fake Slack ──────────────────────────────────────────────────────────
 
-type Method = 'usersInfo' | 'postMessage' | 'postEphemeral' | 'startStream' | 'appendStream' | 'stopStream';
+type Method = 'usersInfo' | 'postMessage' | 'postBlocks' | 'postEphemeral' | 'startStream' | 'appendStream' | 'stopStream';
 interface SlackCall {
   method: Method;
   token: string;
@@ -210,6 +213,12 @@ function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
     async postMessage(token, a) {
       record('postMessage', token, { ...a });
     },
+    async postBlocks(token, a) {
+      const call = record('postBlocks', token, JSON.parse(JSON.stringify(a)) as Record<string, unknown>);
+      call.ts = `1763049999.${String(nextTs++).padStart(6, '0')}`;
+      return { ts: call.ts };
+    },
+    updateMessage: notHere,
     async postEphemeral(token, a) {
       record('postEphemeral', token, { ...a });
     },
@@ -276,6 +285,11 @@ function world(o: {
   interrupt?: 'stopped' | 'idle' | 'fails' | 'absent';
   /** agent:interrupt answers only once this settles. */
   interruptGate?: Promise<void>;
+  /**
+   * @ax/decisions' read of a conversation's decisions, answering these rows
+   * (TASK-1095). Absent: no decisions service at all.
+   */
+  decisions?: unknown[];
   logger?: Logger;
 } = {}) {
   const bus = new HookBus();
@@ -383,8 +397,28 @@ function world(o: {
     });
   }
 
+  const lookups: Invoke[] = [];
+  if (o.decisions !== undefined) {
+    const rows = o.decisions;
+    bus.registerService('decisions:recent-for-conversation', 'fake-decisions', async (ctx, input) => {
+      lookups.push({ ctx, input });
+      // As @ax/decisions guards it: only the turn's own user and agent may read the conversation's decisions.
+      const i = input as { userId: unknown; agentId: unknown };
+      if (ctx.userId !== i.userId || ctx.agentId !== i.agentId) throw new Error('conversation decision scope mismatch');
+      return { decisions: rows };
+    });
+  }
+
   const slack = fakeSlack(o.slackFail !== undefined ? { fail: o.slackFail } : {});
   const registry = createTurnRegistry();
+  let minted = 0;
+  // The open approval prompts (TASK-1095), as the plugin keeps them.
+  const prompts = createPromptRegistry({
+    now: () => Date.now(),
+    randomBytes: (size) => Buffer.alloc(size, ++minted),
+    ttlMs: PROMPT_TTL_MS,
+    max: PROMPT_MAX,
+  });
   subscribeTurnEvents(bus, registry, '@ax/channel-slack/turns');
   const jobs: Array<Promise<void>> = [];
   /** Every accepted job's lane: which queue, its key and group. */
@@ -471,6 +505,7 @@ function world(o: {
     bus,
     api: slack.api,
     registry,
+    prompts,
     publicOrigin: PUBLIC_ORIGIN,
     logger,
     clock: systemClock,
@@ -519,6 +554,8 @@ function world(o: {
     agents,
     approvals,
     threadWrites,
+    prompts,
+    lookups,
   };
 }
 
@@ -830,6 +867,139 @@ describe('createEventRouter: a DM from the owner', () => {
     await w.idle();
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Let me send that.\n\n${COPY.heldForSender(TODAY)}`);
     expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.audience])).toEqual([['usr_alice', 'user', 'private']]);
+  });
+});
+
+// ── A held call's prompt (TASK-1095) ────────────────────────────────────────
+
+/*
+  The router hands the turn its whole deps, prompt registry included, from
+  both of its turns: a DM and a member's mention get a prompt for their held
+  call after the reply; an outsider's turn never does.
+*/
+describe("createEventRouter: a held call's prompt follows the reply in the thread", () => {
+  const heldCall = (callId: string) => ({
+    chunks: [
+      { kind: 'text', text: 'Let me send that.' },
+      { kind: 'tool-use', toolCallId: callId, toolName: 'mcp__gmail__send_email', input: { to: 'bob@partner.example' } },
+      { kind: 'tool-result', toolCallId: callId, output: 'Held for approval', held: true },
+    ],
+    end: 'turn-end' as const,
+  });
+  /** A pending decision, as @ax/decisions lists it, holding `callId` (only the fields the turn reads differ per test). */
+  const pending = (id: string, callId: string, owner: string, agentId: string, conversationId: string) => ({
+    id,
+    agentId,
+    ownerUserId: owner,
+    conversationId,
+    kind: 'action',
+    attendance: 'attended',
+    status: 'pending',
+    call: { id: callId, name: 'mcp__gmail__send_email', input: { to: 'bob@partner.example' } },
+    callFingerprint: 'a'.repeat(64),
+    ruleId: 'gmail-send',
+    irreversible: true,
+    freshness: null,
+    summary: 'Wants to use Gmail: Send email',
+    detail: 'It stopped before doing this. Nothing has happened yet.',
+    preview: null,
+    primaryLabel: 'Yes, go ahead',
+    secondaryLabel: 'Show me the details',
+    ghostLabel: "No, I'll handle it",
+    approvedText: 'Sent.',
+    dismissedText: 'You declined this. Nothing was sent.',
+    createdAt: '2026-11-14T12:00:00.000Z',
+    expiresAt: '2026-11-15T12:00:00.000Z',
+    resolvedAt: null,
+    staleReason: null,
+    consumedAt: null,
+    replayDueAt: null,
+    replayClaimedAt: null,
+    replayedAt: null,
+    replayAbandonedAt: null,
+    replayError: null,
+    deliveryDueAt: null,
+    deliveredAt: null,
+    approvalScope: 'once',
+    consentExpectedRevision: null,
+    consentDeliveryState: 'none',
+    consentGranted: null,
+    consentDeliveryClaimedAt: null,
+    routineReleaseAt: null,
+    routineAuthorizationId: null,
+    routineExecutionFingerprint: null,
+    routineOutcome: null,
+    routineFailureCode: null,
+    routineFailureField: null,
+  });
+  /** The prompt id both buttons of a posted prompt carry. */
+  const promptIdOf = (call: SlackCall): string => {
+    const blocks = call.args['blocks'] as Array<{ type: string; elements?: Array<Record<string, unknown>> }>;
+    const values = blocks.filter((b) => b.type === 'actions').flatMap((b) => (b.elements ?? []).map((e) => e['value']));
+    expect(new Set(values).size).toBe(1);
+    return values[0] as string;
+  };
+
+  it("a DM: the reply asks, then the prompt for Alice's held call, in her DM thread", async () => {
+    const conversationId = `conv:slack:${INSTALL_ID}:${DM_ALICE}:${TS}`;
+    const w = world({ decisions: [pending('dec_dm', 'toolu_dm', 'usr_alice', 'agt_alice_old', conversationId)] });
+    w.scripts.push(heldCall('toolu_dm'));
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Let me send that.\n\n${COPY.heldAsked}`);
+    expect(methods(w.slack.calls)).toEqual(['usersInfo', 'startStream', 'stopStream', 'postBlocks']);
+    const post = w.slack.calls.at(-1)!;
+    expect(post.args).toMatchObject({ channel: DM_ALICE, threadTs: TS });
+    const claim = w.prompts.claim(promptIdOf(post), ALICE);
+    expect(claim.ok && claim.prompt).toMatchObject({
+      mode: 'dm',
+      askerSlackId: ALICE,
+      userId: 'usr_alice',
+      agentId: 'agt_alice_old',
+      conversationId,
+      subject: { kind: 'decision', decisionId: 'dec_dm' },
+    });
+  });
+
+  it("a member's mention: the prompt for her held call, in the mention's thread, answerable by her alone", async () => {
+    const conversationId = `conv:slack:${INSTALL_ID}:${SUPPORT}:${MENTION_TS}`;
+    const w = world({ decisions: [pending('dec_support', 'toolu_support', 'usr_alice', 'agt_support', conversationId)] });
+    w.scripts.push(heldCall('toolu_support'));
+    await w.dispatch(INSTALL, mention());
+    await w.idle();
+
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe(`Let me send that.\n\n${COPY.heldAsked}`);
+    const posts = w.slack.calls.filter((c) => c.method === 'postBlocks');
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.args).toMatchObject({ channel: SUPPORT, threadTs: MENTION_TS });
+    const id = promptIdOf(posts[0]!);
+    expect(w.prompts.claim(id, ADA)).toMatchObject({ ok: false, reason: 'not-asker' });
+    const claim = w.prompts.claim(id, ALICE);
+    expect(claim.ok && claim.prompt).toMatchObject({
+      mode: 'attended',
+      askerSlackId: ALICE,
+      userId: 'usr_alice',
+      agentId: 'agt_support',
+      conversationId,
+      subject: { kind: 'decision', decisionId: 'dec_support' },
+    });
+  });
+
+  // Card acceptance: an outsider's turn never shows buttons.
+  it("an outsider's mention: its owner's line, no lookup, and no prompt", async () => {
+    const conversationId = `conv:slack:${INSTALL_ID}:${SUPPORT}:${MENTION_TS}:external`;
+    // The row the hold wrote, under the person who connected the channel.
+    const w = world({ decisions: [pending('dec_outsider', 'toolu_outsider', 'usr_ada', 'agt_support', conversationId)] });
+    w.scripts.push(heldCall('toolu_outsider'));
+    await w.dispatch(INSTALL, mention({ user: BOB }));
+    await w.idle();
+
+    expect(w.invokes.map((i) => i.ctx.source)).toEqual(['external']);
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe(`Let me send that.\n\n${COPY.heldForOwner}`);
+    expect(methods(w.slack.calls)).not.toContain('postBlocks');
+    expect(w.lookups).toEqual([]);
+    expect(w.prompts.size()).toBe(0);
   });
 });
 

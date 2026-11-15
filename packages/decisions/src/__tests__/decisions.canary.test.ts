@@ -145,7 +145,7 @@ async function boot(
 
 /** What the stub conversations store holds for one conversation. */
 interface Channel {
-  origin: 'web' | 'routine';
+  origin: 'web' | 'routine' | 'slack';
   activeSessionId: string | null;
   userId: string;
 }
@@ -240,7 +240,37 @@ function routineCtx(h: TestHarness): AgentContext {
   });
 }
 
+/**
+ * TASK-1095. Slack threads (origin `'slack'`), each with a warm session behind
+ * it, the way the orchestrator binds one for a Slack turn as for a web one.
+ * channel-slack runs a DM, and a member's turn in a connected channel, as
+ * `source: 'user'`; an outsider's turn in a connected channel runs as
+ * `source: 'external'`, as whoever connected the channel, in a conversation of
+ * its own (`conv-slack-outsider`).
+ */
+function slackChannels(): Record<string, Channel> {
+  return {
+    ...liveChannels(),
+    'conv-slack': { origin: 'slack', activeSessionId: 'sess-slack', userId: 'u1' },
+    'conv-slack-outsider': { origin: 'slack', activeSessionId: 'sess-slack-outsider', userId: 'u1' },
+  };
+}
+
+function slackCtx(
+  h: TestHarness,
+  source: 'user' | 'external',
+  conversationId: 'conv-slack' | 'conv-slack-outsider' = source === 'user' ? 'conv-slack' : 'conv-slack-outsider',
+  sessionId = 's-slack',
+): AgentContext {
+  return h.ctx({ agentId: 'a1', userId: 'u1', conversationId, sessionId, source });
+}
+
 const CALL = { id: 'c1', name: HOLD_RULE.match.tool, input: { to: 'a@b.c' } };
+/**
+ * The same tool with other input, so a second hold for the same person and
+ * agent is a second question rather than a reuse of the first (TASK-254).
+ */
+const OTHER_CALL = { id: 'c-other', name: HOLD_RULE.match.tool, input: { to: 'x@y.z' } };
 const SANDBOX_CALL = {
   id: 'c-sandbox',
   name: SANDBOX_HOLD_RULE.match.tool,
@@ -1228,8 +1258,8 @@ describe('decisions canary — the same call, held twice', () => {
     // And the second click is the idempotent one the machine already absorbs —
     // it reports the stored outcome rather than dying on the unique index and
     // coming back with TASK-253's refusal sentence. That branch still exists
-    // and still speaks (a shared agent's two owners can still collide); the
-    // ordinary "the agent tried again" path no longer reaches it.
+    // and still speaks (an undo can still leave one person two cards for one
+    // call); the ordinary "the agent tried again" path no longer reaches it.
     expect(a.executed).toBe(true);
     expect(a.error).toBeNull();
     expect(b.error).toBeNull();
@@ -1342,8 +1372,9 @@ describe('decisions canary — the same call, held twice', () => {
   it('the same two rows on the ATTENDED path are refused through the index while the first yes is unspent', async () => {
     // The contrasting half. Nothing has been sent when the second approval
     // arrives — the warm agent has not cashed the authorisation yet — so the
-    // first row still occupies its (agent, fingerprint) slot and the index
-    // does its job. This is the sub-case TASK-253 made audible.
+    // first row still occupies its (agent, owner, fingerprint) slot and the
+    // index does its job. This is the sub-case TASK-253 made audible, and the
+    // same person's duplicate is the one the index still refuses.
     const h = await boot();
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
     const { first, second } = await twoOpenRowsFromAnUndo(h, userCtx(h));
@@ -1963,6 +1994,235 @@ describe('decisions canary — attendance and delivery', () => {
     expect(out.path).toBe('host-replays');
     expect(h.delivered).toEqual([]);
   });
+
+  // TASK-1095. A Slack thread is a chat a person answers in (Allow and Deny in
+  // the thread), so its own person's holds are attended, exactly like a web
+  // thread's, and an outsider's turn stays unattended. What that changes for a
+  // Slack hold is pinned here and in the connector block (review F1) below.
+  it('a slack thread’s own turn holds attended, and an outsider’s turn holds unattended (TASK-1095)', async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const own = await holdAndId(h, slackCtx(h, 'user'), CALL);
+    const outsider = await holdAndId(h, slackCtx(h, 'external'), OTHER_CALL);
+    expect(own).not.toBe(outsider);
+    expect((await readDecision(h, userCtx(h), own)).attendance).toBe('attended');
+    // The outsider's thread is a Slack thread with a warm session too: only
+    // the turn says nobody with access to the agent is there.
+    expect((await readDecision(h, userCtx(h), outsider)).attendance).toBe('unattended');
+  });
+
+  it('a slack hold approved while its session is warm goes back to the agent, under the continuation id Slack follows (TASK-1095)', async () => {
+    // What changed: before TASK-1095 the host made this call on approval and
+    // the agent never heard. Now the warm agent is told, after the undo
+    // window, and the continuation runs under the id the approver minted.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, slackChannels());
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = slackCtx(h, 'user');
+    const id = await holdAndId(h, ctx, CALL);
+
+    // What channel-slack's Allow sends (plan Task 9). Slack shows the
+    // decision's summary, never the recorded request.
+    const out = await h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', ctx, {
+      decisionId: id,
+      userId: 'u1',
+      continuationReqId: 'req-slack-1',
+      requestShownInFull: false,
+    });
+    expect(out.path).toBe('agent-executes');
+    expect(out.executed).toBe(false);
+    expect(out.streamReqId).toBe('req-slack-1');
+    expect(out.pendingUntil).not.toBeNull();
+    expect(h.delivered).toEqual([]);
+
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]).toMatchObject({
+      sessionId: 'sess-slack',
+      entry: { type: 'decision-resolved', decisionId: id, outcome: 'approved', reqId: 'req-slack-1' },
+    });
+    // The host made nothing. The agent's re-issued call cashes the yes, once.
+    expect(executor.calls).toEqual([]);
+    expect((await h.bus.fire('tool:pre-call', ctx, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
+    expect(executor.calls).toEqual([]);
+  });
+
+  it('a deny in a slack thread tells its warm agent no, and an outsider’s deny wakes nobody (TASK-1095)', async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const own = await holdAndId(h, slackCtx(h, 'user'), CALL);
+    const outsider = await holdAndId(h, slackCtx(h, 'external'), OTHER_CALL);
+
+    await h.bus.call('decisions:dismiss', userCtx(h), { decisionId: outsider, userId: 'u1' });
+    expect(h.delivered).toEqual([]);
+
+    await h.bus.call('decisions:dismiss', userCtx(h), { decisionId: own, userId: 'u1' });
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]).toMatchObject({
+      sessionId: 'sess-slack',
+      entry: { type: 'decision-resolved', decisionId: own, outcome: 'dismissed' },
+    });
+  });
+});
+
+/**
+ * TASK-1095 review. A standing yes is one person's answer about one call. Now
+ * that a Slack thread is attended, a yes stands from the click until the warm
+ * agent re-issues its call (the undo window at least), and a late connector yes
+ * until the next identical call. Who may spend it, over the real gate, store
+ * and policy: the asker's own turn. Not a team-mate's on the same agent, and
+ * not an outsider's, which runs AS the asker when the asker connected the
+ * channel.
+ */
+describe('decisions canary — whose yes it is (TASK-1095)', () => {
+  /** `slackChannels()` plus a thread of u2's: a second member of the same team agent. */
+  function teamChannels(): Record<string, Channel> {
+    return {
+      ...slackChannels(),
+      'conv-slack-u2': { origin: 'slack', activeSessionId: 'sess-slack-u2', userId: 'u2' },
+    };
+  }
+
+  function teamMateCtx(h: TestHarness): AgentContext {
+    return h.ctx({
+      agentId: 'a1',
+      userId: 'u2',
+      conversationId: 'conv-slack-u2',
+      sessionId: 's-slack-u2',
+      source: 'user',
+    });
+  }
+
+  it("a team-mate's identical call on the same team agent is their own question, not a ride on the asker's yes", async () => {
+    const h = await boot({}, undefined, teamChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    expect((await approve(h, mine, id)).path).toBe('agent-executes');
+
+    const teamMate = teamMateCtx(h);
+    const theirId = await holdAndId(h, teamMate, CALL);
+    expect(theirId).not.toBe(id);
+    const theirQueue = await h.bus.call<unknown, DecisionsListOutput>('decisions:list', teamMate, {
+      userId: 'u2',
+      status: 'pending',
+    });
+    expect(theirQueue.decisions.map((d) => d.id)).toEqual([theirId]);
+
+    // The asker's yes is untouched, and theirs to spend, once.
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("the team-mate's own yes stands beside the asker's, and each turn spends only its own", async () => {
+    // The standing-authorisation slot is one person's (agent, owner, call
+    // shape), so the team-mate's approval is not refused while the asker's
+    // yes stands. It used to be, with CLAIM_REFUSED_DETAIL, for as long as the
+    // asker's yes stood: a parked one, until the asker's next identical call.
+    const h = await boot({}, undefined, teamChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    expect((await approve(h, mine, id)).path).toBe('agent-executes');
+    const teamMate = teamMateCtx(h);
+    const theirId = await holdAndId(h, teamMate, CALL);
+
+    const theirs = await h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', teamMate, {
+      decisionId: theirId,
+      userId: 'u2',
+    });
+    expect(theirs.error).toBeNull();
+    expect(theirs.path).toBe('agent-executes');
+    expect(theirs.decision!.status).toBe('executed');
+
+    // Each turn spends its own yes, once, and leaves the other's standing.
+    expect((await h.bus.fire('tool:pre-call', teamMate, CALL)).rejected).toBe(false);
+    const spent = await h.bus.call<unknown, DecisionsGetOutput>('decisions:get', teamMate, {
+      decisionId: theirId,
+      userId: 'u2',
+    });
+    expect(spent.decision!.consumedAt).not.toBeNull();
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    expect(isHold(await h.bus.fire('tool:pre-call', teamMate, CALL))).toBe(true);
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("an outsider's identical call cannot spend a member's yes, though its turn runs as that member", async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    await approve(h, mine, id);
+
+    // u1 connected the channel, so the outsider's turn runs as u1, in a
+    // conversation of its own.
+    const outsiderId = await holdAndId(h, slackCtx(h, 'external'), CALL);
+    expect(outsiderId).not.toBe(id);
+    // A question in u1's Today, on the unattended path like any outsider's.
+    expect((await readDecision(h, mine, outsiderId)).attendance).toBe('unattended');
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("a member's yes handed to a session that runs an outsider's turns is not spent there", async () => {
+    // channel-slack gives an outsider's turns a conversation of their own
+    // (router.ts, the `:external` key), so a member's thread should never have
+    // such a session behind it. Pinned for the day one does: decisions wakes
+    // the conversation's active session, and a runner there re-issues the
+    // call under its session's `source: 'external'`.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, slackChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    const out = await h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', mine, {
+      decisionId: id,
+      userId: 'u1',
+      continuationReqId: 'req-slack-1',
+      requestShownInFull: false,
+    });
+    expect(out.path).toBe('agent-executes');
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
+    expect(h.delivered[0]).toMatchObject({
+      sessionId: 'sess-slack',
+      entry: { decisionId: id, outcome: 'approved', reqId: 'req-slack-1' },
+    });
+
+    const woken = slackCtx(h, 'external', 'conv-slack', 'sess-slack');
+    expect(isHold(await h.bus.fire('tool:pre-call', woken, CALL))).toBe(true);
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    // The member's own next turn still has it, once.
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("an outsider's own question, answered from Today, is still spent by the outsider's turn", async () => {
+    // The counter-control: the rule keeps an outsider off a member's yes, not
+    // off its own. A tool the host cannot make (sandbox-only), so the yes
+    // parks for the agent's next identical call.
+    const h = await boot({}, undefined, slackChannels());
+    const outsider = slackCtx(h, 'external');
+    const id = await holdAndId(h, outsider, SANDBOX_CALL);
+    expect((await approve(h, userCtx(h), id)).decision!.status).toBe('approved-pending-agent');
+
+    expect((await h.bus.fire('tool:pre-call', outsider, SANDBOX_CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', outsider, SANDBOX_CALL))).toBe(true);
+  });
+
+  it("an outsider's turn cannot spend its connector's own unattended yes from another conversation", async () => {
+    // u1's routine asked, u1 said yes from Today, and the yes parks for the
+    // routine's next identical call. An outsider's turn runs AS u1, so only
+    // the conversation keeps it off that yes.
+    const h = await boot({}, undefined, slackChannels());
+    const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
+    expect((await approve(h, userCtx(h), id)).decision!.status).toBe('approved-pending-agent');
+
+    expect(isHold(await h.bus.fire('tool:pre-call', slackCtx(h, 'external'), SANDBOX_CALL))).toBe(true);
+    expect((await readDecision(h, userCtx(h), id)).consumedAt).toBeNull();
+    // The routine's own next call still has it, once.
+    expect((await h.bus.fire('tool:pre-call', routineCtx(h), SANDBOX_CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', routineCtx(h), SANDBOX_CALL))).toBe(true);
+  });
 });
 
 /**
@@ -2349,7 +2609,7 @@ describe('decisions canary — the freshness guard', () => {
  * The cost is the window between them, and a host that dies inside it leaves a
  * row that is `executed`, claimed, and un-replayed forever: nothing retries it,
  * nothing consumes it, undo refuses it, and it goes on occupying its
- * `(agent, fingerprint)` slot in the partial unique index — so approving the
+ * `(agent, owner, fingerprint)` slot in the partial unique index — so approving the
  * same call again collides and, before this card, was absorbed in silence.
  *
  * The crash is simulated by CRASHING, not by mocking the store: a host executor
@@ -3111,6 +3371,61 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     expect((await h.bus.fire('tool:pre-call', userCtx(h), CONNECTOR_CALL)).rejected).toBe(false);
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CONNECTOR_CALL))).toBe(true);
     expect(connector.calls).toEqual([]);
+  });
+
+  // TASK-1095. A Slack thread is a chat too, so review F1 now covers it: a late
+  // yes to a connector call held there parks for the agent. Before TASK-1095
+  // the thread read unattended, the host made the call, and the agent's
+  // re-issued call in the thread then raised a second card for it.
+  it('approved after a slack thread’s session ended, a connector call parks for the agent and a host tool is still made by the host (review F1, TASK-1095)', async () => {
+    const channels = slackChannels();
+    const h = await boot({}, undefined, channels);
+    const connector = recordConnectorCalls(h);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = slackCtx(h, 'user');
+    const connectorId = await holdAndId(h, ctx, CONNECTOR_CALL);
+    const toolId = await holdAndId(h, ctx, CALL);
+    // Nobody answered before the warm session was reaped.
+    channels['conv-slack']!.activeSessionId = null;
+
+    // SHOWN, so this park is attendance's and not review F2's: even a yes from
+    // Today, which showed the whole request, leaves the call to the agent.
+    const parked = await approve(h, ctx, connectorId, SHOWN);
+    expect(parked.decision!.status).toBe('approved-pending-agent');
+    expect(parked.path).toBeNull();
+    expect(connector.calls).toEqual([]);
+
+    // A host tool is unchanged by the flip: the host makes it, once.
+    const made = await approve(h, ctx, toolId);
+    expect(made.path).toBe('host-replays');
+    expect(made.executed).toBe(true);
+    expect(executor.calls).toEqual([CALL]);
+    expect(h.delivered).toEqual([]);
+
+    // The person asks again in the thread. A fresh session's identical call
+    // cashes the parked yes once, and the host still never calls.
+    channels['conv-slack']!.activeSessionId = 'sess-slack-next';
+    const next = slackCtx(h, 'user', 'conv-slack', 'sess-slack-next');
+    expect((await h.bus.fire('tool:pre-call', next, CONNECTOR_CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', next, CONNECTOR_CALL))).toBe(true);
+    expect(connector.calls).toEqual([]);
+  });
+
+  it('an outsider’s connector call in a slack thread stays a task-run call: the host makes it on its owner’s yes, and the warm session is never told (TASK-1095)', async () => {
+    // The flip must not reach an external turn. Its thread has a warm
+    // session, so reading it as attended would hand the yes to that agent.
+    const h = await boot({}, undefined, slackChannels());
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, slackCtx(h, 'external'), CONNECTOR_CALL);
+    expect((await readDecision(h, userCtx(h), id)).attendance).toBe('unattended');
+
+    // Slack shows an outsider no buttons. Its owner answers from Today.
+    const out = await approve(h, userCtx(h), id, SHOWN);
+
+    expect(out.path).toBe('host-replays');
+    expect(out.executed).toBe(true);
+    expect(connector.calls).toHaveLength(1);
+    expect(h.delivered).toEqual([]);
   });
 
   it('a Deny saved after the hold stops the call', async () => {

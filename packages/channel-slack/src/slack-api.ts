@@ -1,10 +1,10 @@
 /**
  * channel-slack's only egress: a small Slack Web API client over an injected
- * `fetch`. No Slack SDK: about sixteen methods don't earn a dependency tree,
+ * `fetch`. No Slack SDK: about seventeen methods don't earn a dependency tree,
  * or retries and logging we don't control.
  *
  * The capability is as small as we could make it (invariant 5):
- *   - one destination, `https://slack.com/api/<method>`, POST, for the sixteen
+ *   - one destination, `https://slack.com/api/<method>`, POST, for the seventeen
  *     methods below and no others. Nothing a caller passes reaches the URL;
  *   - redirects are refused (`redirect: 'manual'`; any 3xx, or an answer a
  *     fetch followed a redirect to anyway, is `redirect`), so no token is
@@ -86,6 +86,9 @@ export function isTokenRefused(code: string | undefined): boolean {
   return code !== undefined && TOKEN_REFUSED_CODES.has(code);
 }
 
+/** One Block Kit block, as Slack takes it. Built in prompt code, never from model text. */
+export type SlackBlock = Readonly<Record<string, unknown>>;
+
 /** One element of a streamed reply. Every stream call sends these, never `markdown_text`. */
 export type StreamChunkOut =
   | { type: 'markdown_text'; text: string }
@@ -153,6 +156,16 @@ export interface SlackApi {
     botToken: string,
     a: { channel: string; threadTs: string; markdownText: string },
   ): Promise<void>;
+  /** A threaded message with Block Kit blocks; `text` is the notification and fallback. */
+  postBlocks(
+    botToken: string,
+    a: { channel: string; threadTs: string; text: string; blocks: readonly SlackBlock[] },
+  ): Promise<{ ts: string }>;
+  /** Replace a message the bot posted (`chat.update`), e.g. to close a prompt's buttons. */
+  updateMessage(
+    botToken: string,
+    a: { channel: string; ts: string; text: string; blocks: readonly SlackBlock[] },
+  ): Promise<void>;
   postEphemeral(
     botToken: string,
     a: { channel: string; user: string; text: string; threadTs?: string },
@@ -201,6 +214,7 @@ type SlackMethod =
   | 'users.info'
   | 'chat.postMessage'
   | 'chat.postEphemeral'
+  | 'chat.update'
   | 'chat.startStream'
   | 'chat.appendStream'
   | 'chat.stopStream'
@@ -550,6 +564,33 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
           unfurl_links: false,
           unfurl_media: false,
         }),
+      );
+    },
+
+    async postBlocks(botToken, a) {
+      const method = 'chat.postMessage';
+      const r = await call(
+        method,
+        bearer(botToken),
+        json({
+          channel: a.channel,
+          thread_ts: a.threadTs,
+          text: a.text,
+          blocks: a.blocks,
+          unfurl_links: false,
+          unfurl_media: false,
+        }),
+      );
+      const ts = idOf(r['ts']);
+      if (ts === null) throw badResponse(method);
+      return { ts };
+    },
+
+    async updateMessage(botToken, a) {
+      await call(
+        'chat.update',
+        bearer(botToken),
+        json({ channel: a.channel, ts: a.ts, text: a.text, blocks: a.blocks }),
       );
     },
 

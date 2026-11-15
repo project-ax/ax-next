@@ -13,11 +13,15 @@ import { SLASH_COMMAND } from './manifest.js';
  * `@here`, `@channel` or `@everyone`: the bot never pings anyone, a name
  * from outside included (copy.test.ts).
  *
- * The `slash*` lines answer `/ax` (commands.ts), and the `channel*` lines
- * (with `queueFull` and `turnFailed`) can reach a channel mention's sender
- * privately before its turn starts (router.ts). Both go out as mrkdwn `text`,
- * not Markdown: a link is a bare URL, and no line holds a `<` or `>` of its
- * own (mrkdwn reads `<…>` as a link). A name from outside goes through `shown`.
+ * The `slash*` lines answer `/ax` (commands.ts), the `channel*` lines (with
+ * `queueFull` and `turnFailed`) can reach a channel mention's sender
+ * privately before its turn starts (router.ts), and the `prompt*` and
+ * `decision*` lines surround an approval prompt (blocks.ts). All three go
+ * out as mrkdwn, not Markdown (but for the prompt's two button labels, which
+ * are plain_text): a link is a bare URL, and no line holds a `<` or `>` of
+ * its own (mrkdwn reads `<…>` as a link). A name from outside goes through
+ * `shown`. A prompt's subject is never a COPY line: it is outside text,
+ * shown as `plain_text` (format.ts `cleanPromptSubject`).
  */
 
 /**
@@ -67,7 +71,50 @@ export const COPY = {
     "I need my owner's OK before I can do part of this. I've asked them, and nothing will happen until they approve it.",
   heldForSender: (todayLink: string) =>
     `I need your OK before I can do part of this. Approve it in [Today](${todayLink}). Nothing will happen until you do.`,
+  /*
+    The same ask when the turn posts a prompt for the call (blocks.ts): it
+    ends the reply, and the prompt under it carries the buttons and Today's
+    link. It is also the prompt's notification text, and stands in for a
+    subject with nothing printable left, so it links nothing and names
+    nothing.
+  */
+  heldAsked: 'I need your OK before I can do part of this.',
   statusDefault: 'Working',
+
+  // ── An approval prompt (blocks.ts; mrkdwn, except the two button labels) ──
+  /*
+    A call held in a DM or an attended channel turn gets a prompt in the
+    thread: its subject (outside text, never one of these lines), Allow and
+    Deny (`promptAllow`, `promptDeny`: plain_text labels), then
+    `promptOnlyAsker` and `promptToday` as context. Once answered or closed,
+    the buttons give way to one `decision*` line or `promptClosed`.
+    `promptOnlyAsker`, `promptGone`, `promptFailed` and `promptStillWorking`
+    also answer a click privately. None names the person, the agent or the tool, and a link is a
+    bare URL that ends its line.
+  */
+  promptAllow: 'Allow',
+  promptDeny: 'Deny',
+  promptOnlyAsker: 'Only the person who asked can answer this.',
+  promptToday: (todayLink: string) => `You can also answer it in Today: ${shown(todayLink)}`,
+  promptGone: (todayLink: string) =>
+    `This isn't waiting here anymore. If it still needs an answer, it's in Today: ${shown(todayLink)}`,
+  promptFailed: "Something went wrong and I couldn't record your answer. Try again in a moment.",
+  // An answer past its deadline may still land, so the prompt stays taken: no "try again" here.
+  promptStillWorking: "This is taking longer than usual. I'm still working on your answer, so there's no need to click again.",
+  promptClosed: "This can't be answered here anymore.",
+  decisionAllowed: "Allowed. I'll pick it up in a moment.",
+  decisionDone: 'Allowed, and done.',
+  decisionAllowedNextTime: "Allowed. Ask me again and I'll do it.",
+  decisionDenied: "Denied. I won't do it.",
+  decisionExpired: 'This request expired, so nothing happened.',
+  decisionChanged: (todayLink: string) =>
+    `Things changed since I asked, so nothing happened. The details are in Today: ${shown(todayLink)}`,
+  decisionFailed: (todayLink: string) => `Allowed, but it didn't work. The details are in Today: ${shown(todayLink)}`,
+  // An abandoned replay (not a service's own error): nobody can say whether it finished, so no "didn't work".
+  decisionInterrupted: (todayLink: string) =>
+    `Allowed, but it was interrupted, so I can't tell whether it finished. Check Today before trying again: ${shown(todayLink)}`,
+  decisionNotRun: (todayLink: string) =>
+    `I couldn't do that just now. You can try again from Today: ${shown(todayLink)}`,
 
   // ── Before a channel mention's turn (mrkdwn, shown only to its sender) ────
   /*

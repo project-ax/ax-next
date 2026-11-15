@@ -23,6 +23,13 @@ const ARGS: Record<string, unknown[][]> = {
   noAgent: [[ORIGIN]],
   artifactLink: [[LINK]],
   heldForSender: [[TODAY]],
+  // An approval prompt's lines take Today's link (the configured origin), shown as a bare URL.
+  promptToday: [[TODAY], [HOSTILE]],
+  promptGone: [[TODAY], [HOSTILE]],
+  decisionChanged: [[TODAY], [HOSTILE]],
+  decisionFailed: [[TODAY], [HOSTILE]],
+  decisionInterrupted: [[TODAY], [HOSTILE]],
+  decisionNotRun: [[TODAY], [HOSTILE]],
   slashNotMapped: [[ORIGIN]],
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
@@ -52,6 +59,24 @@ describe('COPY: everything the bot says in Slack', () => {
         'filesUnsupported',
         'heldForOwner',
         'heldForSender',
+        'heldAsked',
+        'promptAllow',
+        'promptDeny',
+        'promptOnlyAsker',
+        'promptToday',
+        'promptGone',
+        'promptFailed',
+        'promptStillWorking',
+        'promptClosed',
+        'decisionAllowed',
+        'decisionDone',
+        'decisionAllowedNextTime',
+        'decisionDenied',
+        'decisionExpired',
+        'decisionChanged',
+        'decisionFailed',
+        'decisionInterrupted',
+        'decisionNotRun',
         'noAgent',
         'notMapped',
         'queueFull',
@@ -103,6 +128,75 @@ describe('COPY: everything the bot says in Slack', () => {
   it("a held call's lines can't name the tool, its connector or the owner: they take nothing but Today's link", () => {
     expect(typeof COPY.heldForOwner).toBe('string');
     expect(COPY.heldForSender).toHaveLength(1);
+  });
+});
+
+describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private reply, an update)", () => {
+  /** Every line blocks.ts or the click gate shows around a prompt, as mrkdwn, with Today's link filled in. */
+  const PROMPT_LINES = (link: string): Array<[string, string]> => [
+    ['heldAsked', COPY.heldAsked],
+    ['promptOnlyAsker', COPY.promptOnlyAsker],
+    ['promptToday', COPY.promptToday(link)],
+    ['promptGone', COPY.promptGone(link)],
+    ['promptFailed', COPY.promptFailed],
+    ['promptStillWorking', COPY.promptStillWorking],
+    ['promptClosed', COPY.promptClosed],
+    ['decisionAllowed', COPY.decisionAllowed],
+    ['decisionDone', COPY.decisionDone],
+    ['decisionAllowedNextTime', COPY.decisionAllowedNextTime],
+    ['decisionDenied', COPY.decisionDenied],
+    ['decisionExpired', COPY.decisionExpired],
+    ['decisionChanged', COPY.decisionChanged(link)],
+    ['decisionFailed', COPY.decisionFailed(link)],
+    ['decisionInterrupted', COPY.decisionInterrupted(link)],
+    ['decisionNotRun', COPY.decisionNotRun(link)],
+  ];
+  /** The lines that point at Today. */
+  const LINKED = ['promptToday', 'promptGone', 'decisionChanged', 'decisionFailed', 'decisionInterrupted', 'decisionNotRun'];
+
+  it('are plain mrkdwn text: no < or >, no Markdown link, even around a hostile link', () => {
+    for (const link of [TODAY, HOSTILE]) {
+      for (const [key, line] of PROMPT_LINES(link)) {
+        expect(line, key).not.toMatch(/[<>]/);
+        expect(line, key).not.toMatch(/\]\(/);
+      }
+    }
+  });
+
+  it('every line that points at Today shows the link as a bare URL, at the end (nothing after it to join the link)', () => {
+    for (const [key, line] of PROMPT_LINES(TODAY)) {
+      if (LINKED.includes(key)) expect(line.endsWith(` ${TODAY}`), key).toBe(true);
+      else expect(line, key).not.toMatch(/https?:/);
+    }
+  });
+
+  it('a hostile link is escaped and marked: it opens no link, mention or broadcast', () => {
+    for (const [key, line] of PROMPT_LINES(HOSTILE)) {
+      if (!LINKED.includes(key)) continue;
+      expect(line.split(ZWSP).join(''), key).toContain('&lt;!channel&gt; &amp; &lt;@U1&gt; @here');
+      expect(spellsMention(decodeSlackEntities(line)), key).toBe(false);
+    }
+  });
+
+  it("the line that ends the asking reply links nothing: the prompt under it carries Today's link", () => {
+    expect(COPY.heldAsked).not.toMatch(/\]\(|https?:/);
+    expect(new Set([COPY.heldAsked, COPY.heldForOwner, COPY.heldForSender(TODAY)]).size).toBe(3);
+  });
+
+  it("the line for an answer past its deadline doesn't ask for another click: the prompt stays taken until that answer lands", () => {
+    expect(COPY.promptStillWorking).not.toMatch(/try again/i);
+    expect(COPY.promptStillWorking).not.toBe(COPY.promptFailed);
+  });
+
+  it('the buttons say Allow and Deny', () => {
+    expect(COPY.promptAllow).toBe('Allow');
+    expect(COPY.promptDeny).toBe('Deny');
+  });
+
+  it('each way a prompt can end reads differently, so the asker can tell what happened', () => {
+    const outcomes = PROMPT_LINES(TODAY).filter(([key]) => key.startsWith('decision') || key === 'promptClosed');
+    expect(outcomes).toHaveLength(10);
+    expect(new Set(outcomes.map(([, line]) => line)).size).toBe(outcomes.length);
   });
 });
 

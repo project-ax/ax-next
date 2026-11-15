@@ -106,10 +106,18 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
   `.execute(db);
 
   // THE idempotency guarantee, at the storage layer rather than in application
-  // code: at most one standing authorisation per (agent, call shape). Two
-  // concurrent approvals of the same call cannot both leave an unconsumed
+  // code: at most one standing authorisation per (agent, person, call shape).
+  // Two concurrent approvals of the same call cannot both leave an unconsumed
   // authorisation behind — the second one's UPDATE violates this index and
   // fails loudly instead of silently authorising a second execution.
+  //
+  // THE OWNER IS IN THE KEY (TASK-1095 review). A yes is one person's answer
+  // about one call, and only that person's own turn may spend it
+  // (`takeApproval`, `ApprovalTaker`). Keyed on (agent, call shape) alone, the
+  // slot was shared by everyone on a team agent: while one member's yes stood,
+  // a team-mate's approval of their own identical call was refused
+  // (`CLAIM_REFUSED_DETAIL`), and a parked yes stands until its owner's next
+  // identical call, which may never come.
   //
   // AW-5 WIDENS the predicate twice over.
   //
@@ -142,10 +150,57 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`DROP INDEX IF EXISTS decisions_v1_approved_unconsumed`.execute(db);
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS decisions_v1_authorised_unconsumed
-      ON decisions_v1_decisions (agent_id, call_fingerprint)
+      ON decisions_v1_decisions (agent_id, owner_user_id, call_fingerprint)
       WHERE status IN ('executed', 'approved-pending-agent')
         AND consumed_at IS NULL
         AND replayed_at IS NULL
+  `.execute(db);
+  // A database an earlier release migrated already has an index under this
+  // name, keyed (agent_id, call_fingerprint), so the CREATE above skipped it.
+  // Swap it for the per-person one, under the SAME name.
+  //
+  // THE SAME NAME IS THE ROLLBACK SAFETY. An earlier release's boot runs its
+  // own `CREATE UNIQUE INDEX IF NOT EXISTS decisions_v1_authorised_unconsumed
+  // ON (agent_id, call_fingerprint)`. Under any other name that create would
+  // run over two team-mates' standing yeses for one call, fail on them, and
+  // fail that host's boot (`init-failed`) in the middle of a rollback. Under
+  // this name it does nothing, and the earlier release runs on the per-person
+  // index: its claim refuses only one person's duplicate, and its take, which
+  // never looked at the owner, spends every standing yes for the call in one
+  // UPDATE while the call runs once. Never more runs than yeses.
+  //
+  // ONE TRANSACTION, the recipe `conversations` and `disk-quota` use to widen
+  // a CHECK. A DO block is one statement, so the new index is built, the old
+  // one dropped and the new one renamed together or not at all: there is no
+  // instant without the guarantee. Two hosts at once: the second waits on the
+  // advisory lock, re-reads `pg_indexes` (READ COMMITTED: each statement sees
+  // what has committed), finds `owner_user_id` and does nothing. The build
+  // cannot fail on existing rows: the new key is finer than the old one, so
+  // every set of rows the old index admitted, the new one admits. Until it
+  // commits it holds the table against writes (the build) and, from the drop,
+  // against reads too; at boot, with the chart's Recreate rollout, nothing else
+  // is using it.
+  await sql`
+    DO $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('decisions_v1_authorised_unconsumed'));
+      IF EXISTS (
+        SELECT 1 FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND tablename = 'decisions_v1_decisions'
+           AND indexname = 'decisions_v1_authorised_unconsumed'
+           AND indexdef NOT LIKE '%owner_user_id%'
+      ) THEN
+        CREATE UNIQUE INDEX decisions_v1_authorised_unconsumed_by_owner
+          ON decisions_v1_decisions (agent_id, owner_user_id, call_fingerprint)
+          WHERE status IN ('executed', 'approved-pending-agent')
+            AND consumed_at IS NULL
+            AND replayed_at IS NULL;
+        DROP INDEX decisions_v1_authorised_unconsumed;
+        ALTER INDEX decisions_v1_authorised_unconsumed_by_owner
+          RENAME TO decisions_v1_authorised_unconsumed;
+      END IF;
+    END $$
   `.execute(db);
 
   // The deferred-replay sweep's read path: the handful of rows whose undo

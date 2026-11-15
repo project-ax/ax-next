@@ -5,6 +5,7 @@ import { COMMANDS_ROUTE_PATH, createCommandsHandler, normalizeName } from '../co
 import { COPY } from '../copy.js';
 import { createEventsHandler, createSeenEvents } from '../events.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
+import { createInteractionsHandler } from '../interactions.js';
 import { createLifetime } from '../lifetime.js';
 import {
   AGENT_NAME_ARG_MAX,
@@ -240,6 +241,8 @@ function fakeSlack() {
     setAppIcon: notHere,
     oauthAccess: notHere,
     postMessage: notHere,
+    postBlocks: notHere,
+    updateMessage: notHere,
     startStream: notHere,
     appendStream: notHere,
     stopStream: notHere,
@@ -331,8 +334,11 @@ function signatureHeaders(body: Buffer, o: { ts?: number; secret?: string } = {}
   return { 'x-slack-request-timestamp': ts, 'x-slack-signature': `v0=${digest}` };
 }
 
+/** The Slack routes that share ingress.ts. */
+type Route = 'commands' | 'events' | 'interactions';
+
 function request(
-  route: 'commands' | 'events',
+  route: Route,
   o: { body: Buffer; headers?: Record<string, string>; installId?: string; rawPath?: string },
 ): RouteRequest {
   const installId = o.installId ?? INSTALL_ID;
@@ -344,7 +350,7 @@ function request(
     params: { installId },
     query: {},
     headers: {
-      'content-type': route === 'commands' ? 'application/x-www-form-urlencoded' : 'application/json',
+      'content-type': route === 'events' ? 'application/json' : 'application/x-www-form-urlencoded',
       ...o.headers,
     },
     body: o.body,
@@ -359,8 +365,8 @@ interface SignOptions {
   headers?: Record<string, string>;
 }
 
-/** A signed request to the commands route with exactly these bytes. */
-function signed(body: Buffer, o: SignOptions = {}, route: 'commands' | 'events' = 'commands'): RouteRequest {
+/** A signed request to the commands route (or another of the Slack routes) with exactly these bytes. */
+function signed(body: Buffer, o: SignOptions = {}, route: Route = 'commands'): RouteRequest {
   return request(route, {
     body,
     ...(o.installId !== undefined ? { installId: o.installId } : {}),
@@ -502,6 +508,17 @@ function world(
     logger,
     now,
   });
+  /** The interactions route over the same installs and secrets, to compare answers with. */
+  const interactions = createInteractionsHandler({
+    store,
+    secrets,
+    lifetime: createLifetime(),
+    logger,
+    now,
+    onClick: async () => {
+      throw new Error('the ingress cases never reach a click');
+    },
+  });
 
   async function send(req: RouteRequest, via = handler): Promise<Answered> {
     const { res, answer } = fakeResponse();
@@ -529,6 +546,7 @@ function world(
     lifetime,
     send,
     sendToEvents: (req: RouteRequest) => send(req, events),
+    sendToInteractions: (req: RouteRequest) => send(req, interactions),
     axCalls,
   };
 }
@@ -566,24 +584,27 @@ describe('the /ax route: what it checks before reading the form', () => {
     );
   });
 
-  it('an unknown, malformed or respelled installId, or one with no signing secret, gets the same 404 as the events route', async () => {
+  it('an unknown, malformed or respelled installId, or one with no signing secret, gets the same 404 as the events and interactions routes', async () => {
     const w = world();
     const body = formBody(fields());
     const firstHex = INSTALL_ID.charCodeAt(0).toString(16);
-    const cases: Array<[string, (route: 'commands' | 'events') => RouteRequest]> = [
+    /** Another route's path, for each route: a path spelled right, for the wrong handler. */
+    const other: Record<Route, Route> = { commands: 'events', events: 'interactions', interactions: 'commands' };
+    const cases: Array<[string, (route: Route) => RouteRequest]> = [
       ['unknown install', (r) => signed(body, { installId: UNKNOWN_ID }, r)],
       ['21 characters', (r) => signed(body, { installId: INSTALL_ID.slice(1) }, r)],
       ['a padding character', (r) => signed(body, { installId: `${INSTALL_ID.slice(0, 21)}=` }, r)],
       ['rawPath with %2F', (r) => signed(body, { rawPath: `/slack/${r}/${INSTALL_ID.slice(0, 10)}%2F${INSTALL_ID.slice(11)}` }, r)],
       ['a percent-encoded spelling', (r) => signed(body, { rawPath: `/slack/${r}/%${firstHex}${INSTALL_ID.slice(1)}` }, r)],
       ['a trailing slash', (r) => signed(body, { rawPath: `/slack/${r}/${INSTALL_ID}/` }, r)],
-      ['the other route’s path', (r) => signed(body, { rawPath: `/slack/${r === 'commands' ? 'events' : 'commands'}/${INSTALL_ID}` }, r)],
+      ['another route’s path', (r) => signed(body, { rawPath: `/slack/${other[r]}/${INSTALL_ID}` }, r)],
       ['no signing secret', (r) => signed(body, { installId: NO_SECRET_ID }, r)],
     ];
     for (const [name, req] of cases) {
       const answer = await w.send(req('commands'));
       expect(answer, name).toStrictEqual({ status: 404, how: 'json', body: { error: 'not-found' }, headers: {} });
       expect(await w.sendToEvents(req('events')), name).toStrictEqual(answer);
+      expect(await w.sendToInteractions(req('interactions')), name).toStrictEqual(answer);
     }
     expect(w.slack.calls).toEqual([]);
     expect(w.lines).toEqual([]);

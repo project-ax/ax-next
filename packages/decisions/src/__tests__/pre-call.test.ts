@@ -191,6 +191,135 @@ describe('tool:pre-call subscriber — the standing authorisation', () => {
   });
 });
 
+describe('tool:pre-call subscriber — whose yes it is (TASK-1095)', () => {
+  /** Hold `call` in `c`'s turn, then approve it the way `decisions:approve` claims it. */
+  async function heldAndApproved(
+    sub: ReturnType<typeof createPreCallSubscriber>,
+    store: FakeStore,
+    c: AgentContext,
+    opts: { status?: 'executed' | 'approved-pending-agent'; call?: ToolCall; routineReleaseAt?: string } = {},
+  ): Promise<string> {
+    const r = await sub(c, opts.call ?? CALL);
+    expect(isHold(r)).toBe(true);
+    const id = (r as Hold).hold.decisionId;
+    await store.claimForApproval(id, {
+      nowIso: NOW.toISOString(),
+      status: opts.status ?? 'executed',
+      ...(opts.routineReleaseAt !== undefined ? { routineReleaseAt: opts.routineReleaseAt } : {}),
+    });
+    return id;
+  }
+
+  it("a team-mate's identical call on the same agent is their own question, never a ride on the asker's yes", async () => {
+    const { sub, store } = build(HOLD);
+    const mine = await heldAndApproved(sub, store, ctx());
+
+    const theirs = await sub(ctx({ userId: 'u2', sessionId: 's2', conversationId: 'c2' }), CALL);
+    expect(isHold(theirs)).toBe(true);
+    const theirRow = (await store.get((theirs as Hold).hold.decisionId))!;
+    expect(theirRow.id).not.toBe(mine);
+    expect(theirRow.ownerUserId).toBe('u2');
+    expect(theirRow.status).toBe('pending');
+
+    // The asker's yes is untouched, and theirs to spend, once.
+    expect((await store.get(mine))!.consumedAt).toBeNull();
+    expect(await sub(ctx(), CALL)).toBeUndefined();
+    expect(isHold(await sub(ctx(), CALL))).toBe(true);
+  });
+
+  it("an outsider's turn never spends an attended yes, though it runs as the person who gave it", async () => {
+    const { sub, store } = build(HOLD);
+    const mine = await heldAndApproved(sub, store, ctx({ source: 'user' }));
+
+    expect(isHold(await sub(ctx({ source: 'external' }), CALL))).toBe(true);
+    expect((await store.get(mine))!.consumedAt).toBeNull();
+    expect(await sub(ctx({ source: 'user' }), CALL)).toBeUndefined();
+  });
+
+  it('a source this build does not know is an outsider here too: it fails closed', async () => {
+    const { sub, store } = build(HOLD);
+    await heldAndApproved(sub, store, ctx());
+    expect(isHold(await sub(ctx({ source: 'carrier-pigeon' as never }), CALL))).toBe(true);
+  });
+
+  it("a routine's turn is not an outsider's: it spends its own user's yes", async () => {
+    // `isOutsiderTurn`, not `!isAttendedTurn`: a routine is unattended, but
+    // nobody without access to the agent is in it.
+    const { sub, store } = build(HOLD);
+    await heldAndApproved(sub, store, ctx());
+    expect(await sub(ctx({ source: 'routine' }), CALL)).toBeUndefined();
+  });
+
+  it("an outsider's turn still spends an unattended yes: its own question, answered by its user from Today", async () => {
+    const { sub, store } = build(HOLD, createFakeStore(), async () => 'unattended');
+    const outsider = ctx({ source: 'external', conversationId: 'c-outsider' });
+    await heldAndApproved(sub, store, outsider, { status: 'approved-pending-agent' });
+
+    expect(await sub(outsider, CALL)).toBeUndefined();
+    expect(isHold(await sub(outsider, CALL))).toBe(true);
+  });
+
+  it("an outsider's turn never spends its connector's unattended yes from another conversation", async () => {
+    // The connector's own question, raised by an unattended turn of theirs
+    // (a routine, say) and answered from Today: an outsider-mode turn runs AS
+    // the connector, so the owner match alone would hand it that yes.
+    const { sub, store } = build(HOLD, createFakeStore(), async () => 'unattended');
+    const routine = ctx({ source: 'routine', conversationId: 'c-routine' });
+    const parked = await heldAndApproved(sub, store, routine, { status: 'approved-pending-agent' });
+
+    const outsider = ctx({ source: 'external', conversationId: 'c-outsider' });
+    expect(isHold(await sub(outsider, CALL))).toBe(true);
+    expect((await store.get(parked))!.consumedAt).toBeNull();
+    // An outsider-mode turn with no conversation at all fails closed too.
+    expect(isHold(await sub(ctx({ source: 'external', conversationId: undefined }), CALL))).toBe(true);
+    expect((await store.get(parked))!.consumedAt).toBeNull();
+    // The counter-control: the connector's own routine turn still spends it.
+    expect(await sub(routine, CALL)).toBeUndefined();
+  });
+
+  it("an outsider's routine change never goes ahead on its connector's unattended yes from another conversation", async () => {
+    const bus = new HookBus();
+    bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));
+    const routineHold: PolicyAnswer = {
+      verdict: 'hold',
+      ruleId: 'routines.update',
+      capability: 'edit routines',
+    };
+    const { sub, store } = build(routineHold, createFakeStore(), async () => 'unattended', bus);
+    const change: ToolCall = {
+      id: 'c-delete',
+      name: 'routine_delete',
+      input: { requestId: 'r-delete', routineId: 'rtn_a', expectedRevision: 'rev_a' },
+    };
+    const routine = ctx({ source: 'routine', conversationId: 'c-routine' });
+    await heldAndApproved(sub, store, routine, { call: change, routineReleaseAt: NOW.toISOString() });
+
+    expect(isHold(await sub(ctx({ source: 'external', conversationId: 'c-outsider' }), change))).toBe(true);
+    expect(await sub(routine, change)).toBeUndefined();
+  });
+
+  it("an outsider's routine change never goes ahead on an attended yes either", async () => {
+    const bus = new HookBus();
+    bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));
+    const routineHold: PolicyAnswer = {
+      verdict: 'hold',
+      ruleId: 'routines.update',
+      capability: 'edit routines',
+    };
+    const { sub, store } = build(routineHold, createFakeStore(), async () => 'attended', bus);
+    const change: ToolCall = {
+      id: 'c-delete',
+      name: 'routine_delete',
+      input: { requestId: 'r-delete', routineId: 'rtn_a', expectedRevision: 'rev_a' },
+    };
+    await heldAndApproved(sub, store, ctx(), { call: change, routineReleaseAt: NOW.toISOString() });
+
+    expect(isHold(await sub(ctx({ source: 'external' }), change))).toBe(true);
+    // Its own user's turn goes ahead on it (the routine executor consumes it).
+    expect(await sub(ctx(), change)).toBeUndefined();
+  });
+});
+
 describe('tool:pre-call subscriber — untrusted model output', () => {
   const EVIL: ToolCall = {
     id: 'c',
@@ -496,8 +625,8 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   });
 
   it('does not collapse two AGENTS asking the same thing', async () => {
-    // The standing authorisation is keyed on (agent, fingerprint), so one
-    // agent's yes never authorises another's call — and one agent's question
+    // The standing authorisation is keyed on (agent, owner, fingerprint), so
+    // one agent's yes never authorises another's call — and one agent's question
     // must not stand in for another's either.
     const { sub, store } = build(HOLD);
     const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
@@ -510,8 +639,9 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   });
 
   it('does not collapse two OWNERS of one shared agent', async () => {
-    // A team agent's rows are keyed (agent, fingerprint) in the index but READ
-    // back scoped by owner. Handing u2 the id of u1's row would give u2 a hold
+    // A team agent's rows are one person's each: READ back scoped by owner,
+    // and keyed (agent, owner, fingerprint) in the index since the TASK-1095
+    // review. Handing u2 the id of u1's row would give u2 a hold
     // they cannot see, cannot answer, and cannot dismiss — a lost question,
     // which is strictly worse than the duplicate this collapse exists to stop.
     const { sub, store } = build(HOLD);
@@ -527,8 +657,8 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   it('DOES collapse across two of one person’s conversations', async () => {
     // Deliberate, and the one place the collapse is wider than the thread the
     // call came from: the authorisation this question leads to is keyed
-    // (agent, fingerprint) with no conversation in it, so two open rows in two
-    // threads are two cards for ONE authorisation — and approving the second
+    // (agent, owner, fingerprint) with no conversation in it, so two open rows
+    // in two threads are two cards for ONE authorisation — and approving the second
     // is exactly the refusal this card removes. The person answers it from the
     // Today queue, which is not per-thread; only the in-thread card stays in
     // the thread that asked first.
