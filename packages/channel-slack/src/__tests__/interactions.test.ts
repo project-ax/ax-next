@@ -70,6 +70,9 @@ const PENDING: InstallRow = {
   installedAt: null,
 };
 const NO_SECRET: InstallRow = { ...ACTIVE, installId: NO_SECRET_ID };
+/** An active row with no workspace on record: activation sets both, so only a damaged row looks like this. */
+const NO_TEAM_ID = 'Wd3sQ8nLz1Kc6Vb0Xp4TrA';
+const NO_TEAM: InstallRow = { ...ACTIVE, installId: NO_TEAM_ID, teamId: null, teamName: null };
 
 // A `block_actions` payload for a click on Allow, in a prompt our bot posted
 // in Mel's thread (docs.slack.dev, "block_actions payloads").
@@ -600,8 +603,8 @@ describe('the payload', () => {
 
   it('anything but a click on one of our prompt buttons, on a message, for this app and workspace → an empty 200, ignored', async () => {
     const w = world({
-      installs: [ACTIVE, PENDING],
-      signingSecrets: { [INSTALL_ID]: SIGNING_SECRET, [PENDING_ID]: SIGNING_SECRET },
+      installs: [ACTIVE, PENDING, NO_TEAM],
+      signingSecrets: { [INSTALL_ID]: SIGNING_SECRET, [PENDING_ID]: SIGNING_SECRET, [NO_TEAM_ID]: SIGNING_SECRET },
     });
     // Each is a valid click on every rule but the one its reason names.
     const cases: Array<[string, RouteRequest, string, string]> = [
@@ -611,6 +614,8 @@ describe('the payload', () => {
       ['a pending install', click(blockActions(), { installId: PENDING_ID }), PENDING_ID, 'status'],
       ['another workspace', click(blockActions({ team: { ...TEAM, id: 'T07OTHERTM9' } })), INSTALL_ID, 'team'],
       ['no workspace', click(without(blockActions(), 'team')), INSTALL_ID, 'team'],
+      // A missing workspace never matches a missing workspace.
+      ['no workspace on either side', click(blockActions({ team: { ...TEAM, id: null } }), { installId: NO_TEAM_ID }), NO_TEAM_ID, 'team'],
       ['a click in a modal', click(blockActions({ container: { ...CONTAINER, type: 'view' } })), INSTALL_ID, 'container'],
       ['an ephemeral message', click(blockActions({ container: { ...CONTAINER, is_ephemeral: true } })), INSTALL_ID, 'container'],
       ['an is_ephemeral we cannot read', click(blockActions({ container: { ...CONTAINER, is_ephemeral: 'true' } })), INSTALL_ID, 'container'],
@@ -634,6 +639,16 @@ describe('the payload', () => {
     }
     expect(w.lines).toHaveLength(cases.length);
     expect(w.clicks).toEqual([]);
+  });
+
+  it('a container that leaves out is_ephemeral, or sends null, is a message the whole conversation sees: the click is read', async () => {
+    // Slack sending `false` on a message everyone sees is measured nowhere yet: its absence mustn't drop a click.
+    const w = world();
+    for (const container of [without(CONTAINER, 'is_ephemeral'), { ...CONTAINER, is_ephemeral: null }]) {
+      expect(await w.send(click(blockActions({ container })))).toStrictEqual(OK);
+    }
+    expect(w.clicks.map((c) => c.click)).toStrictEqual([MELS_ALLOW, MELS_ALLOW]);
+    expect(w.lines).toEqual([]);
   });
 });
 
