@@ -6,6 +6,7 @@
  *   GET  /admin/slack              → SlackStatus
  *   POST /admin/slack/connect      { accessToken, refreshToken, botName } → { installUrl }
  *   POST /admin/slack/install-url  → { installUrl }, while an install is unfinished
+ *   POST /admin/slack/rename       { botName } → { botName }
  *   POST /admin/slack/disconnect   → { appDeleted }
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
@@ -42,6 +43,7 @@ export interface ConnectSlackInput {
 const STATUS_PATH = '/admin/slack';
 const CONNECT_PATH = '/admin/slack/connect';
 const INSTALL_URL_PATH = '/admin/slack/install-url';
+const RENAME_PATH = '/admin/slack/rename';
 const DISCONNECT_PATH = '/admin/slack/disconnect';
 
 const writeHeaders = {
@@ -200,6 +202,14 @@ export async function disconnectSlack(): Promise<{ appDeleted: boolean }> {
   return { appDeleted };
 }
 
+/** Rename the bot. Sends the name as typed; the answer is the name the server kept. */
+export async function renameSlackBot(botName: string): Promise<{ botName: string }> {
+  const answer = await post(RENAME_PATH, { botName });
+  const kept = isRecord(answer.body) ? answer.body['botName'] : undefined;
+  if (typeof kept !== 'string' || kept === '') throw badResponse(answer.status);
+  return { botName: kept };
+}
+
 /** Hand the whole page to Slack's Allow page. Refuses any other address. */
 export function goToSlack(installUrl: string): void {
   if (!isSlackAllowPage(installUrl)) throw new Error('not a Slack install link');
@@ -213,6 +223,8 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'invalid-refresh-token': "That doesn't look like a refresh token. It starts with xoxe-.",
   'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
   'slack-name': "Slack didn't accept that bot name. Try another.",
+  'slack-config-token':
+    "Slack stopped accepting the configuration token we have, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
   // Connect never heard back from Slack, so the app may exist with no way for us to delete it.
   'slack-unconfirmed':
     "Slack didn't give us a clear answer, so a Slack app may have been created anyway. Check api.slack.com/apps and delete it before you try again.",
@@ -246,6 +258,8 @@ export function slackErrorCopy(err: unknown): { field: SlackErrorField; message:
       }
       case 'slack-token':
         return { field: null, message: SLACK_ERROR_COPY['slack-token'] };
+      case 'slack-config-token':
+        return { field: null, message: SLACK_ERROR_COPY['slack-config-token'] };
       case 'slack-name':
         return { field: 'botName', message: SLACK_ERROR_COPY['slack-name'] };
       case 'slack-unconfirmed':

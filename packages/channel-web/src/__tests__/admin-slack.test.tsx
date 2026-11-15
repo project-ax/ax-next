@@ -11,6 +11,7 @@ import {
   disconnectSlack,
   fetchSlackStatus,
   goToSlack,
+  renameSlackBot,
   resumeSlackInstall,
   slackErrorCopy,
   slackStateChanged,
@@ -136,6 +137,27 @@ describe('the writes', () => {
     ]);
   });
 
+  it('renameSlackBot POSTs exactly the name with the CSRF header and returns the name the server kept', async () => {
+    answer = () => json(200, { botName: 'Ada Helper', extra: 1 });
+    expect(await renameSlackBot('  Ada   Helper ')).toEqual({ botName: 'Ada Helper' });
+    expect(calls).toEqual([
+      {
+        url: '/admin/slack/rename',
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: { botName: '  Ada   Helper ' },
+      },
+    ]);
+  });
+
+  it('a rename answer without a usable name is refused', async () => {
+    for (const body of [{}, { botName: '' }, { botName: 7 }]) {
+      answer = () => json(200, body);
+      await expect(renameSlackBot('Ada')).rejects.toMatchObject({ code: 'bad-response' });
+    }
+  });
+
   it('an install link that is not Slack’s Allow page is refused, never followed', async () => {
     for (const installUrl of [
       'https://evil.example/oauth/v2/authorize?state=x',
@@ -215,6 +237,11 @@ describe('what an error says', () => {
       refusal(502, 'slack-unconfirmed'),
       null,
       "Slack didn't give us a clear answer, so a Slack app may have been created anyway. Check api.slack.com/apps and delete it before you try again.",
+    ],
+    [
+      refusal(502, 'slack-config-token'),
+      null,
+      "Slack stopped accepting the configuration token we have, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
     ],
     [refusal(502, 'slack-error'), null, SLACK_ERROR_COPY.generic],
     [refusal(500, 'internal'), null, SLACK_ERROR_COPY.generic],
