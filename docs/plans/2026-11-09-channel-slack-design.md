@@ -565,7 +565,13 @@ connectors. The protections are:
   left: a message the runner folds INTO that dark reaction is answered there,
   out of Slack's sight, and its reply says it had nothing to add; and a reply
   whose invoke was answered early still ends if its own turn goes quiet for
-  60 seconds (a long tool call). A woken continuation has no lane slot either,
+  60 seconds. That covers a long tool call and also the wait for the turn's
+  first block (the claude-sdk runner sends whole blocks only), so a first
+  block slower than 60 seconds brings back "I didn't have anything to add"
+  with the real answer going nowhere. And if that turn then crashes, no
+  turn-error fires (its waiter is already gone), so the partial reply is
+  finished as if complete. The root cause is chat-orchestrator's oldest-waiter
+  fallback (`resolveWaiterFor`), filed as TASK-1126. A woken continuation has no lane slot either,
   so a message sent meanwhile may fold into it.
 - **A missed continuation's redraw** needs `decisions:get`. Without it, or
   when the read fails or takes over 5 seconds, the prompt keeps "I'll pick it
