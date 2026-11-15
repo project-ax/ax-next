@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOT_PREFIX, fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { CHANNEL_LIST_PAGE_LIMIT, SLACK_RESPONSE_CAP_BYTES } from '../limits.js';
+import { buildAppManifest, slackUrls } from '../manifest.js';
 import { SlackApiError, createSlackApi, type SlackApi, type SlackChannel } from '../slack-api.js';
 
 // Distinctive secrets, so a leak into an error is easy to spot.
@@ -138,6 +139,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
   return [
     ['tooling.tokens.rotate', () => api.rotateConfigToken(REFRESH)],
     ['apps.manifest.create', () => api.createApp(CFG, { display_information: { name: 'ax' } })],
+    ['apps.manifest.update', () => api.updateApp(CFG, 'A0APP', { display_information: { name: 'ax' } })],
     ['apps.manifest.delete', () => api.deleteApp(CFG, 'A0APP')],
     [
       'apps.icon.set',
@@ -188,6 +190,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
 const FORM_METHODS = [
   'tooling.tokens.rotate',
   'apps.manifest.create',
+  'apps.manifest.update',
   'apps.manifest.delete',
   'apps.icon.set',
   'oauth.v2.access',
@@ -632,6 +635,58 @@ describe('requests', () => {
         `Bearer ${CFG}`,
       ],
     ]);
+  });
+
+  it('updateApp sends the app id and the whole manifest as form fields with the config token', async () => {
+    const slack = fakeSlack(() => okJson({ app_id: 'A0APP', permissions_updated: false }));
+    const manifest = buildAppManifest('Ada Helper', slackUrls('https://ax.example', 'AAAAAAAAAAAAAAAAAAAAAA'));
+    await createSlackApi({ fetchImpl: slack.fetchImpl }).updateApp(CFG, 'A0APP', manifest);
+
+    expect(slack.sent.map((r) => [r.method, formOf(r), r.headers.get('authorization')])).toStrictEqual([
+      ['apps.manifest.update', { app_id: 'A0APP', manifest: JSON.stringify(manifest) }, `Bearer ${CFG}`],
+    ]);
+    expect(JSON.parse(formOf(slack.sent[0]!)['manifest']!)).toEqual(manifest);
+  });
+
+  it('updateApp resolves whatever permissions_updated says, and rejects refusals code-only', async () => {
+    const manifest = { display_information: { name: 'ax' } };
+    for (const fields of [
+      { app_id: 'A0APP', permissions_updated: true },
+      { app_id: 'A0APP', permissions_updated: false },
+      {},
+    ]) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(fields)).fetchImpl });
+      await expect(api.updateApp(CFG, 'A0APP', manifest), JSON.stringify(fields)).resolves.toBeUndefined();
+    }
+
+    for (const code of ['invalid_manifest', 'invalid_auth', 'token_revoked']) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => slackError(code)).fetchImpl });
+      const err = await failure(api.updateApp(CFG, 'A0APP', manifest));
+      expect(err.message).toBe(`slack apps.manifest.update: ${code}`);
+      expect(err.method).toBe('apps.manifest.update');
+      expect(err.code).toBe(code);
+    }
+
+    // Slack explains a refused manifest in `errors` (docs.slack.dev's own
+    // example). None of Slack's text rides along on the error.
+    const explained = {
+      ok: false,
+      error: 'invalid_manifest',
+      errors: [
+        {
+          message: 'Event Subscription requires either Request URL or Socket Mode Enabled',
+          pointer: '/settings/event_subscriptions',
+        },
+        { message: 'Interactivity requires a Request URL', pointer: '/settings/interactivity' },
+      ],
+    };
+    const api = createSlackApi({
+      fetchImpl: fakeSlack(() => new Response(JSON.stringify(explained), { status: 200 })).fetchImpl,
+    });
+    const err = await failure(api.updateApp(CFG, 'A0APP', manifest));
+    expect(err.message).toBe('slack apps.manifest.update: invalid_manifest');
+    const dump = [err.message, String(err), err.stack ?? '', JSON.stringify(err), JSON.stringify(Object.entries(err))].join('\n');
+    for (const said of ['Request URL', '/settings/']) expect(dump, said).not.toContain(said);
   });
 });
 

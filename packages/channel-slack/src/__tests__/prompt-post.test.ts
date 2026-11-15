@@ -63,6 +63,7 @@ function fakeSlack(answers: Answer[] = [{ ts: PROMPT_TS }]) {
   const api: SlackApi = {
     rotateConfigToken: notHere,
     createApp: notHere,
+    updateApp: notHere,
     deleteApp: notHere,
     setAppIcon: notHere,
     oauthAccess: notHere,

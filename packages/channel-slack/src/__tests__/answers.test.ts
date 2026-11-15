@@ -204,6 +204,7 @@ function fakeSlack(o: { users: Record<string, unknown>; hang?: Method; hold?: { 
   const api: SlackApi = {
     rotateConfigToken: notHere('rotateConfigToken'),
     createApp: notHere('createApp'),
+    updateApp: notHere('updateApp'),
     deleteApp: notHere('deleteApp'),
     setAppIcon: notHere('setAppIcon'),
     oauthAccess: notHere('oauthAccess'),

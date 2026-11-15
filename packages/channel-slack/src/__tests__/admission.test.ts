@@ -66,6 +66,7 @@ function fakeApi(users: Record<string, unknown> = { [ALICE]: member() }) {
   const api: SlackApi = {
     rotateConfigToken: notHere,
     createApp: notHere,
+    updateApp: notHere,
     deleteApp: notHere,
     setAppIcon: notHere,
     oauthAccess: notHere,

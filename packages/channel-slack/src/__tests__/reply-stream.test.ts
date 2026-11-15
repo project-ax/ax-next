@@ -86,6 +86,7 @@ function fakeSlack(
   const api: SlackApi = {
     rotateConfigToken: notHere,
     createApp: notHere,
+    updateApp: notHere,
     deleteApp: notHere,
     setAppIcon: notHere,
     oauthAccess: notHere,

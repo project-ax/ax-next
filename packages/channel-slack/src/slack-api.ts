@@ -1,10 +1,10 @@
 /**
  * channel-slack's only egress: a small Slack Web API client over an injected
- * `fetch`. No Slack SDK: about seventeen methods don't earn a dependency tree,
+ * `fetch`. No Slack SDK: about eighteen methods don't earn a dependency tree,
  * or retries and logging we don't control.
  *
  * The capability is as small as we could make it (invariant 5):
- *   - one destination, `https://slack.com/api/<method>`, POST, for the seventeen
+ *   - one destination, `https://slack.com/api/<method>`, POST, for the eighteen
  *     methods below and no others. Nothing a caller passes reaches the URL;
  *   - redirects are refused (`redirect: 'manual'`; any 3xx, or an answer a
  *     fetch followed a redirect to anyway, is `redirect`), so no token is
@@ -20,9 +20,10 @@
  * Encoding, per method (MEASURED from docs.slack.dev, 2026-11-12):
  * `tooling.tokens.rotate`, `oauth.v2.access` and `users.info` take ONLY form
  * bodies ("arguments sent in a JSON body are ignored by methods that don't
- * list application/json"), and so do the `apps.*` calls here,
- * `conversations.info` and `conversations.list` (read 2026-11-13).
- * `conversations.join` lists both and is sent as a form like its siblings.
+ * list application/json"), and so do `conversations.info` and
+ * `conversations.list` (read 2026-11-13). `conversations.join` and every
+ * `apps.*` call here list both (the `apps.*` pages read 2026-11-15) and are
+ * sent as forms like their siblings.
  * Every `chat.*` call is JSON, and so are `reactions.add` and
  * `reactions.remove` (both list JSON; MEASURED working on the kind walk,
  * 2026-11-13). `oauth.v2.access` authenticates the app with HTTP Basic, so
@@ -142,6 +143,12 @@ export interface SlackChannel {
 export interface SlackApi {
   rotateConfigToken(refreshToken: string): Promise<RotatedConfigToken>;
   createApp(configToken: string, manifest: Record<string, unknown>): Promise<CreatedApp>;
+  /**
+   * Replace the app's manifest. Slack keeps nothing it isn't sent, so pass all
+   * of it. `permissions_updated` is deliberately unread: the manifest carries
+   * this build's scopes; a card that changes `BOT_SCOPES` owns existing installs.
+   */
+  updateApp(configToken: string, appId: string, manifest: Record<string, unknown>): Promise<void>;
   deleteApp(configToken: string, appId: string): Promise<void>;
   setAppIcon(configToken: string, appId: string, url: string): Promise<void>;
   oauthAccess(i: {
@@ -208,6 +215,7 @@ export interface SlackApi {
 type SlackMethod =
   | 'tooling.tokens.rotate'
   | 'apps.manifest.create'
+  | 'apps.manifest.update'
   | 'apps.manifest.delete'
   | 'apps.icon.set'
   | 'oauth.v2.access'
@@ -464,6 +472,14 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
         throw badResponse(method);
       }
       return { appId, clientId, clientSecret, signingSecret };
+    },
+
+    async updateApp(configToken, appId, manifest) {
+      await call(
+        'apps.manifest.update',
+        bearer(configToken),
+        form({ app_id: appId, manifest: JSON.stringify(manifest) }),
+      );
     },
 
     async deleteApp(configToken, appId) {
