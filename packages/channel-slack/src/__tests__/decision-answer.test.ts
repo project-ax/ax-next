@@ -253,6 +253,14 @@ describe('decisionOutcome: what the prompt says, from what decisions handed back
       { ...inert('executed'), path: 'host-replays', error: 'It did not work.' },
       shows(COPY.decisionNotRun(TODAY)),
     ],
+    // The plan's order: an error comes before the status, so a fresh Allow
+    // whose host replay threw says "try Today", and decisionFailed is what a
+    // later read of that failed row says.
+    [
+      'a host replay that threw (failed, with its error): the error decides',
+      { ...inert('failed'), error: 'The tool could not finish.' },
+      shows(COPY.decisionNotRun(TODAY)),
+    ],
     // Executed: who runs it, and whether there is a turn to follow.
     ['executed, handed to the warm agent with a stream: followed', handedToAgent('req-0123456789ab'), { line: COPY.decisionAllowed, follow: true }],
     [
