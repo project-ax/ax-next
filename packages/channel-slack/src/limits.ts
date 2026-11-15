@@ -183,6 +183,13 @@ export const PROMPT_TTL_MS = 86_400_000;
  */
 export const PROMPT_MAX = 1_000;
 /**
+ * The most people told, once each, that a prompt isn't theirs to answer
+ * (prompts.ts `firstRefusal`). Anyone else who clicks it after that is
+ * refused without a word: each telling is a Slack call, and only the person
+ * who asked can answer anyway.
+ */
+export const PROMPT_REFUSALS_MAX = 20;
+/**
  * The longest prompt subject shown (a decision's summary, a host, a skill's
  * description), in UTF-16 code units (format.ts `cleanPromptSubject`).
  * Slack's cap on a section's text is 3,000.
