@@ -1341,6 +1341,8 @@ describe('@ax/preset-k8s wiring', () => {
       'chat:stream-chunk',
       'chat:turn-end',
       'chat:turn-error',
+      // A card asking the person's OK (a blocked host, a skill): Slack turns hear them too (TASK-1095).
+      'chat:permission-request',
     ]);
     // Every hard call has a producer in this preset, and so do the optional ones.
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
