@@ -225,6 +225,9 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'slack-name': "Slack didn't accept that bot name. Try another.",
   'slack-config-token':
     "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
+  // A 409 the Rename form shows itself: a connected card has no https view for the re-read to land on.
+  'public-origin-not-https':
+    "Our public address isn't https right now, so we can't send Slack a new name. Whoever runs this server can fix that.",
   'slack-app-gone':
     'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',
   // Connect never heard back from Slack, so the app may exist with no way for us to delete it.
@@ -262,6 +265,8 @@ export function slackErrorCopy(err: unknown): { field: SlackErrorField; message:
         return { field: null, message: SLACK_ERROR_COPY['slack-token'] };
       case 'slack-config-token':
         return { field: null, message: SLACK_ERROR_COPY['slack-config-token'] };
+      case 'public-origin-not-https':
+        return { field: null, message: SLACK_ERROR_COPY['public-origin-not-https'] };
       case 'slack-app-gone':
         return { field: null, message: SLACK_ERROR_COPY['slack-app-gone'] };
       case 'slack-name':

@@ -61,6 +61,7 @@ import {
   goToSlack,
   renameSlackBot,
   resumeSlackInstall,
+  SlackAdminError,
   slackErrorCopy,
   slackStateChanged,
   type SlackErrorField,
@@ -458,6 +459,11 @@ function RenameForm({
       onRenamed(botName);
     } catch (err) {
       setBusy(false);
+      // Before the state-changed check: a connected card has no https view to re-read into, so refreshing would loop.
+      if (err instanceof SlackAdminError && err.code === 'public-origin-not-https') {
+        setError(slackErrorCopy(err));
+        return;
+      }
       if (slackStateChanged(err)) {
         onChanged();
         return;

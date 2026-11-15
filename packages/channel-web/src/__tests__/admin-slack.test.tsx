@@ -244,6 +244,11 @@ describe('what an error says', () => {
       "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
     ],
     [
+      refusal(409, 'public-origin-not-https'),
+      null,
+      "Our public address isn't https right now, so we can't send Slack a new name. Whoever runs this server can fix that.",
+    ],
+    [
       refusal(502, 'slack-app-gone'),
       null,
       'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',

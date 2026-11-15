@@ -429,6 +429,18 @@ describe('Rename', () => {
     expect(status).toHaveBeenCalledTimes(1);
   });
 
+  it('a rename refused for want of an https address says so, instead of refreshing in a loop', async () => {
+    rename.mockRejectedValueOnce(new SlackAdminError(409, 'public-origin-not-https'));
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, 'Ada Helper');
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent("Our public address isn't https right now");
+    expect(document.body.textContent).not.toContain('public-origin-not-https');
+    expect(document.body.textContent).not.toContain('This changed while you were here');
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
   it('an app Slack no longer has says to disconnect and connect again, in the dialog', async () => {
     rename.mockRejectedValueOnce(new SlackAdminError(502, 'slack-app-gone'));
     renderTab(CONNECTED);
