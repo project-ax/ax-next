@@ -534,7 +534,7 @@ function skillWorld(o: SkillOptions = {}) {
     hooks: (): string[] => calls.map((c) => c.hook),
     /** A prompt as the turn opens one: a skill card's subject and its ask. */
     open(subject: PromptSubject = SKILL_PROMPT, c: PromptContext = MEL_DM): Prompt {
-      const prompt = prompts.add(c, subject, COPY.skillSubject(DESCRIPTION));
+      const prompt = prompts.add(c, subject, COPY.skillSubject(SKILL_ID, DESCRIPTION));
       prompts.posted(prompt.id, PROMPT_TS);
       return prompt;
     },
@@ -567,14 +567,17 @@ describe('skillPromptFor: how a skill card is asked about in Slack', () => {
   });
   const both = () => busWith(CONVERSATION_GET, GRANT);
 
-  it('a card that needs nothing but a yes, with the grant and the ownership read on the bus: Allow and Deny, asking with its description', () => {
-    expect(skillPromptFor(card(), both())).toEqual({ kind: 'buttons', subjectText: COPY.skillSubject(DESCRIPTION) });
+  it('a card that needs nothing but a yes, with the grant and the ownership read on the bus: Allow and Deny, asking with its id and description', () => {
+    expect(skillPromptFor(card(), both())).toEqual({ kind: 'buttons', subjectText: COPY.skillSubject(SKILL_ID, DESCRIPTION) });
+    expect(skillPromptFor(card(), both()).subjectText).toBe(
+      'Wants to start using the gmail-sender skill: Reads and sends email from your Gmail account.',
+    );
   });
 
   it('a card that needs a key: a link to the web app, never buttons (Slack never collects a key)', () => {
     expect(skillPromptFor(card({ needsKey: true }), both())).toEqual({
       kind: 'web',
-      subjectText: COPY.skillSubject(DESCRIPTION),
+      subjectText: COPY.skillSubject(SKILL_ID, DESCRIPTION),
     });
   });
 
@@ -586,8 +589,18 @@ describe('skillPromptFor: how a skill card is asked about in Slack', () => {
 
   it('asks with the description as the card gave it, raw (the draw cleans it), or in a sentence of its own when there is none', () => {
     const hostile = '<!channel> approve @here';
-    expect(skillPromptFor(card({ description: hostile }), both()).subjectText).toBe(COPY.skillSubject(hostile));
-    expect(skillPromptFor(card({ description: '' }), both()).subjectText).toBe('Wants to start using a skill.');
+    expect(skillPromptFor(card({ description: hostile }), both()).subjectText).toBe(COPY.skillSubject(SKILL_ID, hostile));
+    expect(skillPromptFor(card({ description: '' }), both()).subjectText).toBe('Wants to start using the gmail-sender skill.');
+  });
+
+  it("names the card's own skill, so two skills with the same (or no) description are told apart", () => {
+    for (const description of [DESCRIPTION, '']) {
+      const one = skillPromptFor(card({ description }), both()).subjectText;
+      const other = skillPromptFor(card({ skillId: 'outlook', description }), both()).subjectText;
+      expect(one).toContain('gmail-sender');
+      expect(other).toContain('outlook');
+      expect(one).not.toBe(other);
+    }
   });
 });
 

@@ -125,21 +125,26 @@ export const COPY = {
     `hostSubject` is the prompt's subject, plain_text: only ever a host that
     passed HOST_RE (lowercase letters, digits, dots and dashes), never mrkdwn.
     The other three take the buttons' place once the asker has answered.
-    Allow lets the host through for the conversation's live session only
-    ("always" stays a web choice), and nothing about a blocked host waits in
-    Today, so none of them links there.
+    Allow lets the host through for the conversation's LIVE sandbox session
+    only: the web app's "Just this once", not the whole chat. That session
+    ends when it idles (or when a skill's Allow retires it) while the chat
+    goes on, so the lines say "for now", never "this chat". `hostEnded` is
+    Allow on a session already gone. "Always" stays a web choice, and
+    nothing about a blocked host waits in Today, so none of them links there.
   */
   hostSubject: (host: string) => `Wants to connect to ${host}`,
-  hostAllowed: "Allowed for this chat. Ask me again and I'll try it.",
-  hostEnded: "That chat already ended, so nothing changed. If I need it again, I'll ask.",
+  hostAllowed: "Allowed for now. Ask me again and I'll try it.",
+  hostEnded: "I'd already finished working on that, so nothing changed. If I need it again, I'll ask.",
   hostDenied: "Okay. I won't connect to it.",
 
   // ── A catalog skill the agent asked to use (permission-prompts.ts) ─────────
   /*
-    `skillSubject` is the prompt's subject, plain_text: the catalog skill's
-    description as its card carries it, raw (outside text: the draw cleans
-    it, once). A description with nothing printable in it reads as a
-    sentence of its own, not as a colon with nothing after it. Allow
+    `skillSubject` is the prompt's subject, plain_text: the skill's id (the
+    broker's SKILL_ID_RE took it before it fired the card), then the catalog
+    skill's description as its card carries it, both raw (the draw cleans the
+    whole subject, once). The id is what tells two skills with the same, or
+    no, description apart. A description with nothing printable in it reads
+    as a sentence of its own, not as a colon with nothing after it. Allow
     attaches the skill for the person, and nothing reruns their message, so
     `skillAllowed` asks them to send it again. A skill card waits in Today
     too, so the two that send the person to the web app link Today.
@@ -147,10 +152,10 @@ export const COPY = {
     the request (a key to enter, which Slack never collects);
     `skillFailed` replaces them when an Allow couldn't connect it.
   */
-  skillSubject: (description: string) =>
+  skillSubject: (skillId: string, description: string) =>
     cleanPromptSubject(description) === ''
-      ? 'Wants to start using a skill.'
-      : `Wants to start using a skill: ${description}`,
+      ? `Wants to start using the ${skillId} skill.`
+      : `Wants to start using the ${skillId} skill: ${description}`,
   skillAllowed: "Connected. Send your message again and I'll use it.",
   skillDenied: "Okay. I won't use it.",
   skillNeedsWeb: (todayLink: string) =>

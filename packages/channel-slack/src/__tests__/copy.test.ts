@@ -33,9 +33,9 @@ const ARGS: Record<string, unknown[][]> = {
   // A host prompt's subject (plain_text, cleaned at draw). Only a host past HOST_RE ever reaches it
   // (permission-prompts.ts `hostSubject`): lowercase letters, digits, dots and dashes.
   hostSubject: [['api.example.com']],
-  // A skill prompt's subject (plain_text): a catalog skill's description, kept raw and cleaned where it is
-  // drawn (blocks.ts), so a hostile one is pinned there (blocks.test.ts, turn.test.ts), not here.
-  skillSubject: [['Reads and sends email from your Gmail account.'], ['']],
+  // A skill prompt's subject (plain_text): a catalog skill's id and description, kept raw and cleaned where
+  // they are drawn (blocks.ts), so a hostile one is pinned there (blocks.test.ts, turn.test.ts), not here.
+  skillSubject: [['gmail', 'Reads and sends email from your Gmail account.'], ['gmail', '']],
   skillNeedsWeb: [[TODAY], [HOSTILE]],
   skillFailed: [[TODAY], [HOSTILE]],
   slashNotMapped: [[ORIGIN]],
@@ -221,30 +221,37 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     expect(COPY.promptStillWorking).not.toBe(COPY.promptFailed);
   });
 
-  it("a host prompt: its subject names the host as given, Allow says it is for this chat only, and nothing links anywhere", () => {
+  it("a host prompt: its subject names the host as given, Allow says it is for now only, and nothing links anywhere", () => {
     expect(COPY.hostSubject('api.example.com')).toBe('Wants to connect to api.example.com');
-    // Session only: "always" stays a choice in the web app.
-    expect(COPY.hostAllowed).toMatch(/for this chat/);
+    // The live sandbox session only (the web's "Just this once"): "always" stays a choice in the web app.
+    expect(COPY.hostAllowed).toMatch(/for now/);
     expect(COPY.hostAllowed).not.toMatch(/always/i);
+    // Not the chat: the session ends when it idles (or a skill's Allow retires it) while the chat goes on.
+    for (const line of [COPY.hostAllowed, COPY.hostEnded]) expect(line).not.toMatch(/\bchat\b/i);
     // A blocked host never waits in Today, so none of its lines points there.
     for (const line of [COPY.hostSubject('api.example.com'), COPY.hostAllowed, COPY.hostEnded, COPY.hostDenied]) {
       expect(line).not.toMatch(/https?:|\]\(|Today/);
     }
   });
 
-  it("a skill prompt's subject is the catalog's description as given, raw: the draw cleans it, once (blocks.ts)", () => {
-    expect(COPY.skillSubject('Reads and sends email from your Gmail account.')).toBe(
-      'Wants to start using a skill: Reads and sends email from your Gmail account.',
+  it("a skill prompt's subject names the skill, then the catalog's description as given, raw: the draw cleans it, once (blocks.ts)", () => {
+    expect(COPY.skillSubject('gmail', 'Reads and sends email from your Gmail account.')).toBe(
+      'Wants to start using the gmail skill: Reads and sends email from your Gmail account.',
     );
     // Not cleaned here: cleaning twice reads differently (format.ts), and the draw cleans it.
-    expect(COPY.skillSubject('<!channel> approve')).toBe('Wants to start using a skill: <!channel> approve');
+    expect(COPY.skillSubject('gmail', '<!channel> approve')).toBe('Wants to start using the gmail skill: <!channel> approve');
   });
 
-  it('a skill with no description, or one with nothing printable in it, is asked about in a sentence of its own', () => {
+  it('a skill with no description, or one with nothing printable in it, is still named, in a sentence of its own', () => {
     const invisible = [0x200b, 0x202e, 0xfeff, 0x2060].map((c) => String.fromCharCode(c)).join('');
     for (const blank of ['', '   ', '\n\t', invisible, ` ${invisible} `]) {
-      expect(COPY.skillSubject(blank), JSON.stringify(blank)).toBe('Wants to start using a skill.');
+      expect(COPY.skillSubject('gmail', blank), JSON.stringify(blank)).toBe('Wants to start using the gmail skill.');
     }
+  });
+
+  it('two skills with the same description are told apart by their ids', () => {
+    expect(COPY.skillSubject('gmail', 'Sends email.')).not.toBe(COPY.skillSubject('outlook', 'Sends email.'));
+    expect(COPY.skillSubject('gmail', '')).not.toBe(COPY.skillSubject('outlook', ''));
   });
 
   it("a skill prompt's answers: Allow asks for the message again; a key, or a failure, is finished in the web app", () => {

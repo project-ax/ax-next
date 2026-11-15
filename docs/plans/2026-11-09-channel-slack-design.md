@@ -449,16 +449,20 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
        exactly the prompt's session and host, as the asker; the proxy lets
        only the session's owner do it. It widens that one session's live
        allowlist and is never saved (`host-grants:grant`, "always for this
-       agent", stays a web-app choice). A session that has ended reads "That
-       chat already ended". **Deny** calls nothing; the host stays refused and
+       agent", stays a web-app choice): the web app's "Just this once", so
+       it reads "Allowed for now", never "for this chat" (the session ends
+       when it idles, or when a skill's Allow retires it, while the chat goes
+       on). A session that has ended reads "I'd already finished working on
+       that". **Deny** calls nothing; the host stays refused and
        the agent asks again if it needs it. A host prompt has no Today link:
        the web app keeps host cards out of Today on purpose.
      - **A catalog skill the agent asked to use.** In Slack the card comes
        in a continuation: tool-policy holds `request_capability` itself, and the
        card fires once that hold is allowed and the woken agent asks again. A
        continuation whose only output is the card still posts its prompt. Its
-       subject is the skill's description (text its author wrote, so cleaned
-       and drawn as plain text), and the prompt links Today, where the card
+       subject names the skill's id (so two skills with the same, or no,
+       description are told apart) and its description (text its author
+       wrote): both cleaned and drawn as plain text, and the prompt links Today, where the card
        waits too. **Allow**
        does what the web app's `/api/chat/permission-decision` does
        (`routes-chat.ts:885`), as the asker: `conversations:get` first (the
@@ -638,7 +642,7 @@ connectors. The protections are:
 - **A click on a forgotten prompt says "it's in Today"** whatever the kind
   (a restart or the 24-hour limit leaves no kind to tailor by). For a host
   that points at nothing: the agent just asks again.
-- **A skill prompt shows only the description**, not the hosts and packages the
+- **A skill prompt shows only the id and description**, not the hosts and packages the
   web card lists ("To do this, it needs to reach: ..."). The reach is the
   skill's connectors', which an admin curates, and anything needing a key goes
   to the web app.

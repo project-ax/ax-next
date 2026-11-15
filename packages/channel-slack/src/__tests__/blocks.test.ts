@@ -246,7 +246,7 @@ describe('outcomeBlocks: a prompt once answered', () => {
 
 describe("linkOnlyBlocks: a request Slack can't take, sent to the web app", () => {
   /** A catalog skill's description, framed as a skill prompt frames it. */
-  const SKILL = COPY.skillSubject('Reads and sends email from your Gmail account.');
+  const SKILL = COPY.skillSubject('gmail', 'Reads and sends email from your Gmail account.');
   const LINE = COPY.skillNeedsWeb(TODAY);
 
   it('is the subject, then the line, and nothing to click; the notification is the generic ask, never the subject', () => {

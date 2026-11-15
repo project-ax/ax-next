@@ -954,7 +954,7 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
   const SAID = { kind: 'text', text: 'I need one more thing for that.' };
   const CHANNEL = 'C07SUPPORT1';
   const THREAD = '1763035200.000100';
-  const SUBJECT = COPY.skillSubject(DESCRIPTION);
+  const SUBJECT = COPY.skillSubject('gmail-sender', DESCRIPTION);
   type Block = { type: string; text?: { text?: string } };
   const posts = (calls: readonly SlackCall[]): SlackCall[] => calls.filter((c) => c.method === 'postBlocks');
   const subjects = (calls: readonly SlackCall[]): string[] =>
@@ -1075,7 +1075,7 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
     const h = harness({ chunks: [SAID], cards });
     await h.run('attended');
     expect(subjects(h.calls())).toEqual([
-      COPY.skillSubject('Reads your Drive.'),
+      COPY.skillSubject('drive-reader', 'Reads your Drive.'),
       COPY.hostSubject('api.example.com'),
       SUBJECT,
     ]);
@@ -1106,9 +1106,10 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
 
     const sent = posts(h.calls());
     expect(sent).toHaveLength(2);
-    for (const post of sent) {
+    for (const [i, post] of sent.entries()) {
+      const skillId = ['gmail-sender', 'drive-reader'][i]!;
       const blocks = post.args['blocks'] as Array<{ type: string; text?: { type: string; text: string } }>;
-      expect(blocks[0]!.text).toEqual({ type: 'plain_text', text: cleanPromptSubject(COPY.skillSubject(hostile)), emoji: false });
+      expect(blocks[0]!.text).toEqual({ type: 'plain_text', text: cleanPromptSubject(COPY.skillSubject(skillId, hostile)), emoji: false });
       expect(spellsMention(blocks[0]!.text!.text)).toBe(false);
       expect(post.args['text']).toBe(COPY.heldAsked);
       // Nowhere but the plain_text section.
@@ -1734,14 +1735,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(posts).toHaveLength(1);
     expect(posts[0]!.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
     const blocks = posts[0]!.args['blocks'] as Array<{ type: string; text?: { text?: string }; elements?: unknown[] }>;
-    expect(blocks[0]!.text!.text).toBe(COPY.skillSubject(DESCRIPTION));
+    expect(blocks[0]!.text!.text).toBe(COPY.skillSubject('gmail-sender', DESCRIPTION));
     expect(blocks.at(-1)!.elements).toContainEqual({ type: 'mrkdwn', text: COPY.promptToday(TODAY) });
     const claim = h.prompts.claim(promptIdOf(posts[0]!), SENDER);
     expect(claim.ok && claim.prompt).toMatchObject({
       ...CONTEXT,
       mode,
       subject: { kind: 'skill', skillId: 'gmail-sender' },
-      subjectText: COPY.skillSubject(DESCRIPTION),
+      subjectText: COPY.skillSubject('gmail-sender', DESCRIPTION),
       messageTs: PROMPT_TS,
     });
     expect(h.prompts.size()).toBe(1);
@@ -1811,7 +1812,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
         JSON.stringify({
           channel: CHANNEL,
           threadTs: THREAD,
-          ...linkOnlyBlocks({ subject: COPY.skillSubject(DESCRIPTION), line: COPY.skillNeedsWeb(TODAY) }),
+          ...linkOnlyBlocks({ subject: COPY.skillSubject('gmail-sender', DESCRIPTION), line: COPY.skillNeedsWeb(TODAY) }),
         }),
       ),
     ]);

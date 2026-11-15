@@ -32,7 +32,7 @@ import type { PermissionIn } from './turn-registry.js';
  *     stays a choice in the web app).
  *
  *       added: true                  → hostAllowed
- *       added: false (chat ended)    → hostEnded
+ *       added: false (session ended) → hostEnded
  *       forbidden, invalid-host      → promptClosed (logged by code)
  *       an answer it can't read      → promptClosed (logged: bad-response)
  *       anything else                → thrown to the gate: "try again"
@@ -53,10 +53,11 @@ import type { PermissionIn } from './turn-registry.js';
  * card, kind `skill`), asked about in a DM or an attended turn after its
  * reply. In Slack the card comes in a continuation: tool-policy holds
  * `request_capability` itself, and the card fires once that hold is allowed
- * and the woken agent asks again. Its subject is the catalog skill's
- * description (`COPY.skillSubject`): text its author wrote, so outside
- * text, shown only as the prompt's plain_text subject (cleaned there), never
- * in mrkdwn, a notification or a log. The card waits in Today too
+ * and the woken agent asks again. Its subject names the skill's id and the
+ * catalog skill's description (`COPY.skillSubject`): the description is text
+ * its author wrote, so outside text, and both are shown only as the prompt's
+ * plain_text subject (cleaned there), never in mrkdwn, a notification or a
+ * log. The card waits in Today too
  * (channel-web keeps it there), so its prompt links Today. Slack never
  * collects a key: a card that needs one, or a bus without the two hooks
  * Allow needs, gets a link to the web app instead of buttons
@@ -180,7 +181,7 @@ export type SkillCard = Extract<PermissionIn, { kind: 'skill' }>;
 
 /**
  * How a skill card is asked about in Slack, and with what subject
- * (`COPY.skillSubject`, raw: the draw cleans it):
+ * (`COPY.skillSubject`: its id and description, raw: the draw cleans it):
  *
  *   - `buttons`: Allow and Deny. Only a card that needs nothing but a yes,
  *     on a bus with both hooks Allow calls.
@@ -192,7 +193,7 @@ export function skillPromptFor(
   p: SkillCard,
   bus: Pick<HookBus, 'hasService'>,
 ): { kind: 'buttons'; subjectText: string } | { kind: 'web'; subjectText: string } {
-  const subjectText = COPY.skillSubject(p.description);
+  const subjectText = COPY.skillSubject(p.skillId, p.description);
   if (p.needsKey || !bus.hasService(APPLY_GRANT) || !bus.hasService(CONVERSATION_GET)) {
     return { kind: 'web', subjectText };
   }

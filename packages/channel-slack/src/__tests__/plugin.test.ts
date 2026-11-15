@@ -993,7 +993,7 @@ describe('@ax/channel-slack plugin', () => {
     const blocks = posted.body['blocks'] as Array<Record<string, unknown>>;
     expect(blocks[0]).toEqual({
       type: 'section',
-      text: { type: 'plain_text', text: COPY.skillSubject('Reads and sends email.'), emoji: false },
+      text: { type: 'plain_text', text: 'Wants to start using the gmail-sender skill: Reads and sends email.', emoji: false },
     });
     const actions = blocks.find((b) => b['type'] === 'actions')!;
     const promptId = (actions['elements'] as Array<{ value: string }>)[0]!.value;
