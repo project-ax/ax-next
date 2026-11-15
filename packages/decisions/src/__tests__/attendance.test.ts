@@ -179,16 +179,35 @@ describe('attendanceFor', () => {
     expect(await attendanceFor(bus, ctx(), 'conv-b')).toBe('unattended');
   });
 
-  it('a slack conversation is unattended until approval buttons exist (TASK-1095)', async () => {
-    // TASK-1093. A Slack DM is the owner's own turn (`source: 'user'`), but
-    // Slack can't show an approval card yet: read as attended, a held call
-    // would park on a button nobody can see. Unattended, it waits in Today and
-    // the host replays it on approval. TASK-1095 adds the buttons and must
-    // flip this (and this test) on purpose.
+  it('a slack conversation is attended: Slack shows approval buttons (TASK-1095)', async () => {
+    // Flipped on purpose. TASK-1093 read a Slack thread as unattended because
+    // Slack couldn't show an approval card, so a held call would have waited
+    // on a button nobody could see. TASK-1095 puts Allow and Deny in the
+    // thread, answerable only by the person whose turn it was, so a Slack
+    // thread is a chat a person answers in, like a web one. That covers DMs
+    // and a member's turn in a connected channel: both are `source: 'user'`.
     const bus = new HookBus();
     withConversations(bus, { 'conv-slack': { origin: 'slack' } });
-    expect(await attendanceFor(bus, ctx({ source: 'user' }), 'conv-slack')).toBe('unattended');
-    expect(await attendanceFor(bus, ctx(), 'conv-slack')).toBe('unattended');
+    expect(await attendanceFor(bus, ctx({ source: 'user' }), 'conv-slack')).toBe('attended');
+    expect(await attendanceFor(bus, ctx(), 'conv-slack')).toBe('attended');
+  });
+
+  it('an external turn in a slack conversation is unattended', async () => {
+    // TASK-1094. An outsider's turn in a connected channel runs as whoever
+    // connected it, and the outsider has no access to the agent: Slack shows
+    // them no buttons. The hold waits in the connector's Today and the host
+    // replays the call on their yes. The flip above must never reach this.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-slack': { origin: 'slack' } });
+    expect(await attendanceFor(bus, ctx({ source: 'external' }), 'conv-slack')).toBe('unattended');
+  });
+
+  it('an unknown source in a slack conversation is unattended', async () => {
+    // Fails closed, as in a web conversation: a source this build can't place
+    // may be an outsider.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-slack': { origin: 'slack' } });
+    expect(await attendanceFor(bus, ctx({ source: 'bogus' as never }), 'conv-slack')).toBe('unattended');
   });
 
   it('an external turn is unattended even in a web conversation', async () => {
@@ -241,6 +260,17 @@ describe('conversationChannel', () => {
     const bus = new HookBus();
     withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: '' } });
     expect((await conversationChannel(bus, ctx(), 'conv-web'))!.activeSessionId).toBeNull();
+  });
+
+  it('carries a slack origin through as itself, with its live session (TASK-1095)', async () => {
+    // Not folded into `'routine'` (what an unknown origin becomes) and not into
+    // `'web'`: the channel is reported as the channel it is.
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-slack': { origin: 'slack', activeSessionId: 'sess-slack' } });
+    expect(await conversationChannel(bus, ctx(), 'conv-slack')).toEqual({
+      origin: 'slack',
+      activeSessionId: 'sess-slack',
+    });
   });
 });
 

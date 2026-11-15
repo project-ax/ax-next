@@ -1,10 +1,11 @@
 /**
  * @ax/decisions — the Decision row.
  *
- * One row, three renderers (the in-thread card, the Today queue, and later
- * Slack's interactive message). There is no separate "live approval" concept —
- * an approval abandoned by its agent is the same row as any other, which is
- * what lets `decisions:approve` re-route it to the host replay on the spot.
+ * One row, three renderers (the in-thread card, the Today queue, and Slack's
+ * Allow/Deny prompt in the thread, TASK-1095). There is no separate "live
+ * approval" concept — an approval abandoned by its agent is the same row as
+ * any other, which is what lets `decisions:approve` re-route it to the host
+ * replay on the spot.
  *
  * It does NOT, however, degrade into the queue for free, and this file used to
  * claim it did. The row cannot tell you the agent left; only a live read can.
@@ -32,10 +33,11 @@ export type { ToolCall };
  * Which CHANNEL opened the conversation that produced this decision. Captured
  * at hold time and never revisited.
  *
- *   - `attended`   — a live channel (today: web) with a human expected to
- *                    answer inside the keepalive budget, so an agent MAY still
- *                    be warm when they do.
- *   - `unattended` — routine tick or webhook. Nothing was ever waiting on the
+ *   - `attended`   — a live channel (web, or a Slack thread since TASK-1095)
+ *                    with a human expected to answer inside the keepalive
+ *                    budget, so an agent MAY still be warm when they do.
+ *   - `unattended` — routine tick or webhook, or an outsider's turn in any
+ *                    channel (TASK-1091). Nothing was ever waiting on the
  *                    answer; the host replays the recorded call (AW-5).
  *
  * IT DOES NOT PICK THE EXECUTION PATH ON ITS OWN, and reading it as though it
