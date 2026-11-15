@@ -5,7 +5,12 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
-import { createInstallStore, type InstallRow, type InstallStore } from '../store.js';
+import {
+  createInstallStore,
+  InstallStoreError,
+  type InstallRow,
+  type InstallStore,
+} from '../store.js';
 
 let container: StartedPostgreSqlContainer;
 let pool: pg.Pool;
@@ -229,6 +234,31 @@ describe('install rows', () => {
       store.activate(installId, { ...TEAM, teamId: 'T07OTHERTM9', installedAt: new Date() }),
     ).rejects.toThrow();
     expect((await store.get(installId))?.teamId).toBe(TEAM.teamId);
+  });
+
+  it('setBotName renames an active install and changes nothing else, on no other install', async () => {
+    const a = await pending();
+    await store.activate(a, { ...TEAM, installedAt: new Date('2026-11-13T12:00:00.000Z') });
+    const b = await pending();
+    const snapshotA = await store.get(a);
+    const snapshotB = await store.get(b);
+
+    await store.setBotName(a, 'Ada Helper');
+
+    expect(await store.get(a)).toEqual({ ...snapshotA, botName: 'Ada Helper' });
+    expect(await store.get(b)).toEqual(snapshotB);
+  });
+
+  it('setBotName refuses an install that is missing or still pending, and changes nothing', async () => {
+    const installId = await pending();
+    const err = await store.setBotName(installId, 'Ada Helper').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InstallStoreError);
+    expect((err as InstallStoreError).code).toBe('install-not-active');
+    expect((await store.get(installId))?.botName).toBe(PENDING.botName);
+
+    const missing = await store.setBotName(newInstallId(), 'Ada Helper').catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(InstallStoreError);
+    expect((missing as InstallStoreError).code).toBe('install-not-active');
   });
 
   it('remove and removeAll delete rows', async () => {

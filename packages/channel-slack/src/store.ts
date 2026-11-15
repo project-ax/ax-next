@@ -61,6 +61,12 @@ export interface InstallStore {
     a: { teamId: string; teamName: string; botUserId: string; installedAt: Date },
   ): Promise<void>;
   /**
+   * Rename an ACTIVE install: one UPDATE, nothing else touched. Throws
+   * `install-not-active` when the install is missing or still pending.
+   * `botName` must already have passed `checkBotName`; nothing is cleaned here.
+   */
+  setBotName(installId: string, botName: string): Promise<void>;
+  /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
    */
@@ -113,8 +119,8 @@ function toRow(r: SelectedRow): InstallRow {
 
 /** A store call that found nothing to change. Carries no data, so it is safe to log. */
 export class InstallStoreError extends Error {
-  readonly code: 'install-not-pending';
-  constructor(code: 'install-not-pending') {
+  readonly code: 'install-not-pending' | 'install-not-active';
+  constructor(code: 'install-not-pending' | 'install-not-active') {
     super(`channel-slack install store: ${code}`);
     this.name = 'InstallStoreError';
     this.code = code;
@@ -237,6 +243,16 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         .where('status', '=', 'pending')
         .executeTakeFirst();
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-pending');
+    },
+
+    async setBotName(installId, botName) {
+      const r = await db
+        .updateTable(INSTALLS)
+        .set({ bot_name: botName })
+        .where('install_id', '=', installId)
+        .where('status', '=', 'active')
+        .executeTakeFirst();
+      if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
     },
 
     // Bindings go in the same statement as their install, keyed on what the
