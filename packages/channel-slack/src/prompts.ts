@@ -1,4 +1,11 @@
-import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLACK_ID_MAX } from './limits.js';
+import {
+  AGENT_ID_MAX,
+  EVENT_TEXT_MAX,
+  PROMPT_HOST_MAX,
+  PROMPT_ID_BYTES,
+  PROMPT_REFUSALS_MAX,
+  SLACK_ID_MAX,
+} from './limits.js';
 
 /**
  * The approval prompts open now (TASK-1095). When a DM or an attended
@@ -25,10 +32,14 @@ import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLA
  *   - Only a DM or an attended channel turn gets a prompt. `add` throws for
  *     any other mode, whatever the type says: an outsider's turn never has one.
  *   - Every context field is a string no longer than its cap (SLACK_ID_MAX
- *     for Slack's ids, AGENT_ID_MAX for AX's), and the subject text a string
- *     no longer than a Slack message (EVENT_TEXT_MAX), or `add` throws. A
- *     cheap backstop: the caller bounds what it hands in, and this registry
- *     bounds how many prompts it keeps, not how big each one is.
+ *     for Slack's ids, AGENT_ID_MAX for AX's), and the ids that say who may
+ *     answer and who the answer runs as (install, asker, user, agent,
+ *     conversation) aren't empty. Every subject field is a non-empty string
+ *     no longer than its cap (AGENT_ID_MAX for AX's ids, PROMPT_HOST_MAX for
+ *     a host), and the subject text a string no longer than a Slack message
+ *     (EVENT_TEXT_MAX). Else `add` throws. A cheap backstop: the caller
+ *     bounds what it hands in, and this registry bounds how many prompts it
+ *     keeps, not how big each one is.
  *   - An id is PROMPT_ID_BYTES random bytes, base64url, and no two open
  *     prompts share one: `add` throws rather than hand out an id that is
  *     already open, or one the interactions route would refuse (PROMPT_ID_RE).
@@ -129,6 +140,7 @@ export type PromptRefusal =
   | 'prompt-mode-refused'
   | 'prompt-context-unusable'
   | 'prompt-subject-unknown'
+  | 'prompt-subject-unusable'
   | 'prompt-text-unusable'
   | 'prompt-id-unusable'
   | 'prompts-full';
@@ -150,9 +162,9 @@ interface Entry {
   readonly refused: Set<string>;
 }
 
-/** `v`, when it is a string of at most `max` code units. */
-function bounded(v: unknown, max: number, code: PromptRefusal): string {
-  if (typeof v !== 'string' || v.length > max) throw new PromptRegistryError(code);
+/** `v`, when it is a string of at least `min` and at most `max` code units. */
+function bounded(v: unknown, max: number, code: PromptRefusal, min = 0): string {
+  if (typeof v !== 'string' || v.length < min || v.length > max) throw new PromptRegistryError(code);
   return v;
 }
 
@@ -166,28 +178,35 @@ function contextOf(c: PromptContext): PromptContext {
   // The type already says so. A cast mustn't get an outsider's turn past it.
   if (mode !== 'dm' && mode !== 'attended') throw new PromptRegistryError('prompt-mode-refused');
   const field = (v: unknown, max: number) => bounded(v, max, 'prompt-context-unusable');
+  // Who may answer, and who the answer runs as: never empty.
+  const id = (v: unknown, max: number) => bounded(v, max, 'prompt-context-unusable', 1);
   return {
-    installId: field(c.installId, AGENT_ID_MAX),
+    installId: id(c.installId, AGENT_ID_MAX),
     teamId: field(c.teamId, SLACK_ID_MAX),
     channel: field(c.channel, SLACK_ID_MAX),
     threadTs: field(c.threadTs, SLACK_ID_MAX),
-    askerSlackId: field(c.askerSlackId, SLACK_ID_MAX),
-    userId: field(c.userId, AGENT_ID_MAX),
-    agentId: field(c.agentId, AGENT_ID_MAX),
-    conversationId: field(c.conversationId, AGENT_ID_MAX),
+    askerSlackId: id(c.askerSlackId, SLACK_ID_MAX),
+    userId: id(c.userId, AGENT_ID_MAX),
+    agentId: id(c.agentId, AGENT_ID_MAX),
+    conversationId: id(c.conversationId, AGENT_ID_MAX),
     mode,
   };
 }
 
-/** A frozen copy of exactly the fields of the subject's kind. */
+/** A frozen copy of exactly the fields of the subject's kind, each a non-empty bounded string. */
 function subjectOf(s: PromptSubject): PromptSubject {
+  const field = (v: unknown, max: number) => bounded(v, max, 'prompt-subject-unusable', 1);
   switch (s.kind) {
     case 'decision':
-      return Object.freeze({ kind: 'decision', decisionId: s.decisionId });
+      return Object.freeze({ kind: 'decision', decisionId: field(s.decisionId, AGENT_ID_MAX) });
     case 'host':
-      return Object.freeze({ kind: 'host', host: s.host, sessionId: s.sessionId });
+      return Object.freeze({
+        kind: 'host',
+        host: field(s.host, PROMPT_HOST_MAX),
+        sessionId: field(s.sessionId, AGENT_ID_MAX),
+      });
     case 'skill':
-      return Object.freeze({ kind: 'skill', skillId: s.skillId });
+      return Object.freeze({ kind: 'skill', skillId: field(s.skillId, AGENT_ID_MAX) });
     default:
       throw new PromptRegistryError('prompt-subject-unknown');
   }

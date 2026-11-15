@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLACK_ID_MAX } from '../limits.js';
+import {
+  AGENT_ID_MAX,
+  EVENT_TEXT_MAX,
+  PROMPT_HOST_MAX,
+  PROMPT_ID_BYTES,
+  PROMPT_REFUSALS_MAX,
+  SLACK_ID_MAX,
+} from '../limits.js';
 import { logCode } from '../log-code.js';
 import {
   PROMPT_ID_RE,
@@ -262,6 +269,42 @@ describe('createPromptRegistry: add', () => {
       const { prompts } = registry();
       const atCap = { ...MEL, [field]: 'x'.repeat(cap) } as PromptContext;
       expect(prompts.add(atCap, HELD, SUMMARY)[field as keyof PromptContext], field).toBe('x'.repeat(cap));
+    }
+  });
+
+  it('refuses an empty id for who asked, who it runs as, and where: the install, the asker, the user, the agent and the conversation', () => {
+    for (const field of ['installId', 'askerSlackId', 'userId', 'agentId', 'conversationId']) {
+      const { prompts, sizes } = registry();
+      const turn = { ...MEL, [field]: '' } as PromptContext;
+      expect(refused(() => prompts.add(turn, HELD, SUMMARY)).code, field).toBe('prompt-context-unusable');
+      expect(prompts.size(), field).toBe(0);
+      expect(sizes, field).toEqual([]);
+      // One character is enough.
+      expect(registry().prompts.add({ ...MEL, [field]: 'x' }, HELD, SUMMARY)[field as keyof PromptContext], field).toBe('x');
+    }
+  });
+
+  it("refuses a subject field that is not a string, is empty, or is longer than its cap, before minting an id", () => {
+    const subjects: Array<{ subject: Record<string, unknown>; field: string; cap: number }> = [
+      { subject: { kind: 'decision', decisionId: 'dec_0001' }, field: 'decisionId', cap: AGENT_ID_MAX },
+      { subject: { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' }, field: 'host', cap: PROMPT_HOST_MAX },
+      { subject: { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' }, field: 'sessionId', cap: AGENT_ID_MAX },
+      { subject: { kind: 'skill', skillId: 'skl_0001' }, field: 'skillId', cap: AGENT_ID_MAX },
+    ];
+    for (const { subject, field, cap } of subjects) {
+      for (const bad of [undefined, null, 7, ['dec_0001'], { toString: () => 'dec_0001' }, '', 'x'.repeat(cap + 1)]) {
+        const { prompts, sizes } = registry();
+        const label = `${field} = ${typeof bad === 'string' ? `${bad.length} characters` : String(bad)}`;
+        const held = { ...subject, [field]: bad } as unknown as PromptSubject;
+        expect(refused(() => prompts.add(MEL, held, SUMMARY)).code, label).toBe('prompt-subject-unusable');
+        expect(prompts.size(), label).toBe(0);
+        expect(sizes, label).toEqual([]);
+      }
+      // Exactly at the cap is kept.
+      const atCap = { ...subject, [field]: 'x'.repeat(cap) } as unknown as PromptSubject;
+      expect((registry().prompts.add(MEL, atCap, SUMMARY).subject as Record<string, unknown>)[field], field).toBe(
+        'x'.repeat(cap),
+      );
     }
   });
 

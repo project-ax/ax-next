@@ -55,7 +55,10 @@ import type { InstallRow } from './store.js';
  *      the answer's follow-up (the agent carrying on in the thread) starts,
  *      never awaited. An answer that says `settle: false` (a failure the
  *      asker can retry) keeps its buttons instead: its line goes to the
- *      asker privately, and the prompt is open again.
+ *      asker privately, and the prompt is open again. Something that isn't
+ *      an answer at all (no object, no string line) may still have acted,
+ *      so it closes the prompt (`COPY.promptClosed`) rather than invite a
+ *      retry.
  *
  * One answer per prompt. Only an `ok` claim holds the prompt's lock, and the
  * click that took it lets go exactly once: `settle` once the prompt is
@@ -97,7 +100,8 @@ export interface Answer {
   line: string;
   /** False when the prompt should stay answerable (a transient failure the asker can retry). */
   settle: boolean;
-  follow?: () => void;
+  /** Started once the prompt is redrawn and settled, never awaited; a throw or a rejected promise is logged. */
+  follow?: () => void | Promise<void>;
 }
 
 export type SubjectAnswer = (
@@ -271,6 +275,13 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
      * Only an explicit `false` keeps it open: one answer per prompt fails closed.
      */
     const finish = async (out: Answer): Promise<void> => {
+      // Not an answer at all: it may have acted already, so the prompt closes rather than invite a retry.
+      if (typeof out !== 'object' || out === null || typeof out.line !== 'string') {
+        log('error', 'slack_prompt_failed', { kind, stage: 'answer', code: 'unusable-answer' });
+        await redraw(COPY.promptClosed);
+        letGo('settle');
+        return;
+      }
       const settled = out.settle !== false;
       if (settled) {
         await redraw(out.line);
@@ -281,11 +292,12 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         await tell(out.line, prompt.threadTs, kind);
       }
       log('info', 'slack_prompt_answered', { kind, action: click.action, settled });
-      try {
-        out.follow?.();
-      } catch (err) {
-        log('error', 'slack_prompt_failed', { kind, stage: 'follow', code: logCode(err) });
-      }
+      // Never awaited, and a follow-up that throws or hands back a promise that rejects is logged the same way.
+      void Promise.resolve()
+        .then(() => out.follow?.())
+        .catch((err: unknown) => {
+          log('error', 'slack_prompt_failed', { kind, stage: 'follow', code: logCode(err) });
+        });
     };
 
     /**

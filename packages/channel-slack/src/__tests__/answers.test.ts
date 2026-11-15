@@ -550,9 +550,31 @@ describe('the click gate: the asker answers', () => {
 
     await expect(w.onClick(INSTALL, w.clickOn(prompt))).resolves.toBeUndefined();
 
-    expect(w.logged('slack_prompt_failed')).toEqual([
-      { installId: INSTALL_ID, kind: 'decision', stage: 'follow', code: 'store-unavailable' },
-    ]);
+    await vi.waitFor(() =>
+      expect(w.logged('slack_prompt_failed')).toEqual([
+        { installId: INSTALL_ID, kind: 'decision', stage: 'follow', code: 'store-unavailable' },
+      ]),
+    );
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it('a follow-up that hands back a promise that rejects is logged the same way: nothing goes unhandled', async () => {
+    const w = await world({
+      answer: () => ({
+        line: COPY.decisionAllowed,
+        settle: true,
+        follow: (() => Promise.reject(fault('fake-follow'))) as () => void,
+      }),
+    });
+    const prompt = w.open(MEL_DM);
+
+    await expect(w.onClick(INSTALL, w.clickOn(prompt))).resolves.toBeUndefined();
+
+    await vi.waitFor(() =>
+      expect(w.logged('slack_prompt_failed')).toEqual([
+        { installId: INSTALL_ID, kind: 'decision', stage: 'follow', code: 'store-unavailable' },
+      ]),
+    );
     expect(w.state(prompt)).toBe('gone');
   });
 });
@@ -1066,19 +1088,56 @@ describe('the click gate: one answer per prompt', () => {
   }
 
   it('a throw past every step still lets go of the prompt: the asker can click again', async () => {
-    // An answer that breaks its contract: nothing to read a line from.
-    const w = await world({
-      answer: (n) => (n === 1 ? (null as unknown as Answer) : { line: COPY.decisionAllowed, settle: true }),
+    // An answers table that breaks the first time it is looked in, before any answer runs.
+    const ran: PromptAction[] = [];
+    let looks = 0;
+    const table = { decision: async (_ctx, _prompt, action) => {
+      ran.push(action);
+      return { line: COPY.decisionAllowed, settle: true };
+    } } satisfies AnswerDeps['answers'];
+    const answers = new Proxy(table, {
+      getOwnPropertyDescriptor(target, key) {
+        looks += 1;
+        if (looks === 1) throw new Error('a broken answers table');
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
     });
+    const w = await world({ answers });
     const prompt = w.open(MEL_DM);
 
     await w.onClick(INSTALL, w.clickOn(prompt)).catch(() => undefined);
+    expect(ran).toEqual([]);
     expect(w.state(prompt)).toBe('open');
 
     await w.onClick(INSTALL, w.clickOn(prompt));
-    expect(w.runs).toHaveLength(2);
+    expect(ran).toEqual(['allow']);
     expect(w.state(prompt)).toBe('gone');
   });
+
+  for (const [what, result] of [
+    ['null', null],
+    ['a string', COPY.decisionAllowed],
+    ['an object with no line', { settle: true }],
+  ] as const) {
+    it(`an answer that hands back ${what} may have acted already: the prompt closes, and the next click runs nothing`, async () => {
+      const w = await world({ answer: () => result as unknown as Answer });
+      const prompt = w.open(MEL_DM);
+
+      await expect(w.onClick(INSTALL, w.clickOn(prompt))).resolves.toBeUndefined();
+
+      expect(w.slack.calls).toEqual([
+        MEL_LOOKED_UP,
+        { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.promptClosed) },
+      ]);
+      expect(w.logged('slack_prompt_failed')).toEqual([
+        { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'unusable-answer' },
+      ]);
+      expect(w.state(prompt)).toBe('gone');
+
+      await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+      expect(w.runs).toHaveLength(1);
+    });
+  }
 
   it('an answer that leaves the prompt open: no redraw (its buttons stay), its line privately, and the prompt can be answered again', async () => {
     const w = await world({ answer: () => ({ line: COPY.promptFailed, settle: false }) });
@@ -1452,6 +1511,19 @@ describe('the click gate: an answer past its deadline still holds the prompt unt
       told(DM_MEL, MEL, COPY.promptStillWorking),
       told(DM_MEL, MEL, COPY.promptFailed),
     ]);
+  });
+
+  it('an answer that lands late with nothing usable: the prompt closes, never retried', async () => {
+    const { w, prompt, land } = await slowAllow(() => null as unknown as Answer);
+
+    land();
+    await vi.waitFor(() => expect(w.state(prompt)).toBe('gone'));
+
+    expect(w.slack.calls.at(-1)).toEqual({
+      method: 'updateMessage',
+      token: BOT_TOKEN,
+      args: redrawn(DM_MEL, COPY.promptClosed),
+    });
   });
 
   it("Mel hears it's still going before she hears how it went, even when it lands while she's being told", async () => {
