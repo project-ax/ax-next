@@ -101,9 +101,12 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
     : null;
 }
 
+/** A local copy of decisions' `TOOL_ERROR_REPLAY_CODE` (no cross-plugin import), as channel-web keeps one. */
+const TOOL_ERROR = 'tool-error';
+
 /**
- * The line for a `failed` row. An ABANDONED replay (`replayAbandonedAt` is a
- * string) is the absence of a report, not a report that it failed: the host
+ * The line for a `failed` row. An ABANDONED replay (`replayAbandonedAt` set)
+ * is the absence of a report, not a report that it failed: the host
  * stopped waiting on a call that may still have finished, so, as decisions'
  * `receiptFor` does, it says it can't tell rather than "didn't work" (which
  * would invite a redo of something that may have happened). Two exceptions,
@@ -111,9 +114,11 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
  * with an error (`replayError === 'tool-error'`) did not get interrupted, so it
  * reads "didn't work" even when stamped abandoned; and any stamp that is
  * present at all counts as abandoned (`!= null`), the cautious reading.
+ * Unlike Today's receipt, the tool-error line carries no "it may have done part
+ * of it" warning: that row reaches Slack only when the call was answered in
+ * Today first (a Slack Allow parks connector calls for the agent rather than
+ * replaying them on the host), and Today's own receipt already warns.
  */
-const TOOL_ERROR = 'tool-error';
-
 function failedLine(decision: Record<string, unknown>, todayLink: string): string {
   if (decision['replayError'] === TOOL_ERROR) return COPY.decisionFailed(todayLink);
   return decision['replayAbandonedAt'] != null
@@ -130,7 +135,7 @@ function failedLine(decision: Record<string, unknown>, todayLink: string): strin
  *   failed (a host replay that threw), with
  *   its `error` or without: abandoned
  *   (`replayAbandonedAt` set) and not a
- *   service's own error → decisionInterrupted,
+ *   service's own error                        → decisionInterrupted
  *   otherwise                                  → decisionFailed
  *   any other status with an `error` (it
  *   didn't do what it looks like: an
@@ -194,6 +199,7 @@ export function decisionOutcome(out: unknown, todayLink: string): DecisionOutcom
  *   build doesn't know                         → null
  *   failed                                     → decisionFailed, or
  *                                                decisionInterrupted if abandoned
+ *                                                (not a service's own error)
  *   executed or approved-pending-agent, MADE:
  *   the host replayed it (`replayedAt`) or the
  *   agent took the yes up (`consumedAt`); a

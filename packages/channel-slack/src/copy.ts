@@ -110,7 +110,7 @@ export const COPY = {
   decisionChanged: (todayLink: string) =>
     `Things changed since I asked, so nothing happened. The details are in Today: ${shown(todayLink)}`,
   decisionFailed: (todayLink: string) => `Allowed, but it didn't work. The details are in Today: ${shown(todayLink)}`,
-  // An abandoned replay: nobody can say whether it finished, so no "didn't work".
+  // An abandoned replay (not a service's own error): nobody can say whether it finished, so no "didn't work".
   decisionInterrupted: (todayLink: string) =>
     `Allowed, but it was interrupted, so I can't tell whether it finished. Check Today before trying again: ${shown(todayLink)}`,
   decisionNotRun: (todayLink: string) =>

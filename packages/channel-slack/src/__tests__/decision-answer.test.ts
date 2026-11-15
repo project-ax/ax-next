@@ -279,6 +279,9 @@ describe('decisionOutcome: what the prompt says, from what decisions handed back
       shows(COPY.decisionInterrupted(TODAY)),
     ],
     ['abandoned with no error beside it: interrupted', { decision: row('failed', { replayAbandonedAt: ABANDONED_AT }) }, shows(COPY.decisionInterrupted(TODAY))],
+    // The shape decisions actually sends for an ordinary failure: both markers present and null, or an error message.
+    ['failed, replayAbandonedAt null, an error message: didn\'t work', { decision: row('failed', { replayAbandonedAt: null, replayError: 'boom' }) }, shows(COPY.decisionFailed(TODAY))],
+    ['failed, abandoned, a non-tool error message: interrupted', { decision: row('failed', { replayAbandonedAt: ABANDONED_AT, replayError: 'boom' }) }, shows(COPY.decisionInterrupted(TODAY))],
     ['failed with any replayAbandonedAt stamp (not only a string): abandoned, the cautious reading', { decision: row('failed', { replayAbandonedAt: 7 }) }, shows(COPY.decisionInterrupted(TODAY))],
     // The service answered with an error: not interrupted, even when stamped abandoned (receiptFor's TOOL_ERROR_RECEIPT case).
     ['failed, abandoned, but the service answered with an error: didn\'t work', { decision: row('failed', { replayAbandonedAt: ABANDONED_AT, replayError: 'tool-error' }) }, shows(COPY.decisionFailed(TODAY))],
@@ -377,6 +380,7 @@ describe("lineAfterMiss: what an answered prompt says once the thread stopped wa
     // Every other status, as the Allow's own table reads it.
     ['failed, whatever else the row says', stored('failed', { replayClaimedAt: AT, replayedAt: AT }), COPY.decisionFailed(TODAY)],
     ['failed, abandoned: interrupted, whatever else the row says', stored('failed', { replayAbandonedAt: AT, replayedAt: AT }), COPY.decisionInterrupted(TODAY)],
+    ['failed, replayAbandonedAt null, an error message: didn\'t work', stored('failed', { replayAbandonedAt: null, replayError: 'boom' }), COPY.decisionFailed(TODAY)],
     ['failed, any abandoned stamp: interrupted', stored('failed', { replayAbandonedAt: 7 }), COPY.decisionInterrupted(TODAY)],
     ['failed, abandoned, the service answered with an error: didn\'t work', stored('failed', { replayAbandonedAt: AT, replayError: 'tool-error' }), COPY.decisionFailed(TODAY)],
     ['dismissed (undone, then denied, in Today)', stored('dismissed'), COPY.decisionDenied],
