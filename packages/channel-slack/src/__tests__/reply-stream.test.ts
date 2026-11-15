@@ -925,6 +925,9 @@ describe('createReplyStream: a call held for approval', () => {
   it.each([
     // A DM, or a channel member who can use the agent: it waits in their own Today.
     ['sender', () => COPY.heldForSender(TODAY_LINK)],
+    // The same person, when a prompt with buttons follows the reply (turn.ts): the ask alone,
+    // since the prompt carries Today's link.
+    ['asked', () => COPY.heldAsked],
     // An outsider's turn: it waits for the agent's owner, whom they can't reach.
     ['owner', () => COPY.heldForOwner],
   ] as const)('held(%j): the reply ends with the line that says who must approve', async (who, line) => {
@@ -936,6 +939,18 @@ describe('createReplyStream: a call held for approval', () => {
     await finishNow(s);
     expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
     expect(delivered(calls)).toBe(`Let me send that.\n\n${line()}`);
+  });
+
+  it("held('asked') again and again: the ask is said once, and links nothing (the prompt after the reply does)", async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.text('Let me check.');
+    s.held('asked');
+    await tick();
+    s.held('asked');
+    await finishNow(s);
+    expect(delivered(calls)).toBe(`Let me check.\n\n${COPY.heldAsked}`);
+    expect(delivered(calls)).not.toContain(TODAY_LINK);
   });
 
   it('however many calls are held, the line is said once', async () => {
@@ -953,6 +968,10 @@ describe('createReplyStream: a call held for approval', () => {
   it.each([
     [['owner', 'sender'], COPY.heldForOwner],
     [['sender', 'owner'], COPY.heldForSender(TODAY_LINK)],
+    [['asked', 'sender'], COPY.heldAsked],
+    [['sender', 'asked'], COPY.heldForSender(TODAY_LINK)],
+    [['owner', 'asked'], COPY.heldForOwner],
+    [['asked', 'owner'], COPY.heldAsked],
   ] as const)('holds for different people (%j): the first decides whose line, said once', async (order, line) => {
     const { api, calls } = fakeSlack();
     const s = make(api);

@@ -61,7 +61,8 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *     twice; nothing is ever dropped.
  *   - `finish` adds the closing lines, in this order: the artifact link once,
  *     the held line once (a call waits for someone's approval; it says whose,
- *     and nothing about the call), the failure or busy line. Then it flushes
+ *     and nothing about the call; when a prompt follows the reply, only the
+ *     ask), the failure or busy line. Then it flushes
  *     and stops the stream. A reply with nothing at all to say, not even a
  *     closing line, posts COPY.emptyReply. It never rejects and runs once.
  *
@@ -96,11 +97,13 @@ export interface ReplyStream {
   /**
    * A call of the turn is held until someone approves it, and the reply ends
    * saying who: `'sender'`, the person the reply is for (it waits in their
-   * Today, linked), or `'owner'`, someone the reader can't reach (the agent's
-   * owner was asked; no link). Said once, however many calls are held (the
-   * first hold decides whose), and it counts as something to say.
+   * Today, linked); `'asked'`, the same person when a prompt with buttons
+   * follows the reply (turn.ts; the prompt carries Today's link, so the line
+   * links nothing); or `'owner'`, someone the reader can't reach (the
+   * agent's owner was asked; no link). Said once, however many calls are
+   * held (the first hold decides whose), and it counts as something to say.
    */
-  held(who: 'owner' | 'sender'): void;
+  held(who: 'owner' | 'sender' | 'asked'): void;
   finish(outcome: ReplyOutcome): Promise<void>;
 }
 
@@ -211,7 +214,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
   let title: string | null = null;
   let artifactSeen = false;
   /** Whose approval a held call waits for. Null until a call is held. */
-  let heldBy: 'owner' | 'sender' | null = null;
+  let heldBy: 'owner' | 'sender' | 'asked' | null = null;
   let anyText = false;
   /** The agent sent a status of its own (working() alone doesn't count). */
   let agentStatus = false;
@@ -603,8 +606,13 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       }
       const lines: string[] = [];
       if (artifactSeen) lines.push(COPY.artifactLink(d.agentLink));
-      // Only a sender's line links Today: anything else reads as the owner's.
-      if (heldBy !== null) lines.push(heldBy === 'sender' ? COPY.heldForSender(d.todayLink) : COPY.heldForOwner);
+      // Only a sender's line links Today, and only an asked one is the bare ask
+      // (its prompt follows): anything else reads as the owner's.
+      if (heldBy !== null) {
+        lines.push(
+          heldBy === 'sender' ? COPY.heldForSender(d.todayLink) : heldBy === 'asked' ? COPY.heldAsked : COPY.heldForOwner,
+        );
+      }
       if (outcome === 'error') lines.push(COPY.turnFailed);
       if (outcome === 'busy') lines.push(COPY.busy);
       // Only the Working card was shown: say so in that message, not a second one.

@@ -1,8 +1,11 @@
 import { makeAgentContext, makeReqId, type AgentMessage, type HookBus, type Logger } from '@ax/core';
 import { COPY } from './copy.js';
+import { findHeldDecision, type HeldDecision } from './decision-prompts.js';
 import { decodeSlackEntities } from './format.js';
-import { TURN_END_GRACE_MS, TURN_HARD_CAP_MS } from './limits.js';
+import { DECISION_LOOKUP_TIMEOUT_MS, TURN_END_GRACE_MS, TURN_HARD_CAP_MS } from './limits.js';
 import { logCode } from './log-code.js';
+import { postPrompt } from './prompt-post.js';
+import type { PromptContext, PromptRegistry } from './prompts.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
@@ -27,9 +30,21 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  *
  * A call the turn holds for approval never runs, and the runner ends the turn
  * right after it, so the reply ends with one line saying whose approval it
- * waits for (reply-stream.ts `held`): the person who wrote, in their own
- * Today, when the turn runs as them; the agent's owner otherwise. The line
- * never names the call, its tool or connector, or the person.
+ * waits for (reply-stream.ts `held`). The line never names the call, its tool
+ * or connector, or the person.
+ *
+ *   - A turn that runs as the person who wrote (a DM, or an attended channel
+ *     turn) lets them answer it in Slack (TASK-1095). Once the turn has
+ *     ended, the held call's decision is looked up (decision-prompts.ts).
+ *     Found, the reply ends with the ask alone, and a prompt with Allow and
+ *     Deny follows it in the thread (prompt-post.ts), still inside the turn,
+ *     so the conversation's next turn comes after it. Not found, or the
+ *     prompt can't be posted: the line that sends them to their own Today,
+ *     in the reply or as a message of its own after it. Only the first held
+ *     call gets a prompt; any other waits in Today, which the prompt links.
+ *   - Any other turn runs as someone else for them (the person who connected
+ *     the channel, the agent's owner), whom they can't reach: the reply says
+ *     the owner was asked, and nothing is looked up or posted.
  *
  * The reply ends at the first of: the turn's `chat:turn-end` (complete), its
  * `chat:turn-error` (error), a `terminated` invoke outcome
@@ -79,6 +94,12 @@ export interface TurnDeps {
   bus: HookBus;
   api: SlackApi;
   registry: TurnRegistry;
+  /**
+   * The open approval prompts (prompts.ts), where a held call's prompt is
+   * opened. Without a registry, a held call ends the reply with the Today
+   * line, and nothing is looked up.
+   */
+  prompts?: PromptRegistry;
   /** The web app's origin, for links in the bot's own lines. */
   publicOrigin: string;
   logger: Logger;
@@ -204,6 +225,19 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     they can't reach.
   */
   const approver = source === 'user' ? 'sender' : 'owner';
+  /*
+    Whether the person who wrote can answer a held call here, with a prompt
+    (TASK-1095): only when the turn runs as them, `source` 'user', which is
+    exactly a DM or an attended turn. The mode is narrowed again for the
+    registry, which refuses any other mode itself. An outsider's turn never
+    gets a prompt, and nor does a turn with no registry to open one in.
+  */
+  const asking =
+    d.prompts !== undefined && source === 'user' && (r.mode === 'dm' || r.mode === 'attended')
+      ? { prompts: d.prompts, mode: r.mode }
+      : null;
+  // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
+  const todayLink = `${d.publicOrigin}/workspace`;
 
   const reqId = makeReqId();
   const ctx = makeAgentContext({
@@ -231,8 +265,7 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     },
     messageTs: r.messageTs,
     agentLink: `${d.publicOrigin}/workspace/agents/${encodeURIComponent(r.agentId)}`,
-    // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
-    todayLink: `${d.publicOrigin}/workspace`,
+    todayLink,
     logger: replyLogger,
     clock: d.clock,
   });
@@ -249,6 +282,13 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
   };
 
   const toolNames = new Map<string, string>();
+  /**
+   * The first call the turn held, when its writer can answer it here
+   * (`asking`): whose line ends the reply waits until the turn has ended and
+   * the call's decision has been looked up. Later holds change nothing. Set
+   * in `onChunk`, so declared wide: TypeScript would read it as null forever.
+   */
+  let firstHeld = null as { callId: string | undefined } | null;
   /**
    * Text after other work (a tool call or its result, thinking) starts a new
    * paragraph. claude-sdk sends whole text blocks, so without this the block
@@ -285,9 +325,11 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
         return;
       case 'tool-result': {
         // Held: the call never ran and waits for someone's approval. The reply
-        // ends saying whose (once), and it is no artifact.
+        // ends saying whose (once), and it is no artifact. When the writer can
+        // answer it here, that waits for the call's decision (below).
         if (c.held === true) {
-          stream.held(approver);
+          if (asking === null) stream.held(approver);
+          else if (firstHeld === null) firstHeld = { callId: c.toolCallId };
           return;
         }
         if (c.isError === true || c.toolCallId === undefined) return;
@@ -393,10 +435,87 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
       }),
     );
   }
+  /*
+    A call held for the person who wrote: the decision it waits as. Found,
+    the reply ends with the ask and the prompt follows it; not found, the
+    reply sends them to their own Today, as before buttons.
+  */
+  let found: HeldDecision | null = null;
+  if (firstHeld !== null) {
+    const callId = firstHeld.callId;
+    if (callId !== undefined) {
+      found = await findHeldDecision(
+        d.bus,
+        ctx,
+        { userId: r.userId, agentId: r.agentId, conversationId: r.conversationId, toolCallId: callId },
+        DECISION_LOOKUP_TIMEOUT_MS,
+        { installId, logger: d.logger },
+      );
+    }
+    stream.held(found !== null ? 'asked' : 'sender');
+  }
   try {
     await stream.finish(outcome);
+    // After the reply, and before the lane lets the conversation's next turn start.
+    if (found !== null && asking !== null) {
+      await askInThread(
+        d,
+        asking.prompts,
+        r.botToken,
+        {
+          installId,
+          teamId: r.install.teamId ?? '',
+          channel: r.channel,
+          threadTs: r.threadTs,
+          askerSlackId: r.senderSlackId,
+          userId: r.userId,
+          agentId: r.agentId,
+          conversationId: r.conversationId,
+          mode: asking.mode,
+        },
+        found,
+        todayLink,
+      );
+    }
   } finally {
     // The sender has their reply; the lane waits for the stop (see `interrupting`).
     if (interrupting !== null) await interrupting;
+  }
+}
+
+/**
+ * After a reply that ended with the ask: the prompt for the held call's
+ * decision, in the reply's thread, for the person `c` says asked
+ * (prompt-post.ts). Should it not be posted, the line that sends them to
+ * their own Today instead, as a message of its own: one try, logged by code
+ * when it fails (`slack_reply_failed`, stage `held`). Never rejects.
+ */
+async function askInThread(
+  d: Pick<TurnDeps, 'api' | 'logger' | 'clock'>,
+  prompts: PromptRegistry,
+  botToken: string,
+  c: PromptContext,
+  found: HeldDecision,
+  todayLink: string,
+): Promise<void> {
+  const posted = await postPrompt(
+    { api: d.api, botToken, prompts, logger: d.logger, todayLink, clock: d.clock },
+    c,
+    { kind: 'decision', decisionId: found.decisionId },
+    found.summary,
+  );
+  if (posted) return;
+  try {
+    await d.api.postMessage(botToken, {
+      channel: c.channel,
+      threadTs: c.threadTs,
+      markdownText: COPY.heldForSender(todayLink),
+    });
+  } catch (err) {
+    try {
+      d.logger.warn('slack_reply_failed', { installId: c.installId, stage: 'held', code: logCode(err) });
+    } catch {
+      // A log line never changes the turn.
+    }
   }
 }
