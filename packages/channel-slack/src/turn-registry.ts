@@ -151,7 +151,7 @@ function narrowPermission(payload: Record<string, unknown>): PermissionIn | null
 type SinkStage = 'chunk' | 'end' | 'error' | 'permission';
 
 export interface TurnRegistryDeps {
-  /** Hears a sink's end, error or permission throwing, by stage and code. */
+  /** Hears a sink's end, error or permission throwing, and its FIRST chunk throw, by stage and code. */
   logger: Pick<Logger, 'warn'>;
 }
 
