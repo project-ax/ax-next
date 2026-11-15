@@ -426,19 +426,36 @@ describe('createTurnRegistry', () => {
     });
   });
 
-  it("a sink's end or error that throws is logged by stage and code; a chunk's is not (one a token would flood the log)", () => {
+  it("a sink's end or error that throws is logged by stage and code", () => {
     const { lines, logger } = recordingLogger();
     const r = createTurnRegistry({ logger });
     const boom = (): never => {
       throw new PluginError({ code: 'sink-broke', plugin: 'test', message: 'no' });
     };
-    r.register(recordingSink({ chunk: boom, end: boom, error: boom }).sink);
-    r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'hi' });
+    r.register(recordingSink({ end: boom, error: boom }).sink);
     r.onTurnError({ reqId: REQ });
     r.onTurnEnd(ctxFor(CONVERSATION), { reqId: REQ });
     expect(lines).toEqual([
       { msg: 'slack_turn_sink_failed', fields: { stage: 'error', code: 'sink-broke' } },
       { msg: 'slack_turn_sink_failed', fields: { stage: 'end', code: 'sink-broke' } },
+    ]);
+  });
+
+  it("a sink's chunk that throws is logged once for that sink, not once per streamed piece; each sink gets its own line", () => {
+    const { lines, logger } = recordingLogger();
+    const r = createTurnRegistry({ logger });
+    const boom = (): never => {
+      throw new PluginError({ code: 'sink-broke', plugin: 'test', message: 'text of the reply' });
+    };
+    const second = 'req-bbbbbbbbbbbb';
+    r.register(recordingSink({ chunk: boom }).sink);
+    r.register(recordingSink({ reqId: second, chunk: boom }).sink);
+    for (let i = 0; i < 5; i++) r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'hi' });
+    expect(lines).toEqual([{ msg: 'slack_turn_sink_failed', fields: { stage: 'chunk', code: 'sink-broke' } }]);
+    for (let i = 0; i < 5; i++) r.onStreamChunk({ reqId: second, kind: 'text', text: 'hi' });
+    expect(lines).toEqual([
+      { msg: 'slack_turn_sink_failed', fields: { stage: 'chunk', code: 'sink-broke' } },
+      { msg: 'slack_turn_sink_failed', fields: { stage: 'chunk', code: 'sink-broke' } },
     ]);
   });
 

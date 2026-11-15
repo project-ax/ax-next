@@ -39,8 +39,9 @@ import { logCode } from './log-code.js';
  * chunk is handed on with only the fields named in StreamChunkIn. A sink
  * that throws never breaks the registry or the bus. Its end, error or
  * permission throwing is logged (`slack_turn_sink_failed`, the stage and the
- * error's code only: never its message, the card or an id); a chunk's is
- * not, as one broken sink would log once per streamed piece.
+ * error's code only: never its message, the card or an id). A chunk's is
+ * logged once per sink: the busiest path must leave a trace when a reply
+ * is lost, but one broken sink would log once per streamed piece.
  */
 
 /** The chat events the registry needs, in the order it subscribes to them. */
@@ -158,18 +159,23 @@ interface Entry {
   readonly sink: TurnSink;
   /** A chunk under the sink's reqId has come: its turn has begun. */
   begun: boolean;
+  /** Its first chunk failure has been logged: the rest are not. */
+  chunkFailed: boolean;
 }
 
 export function createTurnRegistry(d: TurnRegistryDeps): TurnRegistry {
   const byReqId = new Map<string, Entry>();
 
   /** A sink's own failure stays its own: its turn still ends by its other paths. */
-  const safely = (stage: SinkStage, fn: () => void): void => {
+  const safely = (stage: SinkStage, fn: () => void, entry?: Entry): void => {
     try {
       fn();
     } catch (err) {
-      // A chunk's isn't logged: one broken sink would log once per streamed piece (header).
-      if (stage === 'chunk') return;
+      // A chunk's is logged once per sink: one broken sink would otherwise log once per piece (header).
+      if (stage === 'chunk' && entry !== undefined) {
+        if (entry.chunkFailed) return;
+        entry.chunkFailed = true;
+      }
       try {
         d.logger.warn('slack_turn_sink_failed', { stage, code: logCode(err) });
       } catch {
@@ -186,7 +192,7 @@ export function createTurnRegistry(d: TurnRegistryDeps): TurnRegistry {
 
   return {
     register(sink) {
-      const entry: Entry = { sink, begun: false };
+      const entry: Entry = { sink, begun: false, chunkFailed: false };
       byReqId.set(sink.reqId, entry);
       return () => {
         if (byReqId.get(sink.reqId) === entry) byReqId.delete(sink.reqId);
@@ -199,7 +205,7 @@ export function createTurnRegistry(d: TurnRegistryDeps): TurnRegistry {
       entry.begun = true;
       const sink = entry.sink;
       const chunk = narrowChunk(sink.reqId, payload as Record<string, unknown>);
-      safely('chunk', () => sink.chunk(chunk));
+      safely('chunk', () => sink.chunk(chunk), entry);
     },
 
     onTurnEnd(ctx, payload) {
