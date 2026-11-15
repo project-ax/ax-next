@@ -28,6 +28,7 @@ const ARGS: Record<string, unknown[][]> = {
   promptGone: [[TODAY], [HOSTILE]],
   decisionChanged: [[TODAY], [HOSTILE]],
   decisionFailed: [[TODAY], [HOSTILE]],
+  decisionInterrupted: [[TODAY], [HOSTILE]],
   decisionNotRun: [[TODAY], [HOSTILE]],
   slashNotMapped: [[ORIGIN]],
   slashConnected: [[HOSTILE, HOSTILE]],
@@ -74,6 +75,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'decisionExpired',
         'decisionChanged',
         'decisionFailed',
+        'decisionInterrupted',
         'decisionNotRun',
         'noAgent',
         'notMapped',
@@ -146,10 +148,11 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     ['decisionExpired', COPY.decisionExpired],
     ['decisionChanged', COPY.decisionChanged(link)],
     ['decisionFailed', COPY.decisionFailed(link)],
+    ['decisionInterrupted', COPY.decisionInterrupted(link)],
     ['decisionNotRun', COPY.decisionNotRun(link)],
   ];
   /** The lines that point at Today. */
-  const LINKED = ['promptToday', 'promptGone', 'decisionChanged', 'decisionFailed', 'decisionNotRun'];
+  const LINKED = ['promptToday', 'promptGone', 'decisionChanged', 'decisionFailed', 'decisionInterrupted', 'decisionNotRun'];
 
   it('are plain mrkdwn text: no < or >, no Markdown link, even around a hostile link', () => {
     for (const link of [TODAY, HOSTILE]) {
@@ -192,7 +195,7 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
 
   it('each way a prompt can end reads differently, so the asker can tell what happened', () => {
     const outcomes = PROMPT_LINES(TODAY).filter(([key]) => key.startsWith('decision') || key === 'promptClosed');
-    expect(outcomes).toHaveLength(9);
+    expect(outcomes).toHaveLength(10);
     expect(new Set(outcomes.map(([, line]) => line)).size).toBe(outcomes.length);
   });
 });

@@ -102,6 +102,19 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
 }
 
 /**
+ * The line for a `failed` row. An ABANDONED replay (`replayAbandonedAt` is a
+ * string) is the absence of a report, not a report that it failed: the host
+ * stopped waiting on a call that may still have finished, so, as decisions'
+ * `receiptFor` does, it says it can't tell rather than "didn't work" (which
+ * would invite a redo of something that may have happened).
+ */
+function failedLine(decision: Record<string, unknown>, todayLink: string): string {
+  return typeof decision['replayAbandonedAt'] === 'string'
+    ? COPY.decisionInterrupted(todayLink)
+    : COPY.decisionFailed(todayLink);
+}
+
+/**
  * The line a prompt shows once decisions has answered an Allow or a Deny,
  * from `out` (decisions:approve's or decisions:dismiss's answer), and
  * whether the agent's next turn is to be followed. In this order:
@@ -109,6 +122,8 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
  *   no readable decision                       → promptClosed
  *   failed (a host replay that threw), with
  *   its `error` or without                     → decisionFailed
+ *   failed, its replay abandoned
+ *   (`replayAbandonedAt`)                      → decisionInterrupted
  *   any other status with an `error` (it
  *   didn't do what it looks like: an
  *   identical call already allowed)            → decisionNotRun
@@ -132,7 +147,8 @@ export function decisionOutcome(out: unknown, todayLink: string): DecisionOutcom
   const status = statusOf(out['decision']);
   // A failed row says so, with its error or without: a host replay that
   // threw comes back failed WITH its error, and "not run" would invite a retry.
-  if (status === 'failed') return shows(COPY.decisionFailed(todayLink));
+  // An abandoned one says it can't tell (failedLine).
+  if (status === 'failed') return shows(failedLine(out['decision'], todayLink));
   const error = out['error'];
   if (error !== null && error !== undefined) return shows(COPY.decisionNotRun(todayLink));
   switch (status) {
@@ -168,7 +184,8 @@ export function decisionOutcome(out: unknown, todayLink: string): DecisionOutcom
  *
  *   no readable decision, or a status this
  *   build doesn't know                         → null
- *   failed                                     → decisionFailed
+ *   failed                                     → decisionFailed, or
+ *                                                decisionInterrupted if abandoned
  *   executed or approved-pending-agent, MADE:
  *   the host replayed it (`replayedAt`) or the
  *   agent took the yes up (`consumedAt`); a
