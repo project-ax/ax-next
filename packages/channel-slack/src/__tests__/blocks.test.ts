@@ -132,7 +132,7 @@ describe('promptBlocks: an approval prompt', () => {
     expect(context['type']).toBe('context');
     const lines = textObjects([context]);
     expect(lines.every((t) => t.type === 'mrkdwn')).toBe(true);
-    expect(lines.some((t) => t.text.includes(TODAY))).toBe(true);
+    expect(lines.map((t) => t.text)).toContain(COPY.promptToday(TODAY));
   });
 
   it('both buttons carry the prompt id and nothing else, and fit Slack: labels, action ids and values', () => {
