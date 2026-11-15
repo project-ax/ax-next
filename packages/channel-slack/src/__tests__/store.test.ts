@@ -240,6 +240,8 @@ describe('install rows', () => {
     const a = await pending();
     await store.activate(a, { ...TEAM, installedAt: new Date('2026-11-13T12:00:00.000Z') });
     const b = await pending();
+    // Active too, so a rename that lost its install_id filter would also pass the active filter on b.
+    await store.activate(b, { ...TEAM, teamId: 'T07OTHERTM9', installedAt: new Date('2026-11-13T13:00:00.000Z') });
     const snapshotA = await store.get(a);
     const snapshotB = await store.get(b);
 
