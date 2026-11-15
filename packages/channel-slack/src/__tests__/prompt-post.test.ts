@@ -209,11 +209,13 @@ describe("postPrompt: an approval prompt in the turn's thread", () => {
 
   it('a subject past PROMPT_SUBJECT_MAX is cut once, before it is kept: the registry and the prompt get the same text', async () => {
     const w = world();
-    // 908 characters; the first 300 end inside a word ('Wants to ' x 33, then 'Wan').
+    // 908 characters; the cut falls inside a word (the maximum is not a multiple of 9).
     const long = `${'Wants to '.repeat(100)}and more`;
     expect(await w.post(MEL_SUPPORT, HELD, long)).toBe(true);
-    const cut = `${'Wants to '.repeat(33)}Wan`;
+    const cut = long.slice(0, PROMPT_SUBJECT_MAX);
     expect(cut).toHaveLength(PROMPT_SUBJECT_MAX);
+    expect(PROMPT_SUBJECT_MAX % 9).not.toBe(0);
+    expect(cut.length).toBeLessThan(long.length);
 
     // Kept raw, but cut: the registry holds no more than a prompt can show.
     const claim = w.prompts.claim(FIRST_ID, MEL);
@@ -221,6 +223,22 @@ describe("postPrompt: an approval prompt in the turn's thread", () => {
     // What the prompt shows is that same text (cleaning leaves this one as it is).
     const blocks = w.slack.calls[0]!.args['blocks'] as Array<{ type: string; text?: { text: string } }>;
     expect(blocks[0]!.text!.text).toBe(cut);
+  });
+
+  it("a skill's longest subject (a 64-character id and a 240-character description) is shown whole, not cut mid-word", async () => {
+    const w = world();
+    const skillId = `a${'b'.repeat(63)}`;
+    const description = `${'word '.repeat(47)}words`;
+    expect(skillId).toHaveLength(64);
+    expect(description).toHaveLength(240);
+    const subject = COPY.skillSubject(skillId, description);
+    expect(subject.length).toBeGreaterThan(300);
+    expect(subject.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+    expect(await w.post(MEL_SUPPORT, { kind: 'skill', skillId }, subject)).toBe(true);
+    const claim = w.prompts.claim(FIRST_ID, MEL);
+    expect(claim.ok && claim.prompt.subjectText).toBe(subject);
+    const blocks = w.slack.calls[0]!.args['blocks'] as Array<{ type: string; text?: { text: string } }>;
+    expect(blocks[0]!.text!.text).toBe(subject);
   });
 
   it('a subject cleaning would change is kept raw, and drawn cleaned: the registry never holds the cleaned form', async () => {
