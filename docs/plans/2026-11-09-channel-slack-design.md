@@ -234,7 +234,11 @@ Nine bot scopes, each for one job:
 - `commands`: the `/ax` slash command (TASK-1094).
 
 Events stay `app_mention` and `message.im`; the App Home messages tab is on
-(without it nobody can DM the app); no interactivity until TASK-1095.
+(without it nobody can DM the app). Interactivity is on (TASK-1095): the
+manifest carries one more URL, `<origin>/slack/interactions/<installId>`, where
+Slack sends a click on an Allow or Deny button. It needs no new scope. An
+install made before TASK-1095 has no such URL, so it reconnects to get one
+(Disconnect, then Connect); until then its prompts still carry the Today link.
 
 Two scopes are deliberately **not** requested. `channels:history`: a channel
 is mention-only, so a follow-up in a thread needs an @mention again and the
@@ -333,9 +337,11 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    text never enters a member's attended transcript, and `(source, audience)`
    stays constant per conversation. Each owner can read theirs in the web app.
 4. **Invoke.** `agent:invoke` with the context from step 2.
-5. **Reply.** Subscribe to `chat:stream-chunk`, `chat:phase`, `chat:turn-end`,
-   `chat:turn-error` and `chat:permission-request` filtered by `reqId`, the way
-   channel-web does (`channel-web/src/server/plugin.ts:807-857`). Then:
+5. **Reply.** Subscribe to `chat:stream-chunk`, `chat:turn-end` and
+   `chat:turn-error` filtered by `reqId`, the way channel-web does (the cite is
+   `channel-web/src/server/sse.ts:590-619`). There is no `chat:phase`. Permission
+   cards (`chat:permission-request`) are not heard yet: they come in a second PR
+   of TASK-1095. Then:
    - Stream into the thread with `chat.startStream` / `appendStream` /
      `stopStream`. They work in channel threads (pass `recipient_user_id` and
      `recipient_team_id`) and need only `chat:write`. A stream lasts at most
@@ -372,16 +378,56 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      also stopped (`agent:interrupt`, best-effort), not only its reply. Up to 3
      turns per conversation run or wait in order; a fourth message gets a
      "still working" reply.
-6. **Approvals.**
-   - **Attended:** Block Kit buttons. The interactivity route checks the clicker
-     is the turn's person, then calls `agent:apply-capability-grant`, the same
-     hook `/api/chat/permission-decision` uses (`routes-chat.ts:825`).
-   - **External:** a "waiting for my owner" note, and the call waits in the
-     connector's Today.
-   - **Attended and DM:** a link to approve it in Today, until TASK-1095's
-     buttons.
-   - Until TASK-1095, a Slack conversation (origin `'slack'`) is unattended for
-     decisions, so held calls wait in Today.
+6. **Approvals.** What a person sees when a call needs an OK (TASK-1095, PR A):
+   - **A held call in a DM or an attended channel turn.** After the reply, the
+     bot posts a prompt in the thread: the decision's own summary, **Allow** and
+     **Deny** buttons, and a Today link. The summary is the only text that comes
+     from outside AX's own wording, so it is cleaned and drawn as plain text.
+   - **Only the asker may answer**, and every click is proved again before any
+     action: the prompt is still open and was posted for this install and
+     channel; the signed click's Slack user is the person who asked; Slack still
+     admits them (`users.info`); their verified email maps to the prompt's AX
+     user; that user still reaches the agent; and, for a channel, the channel is
+     still connected to that agent. In a channel the agent access must be full
+     (`yes`); a DM also accepts a team agent the person can only chat with
+     (`not-team`). Nothing is taken from the message text or a button label.
+     Anyone else gets one private line ("Only the person who asked can answer
+     this"). One answer per prompt: a second click while one is being handled is
+     silent.
+   - **Allow** calls `decisions:approve` as that user, once (no "always allow",
+     no Undo). The prompt then reads what really happened (done, will be picked
+     up, parked for the next ask, expired, changed, did not run). When the agent
+     is woken by the approval (a warm session, after the 10-second undo window),
+     the bot follows that continuation into the thread. The follower starts the
+     moment `decisions:approve` returns, not after the prompt is redrawn, so
+     the first words aren't missed. **Deny** calls `decisions:dismiss`.
+   - **An answer that takes over 30 seconds** (a slow hook) tells the asker it
+     is still working and keeps the prompt taken until it lands; it is not
+     retried by a second click. Other slow steps release with "try again".
+   - **External turns:** no buttons, an unchanged note ("waiting for my owner"),
+     and the call waits in the connector's Today.
+   - **Not offered buttons:** a call identical to one already waiting reuses
+     that decision, so its reply links Today instead; a bot with no prompt
+     room left, or a restart (prompts live in memory), does the same.
+   - **Attendance.** Decisions treats a Slack conversation (origin `'slack'`) as
+     attended, like a web chat, unless it is an outsider's turn, which is
+     checked first and stays unattended. Attended means an approval on a warm
+     session is handed to the agent, which re-issues the call itself, instead
+     of the host replaying it. A connector call approved after the session
+     ended parks until the agent's next identical call (the same as in a web
+     chat; the prompt says "Ask me again and I'll do it").
+   - **Whose yes is spent.** A standing approval is spent only by the turn of
+     the person who gave it, and never by an outsider's turn (an outsider's turn
+     takes only an unattended yes). Before, any turn on the agent making the
+     identical call could cash it. This is a behaviour change for web chats
+     with a team agent too: a team-mate making the same call no longer spends
+     someone else's approval and is asked for their own, and for now only one
+     person's approval for a given call can stand at a time.
+   - **Permission cards** (a host to allow, a skill to attach) arrive in PR B.
+     The skill card goes through `agent:apply-capability-grant`, behind the
+     checks `routes-chat.ts:885` makes. They are not the held-call prompt:
+     held calls are resolved by `decisions:approve` and `decisions:dismiss`,
+     never by that hook.
 
 ## 6. Hooks, and the boundary review
 
@@ -467,7 +513,11 @@ can't read the domains itself (don't copy the list into it).
 - **Caller risk:** reading `approved` as "has an account". It says nothing of
   the sort.
 
-**No other new hooks** (apart from `auth:is-approved-email` above).
+**No other new hooks** (apart from `auth:is-approved-email` above, and
+TASK-1095 adds none). TASK-1095 adds one more public route,
+`POST /slack/interactions/<installId>`, signed like the events and `/ax`
+routes (the signature, the install and the admission check run before the body
+is read), and decisions' attendance now covers origin `'slack'`.
 `@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
 registers routes and subscribes to chat events. Two existing surfaces widen:
 conversations' `origin` gains `'slack'` (a Slack thread is read-only in the web
@@ -485,6 +535,27 @@ connectors. The protections are:
 - No Slack Connect channels.
 - The identity check reads Slack's API, never the message.
 - Secrets are readable only by this plugin.
+
+**Known gaps, accepted (TASK-1095, PR A):**
+
+- **Prompts live in memory.** A restart, or the 24-hour limit, turns a click
+  into "this isn't waiting here anymore, answer it in Today". The decision
+  itself is safe in Today.
+- **An identical call already waiting** reuses its row, so the reply links
+  Today instead of showing buttons.
+- **A hold approved in the web Today** wakes the agent, but its continuation
+  isn't posted to Slack (only Slack clicks are followed).
+- **A late connector approval** (after the warm session ended) parks until the
+  agent's next identical call, as in web chats.
+- **The agent's reaction to a Deny** runs without a stream; and a woken
+  continuation has no lane slot, so a message sent meanwhile may fold into it.
+- **A host prompt shows the host** to everyone in the connected channel.
+- **Refused clickers cost** one vault read each and, once per prompt, one
+  private line.
+- **Only one yes per agent and call** can stand at a time (a team-mate's
+  identical approval is refused while another's stands).
+- **Whether Slack auto-links** a URL in a plain-text section is unmeasured
+  (unfurls are off); checked in the TASK-1097 walk.
 
 **Known gaps, accepted (TASK-1094):**
 

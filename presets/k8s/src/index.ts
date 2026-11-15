@@ -1527,8 +1527,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // branding's public light logo for the bot's avatar (Slack fetches it itself;
   // a missing or unsuitable logo just leaves Slack's default).
   //
-  // Single-replica: its event dedupe and admin lock are in-process, which the
-  // chart's one-host pin (ax-next.validateHostReplicas) keeps honest.
+  // Single-replica: its event dedupe, admin lock and open approval prompts are
+  // in-process, which the chart's one-host pin (ax-next.validateHostReplicas) keeps honest.
   const slackOrigin = presetPublicOrigin(config);
   plugins.push(
     createChannelSlackPlugin({

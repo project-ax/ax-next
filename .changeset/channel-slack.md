@@ -9,7 +9,7 @@ Add `@ax/channel-slack`, so people can talk to their own AX agent from Slack. A 
 
 `credentials:get` can now be asked for the workspace-wide value only (`scope: 'global'`). The Slack install's secrets are read that way, so a key someone stored for themselves under the same name can never stand in for the install's own.
 
-Conversations can now come from Slack (origin `'slack'`). A Slack DM thread shows up in the web app but stays read-only there, so the conversation never forks: where the message box would be, it says "This conversation is in Slack. Reply there." Until Slack can show approval buttons, a tool call that needs your OK from a Slack DM waits in Today, the same as a routine's.
+Conversations can now come from Slack (origin `'slack'`). A Slack DM thread shows up in the web app but stays read-only there, so the conversation never forks: where the message box would be, it says "This conversation is in Slack. Reply there." A tool call that needs your OK from a Slack DM shows Allow and Deny buttons in the thread; the call is still in Today too.
 
 A team admin can now connect a public Slack channel to a team agent, from the agent's settings or by typing `/ax connect` followed by the agent's name in the channel. `/ax disconnect` undoes it. Only a team admin of the agent's team can do either; being a workspace admin does not count, and a personal agent can't be connected at all. AX checks the channel first (public, not archived, not shared with another workspace) and only then has the bot join it. A person who can't see an agent is told nothing about it, and deleting an agent frees its channels.
 
@@ -23,4 +23,4 @@ Mention-only, on purpose: the bot answers a message that mentions it and nothing
 
 Each connected channel has a "remember this channel" switch, for what people who can use the agent say there. What anyone else says is never remembered, switch or not: it would otherwise come back as fact in the agent's later turns, members' private chats included. The switch works through `memory:pre-capture`, so it also stops the agent's own `memory_note`. Once a thread has had a turn while the switch was off, it stays unremembered, even if the switch comes back on or Slack is disconnected. It stops learning, not recall: the agent still recalls what it learned elsewhere.
 
-When a call needs approval, an outsider's turn says the agent is waiting for its owner and the call waits in the connector's Today. A member's turn, or a DM, links to Today to approve it, until Slack gets approval buttons.
+When a call needs approval, an outsider's turn says the agent is waiting for its owner and the call waits in the connector's Today. A member's turn, or a DM, shows Allow and Deny buttons in the thread, and the asker can also approve it in Today (see the approval buttons note).
