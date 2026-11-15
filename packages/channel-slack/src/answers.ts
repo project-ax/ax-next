@@ -70,7 +70,13 @@ import type { InstallRow } from './store.js';
  * would otherwise hold the prompt, and keep every click on it silent, for as
  * long as it hung. A step past its deadline is a failure like any other:
  * "try again", and the prompt is open again. A redraw past it is logged, and
- * the answer still stands.
+ * the answer still stands. The answer itself is the exception: past its
+ * deadline it may still act (an approve that lands late), so a retry could
+ * be a second answer (Allow, then Deny: approved AND dismissed). The click
+ * ends at the deadline and tells the asker it's still going
+ * (`COPY.promptStillWorking`), but the prompt stays taken until the answer
+ * settles, and then ends as that answer says. One that never settles holds
+ * it only until the registry lets a taken prompt go (prompts.ts).
  *
  * What the bot says here is COPY only. An answer's `line` is a COPY line
  * too: it is drawn as mrkdwn where the buttons were, and is the message's
@@ -257,6 +263,55 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
       await tell(COPY.promptFailed, prompt.threadTs, kind);
     };
 
+    /** Set once the answer outlived its deadline: the lock then waits for that answer, not for this click. */
+    let parked = false;
+
+    /**
+     * 10. The answer shows where the buttons were, and the prompt is settled.
+     * Only an explicit `false` keeps it open: one answer per prompt fails closed.
+     */
+    const finish = async (out: Answer): Promise<void> => {
+      const settled = out.settle !== false;
+      if (settled) {
+        await redraw(out.line);
+        letGo('settle');
+      } else {
+        // Its buttons stay, so the asker can try again: the line goes to them alone.
+        letGo('release');
+        await tell(out.line, prompt.threadTs, kind);
+      }
+      log('info', 'slack_prompt_answered', { kind, action: click.action, settled });
+      try {
+        out.follow?.();
+      } catch (err) {
+        log('error', 'slack_prompt_failed', { kind, stage: 'follow', code: logCode(err) });
+      }
+    };
+
+    /**
+     * An answer that outlived its deadline, once it settles: what it says
+     * then, after the asker has been told it's still going. Never rejects,
+     * and lets go of the prompt whatever happens.
+     */
+    const landLate = async (running: Promise<Answer>, stillWorking: Promise<void>): Promise<void> => {
+      try {
+        let out: Answer;
+        try {
+          out = await running;
+        } catch (err) {
+          await stillWorking;
+          await failed('late-answer', err);
+          return;
+        }
+        await stillWorking;
+        await finish(out);
+      } catch (err) {
+        log('error', 'slack_prompt_failed', { kind, stage: 'late-answer', code: logCode(err) });
+      } finally {
+        letGo('release');
+      }
+    };
+
     try {
       // 3. This install's prompt, in the clicked channel.
       if (prompt.installId !== installId || prompt.channel !== click.channel) {
@@ -353,33 +408,33 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         conversationId: prompt.conversationId,
         logger: d.logger,
       });
+      // Called once, whatever its deadline says: past it, the answer may still act.
+      const running = (async () => answer(ctx, prompt, click.action, { install, botToken: token }))();
       let out: Answer;
       try {
-        out = await bounded(() => answer(ctx, prompt, click.action, { install, botToken: token }));
+        out = await bounded(() => running);
       } catch (err) {
-        await failed('answer', err);
+        if (!(err instanceof StepTimeoutError)) {
+          await failed('answer', err);
+          return;
+        }
+        // Past its deadline, the answer may still land (an approve, say), and
+        // a retry would then be a second answer. So the prompt stays taken
+        // until it settles, and this click hands its lock to the wait: the
+        // asker's next click is the silent busy one. An answer that never
+        // settles holds it no longer than the registry lets a taken prompt
+        // outlive its expiry (prompts.ts).
+        parked = true;
+        log('warn', 'slack_prompt_failed', { kind, stage: 'answer', code: logCode(err) });
+        const stillWorking = tell(COPY.promptStillWorking, prompt.threadTs, kind);
+        void landLate(running, stillWorking);
+        await stillWorking;
         return;
       }
-
-      // 10. The answer shows where the buttons were, and the prompt is settled.
-      // Only an explicit `false` keeps it open: one answer per prompt fails closed.
-      const settled = out.settle !== false;
-      if (settled) {
-        await redraw(out.line);
-        letGo('settle');
-      } else {
-        // Its buttons stay, so the asker can try again: the line goes to them alone.
-        letGo('release');
-        await tell(out.line, prompt.threadTs, kind);
-      }
-      log('info', 'slack_prompt_answered', { kind, action: click.action, settled });
-      try {
-        out.follow?.();
-      } catch (err) {
-        log('error', 'slack_prompt_failed', { kind, stage: 'follow', code: logCode(err) });
-      }
+      await finish(out);
     } finally {
-      letGo('release');
+      // A parked click's lock belongs to its late answer (`landLate`).
+      if (!parked) letGo('release');
     }
   };
 }

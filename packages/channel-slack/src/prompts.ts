@@ -39,7 +39,9 @@ import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLA
  *     open: past that, the oldest one nobody is answering is forgotten. One
  *     being answered is never dropped under its answer by either rule, and
  *     when every open prompt is being answered, `add` throws rather than grow
- *     past `max`. Expired prompts are swept on `add`, `claim` and `size`: no
+ *     past `max`. But a taken prompt is held at most `ttlMs` past its
+ *     expiry: an answer can outlive its click (answers.ts), and one that
+ *     never settles must not keep its prompt, or a slot, forever. Expired prompts are swept on `add`, `claim` and `size`: no
  *     timers, so nothing to unref and nothing to leak.
  *   - What `add` throws is a PromptRegistryError, whose `code` is all a
  *     caller logs (log-code.ts). A caller treats it like a failed post: no
@@ -205,10 +207,15 @@ export function createPromptRegistry(o: {
   /** id -> its prompt. Insertion order is age. */
   const entries = new Map<string, Entry>();
 
-  /** Drop every expired prompt nobody is answering: every one, not just the oldest, as the clock can step back. */
+  /**
+   * Drop every expired prompt nobody is answering: every one, not just the
+   * oldest, as the clock can step back. One being answered stays under its
+   * answer, but not forever: a whole TTL past its expiry, it goes too.
+   */
   function sweep(nowMs: number): void {
     for (const [id, entry] of entries) {
-      if (!entry.busy && nowMs >= entry.prompt.expiresAt) entries.delete(id);
+      const expiresAt = entry.prompt.expiresAt;
+      if (nowMs >= (entry.busy ? expiresAt + ttlMs : expiresAt)) entries.delete(id);
     }
   }
 

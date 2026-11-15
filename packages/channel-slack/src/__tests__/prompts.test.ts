@@ -421,6 +421,23 @@ describe('createPromptRegistry: expiry', () => {
     expect(prompts.size()).toBe(1);
   });
 
+  it('one being answered is held at most a TTL past its expiry: an answer that never settles frees its prompt and its slot', () => {
+    const { prompts, at } = registry({ max: 1 });
+    const prompt = prompts.add(MEL, HELD, SUMMARY);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId).ok).toBe(true);
+    at(NOW_MS + 60_000 + 59_999);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(BUSY);
+    expect(refused(() => prompts.add(ADA, HELD, SUMMARY)).code).toBe('prompts-full');
+    at(NOW_MS + 60_000 + 60_000);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(GONE);
+    expect(prompts.size()).toBe(0);
+    // Its late settle or release brings nothing back, and the slot is free.
+    prompts.release(prompt.id);
+    prompts.settle(prompt.id);
+    const next = prompts.add(ADA, HELD, SUMMARY);
+    expect(prompts.claim(next.id, next.askerSlackId).ok).toBe(true);
+  });
+
   it('after the clock steps back, an expired prompt is still gone, though one added before it has not expired', () => {
     const { prompts, at } = registry();
     at(NOW_MS + 100);

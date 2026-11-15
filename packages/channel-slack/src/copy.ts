@@ -88,8 +88,8 @@ export const COPY = {
     Deny (`promptAllow`, `promptDeny`: plain_text labels), then
     `promptOnlyAsker` and `promptToday` as context. Once answered or closed,
     the buttons give way to one `decision*` line or `promptClosed`.
-    `promptOnlyAsker`, `promptGone` and `promptFailed` also answer a click
-    privately. None names the person, the agent or the tool, and a link is a
+    `promptOnlyAsker`, `promptGone`, `promptFailed` and `promptStillWorking`
+    also answer a click privately. None names the person, the agent or the tool, and a link is a
     bare URL that ends its line.
   */
   promptAllow: 'Allow',
@@ -99,6 +99,8 @@ export const COPY = {
   promptGone: (todayLink: string) =>
     `This isn't waiting here anymore. If it still needs an answer, it's in Today: ${shown(todayLink)}`,
   promptFailed: "Something went wrong and I couldn't record your answer. Try again in a moment.",
+  // An answer past its deadline may still land, so the prompt stays taken: no "try again" here.
+  promptStillWorking: "This is taking longer than usual. I'm still working on your answer, so there's no need to click again.",
   promptClosed: "This can't be answered here anymore.",
   decisionAllowed: "Allowed. I'll pick it up in a moment.",
   decisionDone: 'Allowed, and done.',

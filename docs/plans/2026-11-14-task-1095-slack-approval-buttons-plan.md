@@ -111,6 +111,7 @@ These are the cases most likely to bite someone in Slack that no single happy-pa
   - `promptToday: (todayLink) => \`You can also answer it in Today: ${shown(todayLink)}\``
   - `promptGone: (todayLink) => \`This isn't waiting here anymore. If it still needs an answer, it's in Today: ${shown(todayLink)}\``
   - `promptFailed: "Something went wrong and I couldn't record your answer. Try again in a moment."`
+  - `promptStillWorking: "This is taking longer than usual. I'm still working on your answer, so there's no need to click again."` (Task 5 review fix: the ephemeral for an answer past its deadline)
   - `promptClosed: "This can't be answered here anymore."`
   - `decisionAllowed: "Allowed. I'll pick it up in a moment."`
   - `decisionDone: 'Allowed, and done.'`
@@ -290,7 +291,7 @@ export function createClickHandler(d: AnswerDeps): ClickHandler;
   6. `findSenderUser(...)` (throws → `promptFailed`, release) `!== prompt.userId` → ephemeral `COPY.promptOnlyAsker`, reason `not-mapped`.
   7. `agentAccess(bus, ctx, prompt.agentId, prompt.userId)`: `'no' | 'agent-gone'` → settle, update the prompt to `COPY.promptClosed`, reason `no-access`; a throw → `promptFailed`, release.
   8. `prompt.mode === 'attended'`: `channels.get(installId, channel)` is null or names another agent → settle, update to `COPY.promptClosed`, reason `disconnected` (Review Focus 5). A throw → `promptFailed`, release.
-  9. `answers[prompt.subject.kind]` absent → settle, `COPY.promptClosed`, reason `unsupported`. Else call it with `ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: prompt.agentId, userId: prompt.userId, conversationId: prompt.conversationId, logger })`. A throw → ephemeral `promptFailed`, release, log `slack_prompt_failed {stage:'answer', code}`.
+  9. `answers[prompt.subject.kind]` absent → settle, `COPY.promptClosed`, reason `unsupported`. Else call it with `ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: prompt.agentId, userId: prompt.userId, conversationId: prompt.conversationId, logger })`. A throw → ephemeral `promptFailed`, release, log `slack_prompt_failed {stage:'answer', code}`. **Past `PROMPT_STEP_TIMEOUT_MS` (Task 5 review fix): NOT released**, because the abandoned answer may still act and a retry would be a second answer (Allow-then-Deny = approve AND dismiss). Log `{stage:'answer', code:'timeout'}`, ephemeral `COPY.promptStillWorking`, and the click ends; the prompt stays taken (every click on it is the silent busy one) until the answer settles, then ends exactly as that answer says (a late throw → `promptFailed` + release, logged `stage:'late-answer'`), after the still-working line. One that never settles is bounded by the registry: a taken prompt is dropped `ttlMs` past its expiry (Task 3).
   10. `api.updateMessage` on `prompt.messageTs ?? click.messageTs` with `outcomeBlocks({ subject: prompt.subjectText, line })` (a failure is logged `slack_prompt_failed {stage:'update'}`, never fatal); `settle` or `release` per `Answer.settle`; log `slack_prompt_answered {installId, kind, action}`; then `answer.follow?.()`, not awaited.
 - A `finally` releases a claim THIS click took (an `ok` claim) that nothing settled, never one it didn't take.
 
@@ -392,7 +393,7 @@ export function followContinuation(d: TurnDeps, c: ContinuationRequest): Promise
 | `status 'failed'` | `decisionFailed(today)` | no |
 | `status 'pending'` or anything else | `decisionNotRun(today)` | no |
 
-  `Answer.settle` is true for every row of the table (the answer landed or can't land here; Today has the rest). A throw from either hook propagates (the gate turns it into `promptFailed` + release).
+  `Answer.settle` is true for every row of the table (the answer landed or can't land here; Today has the rest). A throw from either hook propagates (the gate turns it into `promptFailed` + release). A hook slower than `PROMPT_STEP_TIMEOUT_MS` keeps the prompt taken until it settles (Task 5 review fix), so no retry runs beside it; still read an already-approved or already-dismissed decision as answered, since a release after a late throw opens the prompt to a retry.
 
 - [ ] **Step 1: Write the failing tests:** a table test over `decisionOutcome` (one case per row, plus `streamReqId` present but `path 'host-replays'` → no follow); Allow calls `decisions:approve` with exactly `{decisionId, userId, continuationReqId, requestShownInFull:false}` and a ctx whose `userId` equals `input.userId`, and `follow` receives the returned `streamReqId` and `pendingUntil`; Deny calls `decisions:dismiss` with exactly `{decisionId, userId}`; a dismiss answering an already-executed row → `decisionAllowed`/`decisionDone` per the table, not `decisionDenied`.
 - [ ] **Step 2: Run, expect FAIL.**

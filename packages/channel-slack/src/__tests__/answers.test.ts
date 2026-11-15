@@ -1169,7 +1169,8 @@ describe('the click gate: every step has a deadline', () => {
   /**
    * One step that never answers, and what the click does once the deadline
    * passes: Mel is told to try again (a step inside the claim) with the
-   * prompt open again, or the click just ends (a step outside it).
+   * prompt open again, or the click just ends (a step outside it). The
+   * answer is the exception: it may still act, so the prompt stays taken.
    */
   const HUNG: Array<{
     step: string;
@@ -1177,7 +1178,7 @@ describe('the click gate: every step has a deadline', () => {
     context: PromptContext;
     /** Whether the click is on a prompt this process has. */
     known: boolean;
-    then: { state: 'open' | 'gone'; failed: Record<string, unknown> | null; told: string | null; runs: number };
+    then: { state: 'open' | 'busy' | 'gone'; failed: Record<string, unknown> | null; told: string | null; runs: number };
   }> = [
     {
       step: 'the bot token read',
@@ -1239,10 +1240,11 @@ describe('the click gate: every step has a deadline', () => {
       options: { answer: () => never() },
       context: MEL_DM,
       known: true,
+      // It may still land: the prompt stays taken, and Mel hears it's still going, not "try again".
       then: {
-        state: 'open',
+        state: 'busy',
         failed: { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'timeout' },
-        told: COPY.promptFailed,
+        told: COPY.promptStillWorking,
         runs: 1,
       },
     },
@@ -1296,9 +1298,9 @@ describe('the click gate: every step has a deadline', () => {
     });
   }
 
-  it("while a step hangs, the prompt stays taken: Mel's second click is the silent busy one", async () => {
+  it("while a step hangs, the prompt stays taken: Mel's second click is the silent busy one, until the deadline lets it go", async () => {
     vi.useFakeTimers();
-    const w = await world({ answer: () => never() });
+    const w = await world({ findUser: 'hang' });
     const prompt = w.open(MEL_DM);
     const first = w.onClick(INSTALL, w.clickOn(prompt));
     await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS - 1);
@@ -1313,6 +1315,30 @@ describe('the click gate: every step has a deadline', () => {
     expect(w.state(prompt)).toBe('open');
   });
 
+  it("while the answer hangs, the prompt stays taken, past the deadline too: Mel's second click is silent and runs nothing", async () => {
+    vi.useFakeTimers();
+    const w = await world({ answer: () => never() });
+    const prompt = w.open(MEL_DM);
+    const first = w.onClick(INSTALL, w.clickOn(prompt));
+    await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS - 1);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo']);
+    await vi.advanceTimersByTimeAsync(1);
+    await first;
+    expect(w.state(prompt)).toBe('busy');
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+
+    expect(w.runs).toHaveLength(1);
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, reason: 'busy' },
+      { installId: INSTALL_ID, reason: 'busy' },
+    ]);
+  });
+
   it('leaves no timer behind once a click is answered', async () => {
     vi.useFakeTimers();
     const w = await world();
@@ -1325,6 +1351,142 @@ describe('the click gate: every step has a deadline', () => {
 
     expect(w.runs).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+// ── An answer past its deadline ─────────────────────────────────────────────
+
+describe('the click gate: an answer past its deadline still holds the prompt until it lands', () => {
+  /**
+   * Mel's Allow, whose answer outlives the click's deadline and lands only
+   * when the test says: the abandoned approve may still go through, so
+   * nothing else may run on the prompt until it has.
+   */
+  async function slowAllow(late: () => Answer | Promise<Answer>, options: WorldOptions = {}) {
+    vi.useFakeTimers();
+    const landing = deferred();
+    const w = await world({
+      ...options,
+      answer: async (n) => {
+        if (n > 1) return { line: COPY.decisionDenied, settle: true };
+        await landing.promise;
+        return late();
+      },
+    });
+    const prompt = w.open(MEL_DM);
+    const click = w.onClick(INSTALL, w.clickOn(prompt));
+    await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS);
+    await click;
+    return { w, prompt, land: landing.release };
+  }
+
+  it("Allow times out, then Mel clicks Deny: silence, no dismiss, until the approve lands; then the prompt shows the approve's line and is settled", async () => {
+    let followed = 0;
+    const { w, prompt, land } = await slowAllow(() => ({
+      line: COPY.decisionAllowed,
+      settle: true,
+      follow: () => {
+        followed += 1;
+      },
+    }));
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptStillWorking)]);
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'timeout' },
+    ]);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+
+    expect(w.runs.map((r) => r.action)).toEqual(['allow']);
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+    expect(w.slack.calls).toHaveLength(2);
+    expect(w.state(prompt)).toBe('busy');
+
+    land();
+    await vi.waitFor(() => expect(w.state(prompt)).toBe('gone'));
+
+    expect(w.slack.calls.slice(2)).toEqual([
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed) },
+    ]);
+    expect(w.logged('slack_prompt_answered')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', action: 'allow', settled: true },
+    ]);
+    await vi.waitFor(() => expect(followed).toBe(1));
+
+    // Deny after it landed: the prompt is answered, and Mel is pointed at Today. Still no dismiss.
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+    expect(w.runs.map((r) => r.action)).toEqual(['allow']);
+    expect(w.slack.calls.at(-1)).toEqual(told(DM_MEL, MEL, COPY.promptGone(TODAY)));
+  });
+
+  it("an answer that fails after its deadline: the prompt is open again, Mel is told to try again, and her next click answers it", async () => {
+    const { w, prompt, land } = await slowAllow(() => {
+      throw fault('fake-decisions');
+    });
+
+    land();
+    await vi.waitFor(() => expect(w.state(prompt)).toBe('open'));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      told(DM_MEL, MEL, COPY.promptStillWorking),
+      told(DM_MEL, MEL, COPY.promptFailed),
+    ]);
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'timeout' },
+      { installId: INSTALL_ID, kind: 'decision', stage: 'late-answer', code: 'store-unavailable' },
+    ]);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+    expect(w.runs.map((r) => r.action)).toEqual(['allow', 'deny']);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it('an answer that lands late and leaves the prompt open: its line privately, no redraw, and the prompt is open again', async () => {
+    const { w, prompt, land } = await slowAllow(() => ({ line: COPY.promptFailed, settle: false }));
+
+    land();
+    await vi.waitFor(() => expect(w.state(prompt)).toBe('open'));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      told(DM_MEL, MEL, COPY.promptStillWorking),
+      told(DM_MEL, MEL, COPY.promptFailed),
+    ]);
+  });
+
+  it("Mel hears it's still going before she hears how it went, even when it lands while she's being told", async () => {
+    const telling = deferred();
+    vi.useFakeTimers();
+    const landing = deferred();
+    const w = await world({
+      slackHold: { method: 'postEphemeral', until: telling.promise },
+      answer: async () => {
+        await landing.promise;
+        return { line: COPY.decisionAllowed, settle: true };
+      },
+    });
+    const prompt = w.open(MEL_DM);
+    const click = w.onClick(INSTALL, w.clickOn(prompt));
+    await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS);
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo', 'postEphemeral']);
+
+    landing.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo', 'postEphemeral']);
+    telling.release();
+    await click;
+    await vi.waitFor(() => expect(w.state(prompt)).toBe('gone'));
+
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo', 'postEphemeral', 'updateMessage']);
+  });
+
+  it('an answer that never lands holds the prompt only so long: a TTL past its expiry, the registry lets it go', async () => {
+    const { w, prompt } = await slowAllow(() => ({ line: COPY.decisionAllowed, settle: true }));
+
+    w.later(PROMPT_TTL_MS);
+    expect(w.state(prompt)).toBe('busy');
+    w.later(PROMPT_TTL_MS);
+    expect(w.state(prompt)).toBe('gone');
   });
 });
 

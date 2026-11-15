@@ -65,6 +65,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'promptToday',
         'promptGone',
         'promptFailed',
+        'promptStillWorking',
         'promptClosed',
         'decisionAllowed',
         'decisionDone',
@@ -136,6 +137,7 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     ['promptToday', COPY.promptToday(link)],
     ['promptGone', COPY.promptGone(link)],
     ['promptFailed', COPY.promptFailed],
+    ['promptStillWorking', COPY.promptStillWorking],
     ['promptClosed', COPY.promptClosed],
     ['decisionAllowed', COPY.decisionAllowed],
     ['decisionDone', COPY.decisionDone],
@@ -176,6 +178,11 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
   it("the line that ends the asking reply links nothing: the prompt under it carries Today's link", () => {
     expect(COPY.heldAsked).not.toMatch(/\]\(|https?:/);
     expect(new Set([COPY.heldAsked, COPY.heldForOwner, COPY.heldForSender(TODAY)]).size).toBe(3);
+  });
+
+  it("the line for an answer past its deadline doesn't ask for another click: the prompt stays taken until that answer lands", () => {
+    expect(COPY.promptStillWorking).not.toMatch(/try again/i);
+    expect(COPY.promptStillWorking).not.toBe(COPY.promptFailed);
   });
 
   it('the buttons say Allow and Deny', () => {
