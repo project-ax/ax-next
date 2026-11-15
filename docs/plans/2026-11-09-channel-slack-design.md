@@ -197,10 +197,15 @@ recalled in a channel.
    `tooling.tokens.rotate` whenever it needs one. Access tokens are never stored
    past their 12 hours.
 
-**Renaming:** admin settings → Slack → **Bot name**. AX applies it with
-`apps.manifest.update`. There's no reinstall, and the bot token keeps working
-(§7 Q3). The name people see changes; the @handle underneath stays as it was at
-install. Slack shows mentions by current name, so people don't notice.
+**Renaming:** Admin › Slack → **Rename** (TASK-1096), once Slack is connected.
+AX checks the name (§7 Q3) and applies it with `apps.manifest.update`, using an
+access token minted from the stored refresh token. Slack replaces the whole
+manifest on update, so AX sends all of it as this build makes it, with only the
+name changed. There's no reinstall, and the bot token keeps working (§7 Q3). The
+name people see changes; the @handle underneath stays as it was at install.
+Slack shows mentions by current name, so people don't notice. If the stored
+token stops working, or the Slack app was deleted on Slack's side, the tab says
+so and the fix is Disconnect, then Connect again.
 
 **The secrets:** bot token, signing secret, client secret, and the
 configuration **refresh token**. All live in the credentials store, readable
@@ -212,7 +217,9 @@ so AX can't retire it through the API. Hence:
 
 - It's admin-only to set, and nobody can ever read it back.
 - Admin settings shows who added the token (an AX admin; configuration tokens
-  belong to one person). Replacing it comes with the rename card (TASK-1096).
+  belong to one person). Replacing it isn't built yet (TASK-1128). Until
+  then, a token that stops working means Disconnect, then Connect with a new
+  one.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
   can't do that last step itself.
@@ -239,7 +246,10 @@ manifest carries one more URL, `<origin>/slack/interactions/<installId>`, where
 Slack sends a click on an Allow or Deny button. It needs no new scope. An
 install made before TASK-1095 has no such URL, so it reconnects to get one
 (Disconnect, then Connect); until then its prompts still carry the Today link
-(a host prompt has none: see §5.6).
+(a host prompt has none: see §5.6). Saving the bot's
+name (TASK-1096) also sends the whole current manifest, so it should bring that
+URL to an older install without a reconnect. That isn't measured yet; the
+TASK-1097 walk checks it.
 
 Two scopes are deliberately **not** requested. `channels:history`: a channel
 is mention-only, so a follow-up in a thread needs an @mention again and the
