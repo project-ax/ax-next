@@ -791,6 +791,16 @@ describe('@ax/preset-memory canary', () => {
     expect(command.status).toBe(unserved.status);
     expect(command.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
     expect(await command.text()).toBe(unservedText);
+    // And the interactions route (TASK-1095), where a click on an approval
+    // prompt's Allow or Deny arrives: the same 404 for an unknown install.
+    const interaction = await fetch(url('/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'payload=%7B%7D',
+    });
+    expect(interaction.status).toBe(unserved.status);
+    expect(interaction.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
+    expect(await interaction.text()).toBe(unservedText);
 
     // A team agent's channel settings are mounted too (TASK-1094): signed out
     // is the route's 401, and an agent nobody here can see is its own 404.

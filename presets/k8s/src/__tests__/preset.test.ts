@@ -1284,7 +1284,7 @@ describe('@ax/preset-k8s wiring', () => {
     ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
   });
 
-  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, branding and the cap interrupt optional (TASK-1093)', () => {
+  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, every optional one produced too (TASK-1093, TASK-1095)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const slack = plugins.find((p) => p.manifest.name === '@ax/channel-slack');
     expect(slack).toBeDefined();
@@ -1320,6 +1320,16 @@ describe('@ax/preset-k8s wiring', () => {
         hook: 'teams:list-for-user',
         degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
       },
+      // The approval buttons (TASK-1095): a call held in a Slack turn gets Allow and Deny in the thread.
+      ...[
+        'decisions:recent-for-conversation',
+        'decisions:get',
+        'decisions:approve',
+        'decisions:dismiss',
+      ].map((hook) => ({
+        hook,
+        degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
+      })),
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',
@@ -1334,7 +1344,8 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
     // Every hard call has a producer in this preset, and so do the optional ones.
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
-    for (const hook of [...slack!.manifest.calls, 'branding:get', 'agent:interrupt', 'teams:list-for-user']) {
+    // The producer check is over the manifest, so a hook added there can't be forgotten here.
+    for (const hook of [...slack!.manifest.calls, ...slack!.manifest.optionalCalls!.map((c) => c.hook)]) {
       expect(registered.has(hook), hook).toBe(true);
     }
   });

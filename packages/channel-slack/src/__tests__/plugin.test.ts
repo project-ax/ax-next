@@ -23,7 +23,12 @@ import { AGENTS_DELETED_KEY } from '../agents-deleted.js';
 import { CAPTURE_VETO_KEY } from '../capture-veto.js';
 import { createChannelStore } from '../channel-store.js';
 import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
-import { ADMIN_BODY_MAX_BYTES, COMMANDS_MAX_BODY_BYTES, EVENTS_MAX_BODY_BYTES } from '../limits.js';
+import {
+  ADMIN_BODY_MAX_BYTES,
+  COMMANDS_MAX_BODY_BYTES,
+  EVENTS_MAX_BODY_BYTES,
+  INTERACTIONS_MAX_BODY_BYTES,
+} from '../limits.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
@@ -543,6 +548,16 @@ describe('@ax/channel-slack plugin', () => {
           hook: 'teams:list-for-user',
           degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
         },
+        // The approval buttons (TASK-1095): optional, never hard.
+        ...[
+          'decisions:recent-for-conversation',
+          'decisions:get',
+          'decisions:approve',
+          'decisions:dismiss',
+        ].map((hook) => ({
+          hook,
+          degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
+        })),
       ],
       subscribes: [
         'bootstrap:reset-cleanup',
@@ -563,7 +578,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the twelve routes, and only the events and commands routes bypass CSRF', async () => {
+  it('init registers the thirteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -579,6 +594,12 @@ describe('@ax/channel-slack plugin', () => {
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
       { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
+      {
+        method: 'POST',
+        path: '/slack/interactions/:installId',
+        bypassCsrf: true,
+        maxBodyBytes: INTERACTIONS_MAX_BODY_BYTES,
+      },
       { method: 'GET', path: '/settings/slack/:agentId', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'GET', path: '/settings/slack/:agentId/available', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/settings/slack/:agentId/connect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
@@ -666,6 +687,8 @@ describe('@ax/channel-slack plugin', () => {
       expect(await answer(`/slack/events/${id}`), id).toEqual(unserved);
       // The commands route answers an unknown or secretless install the same way.
       expect(await answer(`/slack/commands/${id}`), `commands ${id}`).toEqual(unserved);
+      // And the interactions route (TASK-1095).
+      expect(await answer(`/slack/interactions/${id}`), `interactions ${id}`).toEqual(unserved);
     }
   });
 
@@ -928,6 +951,17 @@ describe('@ax/channel-slack plugin', () => {
     expect(answer).toEqual({ status: 503, body: undefined, done: true });
   });
 
+  it('stopAdmission makes the interactions route answer 503 before any lookup (TASK-1095)', async () => {
+    const { plugin, call } = await boot();
+    await plugin.stopAdmission?.();
+    const answer = await call(
+      'POST',
+      '/slack/interactions/:installId',
+      request('POST', `/slack/interactions/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body: eventBody() }),
+    );
+    expect(answer).toEqual({ status: 503, body: undefined, done: true });
+  });
+
   it('bootstrap:reset-cleanup empties the installs table', async () => {
     const { harness } = await boot();
     await insertActiveInstall();
@@ -1165,7 +1199,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(12);
+    expect(s.routes).toHaveLength(13);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

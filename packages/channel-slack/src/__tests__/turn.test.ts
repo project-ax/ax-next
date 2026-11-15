@@ -148,8 +148,6 @@ interface HarnessOptions {
   lookupFails?: boolean;
   /** Slack refuses a prompt's post. */
   postBlocksFails?: boolean;
-  /** The turn's deps carry no prompt registry (nothing has wired one in). */
-  noPrompts?: boolean;
 }
 
 function harness(script: Script = {}, o: HarnessOptions = {}) {
@@ -236,7 +234,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
           bus,
           api: slack.api,
           registry,
-          ...(o.noPrompts === true ? {} : { prompts }),
+          prompts,
           publicOrigin: PUBLIC_ORIGIN,
           logger: quiet,
           clock: systemClock,
@@ -567,17 +565,6 @@ describe('runTurn: a held call the person who wrote can answer gets a prompt aft
     expect(h.streamed()).toBe(`Let me send that.\n\n${COPY.heldAsked}\n\n${COPY.turnFailed}`);
     expect(h.calls().at(-1)!.method).toBe('postBlocks');
     expect(h.prompts.size()).toBe(1);
-  });
-
-  it('no prompt registry in the turn: the Today line, and nothing is looked up', async () => {
-    const h = harness(
-      { chunks: [SAID, ...heldCall('toolu_held')] },
-      { decisions: [decisionRow('dec_held', 'toolu_held')], noPrompts: true },
-    );
-    await h.run('dm');
-    expect(h.reply()).toBe(`Let me send that.\n\n${COPY.heldForSender(TODAY)}`);
-    expect(h.lookups).toEqual([]);
-    expect(h.calls().map((c) => c.method)).not.toContain('postBlocks');
   });
 });
 

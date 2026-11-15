@@ -115,12 +115,8 @@ export interface TurnDeps {
   bus: HookBus;
   api: SlackApi;
   registry: TurnRegistry;
-  /**
-   * The open approval prompts (prompts.ts), where a held call's prompt is
-   * opened. Without a registry, a held call ends the reply with the Today
-   * line, and nothing is looked up.
-   */
-  prompts?: PromptRegistry;
+  /** The open approval prompts (prompts.ts), where a held call's prompt is opened. */
+  prompts: PromptRegistry;
   /** The web app's origin, for links in the bot's own lines. */
   publicOrigin: string;
   logger: Logger;
@@ -369,12 +365,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     (TASK-1095): only when the turn runs as them, `source` 'user', which is
     exactly a DM or an attended turn. The mode is narrowed again for the
     registry, which refuses any other mode itself. An outsider's turn never
-    gets a prompt, and nor does a turn with no registry to open one in.
+    gets a prompt.
   */
   const asking =
-    d.prompts !== undefined && source === 'user' && (s.mode === 'dm' || s.mode === 'attended')
-      ? { prompts: d.prompts, mode: s.mode }
-      : null;
+    source === 'user' && (s.mode === 'dm' || s.mode === 'attended') ? { prompts: d.prompts, mode: s.mode } : null;
   // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
   const todayLink = `${d.publicOrigin}/workspace`;
 

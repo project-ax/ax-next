@@ -51,9 +51,9 @@ import type { InstallRow } from './store.js';
  *      the prompt closes. The answer runs as the prompt's user, agent and
  *      conversation, never as anything the click says.
  *  10. The prompt's message is redrawn with the answer's line where the
- *      buttons were (blocks.ts `outcomeBlocks`), the prompt is settled, and
- *      the answer's follow-up (the agent carrying on in the thread) starts,
- *      never awaited. An answer that says `settle: false` (a failure the
+ *      buttons were (blocks.ts `outcomeBlocks`) and the prompt is settled.
+ *      Whatever follows an answer (the agent carrying on in the thread after
+ *      an Allow) is the answer's own to start (decision-answer.ts). An answer that says `settle: false` (a failure the
  *      asker can retry) keeps its buttons instead: its line goes to the
  *      asker privately, and the prompt is open again. Something that isn't
  *      an answer at all (no object, no string line) may still have acted,
@@ -100,8 +100,6 @@ export interface Answer {
   line: string;
   /** False when the prompt should stay answerable (a transient failure the asker can retry). */
   settle: boolean;
-  /** Started once the prompt is redrawn and settled, never awaited; a throw or a rejected promise is logged. */
-  follow?: () => void | Promise<void>;
 }
 
 export type SubjectAnswer = (
@@ -292,12 +290,6 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         await tell(out.line, prompt.threadTs, kind);
       }
       log('info', 'slack_prompt_answered', { kind, action: click.action, settled });
-      // Never awaited, and a follow-up that throws or hands back a promise that rejects is logged the same way.
-      void Promise.resolve()
-        .then(() => out.follow?.())
-        .catch((err: unknown) => {
-          log('error', 'slack_prompt_failed', { kind, stage: 'follow', code: logCode(err) });
-        });
     };
 
     /**

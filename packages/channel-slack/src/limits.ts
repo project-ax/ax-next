@@ -214,11 +214,14 @@ export const CONTINUATION_START_GRACE_MS = 60_000;
 /**
  * How long each step of answering a click may take (answers.ts: the bot
  * token's vault read, a Slack call, an AX lookup, the binding read, the
- * answer itself) before it counts as failed: the asker is told to try again,
- * and the prompt can be answered again. A hang backstop, not a latency goal.
- * While a click is being answered the prompt is taken, and every other click
- * on it is silent, so a step that hung with no deadline would keep it that
- * way for as long as it hung. Above SLACK_API_TIMEOUT_MS, so a Slack call's
- * own deadline answers first, and well under the hook bus's own 120 s.
+ * answer itself) before it counts as failed. A step before the answer: the
+ * asker is told to try again, and the prompt can be answered again. The
+ * answer itself may still be running (an approve can land late), so a timed
+ * out answer is not retryable: the asker is told it is still going, and the
+ * prompt stays taken, every other click on it silent, until the answer lands
+ * and shows what it did. A hang backstop, not a latency goal. A step that
+ * hung with no deadline would keep the prompt taken for as long as it hung.
+ * Above SLACK_API_TIMEOUT_MS, so a Slack call's own deadline answers first,
+ * and well under the hook bus's own 120 s.
  */
 export const PROMPT_STEP_TIMEOUT_MS = 30_000;

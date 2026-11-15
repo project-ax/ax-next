@@ -513,77 +513,6 @@ describe('the click gate: the asker answers', () => {
     const asked = promptBlocks({ subject: hostile, promptId: prompt.id, todayLink: TODAY });
     expect((update?.args['blocks'] as unknown[])[0]).toEqual(asked.blocks[0]);
   });
-
-  it("the answer's follow-up starts after the prompt is redrawn and settled, and is never awaited", async () => {
-    const seen: Array<{ calls: number; state: string }> = [];
-    let look = (): void => {};
-    const w = await world({
-      answer: () => ({
-        line: COPY.decisionAllowed,
-        settle: true,
-        // Never settles: a click that awaited it would never end.
-        follow: () => {
-          look();
-          return never();
-        },
-      }),
-    });
-    const prompt = w.open(MEL_DM);
-    look = () => {
-      seen.push({ calls: w.slack.calls.length, state: w.state(prompt) });
-    };
-
-    const outcome = await Promise.race([
-      w.onClick(INSTALL, w.clickOn(prompt)).then(() => 'returned'),
-      new Promise((resolve) => setTimeout(() => resolve('hung'), 500)),
-    ]);
-
-    expect(outcome).toBe('returned');
-    // The usersInfo call and the redraw were both made, and the prompt was settled, before it started.
-    expect(seen).toEqual([{ calls: 2, state: 'gone' }]);
-  });
-
-  it('a follow-up that throws is logged with its code, and the click still ends quietly', async () => {
-    const w = await world({
-      answer: () => ({
-        line: COPY.decisionAllowed,
-        settle: true,
-        follow: () => {
-          throw fault('fake-follow');
-        },
-      }),
-    });
-    const prompt = w.open(MEL_DM);
-
-    await expect(w.onClick(INSTALL, w.clickOn(prompt))).resolves.toBeUndefined();
-
-    await vi.waitFor(() =>
-      expect(w.logged('slack_prompt_failed')).toEqual([
-        { installId: INSTALL_ID, kind: 'decision', stage: 'follow', code: 'store-unavailable' },
-      ]),
-    );
-    expect(w.state(prompt)).toBe('gone');
-  });
-
-  it('a follow-up that hands back a promise that rejects is logged the same way: nothing goes unhandled', async () => {
-    const w = await world({
-      answer: () => ({
-        line: COPY.decisionAllowed,
-        settle: true,
-        follow: (() => Promise.reject(fault('fake-follow'))) as () => void,
-      }),
-    });
-    const prompt = w.open(MEL_DM);
-
-    await expect(w.onClick(INSTALL, w.clickOn(prompt))).resolves.toBeUndefined();
-
-    await vi.waitFor(() =>
-      expect(w.logged('slack_prompt_failed')).toEqual([
-        { installId: INSTALL_ID, kind: 'decision', stage: 'follow', code: 'store-unavailable' },
-      ]),
-    );
-    expect(w.state(prompt)).toBe('gone');
-  });
 });
 
 // ── Anyone else's click ─────────────────────────────────────────────────────
@@ -1447,14 +1376,7 @@ describe('the click gate: an answer past its deadline still holds the prompt unt
   }
 
   it("Allow times out, then Mel clicks Deny: silence, no dismiss, until the approve lands; then the prompt shows the approve's line and is settled", async () => {
-    let followed = 0;
-    const { w, prompt, land } = await slowAllow(() => ({
-      line: COPY.decisionAllowed,
-      settle: true,
-      follow: () => {
-        followed += 1;
-      },
-    }));
+    const { w, prompt, land } = await slowAllow(() => ({ line: COPY.decisionAllowed, settle: true }));
     expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptStillWorking)]);
     expect(w.logged('slack_prompt_failed')).toEqual([
       { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'timeout' },
@@ -1476,7 +1398,6 @@ describe('the click gate: an answer past its deadline still holds the prompt unt
     expect(w.logged('slack_prompt_answered')).toEqual([
       { installId: INSTALL_ID, kind: 'decision', action: 'allow', settled: true },
     ]);
-    await vi.waitFor(() => expect(followed).toBe(1));
 
     // Deny after it landed: the prompt is answered, and Mel is pointed at Today. Still no dismiss.
     await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
