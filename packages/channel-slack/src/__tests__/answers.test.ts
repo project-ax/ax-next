@@ -1779,7 +1779,7 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
 describe('the click gate: a skill prompt, answered with the real skill answer', () => {
   const SKILL_ID = 'gmail-sender';
   const SKILL_SUBJECT: PromptSubject = { kind: 'skill', skillId: SKILL_ID };
-  const ASKED = 'Wants to start using a skill: Reads and sends email from your Gmail account.';
+  const ASKED = COPY.skillSubject(SKILL_ID, 'Reads and sends email from your Gmail account.');
   const GRANT = 'agent:apply-capability-grant';
   const CONVERSATION_GET = 'conversations:get';
 

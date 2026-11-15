@@ -74,7 +74,7 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  *     Today).
  *   - A catalog skill the agent asked to use (request_capability's card;
  *     in Slack, in the continuation after that call's own hold was
- *     allowed) is asked about with its description, and its prompt links
+ *     allowed) is asked about with its id and description, and its prompt links
  *     Today, where the same card waits. One that needs a key, or a bus
  *     without what its Allow calls, gets a link to the web app instead,
  *     with nothing to click.

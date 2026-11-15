@@ -250,7 +250,14 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
   });
 
   it('two skills with the same description are told apart by their ids', () => {
-    expect(COPY.skillSubject('gmail', 'Sends email.')).not.toBe(COPY.skillSubject('outlook', 'Sends email.'));
+    const gmail = COPY.skillSubject('gmail', 'Sends email.');
+    const outlook = COPY.skillSubject('outlook', 'Sends email.');
+    expect(gmail).not.toBe(outlook);
+    expect(gmail).toContain('gmail');
+    expect(outlook).toContain('outlook');
+    // The description is still there, with the id beside it.
+    expect(gmail).toContain('Sends email.');
+    expect(outlook).toContain('Sends email.');
     expect(COPY.skillSubject('gmail', '')).not.toBe(COPY.skillSubject('outlook', ''));
   });
 

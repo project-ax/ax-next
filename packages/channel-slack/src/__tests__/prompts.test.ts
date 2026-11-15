@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { COPY } from '../copy.js';
 import {
   AGENT_ID_MAX,
   EVENT_TEXT_MAX,
@@ -233,7 +234,7 @@ describe('createPromptRegistry: add', () => {
     // A catalog skill the agent asked to use (permission-prompts.ts): its id only. The card's
     // description is the subject text, and nothing else of the card is kept.
     const skill = { kind: 'skill', skillId: 'gmail-sender', description: 'Sends email', extra: 1 } as PromptSubject;
-    const keptSkill = prompts.add(MEL, skill, 'Wants to start using a skill: Sends email').subject;
+    const keptSkill = prompts.add(MEL, skill, COPY.skillSubject('gmail-sender', 'Sends email')).subject;
     expect(keptSkill).toEqual({ kind: 'skill', skillId: 'gmail-sender' });
     expect(Object.isFrozen(keptSkill)).toBe(true);
   });

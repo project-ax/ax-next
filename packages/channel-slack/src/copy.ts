@@ -24,7 +24,7 @@ import { SLASH_COMMAND } from './manifest.js';
  * shown as `plain_text` (format.ts `cleanPromptSubject`). Two lines frame
  * outside text as a subject, raw, cleaned where it is drawn: `hostSubject`
  * (a host past the egress proxy's HOST_RE, permission-prompts.ts) and
- * `skillSubject` (a catalog skill's description, which can hold anything).
+ * `skillSubject` (a catalog skill's id and description, which can hold anything).
  * Neither is ever mrkdwn, a notification or a log.
  */
 
@@ -139,10 +139,13 @@ export const COPY = {
 
   // ── A catalog skill the agent asked to use (permission-prompts.ts) ─────────
   /*
-    `skillSubject` is the prompt's subject, plain_text: the skill's id (the
-    broker's SKILL_ID_RE took it before it fired the card), then the catalog
-    skill's description as its card carries it, both raw (the draw cleans the
-    whole subject, once). The id is what tells two skills with the same, or
+    `skillSubject` is the prompt's subject, plain_text: the skill's id, then
+    the catalog skill's description as its card carries it, both raw (the draw
+    cleans the whole subject, once). The id is no model text: the card only
+    fires after `skills:get` finds an exact catalog match, and a catalog id
+    is a manifest name, `^[a-z][a-z0-9-]{0,63}$` (skills-parser NAME_RE; the
+    broker's own SKILL_ID_RE is wider, and allows dots). It is still cleaned
+    and drawn as plain_text with the rest, never trusted for its shape. The id is what tells two skills with the same, or
     no, description apart. A description with nothing printable in it reads
     as a sentence of its own, not as a colon with nothing after it. Allow
     attaches the skill for the person, and nothing reruns their message, so

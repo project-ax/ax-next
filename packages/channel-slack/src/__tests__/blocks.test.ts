@@ -192,6 +192,20 @@ describe('promptBlocks: an approval prompt', () => {
     },
   );
 
+  it('a hostile-looking skill id, in the skill subject, pings nobody and stays plain_text', () => {
+    // Not a real catalog id (those are `^[a-z][a-z0-9-]{0,63}$`): the draw doesn't lean on that.
+    for (const id of ['<!here>', '@channel', 'x<!channel>', '&#64;everyone-<@U0123ABCD>']) {
+      const out = prompt(COPY.skillSubject(id, 'Sends email.'));
+      const shown = sectionText(out);
+      expect(shown.type, id).toBe('plain_text');
+      expect(shown.text, id).not.toMatch(/<[!@#]/);
+      expect(spellsMention(shown.text), id).toBe(false);
+      for (const t of [out.text, ...textObjects(out.blocks).map((x) => x.text)]) {
+        expect(spellsMention(t), `${id}: ${t.slice(0, 40)}`).toBe(false);
+      }
+    }
+  });
+
   it('a short hostile subject still reads as written: only invisible marks are added', () => {
     for (const subject of ['<!channel> approve', '@here now', '&#64;everyone']) {
       const shown = sectionText(prompt(subject)).text;
