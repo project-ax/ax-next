@@ -59,6 +59,8 @@ function fakeSlack() {
     oauthAccess: notHere,
     usersInfo: notHere,
     postEphemeral: notHere,
+    postBlocks: notHere,
+    updateMessage: notHere,
     conversationsInfo: notHere,
     conversationsList: notHere,
     conversationsJoin: notHere,

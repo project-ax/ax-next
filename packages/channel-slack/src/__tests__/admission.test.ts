@@ -77,6 +77,8 @@ function fakeApi(users: Record<string, unknown> = { [ALICE]: member() }) {
       return user;
     },
     postMessage: notHere,
+    postBlocks: notHere,
+    updateMessage: notHere,
     async postEphemeral(token, a) {
       calls.push({ method: 'postEphemeral', token, args: a });
     },

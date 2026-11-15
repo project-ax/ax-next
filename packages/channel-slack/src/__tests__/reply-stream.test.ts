@@ -91,6 +91,8 @@ function fakeSlack(
     oauthAccess: notHere,
     usersInfo: notHere,
     postEphemeral: notHere,
+    postBlocks: notHere,
+    updateMessage: notHere,
     postMessage: (token, a) => run('postMessage', token, { ...a }, () => undefined),
     addReaction: (token, a) => run('addReaction', token, { ...a }, () => undefined),
     removeReaction: (token, a) => run('removeReaction', token, { ...a }, () => undefined),

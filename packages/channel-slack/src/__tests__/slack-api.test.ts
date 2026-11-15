@@ -158,6 +158,11 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
       'chat.postMessage',
       () => api.postMessage(BOT, { channel: 'D1', threadTs: '1.2', markdownText: 'hi' }),
     ],
+    [
+      'chat.postMessage',
+      () => api.postBlocks(BOT, { channel: 'D1', threadTs: '1.2', text: 'hi', blocks: [] }),
+    ],
+    ['chat.update', () => api.updateMessage(BOT, { channel: 'D1', ts: '1.3', text: 'hi', blocks: [] })],
     ['chat.postEphemeral', () => api.postEphemeral(BOT, { channel: 'C1', user: 'U1', text: 'hi' })],
     [
       'chat.startStream',
@@ -374,6 +379,57 @@ describe('requests', () => {
       markdown_text: 'see https://example.com',
       unfurl_links: false,
       unfurl_media: false,
+    });
+  });
+
+  it('postBlocks sends exactly channel, thread_ts, text, blocks and no unfurling, and returns the ts', async () => {
+    const slack = fakeSlack(() => okJson({ ts: '1700000000.000200' }));
+    const blocks = [{ type: 'section', text: { type: 'plain_text', text: 'ok?' } }];
+    const out = await createSlackApi({ fetchImpl: slack.fetchImpl }).postBlocks(BOT, {
+      channel: 'D1',
+      threadTs: '1.2',
+      text: 'ok?',
+      blocks,
+    });
+    expect(out).toStrictEqual({ ts: '1700000000.000200' });
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(slack.sent[0]!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(slack.sent[0]!.body).not.toContain(BOT);
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'D1',
+      thread_ts: '1.2',
+      text: 'ok?',
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  });
+
+  it('postBlocks without a usable ts is bad-response', async () => {
+    for (const fields of [{}, { ts: 5 }, { ts: '' }]) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(fields)).fetchImpl });
+      const err = await failure(api.postBlocks(BOT, { channel: 'D1', threadTs: '1.2', text: 'x', blocks: [] }));
+      expect(err.code).toBe('bad-response');
+    }
+  });
+
+  it('updateMessage sends exactly channel, ts, text, blocks to chat.update', async () => {
+    const slack = fakeSlack(() => okJson());
+    const blocks = [{ type: 'section', text: { type: 'plain_text', text: 'Allowed' } }];
+    await createSlackApi({ fetchImpl: slack.fetchImpl }).updateMessage(BOT, {
+      channel: 'D1',
+      ts: '1.3',
+      text: 'Allowed',
+      blocks,
+    });
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.update');
+    expect(slack.sent[0]!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(slack.sent[0]!.body).not.toContain(BOT);
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'D1',
+      ts: '1.3',
+      text: 'Allowed',
+      blocks,
     });
   });
 

@@ -329,6 +329,8 @@ function fakeSlack(trail: string[]) {
     },
     usersInfo: notHere,
     postMessage: notHere,
+    postBlocks: notHere,
+    updateMessage: notHere,
     postEphemeral: notHere,
     startStream: notHere,
     appendStream: notHere,

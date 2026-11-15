@@ -210,6 +210,8 @@ function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
     async postMessage(token, a) {
       record('postMessage', token, { ...a });
     },
+    postBlocks: notHere,
+    updateMessage: notHere,
     async postEphemeral(token, a) {
       record('postEphemeral', token, { ...a });
     },

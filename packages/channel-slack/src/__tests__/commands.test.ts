@@ -240,6 +240,8 @@ function fakeSlack() {
     setAppIcon: notHere,
     oauthAccess: notHere,
     postMessage: notHere,
+    postBlocks: notHere,
+    updateMessage: notHere,
     startStream: notHere,
     appendStream: notHere,
     stopStream: notHere,
