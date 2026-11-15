@@ -20,28 +20,31 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
 
 /**
  * channel-slack's admin surface: see how Slack stands, connect a workspace,
- * pick an unfinished install back up, and disconnect. Plus the OAuth callback
- * Slack sends the admin's browser to after they click Allow.
+ * pick an unfinished install back up, rename the bot, and disconnect. Plus the
+ * OAuth callback Slack sends the admin's browser to after they click Allow.
  *
  *   GET  /admin/slack                 → SlackStatus
  *   POST /admin/slack/connect         { accessToken, refreshToken, botName? } → { installUrl, iconSet }
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
+ *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
  *   POST /admin/slack/disconnect      → { appDeleted }
  *   GET  /admin/slack/oauth/callback  ?code&state or ?error&state → 302 to `<publicOrigin>/?slack=<outcome>`
  *
  * Every route is admin-only: 401 signed out, 403 not an admin, except that
  * the callback sends a refused browser home instead (below). Every one that
  * changes anything runs under one in-process lock, so two admins can't
- * create two apps, and a callback can't race a disconnect. The POSTs keep
- * http-server's CSRF check; nothing here bypasses it.
+ * create two apps, and neither a callback nor a rename can race a
+ * disconnect. The POSTs keep http-server's CSRF check; nothing here
+ * bypasses it.
  *
  * Secrets:
  *   - The pasted ACCESS token creates the app and sets its icon (and, if
  *     Connect fails halfway, deletes the app again). Then it is dropped. It
  *     is never stored.
  *   - The pasted REFRESH token is stored verbatim and no route ever returns
- *     it. Only Disconnect reads it, to mint the one access token that deletes
- *     the app. Slack mints a new refresh token alongside, which the client
+ *     it. Only Disconnect and Rename read it, each to mint one access token
+ *     that is used once: Disconnect to delete the app, Rename to update its
+ *     manifest. Slack mints a new refresh token alongside, which the client
  *     never hands back (slack-api.ts), so nothing can store it.
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
@@ -91,11 +94,15 @@ export interface AdminRoutesDeps {
 export const ADMIN_STATUS_PATH = '/admin/slack';
 export const ADMIN_CONNECT_PATH = '/admin/slack/connect';
 export const ADMIN_INSTALL_URL_PATH = '/admin/slack/install-url';
+export const ADMIN_RENAME_PATH = '/admin/slack/rename';
 export const ADMIN_DISCONNECT_PATH = '/admin/slack/disconnect';
 /** Must match the `redirect_uri` slackUrls registers in the manifest. */
 export const OAUTH_CALLBACK_PATH = '/admin/slack/oauth/callback';
 
 type InstallOutcome = 'connected' | 'cancelled' | 'failed';
+
+/** Why Slack didn't take a rename, as the admin is told it (a 502). */
+type RenameRefusal = 'slack-config-token' | 'slack-name' | 'slack-error';
 
 /** A route's answer, written once at the end: JSON with a status, or a redirect. */
 type Reply = { status: number; body: unknown } | { location: string };
@@ -111,13 +118,27 @@ const STATE_RE = new RegExp(`^[0-9a-f]{${OAUTH_STATE_BYTES * 2}}$`);
  * through, bounded: it only ever travels form-encoded, to Slack.
  */
 const OAUTH_CODE_RE = new RegExp(`^[\\x21-\\x7e]{1,${SLACK_TOKEN_MAX}}$`);
-/** What `apps.manifest.create` says when the access token is no good. */
+/** What Slack's `apps.manifest.*` methods say when a configuration access token is no good. */
 const TOKEN_ERRORS: ReadonlySet<string> = new Set([
   'invalid_auth',
   'not_authed',
   'token_expired',
   'token_revoked',
   'account_inactive',
+]);
+/**
+ * Slack refusing a rename over the STORED configuration token itself, which
+ * no retry fixes. Either it is dead (TOKEN_ERRORS, or rotate's
+ * `invalid_refresh_token` once it was revoked on Slack's page), or it works
+ * but its owner can't manage this app (`no_permission`,
+ * `app_not_owned_by_manager_app`, both listed for `apps.manifest.update`).
+ * The remedy is the same for all: Disconnect, then Connect with a new token.
+ */
+const CONFIG_TOKEN_REFUSED: ReadonlySet<string> = new Set([
+  ...TOKEN_ERRORS,
+  'invalid_refresh_token',
+  'no_permission',
+  'app_not_owned_by_manager_app',
 ]);
 /**
  * `apps.manifest.create` failures where Slack may have made the app anyway:
@@ -196,6 +217,19 @@ function createAppError(err: unknown): 'slack-token' | 'slack-name' | 'slack-unc
   if (TOKEN_ERRORS.has(err.code)) return 'slack-token';
   if (err.code === 'invalid_manifest') return 'slack-name';
   return UNCONFIRMED_CODES.has(err.code) || HTTP_5XX.test(err.code) ? 'slack-unconfirmed' : 'slack-error';
+}
+
+/**
+ * What a rename's failed Slack step tells the admin. Only the update carries
+ * the name, so only it can mean `slack-name`. Everything else is
+ * `slack-error`: a rename sends the same manifest every time, so trying
+ * again is always safe.
+ */
+function renameError(stage: string, err: unknown): RenameRefusal {
+  if (!(err instanceof SlackApiError)) return 'slack-error';
+  if (CONFIG_TOKEN_REFUSED.has(err.code)) return 'slack-config-token';
+  if (stage === 'update-app' && err.code === 'invalid_manifest') return 'slack-name';
+  return 'slack-error';
 }
 
 export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
@@ -441,6 +475,32 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
+   * Send Slack the app's whole manifest under `botName`, with an access token
+   * minted from the stored refresh token and used once. Slack replaces the
+   * manifest on update, so a part of one would drop the rest (the approval
+   * buttons, `/ax`, the scopes). Null when Slack took it, else what the
+   * admin is told. A vault fault reading the token throws: the route's 500.
+   */
+  async function updateSlackApp(install: InstallRow, botName: string): Promise<RenameRefusal | null> {
+    const refreshToken = await d.secrets.get(install, 'config-refresh-token');
+    if (refreshToken === null) {
+      log('warn', 'slack_admin_failed', { installId: install.installId, stage: 'config-token', code: 'missing' });
+      return 'slack-config-token';
+    }
+    const manifest = buildAppManifest(botName, slackUrls(d.publicOrigin, install.installId));
+    let stage = 'rotate';
+    try {
+      const { accessToken } = await d.api.rotateConfigToken(refreshToken);
+      stage = 'update-app';
+      await d.api.updateApp(accessToken, install.appId, manifest);
+      return null;
+    } catch (err) {
+      failed(stage, err, install.installId);
+      return renameError(stage, err);
+    }
+  }
+
+  /**
    * Who connected the install, as auth knows them now: the row keeps only
    * their id (invariant 4: names are auth's). The display name, else the
    * email (only admins see this), else "Administrator", which also stands in
@@ -507,6 +567,37 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         if (err instanceof InstallStoreError) return json(409, { error: 'not-pending' });
         throw err;
       }
+    });
+  }
+
+  async function rename(req: RouteRequest): Promise<Reply> {
+    // http-server's maxBodyBytes refused anything larger already; this is the backstop.
+    if (req.body.length > ADMIN_BODY_MAX_BYTES) return json(413, { error: 'body-too-large' });
+    const body = bodyObject(req.body);
+    if (body === null) return json(400, { error: 'invalid-body' });
+    // The admin's input: checked before the vault or Slack is touched.
+    const rawName = body['botName'];
+    if (typeof rawName !== 'string') return json(400, { error: 'invalid-bot-name', reason: 'bad-characters' });
+    const name = checkBotName(rawName);
+    if (!name.ok) return json(400, { error: 'invalid-bot-name', reason: name.reason });
+
+    return d.lock.run(async () => {
+      const install = await d.store.current();
+      if (install === null || install.status !== 'active') return json(409, { error: 'not-connected' });
+      // The manifest carries the URLs Slack calls back on: https only, as at Connect.
+      if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      const refusal = await updateSlackApp(install, name.name);
+      if (refusal !== null) return json(502, { error: refusal });
+      // Last, so the row only ever shows a name Slack took. If this write
+      // fails, Slack has the name already, and a retry sends the same manifest.
+      try {
+        await d.store.setBotName(install.installId, name.name);
+      } catch (err) {
+        // Gone meanwhile: a reset removes installs without this lock.
+        if (err instanceof InstallStoreError) return json(409, { error: 'not-connected' });
+        throw err;
+      }
+      return json(200, { botName: name.name });
     });
   }
 
@@ -616,6 +707,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     route('GET', ADMIN_STATUS_PATH, 'status', status),
     route('POST', ADMIN_CONNECT_PATH, 'connect', connect),
     route('POST', ADMIN_INSTALL_URL_PATH, 'install-url', installUrl),
+    route('POST', ADMIN_RENAME_PATH, 'rename', rename),
     route('POST', ADMIN_DISCONNECT_PATH, 'disconnect', disconnect),
     // A browser lands here from Slack: a refusal or a fault still sends it home, with `failed`.
     route('GET', OAUTH_CALLBACK_PATH, 'callback', callback, { browser: true }),

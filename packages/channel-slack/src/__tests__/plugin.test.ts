@@ -596,7 +596,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the thirteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the fourteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -608,6 +608,7 @@ describe('@ax/channel-slack plugin', () => {
       { method: 'GET', path: '/admin/slack', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/admin/slack/connect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/install-url', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      { method: 'POST', path: '/admin/slack/rename', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/disconnect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
@@ -1488,7 +1489,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(13);
+    expect(s.routes).toHaveLength(14);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
