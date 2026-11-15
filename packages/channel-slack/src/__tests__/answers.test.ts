@@ -5,6 +5,7 @@ import { promptBlocks, type PromptAction } from '../blocks.js';
 import type { ChannelStore } from '../channel-store.js';
 import { COPY } from '../copy.js';
 import { createDecisionAnswer } from '../decision-answer.js';
+import { createHostAnswer } from '../permission-prompts.js';
 import type { ButtonClick } from '../interactions.js';
 import { PROMPT_MAX, PROMPT_STEP_TIMEOUT_MS, PROMPT_TTL_MS } from '../limits.js';
 import {
@@ -1677,6 +1678,99 @@ describe("the click gate with the decision answer (decision-answer.ts): a decisi
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed) },
     ]);
     expect(h.w.state(h.prompt)).toBe('gone');
+  });
+});
+
+// ── A host the sandbox was refused (TASK-1095 PR B) ────────────────────────
+
+describe('the click gate: a host prompt, answered with the real host answer', () => {
+  /** The turn's live sandbox session, as the egress wall's card named it. */
+  const SESSION = 'sess_live_0001';
+  const HOST = 'api.example.com';
+  const HOST_SUBJECT: PromptSubject = { kind: 'host', host: HOST, sessionId: SESSION };
+
+  /** A world whose `proxy:add-host` records each call and lets the host through, as credential-proxy does for its owner. */
+  async function hostWorld() {
+    const added: Array<{ ctx: AgentContext; input: unknown }> = [];
+    const w = await world({
+      services: (bus) => {
+        bus.registerService('proxy:add-host', 'fake-credential-proxy', async (ctx, input) => {
+          added.push({ ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
+          return { added: true, agentId: 'agt_support' };
+        });
+      },
+      answersOn: (bus) => ({ host: createHostAnswer({ bus }) }),
+    });
+    const open = () => w.open(MEL_SUPPORT, { subject: HOST_SUBJECT, subjectText: COPY.hostSubject(HOST) });
+    /** The host prompt redrawn with `line`: its subject, then the line, and nothing to click. */
+    const redrawnHost = (line: string) => ({
+      channel: SUPPORT,
+      ts: PROMPT_TS,
+      text: line,
+      blocks: [
+        { type: 'section', text: { type: 'plain_text', text: COPY.hostSubject(HOST), emoji: false } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: line }] },
+      ],
+    });
+    return { w, added, open, redrawnHost };
+  }
+
+  it("Mel's Allow on her host prompt in #support: proxy:add-host as usr_mel, for exactly the prompt's session and host; the prompt says so", async () => {
+    const { w, added, open, redrawnHost } = await hostWorld();
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(added.map((a) => a.input)).toEqual([{ sessionId: SESSION, host: HOST }]);
+    expect(added[0]!.ctx.userId).toBe('usr_mel');
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.hostAllowed) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_answered')).toEqual([
+      { installId: INSTALL_ID, kind: 'host', action: 'allow', settled: true },
+    ]);
+  });
+
+  it("Ada's click on Mel's host prompt: told privately it isn't hers, and nothing is let through", async () => {
+    const { w, added, open } = await hostWorld();
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
+
+    expect(added).toEqual([]);
+    expect(w.slack.calls).toEqual([told(SUPPORT, ADA, COPY.promptOnlyAsker)]);
+    expect(w.state(prompt)).toBe('open');
+  });
+
+  it("Mel's Deny: nothing is called, and the prompt says so", async () => {
+    const { w, added, open, redrawnHost } = await hostWorld();
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+
+    expect(added).toEqual([]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.hostDenied) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it('a channel disconnected since the turn (Review Focus 5): the prompt closes, and nothing is let through', async () => {
+    const { w, added, open, redrawnHost } = await hostWorld();
+    const prompt = open();
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(added).toEqual([]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.promptClosed) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
   });
 });
 

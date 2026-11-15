@@ -37,6 +37,7 @@ import {
 import { logCode } from './log-code.js';
 import { runMigrations, type ChannelSlackDatabase } from './migrations.js';
 import { createMutex } from './mutex.js';
+import { createHostAnswer } from './permission-prompts.js';
 import { createPromptRegistry } from './prompts.js';
 import { systemClock } from './reply-stream.js';
 import { createEventRouter } from './router.js';
@@ -111,7 +112,11 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // they are first; its answer for a decision (decision-answer.ts) calls
 // `decisions:approve` or `decisions:dismiss` as the asker, and after an Allow
 // the agent's next turn is followed into the thread (turn.ts
-// `followContinuation`). External turns never get buttons.
+// `followContinuation`). External turns never get buttons. A host the
+// sandbox was refused mid-turn (the egress wall's `chat:permission-request`
+// card) gets a prompt after the reply too, and its Allow lets that host
+// through for the conversation's live session only, as the asker
+// (permission-prompts.ts: `proxy:add-host`).
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -222,6 +227,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         { hook: 'decisions:get', degradation: HELD_DEGRADATION },
         { hook: 'decisions:approve', degradation: HELD_DEGRADATION },
         { hook: 'decisions:dismiss', degradation: HELD_DEGRADATION },
+        // Allow on a refused host's prompt (permission-prompts.ts). Without
+        // it the turn offers no prompt for the host (turn.ts checks first).
+        { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
       ],
       subscribes: [RESET_CLEANUP, AGENTS_DELETED, MEMORY_PRE_CAPTURE_HOOK, ...TURN_EVENT_HOOKS],
     },
@@ -369,6 +377,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                     publicOrigin,
                     follow: (c) => void followContinuation(turnDeps, c),
                   }),
+                  host: createHostAnswer({ bus }),
                 },
               }),
             }),

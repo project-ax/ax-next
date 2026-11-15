@@ -15,16 +15,18 @@ import {
   CONTINUATION_START_GRACE_MS,
   CONTINUATION_WAKE_MAX_MS,
   DECISION_LOOKUP_TIMEOUT_MS,
+  PERMISSION_PROMPTS_PER_TURN_MAX,
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from './limits.js';
 import { logCode } from './log-code.js';
+import { ADD_HOST, hostSubject } from './permission-prompts.js';
 import { postPrompt } from './prompt-post.js';
-import type { Prompt, PromptContext, PromptRegistry } from './prompts.js';
+import type { Prompt, PromptContext, PromptRegistry, PromptSubject } from './prompts.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
-import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
+import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.js';
 
 /**
  * One Slack turn: a person's message to an agent, the reply streamed back
@@ -60,6 +62,18 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  *   - Any other turn runs as someone else for them (the person who connected
  *     the channel, the agent's owner), whom they can't reach: the reply says
  *     the owner was asked, and nothing is looked up or posted.
+ *
+ * A host the sandbox was refused while the turn ran (the egress wall's
+ * `chat:permission-request` card) gets a prompt too, in a DM or an attended
+ * turn only (permission-prompts.ts): after the reply, and after a held call's
+ * prompt, in the order the cards came, one per host, at most
+ * PERMISSION_PROMPTS_PER_TURN_MAX. A host is shown only once it passes the
+ * egress proxy's own HOST_RE, and its prompt links nowhere (nothing about a
+ * blocked host waits in Today). A card that gets no prompt is counted, and
+ * logged by reason and count once the turn has ended
+ * (`slack_permission_skipped`): `outsider` (the turn's writer can't answer
+ * it here), `unavailable` (nothing to call on Allow: no `proxy:add-host`),
+ * `invalid-host`, or `cap`.
  *
  * The reply ends at the first of: the turn's `chat:turn-end` (complete), its
  * `chat:turn-error` (error), a `terminated` invoke outcome
@@ -242,6 +256,9 @@ const INTERRUPT = 'agent:interrupt';
 
 type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'timeout';
 
+/** Why a card asking the person's OK got no prompt (module header): logged as a count. */
+type PermissionSkip = 'outsider' | 'unavailable' | 'invalid-host' | 'cap';
+
 interface Decision {
   outcome: ReplyOutcome;
   fail?: { reason: FailReason; code?: string };
@@ -423,14 +440,30 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   */
   const approver = source === 'user' ? 'sender' : 'owner';
   /*
-    Whether the person who wrote can answer a held call here, with a prompt
-    (TASK-1095): only when the turn runs as them, `source` 'user', which is
-    exactly a DM or an attended turn. The mode is narrowed again for the
-    registry, which refuses any other mode itself. An outsider's turn never
-    gets a prompt.
+    Whether the person who wrote can answer a held call, or a card, here,
+    with a prompt (TASK-1095): only when the turn runs as them, `source`
+    'user', which is exactly a DM or an attended turn. The mode is narrowed
+    again for the registry, which refuses any other mode itself. An
+    outsider's turn never gets a prompt. `context` is every prompt's: where
+    it goes, who may answer it, and whose turn the answer runs as.
   */
   const asking =
-    source === 'user' && (s.mode === 'dm' || s.mode === 'attended') ? { prompts: d.prompts, mode: s.mode } : null;
+    source === 'user' && (s.mode === 'dm' || s.mode === 'attended')
+      ? {
+          prompts: d.prompts,
+          context: {
+            installId,
+            teamId: s.teamId,
+            channel: s.channel,
+            threadTs: s.threadTs,
+            askerSlackId: s.recipientSlackId,
+            userId: s.userId,
+            agentId: s.agentId,
+            conversationId: s.conversationId,
+            mode: s.mode,
+          } satisfies PromptContext,
+        }
+      : null;
   // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
   const todayLink = `${d.publicOrigin}/workspace`;
 
@@ -565,6 +598,43 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     }
   };
 
+  /*
+    The cards asking the person's OK that this turn heard, as the prompts to
+    post after its reply, in the order they came (module header). Never
+    more kept than the cap: anything else is only counted.
+  */
+  const permissions: Array<{ key: string; subject: PromptSubject; subjectText: string }> = [];
+  const skipped = new Map<PermissionSkip, number>();
+  const skip = (reason: PermissionSkip): void => {
+    skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
+  };
+  const onPermission = (p: PermissionIn): void => {
+    if (asking === null) {
+      skip('outsider');
+      return;
+    }
+    // Nothing here answers a skill card yet: it is not offered.
+    if (p.kind !== 'host') return;
+    if (!d.bus.hasService(ADD_HOST)) {
+      skip('unavailable');
+      return;
+    }
+    // The host is the sandbox's: shown only once the proxy's own pattern takes it.
+    const subjectText = hostSubject(p.host);
+    if (subjectText === null) {
+      skip('invalid-host');
+      return;
+    }
+    const key = `host:${p.host}`;
+    // One prompt per host: a repeat is that prompt, never one over the cap.
+    if (permissions.some((q) => q.key === key)) return;
+    if (permissions.length >= PERMISSION_PROMPTS_PER_TURN_MAX) {
+      skip('cap');
+      return;
+    }
+    permissions.push({ key, subject: { kind: 'host', host: p.host, sessionId: p.sessionId }, subjectText });
+  };
+
   // Registered before agent:invoke: a fast turn's first chunk can beat the
   // call's return. And before this function's first await: a woken turn's
   // follower is started without being awaited.
@@ -574,6 +644,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     chunk: onChunk,
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
+    permission: onPermission,
   });
   // 👀 on the sender's message while a cold runner starts, not a blank thread
   // (walk on kind, 2026-11-13); it comes off once the reply shows. A woken
@@ -674,6 +745,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   if (grace !== null) d.clock.clearTimeout(grace);
   if (startBy !== null) d.clock.clearTimeout(startBy);
   unregister();
+  // Every card the turn will hear has come: what got no prompt, by reason and count only (never a host).
+  for (const [reason, count] of skipped) {
+    quietly(() => d.logger.info('slack_permission_skipped', { installId, reason, count }));
+  }
   // Given up without a word: the reply was never given anything, so nothing
   // of it reached Slack, and nothing is sent in the thread now (Review Focus
   // 3). Only the prompt is redrawn, with what its decision says (`missed`).
@@ -719,24 +794,19 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     await stream.finish(outcome);
     // After the reply: for a turn, before its lane lets the conversation's next turn start.
     if (found !== null && asking !== null) {
-      await askInThread(
-        d,
-        asking.prompts,
-        s.botToken,
-        {
-          installId,
-          teamId: s.teamId,
-          channel: s.channel,
-          threadTs: s.threadTs,
-          askerSlackId: s.recipientSlackId,
-          userId: s.userId,
-          agentId: s.agentId,
-          conversationId: s.conversationId,
-          mode: asking.mode,
-        },
-        found,
-        todayLink,
-      );
+      await askInThread(d, asking.prompts, s.botToken, asking.context, found, todayLink);
+    }
+    // Then the cards', in the order they came. Nothing about a blocked host
+    // waits in Today (channel-web keeps them out of it), so these link nowhere.
+    if (asking !== null) {
+      for (const p of permissions) {
+        await postPrompt(
+          { api: d.api, botToken: s.botToken, prompts: asking.prompts, logger: d.logger, todayLink: null, clock: d.clock },
+          asking.context,
+          p.subject,
+          p.subjectText,
+        );
+      }
     }
   } finally {
     // The sender has their reply; the lane waits for the stop (see `interrupting`).

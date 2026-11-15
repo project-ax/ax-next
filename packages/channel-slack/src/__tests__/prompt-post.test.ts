@@ -88,7 +88,7 @@ function fakeSlack(answers: Answer[] = [{ ts: PROMPT_TS }]) {
   return { api, calls };
 }
 
-function world(o: { answers?: Answer[]; max?: number; logger?: Logger } = {}) {
+function world(o: { answers?: Answer[]; max?: number; logger?: Logger; todayLink?: string | null } = {}) {
   const lines: Line[] = [];
   const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
     lines.push({ level, msg, fields });
@@ -105,7 +105,14 @@ function world(o: { answers?: Answer[]; max?: number; logger?: Logger } = {}) {
   const slack = fakeSlack(o.answers);
   const post = (c: PromptContext = MEL_SUPPORT, subject: PromptSubject = HELD, text = SUMMARY) =>
     postPrompt(
-      { api: slack.api, botToken: BOT_TOKEN, prompts, logger: o.logger ?? recording, todayLink: TODAY, clock: systemClock },
+      {
+        api: slack.api,
+        botToken: BOT_TOKEN,
+        prompts,
+        logger: o.logger ?? recording,
+        todayLink: o.todayLink === undefined ? TODAY : o.todayLink,
+        clock: systemClock,
+      },
       c,
       subject,
       text,
@@ -187,6 +194,17 @@ describe("postPrompt: an approval prompt in the turn's thread", () => {
       },
     });
     expect(w.lines).toEqual([]);
+  });
+
+  it("a prompt about something that doesn't wait in Today (a blocked host) links nowhere: only who may answer", async () => {
+    const w = world({ todayLink: null });
+    const host: PromptSubject = { kind: 'host', host: 'api.example.com', sessionId: 'sess_live' };
+    expect(await w.post(MEL_SUPPORT, host, 'Wants to connect to api.example.com')).toBe(true);
+    const blocks = w.slack.calls[0]!.args['blocks'] as unknown[];
+    expect(blocks.at(-1)).toEqual({ type: 'context', elements: [{ type: 'mrkdwn', text: COPY.promptOnlyAsker }] });
+    expect(JSON.stringify(w.slack.calls)).not.toMatch(/https?:/);
+    const claim = w.prompts.claim(FIRST_ID, MEL);
+    expect(claim.ok && claim.prompt.subject).toEqual(host);
   });
 
   it('a subject past PROMPT_SUBJECT_MAX is cut once, before it is kept: the registry and the prompt get the same text', async () => {

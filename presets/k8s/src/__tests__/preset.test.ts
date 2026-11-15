@@ -1330,6 +1330,9 @@ describe('@ax/preset-k8s wiring', () => {
         hook,
         degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
       })),
+      // A host the sandbox was refused gets Allow and Deny in the thread, for the live session only.
+      // Its producer is @ax/credential-proxy (the check below).
+      { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',

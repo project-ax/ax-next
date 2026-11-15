@@ -40,8 +40,12 @@ export interface PromptPostDeps {
   botToken: string;
   prompts: PromptRegistry;
   logger: Logger;
-  /** Today in the web app: the prompt links it, where the same request waits. Host-built. */
-  todayLink: string;
+  /**
+   * Today in the web app: the prompt links it, where the same request waits.
+   * Host-built. Null for a request that doesn't wait there (a host the
+   * sandbox was refused): the prompt then links nowhere.
+   */
+  todayLink: string | null;
   /** The turn's clock: a rate limit's wait runs on it. */
   clock: Pick<ReplyClock, 'setTimeout'>;
 }

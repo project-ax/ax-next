@@ -21,7 +21,9 @@ import { SLASH_COMMAND } from './manifest.js';
  * are plain_text): a link is a bare URL, and no line holds a `<` or `>` of
  * its own (mrkdwn reads `<…>` as a link). A name from outside goes through
  * `shown`. A prompt's subject is never a COPY line: it is outside text,
- * shown as `plain_text` (format.ts `cleanPromptSubject`).
+ * shown as `plain_text` (format.ts `cleanPromptSubject`). `hostSubject` is
+ * the one line that frames outside text as a subject: a host past the egress
+ * proxy's HOST_RE (permission-prompts.ts), raw, cleaned where it is drawn.
  */
 
 /**
@@ -115,6 +117,20 @@ export const COPY = {
     `Allowed, but it was interrupted, so I can't tell whether it finished. Check Today before trying again: ${shown(todayLink)}`,
   decisionNotRun: (todayLink: string) =>
     `I couldn't do that just now. You can try again from Today: ${shown(todayLink)}`,
+
+  // ── A host the sandbox was refused (permission-prompts.ts) ─────────────────
+  /*
+    `hostSubject` is the prompt's subject, plain_text: only ever a host that
+    passed HOST_RE (lowercase letters, digits, dots and dashes), never mrkdwn.
+    The other three take the buttons' place once the asker has answered.
+    Allow lets the host through for the conversation's live session only
+    ("always" stays a web choice), and nothing about a blocked host waits in
+    Today, so none of them links there.
+  */
+  hostSubject: (host: string) => `Wants to connect to ${host}`,
+  hostAllowed: "Allowed for this chat. Ask me again and I'll try it.",
+  hostEnded: "That chat already ended, so nothing changed. If I need it again, I'll ask.",
+  hostDenied: "Okay. I won't connect to it.",
 
   // ── Before a channel mention's turn (mrkdwn, shown only to its sender) ────
   /*

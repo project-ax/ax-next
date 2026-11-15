@@ -1,4 +1,11 @@
-import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLACK_ID_MAX } from './limits.js';
+import {
+  AGENT_ID_MAX,
+  EVENT_TEXT_MAX,
+  PROMPT_HOST_MAX,
+  PROMPT_ID_BYTES,
+  PROMPT_REFUSALS_MAX,
+  SLACK_ID_MAX,
+} from './limits.js';
 
 /**
  * The approval prompts open now (TASK-1095). When a DM or an attended
@@ -28,11 +35,14 @@ import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLA
  *     for Slack's ids, AGENT_ID_MAX for AX's), and the ids that say who may
  *     answer and who the answer runs as (install, asker, user, agent,
  *     conversation) aren't empty. A subject is of a kind something here
- *     answers (a decision, today), its id a non-empty string no longer than
- *     AGENT_ID_MAX, and the subject text a string no longer than a Slack
- *     message (EVENT_TEXT_MAX). Else `add` throws. A cheap backstop: the caller
+ *     answers (a decision, a host), each of its fields a non-empty string no
+ *     longer than its cap (AGENT_ID_MAX for AX's ids, PROMPT_HOST_MAX for a
+ *     host), and the subject text a string no longer than a Slack message
+ *     (EVENT_TEXT_MAX). Else `add` throws. A cheap backstop: the caller
  *     bounds what it hands in, and this registry bounds how many prompts it
- *     keeps, not how big each one is.
+ *     keeps, not how big each one is. Whether a host is one the egress proxy
+ *     would take is not checked here: the turn checks before it shows one,
+ *     and the answer before it acts (permission-prompts.ts).
  *   - An id is PROMPT_ID_BYTES random bytes, base64url, and no two open
  *     prompts share one: `add` throws rather than hand out an id that is
  *     already open, or one the interactions route would refuse (PROMPT_ID_RE).
@@ -57,11 +67,14 @@ import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLA
  */
 
 /**
- * What a prompt asks about: a call held for a person's OK (@ax/decisions).
- * A kind is added with the code that answers it (answers.ts `answers`), never
- * before.
+ * What a prompt asks about. A kind is added with the code that answers it
+ * (answers.ts `answers`), never before.
  */
-export type PromptSubject = { readonly kind: 'decision'; readonly decisionId: string };
+export type PromptSubject =
+  // A call held for a person's OK (@ax/decisions).
+  | { readonly kind: 'decision'; readonly decisionId: string }
+  // A host the sandbox was refused, for the turn's live session only (permission-prompts.ts).
+  | { readonly kind: 'host'; readonly host: string; readonly sessionId: string };
 
 /** The turn a prompt belongs to: who may answer it, and who the answer runs as. */
 export interface PromptContext {
@@ -187,10 +200,19 @@ function contextOf(c: PromptContext): PromptContext {
 /** A frozen copy of exactly the fields of the subject's kind, each a non-empty bounded string. */
 function subjectOf(s: PromptSubject): PromptSubject {
   const field = (v: unknown, max: number) => bounded(v, max, 'prompt-subject-unusable', 1);
-  // The type says decision. A cast mustn't get a kind nothing here answers past it.
-  const kind: unknown = s.kind;
-  if (kind !== 'decision') throw new PromptRegistryError('prompt-subject-unknown');
-  return Object.freeze({ kind: 'decision', decisionId: field(s.decisionId, AGENT_ID_MAX) });
+  switch (s.kind) {
+    case 'decision':
+      return Object.freeze({ kind: 'decision', decisionId: field(s.decisionId, AGENT_ID_MAX) });
+    case 'host':
+      return Object.freeze({
+        kind: 'host',
+        host: field(s.host, PROMPT_HOST_MAX),
+        sessionId: field(s.sessionId, AGENT_ID_MAX),
+      });
+    default:
+      // The type names every kind. A cast mustn't get one nothing here answers past it.
+      throw new PromptRegistryError('prompt-subject-unknown');
+  }
 }
 
 export function createPromptRegistry(o: {

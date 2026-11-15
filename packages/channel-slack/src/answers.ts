@@ -129,7 +129,7 @@ export interface AnswerDeps {
   /** The web app's origin, for the Today link. */
   publicOrigin: string;
   logger: Logger;
-  /** One per subject kind (`decision`). A kind with none here closes its prompt (`unsupported`). */
+  /** One per subject kind (`decision`, `host`). A kind with none here closes its prompt (`unsupported`). */
   answers: Partial<Record<PromptSubject['kind'], SubjectAnswer>>;
 }
 

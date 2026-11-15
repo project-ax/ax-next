@@ -4,6 +4,7 @@ import { COPY } from '../copy.js';
 import {
   CONTINUATION_START_GRACE_MS,
   CONTINUATION_WAKE_MAX_MS,
+  PERMISSION_PROMPTS_PER_TURN_MAX,
   PROMPT_MAX,
   PROMPT_TTL_MS,
   TURN_END_GRACE_MS,
@@ -154,6 +155,13 @@ interface Script {
   answeredByDarkEnd?: boolean;
   /** Chunks to fire, in order, each stamped with the invoke's reqId. */
   chunks?: Array<Record<string, unknown>>;
+  /**
+   * Then cards asking the person's OK, fired as chat-orchestrator fires the
+   * egress wall's host card: under the egress proxy's ctx, never the turn's,
+   * the turn named only by the payload's reqId (the invoke's, unless the card
+   * names another).
+   */
+  cards?: Array<Record<string, unknown>>;
   end?: 'turn-end' | 'turn-error';
 }
 
@@ -165,14 +173,6 @@ interface AfterDark {
   methods: string[];
 }
 
-const quiet: Logger = {
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-  child: () => quiet,
-};
-
 interface HarnessOptions {
   /**
    * @ax/decisions' read, answering these rows for the turn's conversation.
@@ -183,14 +183,29 @@ interface HarnessOptions {
   lookupFails?: boolean;
   /** Slack refuses a prompt's post. */
   postBlocksFails?: boolean;
+  /** credential-proxy's `proxy:add-host` is not on the bus (a kernel booted without it). */
+  noProxy?: boolean;
 }
 
 function harness(script: Script = {}, o: HarnessOptions = {}) {
   const bus = new HookBus();
   const registry = createTurnRegistry();
   subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
+  const lines: LogLine[] = [];
+  const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
+    lines.push({ level, msg, fields });
+  };
+  const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
   const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
   const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
+  /** proxy:add-host's calls. Only an Allow makes one (permission-prompts.ts): a turn never does. */
+  const addHosts: Array<{ ctx: AgentContext; input: unknown }> = [];
+  if (o.noProxy !== true) {
+    bus.registerService('proxy:add-host', 'fake-credential-proxy', async (ctx, input) => {
+      addHosts.push({ ctx, input });
+      return { added: true };
+    });
+  }
   if (o.decisions !== undefined || o.lookupFails === true) {
     bus.registerService('decisions:recent-for-conversation', 'fake-decisions', async (ctx, input) => {
       lookups.push({ ctx, input });
@@ -222,6 +237,8 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
       userId: ctx.userId,
       ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
     });
+  /** The egress proxy's events reach chat-orchestrator under no turn's ctx: no user, agent or conversation. */
+  const egressCtx = makeAgentContext({ sessionId: 'credential-proxy', agentId: '', userId: '' });
   bus.registerService(
     'agent:invoke',
     'fake-orchestrator',
@@ -241,6 +258,9 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
       }
       for (const chunk of script.chunks ?? [{ kind: 'text', text: 'ok' }]) {
         await bus.fire('chat:stream-chunk', ipcCtx, { reqId: ctx.reqId, ...chunk });
+      }
+      for (const card of script.cards ?? []) {
+        await bus.fire('chat:permission-request', egressCtx, { reqId: ctx.reqId, ...card });
       }
       if (script.end === 'turn-error') {
         await bus.fire('chat:turn-error', ipcCtx, { reqId: ctx.reqId, reason: 'chat-run-timeout' });
@@ -281,8 +301,12 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   return {
     invokes,
     lookups,
+    addHosts,
     prompts,
     afterDark,
+    lines,
+    /** The fields of every line logged as `msg`, in order. */
+    logged: (msg: string) => lines.filter((l) => l.msg === msg).map((l) => l.fields),
     /** Turn sinks registered now: 1 while a reply waits on its turn. */
     sinks: () => registry.size(),
     own: {
@@ -308,7 +332,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
           registry,
           prompts,
           publicOrigin: PUBLIC_ORIGIN,
-          logger: quiet,
+          logger,
           clock: systemClock,
         },
         request(mode),
@@ -698,6 +722,173 @@ describe('runTurn: a held call the person who wrote can answer gets a prompt aft
     await h.run('attended');
     expect(h.streamed()).toBe(`Let me send that.\n\n${COPY.heldAsked}\n\n${COPY.turnFailed}`);
     expect(h.calls().at(-1)!.method).toBe('postBlocks');
+    expect(h.prompts.size()).toBe(1);
+  });
+});
+
+describe('runTurn: a host the sandbox was refused gets a prompt after the reply, when the person who wrote can allow it (TASK-1095)', () => {
+  const SAID = { kind: 'text', text: 'I could not reach that site.' };
+  const CHANNEL = 'C07SUPPORT1';
+  const THREAD = '1763035200.000100';
+  /** The turn's live sandbox session, as the egress proxy names it on the card. */
+  const SESSION = 'sess_live';
+  /** The egress wall's card for `host`: chat-orchestrator fires it while the turn runs. */
+  const hostCard = (host: string): Record<string, unknown> => ({ kind: 'host', host, sessionId: SESSION });
+  const heldCall = (id: string): Array<Record<string, unknown>> => [
+    { kind: 'tool-use', toolCallId: id, toolName: 'mcp__gmail__send_email', input: {} },
+    { kind: 'tool-result', toolCallId: id, output: 'Held for approval', held: true },
+  ];
+  type Block = { type: string; text?: { text?: string } };
+  const posts = (calls: readonly SlackCall[]): SlackCall[] => calls.filter((c) => c.method === 'postBlocks');
+  /** What each posted prompt asks: its section's text. */
+  const subjects = (calls: readonly SlackCall[]): string[] =>
+    posts(calls).map((c) => (c.args['blocks'] as Block[])[0]!.text!.text!);
+
+  it.each(['dm', 'attended'] as const)(
+    "a %s turn: after the reply, one prompt to connect to the host, for the turn's own live session, linking nowhere",
+    async (mode) => {
+      const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] });
+      await h.run(mode);
+
+      // The reply is the agent's own words; the prompt follows it, once its stream has stopped.
+      expect(h.streamed()).toBe('I could not reach that site.');
+      const methods = h.calls().map((c) => c.method);
+      expect(methods.filter((m) => m === 'postBlocks')).toHaveLength(1);
+      expect(methods.at(-1)).toBe('postBlocks');
+      expect(methods.indexOf('postBlocks')).toBeGreaterThan(methods.lastIndexOf('stopStream'));
+      expect(methods).not.toContain('postMessage');
+      const post = h.calls().at(-1)!;
+      expect(post.token).toBe(BOT_TOKEN);
+      expect(post.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
+      const blocks = post.args['blocks'] as Block[];
+      // The host is shown only as the subject: plain_text.
+      expect(blocks[0]).toEqual({
+        type: 'section',
+        text: { type: 'plain_text', text: COPY.hostSubject('api.example.com'), emoji: false },
+      });
+      // Nothing about a blocked host waits in Today (channel-web keeps host cards out of it): no Today line.
+      expect(blocks.at(-1)).toEqual({ type: 'context', elements: [{ type: 'mrkdwn', text: COPY.promptOnlyAsker }] });
+      expect(JSON.stringify(post.args)).not.toContain(TODAY);
+
+      // Its buttons name an open prompt for that host and that session, answerable only by the sender, run as the turn ran.
+      const id = promptIdOf(post);
+      expect(h.prompts.claim(id, 'U07SOMEONE1')).toMatchObject({ ok: false, reason: 'not-asker' });
+      const claim = h.prompts.claim(id, SENDER);
+      expect(claim.ok && claim.prompt).toMatchObject({
+        installId: INSTALL.installId,
+        teamId: INSTALL.teamId,
+        channel: CHANNEL,
+        threadTs: THREAD,
+        askerSlackId: SENDER,
+        userId: 'usr_alice',
+        agentId: 'agt_support',
+        conversationId: 'conv_support_thread',
+        mode,
+        subject: { kind: 'host', host: 'api.example.com', sessionId: SESSION },
+        subjectText: COPY.hostSubject('api.example.com'),
+        messageTs: PROMPT_TS,
+      });
+      expect(h.prompts.size()).toBe(1);
+      // The turn only asks: nothing is let through until the person answers.
+      expect(h.addHosts).toEqual([]);
+      expect(h.logged('slack_permission_skipped')).toEqual([]);
+    },
+  );
+
+  it('a host the proxy would never take is never shown: no prompt, counted in the log without it', async () => {
+    const tooLong = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(62)}`;
+    expect(tooLong).toHaveLength(254);
+    const refused = ['<!channel>', 'a b', 'EXAMPLE.com', tooLong];
+    const h = harness({ chunks: [SAID], cards: refused.map(hostCard) });
+    await h.run('attended');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([
+      { installId: INSTALL.installId, reason: 'invalid-host', count: refused.length },
+    ]);
+    const all = JSON.stringify(h.lines) + JSON.stringify(h.calls());
+    for (const host of ['<!channel>', 'EXAMPLE.com', tooLong]) expect(all, host).not.toContain(host);
+  });
+
+  it('two cards for one host: one prompt', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com'), hostCard('api.example.com')] });
+    await h.run('dm');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('api.example.com')]);
+    expect(h.prompts.size()).toBe(1);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  it(`more hosts than PERMISSION_PROMPTS_PER_TURN_MAX: prompts for the first ones, in the order they came; the rest counted, a repeat not`, async () => {
+    const hosts = ['one.example.com', 'two.example.com', 'three.example.com', 'four.example.com'];
+    expect(hosts).toHaveLength(PERMISSION_PROMPTS_PER_TURN_MAX + 1);
+    // A repeat of one already asked about, once the cap is reached: the same prompt, not one over the cap.
+    const cards = [...hosts.slice(0, -1), hosts[0]!, hosts.at(-1)!].map(hostCard);
+    const h = harness({ chunks: [SAID], cards });
+    await h.run('attended');
+    expect(subjects(h.calls())).toEqual(hosts.slice(0, PERMISSION_PROMPTS_PER_TURN_MAX).map((x) => COPY.hostSubject(x)));
+    expect(h.prompts.size()).toBe(PERMISSION_PROMPTS_PER_TURN_MAX);
+    expect(h.logged('slack_permission_skipped')).toEqual([{ installId: INSTALL.installId, reason: 'cap', count: 1 }]);
+  });
+
+  // Card acceptance: an outsider's turn never shows buttons.
+  it("an outsider's turn: no prompt and nothing opened, counted as an outsider's", async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] });
+    await h.run('external');
+    expect(h.reply()).toBe('I could not reach that site.');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.addHosts).toEqual([]);
+    expect(h.logged('slack_permission_skipped')).toEqual([{ installId: INSTALL.installId, reason: 'outsider', count: 1 }]);
+  });
+
+  it("a held call and a refused host in one turn: the held call's prompt first, then the host's; only the first links Today", async () => {
+    const h = harness(
+      { chunks: [SAID, ...heldCall('toolu_held')], cards: [hostCard('api.example.com')] },
+      { decisions: [decisionRow('dec_held', 'toolu_held')] },
+    );
+    await h.run('attended');
+    expect(subjects(h.calls())).toEqual([SUMMARY, COPY.hostSubject('api.example.com')]);
+    const [held, host] = posts(h.calls()).map((c) => JSON.stringify(c.args['blocks']));
+    expect(held).toContain(TODAY);
+    expect(host).not.toContain(TODAY);
+    expect(h.prompts.size()).toBe(2);
+  });
+
+  it('without proxy:add-host on the bus, a refused host is not offered: no prompt, counted as unavailable', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] }, { noProxy: true });
+    await h.run('dm');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([
+      { installId: INSTALL.installId, reason: 'unavailable', count: 1 },
+    ]);
+  });
+
+  it("another turn's host card is not this one's", async () => {
+    const h = harness({ chunks: [SAID], cards: [{ ...hostCard('api.example.com'), reqId: 'req-0ther0000001' }] });
+    await h.run('dm');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  it('Slack refuses the prompt: nothing is left open, and nothing else is posted', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] }, { postBlocksFails: true });
+    await h.run('attended');
+    expect(posts(h.calls())).toHaveLength(1);
+    expect(h.calls().map((c) => c.method)).not.toContain('postMessage');
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_reply_failed')).toEqual([
+      { installId: INSTALL.installId, stage: 'prompt', code: 'invalid_blocks' },
+    ]);
+  });
+
+  it('a refused host, then the turn fails: the failure line, then the prompt', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')], end: 'turn-error' });
+    await h.run('dm');
+    expect(h.streamed()).toBe(`I could not reach that site.\n\n${COPY.turnFailed}`);
+    expect(h.calls().at(-1)!.method).toBe('postBlocks');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('api.example.com')]);
     expect(h.prompts.size()).toBe(1);
   });
 });

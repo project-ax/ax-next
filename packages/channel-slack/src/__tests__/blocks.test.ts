@@ -135,6 +135,18 @@ describe('promptBlocks: an approval prompt', () => {
     expect(lines.map((t) => t.text)).toContain(COPY.promptToday(TODAY));
   });
 
+  it("for a request that doesn't wait in Today (a blocked host): no Today line, and nothing else changes", () => {
+    const linked = promptBlocks({ subject: SUBJECT, promptId: PROMPT_ID, todayLink: TODAY });
+    const unlinked = promptBlocks({ subject: SUBJECT, promptId: PROMPT_ID, todayLink: null });
+    expect(unlinked.blocks.at(-1)).toStrictEqual({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: COPY.promptOnlyAsker }],
+    });
+    expect(unlinked.text).toBe(linked.text);
+    expect(unlinked.blocks.slice(0, -1)).toStrictEqual(linked.blocks.slice(0, -1));
+    expect(JSON.stringify(unlinked)).not.toMatch(/https?:/);
+  });
+
   it('both buttons carry the prompt id and nothing else, and fit Slack: labels, action ids and values', () => {
     const out = prompt(SUBJECT);
     const both = buttons(out.blocks);

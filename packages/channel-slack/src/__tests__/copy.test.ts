@@ -30,6 +30,9 @@ const ARGS: Record<string, unknown[][]> = {
   decisionFailed: [[TODAY], [HOSTILE]],
   decisionInterrupted: [[TODAY], [HOSTILE]],
   decisionNotRun: [[TODAY], [HOSTILE]],
+  // A host prompt's subject (plain_text, cleaned at draw). Only a host past HOST_RE ever reaches it
+  // (permission-prompts.ts `hostSubject`): lowercase letters, digits, dots and dashes.
+  hostSubject: [['api.example.com']],
   slashNotMapped: [[ORIGIN]],
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
@@ -77,6 +80,10 @@ describe('COPY: everything the bot says in Slack', () => {
         'decisionFailed',
         'decisionInterrupted',
         'decisionNotRun',
+        'hostSubject',
+        'hostAllowed',
+        'hostEnded',
+        'hostDenied',
         'noAgent',
         'notMapped',
         'queueFull',
@@ -150,6 +157,9 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     ['decisionFailed', COPY.decisionFailed(link)],
     ['decisionInterrupted', COPY.decisionInterrupted(link)],
     ['decisionNotRun', COPY.decisionNotRun(link)],
+    ['hostAllowed', COPY.hostAllowed],
+    ['hostEnded', COPY.hostEnded],
+    ['hostDenied', COPY.hostDenied],
   ];
   /** The lines that point at Today. */
   const LINKED = ['promptToday', 'promptGone', 'decisionChanged', 'decisionFailed', 'decisionInterrupted', 'decisionNotRun'];
@@ -188,14 +198,27 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     expect(COPY.promptStillWorking).not.toBe(COPY.promptFailed);
   });
 
+  it("a host prompt: its subject names the host as given, Allow says it is for this chat only, and nothing links anywhere", () => {
+    expect(COPY.hostSubject('api.example.com')).toBe('Wants to connect to api.example.com');
+    // Session only: "always" stays a choice in the web app.
+    expect(COPY.hostAllowed).toMatch(/for this chat/);
+    expect(COPY.hostAllowed).not.toMatch(/always/i);
+    // A blocked host never waits in Today, so none of its lines points there.
+    for (const line of [COPY.hostSubject('api.example.com'), COPY.hostAllowed, COPY.hostEnded, COPY.hostDenied]) {
+      expect(line).not.toMatch(/https?:|\]\(|Today/);
+    }
+  });
+
   it('the buttons say Allow and Deny', () => {
     expect(COPY.promptAllow).toBe('Allow');
     expect(COPY.promptDeny).toBe('Deny');
   });
 
   it('each way a prompt can end reads differently, so the asker can tell what happened', () => {
-    const outcomes = PROMPT_LINES(TODAY).filter(([key]) => key.startsWith('decision') || key === 'promptClosed');
-    expect(outcomes).toHaveLength(10);
+    const outcomes = PROMPT_LINES(TODAY).filter(
+      ([key]) => key.startsWith('decision') || key.startsWith('host') || key === 'promptClosed',
+    );
+    expect(outcomes).toHaveLength(13);
     expect(new Set(outcomes.map(([, line]) => line)).size).toBe(outcomes.length);
   });
 });

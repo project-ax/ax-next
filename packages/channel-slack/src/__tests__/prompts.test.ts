@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGENT_ID_MAX,
   EVENT_TEXT_MAX,
+  PROMPT_HOST_MAX,
   PROMPT_ID_BYTES,
   PROMPT_REFUSALS_MAX,
   SLACK_ID_MAX,
@@ -209,12 +210,11 @@ describe('createPromptRegistry: add', () => {
     expect(prompts.size()).toBe(2);
   });
 
-  it('refuses a subject of a kind it does not know, and keeps a decision with exactly its fields', () => {
+  it('refuses a subject of a kind it does not know, and keeps each kind it knows with exactly its fields', () => {
     const { prompts, sizes } = registry();
     for (const unknown of [
       { kind: 'routine', decisionId: 'dec_0001' },
-      // The permission cards' kinds come with the code that answers them (PR B), not before.
-      { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' },
+      // A skill card's kind comes with the code that answers it, not before.
       { kind: 'skill', skillId: 'skl_0001' },
     ]) {
       const subject = unknown as unknown as PromptSubject;
@@ -225,6 +225,11 @@ describe('createPromptRegistry: add', () => {
 
     const held = { kind: 'decision', decisionId: 'dec_0001', extra: 1 } as PromptSubject;
     expect(prompts.add(MEL, held, SUMMARY).subject).toEqual({ kind: 'decision', decisionId: 'dec_0001' });
+    // A host the sandbox was refused, for the turn's live session only (permission-prompts.ts).
+    const host = { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001', extra: 1 } as PromptSubject;
+    const kept = prompts.add(MEL, host, 'Wants to connect to api.example.com').subject;
+    expect(kept).toEqual({ kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' });
+    expect(Object.isFrozen(kept)).toBe(true);
   });
 
   it('reads the mode once: a mode that changes between reads keeps the value it was checked as', () => {
@@ -284,6 +289,8 @@ describe('createPromptRegistry: add', () => {
   it("refuses a subject field that is not a string, is empty, or is longer than its cap, before minting an id", () => {
     const subjects: Array<{ subject: Record<string, unknown>; field: string; cap: number }> = [
       { subject: { kind: 'decision', decisionId: 'dec_0001' }, field: 'decisionId', cap: AGENT_ID_MAX },
+      { subject: { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' }, field: 'host', cap: PROMPT_HOST_MAX },
+      { subject: { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' }, field: 'sessionId', cap: AGENT_ID_MAX },
     ];
     for (const { subject, field, cap } of subjects) {
       for (const bad of [undefined, null, 7, ['dec_0001'], { toString: () => 'dec_0001' }, '', 'x'.repeat(cap + 1)]) {

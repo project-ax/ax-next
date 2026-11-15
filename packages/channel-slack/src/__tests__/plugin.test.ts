@@ -22,6 +22,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { AGENTS_DELETED_KEY } from '../agents-deleted.js';
 import { CAPTURE_VETO_KEY } from '../capture-veto.js';
 import { createChannelStore } from '../channel-store.js';
+import { COPY } from '../copy.js';
 import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
 import {
   ADMIN_BODY_MAX_BYTES,
@@ -567,6 +568,8 @@ describe('@ax/channel-slack plugin', () => {
           hook,
           degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
         })),
+        // A host the sandbox was refused, allowed for the live session from Slack.
+        { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
       ],
       subscribes: [
         'bootstrap:reset-cleanup',
@@ -862,6 +865,80 @@ describe('@ax/channel-slack plugin', () => {
       recipient_team_id: TEAM_ID,
       chunks: [{ type: 'markdown_text', text: 'Sent it to Bob.' }],
     });
+  });
+
+  it("an Allow on a refused host's prompt lets it through for the turn's live session, as the asker, through the plugin wiring (TASK-1095)", async () => {
+    // The host answer (`createHostAnswer`) is plugin.ts's to wire: without it
+    // the click closes the prompt, and nothing is let through.
+    const slack = fakeSlackFetch();
+    const { s, harness, call } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const bus = harness.bus;
+    // Alice's sandbox is refused a host mid-turn: chat-orchestrator fires the
+    // egress wall's card under the egress proxy's ctx, naming her turn's reqId.
+    s.turnScript = async (b, ctx) => {
+      const egress = makeAgentContext({ sessionId: 'credential-proxy', agentId: '', userId: '' });
+      await b.fire('chat:permission-request', egress, {
+        kind: 'host',
+        host: 'api.example.com',
+        sessionId: 'sess_live',
+        reqId: ctx.reqId,
+      });
+      await b.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'I could not reach it.' });
+      await b.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+    const added: Array<{ userId: string; input: unknown }> = [];
+    bus.registerService('proxy:add-host', 'fake-credential-proxy', async (ctx, input) => {
+      added.push({ userId: ctx.userId, input });
+      return { added: true, agentId: 'agt_alice' };
+    });
+
+    const dmBody = eventBody('message', 'Check the status page');
+    await call(
+      'POST',
+      '/slack/events/:installId',
+      request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body: dmBody, headers: signed(dmBody) }),
+    );
+    await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.postMessage'));
+    const posted = slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    const blocks = posted.body['blocks'] as Array<Record<string, unknown>>;
+    expect(blocks[0]).toEqual({ type: 'section', text: { type: 'plain_text', text: COPY.hostSubject('api.example.com'), emoji: false } });
+    const actions = blocks.find((b) => b['type'] === 'actions')!;
+    const promptId = (actions['elements'] as Array<{ value: string }>)[0]!.value;
+    const promptTs = '1763039999.000002';
+    // Asking let nothing through.
+    expect(added).toEqual([]);
+
+    // Alice clicks Allow, signed as Slack signs a click.
+    const payload = {
+      type: 'block_actions',
+      api_app_id: APP_ID,
+      team: { id: TEAM_ID },
+      user: { id: ALICE },
+      channel: { id: DM_CHANNEL },
+      container: { type: 'message', message_ts: promptTs, channel_id: DM_CHANNEL },
+      message: { ts: promptTs, thread_ts: DM_TS },
+      actions: [{ type: 'button', action_id: 'ax_prompt_allow', value: promptId }],
+    };
+    const clickBody = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString());
+    const mark = slack.calls.length;
+    const clicked = await call(
+      'POST',
+      '/slack/interactions/:installId',
+      request('POST', `/slack/interactions/${INSTALL_ID}`, {
+        params: { installId: INSTALL_ID },
+        body: clickBody,
+        headers: { ...signed(clickBody), 'content-type': 'application/x-www-form-urlencoded' },
+      }),
+    );
+    expect(clicked.status).toBe(200);
+    await vi.waitFor(() => expect(slack.calls.slice(mark).map((c) => c.method)).toContain('chat.update'));
+    // Her own session, for exactly that host, as her.
+    expect(added).toEqual([{ userId: 'usr_alice', input: { sessionId: 'sess_live', host: 'api.example.com' } }]);
+    const update = slack.calls.slice(mark).find((c) => c.method === 'chat.update')!;
+    expect(update.body['text']).toBe(COPY.hostAllowed);
   });
 
   /**
