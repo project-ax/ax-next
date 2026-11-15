@@ -256,6 +256,12 @@ function memoryStore(clock: () => number, trail: string[]) {
       r.botUserId = a.botUserId;
       r.installedAt = a.installedAt;
     },
+    async setBotName(installId, botName) {
+      await enter('setBotName', [installId, botName]);
+      const r = rows.get(installId);
+      if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
+      r.botName = botName;
+    },
     async remove(installId) {
       await enter('remove', [installId]);
       rows.delete(installId);
@@ -274,11 +280,12 @@ function memoryStore(clock: () => number, trail: string[]) {
   return { store, rows, calls, failures };
 }
 
-// ── A fake Slack: the five calls the admin routes make ──────────────────────
+// ── A fake Slack: the six calls the admin routes make ───────────────────────
 
 interface SlackBehaviour {
   rotateConfigToken(refreshToken: string): Promise<RotatedConfigToken>;
   createApp(token: string, manifest: Record<string, unknown>): Promise<CreatedApp>;
+  updateApp(token: string, appId: string, manifest: Record<string, unknown>): Promise<void>;
   deleteApp(token: string, appId: string): Promise<void>;
   setAppIcon(token: string, appId: string, url: string): Promise<void>;
   oauthAccess(i: {
@@ -295,6 +302,7 @@ function fakeSlack(trail: string[]) {
   const on: SlackBehaviour = {
     rotateConfigToken: async () => ({ accessToken: MINTED_ACCESS, expiresAt: NOW_MS + 43_200_000 }),
     createApp: async () => ({ ...APP }),
+    updateApp: async () => {},
     deleteApp: async () => {},
     setAppIcon: async () => {},
     oauthAccess: async () => ({ ...GRANT }),
@@ -314,6 +322,10 @@ function fakeSlack(trail: string[]) {
     createApp: async (token, manifest) => {
       record('createApp', [token, manifest]);
       return on.createApp(token, manifest);
+    },
+    updateApp: async (token, appId, manifest) => {
+      record('updateApp', [token, appId, manifest]);
+      return on.updateApp(token, appId, manifest);
     },
     deleteApp: async (token, appId) => {
       record('deleteApp', [token, appId]);
@@ -487,6 +499,8 @@ function world(
     connect: (body: unknown = CONNECT_BODY, as: TestUser | null = ADA) =>
       call('POST', '/admin/slack/connect', { as, body }),
     installUrl: (as: TestUser | null = ADA) => call('POST', '/admin/slack/install-url', { as }),
+    rename: (body: unknown = { botName: 'Ada Helper' }, as: TestUser | null = ADA) =>
+      call('POST', '/admin/slack/rename', { as, body }),
     callback: (query: Record<string, string>, as: TestUser | null = ADA) =>
       call('GET', CALLBACK, { as, query }),
     disconnect: (as: TestUser | null = ADA) => call('POST', '/admin/slack/disconnect', { as }),
@@ -536,7 +550,7 @@ const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
 // ── The routes ──────────────────────────────────────────────────────────────
 
 describe('the route table', () => {
-  it('is exactly the five admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
+  it('is exactly the six admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
     const { routes } = world();
     expect(routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
       'GET /admin/slack',
@@ -544,6 +558,7 @@ describe('the route table', () => {
       'POST /admin/slack/connect',
       'POST /admin/slack/disconnect',
       'POST /admin/slack/install-url',
+      'POST /admin/slack/rename',
     ]);
     for (const r of routes) {
       expect(r.bypassCsrf, r.path).not.toBe(true);
@@ -1396,6 +1411,385 @@ describe('POST /admin/slack/disconnect', () => {
   });
 });
 
+describe('POST /admin/slack/rename', () => {
+  /** Everything one rename touches, in order: the row, the vault, Slack twice, and the row last. */
+  const ONE_RENAME = [
+    'store:current',
+    'vault:get config-refresh-token',
+    'slack:rotateConfigToken',
+    'slack:updateApp',
+    'store:setBotName',
+  ];
+  /** How far into ONE_RENAME a rename gets before a step fails. */
+  const STOPS_AFTER = { 'config-token': 2, rotate: 3, 'update-app': 4 } as const;
+  /** The two fields a rename changes, as a test reads them out of a manifest. */
+  type ManifestNames = { display_information: { name: string }; features: { bot_user: { display_name: string } } };
+  const updates = (w: World) => w.slack.calls.filter((c) => c.method === 'updateApp');
+
+  it('rotates the stored refresh token and sends Slack the whole manifest with only the name changed; the row and the status show the new name', async () => {
+    const { w, installId } = await connectedWorld();
+    const mark = w.slack.calls.length;
+    const trailMark = w.trail.length;
+    const res = await w.rename({ botName: '  Ada   Helper ' });
+    // Slack first, the row last: the row only ever shows a name Slack took.
+    expect(w.trail.slice(trailMark)).toEqual(ONE_RENAME);
+    expect(res).toMatchObject({ status: 200, how: 'json' });
+    // The tidied name, as stored, and nothing else.
+    expect(res.body).toStrictEqual({ botName: 'Ada Helper' });
+    expect(w.slack.calls.slice(mark)).toEqual([
+      { method: 'rotateConfigToken', args: [REFRESH] },
+      {
+        method: 'updateApp',
+        args: [MINTED_ACCESS, APP.appId, buildAppManifest('Ada Helper', slackUrls(ORIGIN, installId))],
+      },
+    ]);
+
+    // Slack keeps nothing it isn't sent. The update is what Connect created,
+    // with only the two name fields changed...
+    const created = w.slack.calls.find((c) => c.method === 'createApp')!.args[1] as ManifestNames;
+    const renamed = structuredClone(created);
+    renamed.display_information.name = 'Ada Helper';
+    renamed.features.bot_user.display_name = 'Ada Helper';
+    const sent = w.slack.calls[mark + 1]!.args[2];
+    expect(sent).toEqual(renamed);
+    // ...so the approval buttons, /ax, the events and every scope survive it.
+    expect(sent).toMatchObject({
+      features: { slash_commands: [{ command: '/ax', url: `${ORIGIN}/slack/commands/${installId}` }] },
+      oauth_config: { redirect_urls: [REDIRECT_URI], scopes: { bot: [...BOT_SCOPES] } },
+      settings: {
+        event_subscriptions: {
+          request_url: `${ORIGIN}/slack/events/${installId}`,
+          bot_events: ['app_mention', 'message.im'],
+        },
+        interactivity: { is_enabled: true, request_url: `${ORIGIN}/slack/interactions/${installId}` },
+      },
+    });
+
+    expect(onlyRow(w).botName).toBe('Ada Helper');
+    expect((await w.status()).body).toMatchObject({ state: 'connected', botName: 'Ada Helper' });
+    expect(w.lines).toEqual([]);
+  });
+
+  it('refuses a bad name with { error: "invalid-bot-name", reason } before reading the vault or calling Slack', async () => {
+    const { w } = await connectedWorld();
+    const mark = w.trail.length;
+    // Each fails exactly one rule. A missing or non-string name reads as bad characters, like Connect.
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ botName: '' }, 'empty'],
+      [{ botName: 'a'.repeat(36) }, 'too-long'],
+      [{ botName: 'Café' }, 'bad-characters'],
+      [{ botName: 'slack-bot' }, 'reserved'],
+      [{ botName: 42 }, 'bad-characters'],
+      [{ botName: null }, 'bad-characters'],
+      [{}, 'bad-characters'],
+    ];
+    for (const [body, reason] of cases) {
+      const res = await w.rename(body);
+      expect(res, JSON.stringify(body)).toMatchObject({ status: 400 });
+      expect(res.body, JSON.stringify(body)).toStrictEqual({ error: 'invalid-bot-name', reason });
+    }
+    // Not the store, not the vault, not Slack.
+    expect(w.trail.slice(mark)).toEqual([]);
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+  });
+
+  it('a body that is not a JSON object → 400 invalid-body; one over the cap → 413', async () => {
+    const { w } = await connectedWorld();
+    const mark = w.trail.length;
+    for (const body of ['', 'not json', '[1,2]', '"text"', 'null', Buffer.from([0xff, 0xfe, 0x7b, 0x7d])]) {
+      expect(await w.rename(body), String(body)).toMatchObject({ status: 400, body: { error: 'invalid-body' } });
+    }
+    const huge = JSON.stringify({ botName: 'Ada Helper', pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) });
+    expect(await w.rename(huge)).toMatchObject({ status: 413, body: { error: 'body-too-large' } });
+    expect(w.trail.slice(mark)).toEqual([]);
+  });
+
+  it('→ 409 not-connected with nothing connected or an unfinished install; → 409 public-origin-not-https on an http origin; neither touches the vault or Slack', async () => {
+    const w = world();
+    expect(await w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(w.trail).toEqual(['store:current']);
+
+    // Pending: Cancel and Connect again instead.
+    expect((await w.connect()).status).toBe(200);
+    const slackMark = w.slack.calls.length;
+    const vaultMark = w.vaultCalls.length;
+    expect(await w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(w.slack.calls.slice(slackMark)).toEqual([]);
+    expect(w.vaultCalls.slice(vaultMark)).toEqual([]);
+    expect(onlyRow(w)).toMatchObject({ status: 'pending', botName: 'Canopy Bot' });
+
+    // An active install with a refresh token that would work: only the origin stops it.
+    const http = world({ publicOrigin: HTTP_ORIGIN });
+    const installId = 'AAAAAAAAAAAAAAAAAAAAAA';
+    http.memory.rows.set(installId, {
+      installId,
+      status: 'active',
+      appId: APP.appId,
+      clientId: APP.clientId,
+      botName: 'Canopy Bot',
+      teamId: GRANT.teamId,
+      teamName: GRANT.teamName,
+      botUserId: GRANT.botUserId,
+      connectedByUserId: ADA.id,
+      createdAt: new Date(NOW_MS),
+      installedAt: new Date(NOW_MS),
+      stateHash: null,
+      stateUserId: null,
+      stateExpiresAt: null,
+    });
+    http.vault.set(secretRef(installId, 'config-refresh-token'), REFRESH);
+    expect(await http.rename()).toMatchObject({ status: 409, body: { error: 'public-origin-not-https' } });
+    expect(http.slack.calls).toEqual([]);
+    expect(http.vaultCalls).toEqual([]);
+    expect(onlyRow(http).botName).toBe('Canopy Bot');
+    expect([...w.lines, ...http.lines]).toEqual([]);
+  });
+
+  it('a configuration token Slack no longer accepts → 502 slack-config-token; the row keeps its name', async () => {
+    const rotateRefuses =
+      (code: string) =>
+      (w: World): void => {
+        w.slack.on.rotateConfigToken = async () => {
+          throw new SlackApiError('tooling.tokens.rotate', code);
+        };
+      };
+    const updateRefuses =
+      (code: string) =>
+      (w: World): void => {
+        w.slack.on.updateApp = async () => {
+          throw new SlackApiError('apps.manifest.update', code);
+        };
+      };
+    const cases: Array<[keyof typeof STOPS_AFTER, string, (w: World, installId: string) => void]> = [
+      [
+        'config-token',
+        'missing',
+        (w, installId) => {
+          w.vault.delete(secretRef(installId, 'config-refresh-token'));
+        },
+      ],
+      // What rotate says once the token was revoked on Slack's page (MEASURED, TASK-1093).
+      ['rotate', 'invalid_refresh_token', rotateRefuses('invalid_refresh_token')],
+      ...['invalid_auth', 'not_authed', 'token_expired', 'token_revoked', 'account_inactive'].map(
+        (code): ['update-app', string, (w: World) => void] => ['update-app', code, updateRefuses(code)],
+      ),
+      // Alive, but its owner can't manage this app (both are listed for
+      // apps.manifest.update). Trying again can't fix these either.
+      ...['no_permission', 'app_not_owned_by_manager_app'].map(
+        (code): ['update-app', string, (w: World) => void] => ['update-app', code, updateRefuses(code)],
+      ),
+    ];
+    for (const [stage, code, breakIt] of cases) {
+      const { w, installId } = await connectedWorld();
+      breakIt(w, installId);
+      const mark = w.trail.length;
+      const res = await w.rename();
+      expect(res, code).toMatchObject({ status: 502 });
+      expect(res.body, code).toStrictEqual({ error: 'slack-config-token' });
+      // Stopped at the step that failed: no store:setBotName.
+      expect(w.trail.slice(mark), code).toEqual(ONE_RENAME.slice(0, STOPS_AFTER[stage]));
+      expect(onlyRow(w).botName, code).toBe('Canopy Bot');
+      expect(w.lines, code).toEqual([{ level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage, code } }]);
+    }
+  });
+
+  it('Slack refusing the manifest → 502 slack-name; anything else Slack says → 502 slack-error; nothing stored', async () => {
+    const update = (code: string, retryAfterMs?: number): SlackApiError =>
+      new SlackApiError('apps.manifest.update', code, retryAfterMs);
+    const rotate = (code: string): SlackApiError => new SlackApiError('tooling.tokens.rotate', code);
+    const cases: Array<['rotate' | 'update-app', unknown, string]> = [
+      ['update-app', update('invalid_manifest'), 'slack-name'],
+      ['update-app', update('ratelimited', 60_000), 'slack-error'],
+      ['update-app', update('timeout'), 'slack-error'],
+      ['update-app', update('http-503'), 'slack-error'],
+      ['update-app', update('bad-response'), 'slack-error'],
+      ['update-app', new TypeError('not a Slack answer'), 'slack-error'],
+      // The name never reaches rotate, so only the update can mean slack-name.
+      ['rotate', rotate('invalid_manifest'), 'slack-error'],
+      ['rotate', rotate('network'), 'slack-error'],
+      // Rotate names no app, so an app that's gone can only be news from the update.
+      ['rotate', rotate('app_not_found'), 'slack-error'],
+    ];
+    for (const [stage, err, error] of cases) {
+      const { w, installId } = await connectedWorld();
+      const fail = async (): Promise<never> => {
+        throw err;
+      };
+      if (stage === 'rotate') w.slack.on.rotateConfigToken = fail;
+      else w.slack.on.updateApp = fail;
+      const mark = w.trail.length;
+      const res = await w.rename();
+      const label = `${stage} ${String(err)}`;
+      expect(res, label).toMatchObject({ status: 502 });
+      expect(res.body, label).toStrictEqual({ error });
+      expect(w.trail.slice(mark), label).toEqual(ONE_RENAME.slice(0, STOPS_AFTER[stage]));
+      expect(onlyRow(w).botName, label).toBe('Canopy Bot');
+      expect(w.lines, label).toEqual([
+        {
+          level: err instanceof SlackApiError ? 'warn' : 'error',
+          msg: 'slack_admin_failed',
+          fields: { installId, stage, code: err instanceof SlackApiError ? err.code : 'unknown' },
+        },
+      ]);
+    }
+  });
+
+  it('Slack saying the app is gone (app_not_found at the update) → 502 slack-app-gone, not "try again"; nothing stored', async () => {
+    const { w, installId } = await connectedWorld();
+    w.slack.on.updateApp = async () => {
+      throw new SlackApiError('apps.manifest.update', 'app_not_found');
+    };
+    const mark = w.trail.length;
+    const res = await w.rename();
+    expect(res).toMatchObject({ status: 502 });
+    expect(res.body).toStrictEqual({ error: 'slack-app-gone' });
+    expect(w.trail.slice(mark)).toEqual(ONE_RENAME.slice(0, STOPS_AFTER['update-app']));
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage: 'update-app', code: 'app_not_found' } },
+    ]);
+  });
+
+  it('a vault fault reading the token → 500, logged code-only, and Slack is never called', async () => {
+    const { w } = await connectedWorld();
+    w.vaultFailures.set(
+      'credentials:get config-refresh-token',
+      Object.assign(new Error(`vault down ${REFRESH}`), { code: 'ECONNRESET' }),
+    );
+    const mark = w.slack.calls.length;
+    expect(await w.rename()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.slack.calls.slice(mark)).toEqual([]);
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'rename', code: 'ECONNRESET' } },
+    ]);
+  });
+
+  it('the row write failing after Slack said yes → 500; a retry sends the same manifest and lands', async () => {
+    const { w } = await connectedWorld();
+    w.memory.failures.set('setBotName', Object.assign(new Error('connection reset'), { code: '08006' }));
+    expect(await w.rename()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(updates(w)).toHaveLength(1);
+    // Slack has the new name; AX's row doesn't, yet.
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'rename', code: '08006' } },
+    ]);
+
+    w.memory.failures.delete('setBotName');
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(updates(w)).toHaveLength(2);
+    const [first, retry] = updates(w);
+    expect(retry!.args).toEqual(first!.args);
+    expect(onlyRow(w).botName).toBe('Ada Helper');
+  });
+
+  it('the install removed while Slack was renaming it (a reset takes no admin lock) → 409 not-connected', async () => {
+    const { w, installId } = await connectedWorld();
+    w.slack.on.updateApp = async () => {
+      await w.memory.store.removeAll();
+    };
+    expect(await w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(w.memory.calls.at(-1)).toEqual({ method: 'setBotName', args: [installId, 'Ada Helper'] });
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('a rename and a disconnect never interleave', async () => {
+    // The rename first: it finishes, Slack then the row, before the disconnect reads anything.
+    const { w } = await connectedWorld();
+    const gate = deferred();
+    w.slack.on.updateApp = async () => {
+      await gate.promise;
+    };
+    const mark = w.trail.length;
+    const renaming = w.rename();
+    const disconnecting = w.disconnect(GRACE);
+    await settle();
+    gate.resolve();
+    expect(await renaming).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(await disconnecting).toMatchObject({ status: 200, body: { appDeleted: true } });
+    const tail = w.trail.slice(mark);
+    expect(tail.slice(0, ONE_RENAME.length)).toEqual(ONE_RENAME);
+    expect(tail.slice(ONE_RENAME.length, ONE_RENAME.length + 4)).toEqual([
+      'store:current',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'slack:deleteApp',
+    ]);
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+
+    // The disconnect first: the rename then finds nothing to rename.
+    const reverse = (await connectedWorld()).w;
+    const deleting = deferred();
+    reverse.slack.on.deleteApp = async () => {
+      await deleting.promise;
+    };
+    const reverseMark = reverse.trail.length;
+    const disconnected = reverse.disconnect(GRACE);
+    const renamed = reverse.rename();
+    await settle();
+    deleting.resolve();
+    expect(await disconnected).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(await renamed).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(slackMethods(reverse)).not.toContain('updateApp');
+    // The rename's one step: a store read, after the disconnect had finished.
+    expect(reverse.trail.slice(reverseMark).at(-1)).toBe('store:current');
+    expect(reverse.trail.slice(reverseMark).filter((t) => t === 'slack:rotateConfigToken')).toHaveLength(1);
+    expect(reverse.memory.rows.size).toBe(0);
+  });
+
+  it('two renames at once (a double click, or two admins) take turns, each whole; the later name stays', async () => {
+    const { w } = await connectedWorld();
+    const gate = deferred();
+    let held = false;
+    w.slack.on.updateApp = async () => {
+      if (held) return;
+      held = true;
+      await gate.promise;
+    };
+    const mark = w.trail.length;
+    const one = w.rename({ botName: 'Ada Helper' });
+    const two = w.rename({ botName: 'Grace Helper' }, GRACE);
+    await settle();
+    gate.resolve();
+    expect(await one).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(await two).toMatchObject({ status: 200, body: { botName: 'Grace Helper' } });
+    expect(w.trail.slice(mark)).toEqual([...ONE_RENAME, ...ONE_RENAME]);
+    expect(updates(w).map((c) => (c.args[2] as ManifestNames).display_information.name)).toEqual([
+      'Ada Helper',
+      'Grace Helper',
+    ]);
+    expect(onlyRow(w).botName).toBe('Grace Helper');
+  });
+
+  it('saving the name it already has sends the manifest again and answers 200', async () => {
+    const { w, installId } = await connectedWorld();
+    expect(await w.rename({ botName: 'Canopy Bot' })).toMatchObject({
+      status: 200,
+      body: { botName: 'Canopy Bot' },
+    });
+    expect(updates(w).map((c) => c.args)).toEqual([
+      [MINTED_ACCESS, APP.appId, buildAppManifest('Canopy Bot', slackUrls(ORIGIN, installId))],
+    ]);
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+  });
+
+  it('never calls credentials:set, and the minted access token goes nowhere but updateApp', async () => {
+    const { w, installId } = await connectedWorld();
+    const before = w.vaultCalls.length;
+    await w.rename();
+    // One vault call: reading the refresh token.
+    expect(w.vaultCalls.slice(before)).toEqual([
+      { hook: 'credentials:get', ref: secretRef(installId, 'config-refresh-token') },
+    ]);
+    expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS)).map((c) => c.method)).toEqual([
+      'updateApp',
+    ]);
+  });
+});
+
 describe('secrets never leave', () => {
   it('no response body or log line contains any of the four secrets or either pasted token', async () => {
     const leak = (where: string): Error => new Error(`${where} failed: ${SECRETS.join(' ')}`);
@@ -1409,6 +1803,7 @@ describe('secrets never leave', () => {
     const happy = track((await connectedWorld()).w);
     await happy.status();
     await happy.installUrl();
+    await happy.rename();
     await happy.disconnect();
     await happy.status();
 
@@ -1459,6 +1854,24 @@ describe('secrets never leave', () => {
     };
     del.vaultFailures.set('credentials:delete bot-token', leak('vault'));
     await del.disconnect();
+
+    // Rename: rotate failing, the update failing, the row write failing, the vault failing.
+    const renameRotate = track((await connectedWorld()).w);
+    renameRotate.slack.on.rotateConfigToken = async () => {
+      throw leak('rotate');
+    };
+    await renameRotate.rename();
+    const renameUpdate = track((await connectedWorld()).w);
+    renameUpdate.slack.on.updateApp = async () => {
+      throw leak('updateApp');
+    };
+    await renameUpdate.rename();
+    const renameRow = track((await connectedWorld()).w);
+    renameRow.memory.failures.set('setBotName', leak('setBotName'));
+    await renameRow.rename();
+    const renameVault = track((await connectedWorld()).w);
+    renameVault.vaultFailures.set('credentials:get config-refresh-token', leak('vault'));
+    await renameVault.rename();
 
     // Auth and branding faults.
     await track(world({ authFault: leak('auth') })).status();

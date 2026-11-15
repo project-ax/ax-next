@@ -7,8 +7,9 @@
  * interactivity for approval buttons (TASK-1095). The App
  * Home messages tab is on and writable, because without it people can't DM
  * the app at all (MEASURED: `messages_tab_disabled`). Token rotation is off
- * so the bot token never expires. Existing installs reach a new scope only
- * by Disconnect + Connect.
+ * so the bot token never expires. Existing installs are granted a new scope
+ * only by Disconnect + Connect: a rename sends Slack the new manifest, but
+ * nothing builds the re-Allow Slack then asks for.
  *
  * What each scope is for:
  * - app_mentions:read  hear `@bot` in a channel.
@@ -71,8 +72,12 @@ export function slackUrls(publicOrigin: string, installId: string): SlackUrls {
 }
 
 /**
- * The manifest `apps.manifest.create` takes. `botName` must already have
- * passed `checkBotName`. A new object each call: the lists are copies.
+ * The manifest `apps.manifest.create` and `apps.manifest.update` take. Slack
+ * replaces the whole manifest on update, so a rename sends all of it, and a
+ * scope or event added here reaches an existing install that way (Slack then
+ * wants a re-Allow, which nothing builds yet: the card that adds one owns
+ * existing installs). `botName` must already have passed `checkBotName`. A
+ * new object each call: the lists are copies.
  */
 export function buildAppManifest(botName: string, urls: SlackUrls): Record<string, unknown> {
   return {

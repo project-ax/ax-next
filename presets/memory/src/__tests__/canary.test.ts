@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -751,6 +751,19 @@ describe('@ax/preset-memory canary', () => {
       body: '{}',
     });
     expect(noCsrf.status).toBe(403);
+    // Rename (TASK-1096) is one of those admin POSTs: no CSRF header, no entry.
+    const noCsrfRename = await fetch(url('/admin/slack/rename'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+      body: JSON.stringify({ botName: 'Canary Bot' }),
+    });
+    expect(noCsrfRename.status).toBe(403);
+    // With the header it is mounted: nothing is connected here, so the answer is
+    // the route's own 409. An unmounted POST would get the router's 405.
+    expect(await apiJson('POST', '/admin/slack/rename', CANARY_ADMIN, { botName: 'Canary Bot' })).toEqual({
+      status: 409,
+      json: { error: 'not-connected' },
+    });
 
     // ...and Slack's deliveries skip it: no CSRF header, and an install that
     // doesn't exist gets a "not found", compared with one fetched here rather

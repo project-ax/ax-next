@@ -126,6 +126,7 @@ function fakeSlack() {
     },
     rotateConfigToken: notHere,
     createApp: notHere,
+    updateApp: notHere,
     deleteApp: notHere,
     setAppIcon: notHere,
     oauthAccess: notHere,
