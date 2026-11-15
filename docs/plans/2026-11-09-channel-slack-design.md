@@ -660,6 +660,22 @@ connectors. The protections are:
   where Slack attaches the catalog skill the prompt described.
 - **A skill Allow retires the conversation's warm session**, as the web
   app's Connect does; the next message starts a fresh one.
+- **A skill Allow can end a reply that is running.** The grant
+  (`agent:apply-capability-grant`) ends whatever session is ALIVE for the
+  conversation (chat-orchestrator `activeAliveSession`), not only an idle
+  one. Click Allow while the person's next reply is still running and that
+  reply is cut off (the Fault-A class: a turn killed under its sender).
+  `skills:proposed` avoids this by marking the session and restarting it
+  once its turn ends; the grant should do the same. Follow-up card TASK-1127.
+- **One tenant can push another's prompts out.** PROMPT_MAX (1,000 open
+  prompts) is shared by every install on the host, and PR B raises the
+  prompts one reply can post to 4 (a held call plus up to
+  PERMISSION_PROMPTS_PER_TURN_MAX permission prompts). Past the cap the
+  oldest prompt nobody is answering is forgotten, so one busy workspace
+  makes everyone else's open prompts expire sooner than 24 hours. A
+  forgotten held-call or skill prompt still waits in Today; a forgotten
+  host prompt has no fallback (the agent just asks again when it needs the
+  host).
 
 **Known gaps, accepted (TASK-1094):**
 
