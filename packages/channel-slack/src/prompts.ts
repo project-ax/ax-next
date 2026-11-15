@@ -1,4 +1,4 @@
-import { PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX } from './limits.js';
+import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLACK_ID_MAX } from './limits.js';
 
 /**
  * The approval prompts open now (TASK-1095). When a DM or an attended
@@ -24,6 +24,11 @@ import { PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX } from './limits.js';
  * The rules it keeps:
  *   - Only a DM or an attended channel turn gets a prompt. `add` throws for
  *     any other mode, whatever the type says: an outsider's turn never has one.
+ *   - Every context field is a string no longer than its cap (SLACK_ID_MAX
+ *     for Slack's ids, AGENT_ID_MAX for AX's), and the subject text a string
+ *     no longer than a Slack message (EVENT_TEXT_MAX), or `add` throws. A
+ *     cheap backstop: the caller bounds what it hands in, and this registry
+ *     bounds how many prompts it keeps, not how big each one is.
  *   - An id is PROMPT_ID_BYTES random bytes, base64url, and no two open
  *     prompts share one: `add` throws rather than hand out an id that is
  *     already open, or one the interactions route would refuse (PROMPT_ID_RE).
@@ -118,7 +123,13 @@ export interface PromptRegistry {
 export const PROMPT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 
 /** Why `add` refused. */
-export type PromptRefusal = 'prompt-mode-refused' | 'prompt-subject-unknown' | 'prompt-id-unusable' | 'prompts-full';
+export type PromptRefusal =
+  | 'prompt-mode-refused'
+  | 'prompt-context-unusable'
+  | 'prompt-subject-unknown'
+  | 'prompt-text-unusable'
+  | 'prompt-id-unusable'
+  | 'prompts-full';
 
 export class PromptRegistryError extends Error {
   readonly code: PromptRefusal;
@@ -137,20 +148,32 @@ interface Entry {
   readonly refused: Set<string>;
 }
 
-/** A copy of exactly the context's fields, once its mode is one a prompt may have. */
+/** `v`, when it is a string of at most `max` code units. */
+function bounded(v: unknown, max: number, code: PromptRefusal): string {
+  if (typeof v !== 'string' || v.length > max) throw new PromptRegistryError(code);
+  return v;
+}
+
+/**
+ * A copy of exactly the context's fields, once its mode is one a prompt may
+ * have and each field is a bounded string. Each field is read once: what is
+ * checked is what is kept, whatever a getter would say the second time.
+ */
 function contextOf(c: PromptContext): PromptContext {
+  const mode: unknown = c.mode;
   // The type already says so. A cast mustn't get an outsider's turn past it.
-  if (c.mode !== 'dm' && c.mode !== 'attended') throw new PromptRegistryError('prompt-mode-refused');
+  if (mode !== 'dm' && mode !== 'attended') throw new PromptRegistryError('prompt-mode-refused');
+  const field = (v: unknown, max: number) => bounded(v, max, 'prompt-context-unusable');
   return {
-    installId: c.installId,
-    teamId: c.teamId,
-    channel: c.channel,
-    threadTs: c.threadTs,
-    askerSlackId: c.askerSlackId,
-    userId: c.userId,
-    agentId: c.agentId,
-    conversationId: c.conversationId,
-    mode: c.mode,
+    installId: field(c.installId, AGENT_ID_MAX),
+    teamId: field(c.teamId, SLACK_ID_MAX),
+    channel: field(c.channel, SLACK_ID_MAX),
+    threadTs: field(c.threadTs, SLACK_ID_MAX),
+    askerSlackId: field(c.askerSlackId, SLACK_ID_MAX),
+    userId: field(c.userId, AGENT_ID_MAX),
+    agentId: field(c.agentId, AGENT_ID_MAX),
+    conversationId: field(c.conversationId, AGENT_ID_MAX),
+    mode,
   };
 }
 
@@ -205,6 +228,8 @@ export function createPromptRegistry(o: {
     add(c, subject, subjectText) {
       const context = contextOf(c);
       const kept = subjectOf(subject);
+      // Kept raw: both draws clean it themselves (blocks.ts).
+      const text = bounded(subjectText, EVENT_TEXT_MAX, 'prompt-text-unusable');
       const nowMs = now();
       sweep(nowMs);
       const id = randomBytes(PROMPT_ID_BYTES).toString('base64url');
@@ -218,7 +243,7 @@ export function createPromptRegistry(o: {
         ...context,
         id,
         subject: kept,
-        subjectText,
+        subjectText: text,
         messageTs: null,
         expiresAt: nowMs + ttlMs,
       });

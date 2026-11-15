@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX } from '../limits.js';
+import { AGENT_ID_MAX, EVENT_TEXT_MAX, PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX, SLACK_ID_MAX } from '../limits.js';
 import { logCode } from '../log-code.js';
 import {
   PROMPT_ID_RE,
@@ -221,6 +221,73 @@ describe('createPromptRegistry: add', () => {
       kind: 'skill',
       skillId: 'skl_0001',
     });
+  });
+
+  it('reads the mode once: a mode that changes between reads keeps the value it was checked as', () => {
+    const { prompts } = registry();
+    let reads = 0;
+    const turn = { ...MEL } as Record<string, unknown>;
+    Object.defineProperty(turn, 'mode', {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'dm' : 'external';
+      },
+    });
+    expect(prompts.add(turn as unknown as PromptContext, HELD, SUMMARY).mode).toBe('dm');
+    expect(reads).toBe(1);
+  });
+
+  it('refuses a context field that is not a string, or longer than its cap, before minting an id', () => {
+    const caps: Record<string, number> = {
+      installId: AGENT_ID_MAX,
+      teamId: SLACK_ID_MAX,
+      channel: SLACK_ID_MAX,
+      threadTs: SLACK_ID_MAX,
+      askerSlackId: SLACK_ID_MAX,
+      userId: AGENT_ID_MAX,
+      agentId: AGENT_ID_MAX,
+      conversationId: AGENT_ID_MAX,
+    };
+    for (const [field, cap] of Object.entries(caps)) {
+      for (const bad of [undefined, null, 7, ['U07MEL00001'], { toString: () => 'U07MEL00001' }, 'x'.repeat(cap + 1)]) {
+        const { prompts, sizes } = registry();
+        const turn = { ...MEL, [field]: bad } as unknown as PromptContext;
+        const label = `${field} = ${typeof bad === 'string' ? `${bad.length} characters` : String(bad)}`;
+        expect(refused(() => prompts.add(turn, HELD, SUMMARY)).code, label).toBe('prompt-context-unusable');
+        expect(prompts.size(), label).toBe(0);
+        expect(sizes, label).toEqual([]);
+      }
+      // Exactly at the cap is kept.
+      const { prompts } = registry();
+      const atCap = { ...MEL, [field]: 'x'.repeat(cap) } as PromptContext;
+      expect(prompts.add(atCap, HELD, SUMMARY)[field as keyof PromptContext], field).toBe('x'.repeat(cap));
+    }
+  });
+
+  it('refuses subject text that is not a string, or longer than a Slack message, and keeps text up to it raw', () => {
+    for (const bad of [undefined, null, 7, { toString: () => SUMMARY }, 'x'.repeat(EVENT_TEXT_MAX + 1)]) {
+      const { prompts, sizes } = registry();
+      const label = typeof bad === 'string' ? `${bad.length} characters` : String(bad);
+      expect(refused(() => prompts.add(MEL, HELD, bad as string)).code, label).toBe('prompt-text-unusable');
+      expect(prompts.size(), label).toBe(0);
+      expect(sizes, label).toEqual([]);
+    }
+    const { prompts } = registry();
+    // Raw: a broadcast, a tab and an invisible mark, ten code units a time, left as they are.
+    const longest = '<!here>\t\u200b '.repeat(EVENT_TEXT_MAX / 10);
+    expect(longest.length).toBe(EVENT_TEXT_MAX);
+    expect(prompts.add(MEL, HELD, longest).subjectText).toBe(longest);
+    expect(prompts.add(MEL, HELD, '').subjectText).toBe('');
+  });
+
+  it('checks an id is already open before making room: at max, a repeat id refuses and the open prompt stays', () => {
+    const { prompts } = registry({ max: 1, randomBytes: (size) => Buffer.alloc(size, 1) });
+    const mel = prompts.add(MEL, HELD, SUMMARY);
+    const err = refused(() => prompts.add(ADA, { kind: 'decision', decisionId: 'dec_0002' }, SUMMARY));
+    expect(err.code).toBe('prompt-id-unusable');
+    expect(prompts.size()).toBe(1);
+    expect(prompts.claim(mel.id, MEL.askerSlackId)).toEqual({ ok: true, prompt: mel });
   });
 
   it('never hands out an id that is already open: a repeat leaves the open prompt as it was', () => {
@@ -452,6 +519,15 @@ describe('createPromptRegistry: firstRefusal', () => {
     expect(prompts.firstRefusal(mel.id, 'U07ONEMORE2')).toBe(false);
   });
 
+  it("takes a person's id as data: '__proto__', 'constructor' and 'toString' are each refused once, like anyone else", () => {
+    const { prompts } = registry();
+    const mel = prompts.add(MEL, HELD, SUMMARY);
+    for (const who of ['__proto__', 'constructor', 'toString']) {
+      expect(prompts.firstRefusal(mel.id, who), who).toBe(true);
+      expect(prompts.firstRefusal(mel.id, who), who).toBe(false);
+    }
+  });
+
   it('is false for a prompt it does not hold: nobody is told anything about a prompt that is not there', () => {
     const { prompts } = registry();
     const mel = prompts.add(MEL, HELD, SUMMARY);
@@ -491,6 +567,27 @@ describe('createPromptRegistry: posted, remove, size', () => {
     expect(prompts.claim(mel.id, mel.askerSlackId)).toEqual(GONE);
     expect(prompts.claim(ada.id, ada.askerSlackId)).toEqual({ ok: true, prompt: ada });
     expect(prompts.size()).toBe(1);
+  });
+
+  it("an id spelled like an object's own property is one it never handed out: every call on it is a no-op", () => {
+    const { prompts } = registry();
+    const mel = prompts.add(MEL, HELD, SUMMARY);
+    expect(prompts.claim(mel.id, MEL.askerSlackId).ok).toBe(true);
+    for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      expect(prompts.firstRefusal(id, 'U07ADA00001'), id).toBe(false);
+      expect(prompts.firstRefusal(id, 'U07ADA00001'), id).toBe(false);
+      prompts.posted(id, '1763121601.000300');
+      prompts.release(id);
+      prompts.settle(id);
+      prompts.remove(id);
+      expect(prompts.claim(id, MEL.askerSlackId), id).toEqual(GONE);
+    }
+    // Mel's prompt is as it was: still claimed, never posted.
+    expect(prompts.size()).toBe(1);
+    expect(prompts.claim(mel.id, MEL.askerSlackId)).toEqual(BUSY);
+    prompts.release(mel.id);
+    expect(prompts.claim(mel.id, MEL.askerSlackId)).toEqual({ ok: true, prompt: mel });
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'messageTs')).toBe(false);
   });
 
   it('size counts the prompts that can still be answered', () => {
