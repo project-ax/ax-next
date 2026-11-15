@@ -430,8 +430,9 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      takes only an unattended yes). Before, any turn on the agent making the
      identical call could cash it. This is a behaviour change for web chats
      with a team agent too: a team-mate making the same call no longer spends
-     someone else's approval and is asked for their own, and for now only one
-     person's approval for a given call can stand at a time.
+     someone else's approval and is asked for their own. Each person's
+     approval has its own slot, so team-mates' approvals of the same call
+     don't block each other.
    - **Permission cards** (a host to allow, a skill to attach) arrive in PR B.
      The skill card goes through `agent:apply-capability-grant`, behind the
      checks `routes-chat.ts:885` makes. They are not the held-call prompt:
@@ -580,8 +581,9 @@ connectors. The protections are:
   refused clicker on an open prompt is told once per prompt.)
 - **Refused clickers cost** one vault read each and, once per prompt, one
   private line.
-- **Only one yes per agent and call** can stand at a time (a team-mate's
-  identical approval is refused while another's stands).
+- **A parked yes never expires.** An approval that waits for the agent's
+  next identical call (`approved-pending-agent`) stands until its owner
+  makes that call; it only blocks the same person's second yes for it.
 - **Whether Slack auto-links** a URL in a plain-text section is unmeasured
   (unfurls are off); checked in the TASK-1097 walk.
 
