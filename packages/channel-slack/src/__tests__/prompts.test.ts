@@ -214,8 +214,8 @@ describe('createPromptRegistry: add', () => {
     const { prompts, sizes } = registry();
     for (const unknown of [
       { kind: 'routine', decisionId: 'dec_0001' },
-      // A skill card's kind comes with the code that answers it, not before.
-      { kind: 'skill', skillId: 'skl_0001' },
+      // An authored skill is not a kind: request_capability fires cards for catalog skills only.
+      { kind: 'authored-skill', skillId: 'skl_0001' },
     ]) {
       const subject = unknown as unknown as PromptSubject;
       expect(refused(() => prompts.add(MEL, subject, SUMMARY)).code, unknown.kind).toBe('prompt-subject-unknown');
@@ -230,6 +230,12 @@ describe('createPromptRegistry: add', () => {
     const kept = prompts.add(MEL, host, 'Wants to connect to api.example.com').subject;
     expect(kept).toEqual({ kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' });
     expect(Object.isFrozen(kept)).toBe(true);
+    // A catalog skill the agent asked to use (permission-prompts.ts): its id only. The card's
+    // description is the subject text, and nothing else of the card is kept.
+    const skill = { kind: 'skill', skillId: 'gmail-sender', description: 'Sends email', extra: 1 } as PromptSubject;
+    const keptSkill = prompts.add(MEL, skill, 'Wants to start using a skill: Sends email').subject;
+    expect(keptSkill).toEqual({ kind: 'skill', skillId: 'gmail-sender' });
+    expect(Object.isFrozen(keptSkill)).toBe(true);
   });
 
   it('reads the mode once: a mode that changes between reads keeps the value it was checked as', () => {
@@ -291,7 +297,11 @@ describe('createPromptRegistry: add', () => {
       { subject: { kind: 'decision', decisionId: 'dec_0001' }, field: 'decisionId', cap: AGENT_ID_MAX },
       { subject: { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' }, field: 'host', cap: PROMPT_HOST_MAX },
       { subject: { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' }, field: 'sessionId', cap: AGENT_ID_MAX },
+      // The catalog's own bound on a skill id (skill-broker SKILL_ID_RE, channel-web's skillId max) is 128.
+      { subject: { kind: 'skill', skillId: 'gmail-sender' }, field: 'skillId', cap: AGENT_ID_MAX },
     ];
+    // Every catalog skill id fits: a prompt never refuses one the catalog has.
+    expect(AGENT_ID_MAX).toBeGreaterThanOrEqual(128);
     for (const { subject, field, cap } of subjects) {
       for (const bad of [undefined, null, 7, ['dec_0001'], { toString: () => 'dec_0001' }, '', 'x'.repeat(cap + 1)]) {
         const { prompts, sizes } = registry();

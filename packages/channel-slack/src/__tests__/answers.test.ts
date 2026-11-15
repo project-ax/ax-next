@@ -5,7 +5,7 @@ import { promptBlocks, type PromptAction } from '../blocks.js';
 import type { ChannelStore } from '../channel-store.js';
 import { COPY } from '../copy.js';
 import { createDecisionAnswer } from '../decision-answer.js';
-import { createHostAnswer } from '../permission-prompts.js';
+import { createHostAnswer, createSkillAnswer } from '../permission-prompts.js';
 import type { ButtonClick } from '../interactions.js';
 import { PROMPT_MAX, PROMPT_STEP_TIMEOUT_MS, PROMPT_TTL_MS } from '../limits.js';
 import {
@@ -1769,6 +1769,155 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
     expect(w.slack.calls).toEqual([
       MEL_LOOKED_UP,
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.promptClosed) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+});
+
+// ── A catalog skill the agent asked to use (TASK-1095 PR B) ────────────────
+
+describe('the click gate: a skill prompt, answered with the real skill answer', () => {
+  const SKILL_ID = 'gmail-sender';
+  const SKILL_SUBJECT: PromptSubject = { kind: 'skill', skillId: SKILL_ID };
+  const ASKED = 'Wants to start using a skill: Reads and sends email from your Gmail account.';
+  const GRANT = 'agent:apply-capability-grant';
+  const CONVERSATION_GET = 'conversations:get';
+
+  /**
+   * A world whose `conversations:get` answers as @ax/conversations does (each
+   * conversation its owner's, with its frozen agent) and whose
+   * `agent:apply-capability-grant` attaches the skill. Both record each call.
+   */
+  async function skillWorld(o: { conversationGet?: Fault | 'other-agent' } = {}) {
+    const calls: Array<{ hook: string; ctx: AgentContext; input: unknown }> = [];
+    const conversations: Record<string, { userId: string; agentId: string }> = {
+      conv_mel_dm: { userId: 'usr_mel', agentId: 'agt_mel' },
+      conv_mel_support: { userId: 'usr_mel', agentId: o.conversationGet === 'other-agent' ? 'agt_ops' : 'agt_support' },
+    };
+    const w = await world({
+      services: (bus) => {
+        bus.registerService(CONVERSATION_GET, 'fake-conversations', async (ctx, input) => {
+          calls.push({ hook: CONVERSATION_GET, ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
+          if (o.conversationGet === 'fails') throw fault('fake-conversations');
+          const { conversationId, userId } = input as { conversationId: string; userId: string };
+          const row = conversations[conversationId];
+          if (row === undefined || row.userId !== userId) {
+            throw new PluginError({ code: 'not-found', plugin: 'fake-conversations', message: 'conversation not found' });
+          }
+          return { conversation: { conversationId, ...row }, turns: [] };
+        });
+        bus.registerService(GRANT, 'fake-chat-orchestrator', async (ctx, input) => {
+          calls.push({ hook: GRANT, ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
+          return { attached: true };
+        });
+      },
+      answersOn: (bus) => ({ skill: createSkillAnswer({ bus, publicOrigin: PUBLIC_ORIGIN }) }),
+    });
+    const open = (c: PromptContext = MEL_SUPPORT) => w.open(c, { subject: SKILL_SUBJECT, subjectText: ASKED });
+    /** The skill prompt redrawn with `line`: its subject, then the line, and nothing to click. */
+    const redrawnSkill = (channel: string, line: string) => ({
+      channel,
+      ts: PROMPT_TS,
+      text: line,
+      blocks: [
+        { type: 'section', text: { type: 'plain_text', text: ASKED, emoji: false } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: line }] },
+      ],
+    });
+    return { w, calls, open, redrawnSkill, hooks: () => calls.map((c) => c.hook) };
+  }
+
+  it("Mel's Allow on her skill prompt in #support: once the gate has re-proved her, her conversation is read back, then the skill is attached for exactly the prompt's conversation, user, agent and skill", async () => {
+    const { w, calls, open, redrawnSkill, hooks } = await skillWorld();
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    // agents:resolve already ran in the gate (step 7), before the answer's own checks.
+    expect(w.resolved.map((r) => r.input)).toEqual([{ agentId: 'agt_support', userId: 'usr_mel' }]);
+    expect(hooks()).toEqual([CONVERSATION_GET, GRANT]);
+    expect(calls[0]!.input).toEqual({ conversationId: 'conv_mel_support', userId: 'usr_mel' });
+    expect(calls[1]!.input).toEqual({
+      conversationId: 'conv_mel_support',
+      userId: 'usr_mel',
+      agentId: 'agt_support',
+      skillId: SKILL_ID,
+    });
+    expect(calls[1]!.ctx.userId).toBe('usr_mel');
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnSkill(SUPPORT, COPY.skillAllowed) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_answered')).toEqual([
+      { installId: INSTALL_ID, kind: 'skill', action: 'allow', settled: true },
+    ]);
+  });
+
+  it("Ada's click on Mel's skill prompt: told privately it isn't hers, and nothing is read or attached", async () => {
+    const { w, calls, open } = await skillWorld();
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
+
+    expect(calls).toEqual([]);
+    expect(w.slack.calls).toEqual([told(SUPPORT, ADA, COPY.promptOnlyAsker)]);
+    expect(w.state(prompt)).toBe('open');
+  });
+
+  it("Mel's Deny: nothing is called, and the prompt says so", async () => {
+    const { w, calls, open, redrawnSkill } = await skillWorld();
+    const prompt = open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+
+    expect(calls).toEqual([]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnSkill(DM_MEL, COPY.skillDenied) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it("the conversation read fails: the gate's 'try again', the prompt open again, and nothing attached", async () => {
+    const { w, open, hooks } = await skillWorld({ conversationGet: 'fails' });
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(hooks()).toEqual([CONVERSATION_GET]);
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(SUPPORT, MEL, COPY.promptFailed)]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'skill', stage: 'answer', code: 'store-unavailable' },
+    ]);
+  });
+
+  it("the conversation is another agent's: nothing attached, and the prompt sends Mel to the web app", async () => {
+    const { w, open, redrawnSkill, hooks } = await skillWorld({ conversationGet: 'other-agent' });
+    const prompt = open();
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(hooks()).toEqual([CONVERSATION_GET]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnSkill(SUPPORT, COPY.skillFailed(TODAY)) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it('a channel disconnected since the turn (Review Focus 5): the prompt closes, and nothing is read or attached', async () => {
+    const { w, calls, open, redrawnSkill } = await skillWorld();
+    const prompt = open();
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(calls).toEqual([]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnSkill(SUPPORT, COPY.promptClosed) },
     ]);
     expect(w.state(prompt)).toBe('gone');
   });

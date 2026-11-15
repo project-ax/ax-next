@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACTION_ALLOW, ACTION_DENY, actionOf, outcomeBlocks, promptBlocks } from '../blocks.js';
+import { ACTION_ALLOW, ACTION_DENY, actionOf, linkOnlyBlocks, outcomeBlocks, promptBlocks } from '../blocks.js';
 import { COPY } from '../copy.js';
 import { cleanPromptSubject } from '../format.js';
 import { PROMPT_SUBJECT_MAX } from '../limits.js';
@@ -239,6 +239,45 @@ describe('outcomeBlocks: a prompt once answered', () => {
         const all = objectsIn(out.blocks);
         expect(all.filter((o) => o['type'] === 'actions' || o['type'] === 'button')).toEqual([]);
         expect(all.filter((o) => 'value' in o || 'action_id' in o)).toEqual([]);
+      }
+    }
+  });
+});
+
+describe("linkOnlyBlocks: a request Slack can't take, sent to the web app", () => {
+  /** A catalog skill's description, framed as a skill prompt frames it. */
+  const SKILL = COPY.skillSubject('Reads and sends email from your Gmail account.');
+  const LINE = COPY.skillNeedsWeb(TODAY);
+
+  it('is the subject, then the line, and nothing to click; the notification is the generic ask, never the subject', () => {
+    expect(linkOnlyBlocks({ subject: SKILL, line: LINE })).toStrictEqual({
+      text: COPY.heldAsked,
+      blocks: [
+        { type: 'section', text: { type: 'plain_text', text: SKILL, emoji: false } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: LINE }] },
+      ],
+    });
+  });
+
+  it('leaves nothing to click, for any subject: no actions block, no button, no action_id and no value anywhere', () => {
+    for (const subject of [SKILL, '', ...HOSTILE_SUBJECTS]) {
+      const all = objectsIn(linkOnlyBlocks({ subject, line: LINE }).blocks);
+      expect(all.filter((o) => o['type'] === 'actions' || o['type'] === 'button')).toEqual([]);
+      expect(all.filter((o) => 'value' in o || 'action_id' in o || 'block_id' in o)).toEqual([]);
+    }
+  });
+
+  it("draws the subject as a prompt does: cleaned once, plain_text only, never in the notification", () => {
+    for (const subject of [SKILL, INVISIBLE_ONLY, ...HOSTILE_SUBJECTS]) {
+      const out = linkOnlyBlocks({ subject, line: LINE });
+      expect(out.blocks[0]).toStrictEqual(prompt(subject).blocks[0]);
+      const shown = sectionText(out);
+      expect(shown.type).toBe('plain_text');
+      expect(spellsMention(shown.text)).toBe(false);
+      expect(shown.text.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+      expect(out.text).toBe(COPY.heldAsked);
+      for (const t of [out.text, ...textObjects(out.blocks).map((x) => x.text)]) {
+        expect(spellsMention(t), t.slice(0, 40)).toBe(false);
       }
     }
   });

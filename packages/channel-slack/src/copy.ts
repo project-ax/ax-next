@@ -1,4 +1,4 @@
-import { mrkdwnEscape, neutralizeSlackControls } from './format.js';
+import { cleanPromptSubject, mrkdwnEscape, neutralizeSlackControls } from './format.js';
 import { SLASH_COMMAND } from './manifest.js';
 
 /**
@@ -21,9 +21,11 @@ import { SLASH_COMMAND } from './manifest.js';
  * are plain_text): a link is a bare URL, and no line holds a `<` or `>` of
  * its own (mrkdwn reads `<…>` as a link). A name from outside goes through
  * `shown`. A prompt's subject is never a COPY line: it is outside text,
- * shown as `plain_text` (format.ts `cleanPromptSubject`). `hostSubject` is
- * the one line that frames outside text as a subject: a host past the egress
- * proxy's HOST_RE (permission-prompts.ts), raw, cleaned where it is drawn.
+ * shown as `plain_text` (format.ts `cleanPromptSubject`). Two lines frame
+ * outside text as a subject, raw, cleaned where it is drawn: `hostSubject`
+ * (a host past the egress proxy's HOST_RE, permission-prompts.ts) and
+ * `skillSubject` (a catalog skill's description, which can hold anything).
+ * Neither is ever mrkdwn, a notification or a log.
  */
 
 /**
@@ -131,6 +133,29 @@ export const COPY = {
   hostAllowed: "Allowed for this chat. Ask me again and I'll try it.",
   hostEnded: "That chat already ended, so nothing changed. If I need it again, I'll ask.",
   hostDenied: "Okay. I won't connect to it.",
+
+  // ── A catalog skill the agent asked to use (permission-prompts.ts) ─────────
+  /*
+    `skillSubject` is the prompt's subject, plain_text: the catalog skill's
+    description as its card carries it, raw (outside text: the draw cleans
+    it, once). A description with nothing printable in it reads as a
+    sentence of its own, not as a colon with nothing after it. Allow
+    attaches the skill for the person, and nothing reruns their message, so
+    `skillAllowed` asks them to send it again. A skill card waits in Today
+    too, so the two that send the person to the web app link Today.
+    `skillNeedsWeb` stands where the buttons would be when Slack can't take
+    the request (a key to enter, which Slack never collects);
+    `skillFailed` replaces them when an Allow couldn't connect it.
+  */
+  skillSubject: (description: string) =>
+    cleanPromptSubject(description) === ''
+      ? 'Wants to start using a skill.'
+      : `Wants to start using a skill: ${description}`,
+  skillAllowed: "Connected. Send your message again and I'll use it.",
+  skillDenied: "Okay. I won't use it.",
+  skillNeedsWeb: (todayLink: string) =>
+    `This one needs a key or a closer look first. Finish it in the web app: ${shown(todayLink)}`,
+  skillFailed: (todayLink: string) => `I couldn't connect it from here. Finish it in the web app: ${shown(todayLink)}`,
 
   // ── Before a channel mention's turn (mrkdwn, shown only to its sender) ────
   /*

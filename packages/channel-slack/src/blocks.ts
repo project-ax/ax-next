@@ -24,6 +24,10 @@ import type { SlackBlock } from './slack-api.js';
  *     keeps those out of it) gets no Today line, since it would send the
  *     person nowhere.
  *
+ * A request Slack can't take at all (a skill that needs a key) is drawn
+ * with `linkOnlyBlocks`: its subject, and a line sending the person to the
+ * web app, with no buttons.
+ *
  * Give `outcomeBlocks` the subject exactly as `promptBlocks` got it: each
  * cleans it, and cleaning cleaned text reads differently (format.ts), so an
  * answered prompt would no longer show the question as it was asked.
@@ -109,6 +113,20 @@ export function promptBlocks(i: { subject: string; promptId: string; todayLink: 
 export function outcomeBlocks(i: { subject: string; line: string }): { text: string; blocks: SlackBlock[] } {
   return {
     text: i.line,
+    blocks: [subjectSection(i.subject), { type: 'context', elements: [mrkdwn(i.line)] }],
+  };
+}
+
+/**
+ * A request that can't be answered in Slack (a skill that needs a key
+ * first): the same section as a prompt's, then `line` (a COPY line sending
+ * the person to the web app), and nothing to click. Nothing is opened for
+ * it either, so no id goes anywhere. `text` is the notification, as a
+ * prompt's is: the generic ask, never the subject.
+ */
+export function linkOnlyBlocks(i: { subject: string; line: string }): { text: string; blocks: SlackBlock[] } {
+  return {
+    text: COPY.heldAsked,
     blocks: [subjectSection(i.subject), { type: 'context', elements: [mrkdwn(i.line)] }],
   };
 }

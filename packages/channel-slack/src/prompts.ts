@@ -35,14 +35,15 @@ import {
  *     for Slack's ids, AGENT_ID_MAX for AX's), and the ids that say who may
  *     answer and who the answer runs as (install, asker, user, agent,
  *     conversation) aren't empty. A subject is of a kind something here
- *     answers (a decision, a host), each of its fields a non-empty string no
- *     longer than its cap (AGENT_ID_MAX for AX's ids, PROMPT_HOST_MAX for a
- *     host), and the subject text a string no longer than a Slack message
- *     (EVENT_TEXT_MAX). Else `add` throws. A cheap backstop: the caller
- *     bounds what it hands in, and this registry bounds how many prompts it
- *     keeps, not how big each one is. Whether a host is one the egress proxy
- *     would take is not checked here: the turn checks before it shows one,
- *     and the answer before it acts (permission-prompts.ts).
+ *     answers (a decision, a host, a skill), each of its fields a non-empty
+ *     string no longer than its cap (AGENT_ID_MAX for AX's ids and a skill's,
+ *     PROMPT_HOST_MAX for a host), and the subject text a string no longer
+ *     than a Slack message (EVENT_TEXT_MAX). Else `add` throws. A cheap
+ *     backstop: the caller bounds what it hands in, and this registry bounds
+ *     how many prompts it keeps, not how big each one is. Whether a host is
+ *     one the egress proxy would take is not checked here: the turn checks
+ *     before it shows one, and the answer before it acts
+ *     (permission-prompts.ts).
  *   - An id is PROMPT_ID_BYTES random bytes, base64url, and no two open
  *     prompts share one: `add` throws rather than hand out an id that is
  *     already open, or one the interactions route would refuse (PROMPT_ID_RE).
@@ -74,7 +75,9 @@ export type PromptSubject =
   // A call held for a person's OK (@ax/decisions).
   | { readonly kind: 'decision'; readonly decisionId: string }
   // A host the sandbox was refused, for the turn's live session only (permission-prompts.ts).
-  | { readonly kind: 'host'; readonly host: string; readonly sessionId: string };
+  | { readonly kind: 'host'; readonly host: string; readonly sessionId: string }
+  // A catalog skill the agent asked to use, attached for the asker on Allow (permission-prompts.ts).
+  | { readonly kind: 'skill'; readonly skillId: string };
 
 /** The turn a prompt belongs to: who may answer it, and who the answer runs as. */
 export interface PromptContext {
@@ -209,6 +212,8 @@ function subjectOf(s: PromptSubject): PromptSubject {
         host: field(s.host, PROMPT_HOST_MAX),
         sessionId: field(s.sessionId, AGENT_ID_MAX),
       });
+    case 'skill':
+      return Object.freeze({ kind: 'skill', skillId: field(s.skillId, AGENT_ID_MAX) });
     default:
       // The type names every kind. A cast mustn't get one nothing here answers past it.
       throw new PromptRegistryError('prompt-subject-unknown');

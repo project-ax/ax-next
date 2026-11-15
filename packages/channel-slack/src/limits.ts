@@ -202,9 +202,10 @@ export const PROMPT_SUBJECT_MAX = 300;
  */
 export const PROMPT_HOST_MAX = 253;
 /**
- * The most permission prompts (a host the sandbox was refused) one reply
- * posts after it. Each is a message in the thread, and Slack takes about one
- * a second per channel; anything past this is counted in the log
+ * The most permission prompts (a host the sandbox was refused, a skill the
+ * agent asked to use, a skill's link to the web app) one reply posts after
+ * it. Each is a message in the thread, and Slack takes about one a second
+ * per channel; anything past this is counted in the log
  * (`slack_permission_skipped`), and the agent asks again when it needs to.
  */
 export const PERMISSION_PROMPTS_PER_TURN_MAX = 3;

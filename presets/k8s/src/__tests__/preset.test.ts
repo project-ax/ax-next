@@ -1333,6 +1333,12 @@ describe('@ax/preset-k8s wiring', () => {
       // A host the sandbox was refused gets Allow and Deny in the thread, for the live session only.
       // Its producer is @ax/credential-proxy (the check below).
       { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
+      // A catalog skill the agent asked to use gets Allow and Deny too: its conversation is read back
+      // (@ax/conversations), then the skill is attached (@ax/chat-orchestrator), as the web app does.
+      ...['agent:apply-capability-grant', 'conversations:get'].map((hook) => ({
+        hook,
+        degradation: 'a skill request in a Slack turn links to the web app instead of showing buttons',
+      })),
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',
