@@ -1385,7 +1385,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       mark = slackCalls.length;
       expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
-      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Allowed for this chat. Ask me again and I'll try it.");
+      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Allowed for now. Ask me again and I'll try it.");
       expect(addHostCalls).toEqual([
         { userId: 'usr_mel', input: { sessionId: 'sess_compose_host', host: 'api.example.com' } },
       ]);
