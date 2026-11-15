@@ -1004,7 +1004,7 @@ describe('decisions migration — one standing yes per person, agent and call (T
     expect(await uniqueIndexes(db)).toEqual(upgraded);
   });
 
-  it('two hosts upgrading at once: both boots queue on the swap's lock, and once it is released both finish with the one index in place', async () => {
+  it('two hosts upgrading at once: both boots queue on the swap lock, and once it is released both finish with the one index in place', async () => {
     const db = await migratedByPreviousRelease();
     // Another session holds the swap's lock, so both boots stop at it.
     let release!: () => void;
