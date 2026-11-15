@@ -19,7 +19,9 @@ import { SlackApiError, type SlackApi } from './slack-api.js';
  *     prompt (`add` throws a PromptRegistryError: an outsider's turn, a full
  *     registry, a field it won't keep) counts the same: nothing is posted.
  *     Logged as `slack_reply_failed` with stage `prompt` and a code. False,
- *     and the caller ends with the Today link instead.
+ *     and what happens instead is the caller's: a held call's turn ends with
+ *     the Today link; a host prompt has nothing to fall back to (no Today
+ *     item exists for it).
  *   - `ratelimited`: sent again after Slack's Retry-After, up to
  *     REPLY_RATE_LIMIT_RETRIES times, as a reply's own posts are
  *     (reply-stream.ts).
