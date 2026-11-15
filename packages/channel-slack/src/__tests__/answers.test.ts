@@ -1,9 +1,10 @@
-import { HookBus, PluginError, type AgentContext, type Logger } from '@ax/core';
+import { DEFAULT_SERVICE_TIMEOUT_MS, HookBus, PluginError, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createClickHandler, type Answer, type AnswerDeps, type SubjectAnswer } from '../answers.js';
 import { promptBlocks, type PromptAction } from '../blocks.js';
 import type { ChannelStore } from '../channel-store.js';
 import { COPY } from '../copy.js';
+import { createDecisionAnswer } from '../decision-answer.js';
 import type { ButtonClick } from '../interactions.js';
 import { PROMPT_MAX, PROMPT_STEP_TIMEOUT_MS, PROMPT_TTL_MS } from '../limits.js';
 import {
@@ -16,6 +17,7 @@ import {
 import type { SecretName, SecretStore } from '../secrets.js';
 import { SlackApiError, type SlackApi } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
+import type { ContinuationRequest } from '../turn.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
@@ -266,6 +268,10 @@ interface WorldOptions {
   answer?: (n: number) => Answer | Promise<Answer>;
   /** The answers by subject kind, instead of the recording decision answer. */
   answers?: AnswerDeps['answers'];
+  /** The answers by subject kind, built on the world's bus (the real decision answer, say). Over `answers`. */
+  answersOn?: (bus: HookBus) => AnswerDeps['answers'];
+  /** More services on the world's bus, beside auth and agents (a fake @ax/decisions, say). */
+  services?: (bus: HookBus) => void;
   /** Wrap the real registry (a broken one, say). */
   registry?: (real: PromptRegistry) => PromptRegistry;
 }
@@ -316,6 +322,7 @@ async function world(o: WorldOptions = {}) {
     if (o.resolve === 'fails') throw fault('fake-agents');
     return agentsBus.call('agents:resolve', ctx, input);
   });
+  o.services?.(bus);
 
   // #support is connected to the support team's agent.
   const channels = memoryChannelStore();
@@ -379,7 +386,7 @@ async function world(o: WorldOptions = {}) {
     channels: channelStore,
     publicOrigin: PUBLIC_ORIGIN,
     logger,
-    answers: o.answers ?? { decision },
+    answers: o.answersOn?.(bus) ?? o.answers ?? { decision },
   });
 
   return {
@@ -1559,6 +1566,171 @@ describe('the click gate: an answer past its deadline still holds the prompt unt
     expect(w.state(prompt)).toBe('busy');
     w.later(PROMPT_TTL_MS);
     expect(w.state(prompt)).toBe('gone');
+  });
+});
+
+// ── Behind the gate, the real decision answer ───────────────────────────────
+
+describe("the click gate with the decision answer (decision-answer.ts): a decisions hook past the bus's deadline holds the prompt until it settles", () => {
+  /** When the fake decisions wakes the agent. */
+  const WAKE = '2026-11-14T12:00:10.000Z';
+
+  /**
+   * Mel's DM prompt, answered by the real decision answer over a fake
+   * @ax/decisions whose approve lands only when the test says. `timeoutMs`
+   * is the deadline the bus gives approve and dismiss: unset, the bus's
+   * default, as for the real plugin (it registers none of its own).
+   */
+  async function heldApprove(timeoutMs?: number) {
+    vi.useFakeTimers();
+    const landing = deferred();
+    let status = 'pending';
+    const approves: Array<Record<string, unknown>> = [];
+    const dismisses: Array<Record<string, unknown>> = [];
+    const follows: ContinuationRequest[] = [];
+    /** The Slack calls made by the time each follow-up started. */
+    const slackAtFollow: string[][] = [];
+    const timing = timeoutMs === undefined ? {} : { timeoutMs };
+    let slackSoFar = (): string[] => [];
+    const w = await world({
+      services: (bus) => {
+        bus.registerService(
+          'decisions:approve',
+          'fake-decisions',
+          async (_ctx, input) => {
+            const asked = input as Record<string, unknown>;
+            approves.push({ ...asked });
+            await landing.promise;
+            status = 'executed';
+            return {
+              decision: { id: 'dec_0001', status },
+              executed: false,
+              path: 'agent-executes',
+              error: null,
+              pendingUntil: WAKE,
+              streamReqId: asked['continuationReqId'],
+            };
+          },
+          timing,
+        );
+        bus.registerService(
+          'decisions:dismiss',
+          'fake-decisions',
+          async (_ctx, input) => {
+            dismisses.push({ ...(input as Record<string, unknown>) });
+            status = 'dismissed';
+            return { decision: { id: 'dec_0001', status } };
+          },
+          timing,
+        );
+        bus.registerService('decisions:get', 'fake-decisions', async () => ({ decision: { id: 'dec_0001', status } }));
+      },
+      answersOn: (bus) => ({
+        decision: createDecisionAnswer({
+          bus,
+          publicOrigin: PUBLIC_ORIGIN,
+          follow: (c) => {
+            follows.push(c);
+            slackAtFollow.push(slackSoFar());
+          },
+        }),
+      }),
+    });
+    slackSoFar = () => w.slack.calls.map((c) => c.method);
+    const prompt = w.open(MEL_DM);
+    return { w, prompt, approves, dismisses, follows, slackAtFollow, land: landing.release };
+  }
+
+  it("Allow hits the bus's deadline, then Mel clicks Deny: silence, no dismiss; once the approve settles, the prompt shows what the row says", async () => {
+    const h = await heldApprove();
+    const click = h.w.onClick(INSTALL, h.w.clickOn(h.prompt));
+    await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS);
+    await click;
+    expect(h.w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptStillWorking)]);
+    // Past the bus's own deadline too: it stopped waiting for the approve, which hasn't stopped.
+    await vi.advanceTimersByTimeAsync(DEFAULT_SERVICE_TIMEOUT_MS);
+
+    await h.w.onClick(INSTALL, h.w.clickOn(h.prompt, { action: 'deny' }));
+
+    expect(h.dismisses).toEqual([]);
+    expect(h.w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+    expect(h.w.slack.calls).toHaveLength(2);
+    expect(h.w.state(h.prompt)).toBe('busy');
+
+    h.land();
+    await vi.waitFor(() => expect(h.w.state(h.prompt)).toBe('gone'));
+
+    expect(h.w.slack.calls.slice(2)).toEqual([
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed) },
+    ]);
+    expect(h.approves).toHaveLength(1);
+    // Its echo was lost with the deadline: nothing to follow by.
+    expect(h.follows).toEqual([]);
+    expect(h.w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'timeout' },
+      { installId: INSTALL_ID, kind: 'decision', stage: 'approve', code: 'timeout' },
+    ]);
+
+    // Deny after it settled: answered, and Mel is pointed at Today. Still no dismiss.
+    await h.w.onClick(INSTALL, h.w.clickOn(h.prompt, { action: 'deny' }));
+    expect(h.dismisses).toEqual([]);
+    expect(h.w.slack.calls.at(-1)).toEqual(told(DM_MEL, MEL, COPY.promptGone(TODAY)));
+  });
+
+  it("the same when the bus's deadline for the hook comes before the click's: the bus gives up first, and the prompt still waits", async () => {
+    const h = await heldApprove(1_000);
+    const click = h.w.onClick(INSTALL, h.w.clickOn(h.prompt));
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await h.w.onClick(INSTALL, h.w.clickOn(h.prompt, { action: 'deny' }));
+
+    expect(h.dismisses).toEqual([]);
+    expect(h.w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+    expect(h.w.slack.calls).toEqual([MEL_LOOKED_UP]);
+
+    await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS);
+    await click;
+    expect(h.w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptStillWorking)]);
+    expect(h.w.state(h.prompt)).toBe('busy');
+
+    h.land();
+    await vi.waitFor(() => expect(h.w.state(h.prompt)).toBe('gone'));
+    expect(h.w.slack.calls.at(-1)).toEqual({
+      method: 'updateMessage',
+      token: BOT_TOKEN,
+      args: redrawn(DM_MEL, COPY.decisionAllowed),
+    });
+    expect(h.dismisses).toEqual([]);
+  });
+
+  it('on time, the agent is followed as soon as the approve returns, before the prompt is redrawn, under the id the Allow minted', async () => {
+    const h = await heldApprove();
+    h.land();
+
+    await h.w.onClick(INSTALL, h.w.clickOn(h.prompt));
+
+    expect(h.follows).toHaveLength(1);
+    const followed = h.follows[0]!;
+    expect({
+      prompt: followed.prompt.id,
+      install: followed.install,
+      botToken: followed.botToken,
+      reqId: followed.reqId,
+      pendingUntil: followed.pendingUntil,
+    }).toEqual({
+      prompt: h.prompt.id,
+      install: INSTALL,
+      botToken: BOT_TOKEN,
+      reqId: h.approves[0]!['continuationReqId'],
+      pendingUntil: WAKE,
+    });
+    // Following makes no Slack call, and it began before the redraw did.
+    expect(h.slackAtFollow).toEqual([['usersInfo']]);
+    expect(h.w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed) },
+    ]);
+    expect(h.w.state(h.prompt)).toBe('gone');
   });
 });
 
