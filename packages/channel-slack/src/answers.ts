@@ -53,12 +53,12 @@ import type { InstallRow } from './store.js';
  *  10. The prompt's message is redrawn with the answer's line where the
  *      buttons were (blocks.ts `outcomeBlocks`) and the prompt is settled.
  *      Whatever follows an answer (the agent carrying on in the thread after
- *      an Allow) is the answer's own to start (decision-answer.ts). An answer that says `settle: false` (a failure the
- *      asker can retry) keeps its buttons instead: its line goes to the
- *      asker privately, and the prompt is open again. Something that isn't
- *      an answer at all (no object, no string line) may still have acted,
- *      so it closes the prompt (`COPY.promptClosed`) rather than invite a
- *      retry.
+ *      an Allow) is the answer's own to start (decision-answer.ts). An
+ *      answer that says `settle: false` (a failure the asker can retry)
+ *      keeps its buttons instead: its line goes to the asker privately,
+ *      and the prompt is open again. Something that isn't an answer at all
+ *      (no object, no string line) may still have acted, so it closes the
+ *      prompt (`COPY.promptClosed`) rather than invite a retry.
  *
  * One answer per prompt. Only an `ok` claim holds the prompt's lock, and the
  * click that took it lets go exactly once: `settle` once the prompt is
@@ -91,7 +91,7 @@ import type { InstallRow } from './store.js';
  * id, the subject, or an error's message.
  */
 
-/** What one answer did: the line the prompt now shows, and work that follows it (never awaited by the route). */
+/** What one answer did: the line the prompt now shows, and whether the prompt is done. */
 export interface Answer {
   /**
    * A COPY line, never text from outside: it takes the buttons' place as

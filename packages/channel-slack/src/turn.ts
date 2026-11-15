@@ -4,6 +4,7 @@ import { findHeldDecision, type HeldDecision } from './decision-prompts.js';
 import { decodeSlackEntities } from './format.js';
 import {
   CONTINUATION_START_GRACE_MS,
+  CONTINUATION_WAKE_MAX_MS,
   DECISION_LOOKUP_TIMEOUT_MS,
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
@@ -157,9 +158,7 @@ export interface ContinuationRequest {
    * agent, conversation and mode). Host-recorded when the prompt was posted.
    */
   prompt: Prompt;
-  /** The install the answer came through: the prompt's own (the click gate checked). */
-  install: InstallRow;
-  /** That install's bot token. */
+  /** The bot token of the install the answer came through: the prompt's own (the click gate checked). */
   botToken: string;
   /** The `streamReqId` decisions:approve echoed: the woken runner emits under it. */
   reqId: string;
@@ -326,12 +325,13 @@ export function followContinuation(d: TurnDeps, c: ContinuationRequest): Promise
 
 /**
  * How long a woken turn has to begin: until the wake-up at `pendingUntil`
- * (none, one that can't be read, or one already past: from now), then
+ * (none, one that can't be read, or one already past: from now; one further
+ * out than CONTINUATION_WAKE_MAX_MS: that long), then
  * CONTINUATION_START_GRACE_MS.
  */
 function continuationStartMs(pendingUntil: string | null, nowMs: number): number {
   const wakeAt = typeof pendingUntil === 'string' ? Date.parse(pendingUntil) : Number.NaN;
-  const untilWake = Number.isFinite(wakeAt) ? Math.max(0, wakeAt - nowMs) : 0;
+  const untilWake = Number.isFinite(wakeAt) ? Math.min(Math.max(0, wakeAt - nowMs), CONTINUATION_WAKE_MAX_MS) : 0;
   return untilWake + CONTINUATION_START_GRACE_MS;
 }
 

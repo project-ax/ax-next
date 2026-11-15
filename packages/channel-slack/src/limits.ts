@@ -212,6 +212,13 @@ export const DECISION_LOOKUP_TIMEOUT_MS = 5_000;
  */
 export const CONTINUATION_START_GRACE_MS = 60_000;
 /**
+ * The longest a thread waits for the moment the agent is woken, however far
+ * out the decision's `pendingUntil` says it is. decisions wakes it when the
+ * undo window closes (seconds); anything further out is not waited for (and
+ * a timer past 2^31-1 ms would fire at once).
+ */
+export const CONTINUATION_WAKE_MAX_MS = 300_000;
+/**
  * How long each step of answering a click may take (answers.ts: the bot
  * token's vault read, a Slack call, an AX lookup, the binding read, the
  * answer itself) before it counts as failed. A step before the answer: the

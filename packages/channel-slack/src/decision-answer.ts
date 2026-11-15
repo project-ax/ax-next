@@ -99,9 +99,11 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
  * whether the agent's next turn is to be followed. In this order:
  *
  *   no readable decision                       → promptClosed
- *   an `error` (it didn't do what it looks
- *   like: an identical call already allowed,
- *   a replay that threw)                       → decisionNotRun
+ *   failed (a host replay that threw), with
+ *   its `error` or without                     → decisionFailed
+ *   any other status with an `error` (it
+ *   didn't do what it looks like: an
+ *   identical call already allowed)            → decisionNotRun
  *   executed, handed to the agent with a
  *   stream (`path 'agent-executes'`)           → decisionAllowed, follow
  *   executed, made by the host (`executed`)    → decisionDone
@@ -111,7 +113,6 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
  *   dismissed                                  → decisionDenied
  *   expired                                    → decisionExpired
  *   stale                                      → decisionChanged
- *   failed                                     → decisionFailed
  *   pending, or a status this build doesn't
  *   know                                       → decisionNotRun
  *
@@ -120,9 +121,12 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
 export function decisionOutcome(out: unknown, todayLink: string): DecisionOutcome {
   const shows = (line: string): DecisionOutcome => ({ line, follow: false });
   if (!isRecord(out) || !isRecord(out['decision'])) return shows(COPY.promptClosed);
+  const status = statusOf(out['decision']);
+  // A failed row says so, with its error or without: a host replay that
+  // threw comes back failed WITH its error, and "not run" would invite a retry.
+  if (status === 'failed') return shows(COPY.decisionFailed(todayLink));
   const error = out['error'];
   if (error !== null && error !== undefined) return shows(COPY.decisionNotRun(todayLink));
-  const status = statusOf(out['decision']);
   switch (status) {
     case 'executed':
       if (out['path'] === 'agent-executes' && typeof out['streamReqId'] === 'string') {
@@ -138,8 +142,6 @@ export function decisionOutcome(out: unknown, todayLink: string): DecisionOutcom
       return shows(COPY.decisionExpired);
     case 'stale':
       return shows(COPY.decisionChanged(todayLink));
-    case 'failed':
-      return shows(COPY.decisionFailed(todayLink));
     case 'pending':
     case null:
       return shows(COPY.decisionNotRun(todayLink));
@@ -207,7 +209,6 @@ export function createDecisionAnswer(d: DecisionAnswerDeps): SubjectAnswer {
         if (out['streamReqId'] === continuationReqId) {
           startFollowing(d.follow, failed, {
             prompt,
-            install: extra.install,
             botToken: extra.botToken,
             reqId: continuationReqId,
             pendingUntil: typeof out['pendingUntil'] === 'string' ? out['pendingUntil'] : null,

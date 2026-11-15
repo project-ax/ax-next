@@ -253,13 +253,13 @@ describe('decisionOutcome: what the prompt says, from what decisions handed back
       { ...inert('executed'), path: 'host-replays', error: 'It did not work.' },
       shows(COPY.decisionNotRun(TODAY)),
     ],
-    // The plan's order: an error comes before the status, so a fresh Allow
-    // whose host replay threw says "try Today", and decisionFailed is what a
-    // later read of that failed row says.
+    // A failed row says it failed, error or not: a fresh Allow whose host
+    // replay threw comes back failed WITH its error, and says what a later
+    // read of that row says. The error decides only for any other status.
     [
-      'a host replay that threw (failed, with its error): the error decides',
-      { ...inert('failed'), error: 'The tool could not finish.' },
-      shows(COPY.decisionNotRun(TODAY)),
+      'a host replay that threw (failed, with its error): failed, not "not run"',
+      { ...inert('failed'), executed: false, path: 'host-replays', error: 'The tool could not finish.' },
+      shows(COPY.decisionFailed(TODAY)),
     ],
     // Executed: who runs it, and whether there is a turn to follow.
     ['executed, handed to the warm agent with a stream: followed', handedToAgent('req-0123456789ab'), { line: COPY.decisionAllowed, follow: true }],
@@ -349,7 +349,7 @@ describe('Allow: decisions:approve, once, for the prompt\'s own user', () => {
 
     const minted = f.approves[0]!.input['continuationReqId'];
     expect(f.follows).toEqual([
-      { prompt: PROMPT, install: INSTALL, botToken: BOT_TOKEN, reqId: minted, pendingUntil: PENDING_UNTIL },
+      { prompt: PROMPT, botToken: BOT_TOKEN, reqId: minted, pendingUntil: PENDING_UNTIL },
     ]);
     // Started here, before the answer is handed back to be drawn: the gate's
     // follow-up would start only after the redraw, which can take as long as
@@ -425,10 +425,12 @@ describe('Allow: decisions:approve, once, for the prompt\'s own user', () => {
     );
   });
 
-  it('a retry after a failed Allow reads the decision it already approved as answered: nothing approved twice, nothing followed', async () => {
-    // decisions as it behaves: the first approve claims the row and then
-    // fails on its way out; any approve after that finds the row resolved and
-    // hands back what is stored.
+  it("a second Allow, which decisions answers with the row it already approved, reads as Allowed and follows nothing", async () => {
+    // What this pins is the channel's reading of decisions' answer to a
+    // second approve. That nothing is approved twice is decisions' own
+    // guarantee (it absorbs a second answer), modelled by this fake: the
+    // first approve claims the row and then fails on its way out; any after
+    // that hands back what is stored.
     let status = 'pending';
     let claims = 0;
     const f = fake({

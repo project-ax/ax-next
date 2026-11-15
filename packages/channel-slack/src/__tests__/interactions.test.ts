@@ -272,8 +272,13 @@ interface Line {
 interface Clicked {
   install: InstallRow;
   click: ButtonClick;
-  /** Was the response already finished when the click started being handled? */
-  ackedFirst: boolean;
+  /**
+   * Had the handler already called the response's finishing method when
+   * onClick started? An in-process ordering only (the handler finishes the
+   * response before it schedules the click): it says nothing about when the
+   * bytes reach Slack.
+   */
+  endedBeforeClick: boolean;
 }
 
 function world(
@@ -321,7 +326,7 @@ function world(
     logger,
     now: () => nowMs,
     onClick: async (install, c) => {
-      clicks.push({ install, click: c, ackedFirst: current !== null && current.how !== null });
+      clicks.push({ install, click: c, endedBeforeClick: current !== null && current.how !== null });
       if (o.onClick !== undefined) await o.onClick(install, c);
     },
   });
@@ -366,8 +371,8 @@ describe('a click on a prompt button', () => {
     expect(await w.send(click())).toStrictEqual(OK);
     expect(await w.send(click(blockActions({ actions: [DENY] })))).toStrictEqual(OK);
     expect(w.clicks).toStrictEqual([
-      { install: ACTIVE, click: MELS_ALLOW, ackedFirst: true },
-      { install: ACTIVE, click: { ...MELS_ALLOW, action: 'deny' }, ackedFirst: true },
+      { install: ACTIVE, click: MELS_ALLOW, endedBeforeClick: true },
+      { install: ACTIVE, click: { ...MELS_ALLOW, action: 'deny' }, endedBeforeClick: true },
     ]);
     // Only the signing secret is read here: whatever the click needs next is the click handler's.
     expect(w.secretReads).toEqual(['signing-secret', 'signing-secret']);
@@ -632,6 +637,14 @@ describe('the payload', () => {
       ['a 23-character value', click(blockActions({ actions: [{ ...ALLOW, value: `${PROMPT_ID}A` }] })), INSTALL_ID, 'action'],
       ['a value with padding', click(blockActions({ actions: [{ ...ALLOW, value: `${PROMPT_ID.slice(0, 21)}=` }] })), INSTALL_ID, 'action'],
       ['no value', click(blockActions({ actions: [without(ALLOW, 'value')] })), INSTALL_ID, 'action'],
+      // Ignorable AND malformed: the ignore rules are read first, so another
+      // app's click with a user.id we cannot read is ignored, not refused.
+      [
+        'another app, with a user.id we cannot read',
+        click(blockActions({ api_app_id: 'A07OTHERAPP', user: { ...USER, id: 'U07 MEL0001' } })),
+        INSTALL_ID,
+        'app',
+      ],
     ];
     for (const [name, req, installId, reason] of cases) {
       expect(await w.send(req), name).toStrictEqual(OK);

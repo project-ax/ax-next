@@ -1,7 +1,7 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
-import { CONTINUATION_START_GRACE_MS, PROMPT_MAX, PROMPT_TTL_MS, TURN_HARD_CAP_MS } from '../limits.js';
+import { CONTINUATION_START_GRACE_MS, CONTINUATION_WAKE_MAX_MS, PROMPT_MAX, PROMPT_TTL_MS, TURN_HARD_CAP_MS } from '../limits.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
@@ -592,10 +592,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
 
   const CHANNEL = 'C07SUPPORT1';
   const THREAD = '1763035200.000100';
-  /** The answered prompt's turn, and every prompt a continuation of it asks. */
+  /**
+   * The answered prompt's turn, and every prompt a continuation of it asks.
+   * Its install and workspace differ from INSTALL's on purpose: the follower
+   * takes both from the prompt (host-recorded when it was posted).
+   */
   const CONTEXT = {
-    installId: INSTALL.installId,
-    teamId: 'T07ABCDEF12',
+    installId: 'Pr0mptInstall0Id000001',
+    teamId: 'T07PROMPTTM1',
     channel: CHANNEL,
     threadTs: THREAD,
     askerSlackId: SENDER,
@@ -652,7 +656,6 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     });
     const request = (pendingUntil: string | null): ContinuationRequest => ({
       prompt,
-      install: INSTALL,
       botToken: BOT_TOKEN,
       reqId: CONTINUATION,
       pendingUntil,
@@ -698,7 +701,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
       channel: CHANNEL,
       threadTs: THREAD,
       recipientUserId: SENDER,
-      recipientTeamId: 'T07ABCDEF12',
+      recipientTeamId: CONTEXT.teamId,
     });
     expect(h.reply()).toBe('Sent it to Bob.');
     expect(h.registry.size()).toBe(0);
@@ -726,12 +729,13 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(h.lines).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await done;
+    expect(vi.getTimerCount()).toBe(0);
 
     // Not a word: no "I didn't have anything to add".
     expect(h.all()).toEqual([]);
     expect(h.registry.size()).toBe(0);
     expect(h.lines).toEqual([
-      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: INSTALL.installId, reason: 'not-started' } },
+      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: CONTEXT.installId, reason: 'not-started' } },
     ]);
 
     // A turn that starts after all is not followed.
@@ -751,6 +755,54 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await done;
     expect(h.reply()).toBe('On it.');
     expect(h.lines).toEqual([]);
+    // The start deadline, the hard cap and the reply's own timers: all gone.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a turn followed to its end on time leaves no timer behind', async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(10_000);
+    await h.chunk({ kind: 'text', text: 'Sent it to Bob.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('Sent it to Bob.');
+    expect(h.lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a wake-up too far out to be real is waited for no longer than the cap, then the grace', async () => {
+    // A far-future pendingUntil would otherwise overflow the timer (past
+    // 2^31-1 ms a timer fires at once) or hold a sink for months.
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(new Date(Date.now() + 2 ** 31 + 60_000).toISOString());
+    await vi.advanceTimersByTimeAsync(CONTINUATION_WAKE_MAX_MS + CONTINUATION_START_GRACE_MS - 1);
+    expect(h.registry.size()).toBe(1);
+    expect(h.lines).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(h.registry.size()).toBe(0);
+    expect(h.all()).toEqual([]);
+    expect(h.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_continuation_missed', 'not-started']]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a dark turn-end (no reqId) in the prompt's conversation ends a follower still waiting: quietly, as said-nothing", async () => {
+    // Known residual: a warm agent's turn run dark (a reaction to a Deny, say)
+    // ends every sink of its conversation, this one included.
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.end('');
+    await done;
+    expect(h.all()).toEqual([]);
+    expect(h.registry.size()).toBe(0);
+    expect(h.lines).toEqual([
+      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: CONTEXT.installId, reason: 'said-nothing' } },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([
@@ -768,6 +820,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(h.registry.size()).toBe(0);
     expect(h.all()).toEqual([]);
     expect(h.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_continuation_missed', 'not-started']]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('a turn that has started is not given up at the start deadline', async () => {
@@ -783,6 +836,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await done;
     expect(h.reply()).toBe('Working on it. Done.');
     expect(h.lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([
@@ -798,7 +852,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(h.all()).toEqual([]);
     expect(h.registry.size()).toBe(0);
     expect(h.lines).toEqual([
-      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: INSTALL.installId, reason: 'said-nothing' } },
+      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: CONTEXT.installId, reason: 'said-nothing' } },
     ]);
   });
 
@@ -834,7 +888,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await done;
     expect(h.reply()).toBe(`Sending.\n\n${COPY.turnFailed}`);
     expect(h.lines).toEqual([
-      { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL.installId, reason: 'turn-error' } },
+      { level: 'warn', msg: 'slack_turn_failed', fields: { installId: CONTEXT.installId, reason: 'turn-error' } },
     ]);
     expect(h.registry.size()).toBe(0);
   });
@@ -861,6 +915,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await done;
     expect(h.all()).toEqual([]);
     expect(h.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_continuation_missed', 'not-started']]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("the hard cap runs from the turn's first chunk: the failure line, and the prompt's conversation is asked to stop, as its person", async () => {
@@ -889,11 +944,12 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(h.lines).toHaveLength(2);
     expect(h.lines).toEqual(
       expect.arrayContaining([
-        { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL.installId, reason: 'timeout' } },
-        { level: 'info', msg: 'slack_turn_interrupted', fields: { installId: INSTALL.installId, reason: 'timeout', interrupted: true } },
+        { level: 'warn', msg: 'slack_turn_failed', fields: { installId: CONTEXT.installId, reason: 'timeout' } },
+        { level: 'info', msg: 'slack_turn_interrupted', fields: { installId: CONTEXT.installId, reason: 'timeout', interrupted: true } },
       ]),
     );
     expect(h.registry.size()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([

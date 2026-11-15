@@ -1518,8 +1518,10 @@ describe("the click gate with the decision answer (decision-answer.ts): a decisi
         bus.registerService(
           'decisions:approve',
           'fake-decisions',
-          async (_ctx, input) => {
+          async (ctx, input) => {
             const asked = input as Record<string, unknown>;
+            // As @ax/decisions guards it: an approve runs as the user it is for.
+            if (ctx.userId !== asked['userId']) throw new Error('approve scope mismatch');
             approves.push({ ...asked });
             await landing.promise;
             status = 'executed';
@@ -1537,8 +1539,10 @@ describe("the click gate with the decision answer (decision-answer.ts): a decisi
         bus.registerService(
           'decisions:dismiss',
           'fake-decisions',
-          async (_ctx, input) => {
-            dismisses.push({ ...(input as Record<string, unknown>) });
+          async (ctx, input) => {
+            const asked = input as Record<string, unknown>;
+            if (ctx.userId !== asked['userId']) throw new Error('dismiss scope mismatch');
+            dismisses.push({ ...asked });
             status = 'dismissed';
             return { decision: { id: 'dec_0001', status } };
           },
@@ -1634,13 +1638,11 @@ describe("the click gate with the decision answer (decision-answer.ts): a decisi
     const followed = h.follows[0]!;
     expect({
       prompt: followed.prompt.id,
-      install: followed.install,
       botToken: followed.botToken,
       reqId: followed.reqId,
       pendingUntil: followed.pendingUntil,
     }).toEqual({
       prompt: h.prompt.id,
-      install: INSTALL,
       botToken: BOT_TOKEN,
       reqId: h.approves[0]!['continuationReqId'],
       pendingUntil: WAKE,
