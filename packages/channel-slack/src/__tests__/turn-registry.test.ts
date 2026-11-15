@@ -4,6 +4,7 @@ import {
   TURN_EVENT_HOOKS,
   createTurnRegistry,
   subscribeTurnEvents,
+  type PermissionIn,
   type StreamChunkIn,
   type TurnSink,
 } from '../turn-registry.js';
@@ -14,6 +15,7 @@ const REQ = 'req-aaaaaaaaaaaa';
 function recordingSink(over: Partial<TurnSink> = {}) {
   const seen: string[] = [];
   const chunks: StreamChunkIn[] = [];
+  const permissions: PermissionIn[] = [];
   const sink: TurnSink = {
     reqId: REQ,
     conversationId: CONVERSATION,
@@ -23,9 +25,13 @@ function recordingSink(over: Partial<TurnSink> = {}) {
     },
     end: () => seen.push('end'),
     error: () => seen.push('error'),
+    permission: (p) => {
+      permissions.push(p);
+      seen.push(`permission ${p.kind}`);
+    },
     ...over,
   };
-  return { sink, seen, chunks };
+  return { sink, seen, chunks, permissions };
 }
 
 const ctxFor = (conversationId?: string) =>
@@ -227,17 +233,163 @@ describe('createTurnRegistry', () => {
     expect(r.size()).toBe(0);
   });
 
-  it('subscribeTurnEvents wires the three hooks on the bus, and its undo removes them', async () => {
+  describe('permission cards', () => {
+    const hostCard = { kind: 'host', host: 'api.example.com', sessionId: 'sess_1', reqId: REQ };
+    const skillCard = {
+      kind: 'skill',
+      skillId: 'github',
+      description: 'Work with GitHub',
+      hosts: ['api.github.com'],
+      slots: [],
+      packages: { npm: [], pypi: [] },
+    };
+
+    it('a host card is routed by the payload reqId only: a matching ctx conversation is not enough', () => {
+      const r = createTurnRegistry();
+      const mine = recordingSink();
+      const other = recordingSink({ reqId: 'req-bbbbbbbbbbbb' });
+      r.register(mine.sink);
+      r.register(other.sink);
+      // The firing ctx's conversation matches the turn; the payload names another reqId.
+      r.onPermissionRequest(ctxFor(CONVERSATION), { ...hostCard, reqId: 'req-nobody' });
+      // No reqId at all.
+      r.onPermissionRequest(ctxFor(CONVERSATION), { kind: 'host', host: 'api.example.com', sessionId: 'sess_1' });
+      expect(mine.permissions).toEqual([]);
+      expect(other.permissions).toEqual([]);
+      r.onPermissionRequest(ctxFor(undefined), hostCard);
+      expect(mine.permissions).toEqual([{ kind: 'host', host: 'api.example.com', sessionId: 'sess_1' }]);
+      expect(other.permissions).toEqual([]);
+    });
+
+    it('a skill card is routed by the firing ctx conversation only, to every sink in it', () => {
+      const r = createTurnRegistry();
+      const a = recordingSink();
+      const b = recordingSink({ reqId: 'req-bbbbbbbbbbbb' });
+      const elsewhere = recordingSink({ reqId: 'req-cccccccccccc', conversationId: 'conv_other' });
+      r.register(a.sink);
+      r.register(b.sink);
+      r.register(elsewhere.sink);
+      // A reqId in the payload is not a routing key for a skill card.
+      r.onPermissionRequest(ctxFor('conv_nobody'), { ...skillCard, reqId: REQ });
+      r.onPermissionRequest(ctxFor(undefined), { ...skillCard, reqId: REQ });
+      expect(a.permissions).toEqual([]);
+      r.onPermissionRequest(ctxFor(CONVERSATION), skillCard);
+      const expected = { kind: 'skill', skillId: 'github', description: 'Work with GitHub', needsKey: false };
+      expect(a.permissions).toEqual([expected]);
+      expect(b.permissions).toEqual([expected]);
+      expect(elsewhere.permissions).toEqual([]);
+    });
+
+    it('needsKey: true for a slot without haveExisting, a non-object slot, or non-array slots; false for [] and all-true', () => {
+      const needsKeyFor = (slots: unknown): boolean | undefined => {
+        const r = createTurnRegistry();
+        const { sink, permissions } = recordingSink();
+        r.register(sink);
+        r.onPermissionRequest(ctxFor(CONVERSATION), { ...skillCard, slots });
+        const got = permissions[0];
+        return got?.kind === 'skill' ? got.needsKey : undefined;
+      };
+      expect(needsKeyFor([{ slot: 'a', kind: 'api-key' }])).toBe(true);
+      expect(needsKeyFor([{ slot: 'a', haveExisting: false }])).toBe(true);
+      expect(needsKeyFor([{ slot: 'a', haveExisting: true }, { slot: 'b' }])).toBe(true);
+      expect(needsKeyFor([{ slot: 'a', haveExisting: 'true' }])).toBe(true);
+      expect(needsKeyFor(['x'])).toBe(true);
+      expect(needsKeyFor([null])).toBe(true);
+      expect(needsKeyFor('nope')).toBe(true);
+      expect(needsKeyFor(undefined)).toBe(true);
+      expect(needsKeyFor({ length: 0 })).toBe(true);
+      expect(needsKeyFor([])).toBe(false);
+      expect(needsKeyFor([{ slot: 'a', haveExisting: true }, { slot: 'b', haveExisting: true }])).toBe(false);
+    });
+
+    it("a skill card's absent description is the empty string", () => {
+      const r = createTurnRegistry();
+      const { sink, permissions } = recordingSink();
+      r.register(sink);
+      const { description: _omit, ...noDescription } = skillCard;
+      r.onPermissionRequest(ctxFor(CONVERSATION), noDescription);
+      expect(permissions).toEqual([{ kind: 'skill', skillId: 'github', description: '', needsKey: false }]);
+    });
+
+    it('malformed cards are dropped, never thrown on: other kinds, wrong types, empty ids', () => {
+      const r = createTurnRegistry();
+      const { sink, seen } = recordingSink();
+      r.register(sink);
+      const bad: unknown[] = [
+        undefined,
+        null,
+        42,
+        'x',
+        [],
+        {},
+        { kind: 'connector', reqId: REQ, host: 'h', sessionId: 's', skillId: 'k' },
+        { kind: 'host', reqId: REQ, host: '', sessionId: 'sess_1' },
+        { kind: 'host', reqId: REQ, host: 'api.example.com', sessionId: '' },
+        { kind: 'host', reqId: REQ, host: 42, sessionId: 'sess_1' },
+        { kind: 'host', reqId: REQ, host: 'api.example.com', sessionId: ['sess_1'] },
+        { kind: 'host', reqId: 42, host: 'api.example.com', sessionId: 'sess_1' },
+        { ...skillCard, skillId: '' },
+        { ...skillCard, skillId: 7 },
+        { ...skillCard, description: 7 },
+      ];
+      for (const p of bad) {
+        expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), p)).not.toThrow();
+      }
+      expect(seen).toEqual([]);
+    });
+
+    it('a sink without a permission handler, or one that throws, never breaks the registry', () => {
+      const r = createTurnRegistry();
+      const quiet = recordingSink();
+      const { permission: _unused, ...rest } = quiet.sink;
+      r.register(rest);
+      expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), skillCard)).not.toThrow();
+      expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), hostCard)).not.toThrow();
+      const thrower = recordingSink({
+        permission: () => {
+          throw new Error('sink bug');
+        },
+      });
+      r.register(thrower.sink);
+      expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), skillCard)).not.toThrow();
+      expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), hostCard)).not.toThrow();
+      // A throwing sink does not stop the next sink in the same conversation.
+      const r2 = createTurnRegistry();
+      const bad = recordingSink({
+        permission: () => {
+          throw new Error('sink bug');
+        },
+      });
+      const good = recordingSink({ reqId: 'req-bbbbbbbbbbbb' });
+      r2.register(bad.sink);
+      r2.register(good.sink);
+      r2.onPermissionRequest(ctxFor(CONVERSATION), skillCard);
+      expect(good.permissions).toHaveLength(1);
+    });
+  });
+
+  it('subscribeTurnEvents wires the four hooks on the bus, and its undo removes them', async () => {
     const bus = new HookBus();
     const r = createTurnRegistry();
     const { sink, seen } = recordingSink();
     r.register(sink);
     const undo = subscribeTurnEvents(bus, r, '@ax/channel-slack/turns');
-    expect(TURN_EVENT_HOOKS).toEqual(['chat:stream-chunk', 'chat:turn-end', 'chat:turn-error']);
+    expect(TURN_EVENT_HOOKS).toEqual([
+      'chat:stream-chunk',
+      'chat:turn-end',
+      'chat:turn-error',
+      'chat:permission-request',
+    ]);
     await bus.fire('chat:stream-chunk', ctxFor(CONVERSATION), { reqId: REQ, kind: 'text', text: 'hi' });
     await bus.fire('chat:turn-error', ctxFor(CONVERSATION), { reqId: REQ });
     await bus.fire('chat:turn-end', ctxFor(CONVERSATION), { reqId: REQ });
-    expect(seen).toEqual(['chunk text', 'error', 'end']);
+    await bus.fire('chat:permission-request', ctxFor(CONVERSATION), {
+      kind: 'host',
+      host: 'api.example.com',
+      sessionId: 'sess_1',
+      reqId: REQ,
+    });
+    expect(seen).toEqual(['chunk text', 'error', 'end', 'permission host']);
     undo();
     for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, '@ax/channel-slack/turns')).toBe(0);
   });

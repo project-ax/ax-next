@@ -134,7 +134,7 @@ export interface ChannelSlackConfig {
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
 const AGENTS_DELETED = 'agents:deleted';
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
-/** The subscriber name for the three chat events Slack turns read. */
+/** The subscriber name for the four chat events Slack turns read. */
 export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/turns`;
 
 const HELD_DEGRADATION = 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons';

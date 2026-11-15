@@ -575,6 +575,7 @@ describe('@ax/channel-slack plugin', () => {
         'chat:stream-chunk',
         'chat:turn-end',
         'chat:turn-error',
+        'chat:permission-request',
       ],
     });
   });
