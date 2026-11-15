@@ -1,5 +1,14 @@
-import { makeAgentContext, makeReqId, type AgentMessage, type HookBus, type Logger } from '@ax/core';
+import {
+  makeAgentContext,
+  makeReqId,
+  type AgentContext,
+  type AgentMessage,
+  type HookBus,
+  type Logger,
+} from '@ax/core';
+import { outcomeBlocks } from './blocks.js';
 import { COPY } from './copy.js';
+import { recheckAfterMiss } from './decision-answer.js';
 import { findHeldDecision, type HeldDecision } from './decision-prompts.js';
 import { decodeSlackEntities } from './format.js';
 import {
@@ -77,9 +86,13 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  * conversation's lane; and its cap runs from its first chunk. It may also
  * never come (the session ended inside the window, or the wake-up was
  * refused), so nothing within CONTINUATION_START_GRACE_MS of the wake-up, or
- * an end before anything was said, ends it without a single Slack call (no
+ * an end before anything was said, ends it without a word in the thread (no
  * "I didn't have anything to add."), logged by code only as
  * `slack_continuation_missed` with a reason, `not-started` or `said-nothing`.
+ * The prompt still says "I'll pick it up in a moment.", so it is then read
+ * back from the decision (decision-answer.ts `recheckAfterMiss`) and redrawn
+ * with what that says now: done, waiting for the agent's next ask, failed,
+ * and so on. Nothing new to say, or no way to say it, leaves it as it is.
  */
 
 /** Who a turn is from, and so whose context it runs under (`turnContextFields`). */
@@ -166,6 +179,12 @@ export interface ContinuationRequest {
   reqId: string;
   /** ISO instant the agent is woken (the undo window's end), or null. */
   pendingUntil: string | null;
+  /**
+   * The prompt's message, as the click gate redrew it with the Allow's line
+   * (the click's when it beat `posted`), or null. Redrawn again with what the
+   * decision says when the agent never carries on in the thread.
+   */
+  messageTs: string | null;
 }
 
 interface AgentChoice {
@@ -256,7 +275,12 @@ function paragraphBreak(tail: string, next: string): string {
  */
 type ReplyStart =
   | { kind: 'invoke'; message: AgentMessage; messageTs: string }
-  | { kind: 'woken'; withinMs: number };
+  | {
+      kind: 'woken';
+      withinMs: number;
+      /** Once it has been given up without a word: what the thread's prompt says then. Never rejects. */
+      missed: (ctx: AgentContext) => Promise<void>;
+    };
 
 /** One reply: where it goes, who it is for, whose turn it follows, and how that turn begins. */
 interface ReplySpec {
@@ -321,8 +345,44 @@ export function followContinuation(d: TurnDeps, c: ContinuationRequest): Promise
     agentId: p.agentId,
     conversationId: p.conversationId,
     reqId: c.reqId,
-    start: { kind: 'woken', withinMs: continuationStartMs(c.pendingUntil, d.clock.now()) },
+    start: {
+      kind: 'woken',
+      withinMs: continuationStartMs(c.pendingUntil, d.clock.now()),
+      missed: (ctx) => redrawMissed(d, c, ctx),
+    },
   });
+}
+
+/**
+ * The prompt an Allow answered, once its continuation was given up: redrawn
+ * with what its decision says now (decision-answer.ts `recheckAfterMiss`),
+ * where the Allow's line was. Nothing new to say, no message to redraw, or a
+ * failure (logged by code: `slack_prompt_failed`, stage `update`) leaves it
+ * as it is. Never posts in the thread. Never rejects.
+ */
+async function redrawMissed(d: TurnDeps, c: ContinuationRequest, ctx: AgentContext): Promise<void> {
+  const p = c.prompt;
+  const ts = c.messageTs;
+  if (ts === null) return;
+  try {
+    const line = await recheckAfterMiss(d.bus, ctx, p, {
+      todayLink: `${d.publicOrigin}/workspace`,
+      timeoutMs: DECISION_LOOKUP_TIMEOUT_MS,
+      logger: d.logger,
+    });
+    if (line === null) return;
+    await d.api.updateMessage(c.botToken, {
+      channel: p.channel,
+      ts,
+      ...outcomeBlocks({ subject: p.subjectText, line }),
+    });
+  } catch (err) {
+    try {
+      d.logger.warn('slack_prompt_failed', { installId: p.installId, kind: 'decision', stage: 'update', code: logCode(err) });
+    } catch {
+      // A log line never changes the turn.
+    }
+  }
 }
 
 /**
@@ -615,9 +675,11 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   if (startBy !== null) d.clock.clearTimeout(startBy);
   unregister();
   // Given up without a word: the reply was never given anything, so nothing
-  // of it reached Slack, and nothing is sent now (Review Focus 3).
+  // of it reached Slack, and nothing is sent in the thread now (Review Focus
+  // 3). Only the prompt is redrawn, with what its decision says (`missed`).
   if (notStarted === true) {
     quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'not-started' }));
+    if (start.kind === 'woken') await start.missed(ctx);
     return;
   }
   if (fail !== undefined) {
@@ -631,6 +693,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   }
   if (start.kind === 'woken' && outcome === 'complete' && !said) {
     quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'said-nothing' }));
+    await start.missed(ctx);
     return;
   }
   /*

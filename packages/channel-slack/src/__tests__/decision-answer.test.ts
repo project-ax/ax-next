@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Answer } from '../answers.js';
 import type { PromptAction } from '../blocks.js';
 import { COPY } from '../copy.js';
-import { createDecisionAnswer, decisionOutcome } from '../decision-answer.js';
+import { createDecisionAnswer, decisionOutcome, lineAfterMiss, recheckAfterMiss } from '../decision-answer.js';
 import { PROMPT_STEP_TIMEOUT_MS } from '../limits.js';
 import type { Prompt } from '../prompts.js';
 import type { InstallRow } from '../store.js';
@@ -141,6 +141,8 @@ interface FakeOptions {
   without?: string[];
   /** The follower: records each request unless it is given something to do. */
   follow?: (c: ContinuationRequest) => void;
+  /** The message the gate redraws, as it hands it over: the prompt's own unless set. */
+  messageTs?: string | null;
 }
 
 /** A bus with a fake @ax/decisions on it, the decision answer built on it, and what each hook was asked. */
@@ -219,7 +221,12 @@ function fake(o: FakeOptions = {}) {
     lines,
     /** The answer to a click on `action`, as the gate hands it over. */
     click(action: PromptAction): Promise<Answer> {
-      return answer(ctx, PROMPT, action, { install: INSTALL, botToken: BOT_TOKEN });
+      const messageTs = o.messageTs === undefined ? PROMPT.messageTs : o.messageTs;
+      return answer(ctx, PROMPT, action, { install: INSTALL, botToken: BOT_TOKEN, messageTs });
+    },
+    /** What the prompt says once the thread has stopped waiting for the agent (turn.ts gave up). */
+    recheck(timeoutMs = 5_000): Promise<string | null> {
+      return recheckAfterMiss(bus, ctx, PROMPT, { todayLink: TODAY, timeoutMs, logger });
     },
     logged(msg: string): Array<Record<string, unknown>> {
       return lines.filter((l) => l.msg === msg).map((l) => l.fields);
@@ -309,6 +316,125 @@ describe('decisionOutcome: what the prompt says, from what decisions handed back
   });
 });
 
+// ── After a continuation that never came ────────────────────────────────────
+
+/** decisions:get's answer: the stored row, every marker the line reads null unless `over` says otherwise. */
+const stored = (status: unknown, over: Record<string, unknown> = {}) => ({
+  decision: {
+    ...row(status),
+    consumedAt: null,
+    replayDueAt: null,
+    replayClaimedAt: null,
+    replayedAt: null,
+    routineReleaseAt: null,
+    routineOutcome: null,
+    ...over,
+  },
+});
+const AT = '2026-11-14T12:00:11.000Z';
+
+describe("lineAfterMiss: what an answered prompt says once the thread stopped waiting for the agent, read off decisions' row as Today's receipt reads it", () => {
+  const cases: Array<[string, unknown, string | null]> = [
+    // Nothing better to say than what the prompt says now: it stays.
+    ['no answer at all', undefined, null],
+    ['no decision (none by that id for this user)', { decision: null }, null],
+    ['a decision that is not an object', { decision: 'executed' }, null],
+    ['a status this build does not know', stored('carrier-pigeon'), null],
+    ['no status', stored(undefined), null],
+    // Made: the host replayed it, or the agent took the yes up at the gate.
+    ['executed, replayed by the host (the agent was gone by the wake-up)', stored('executed', { replayedAt: AT }), COPY.decisionDone],
+    ['executed, taken up by the agent', stored('executed', { consumedAt: AT }), COPY.decisionDone],
+    ['parked, then taken up by the agent', stored('approved-pending-agent', { consumedAt: AT }), COPY.decisionDone],
+    // Not made, and nothing on the host side holds it: the yes waits at the gate for the agent's next ask.
+    ['executed, the agent woken but silent', stored('executed'), COPY.decisionAllowedNextTime],
+    ['parked for the agent (a connector call, no agent by the wake-up)', stored('approved-pending-agent'), COPY.decisionAllowedNextTime],
+    // The host holds it: its replay is due, or running. What the prompt says still stands.
+    ['executed, its host replay due', stored('executed', { replayDueAt: AT }), null],
+    ['executed, its host replay running', stored('executed', { replayClaimedAt: AT }), null],
+    ['executed, with markers it cannot read', { decision: row('executed') }, null],
+    // A routine change is made only once its own outcome says so.
+    ['a routine change taken up, its outcome not in', stored('executed', { routineReleaseAt: AT, consumedAt: AT }), COPY.decisionAllowedNextTime],
+    [
+      'a routine change that succeeded',
+      stored('executed', { routineReleaseAt: AT, consumedAt: AT, routineOutcome: 'succeeded' }),
+      COPY.decisionDone,
+    ],
+    // Every other status, as the Allow's own table reads it.
+    ['failed, whatever else the row says', stored('failed', { replayClaimedAt: AT, replayedAt: AT }), COPY.decisionFailed(TODAY)],
+    ['dismissed (undone, then denied, in Today)', stored('dismissed'), COPY.decisionDenied],
+    ['expired', stored('expired'), COPY.decisionExpired],
+    ['stale: things changed', stored('stale'), COPY.decisionChanged(TODAY)],
+    ['pending again (undone in Today)', stored('pending'), COPY.decisionNotRun(TODAY)],
+  ];
+
+  it.each(cases)('%s', (_name, out, want) => {
+    expect(lineAfterMiss(out, TODAY)).toBe(want);
+  });
+
+  it('never says the line the prompt already says', () => {
+    expect(cases.map(([, out]) => lineAfterMiss(out, TODAY))).not.toContain(COPY.decisionAllowed);
+  });
+});
+
+describe('recheckAfterMiss: the row read back once the thread stopped waiting', () => {
+  it("reads the prompt's own decision, for the prompt's own user, and gives its line", async () => {
+    const f = fake({ get: () => stored('approved-pending-agent') });
+
+    expect(await f.recheck()).toBe(COPY.decisionAllowedNextTime);
+    expect(f.gets.map((g) => g.input)).toEqual([{ decisionId: DECISION_ID, userId: 'usr_mel' }]);
+    expect(f.lines).toEqual([]);
+  });
+
+  it('without decisions:get: no line, and nothing is read', async () => {
+    const f = fake({ without: ['decisions:get'], get: () => stored('approved-pending-agent') });
+
+    expect(await f.recheck()).toBeNull();
+    expect(f.lines).toEqual([]);
+  });
+
+  it('a read that fails: no line, logged by code', async () => {
+    const f = fake({
+      get: () => {
+        throw fault();
+      },
+    });
+
+    expect(await f.recheck()).toBeNull();
+    expect(f.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'recheck', code: 'store-unavailable' },
+    ]);
+  });
+
+  it('a read that outlasts its deadline: no line once the deadline passes, logged as a timeout', async () => {
+    vi.useFakeTimers();
+    const f = fake({ get: () => new Promise<never>(() => {}) });
+    let settled = false;
+    let line: unknown = 'not yet';
+    void f.recheck(5_000).then((value) => {
+      settled = true;
+      line = value;
+    });
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled).toBe(true);
+    expect(line).toBeNull();
+    expect(f.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'recheck', code: 'timeout' },
+    ]);
+  });
+
+  it('a read answered in time leaves no timer behind', async () => {
+    vi.useFakeTimers();
+    const f = fake({ get: () => stored('dismissed') });
+
+    expect(await f.recheck()).toBe(COPY.decisionDenied);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 // ── Allow ───────────────────────────────────────────────────────────────────
 
 describe('Allow: decisions:approve, once, for the prompt\'s own user', () => {
@@ -349,13 +475,22 @@ describe('Allow: decisions:approve, once, for the prompt\'s own user', () => {
 
     const minted = f.approves[0]!.input['continuationReqId'];
     expect(f.follows).toEqual([
-      { prompt: PROMPT, botToken: BOT_TOKEN, reqId: minted, pendingUntil: PENDING_UNTIL },
+      { prompt: PROMPT, botToken: BOT_TOKEN, reqId: minted, pendingUntil: PENDING_UNTIL, messageTs: PROMPT.messageTs },
     ]);
     // Started here, before the answer is handed back to be drawn: the gate's
     // follow-up would start only after the redraw, which can take as long as
     // the undo window.
     expect(answer).toEqual({ line: COPY.decisionAllowed, settle: true });
     expect('follow' in answer).toBe(false);
+  });
+
+  it("the follower gets the message the gate redraws: the clicked one when the click beat the prompt's own post", async () => {
+    const clicked = '1763121661.000300';
+    const f = fake({ messageTs: clicked });
+
+    await f.click('allow');
+
+    expect(f.follows.map((c) => c.messageTs)).toEqual([clicked]);
   });
 
   it('a pendingUntil that is not a string reaches the follower as null', async () => {

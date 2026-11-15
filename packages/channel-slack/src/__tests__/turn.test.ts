@@ -9,6 +9,7 @@ import {
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
+import { outcomeBlocks } from '../blocks.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
@@ -57,6 +58,7 @@ type Method =
   | 'stopStream'
   | 'postMessage'
   | 'postBlocks'
+  | 'updateMessage'
   | 'addReaction'
   | 'removeReaction';
 
@@ -69,7 +71,7 @@ interface SlackCall {
 /** The ts Slack gives a prompt's message. */
 const PROMPT_TS = '1763040000.000900';
 
-function fakeSlack(o: { postBlocksFails?: boolean } = {}) {
+function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean } = {}) {
   const calls: SlackCall[] = [];
   let nextTs = 1;
   const notHere = async (): Promise<never> => {
@@ -91,7 +93,11 @@ function fakeSlack(o: { postBlocksFails?: boolean } = {}) {
       if (o.postBlocksFails === true) throw new SlackApiError('chat.postMessage', 'invalid_blocks');
       return { ts: PROMPT_TS };
     },
-    updateMessage: notHere,
+    // Only a follower that gave up redraws its prompt; a turn never does (its tests' exact call lists show it).
+    async updateMessage(token, a) {
+      record('updateMessage', a, token);
+      if (o.updateMessageFails === true) throw new SlackApiError('chat.update', 'message_not_found');
+    },
     conversationsInfo: notHere,
     conversationsList: notHere,
     conversationsJoin: notHere,
@@ -736,11 +742,22 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     conversationId: 'conv_support_thread',
   } as const;
 
-  function follower(o: { mode?: 'dm' | 'attended'; decisions?: unknown[] } = {}) {
+  function follower(
+    o: {
+      mode?: 'dm' | 'attended';
+      decisions?: unknown[];
+      /** decisions:get's answer (the row read back when the follower gives up); a throw is the hook's. Absent: no such service. */
+      get?: () => unknown;
+      /** The prompt's message as the gate redrew it: PROMPT_TS unless set. */
+      messageTs?: string | null;
+      /** Slack refuses the prompt's redraw. */
+      updateFails?: boolean;
+    } = {},
+  ) {
     const bus = new HookBus();
     const registry = createTurnRegistry();
     subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
-    const slack = fakeSlack();
+    const slack = fakeSlack(o.updateFails === true ? { updateMessageFails: true } : {});
     const lines: LogLine[] = [];
     const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
       lines.push({ level, msg, fields });
@@ -755,6 +772,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
         const i = input as { userId: unknown; agentId: unknown };
         if (ctx.userId !== i.userId || ctx.agentId !== i.agentId) throw new Error('conversation decision scope mismatch');
         return { decisions: rows };
+      });
+    }
+    const gets: Array<{ ctx: AgentContext; input: unknown }> = [];
+    if (o.get !== undefined) {
+      const get = o.get;
+      bus.registerService('decisions:get', 'fake-decisions', async (ctx, input) => {
+        gets.push({ ctx, input });
+        return get();
       });
     }
     // chat-orchestrator's `agent:interrupt`: `{ conversationId, userId }` in, `{ interrupted }` out.
@@ -787,12 +812,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
       botToken: BOT_TOKEN,
       reqId: CONTINUATION,
       pendingUntil,
+      messageTs: o.messageTs === undefined ? PROMPT_TS : o.messageTs,
     });
     return {
       registry,
       prompts,
       lines,
       lookups,
+      gets,
       interrupts,
       /** Every Slack call, 👀 included. */
       all: () => slack.calls,
@@ -995,6 +1022,123 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(h.lines).toEqual([
       { level: 'info', msg: 'slack_continuation_missed', fields: { installId: CONTEXT.installId, reason: 'said-nothing' } },
     ]);
+  });
+
+  // ── Giving up: the prompt says what its decision says now ──
+  // "Allowed. I'll pick it up in a moment." went unkept when the agent never
+  // carried on in the thread. The follower reads the decision back and
+  // redraws the prompt with it, and still posts nothing in the thread.
+
+  /** decisions:get's answer: the prompt's own row, as `over` leaves it. */
+  const storedRow = (status: string, over: Record<string, unknown> = {}) => ({
+    decision: decisionRow('dec_held', 'toolu_held', { status, ...over }),
+  });
+  /** The prompt redrawn with `line`: its subject, then the line, and nothing to click (blocks.ts `outcomeBlocks`). */
+  const redrawnWith = (line: string) => ({
+    method: 'updateMessage',
+    token: BOT_TOKEN,
+    args: JSON.parse(JSON.stringify({ channel: CHANNEL, ts: PROMPT_TS, ...outcomeBlocks({ subject: SUMMARY, line }) })) as Record<string, unknown>,
+  });
+  const missed = (reason: string): LogLine => ({
+    level: 'info',
+    msg: 'slack_continuation_missed',
+    fields: { installId: CONTEXT.installId, reason },
+  });
+
+  it("not started by the deadline (parked for the agent's next ask): the prompt is redrawn with what its decision says, and nothing is posted in the thread", async () => {
+    vi.useFakeTimers();
+    const h = follower({ get: () => storedRow('approved-pending-agent') });
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(10_000 + CONTINUATION_START_GRACE_MS);
+    await done;
+
+    expect(h.all()).toEqual([redrawnWith(COPY.decisionAllowedNextTime)]);
+    // The prompt's own decision, read as the prompt's own user.
+    expect(h.gets.map((g) => g.input)).toEqual([{ decisionId: 'dec_held', userId: 'usr_alice' }]);
+    expect(h.lines).toEqual([missed('not-started')]);
+    expect(h.registry.size()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('said nothing (the host replayed the call meanwhile): the prompt is redrawn as done, and nothing is posted in the thread', async () => {
+    const h = follower({ get: () => storedRow('executed', { replayedAt: '2026-11-14T12:00:11.000Z' }) });
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'thinking', text: 'They said yes.' });
+    await h.end();
+    await done;
+
+    expect(h.all()).toEqual([redrawnWith(COPY.decisionDone)]);
+    expect(h.lines).toEqual([missed('said-nothing')]);
+  });
+
+  it('a decision that says nothing new (its host replay still running): the prompt is left as it is', async () => {
+    const h = follower({ get: () => storedRow('executed', { replayClaimedAt: '2026-11-14T12:00:11.000Z' }) });
+    const done = h.follow(inTenSeconds());
+    await h.end();
+    await done;
+
+    expect(h.gets).toHaveLength(1);
+    expect(h.all()).toEqual([]);
+    expect(h.lines).toEqual([missed('said-nothing')]);
+  });
+
+  it('a read that fails: the prompt is left as it is, logged by code', async () => {
+    const h = follower({
+      get: () => {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-decisions', message: 'decisions down' });
+      },
+    });
+    const done = h.follow(inTenSeconds());
+    await h.end();
+    await done;
+
+    expect(h.all()).toEqual([]);
+    expect(h.lines).toEqual([
+      missed('said-nothing'),
+      {
+        level: 'warn',
+        msg: 'slack_prompt_failed',
+        fields: { installId: CONTEXT.installId, kind: 'decision', stage: 'recheck', code: 'store-unavailable' },
+      },
+    ]);
+  });
+
+  it('a redraw Slack refuses: logged by code, and still nothing is posted', async () => {
+    const h = follower({ get: () => storedRow('approved-pending-agent'), updateFails: true });
+    const done = h.follow(inTenSeconds());
+    await h.end();
+    await done;
+
+    expect(h.all().map((c) => c.method)).toEqual(['updateMessage']);
+    expect(h.lines).toEqual([
+      missed('said-nothing'),
+      {
+        level: 'warn',
+        msg: 'slack_prompt_failed',
+        fields: { installId: CONTEXT.installId, kind: 'decision', stage: 'update', code: 'message_not_found' },
+      },
+    ]);
+  });
+
+  it('no message to redraw (the gate had none either): nothing is read', async () => {
+    const h = follower({ get: () => storedRow('approved-pending-agent'), messageTs: null });
+    const done = h.follow(inTenSeconds());
+    await h.end();
+    await done;
+
+    expect(h.gets).toEqual([]);
+    expect(h.all()).toEqual([]);
+  });
+
+  it('a continuation that said something: nothing is read back, and the prompt keeps its line', async () => {
+    const h = follower({ get: () => storedRow('approved-pending-agent') });
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'text', text: 'Sent it to Bob.' });
+    await h.end();
+    await done;
+
+    expect(h.gets).toEqual([]);
+    expect(h.all().map((c) => c.method)).toEqual(['startStream', 'stopStream']);
   });
 
   it.each([

@@ -245,7 +245,7 @@ interface Run {
   ctx: AgentContext;
   prompt: Prompt;
   action: PromptAction;
-  extra: { install: InstallRow; botToken: string };
+  extra: { install: InstallRow; botToken: string; messageTs: string | null };
 }
 
 type Fault = 'fails' | 'hang';
@@ -457,6 +457,8 @@ describe('the click gate: the asker answers', () => {
     expect(run.action).toBe('allow');
     expect(run.extra.install).toBe(INSTALL);
     expect(run.extra.botToken).toBe(BOT_TOKEN);
+    // The message it redraws, for whatever follows the answer to redraw again.
+    expect(run.extra.messageTs).toBe(PROMPT_TS);
     expect({
       sessionId: run.ctx.sessionId,
       userId: run.ctx.userId,
@@ -1116,6 +1118,8 @@ describe('the click gate: which message is redrawn', () => {
       MEL_LOOKED_UP,
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed, clicked) },
     ]);
+    // And the answer is told that is the prompt's message.
+    expect(w.runs.map((r) => r.extra.messageTs)).toEqual([clicked]);
   });
 
   it("step 3: once the prompt's message is known, a click naming any other message is refused: silence, a bystander's too, and the prompt stays open", async () => {
@@ -1152,6 +1156,7 @@ describe('the click gate: which message is redrawn', () => {
     await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: '<!channel>' }));
 
     expect(w.runs).toHaveLength(1);
+    expect(w.runs[0]!.extra.messageTs).toBeNull();
     expect(w.slack.calls).toEqual([MEL_LOOKED_UP]);
     expect(w.state(prompt)).toBe('gone');
     expect(w.logged('slack_prompt_failed')).toEqual([

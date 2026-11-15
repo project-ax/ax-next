@@ -1,7 +1,8 @@
-import { makeReqId, PluginError, type HookBus } from '@ax/core';
+import { makeReqId, PluginError, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import type { SubjectAnswer } from './answers.js';
 import { COPY } from './copy.js';
 import { logCode } from './log-code.js';
+import type { Prompt } from './prompts.js';
 import type { ContinuationRequest } from './turn.js';
 
 /**
@@ -35,6 +36,13 @@ import type { ContinuationRequest } from './turn.js';
  * a Deny after the approve went through) reads as what it is: decisions
  * absorbs a second answer and hands back the stored row, so nothing is
  * approved twice.
+ *
+ * An Allow the thread follows says "I'll pick it up in a moment." The agent
+ * may never carry on there: its session ended inside the undo window (the
+ * host then replays the call, or parks it), the wake-up was refused, or it
+ * woke and said nothing. When the follower gives up (turn.ts), it reads the
+ * decision back (`recheckAfterMiss`) and redraws the prompt with what the row
+ * says now (`lineAfterMiss`), read as Today's receipt reads it.
  *
  * Both hooks are called JOINED (`callJoined`). The bus's deadline stops it
  * waiting, not the hook, which may still land: an approve that lands after
@@ -150,6 +158,109 @@ export function decisionOutcome(out: unknown, todayLink: string): DecisionOutcom
   }
 }
 
+/**
+ * What an answered prompt says once the thread has stopped waiting for the
+ * agent to carry on after an Allow (turn.ts gave up), from decisions:get's
+ * answer `out`. Null when it has nothing better to say than "I'll pick it up
+ * in a moment." (the prompt then stays as it is). The row is read as Today's
+ * receipt reads it (decisions `receipts.ts` `receiptFor`, its twin: change
+ * both together):
+ *
+ *   no readable decision, or a status this
+ *   build doesn't know                         → null
+ *   failed                                     → decisionFailed
+ *   executed or approved-pending-agent, MADE:
+ *   the host replayed it (`replayedAt`) or the
+ *   agent took the yes up (`consumedAt`); a
+ *   routine change only once its own outcome
+ *   says `succeeded`                           → decisionDone
+ *   executed, not made, its host replay due or
+ *   running (`replayDueAt`, `replayClaimedAt`),
+ *   or markers that can't be read              → null
+ *   approved-pending-agent, or executed with
+ *   nothing holding it: the yes waits for the
+ *   agent's next ask                           → decisionAllowedNextTime
+ *   any other status: the Allow's own table
+ *   (dismissed, expired, stale, pending)       → decisionOutcome's line
+ *
+ * Every field is read with typeof: it is another plugin's answer. Pure.
+ */
+export function lineAfterMiss(out: unknown, todayLink: string): string | null {
+  if (!isRecord(out) || !isRecord(out['decision'])) return null;
+  const decision = out['decision'];
+  const status = statusOf(decision);
+  if (status === null) return null;
+  if (status === 'executed' || status === 'approved-pending-agent') {
+    // A routine change (`routineReleaseAt` is set on approving one) is made
+    // only once its own outcome says so; any other call once it went out.
+    const routine = typeof decision['routineReleaseAt'] === 'string';
+    const made = routine
+      ? decision['routineOutcome'] === 'succeeded'
+      : typeof decision['replayedAt'] === 'string' || typeof decision['consumedAt'] === 'string';
+    if (made) return COPY.decisionDone;
+    if (status === 'approved-pending-agent') return COPY.decisionAllowedNextTime;
+    // Nobody on the host side holds it: the yes stands at the gate.
+    return decision['replayDueAt'] === null && decision['replayClaimedAt'] === null
+      ? COPY.decisionAllowedNextTime
+      : null;
+  }
+  return decisionOutcome({ decision }, todayLink).line;
+}
+
+/** A read back that took longer than its deadline. Its code is all that is logged. */
+class RecheckTimeout extends Error {
+  readonly code = 'timeout';
+  constructor() {
+    super('channel-slack: reading the decision back took too long');
+    this.name = 'RecheckTimeout';
+  }
+}
+
+/**
+ * The line for `prompt`'s decision now (`lineAfterMiss`), read back with
+ * `decisions:get` for the prompt's own user within `timeoutMs`. Null without
+ * that service, and on a read that fails or outlasts its deadline (logged by
+ * code: `slack_prompt_failed`, stage `recheck`). Never rejects.
+ */
+export async function recheckAfterMiss(
+  bus: HookBus,
+  ctx: AgentContext,
+  prompt: Prompt,
+  o: { todayLink: string; timeoutMs: number; logger: Logger },
+): Promise<string | null> {
+  const subject = prompt.subject;
+  if (subject.kind !== 'decision' || !bus.hasService(GET)) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new RecheckTimeout()), o.timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    const out = await Promise.race([
+      bus.call<{ decisionId: string; userId: string }, unknown>(GET, ctx, {
+        decisionId: subject.decisionId,
+        userId: prompt.userId,
+      }),
+      deadline,
+    ]);
+    return lineAfterMiss(out, o.todayLink);
+  } catch (err) {
+    try {
+      o.logger.warn('slack_prompt_failed', {
+        installId: prompt.installId,
+        kind: 'decision',
+        stage: 'recheck',
+        code: logCode(err),
+      });
+    } catch {
+      // A log line never changes what the prompt says.
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** A hook bus deadline: the bus stopped waiting, which says nothing about what the hook did. */
 const isDeadline = (err: unknown): boolean => err instanceof PluginError && err.code === 'timeout';
 
@@ -212,6 +323,7 @@ export function createDecisionAnswer(d: DecisionAnswerDeps): SubjectAnswer {
             botToken: extra.botToken,
             reqId: continuationReqId,
             pendingUntil: typeof out['pendingUntil'] === 'string' ? out['pendingUntil'] : null,
+            messageTs: extra.messageTs,
           });
         } else {
           // Some other turn's id: following it would take its events away from it.

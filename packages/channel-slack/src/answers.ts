@@ -108,7 +108,16 @@ export type SubjectAnswer = (
   ctx: AgentContext,
   prompt: Prompt,
   action: PromptAction,
-  extra: { install: InstallRow; botToken: string },
+  extra: {
+    install: InstallRow;
+    botToken: string;
+    /**
+     * The prompt's message, the one the gate redraws with the answer's line:
+     * its recorded ts, or the clicked message's when the click beat `posted`.
+     * Null when neither can be used. What follows an answer redraws it again.
+     */
+    messageTs: string | null;
+  },
 ) => Promise<Answer>;
 
 export interface AnswerDeps {
@@ -232,11 +241,14 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
       else d.prompts.release(prompt.id);
     };
 
+    // The prompt's message. A click can beat the prompt's own `posted`: then
+    // the message Slack signed as clicked (step 3 holds a click to the
+    // prompt's own message once it is known).
+    const promptTs = prompt.messageTs ?? (SLACK_ID_RE.test(click.messageTs) ? click.messageTs : null);
+
     /** The prompt's message, redrawn with `line` where its buttons were. A failure is logged, never thrown. */
     const redraw = async (line: string): Promise<void> => {
-      // A click can beat the prompt's own `posted`: then the message Slack signed as clicked.
-      const ts = prompt.messageTs ?? (SLACK_ID_RE.test(click.messageTs) ? click.messageTs : null);
-      if (ts === null) {
+      if (promptTs === null) {
         log('warn', 'slack_prompt_failed', { kind, stage: 'update', code: 'no-message' });
         return;
       }
@@ -244,7 +256,7 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         await bounded(() =>
           d.api.updateMessage(token, {
             channel: prompt.channel,
-            ts,
+            ts: promptTs,
             ...outcomeBlocks({ subject: prompt.subjectText, line }),
           }),
         );
@@ -419,7 +431,8 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         logger: d.logger,
       });
       // Called once, whatever its deadline says: past it, the answer may still act.
-      const running = (async () => answer(ctx, prompt, click.action, { install, botToken: token }))();
+      const running = (async () =>
+        answer(ctx, prompt, click.action, { install, botToken: token, messageTs: promptTs }))();
       let out: Answer;
       try {
         out = await bounded(() => running);
