@@ -238,7 +238,8 @@ Events stay `app_mention` and `message.im`; the App Home messages tab is on
 manifest carries one more URL, `<origin>/slack/interactions/<installId>`, where
 Slack sends a click on an Allow or Deny button. It needs no new scope. An
 install made before TASK-1095 has no such URL, so it reconnects to get one
-(Disconnect, then Connect); until then its prompts still carry the Today link.
+(Disconnect, then Connect); until then its prompts still carry the Today link
+(a host prompt has none: see §5.6).
 
 Two scopes are deliberately **not** requested. `channels:history`: a channel
 is mention-only, so a follow-up in a thread needs an @mention again and the
@@ -339,9 +340,12 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
 4. **Invoke.** `agent:invoke` with the context from step 2.
 5. **Reply.** Subscribe to `chat:stream-chunk`, `chat:turn-end` and
    `chat:turn-error` filtered by `reqId`, the way channel-web does (the cite is
-   `channel-web/src/server/sse.ts:590-619`). There is no `chat:phase`. Permission
-   cards (`chat:permission-request`) are not heard yet: they come in a second PR
-   of TASK-1095. Then:
+   `channel-web/src/server/sse.ts:590-619`). There is no `chat:phase`. It also
+   hears `chat:permission-request` (TASK-1095), narrowed the way channel-web
+   narrows it: a **host** card (an egress-wall refusal) belongs to the turn
+   whose `reqId` it names; a **skill** card (`request_capability`) carries no
+   `reqId` and belongs to every turn open in the firing context's conversation.
+   Any other kind is dropped. Then:
    - Stream into the thread with `chat.startStream` / `appendStream` /
      `stopStream`. They work in channel threads (pass `recipient_user_id` and
      `recipient_team_id`) and need only `chat:write`. A stream lasts at most
@@ -433,11 +437,41 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      someone else's approval and is asked for their own. Each person's
      approval has its own slot, so team-mates' approvals of the same call
      don't block each other.
-   - **Permission cards** (a host to allow, a skill to attach) arrive in PR B.
-     The skill card goes through `agent:apply-capability-grant`, behind the
-     checks `routes-chat.ts:885` makes. They are not the held-call prompt:
-     held calls are resolved by `decisions:approve` and `decisions:dismiss`,
-     never by that hook.
+   - **Permission cards** (TASK-1095, PR B) are two more prompts, asked after
+     the reply in a DM or an attended turn and never in an outsider's turn,
+     through the same click gate as a held call. At most 3 per reply, one per
+     host and one per skill. They are not the held-call prompt: held calls are
+     resolved by `decisions:approve` and `decisions:dismiss`, never by these.
+     - **A host the sandbox was refused** ("Wants to connect to <host>"). The
+       host is whatever the sandbox tried to reach, so it is shown only once it
+       passes the egress proxy's own host pattern (a plain lowercase DNS name),
+       and checked again before it acts. **Allow** calls `proxy:add-host` with
+       exactly the prompt's session and host, as the asker; the proxy lets
+       only the session's owner do it. It widens that one session's live
+       allowlist and is never saved (`host-grants:grant`, "always for this
+       agent", stays a web-app choice). A session that has ended reads "That
+       chat already ended". **Deny** calls nothing; the host stays refused and
+       the agent asks again if it needs it. A host prompt has no Today link:
+       the web app keeps host cards out of Today on purpose.
+     - **A catalog skill the agent asked to use.** In Slack the card comes
+       in a continuation: tool-policy holds `request_capability` itself, and the
+       card fires once that hold is allowed and the woken agent asks again. A
+       continuation whose only output is the card still posts its prompt. Its
+       subject is the skill's description (text its author wrote, so cleaned
+       and drawn as plain text), and the prompt links Today, where the card
+       waits too. **Allow**
+       does what the web app's `/api/chat/permission-decision` does
+       (`routes-chat.ts:885`), as the asker: `conversations:get` first (the
+       conversation is theirs and its frozen agent is the prompt's), then
+       `agent:apply-capability-grant` with the prompt's own conversation,
+       user, agent and skill. It attaches the skill for that person and
+       retires the conversation's warm session, so nothing reruns the
+       message: the reply asks them to send it again. **Deny** calls nothing.
+       A skill that needs a key (Slack never collects one), or a bus without
+       either hook, gets its subject and a link to the web app, with nothing
+       to click.
+     - Both show the bot's own copy for every outcome; neither calls anything
+       from the message, the card's other fields or a button label.
 
 ## 6. Hooks, and the boundary review
 
@@ -591,7 +625,37 @@ connectors. The protections are:
   next identical call (`approved-pending-agent`) stands until its owner
   makes that call; it only blocks the same person's second yes for it.
 - **Whether Slack auto-links** a URL in a plain-text section is unmeasured
-  (unfurls are off); checked in the TASK-1097 walk.
+  (unfurls are off); checked in the TASK-1097 walk. A host prompt's
+  domain-shaped text is the same question.
+
+**Known gaps, accepted (TASK-1095, PR B: permission cards):**
+
+- **A host prompt shows the host to everyone in a connected channel.** The web
+  app shows it to the person alone. The host passes the proxy's pattern, so it
+  is plain text, but it is visible. A host prompt also has no Today link, so an
+  install from before TASK-1095 (no interactivity URL until it reconnects) can't
+  answer a host prompt anywhere; its buttons do nothing until then.
+- **A click on a forgotten prompt says "it's in Today"** whatever the kind
+  (a restart or the 24-hour limit leaves no kind to tailor by). For a host
+  that points at nothing: the agent just asks again.
+- **A skill prompt shows only the description**, not the hosts and packages the
+  web card lists ("To do this, it needs to reach: ..."). The reach is the
+  skill's connectors', which an admin curates, and anything needing a key goes
+  to the web app.
+- **After a Slack Allow (or Deny) the skill card stays in Today.** The web
+  app's buffer clears a card only on its own route, and no hook reaches it.
+  Answering it there attaches again (a no-op).
+- **Duplicate prompts.** A skill card goes to every turn open in its
+  conversation, so a continuation's follower and the person's next turn can each
+  post a prompt for the same skill; both are answerable and the second attaches
+  nothing new. Two people's attended turns never share a conversation
+  (conversations are keyed by user, agent and thread), so this can't ask the
+  wrong person.
+- **The authored-skill grant is never called.** If an agent has an authored
+  draft with the catalog skill's id, the web route would activate the draft
+  where Slack attaches the catalog skill the prompt described.
+- **A skill Allow retires the conversation's warm session**, as the web
+  app's Connect does; the next message starts a fresh one.
 
 **Known gaps, accepted (TASK-1094):**
 

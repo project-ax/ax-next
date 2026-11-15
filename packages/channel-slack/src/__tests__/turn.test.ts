@@ -918,6 +918,17 @@ describe('runTurn: a host the sandbox was refused gets a prompt after the reply,
     expect(h.logged('slack_permission_skipped')).toEqual([]);
   });
 
+  it("another turn's host card beside this turn's own: only this turn's is asked", async () => {
+    const h = harness({
+      chunks: [SAID],
+      cards: [{ ...hostCard('api.example.com'), reqId: 'req-0ther0000001' }, hostCard('files.example.org')],
+    });
+    await h.run('dm');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('files.example.org')]);
+    expect(h.prompts.size()).toBe(1);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
   it('Slack refuses the prompt: nothing is left open, and nothing else is posted', async () => {
     const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] }, { postBlocksFails: true });
     await h.run('attended');

@@ -50,12 +50,20 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // prompt in the thread. The click comes back on the interactions route, signed
 // like a real one, and the real @ax/decisions answers it.
 //
+// TASK-1095 (permission cards): a host the sandbox was refused, and a catalog skill the
+// agent asked to use, fire `chat:permission-request` on the bus as the orchestrator and
+// the skill broker would; a DM or attended turn asks in the thread after its reply, an
+// outsider's turn asks nothing, and Allow reaches `proxy:add-host` and
+// `agent:apply-capability-grant` only for the person who asked.
+//
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor),
 // `auth:get-user`, `auth:find-user-by-email` (the people in AX_USERS and
 // nobody else), `auth:is-approved-email` (APPROVED_DOMAINS), `agent:invoke`
 // (records the turn, then streams one line and ends it on the bus, the way
-// the orchestrator does) and `branding:get`.
+// the orchestrator does), `branding:get`, and the two services a permission
+// prompt's Allow calls (`proxy:add-host`, `agent:apply-capability-grant`: they
+// need a sandbox, so they record the call and say yes).
 // ---------------------------------------------------------------------------
 
 const SLACK_PLUGIN = '@ax/channel-slack';
@@ -145,6 +153,9 @@ const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
 /** When set, a turn runs this in place of the stub's one line of text; it ends the turn itself. */
 let invokeScript: ((ctx: AgentContext) => Promise<void>) | null = null;
 let theBus: HookBus | null = null;
+/** What the two permission-card actions (TASK-1095) were called with: the ctx's user, and the input. */
+const addHostCalls: Array<{ userId: string | undefined; input: unknown }> = [];
+const grantCalls: Array<{ userId: string | undefined; input: unknown }> = [];
 
 function createStubsPlugin(): Plugin {
   const name = '@ax/preset-k8s/test/channel-slack-stubs';
@@ -160,6 +171,10 @@ function createStubsPlugin(): Plugin {
         'auth:is-approved-email',
         'agent:invoke',
         'branding:get',
+        // The two services a permission prompt's Allow calls. Their real producers (the egress
+        // proxy, the orchestrator) need a sandbox, so these record the call and say yes.
+        'proxy:add-host',
+        'agent:apply-capability-grant',
       ],
       calls: [],
       subscribes: [],
@@ -219,6 +234,14 @@ function createStubsPlugin(): Plugin {
         { timeoutMs: Number.POSITIVE_INFINITY },
       );
       bus.registerService('branding:get', name, async () => ({ name: 'Canopy' }));
+      bus.registerService<unknown, unknown>('proxy:add-host', name, async (ctx, input) => {
+        addHostCalls.push({ userId: ctx.userId, input });
+        return { added: true };
+      });
+      bus.registerService<unknown, unknown>('agent:apply-capability-grant', name, async (ctx, input) => {
+        grantCalls.push({ userId: ctx.userId, input });
+        return { attached: true };
+      });
     },
   };
 }
@@ -1312,6 +1335,137 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       const adaRows = await listDecisions('usr_ada');
       expect(adaRows).toHaveLength(1);
       expect(adaRows[0]).toMatchObject({ status: 'pending', ownerUserId: 'usr_ada' });
+    } finally {
+      invokeScript = null;
+      await dropAgent(agentId);
+    }
+  });
+
+  // ── Permission cards (TASK-1095) ───────────────────────────────────────────
+
+  /** A turn that ends after firing `cards` on the bus, as the orchestrator (host) or the skill broker (skill) does. */
+  const turnFiring =
+    (cards: (ctx: AgentContext) => Array<Record<string, unknown>>) =>
+    async (ctx: AgentContext): Promise<void> => {
+      await theBus!.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Working on it.' });
+      for (const card of cards(ctx)) await theBus!.fire('chat:permission-request', ctx, card);
+      await theBus!.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+
+  it("a blocked website: the prompt is answered only by the person whose turn it was, and Allow widens just that session; an outsider's turn gets none (TASK-1095)", async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    addHostCalls.length = 0;
+    grantCalls.length = 0;
+    invokeScript = turnFiring((ctx) => [
+      { kind: 'host', reqId: ctx.reqId, host: 'api.example.com', sessionId: 'sess_compose_host' },
+    ]);
+    try {
+      // Mel's mention: the reply, then the prompt, in her thread.
+      const melTs = nextTs();
+      let mark = slackCalls.length;
+      expect((await deliver(installId, mention(MEL, melTs, 'fetch it'))).status).toBe(200);
+      await invokedTurn(1);
+      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      const [prompt] = promptsIn(calls);
+      expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
+      const methods = calls.map((c) => c.method);
+      expect(methods.indexOf('chat.postMessage')).toBeGreaterThan(methods.indexOf('chat.stopStream'));
+      expect(JSON.stringify(prompt!.blocks)).toContain('Wants to connect to api.example.com');
+      expect(promptsIn(calls)).toHaveLength(1);
+
+      // Ada, a team admin, is not who asked: told privately, and the proxy is never called.
+      mark = slackCalls.length;
+      expect((await click(installId, ADA, prompt!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.postEphemeral');
+      expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toBe('Only the person who asked can answer this.');
+      expect(addHostCalls).toEqual([]);
+
+      // Mel's Allow: the proxy hears exactly this session and host, as her.
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.update');
+      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Allowed for this chat. Ask me again and I'll try it.");
+      expect(addHostCalls).toEqual([
+        { userId: 'usr_mel', input: { sessionId: 'sess_compose_host', host: 'api.example.com' } },
+      ]);
+
+      // A second click on the settled prompt does nothing more.
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(addHostCalls).toHaveLength(1);
+
+      // Carol is no member: her turn runs as Ada and gets no prompt, whatever the card says.
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(CAROL, nextTs(), 'fetch it'))).status).toBe(200);
+      const external = await invokedTurn(2);
+      expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
+      await channelTurnCalls(mark);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
+      expect(addHostCalls).toHaveLength(1);
+    } finally {
+      invokeScript = null;
+      await dropAgent(agentId);
+    }
+  });
+
+  it("a skill that needs only a yes: the prompt follows the reply, a bystander's click is refused, and Mel's Allow attaches it after the real conversation agrees; an outsider's turn gets none (TASK-1095)", async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    addHostCalls.length = 0;
+    grantCalls.length = 0;
+    // `request_capability`'s card, fired from inside the turn with the turn's own ctx.
+    invokeScript = turnFiring(() => [
+      { kind: 'skill', skillId: 'calendar-booking', description: 'Books meetings for you.', slots: [] },
+    ]);
+    try {
+      const melTs = nextTs();
+      let mark = slackCalls.length;
+      expect((await deliver(installId, mention(MEL, melTs, 'book it'))).status).toBe(200);
+      const attended = await invokedTurn(1);
+      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      const [prompt] = promptsIn(calls);
+      expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
+      expect(promptsIn(calls)).toHaveLength(1);
+      expect(JSON.stringify(prompt!.blocks)).toContain('Books meetings for you.');
+      const methods = calls.map((c) => c.method);
+      expect(methods.indexOf('chat.postMessage')).toBeGreaterThan(methods.indexOf('chat.stopStream'));
+
+      // Ada is not who asked: refused, nothing attached.
+      mark = slackCalls.length;
+      expect((await click(installId, ADA, prompt!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.postEphemeral');
+      expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toBe('Only the person who asked can answer this.');
+      expect(grantCalls).toEqual([]);
+
+      // Mel's Allow: the real conversations:get agreed the conversation is hers on this agent,
+      // then the grant hears the prompt's four ids, as her.
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.update');
+      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Connected. Send your message again and I'll use it.");
+      expect(grantCalls).toEqual([
+        {
+          userId: 'usr_mel',
+          input: {
+            conversationId: attended.ctx.conversationId,
+            userId: 'usr_mel',
+            agentId,
+            skillId: 'calendar-booking',
+          },
+        },
+      ]);
+
+      // Carol's turn runs as Ada: no prompt, no grant.
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(CAROL, nextTs(), 'book it'))).status).toBe(200);
+      await invokedTurn(2);
+      await channelTurnCalls(mark);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
+      expect(grantCalls).toHaveLength(1);
     } finally {
       invokeScript = null;
       await dropAgent(agentId);
