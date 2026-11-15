@@ -28,7 +28,9 @@ import type { InstallRow } from './store.js';
  *      gets silence. Anyone but the asker takes nothing (`not-asker`), so a
  *      bystander can never make the asker's own click wait: only steps 3
  *      and 4 run for them.
- *   3. It must be this install's prompt, in the clicked channel. Else
+ *   3. It must be this install's prompt, in the clicked channel, and, once
+ *      its message is known (`posted`), the clicked message must be that
+ *      one: a prompt's id rides only on its own message's buttons. Else
  *      silence.
  *   4. Anyone but the person whose turn it was is told, privately and once
  *      per prompt (`firstRefusal`), that only that person can answer, and
@@ -317,8 +319,12 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
     };
 
     try {
-      // 3. This install's prompt, in the clicked channel.
-      if (prompt.installId !== installId || prompt.channel !== click.channel) {
+      // 3. This install's prompt, in the clicked channel, on its own message once that is known.
+      if (
+        prompt.installId !== installId ||
+        prompt.channel !== click.channel ||
+        (prompt.messageTs !== null && click.messageTs !== prompt.messageTs)
+      ) {
         letGo('release');
         declined('mismatch');
         return;

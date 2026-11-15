@@ -1118,17 +1118,31 @@ describe('the click gate: which message is redrawn', () => {
     ]);
   });
 
-  it("once the prompt's ts is recorded, that message is redrawn, whatever message the click names", async () => {
+  it("step 3: once the prompt's message is known, a click naming any other message is refused: silence, a bystander's too, and the prompt stays open", async () => {
+    // Defense in depth: a prompt's id rides only on its own message's buttons.
     const w = await world();
     const prompt = w.open(MEL_DM);
+    const elsewhere = '1763121699.000900';
 
-    await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: '1763121699.000900' }));
+    await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: elsewhere }));
+    await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: elsewhere, slackUserId: ADA }));
 
-    expect(w.slack.calls[1]).toEqual({
-      method: 'updateMessage',
-      token: BOT_TOKEN,
-      args: redrawn(DM_MEL, COPY.decisionAllowed, PROMPT_TS),
-    });
+    expect(w.slack.calls).toEqual([]);
+    expect(w.runs).toEqual([]);
+    expect(w.findUser).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', reason: 'mismatch' },
+      { installId: INSTALL_ID, kind: 'decision', reason: 'mismatch' },
+    ]);
+
+    // A click on its own message still answers it, and redraws that message.
+    await w.onClick(INSTALL, w.clickOn(prompt));
+    expect(w.runs).toHaveLength(1);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed, PROMPT_TS) },
+    ]);
   });
 
   it("no ts it can use (none recorded, and the click's isn't a Slack ts): nothing is redrawn, it's logged, and the answer stands", async () => {
