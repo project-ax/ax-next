@@ -322,6 +322,32 @@ describe('createPromptRegistry: expiry', () => {
     expect(prompts.claim(prompt.id)).toEqual(GONE);
     expect(prompts.size()).toBe(1);
   });
+
+  it('after the clock steps back, an expired prompt is still gone, though one added before it has not expired', () => {
+    const { prompts, at } = registry();
+    at(NOW_MS + 100);
+    const first = prompts.add(MEL, HELD, SUMMARY);
+    // The clock steps back: the second is added later, yet expires sooner.
+    at(NOW_MS);
+    const second = prompts.add(ADA, HELD, SUMMARY);
+    // The second has expired; the first has not.
+    at(NOW_MS + 60_050);
+    expect(prompts.claim(second.id)).toEqual(GONE);
+    expect(prompts.claim(first.id).ok).toBe(true);
+  });
+
+  it('at max, adding drops an expired prompt before it forgets a live one, even when the expired one is younger', () => {
+    const { prompts, at } = registry({ max: 2 });
+    at(NOW_MS + 100);
+    const live = prompts.add(MEL, HELD, SUMMARY);
+    at(NOW_MS);
+    const expired = prompts.add(ADA, HELD, SUMMARY);
+    at(NOW_MS + 60_050);
+    const added = prompts.add(MEL, { kind: 'decision', decisionId: 'dec_0003' }, SUMMARY);
+    expect(prompts.claim(live.id).ok).toBe(true);
+    expect(prompts.claim(expired.id)).toEqual(GONE);
+    expect(prompts.claim(added.id).ok).toBe(true);
+  });
 });
 
 // ── The cap ─────────────────────────────────────────────────────────────────
