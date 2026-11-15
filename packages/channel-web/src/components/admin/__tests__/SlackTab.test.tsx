@@ -271,6 +271,15 @@ describe('Connect', () => {
     expect(screen.getByText("This changed while you were here, so we've refreshed it.")).toBeInTheDocument();
     expect(status).toHaveBeenCalledTimes(2);
   });
+
+  it('a Connect refused for want of https re-reads into the https explainer, not the Rename sentence', async () => {
+    connect.mockRejectedValueOnce(new SlackAdminError(409, 'public-origin-not-https'));
+    renderTab(NOT_CONNECTED, NO_HTTPS);
+    await fillAndConnect();
+    expect(await screen.findByText(/Slack needs a public https address to reach this server/)).toBeInTheDocument();
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/can't send Slack a new name/)).not.toBeInTheDocument();
+  });
 });
 
 describe('Pending', () => {

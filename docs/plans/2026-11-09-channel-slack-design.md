@@ -204,7 +204,8 @@ manifest on update, so AX sends all of it as this build makes it, with only the
 name changed. There's no reinstall, and the bot token keeps working (§7 Q3). The
 name people see changes; the @handle underneath stays as it was at install.
 Slack shows mentions by current name, so people don't notice. If the stored
-token stops working, or the Slack app was deleted on Slack's side, the tab says
+token can't be used (Slack refuses it, or its owner can't manage the app), or
+the Slack app was deleted on Slack's side, the tab says
 so and the fix is Disconnect, then Connect again.
 
 **The secrets:** bot token, signing secret, client secret, and the
