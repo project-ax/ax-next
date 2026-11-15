@@ -224,7 +224,7 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
   'slack-name': "Slack didn't accept that bot name. Try another.",
   'slack-config-token':
-    "Slack stopped accepting the configuration token we have, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
+    "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
   'slack-app-gone':
     'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',
   // Connect never heard back from Slack, so the app may exist with no way for us to delete it.

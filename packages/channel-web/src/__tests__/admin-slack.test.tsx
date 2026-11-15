@@ -241,7 +241,7 @@ describe('what an error says', () => {
     [
       refusal(502, 'slack-config-token'),
       null,
-      "Slack stopped accepting the configuration token we have, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
+      "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
     ],
     [
       refusal(502, 'slack-app-gone'),
