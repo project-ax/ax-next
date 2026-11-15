@@ -406,6 +406,8 @@ describe('Rename', () => {
     rename.mockRejectedValueOnce(err);
     renderTab(CONNECTED);
     const dialog = await openDialog();
+    // The pointer was on the button, not the field, when Slack said no.
+    within(dialog).getByRole('button', { name: 'Cancel' }).focus();
     submit(dialog, 'Slackbot');
     expect(await within(dialog).findByText(message)).toBeInTheDocument();
     const field = nameInput(dialog);
