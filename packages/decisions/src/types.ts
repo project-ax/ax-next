@@ -263,7 +263,7 @@ export interface Decision {
    * agent re-issued its held call and the gate let it through exactly once.
    * The partial unique index keys on this: `status IN
    * ('executed','approved-pending-agent') AND consumed_at IS NULL` is "one
-   * standing authorisation per (agent, call)".
+   * standing authorisation per (agent, person, call)".
    */
   consumedAt: string | null;
   /**
@@ -546,8 +546,9 @@ export interface DecisionsApproveOutput {
    *
    *   * the host executor's own failure detail when the replay threw, sanitised;
    *   * `CLAIM_REFUSED_DETAIL`, when the partial unique index refused the claim
-   *     because an identical call from this agent is already authorised and has
-   *     not been carried out. That refusal used to be absorbed in silence, which
+   *     because an identical call from this agent is already authorised, by
+   *     the same person, and has not been carried out (a team-mate's yes has a
+   *     slot of its own). That refusal used to be absorbed in silence, which
    *     is what made a replay stranded by a crash look like an approve button
    *     that does nothing (TASK-253).
    *   * a routine change's authored failure line (`ROUTINE_GRANT_FAILED`, or

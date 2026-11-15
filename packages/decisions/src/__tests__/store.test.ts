@@ -330,7 +330,7 @@ describe('decisions store — counting a window', () => {
 });
 
 describe('decisions store — the standing authorisation', () => {
-  it('refuses a second unconsumed approval for the same (agent, fingerprint)', async () => {
+  it('refuses a second unconsumed approval for the same (agent, owner, fingerprint)', async () => {
     const s = await freshStore();
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
@@ -562,11 +562,12 @@ describe('decisions store — claimForApproval', () => {
     expect((await s.get('dec_1'))!.resolvedAt).toBe(T_SOON);
   });
 
-  it('refuses to leave two authorising rows standing for the same (agent, call)', async () => {
+  it('refuses to leave two authorising rows standing for the same (agent, owner, call)', async () => {
     // The partial unique index covers BOTH authorising statuses since AW-5.
     // `executed` and `approved-pending-agent` are equally a standing "yes" at
-    // the pre-call gate, so they cannot coexist unconsumed for one call shape
-    // — otherwise one call would carry two authorisations and run twice.
+    // the pre-call gate, so one person's cannot coexist unconsumed for one
+    // call shape — otherwise one call would carry two authorisations and run
+    // twice.
     const s = await freshStore();
     await s.create(base());
     await s.create(base({ id: 'dec_2' }));
@@ -811,6 +812,214 @@ describe('decisions store — whose yes it is (TASK-1095)', () => {
     for (const [leg, s] of await approvedOnBoth({ attendance: 'unattended' })) {
       expect((await s.findRoutineApproval('a1', OUTSIDER, 'fp-1', T_SOON))?.id, leg).toBe('dec_1');
     }
+  });
+
+  /**
+   * TASK-1095 review: the standing-authorisation slot is ONE PERSON'S, keyed
+   * (agent, owner, call shape). Keyed on (agent, call shape) alone, u1's yes
+   * refused u2's approval of u2's own identical call for as long as u1's
+   * stood, and a parked yes can stand until its owner's next identical call,
+   * which may never come.
+   */
+  for (const status of ['executed', 'approved-pending-agent'] as const) {
+    it(`two team-mates' yeses for the identical call stand at once (${status}), and each turn spends only its own`, async () => {
+      for (const [leg, s] of [
+        ['postgres', await freshStore()],
+        ['fake', createFakeStore()],
+      ] as const) {
+        await s.create(base());
+        await s.create(base({ id: 'dec_u2', ownerUserId: 'u2', conversationId: 'c2' }));
+        expect(await s.claimForApproval('dec_1', { nowIso: T_SOON, status }), leg).toMatchObject({ status });
+        // Not refused: u1's yes holds u1's slot, not u2's.
+        expect(await s.claimForApproval('dec_u2', { nowIso: T_SOON, status }), leg).toMatchObject({ status });
+
+        expect((await s.takeApproval('a1', 'fp-1', TEAM_MATE, T_LATE))?.id, leg).toBe('dec_u2');
+        expect((await s.get('dec_1'))!.consumedAt, leg).toBeNull();
+        expect(await s.takeApproval('a1', 'fp-1', TEAM_MATE, T_LATE), leg).toBeNull();
+        expect((await s.takeApproval('a1', 'fp-1', OWNER, T_LATE))?.id, leg).toBe('dec_1');
+        expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE), leg).toBeNull();
+      }
+    });
+  }
+
+  it("still refuses the same person's second standing yes for the identical call, beside a team-mate's", async () => {
+    for (const [leg, s] of [
+      ['postgres', await freshStore()],
+      ['fake', createFakeStore()],
+    ] as const) {
+      await s.create(base());
+      await s.create(base({ id: 'dec_u2', ownerUserId: 'u2', conversationId: 'c2' }));
+      // u1 again, in another thread: the second open row an undo leaves behind.
+      await s.create(base({ id: 'dec_1b', conversationId: 'c3' }));
+      await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+      await s.claimForApproval('dec_u2', { nowIso: T_SOON, status: 'executed' });
+
+      const err = await s
+        .claimForApproval('dec_1b', { nowIso: T_SOON, status: 'approved-pending-agent' })
+        .then(() => null, (e: unknown) => e);
+      expect(err, leg).toBeInstanceOf(DuplicateAuthorisationError);
+      expect((await s.get('dec_1b'))!.status, leg).toBe('pending');
+    }
+  });
+});
+
+/**
+ * The previous release's statements for the standing-authorisation index,
+ * verbatim (`migrations.ts` before the TASK-1095 review fix). A boot of that
+ * release runs them, as they are, against whatever this release left behind:
+ * that is the deploy's rollback window.
+ */
+const PREVIOUS_RELEASE_INDEX = [
+  sql`DROP INDEX IF EXISTS decisions_v1_approved_unconsumed`,
+  sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS decisions_v1_authorised_unconsumed
+      ON decisions_v1_decisions (agent_id, call_fingerprint)
+      WHERE status IN ('executed', 'approved-pending-agent')
+        AND consumed_at IS NULL
+        AND replayed_at IS NULL
+  `,
+] as const;
+
+describe('decisions migration — one standing yes per person, agent and call (TASK-1095)', () => {
+  /** Every UNIQUE index on the table but its primary key: where the guarantee lives. */
+  async function uniqueIndexes(
+    db: Kysely<DecisionsDatabase>,
+  ): Promise<Array<{ indexname: string; indexdef: string }>> {
+    const { rows } = await sql<{ indexname: string; indexdef: string }>`
+      SELECT indexname, indexdef FROM pg_indexes
+       WHERE schemaname = current_schema()
+         AND tablename = 'decisions_v1_decisions'
+         AND indexdef LIKE 'CREATE UNIQUE INDEX %'
+         AND indexname <> 'decisions_v1_decisions_pkey'
+       ORDER BY indexname`.execute(db);
+    return rows;
+  }
+
+  const predicate = (indexdef: string): string => indexdef.slice(indexdef.indexOf(' WHERE '));
+
+  /**
+   * A database the previous release migrated. This release's migration builds
+   * the same table, column for column, so only the index needs putting back.
+   */
+  async function migratedByPreviousRelease(): Promise<Kysely<DecisionsDatabase>> {
+    const db = makeKysely();
+    await runDecisionsMigration(db);
+    await sql`DROP INDEX decisions_v1_authorised_unconsumed`.execute(db);
+    for (const statement of PREVIOUS_RELEASE_INDEX) await statement.execute(db);
+    const [previous] = await uniqueIndexes(db);
+    expect(previous!.indexdef).toContain('(agent_id, call_fingerprint)');
+    return db;
+  }
+
+  /** u1's and u2's yeses for the identical call on the shared agent, both standing. */
+  async function twoTeamMatesApproved(s: DecisionStore): Promise<void> {
+    await s.create(base());
+    await s.create(base({ id: 'dec_u2', ownerUserId: 'u2', conversationId: 'c2' }));
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'approved-pending-agent' });
+    await s.claimForApproval('dec_u2', { nowIso: T_SOON, status: 'approved-pending-agent' });
+  }
+
+  it('gives a fresh database the one index, keyed (agent, owner, call), and a second run changes nothing', async () => {
+    const db = makeKysely();
+    await runDecisionsMigration(db);
+    const first = await uniqueIndexes(db);
+    expect(first).toHaveLength(1);
+    expect(first[0]!.indexname).toBe('decisions_v1_authorised_unconsumed');
+    expect(first[0]!.indexdef).toContain('(agent_id, owner_user_id, call_fingerprint)');
+
+    await runDecisionsMigration(db);
+    expect(await uniqueIndexes(db)).toEqual(first);
+  });
+
+  it('upgrades a database the previous release migrated: same name and predicate, keyed on the owner too', async () => {
+    const db = await migratedByPreviousRelease();
+    const [previous] = await uniqueIndexes(db);
+    const s = createDecisionsStore(db);
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'approved-pending-agent' });
+    await s.create(base({ id: 'dec_u2', ownerUserId: 'u2', conversationId: 'c2' }));
+    // The bug, before the upgrade: u1's standing yes refuses u2's own.
+    await expect(
+      s.claimForApproval('dec_u2', { nowIso: T_SOON, status: 'approved-pending-agent' }),
+    ).rejects.toThrow(DuplicateAuthorisationError);
+
+    await runDecisionsMigration(db);
+    const after = await uniqueIndexes(db);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.indexname).toBe('decisions_v1_authorised_unconsumed');
+    expect(after[0]!.indexdef).toContain('(agent_id, owner_user_id, call_fingerprint)');
+    expect(predicate(after[0]!.indexdef)).toBe(predicate(previous!.indexdef));
+
+    // u1's yes kept its slot through the upgrade; u2's now has its own.
+    expect(
+      await s.claimForApproval('dec_u2', { nowIso: T_SOON, status: 'approved-pending-agent' }),
+    ).toMatchObject({ status: 'approved-pending-agent' });
+    await s.create(base({ id: 'dec_1b', conversationId: 'c3' }));
+    await expect(
+      s.claimForApproval('dec_1b', { nowIso: T_SOON, status: 'approved-pending-agent' }),
+    ).rejects.toThrow(DuplicateAuthorisationError);
+
+    await runDecisionsMigration(db);
+    expect(await uniqueIndexes(db)).toEqual(after);
+  });
+
+  it("a rollback to the previous release still boots while two team-mates' yeses stand", async () => {
+    // That release's boot creates its (agent, call) index IF NOT EXISTS. Under
+    // any other name this index would leave that name free, the create would
+    // run over two standing yeses for one (agent, call), fail on them, and
+    // fail that host's boot: init-failed, in the middle of a rollback.
+    const db = makeKysely();
+    await runDecisionsMigration(db);
+    await twoTeamMatesApproved(createDecisionsStore(db));
+    const upgraded = await uniqueIndexes(db);
+
+    for (const statement of PREVIOUS_RELEASE_INDEX) await statement.execute(db);
+    expect(await uniqueIndexes(db)).toEqual(upgraded);
+
+    // And rolling forward again finds nothing to do.
+    await runDecisionsMigration(db);
+    expect(await uniqueIndexes(db)).toEqual(upgraded);
+  });
+
+  it('two hosts upgrading at once: the swap waits its turn under a lock, and the second finds it done', async () => {
+    const db = await migratedByPreviousRelease();
+    // Another session holds the swap's lock, so both boots stop at it.
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let held!: () => void;
+    const holding = new Promise<void>((r) => (held = r));
+    const holder = makeKysely();
+    const holderDone = holder.transaction().execute(async (trx) => {
+      await sql`SELECT pg_advisory_xact_lock(hashtext('decisions_v1_authorised_unconsumed'))`.execute(trx);
+      held();
+      await released;
+    });
+    await holding;
+
+    let boots: Array<Promise<unknown>> = [];
+    try {
+      boots = [makeKysely(), makeKysely()].map((other) =>
+        runDecisionsMigration(other).then(() => null, (e: unknown) => e),
+      );
+      await vi.waitFor(
+        async () => {
+          const { rows } = await sql<{ n: number }>`
+            SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`.execute(db);
+          if ((rows[0]?.n ?? 0) < 2) throw new Error('both boots are not waiting on the lock yet');
+        },
+        { timeout: 10_000, interval: 10 },
+      );
+    } finally {
+      // Whatever happened: a pool cannot close over a transaction left open.
+      release();
+      await holderDone;
+    }
+
+    expect(await Promise.all(boots)).toEqual([null, null]);
+    const after = await uniqueIndexes(db);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.indexname).toBe('decisions_v1_authorised_unconsumed');
+    expect(after[0]!.indexdef).toContain('(agent_id, owner_user_id, call_fingerprint)');
   });
 });
 
@@ -1931,11 +2140,11 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
 
   it('scopes to the OWNER — a shared agent is not a shared queue', async () => {
     // Reads are owner-scoped, so handing u2 the id of u1's row would give u2 a
-    // question they cannot see or answer, which is worse than two rows that
-    // collide at approval time. Not a free trade: that collision is refused
-    // where nothing has gone out, and sends a SECOND time where the host
-    // already replayed — the approve-time twin check (TASK-286) is
-    // owner-scoped too, so it does not reach across two owners.
+    // question they cannot see or answer. Two owners' rows are two questions,
+    // and since the TASK-1095 review they no longer collide at approval time
+    // either: the standing-authorisation index is keyed on the owner too, so
+    // each yes has its own slot and is spent by its own owner's turn. The
+    // approve-time twin check (TASK-286) is owner-scoped the same way.
     for (const s of await both()) {
       await s.createOrReuseOpen(base());
       const out = await s.createOrReuseOpen(base({ id: 'dec_2', ownerUserId: 'u2' }));
@@ -1946,8 +2155,8 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
 
   it('reuses across the same person’s CONVERSATIONS', async () => {
     // Deliberately wider than the thread: the authorisation this leads to is
-    // keyed (agent, fingerprint) with no conversation in it, so two open rows
-    // in two threads are two cards for one authorisation.
+    // keyed (agent, owner, fingerprint) with no conversation in it, so two
+    // open rows in two threads are two cards for one authorisation.
     for (const s of await both()) {
       await s.createOrReuseOpen(base());
       const out = await s.createOrReuseOpen(base({ id: 'dec_2', conversationId: 'c2' }));

@@ -456,7 +456,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         return {
           expired: await sweepExpired(store!, now()),
           // BEFORE the due replays, not after, and the order is not cosmetic.
-          // A stranded flight holds the `(agent, fingerprint)` slot its own
+          // A stranded flight holds the `(agent, owner, fingerprint)` slot its own
           // decision needs; releasing it first means a re-held call approved
           // in the same window is already unblocked by the time anything else
           // in this pass runs. Nothing here runs a call, so putting it first
@@ -814,11 +814,14 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //
           // It can also THROW, and the throw is meaningful: the partial unique
           // index refuses a second unconsumed authorisation for the same
-          // (agent, call shape). That happens when the agent held the SAME call
-          // twice and a human approves both rows. Turning it into a 500 would
-          // be the worst reading of it — the call is already authorised, and
-          // nothing about that is an internal error. We absorb it and report
-          // what is stored, exactly as we do when we lose the claim race.
+          // (agent, person, call shape). That happens when the agent held the
+          // SAME call twice for one person and they approve both rows; a
+          // team-mate's yes has a slot of its own (the TASK-1095 review, see
+          // `migrations.ts`), so it never refuses theirs. Turning it into a
+          // 500 would be the worst reading of it — the call is already
+          // authorised, and nothing about that is an internal error. We absorb
+          // it and report what is stored, exactly as we do when we lose the
+          // claim race.
           //
           // AND IT IS THE ONLY THROW THIS BRANCH SPEAKS FOR. `claimForApproval`
           // translates the index's refusal into `DuplicateAuthorisationError`
@@ -851,10 +854,11 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // invisible one.
           //
           // We do NOT try to tell the two apart here by reading the row that
-          // holds the slot. That row is keyed on `(agent, fingerprint)` and
-          // not on the owner, so on a team agent it can belong to somebody
-          // else — and this handler has already established only that the
-          // caller owns THIS decision.
+          // holds the slot. That row used to be keyed on `(agent, fingerprint)`
+          // alone, so on a team agent it could belong to somebody else. Since
+          // the TASK-1095 review the slot is the caller's own (agent, owner,
+          // call shape), and the sentence is true either way: an identical
+          // request is already approved and has not been carried out.
           //
           // AND (TASK-286) A SECOND KIND OF DUPLICATE IS REFUSED HERE TOO. An
           // undo can reopen a row whose identical call the agent has since

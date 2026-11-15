@@ -1258,8 +1258,8 @@ describe('decisions canary — the same call, held twice', () => {
     // And the second click is the idempotent one the machine already absorbs —
     // it reports the stored outcome rather than dying on the unique index and
     // coming back with TASK-253's refusal sentence. That branch still exists
-    // and still speaks (a shared agent's two owners can still collide); the
-    // ordinary "the agent tried again" path no longer reaches it.
+    // and still speaks (an undo can still leave one person two cards for one
+    // call); the ordinary "the agent tried again" path no longer reaches it.
     expect(a.executed).toBe(true);
     expect(a.error).toBeNull();
     expect(b.error).toBeNull();
@@ -1372,8 +1372,9 @@ describe('decisions canary — the same call, held twice', () => {
   it('the same two rows on the ATTENDED path are refused through the index while the first yes is unspent', async () => {
     // The contrasting half. Nothing has been sent when the second approval
     // arrives — the warm agent has not cashed the authorisation yet — so the
-    // first row still occupies its (agent, fingerprint) slot and the index
-    // does its job. This is the sub-case TASK-253 made audible.
+    // first row still occupies its (agent, owner, fingerprint) slot and the
+    // index does its job. This is the sub-case TASK-253 made audible, and the
+    // same person's duplicate is the one the index still refuses.
     const h = await boot();
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
     const { first, second } = await twoOpenRowsFromAnUndo(h, userCtx(h));
@@ -2113,32 +2114,37 @@ describe('decisions canary — whose yes it is (TASK-1095)', () => {
     expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
   });
 
-  it("the team-mate's own yes waits while the asker's stands, and goes through once it is spent", async () => {
-    // The index keeps one standing yes per (agent, call shape), whoever owns
-    // it. Refused in the open (CLAIM_REFUSED_DETAIL) and left answerable:
-    // an approval that waits, never a call made on somebody else's yes.
+  it("the team-mate's own yes stands beside the asker's, and each turn spends only its own", async () => {
+    // The standing-authorisation slot is one person's (agent, owner, call
+    // shape), so the team-mate's approval is not refused while the asker's
+    // yes stands. It used to be, with CLAIM_REFUSED_DETAIL, for as long as the
+    // asker's yes stood: a parked one, until the asker's next identical call.
     const h = await boot({}, undefined, teamChannels());
     const mine = slackCtx(h, 'user');
     const id = await holdAndId(h, mine, CALL);
-    await approve(h, mine, id);
+    expect((await approve(h, mine, id)).path).toBe('agent-executes');
     const teamMate = teamMateCtx(h);
     const theirId = await holdAndId(h, teamMate, CALL);
-    const approveTheirs = (): Promise<DecisionsApproveOutput> =>
-      h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', teamMate, {
-        decisionId: theirId,
-        userId: 'u2',
-      });
 
-    const waiting = await approveTheirs();
-    expect(waiting.error).toBe(CLAIM_REFUSED_DETAIL);
-    expect(waiting.decision!.status).toBe('pending');
+    const theirs = await h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', teamMate, {
+      decisionId: theirId,
+      userId: 'u2',
+    });
+    expect(theirs.error).toBeNull();
+    expect(theirs.path).toBe('agent-executes');
+    expect(theirs.decision!.status).toBe('executed');
 
-    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
-    const through = await approveTheirs();
-    expect(through.error).toBeNull();
-    expect(through.path).toBe('agent-executes');
+    // Each turn spends its own yes, once, and leaves the other's standing.
     expect((await h.bus.fire('tool:pre-call', teamMate, CALL)).rejected).toBe(false);
+    const spent = await h.bus.call<unknown, DecisionsGetOutput>('decisions:get', teamMate, {
+      decisionId: theirId,
+      userId: 'u2',
+    });
+    expect(spent.decision!.consumedAt).not.toBeNull();
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
     expect(isHold(await h.bus.fire('tool:pre-call', teamMate, CALL))).toBe(true);
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
   });
 
   it("an outsider's identical call cannot spend a member's yes, though its turn runs as that member", async () => {
@@ -2603,7 +2609,7 @@ describe('decisions canary — the freshness guard', () => {
  * The cost is the window between them, and a host that dies inside it leaves a
  * row that is `executed`, claimed, and un-replayed forever: nothing retries it,
  * nothing consumes it, undo refuses it, and it goes on occupying its
- * `(agent, fingerprint)` slot in the partial unique index — so approving the
+ * `(agent, owner, fingerprint)` slot in the partial unique index — so approving the
  * same call again collides and, before this card, was absorbed in silence.
  *
  * The crash is simulated by CRASHING, not by mocking the store: a host executor

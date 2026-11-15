@@ -38,7 +38,8 @@ const PG_UNIQUE_VIOLATION = '23505';
 
 /**
  * `claimForApproval` refused because a standing authorisation for this
- * (agent, call shape) ALREADY EXISTS — the partial unique index doing its job.
+ * (agent, person, call shape) ALREADY EXISTS — the partial unique index doing
+ * its job. The person's own: a team-mate's yes has a slot of its own.
  *
  * A TYPED ERROR RATHER THAN A DRIVER CODE THE CALLER SNIFFS, and the reason is
  * invariant 1. `decisions:approve` has to tell this refusal apart from every
@@ -230,8 +231,15 @@ function isUniqueViolation(err: unknown): boolean {
  * A collision costs a spurious wait on an unrelated hold or approval and
  * nothing else: the lock only orders the callers, and the SELECT inside it
  * still matches on the real columns. The agent id is folded in for the same
- * reason it is a column — this is the key the standing authorisation is keyed
- * on.
+ * reason it is a column.
+ *
+ * COARSER THAN THE INDEX, ON PURPOSE. Since the TASK-1095 review the standing
+ * authorisation is keyed (agent, owner, call shape); this lock still has no
+ * owner in it, so team-mates holding or approving one call queue behind each
+ * other. That costs a wait and nothing else. Narrowing it would change the key,
+ * and a key that changes between releases is exactly the instability the
+ * paragraph above rules out: hosts of two releases, mid-rollout or
+ * mid-rollback, would stop queueing behind each other.
  *
  * Exported for `store.test.ts` only, which holds this lock from a second
  * connection to stop a claim at it; nothing outside this file takes it.
@@ -301,12 +309,13 @@ export interface DecisionReceiptFilter {
 /**
  * WHO IS SPENDING a standing yes: the turn that made the call (TASK-1095).
  *
- * A yes is one person's answer about one call. The partial unique index keys
- * it on (agent, call shape) alone, and the take used to as well, so a
+ * A yes is one person's answer about one call. The take used to key it on
+ * (agent, call shape) alone, as the partial unique index did, so a
  * team-mate's byte-identical call on a shared agent, or an outsider's turn run
  * as whoever connected a Slack channel, could spend somebody else's yes: the
  * call then ran in THAT turn, as that turn's user (TASK-1094 residual 2,
- * widened when Slack threads became attended). So a take names its spender:
+ * widened when Slack threads became attended). The index now keys it on the
+ * owner too (`migrations.ts`). So a take names its spender:
  *
  *   * `userId`: the turn's user. Only their own yes (the row's owner).
  *   * `outsider`: `isOutsiderTurn(ctx)`, someone with no access to the agent
@@ -373,23 +382,23 @@ export interface DecisionStore {
    * fails to raise, or an undo that 500s, is worse than the duplicate either
    * would be preventing.
    *
-   * THE KEY IS (agent_id, call_fingerprint) — the key of the index the
-   * standing authorisation lives under, because that is the collision being
-   * removed: `decisions_v1_authorised_unconsumed` has no conversation in it, so
-   * two open rows in two of one person's threads are two cards for ONE
-   * authorisation, and approving the second is exactly the refusal this
-   * exists to make unreachable.
+   * THE KEY IS (agent_id, owner_user_id, call_fingerprint) — the key of the
+   * index the standing authorisation lives under, because that is the
+   * collision being removed: `decisions_v1_authorised_unconsumed` has no
+   * conversation in it, so two open rows in two of one person's threads are
+   * two cards for ONE authorisation, and approving the second is exactly the
+   * refusal this exists to make unreachable.
    *
-   * PLUS THE OWNER, deliberately NARROWER than that index (as taking a yes is,
-   * `takeApproval`, TASK-1095). Reads are owner-scoped; handing user B the id
+   * THE OWNER IS IN IT because reads are owner-scoped: handing user B the id
    * of user A's row on a shared team agent would give B a question they cannot
-   * see, answer or dismiss — a question nobody can answer is worse than two that
-   * collide. The collision that leaves has two outcomes: refused where nothing
-   * has gone out yet (the index), and a SECOND SEND where the host has already
-   * replayed and freed the index slot. The `restore` race used to share both;
-   * TASK-286's approve-time check (`claimForApproval`) now refuses its second
-   * send, but that check is owner-scoped like this collapse, so the two-owner
-   * second send remains. Pinned by a test rather than left to be rediscovered.
+   * see, answer or dismiss — a question nobody can answer is worse than two
+   * that collide. And since the TASK-1095 review two owners' identical holds
+   * no longer collide at all: each is approved into its own slot of the index
+   * and spent only by its own owner's turn (`takeApproval`), and TASK-286's
+   * approve-time twin check is owner-scoped the same way. So on a team agent
+   * the identical call can run once per person who said yes to it: two
+   * answers, each carried out once. Pinned by tests rather than left to be
+   * rediscovered.
    *
    * ONE OPEN ROW IS NEVER HANDED BACK (TASK-286): a card whose identical twin
    * already ran or went out with no answer. Approving it is refused for good,
@@ -459,7 +468,8 @@ export interface DecisionStore {
    * replay it and the agent will perform it on its next run. Both carry a
    * standing authorisation, so both live under the partial unique index — and
    * this throws `DuplicateAuthorisationError` if one already exists for this
-   * (agent, call fingerprint). Refusing loudly is the point.
+   * (agent, owner, call fingerprint): the same person's, never a team-mate's.
+   * Refusing loudly is the point.
    *
    * IT ALSO THROWS `IdenticalCallAlreadyTriedError` when a co-open twin ran or
    * went out with no answer (TASK-286): an identical row this person approved
@@ -645,10 +655,10 @@ export interface DecisionStore {
    *   * nothing retries it (the claim already cleared `replay_due_at`) and
    *     nothing consumes it, so the call runs ZERO times;
    *   * it cannot be undone (`restore` refuses a claimed row);
-   *   * it keeps occupying its `(agent, fingerprint)` slot in the partial
-   *     unique index, so a fresh hold of the same call cannot be approved —
-   *     the claim collides and `decisions:approve` absorbs it, saying why
-   *     (`CLAIM_REFUSED_DETAIL`) but resolving nothing.
+   *   * it keeps occupying its `(agent, owner, fingerprint)` slot in the
+   *     partial unique index, so its owner's fresh hold of the same call
+   *     cannot be approved — the claim collides and `decisions:approve`
+   *     absorbs it, saying why (`CLAIM_REFUSED_DETAIL`) but resolving nothing.
    *
    * All of that is wrong in the SAFE direction — visible inaction rather than a
    * silent double-send, which is what a lease-and-reaper scheme risks. What
@@ -740,11 +750,15 @@ export interface DecisionStore {
    * retrying its call and (from AW-5) a host replay — cannot both win.
    *
    * A yes `taker` may not spend stays exactly as it was, standing for its
-   * owner. It also keeps the partial unique index's slot, which has no owner in
-   * it: until its owner's turn spends it, a team-mate's approval of their own
-   * identical call is refused (`DuplicateAuthorisationError`, said as
-   * `CLAIM_REFUSED_DETAIL`). The safe direction: an approval that waits, never
-   * a call made on somebody else's yes.
+   * owner, in the partial unique index's slot, which is its owner's alone
+   * (agent, owner, call shape): a team-mate's own yes for the identical call
+   * stands beside it in a slot of its own. What it does keep out is a second
+   * yes of its OWNER's for the same call, asked by a turn that cannot spend the
+   * first (an outsider-mode turn run as them, which spends only an unattended
+   * yes from its own conversation): refused (`DuplicateAuthorisationError`,
+   * said as `CLAIM_REFUSED_DETAIL`) until the owner's own turn spends the
+   * first. The safe direction: an approval that waits, never a call made on
+   * somebody else's yes.
    */
   takeApproval(
     agentId: string,

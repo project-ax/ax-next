@@ -625,8 +625,8 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   });
 
   it('does not collapse two AGENTS asking the same thing', async () => {
-    // The standing authorisation is keyed on (agent, fingerprint), so one
-    // agent's yes never authorises another's call — and one agent's question
+    // The standing authorisation is keyed on (agent, owner, fingerprint), so
+    // one agent's yes never authorises another's call — and one agent's question
     // must not stand in for another's either.
     const { sub, store } = build(HOLD);
     const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
@@ -639,8 +639,9 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   });
 
   it('does not collapse two OWNERS of one shared agent', async () => {
-    // A team agent's rows are keyed (agent, fingerprint) in the index but READ
-    // back scoped by owner. Handing u2 the id of u1's row would give u2 a hold
+    // A team agent's rows are one person's each: READ back scoped by owner,
+    // and keyed (agent, owner, fingerprint) in the index since the TASK-1095
+    // review. Handing u2 the id of u1's row would give u2 a hold
     // they cannot see, cannot answer, and cannot dismiss — a lost question,
     // which is strictly worse than the duplicate this collapse exists to stop.
     const { sub, store } = build(HOLD);
@@ -656,8 +657,8 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   it('DOES collapse across two of one person’s conversations', async () => {
     // Deliberate, and the one place the collapse is wider than the thread the
     // call came from: the authorisation this question leads to is keyed
-    // (agent, fingerprint) with no conversation in it, so two open rows in two
-    // threads are two cards for ONE authorisation — and approving the second
+    // (agent, owner, fingerprint) with no conversation in it, so two open rows
+    // in two threads are two cards for ONE authorisation — and approving the second
     // is exactly the refusal this card removes. The person answers it from the
     // Today queue, which is not per-thread; only the in-thread card stays in
     // the thread that asked first.

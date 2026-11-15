@@ -70,10 +70,11 @@ export function createFakeStore(): FakeStore {
   function insert(decision: Decision): Decision {
     trip('create');
     // Mirrors the partial unique index closely enough to catch a caller that
-    // forgets it exists.
+    // forgets it exists. Keyed (agent, owner, call shape), as the index is.
     for (const row of rows.values()) {
       if (
         row.agentId === decision.agentId &&
+        row.ownerUserId === decision.ownerUserId &&
         row.callFingerprint === decision.callFingerprint &&
         AUTHORISING_STATUSES.includes(row.status) &&
         row.consumedAt === null &&
@@ -231,10 +232,12 @@ export function createFakeStore(): FakeStore {
       if (tried !== null) {
         throw new IdenticalCallAlreadyTriedError(decisionId, tried.twinId, tried.outcome);
       }
+      // The index's slot: one standing yes per (agent, owner, call shape).
       for (const other of rows.values()) {
         if (
           other.id !== decisionId &&
           other.agentId === row.agentId &&
+          other.ownerUserId === row.ownerUserId &&
           other.callFingerprint === row.callFingerprint &&
           AUTHORISING_STATUSES.includes(other.status) &&
           other.consumedAt === null &&

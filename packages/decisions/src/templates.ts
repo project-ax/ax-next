@@ -452,18 +452,19 @@ export const CONNECTOR_POLICY_UNREADABLE_DETAIL =
  * Why an approval did nothing, when it did nothing.
  *
  * `decisions:approve` absorbs the partial unique index's refusal — a second
- * standing authorisation for the same (agent, call shape) — rather than
- * turning it into a 500, because the usual cause is benign: the agent held the
- * identical call twice and a person answered both cards. But absorbing it in
- * SILENCE is what made a stranded flight look like an approve button that does
- * nothing, which is the whole of TASK-253. The click is still absorbed; it just
- * says why now.
+ * standing authorisation for the same (agent, person, call shape) — rather
+ * than turning it into a 500, because the usual cause is benign: the agent
+ * held the identical call twice and a person answered both cards. But
+ * absorbing it in SILENCE is what made a stranded flight look like an approve
+ * button that does nothing, which is the whole of TASK-253. The click is still
+ * absorbed; it just says why now.
  *
- * Deliberately vague about WHICH row is holding the slot. Naming it would mean
- * reading a row this caller was never entitled to see — the slot is keyed on
- * `(agent, fingerprint)`, not on the owner, so on a team agent it can belong to
- * somebody else. (And only that person's own turn can spend their yes,
- * TASK-1095, so a team-mate's approval waits until they have.)
+ * Deliberately vague about WHICH row is holding the slot. It used to be keyed
+ * on `(agent, fingerprint)` alone, so on a team agent the holder could be
+ * somebody else's row, which this caller was never entitled to see. Since the
+ * TASK-1095 review the slot is one person's, so the holder is another of the
+ * caller's own answers to the identical call, and a team-mate's yes never
+ * refuses theirs.
  */
 export const CLAIM_REFUSED_DETAIL =
   'An identical request from this agent is already approved and has not been ' +
