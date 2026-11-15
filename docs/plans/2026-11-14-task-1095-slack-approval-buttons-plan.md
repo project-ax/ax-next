@@ -382,7 +382,8 @@ export function followContinuation(d: TurnDeps, c: ContinuationRequest): Promise
 | `out` | line | follow |
 |---|---|---|
 | `decision` null / unreadable | `promptClosed` | no |
-| `error` non-null | `decisionNotRun(today)` | no |
+| `status 'failed'` (with or without `error`; a failed row can't be re-approved) | `decisionFailed(today)` | no |
+| `error` non-null (any other status) | `decisionNotRun(today)` | no |
 | `status 'executed'`, `path 'agent-executes'`, `streamReqId` string | `decisionAllowed` | yes |
 | `status 'executed'`, `path 'host-replays'`, `executed: true` | `decisionDone` | no |
 | `status 'executed'`, otherwise (deferred replay, no stream) | `decisionAllowed` | no |
@@ -390,7 +391,6 @@ export function followContinuation(d: TurnDeps, c: ContinuationRequest): Promise
 | `status 'dismissed'` | `decisionDenied` | no |
 | `status 'expired'` | `decisionExpired` | no |
 | `status 'stale'` | `decisionChanged(today)` | no |
-| `status 'failed'` | `decisionFailed(today)` | no |
 | `status 'pending'` or anything else | `decisionNotRun(today)` | no |
 
   `Answer.settle` is true for every row of the table (the answer landed or can't land here; Today has the rest). A throw from either hook propagates (the gate turns it into `promptFailed` + release). A hook slower than `PROMPT_STEP_TIMEOUT_MS` keeps the prompt taken until it settles (Task 5 review fix), so no retry runs beside it; still read an already-approved or already-dismissed decision as answered, since a release after a late throw opens the prompt to a retry.
