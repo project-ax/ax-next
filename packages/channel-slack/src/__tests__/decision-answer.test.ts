@@ -72,7 +72,7 @@ const PROMPT: Prompt = Object.freeze({
 /** When decisions wakes the agent: the undo window's end. */
 const PENDING_UNTIL = '2026-11-14T12:00:10.000Z';
 
-/** A decision row as decisions hands one back. Only `status` is read; the rest is there to be ignored. */
+/** A decision row as decisions hands one back. `status` decides the line; a failed row also reads `replayAbandonedAt` and `replayError`. */
 function row(status: unknown, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: DECISION_ID,
@@ -279,7 +279,9 @@ describe('decisionOutcome: what the prompt says, from what decisions handed back
       shows(COPY.decisionInterrupted(TODAY)),
     ],
     ['abandoned with no error beside it: interrupted', { decision: row('failed', { replayAbandonedAt: ABANDONED_AT }) }, shows(COPY.decisionInterrupted(TODAY))],
-    ['failed with a replayAbandonedAt that is not a string: an ordinary failure', { decision: row('failed', { replayAbandonedAt: 7 }) }, shows(COPY.decisionFailed(TODAY))],
+    ['failed with any replayAbandonedAt stamp (not only a string): abandoned, the cautious reading', { decision: row('failed', { replayAbandonedAt: 7 }) }, shows(COPY.decisionInterrupted(TODAY))],
+    // The service answered with an error: not interrupted, even when stamped abandoned (receiptFor's TOOL_ERROR_RECEIPT case).
+    ['failed, abandoned, but the service answered with an error: didn\'t work', { decision: row('failed', { replayAbandonedAt: ABANDONED_AT, replayError: 'tool-error' }) }, shows(COPY.decisionFailed(TODAY))],
     ['an abandoned stamp on a row that is not failed: ignored', { decision: row('executed', { replayAbandonedAt: ABANDONED_AT }) }, shows(COPY.decisionAllowed)],
     // Executed: who runs it, and whether there is a turn to follow.
     ['executed, handed to the warm agent with a stream: followed', handedToAgent('req-0123456789ab'), { line: COPY.decisionAllowed, follow: true }],
@@ -331,7 +333,7 @@ describe('decisionOutcome: what the prompt says, from what decisions handed back
 
 // ── After a continuation that never came ────────────────────────────────────
 
-/** decisions:get's answer: the stored row, every marker the line reads null unless `over` says otherwise. */
+/** decisions:get's answer: the stored row; its markers are null unless `over` sets them (`replayAbandonedAt`/`replayError` come from `row`, absent unless set). */
 const stored = (status: unknown, over: Record<string, unknown> = {}) => ({
   decision: {
     ...row(status),
@@ -375,7 +377,8 @@ describe("lineAfterMiss: what an answered prompt says once the thread stopped wa
     // Every other status, as the Allow's own table reads it.
     ['failed, whatever else the row says', stored('failed', { replayClaimedAt: AT, replayedAt: AT }), COPY.decisionFailed(TODAY)],
     ['failed, abandoned: interrupted, whatever else the row says', stored('failed', { replayAbandonedAt: AT, replayedAt: AT }), COPY.decisionInterrupted(TODAY)],
-    ['failed, abandoned stamp not a string: an ordinary failure', stored('failed', { replayAbandonedAt: 7 }), COPY.decisionFailed(TODAY)],
+    ['failed, any abandoned stamp: interrupted', stored('failed', { replayAbandonedAt: 7 }), COPY.decisionInterrupted(TODAY)],
+    ['failed, abandoned, the service answered with an error: didn\'t work', stored('failed', { replayAbandonedAt: AT, replayError: 'tool-error' }), COPY.decisionFailed(TODAY)],
     ['dismissed (undone, then denied, in Today)', stored('dismissed'), COPY.decisionDenied],
     ['expired', stored('expired'), COPY.decisionExpired],
     ['stale: things changed', stored('stale'), COPY.decisionChanged(TODAY)],

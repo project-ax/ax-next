@@ -106,10 +106,17 @@ function statusOf(decision: Record<string, unknown>): DecisionStatus | null {
  * string) is the absence of a report, not a report that it failed: the host
  * stopped waiting on a call that may still have finished, so, as decisions'
  * `receiptFor` does, it says it can't tell rather than "didn't work" (which
- * would invite a redo of something that may have happened).
+ * would invite a redo of something that may have happened). Two exceptions,
+ * as `receiptFor` and channel-web make them: a replay whose service ANSWERED
+ * with an error (`replayError === 'tool-error'`) did not get interrupted, so it
+ * reads "didn't work" even when stamped abandoned; and any stamp that is
+ * present at all counts as abandoned (`!= null`), the cautious reading.
  */
+const TOOL_ERROR = 'tool-error';
+
 function failedLine(decision: Record<string, unknown>, todayLink: string): string {
-  return typeof decision['replayAbandonedAt'] === 'string'
+  if (decision['replayError'] === TOOL_ERROR) return COPY.decisionFailed(todayLink);
+  return decision['replayAbandonedAt'] != null
     ? COPY.decisionInterrupted(todayLink)
     : COPY.decisionFailed(todayLink);
 }
@@ -121,9 +128,10 @@ function failedLine(decision: Record<string, unknown>, todayLink: string): strin
  *
  *   no readable decision                       → promptClosed
  *   failed (a host replay that threw), with
- *   its `error` or without                     → decisionFailed
- *   failed, its replay abandoned
- *   (`replayAbandonedAt`)                      → decisionInterrupted
+ *   its `error` or without: abandoned
+ *   (`replayAbandonedAt` set) and not a
+ *   service's own error → decisionInterrupted,
+ *   otherwise                                  → decisionFailed
  *   any other status with an `error` (it
  *   didn't do what it looks like: an
  *   identical call already allowed)            → decisionNotRun
