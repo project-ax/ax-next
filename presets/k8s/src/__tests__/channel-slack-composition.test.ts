@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   PostgreSqlContainer,
@@ -722,6 +722,24 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     shutdown = () => handle.shutdown();
   }, 180_000);
 
+  // Every channel test connects #support-desk and frees it at its end. One that fails first
+  // must not leave it bound: the next test's supportChannel() would get 409 (channel taken)
+  // and fail for a reason that is not its own. So whatever a test left connected goes here,
+  // by a site admin (a team's own admin may have left it), the way dropAgent frees it.
+  afterEach(async () => {
+    invokeScript = null;
+    actor = null;
+    if (theBus === null || pgContainer === null) return;
+    const left = await bindings();
+    for (const agentId of new Set(left.map((b) => b.agentId))) {
+      await theBus.call('agents:delete', makeAgentContext({ sessionId: 'test', agentId: '', userId: ADMIN }), {
+        actor: { userId: ADMIN, isAdmin: true },
+        agentId,
+      });
+    }
+    if (left.length > 0) await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
+  });
+
   afterAll(async () => {
     if (shutdown !== null) await shutdown();
     vi.unstubAllGlobals();
@@ -1162,6 +1180,13 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const { installId, agentId } = await supportChannel();
     invokes.length = 0;
     const holds: unknown[] = [];
+    // The `n`th turn's pre-call answer, once it has one. A turn reaches agent:invoke (what
+    // invokedTurn waits for) BEFORE its pre-call returns — the real gate reads Postgres — so
+    // reading holds[n-1] straight after invokedTurn races it: under load it is still undefined.
+    const holdOf = async (n: number): Promise<unknown> => {
+      await vi.waitFor(() => expect(holds).toHaveLength(n), { timeout: 10_000 });
+      return holds[n - 1];
+    };
     invokeScript = async (ctx) => {
       // The runner's pre-call, on the real policy: request_capability is held. Then the held
       // result and the turn's end, the way the runners send them.
@@ -1183,7 +1208,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect((await deliver(installId, mention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
       const external = await invokedTurn(1);
       expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
-      expect(isHold(holds[0])).toBe(true);
+      expect(isHold(await holdOf(1))).toBe(true);
       let calls = await channelTurnCalls(mark);
       let said = sentText(calls);
       expect(said).toContain("I need my owner's OK before I can do part of this");
@@ -1208,7 +1233,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect((await deliver(installId, mention(MEL, melTs, 'please book it'))).status).toBe(200);
       const attended = await invokedTurn(2);
       expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
-      expect(isHold(holds[1])).toBe(true);
+      expect(isHold(await holdOf(2))).toBe(true);
       calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
       said = sentText(calls);
       expect(said).toContain('I need your OK before I can do part of this.');
