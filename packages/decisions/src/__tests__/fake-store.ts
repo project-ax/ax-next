@@ -22,8 +22,10 @@ import {
   DuplicateAuthorisationError,
   firstTriedTwin,
   IdenticalCallAlreadyTriedError,
+  outsiderConversation,
   reusableOpenRow,
   takesOnlyUnattended,
+  type ApprovalTaker,
   type DecisionStore,
 } from '../store.js';
 import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js';
@@ -32,6 +34,13 @@ import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js'
 // about which rows are still answerable would let a caller's test pass over a
 // query that does not work.
 const OPEN = OPEN_STATUSES;
+
+/** The real store's outsider rule (TASK-1095 `ApprovalTaker`), over one row. */
+function outsiderMayTake(taker: ApprovalTaker, row: Decision): boolean {
+  if (!takesOnlyUnattended(taker)) return true;
+  const conversationId = outsiderConversation(taker);
+  return conversationId !== null && row.attendance === 'unattended' && row.conversationId === conversationId;
+}
 
 export interface FakeStore extends DecisionStore {
   rows: Map<string, Decision>;
@@ -500,7 +509,7 @@ export function createFakeStore(): FakeStore {
           row.callFingerprint === callFingerprint &&
           // TASK-1095: the real store's who-rule (`ApprovalTaker`).
           row.ownerUserId === taker.userId &&
-          (!takesOnlyUnattended(taker) || row.attendance === 'unattended') &&
+          outsiderMayTake(taker, row) &&
           AUTHORISING_STATUSES.includes(row.status) &&
           row.consumedAt === null &&
           row.replayDueAt === null &&
@@ -521,7 +530,7 @@ export function createFakeStore(): FakeStore {
           (r) =>
             r.agentId === agentId &&
             r.ownerUserId === taker.userId &&
-            (!takesOnlyUnattended(taker) || r.attendance === 'unattended') &&
+            outsiderMayTake(taker, r) &&
             r.callFingerprint === fingerprint &&
             AUTHORISING_STATUSES.includes(r.status) &&
             r.expiresAt > nowIso &&

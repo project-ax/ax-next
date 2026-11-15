@@ -27,8 +27,8 @@ import { checkedRoutineCall, routineConsentNeverCovers } from './routine-authori
  * again.
  *
  * And it is that PERSON's (TASK-1095): a turn spends only its own user's yes,
- * and an outsider's turn only one given on the unattended path
- * (`ApprovalTaker`). A team-mate's identical call, or an outsider's, is a new
+ * and an outsider's turn only one given on the unattended path in its own
+ * conversation (`ApprovalTaker`). A team-mate's identical call, or an outsider's, is a new
  * question rather than a ride on someone else's answer.
  */
 import {
@@ -176,9 +176,14 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
   async function decide(ctx: AgentContext, call: ToolCall): Promise<undefined | Rejection> {
     const fingerprint = callFingerprint(call);
     // Whose yes this call may spend (TASK-1095, `ApprovalTaker`): its own
-    // user's, and an outsider's turn only an unattended one. Both from the
-    // host-stamped ctx (the session record), never from the call.
-    const taker: ApprovalTaker = { userId: ctx.userId, outsider: isOutsiderTurn(ctx) };
+    // user's, and an outsider's turn only an unattended one raised in its own
+    // conversation. All from the host-stamped ctx (the session record), never
+    // from the call.
+    const taker: ApprovalTaker = {
+      userId: ctx.userId,
+      outsider: isOutsiderTurn(ctx),
+      conversationId: ctx.conversationId ?? null,
+    };
 
     // 1. A standing approval, if there is one. Consumed atomically; a failure
     //    here is NOT fatal — we simply have no approval to honour and fall

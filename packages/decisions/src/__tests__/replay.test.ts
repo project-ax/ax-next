@@ -26,7 +26,7 @@ import { createFakeStore } from './fake-store.js';
 const T0 = '2026-08-20T09:00:00.000Z';
 const EXPIRES = '2026-08-22T09:00:00.000Z';
 /** The rows' owner taking their own yes, in their own turn (TASK-1095 `ApprovalTaker`). */
-const OWNER = { userId: 'owner-1', outsider: false } as const;
+const OWNER = { userId: 'owner-1', outsider: false, conversationId: 'conv-1' } as const;
 
 const CALL: ToolCall = {
   id: 'call-1',

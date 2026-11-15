@@ -259,6 +259,45 @@ describe('tool:pre-call subscriber — whose yes it is (TASK-1095)', () => {
     expect(isHold(await sub(outsider, CALL))).toBe(true);
   });
 
+  it("an outsider's turn never spends its connector's unattended yes from another conversation", async () => {
+    // The connector's own question, raised by an unattended turn of theirs
+    // (a routine, say) and answered from Today: an outsider-mode turn runs AS
+    // the connector, so the owner match alone would hand it that yes.
+    const { sub, store } = build(HOLD, createFakeStore(), async () => 'unattended');
+    const routine = ctx({ source: 'routine', conversationId: 'c-routine' });
+    const parked = await heldAndApproved(sub, store, routine, { status: 'approved-pending-agent' });
+
+    const outsider = ctx({ source: 'external', conversationId: 'c-outsider' });
+    expect(isHold(await sub(outsider, CALL))).toBe(true);
+    expect((await store.get(parked))!.consumedAt).toBeNull();
+    // An outsider-mode turn with no conversation at all fails closed too.
+    expect(isHold(await sub(ctx({ source: 'external', conversationId: undefined }), CALL))).toBe(true);
+    expect((await store.get(parked))!.consumedAt).toBeNull();
+    // The counter-control: the connector's own routine turn still spends it.
+    expect(await sub(routine, CALL)).toBeUndefined();
+  });
+
+  it("an outsider's routine change never goes ahead on its connector's unattended yes from another conversation", async () => {
+    const bus = new HookBus();
+    bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));
+    const routineHold: PolicyAnswer = {
+      verdict: 'hold',
+      ruleId: 'routines.update',
+      capability: 'edit routines',
+    };
+    const { sub, store } = build(routineHold, createFakeStore(), async () => 'unattended', bus);
+    const change: ToolCall = {
+      id: 'c-delete',
+      name: 'routine_delete',
+      input: { requestId: 'r-delete', routineId: 'rtn_a', expectedRevision: 'rev_a' },
+    };
+    const routine = ctx({ source: 'routine', conversationId: 'c-routine' });
+    await heldAndApproved(sub, store, routine, { call: change, routineReleaseAt: NOW.toISOString() });
+
+    expect(isHold(await sub(ctx({ source: 'external', conversationId: 'c-outsider' }), change))).toBe(true);
+    expect(await sub(routine, change)).toBeUndefined();
+  });
+
   it("an outsider's routine change never goes ahead on an attended yes either", async () => {
     const bus = new HookBus();
     bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));

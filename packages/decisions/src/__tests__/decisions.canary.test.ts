@@ -2202,6 +2202,21 @@ describe('decisions canary — whose yes it is (TASK-1095)', () => {
     expect((await h.bus.fire('tool:pre-call', outsider, SANDBOX_CALL)).rejected).toBe(false);
     expect(isHold(await h.bus.fire('tool:pre-call', outsider, SANDBOX_CALL))).toBe(true);
   });
+
+  it("an outsider's turn cannot spend its connector's own unattended yes from another conversation", async () => {
+    // u1's routine asked, u1 said yes from Today, and the yes parks for the
+    // routine's next identical call. An outsider's turn runs AS u1, so only
+    // the conversation keeps it off that yes.
+    const h = await boot({}, undefined, slackChannels());
+    const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
+    expect((await approve(h, userCtx(h), id)).decision!.status).toBe('approved-pending-agent');
+
+    expect(isHold(await h.bus.fire('tool:pre-call', slackCtx(h, 'external'), SANDBOX_CALL))).toBe(true);
+    expect((await readDecision(h, userCtx(h), id)).consumedAt).toBeNull();
+    // The routine's own next call still has it, once.
+    expect((await h.bus.fire('tool:pre-call', routineCtx(h), SANDBOX_CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', routineCtx(h), SANDBOX_CALL))).toBe(true);
+  });
 });
 
 /**

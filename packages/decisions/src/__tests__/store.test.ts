@@ -76,7 +76,7 @@ const T_SOON = '2026-08-20T09:00:05.000Z';
 const T_LATE = '2026-08-20T13:00:00.000Z';
 const EXPIRES = '2026-08-22T09:00:00.000Z';
 /** The rows' owner taking their own yes, in their own turn (TASK-1095 `ApprovalTaker`). */
-const OWNER = { userId: 'u1', outsider: false } as const;
+const OWNER = { userId: 'u1', outsider: false, conversationId: 'c1' } as const;
 
 function base(over: Partial<Decision> = {}): Decision {
   return {
@@ -676,9 +676,14 @@ describe('decisions store — the authorisation the agent takes up', () => {
  * cannot drift from the SQL.
  */
 describe('decisions store — whose yes it is (TASK-1095)', () => {
-  const TEAM_MATE = { userId: 'u2', outsider: false } as const;
-  /** An outsider's turn runs AS the person who connected the channel. */
-  const OUTSIDER = { userId: 'u1', outsider: true } as const;
+  const TEAM_MATE = { userId: 'u2', outsider: false, conversationId: 'c2' } as const;
+  /**
+   * An outsider's turn runs AS the person who connected the channel, in the
+   * conversation its question was raised in (`base` raises `dec_1` in c1).
+   */
+  const OUTSIDER = { userId: 'u1', outsider: true, conversationId: 'c1' } as const;
+  /** The same outsider-mode turn, but in another conversation than the yes's. */
+  const OUTSIDER_ELSEWHERE = { userId: 'u1', outsider: true, conversationId: 'c-other' } as const;
 
   /** u1's `dec_1`, claimed into `status`, on real Postgres and on the fake. */
   async function approvedOnBoth(
@@ -735,9 +740,47 @@ describe('decisions store — whose yes it is (TASK-1095)', () => {
     }
   });
 
+  it("an outsider's turn never takes an unattended yes raised in another conversation", async () => {
+    // The connector's own unattended yes (a parked routine call, an outsider
+    // question in another thread) is theirs, not every outsider's: an
+    // outsider-mode turn runs AS the connector, so the owner match alone would
+    // let it spend one raised anywhere. Only its own conversation's.
+    for (const [leg, s] of await approvedOnBoth(
+      { attendance: 'unattended' },
+      'approved-pending-agent',
+    )) {
+      expect(await s.takeApproval('a1', 'fp-1', OUTSIDER_ELSEWHERE, T_LATE), leg).toBeNull();
+      expect((await s.get('dec_1'))!.consumedAt, leg).toBeNull();
+      expect(await s.takeApproval('a1', 'fp-1', { ...OUTSIDER, conversationId: null }, T_LATE), leg).toBeNull();
+      expect(await s.takeApproval('a1', 'fp-1', { ...OUTSIDER, conversationId: '' }, T_LATE), leg).toBeNull();
+      // The counter-control: in its own conversation, it is spent.
+      expect((await s.takeApproval('a1', 'fp-1', OUTSIDER, T_LATE))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it("a member's own turn takes their yes from any conversation: the conversation rule is the outsider's only", async () => {
+    for (const [leg, s] of await approvedOnBoth(
+      { attendance: 'unattended' },
+      'approved-pending-agent',
+    )) {
+      const elsewhere = { ...OWNER, conversationId: 'c-other' };
+      expect((await s.takeApproval('a1', 'fp-1', elsewhere, T_LATE))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it("findRoutineApproval: an outsider's turn never goes ahead on an unattended yes from another conversation", async () => {
+    for (const [leg, s] of await approvedOnBoth({ attendance: 'unattended' })) {
+      expect(await s.findRoutineApproval('a1', OUTSIDER_ELSEWHERE, 'fp-1', T_SOON), leg).toBeNull();
+      expect(await s.findRoutineApproval('a1', { ...OUTSIDER, conversationId: null }, 'fp-1', T_SOON), leg).toBeNull();
+      expect((await s.findRoutineApproval('a1', OUTSIDER, 'fp-1', T_SOON))?.id, leg).toBe('dec_1');
+      const elsewhere = { ...OWNER, conversationId: 'c-other' };
+      expect((await s.findRoutineApproval('a1', elsewhere, 'fp-1', T_SOON))?.id, leg).toBe('dec_1');
+    }
+  });
+
   it('a taker that does not say `outsider: false` is taken for an outsider: it fails closed', async () => {
     for (const [leg, s] of await approvedOnBoth({ attendance: 'attended' })) {
-      const unsaid = { userId: 'u1' } as unknown as ApprovalTaker;
+      const unsaid = { userId: 'u1', conversationId: 'c1' } as unknown as ApprovalTaker;
       expect(await s.takeApproval('a1', 'fp-1', unsaid, T_SOON), leg).toBeNull();
       expect(await s.findRoutineApproval('a1', unsaid, 'fp-1', T_SOON), leg).toBeNull();
     }

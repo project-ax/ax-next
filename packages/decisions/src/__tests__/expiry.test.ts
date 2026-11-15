@@ -20,7 +20,7 @@ import { createFakeStore, type FakeStore } from './fake-store.js';
 
 const NOW = new Date('2026-08-20T09:00:00.000Z');
 /** The rows' owner taking their own yes, in their own turn (TASK-1095 `ApprovalTaker`). */
-const OWNER = { userId: 'owner-1', outsider: false } as const;
+const OWNER = { userId: 'owner-1', outsider: false, conversationId: 'conv-1' } as const;
 const ONE_SEC = 1000;
 
 const CALL: ToolCall = {

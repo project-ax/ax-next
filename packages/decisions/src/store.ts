@@ -316,12 +316,18 @@ export interface DecisionReceiptFilter {
  *     Today to a question an unattended turn asked. Never a yes a person gave
  *     in their own chat. Anything but an explicit `false` reads as an outsider
  *     (`takesOnlyUnattended`), failing closed as `isOutsiderTurn` does.
+ *   * `conversationId`: the turn's conversation. An outsider's turn spends a
+ *     yes raised in THIS conversation only, so it cannot spend the member's
+ *     own unattended yes raised elsewhere (a parked routine call, another
+ *     thread's question). None (`null` or empty) takes nothing
+ *     (`outsiderConversation`). A member's own turn is not limited by it.
  *
  * A yes the spender may not take is left standing for its owner.
  */
 export interface ApprovalTaker {
   userId: string;
   outsider: boolean;
+  conversationId: string | null;
 }
 
 /**
@@ -330,6 +336,18 @@ export interface ApprovalTaker {
  */
 export function takesOnlyUnattended(taker: ApprovalTaker): boolean {
   return taker.outsider !== false;
+}
+
+/**
+ * The conversation an outsider's take is confined to, or `null` when it has
+ * none and so takes nothing (fails closed: a row raised without a conversation
+ * stores `''`, and one outsider's empty conversation is not another's). Only
+ * meaningful when `takesOnlyUnattended(taker)`.
+ */
+export function outsiderConversation(taker: ApprovalTaker): string | null {
+  return typeof taker.conversationId === 'string' && taker.conversationId !== ''
+    ? taker.conversationId
+    : null;
 }
 
 export interface DecisionStore {
@@ -716,7 +734,8 @@ export interface DecisionStore {
   /**
    * Consume the standing authorisation for this (agent, call shape), if there
    * is one AND it is `taker`'s to spend (TASK-1095, `ApprovalTaker`): their
-   * own, and for an outsider's turn an `unattended` one only. A SINGLE
+   * own, and for an outsider's turn an `unattended` one raised in its own
+   * conversation only. A SINGLE
    * conditional UPDATE...RETURNING, so two concurrent callers — the warm agent
    * retrying its call and (from AW-5) a host replay — cannot both win.
    *
@@ -1482,8 +1501,15 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // through the gate on a yes the host already spent.
         .where('replayed_at', 'is', null);
       // TASK-1095: and an outsider's turn, which runs AS a member, never spends
-      // a yes that member gave in their own chat (`ApprovalTaker`).
-      if (takesOnlyUnattended(taker)) take = take.where('attendance', '=', 'unattended');
+      // a yes that member gave in their own chat, nor one of theirs raised in
+      // another conversation (`ApprovalTaker`).
+      if (takesOnlyUnattended(taker)) {
+        const conversationId = outsiderConversation(taker);
+        if (conversationId === null) return null;
+        take = take
+          .where('attendance', '=', 'unattended')
+          .where('conversation_id', '=', conversationId);
+      }
       const row = await take.returningAll().executeTakeFirst();
       return row === undefined ? null : toDecision(row);
     },
@@ -1498,7 +1524,13 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .where('status', 'in', AUTHORISING_STATUSES as string[])
         .where('expires_at', '>', new Date(nowIso));
       // TASK-1095: the same who-rule as `takeApproval`.
-      if (takesOnlyUnattended(taker)) find = find.where('attendance', '=', 'unattended');
+      if (takesOnlyUnattended(taker)) {
+        const conversationId = outsiderConversation(taker);
+        if (conversationId === null) return null;
+        find = find
+          .where('attendance', '=', 'unattended')
+          .where('conversation_id', '=', conversationId);
+      }
       const row = await find.orderBy('created_at', 'desc').executeTakeFirst();
       return row ? toDecision(row) : null;
     },
