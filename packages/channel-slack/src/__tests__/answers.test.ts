@@ -180,11 +180,16 @@ interface SlackCall {
   args: Record<string, unknown>;
 }
 
-function fakeSlack(o: { users: Record<string, unknown>; hang?: Method }) {
+function fakeSlack(o: { users: Record<string, unknown>; hang?: Method; hold?: { method: Method; until: Promise<void> } }) {
   const calls: SlackCall[] = [];
+  let held = false;
   const record = async (method: Method, token: string, args: Record<string, unknown>): Promise<void> => {
     calls.push({ method, token, args: JSON.parse(JSON.stringify(args)) as Record<string, unknown> });
     if (o.hang === method) await never();
+    if (o.hold?.method === method && !held) {
+      held = true;
+      await o.hold.until;
+    }
   };
   /** A method the gate must never call: recorded too, so an exact call list shows it. */
   const notHere =
@@ -255,6 +260,8 @@ interface WorldOptions {
   binding?: Fault;
   /** This Slack method never answers. */
   slackHang?: Method;
+  /** The first call of this Slack method answers only once `until` settles. */
+  slackHold?: { method: Method; until: Promise<void> };
   /** What the decision answer gives back; `n` is its run (1-based). Its default: Allowed or Denied, settled. */
   answer?: (n: number) => Answer | Promise<Answer>;
   /** The answers by subject kind, instead of the recording decision answer. */
@@ -340,7 +347,11 @@ async function world(o: WorldOptions = {}) {
     },
   };
 
-  const slack = fakeSlack({ users: { ...SLACK_USERS, ...o.slackUsers }, ...(o.slackHang ? { hang: o.slackHang } : {}) });
+  const slack = fakeSlack({
+    users: { ...SLACK_USERS, ...o.slackUsers },
+    ...(o.slackHang ? { hang: o.slackHang } : {}),
+    ...(o.slackHold ? { hold: o.slackHold } : {}),
+  });
 
   let nowMs = Date.parse('2026-11-14T12:00:00.000Z');
   let minted = 0;
@@ -926,6 +937,24 @@ describe('the click gate: each step refuses on its own (each case valid on every
     expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'host', reason: 'unsupported' }]);
   });
 
+  it("step 9: only the deps' own answers count: one inherited through a prototype never runs", async () => {
+    let inheritedRuns = 0;
+    const inherited: SubjectAnswer = async () => {
+      inheritedRuns += 1;
+      return { line: COPY.decisionAllowed, settle: true };
+    };
+    const w = await world({ answers: Object.create({ decision: inherited }) as AnswerDeps['answers'] });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(inheritedRuns).toBe(0);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', reason: 'unsupported' },
+    ]);
+  });
+
   it("step 9: an answer that fails: 'try again', privately, the prompt stays open, and Mel's next click answers it", async () => {
     const w = await world({
       answer: (n) => {
@@ -973,6 +1002,82 @@ describe('the click gate: one answer per prompt', () => {
     expect(w.runs).toHaveLength(1);
     expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo', 'updateMessage']);
     expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+  });
+
+  for (const outcome of ['answered', 'closed'] as const) {
+    it(`a second click while the prompt is being redrawn (${outcome}) is the silent busy one, never told the prompt is gone`, async () => {
+      const redrawing = deferred();
+      const w = await world({ slackHold: { method: 'updateMessage', until: redrawing.promise } });
+      // A subject nothing here answers closes the prompt instead.
+      const prompt = w.open(MEL_DM, outcome === 'closed' ? { subject: { kind: 'skill', skillId: 'skl_1' } } : {});
+
+      const first = w.onClick(INSTALL, w.clickOn(prompt));
+      await vi.waitFor(() => expect(w.slack.calls.map((c) => c.method)).toContain('updateMessage'));
+      await w.onClick(INSTALL, w.clickOn(prompt));
+      redrawing.release();
+      await first;
+
+      expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo', 'updateMessage']);
+      expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).toEqual(
+        outcome === 'closed' ? ['unsupported', 'busy'] : ['busy'],
+      );
+      expect(w.state(prompt)).toBe('gone');
+    });
+  }
+
+  /** Each way a click on Mel's prompt ends with a private line while the prompt stays hers to answer. */
+  const LET_GO_FIRST: Array<[string, WorldOptions]> = [
+    [
+      'an answer that failed',
+      {
+        answer: (n) => {
+          if (n === 1) throw fault('fake-decisions');
+          return { line: COPY.decisionAllowed, settle: true };
+        },
+      },
+    ],
+    [
+      'an answer that leaves the prompt open',
+      {
+        answer: (n) =>
+          n === 1 ? { line: COPY.promptFailed, settle: false } : { line: COPY.decisionAllowed, settle: true },
+      },
+    ],
+    ['Slack briefly unavailable', { slackUsers: { [MEL]: new SlackApiError('users.info', 'ratelimited', 1_000) } }],
+    ['an email that maps to no account', { axUsers: { [MEL_EMAIL]: null } }],
+  ];
+
+  for (const [what, options] of LET_GO_FIRST) {
+    it(`${what}: the prompt is let go before Mel is told, so her click during that line isn't the busy one`, async () => {
+      const telling = deferred();
+      const w = await world({ ...options, slackHold: { method: 'postEphemeral', until: telling.promise } });
+      const prompt = w.open(MEL_DM);
+
+      const first = w.onClick(INSTALL, w.clickOn(prompt));
+      await vi.waitFor(() => expect(w.slack.calls.map((c) => c.method)).toContain('postEphemeral'));
+      await w.onClick(INSTALL, w.clickOn(prompt));
+      telling.release();
+      await first;
+
+      // Her second click got past the claim: it asked users.info again.
+      expect(w.slack.calls.filter((c) => c.method === 'usersInfo')).toHaveLength(2);
+      expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).not.toContain('busy');
+    });
+  }
+
+  it('a throw past every step still lets go of the prompt: the asker can click again', async () => {
+    // An answer that breaks its contract: nothing to read a line from.
+    const w = await world({
+      answer: (n) => (n === 1 ? (null as unknown as Answer) : { line: COPY.decisionAllowed, settle: true }),
+    });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt)).catch(() => undefined);
+    expect(w.state(prompt)).toBe('open');
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+    expect(w.runs).toHaveLength(2);
+    expect(w.state(prompt)).toBe('gone');
   });
 
   it('an answer that leaves the prompt open: no redraw (its buttons stay), its line privately, and the prompt can be answered again', async () => {
@@ -1201,6 +1306,8 @@ describe('the click gate: every step has a deadline', () => {
     await w.onClick(INSTALL, w.clickOn(prompt));
 
     expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+    // The hung click's users.info, and nothing from the busy one.
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo']);
     await vi.advanceTimersByTimeAsync(1);
     await first;
     expect(w.state(prompt)).toBe('open');
