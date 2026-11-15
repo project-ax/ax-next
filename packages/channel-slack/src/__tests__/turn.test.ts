@@ -1,13 +1,20 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
-import { PROMPT_MAX, PROMPT_TTL_MS } from '../limits.js';
+import { CONTINUATION_START_GRACE_MS, PROMPT_MAX, PROMPT_TTL_MS, TURN_HARD_CAP_MS } from '../limits.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
-import { runTurn, turnContextFields, type TurnMode, type TurnRequest } from '../turn.js';
+import {
+  followContinuation,
+  runTurn,
+  turnContextFields,
+  type ContinuationRequest,
+  type TurnMode,
+  type TurnRequest,
+} from '../turn.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -572,4 +579,379 @@ describe('runTurn: a held call the person who wrote can answer gets a prompt aft
     expect(h.lookups).toEqual([]);
     expect(h.calls().map((c) => c.method)).not.toContain('postBlocks');
   });
+});
+
+// ── Following a woken agent's turn into the prompt's thread (Task 8) ───────
+
+/**
+ * The continuation's reqId: the Allow minted it, @ax/decisions echoed it as
+ * `streamReqId`, and the woken runner stamps the turn's chunks and its end
+ * with it.
+ */
+const CONTINUATION = 'req-c0ffee000001';
+/** Another turn running meanwhile. */
+const ELSEWHERE = 'req-0ther0000001';
+
+interface LogLine {
+  level: string;
+  msg: string;
+  fields: Record<string, unknown> | undefined;
+}
+
+describe("followContinuation: after Allow, the agent's next turn is followed into the prompt's thread (TASK-1095)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const CHANNEL = 'C07SUPPORT1';
+  const THREAD = '1763035200.000100';
+  /** The answered prompt's turn, and every prompt a continuation of it asks. */
+  const CONTEXT = {
+    installId: INSTALL.installId,
+    teamId: 'T07ABCDEF12',
+    channel: CHANNEL,
+    threadTs: THREAD,
+    askerSlackId: SENDER,
+    userId: 'usr_alice',
+    agentId: 'agt_support',
+    conversationId: 'conv_support_thread',
+  } as const;
+
+  function follower(o: { mode?: 'dm' | 'attended'; decisions?: unknown[] } = {}) {
+    const bus = new HookBus();
+    const registry = createTurnRegistry();
+    subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
+    const slack = fakeSlack();
+    const lines: LogLine[] = [];
+    const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
+      lines.push({ level, msg, fields });
+    };
+    const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
+    const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
+    if (o.decisions !== undefined) {
+      const rows = o.decisions;
+      bus.registerService('decisions:recent-for-conversation', 'fake-decisions', async (ctx, input) => {
+        lookups.push({ ctx, input });
+        // As @ax/decisions guards it: only the turn's own user and agent may read the conversation's decisions.
+        const i = input as { userId: unknown; agentId: unknown };
+        if (ctx.userId !== i.userId || ctx.agentId !== i.agentId) throw new Error('conversation decision scope mismatch');
+        return { decisions: rows };
+      });
+    }
+    // chat-orchestrator's `agent:interrupt`: `{ conversationId, userId }` in, `{ interrupted }` out.
+    const interrupts: Array<{ ctx: AgentContext; input: unknown }> = [];
+    bus.registerService('agent:interrupt', 'fake-orchestrator', async (ctx, input) => {
+      interrupts.push({ ctx, input });
+      return { interrupted: true };
+    });
+    let minted = 0;
+    const prompts = createPromptRegistry({
+      now: () => Date.now(),
+      randomBytes: (size) => Buffer.alloc(size, ++minted),
+      ttlMs: PROMPT_TTL_MS,
+      max: PROMPT_MAX,
+    });
+    // The prompt Alice answered: posted after her turn, then settled by her Allow (answers.ts).
+    const prompt = prompts.add({ ...CONTEXT, mode: o.mode ?? 'attended' }, { kind: 'decision', decisionId: 'dec_held' }, SUMMARY);
+    prompts.posted(prompt.id, PROMPT_TS);
+    prompts.settle(prompt.id);
+    // The woken runner's events as the IPC listener fires them: under its own
+    // ctx (it restamps the reqId), the turn named only in the payload.
+    const ipcCtx = makeAgentContext({
+      sessionId: 'sess_live',
+      agentId: 'agt_support',
+      userId: 'usr_alice',
+      conversationId: 'conv_support_thread',
+    });
+    const request = (pendingUntil: string | null): ContinuationRequest => ({
+      prompt,
+      install: INSTALL,
+      botToken: BOT_TOKEN,
+      reqId: CONTINUATION,
+      pendingUntil,
+    });
+    return {
+      registry,
+      prompts,
+      lines,
+      lookups,
+      interrupts,
+      /** Every Slack call, 👀 included. */
+      all: () => slack.calls,
+      reply: () => replyOf(slack.calls),
+      follow: (pendingUntil: string | null) =>
+        followContinuation(
+          { bus, api: slack.api, registry, prompts, publicOrigin: PUBLIC_ORIGIN, logger, clock: systemClock },
+          request(pendingUntil),
+        ),
+      chunk: (c: Record<string, unknown>, reqId: string = CONTINUATION) =>
+        bus.fire('chat:stream-chunk', ipcCtx, { reqId, ...c }),
+      end: (reqId: string = CONTINUATION) => bus.fire('chat:turn-end', ipcCtx, { reqId, reason: 'user-message-wait' }),
+      error: () => bus.fire('chat:turn-error', ipcCtx, { reqId: CONTINUATION, reason: 'chat-run-timeout' }),
+    };
+  }
+
+  /** When @ax/decisions wakes the agent: the end of the approval's undo window, 10 s after the click. */
+  const inTenSeconds = (): string => new Date(Date.now() + 10_000).toISOString();
+
+  it("streams the woken turn into the prompt's thread, for the person who answered it, until its turn-end", async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'tool-use', toolCallId: 'toolu_again', toolName: 'mcp__gmail__send_email', activityPhrase: 'Sending' });
+    await h.chunk({ kind: 'tool-result', toolCallId: 'toolu_again', output: 'sent' });
+    await h.chunk({ kind: 'text', text: 'Sent it to Bob.' });
+    await h.end();
+    await done;
+
+    const calls = h.all();
+    // No 👀: there is no message of theirs to put it on.
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'stopStream']);
+    expect(calls[0]!.token).toBe(BOT_TOKEN);
+    expect(calls[0]!.args).toMatchObject({
+      channel: CHANNEL,
+      threadTs: THREAD,
+      recipientUserId: SENDER,
+      recipientTeamId: 'T07ABCDEF12',
+    });
+    expect(h.reply()).toBe('Sent it to Bob.');
+    expect(h.registry.size()).toBe(0);
+    expect(h.lines).toEqual([]);
+  });
+
+  it('the sink is registered by the time the call returns, before anything is awaited', async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    expect(done).toBeInstanceOf(Promise);
+    expect(h.registry.size()).toBe(1);
+    await h.chunk({ kind: 'text', text: 'Right away.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('Right away.');
+  });
+
+  // Review Focus 3: the session ended inside the undo window, or the wake-up was refused.
+  it('nothing arrives: at the start deadline the thread hears nothing, the sink is gone, and the miss is logged by code', async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(10_000 + CONTINUATION_START_GRACE_MS - 1);
+    expect(h.registry.size()).toBe(1);
+    expect(h.lines).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+
+    // Not a word: no "I didn't have anything to add".
+    expect(h.all()).toEqual([]);
+    expect(h.registry.size()).toBe(0);
+    expect(h.lines).toEqual([
+      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: INSTALL.installId, reason: 'not-started' } },
+    ]);
+
+    // A turn that starts after all is not followed.
+    await h.chunk({ kind: 'text', text: 'too late' });
+    await h.end();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.all()).toEqual([]);
+  });
+
+  it('the deadline runs from the wake-up: a turn starting past the grace alone, but within it of the wake-up, is followed', async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(CONTINUATION_START_GRACE_MS + 5_000);
+    await h.chunk({ kind: 'text', text: 'On it.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('On it.');
+    expect(h.lines).toEqual([]);
+  });
+
+  it.each([
+    ['no wake-up time', () => null],
+    ['one that cannot be read', () => 'shortly'],
+    ['one already past', () => new Date(Date.now() - 30_000).toISOString()],
+  ] as const)('%s: the deadline is the grace alone', async (_name, pendingUntil) => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(pendingUntil());
+    await vi.advanceTimersByTimeAsync(CONTINUATION_START_GRACE_MS - 1);
+    expect(h.registry.size()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(h.registry.size()).toBe(0);
+    expect(h.all()).toEqual([]);
+    expect(h.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_continuation_missed', 'not-started']]);
+  });
+
+  it('a turn that has started is not given up at the start deadline', async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(5_000);
+    await h.chunk({ kind: 'text', text: 'Working on it. ' });
+    await vi.advanceTimersByTimeAsync(10_000 + CONTINUATION_START_GRACE_MS);
+    expect(h.registry.size()).toBe(1);
+    await h.chunk({ kind: 'text', text: 'Done.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('Working on it. Done.');
+    expect(h.lines).toEqual([]);
+  });
+
+  it.each([
+    ['nothing at all', []],
+    ['only thinking', [{ kind: 'thinking', text: 'They said yes.' }]],
+    ['an empty text', [{ kind: 'text', text: '' }]],
+  ] as const)('a turn-end after %s: no message, and the quiet end is logged by code', async (_name, chunks) => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    for (const c of chunks) await h.chunk(c);
+    await h.end();
+    await done;
+    expect(h.all()).toEqual([]);
+    expect(h.registry.size()).toBe(0);
+    expect(h.lines).toEqual([
+      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: INSTALL.installId, reason: 'said-nothing' } },
+    ]);
+  });
+
+  it.each([
+    ['a status', { kind: 'tool-use', toolCallId: 'toolu_look', toolName: 'mcp__gmail__search', activityPhrase: 'Looking' }],
+    ['a step summary', { kind: 'step-summary', text: 'Read the inbox' }],
+  ] as const)('a turn-end after only %s: the reply shows it', async (_name, chunk) => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.chunk(chunk);
+    await h.end();
+    await done;
+    expect(h.all().map((c) => c.method)).toEqual(['startStream', 'stopStream']);
+    expect(h.lines).toEqual([]);
+  });
+
+  it('a turn-end after only a held call: the reply ends with the held line', async () => {
+    // No decisions service here, so no prompt: the line that sends them to Today.
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'tool-result', toolCallId: 'toolu_again', output: 'Held for approval', held: true });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe(COPY.heldForSender(TODAY));
+    expect(h.lines).toEqual([]);
+  });
+
+  it('a turn-error ends it with the failure line', async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'text', text: 'Sending.' });
+    await h.error();
+    await done;
+    expect(h.reply()).toBe(`Sending.\n\n${COPY.turnFailed}`);
+    expect(h.lines).toEqual([
+      { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL.installId, reason: 'turn-error' } },
+    ]);
+    expect(h.registry.size()).toBe(0);
+  });
+
+  it("another turn's chunks and turn-end are not this one's", async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'text', text: 'Not this turn.' }, ELSEWHERE);
+    await h.end(ELSEWHERE);
+    expect(h.registry.size()).toBe(1);
+    expect(h.all()).toEqual([]);
+    await h.chunk({ kind: 'text', text: 'This one.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('This one.');
+  });
+
+  it("another turn's chunk doesn't start this one: its start deadline still holds", async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(null);
+    await h.chunk({ kind: 'text', text: 'Not this turn.' }, ELSEWHERE);
+    await vi.advanceTimersByTimeAsync(CONTINUATION_START_GRACE_MS);
+    await done;
+    expect(h.all()).toEqual([]);
+    expect(h.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_continuation_missed', 'not-started']]);
+  });
+
+  it("the hard cap runs from the turn's first chunk: the failure line, and the prompt's conversation is asked to stop, as its person", async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(30_000);
+    // Any chunk starts it, even one that shows nothing.
+    await h.chunk({ kind: 'thinking', text: 'Checking.' });
+    // Past the start deadline meanwhile: started, so not given up.
+    await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS - 1);
+    expect(h.interrupts).toEqual([]);
+    expect(h.all()).toEqual([]);
+    expect(h.lines).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+
+    expect(h.reply()).toBe(COPY.turnFailed);
+    expect(h.interrupts.map((i) => i.input)).toEqual([{ conversationId: 'conv_support_thread', userId: 'usr_alice' }]);
+    expect(h.interrupts[0]!.ctx).toMatchObject({
+      reqId: CONTINUATION,
+      userId: 'usr_alice',
+      agentId: 'agt_support',
+      conversationId: 'conv_support_thread',
+    });
+    expect(h.lines).toHaveLength(2);
+    expect(h.lines).toEqual(
+      expect.arrayContaining([
+        { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL.installId, reason: 'timeout' } },
+        { level: 'info', msg: 'slack_turn_interrupted', fields: { installId: INSTALL.installId, reason: 'timeout', interrupted: true } },
+      ]),
+    );
+    expect(h.registry.size()).toBe(0);
+  });
+
+  it.each([
+    ['DM', 'dm'],
+    ['channel', 'attended'],
+  ] as const)(
+    'a prompt answered in a %s: a call held inside the continuation gets a prompt of its own, for the same person, in the same thread',
+    async (_where, mode) => {
+      const h = follower({ mode, decisions: [decisionRow('dec_other', 'toolu_other'), decisionRow('dec_again', 'toolu_again')] });
+      const done = h.follow(inTenSeconds());
+      await h.chunk({ kind: 'text', text: 'Let me try that again.' });
+      await h.chunk({ kind: 'tool-use', toolCallId: 'toolu_again', toolName: 'mcp__gmail__send_email' });
+      await h.chunk({ kind: 'tool-result', toolCallId: 'toolu_again', output: 'Held for approval', held: true });
+      await h.end();
+      await done;
+
+      // The ask ends the reply, and the prompt follows it.
+      expect(replyOf(h.all().filter((c) => c.method.endsWith('Stream')))).toBe(`Let me try that again.\n\n${COPY.heldAsked}`);
+      const posts = h.all().filter((c) => c.method === 'postBlocks');
+      expect(posts).toHaveLength(1);
+      expect(h.all().at(-1)!.method).toBe('postBlocks');
+      expect(posts[0]!.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
+      const claim = h.prompts.claim(promptIdOf(posts[0]!), SENDER);
+      expect(claim.ok).toBe(true);
+      expect(claim.ok && claim.prompt).toMatchObject({
+        ...CONTEXT,
+        mode,
+        subject: { kind: 'decision', decisionId: 'dec_again' },
+        subjectText: SUMMARY,
+        messageTs: PROMPT_TS,
+      });
+      expect(h.prompts.size()).toBe(1);
+
+      // Looked up as the prompt's person, under the continuation's reqId and the prompt's mode.
+      expect(h.lookups.map((l) => l.input)).toEqual([
+        { userId: 'usr_alice', agentId: 'agt_support', conversationId: 'conv_support_thread' },
+      ]);
+      expect(h.lookups[0]!.ctx).toMatchObject({
+        reqId: CONTINUATION,
+        userId: 'usr_alice',
+        agentId: 'agt_support',
+        conversationId: 'conv_support_thread',
+        ...turnContextFields(mode),
+      });
+      expect(h.lines).toEqual([]);
+    },
+  );
 });

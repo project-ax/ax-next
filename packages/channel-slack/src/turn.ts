@@ -2,10 +2,15 @@ import { makeAgentContext, makeReqId, type AgentMessage, type HookBus, type Logg
 import { COPY } from './copy.js';
 import { findHeldDecision, type HeldDecision } from './decision-prompts.js';
 import { decodeSlackEntities } from './format.js';
-import { DECISION_LOOKUP_TIMEOUT_MS, TURN_END_GRACE_MS, TURN_HARD_CAP_MS } from './limits.js';
+import {
+  CONTINUATION_START_GRACE_MS,
+  DECISION_LOOKUP_TIMEOUT_MS,
+  TURN_END_GRACE_MS,
+  TURN_HARD_CAP_MS,
+} from './limits.js';
 import { logCode } from './log-code.js';
 import { postPrompt } from './prompt-post.js';
-import type { PromptContext, PromptRegistry } from './prompts.js';
+import type { Prompt, PromptContext, PromptRegistry } from './prompts.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
@@ -56,6 +61,22 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  * The cap ends the TURN too, not only its reply: the turn is asked to stop
  * (`agent:interrupt`, best-effort), so a turn nobody will see the end of
  * doesn't run, and spend, on for hours.
+ *
+ * After an Allow (TASK-1095) the agent carries on in a turn no message
+ * started: @ax/decisions wakes it once the approval's undo window closes,
+ * under the reqId the Allow gave it, and `followContinuation` streams that
+ * turn into the prompt's thread, for the person who answered it. One reply
+ * engine (`followReply`) serves both kinds of turn, so a chunk means the
+ * same in each, and a call held again inside a continuation gets a prompt of
+ * its own. What differs for a continuation: everything about it (thread,
+ * person, user, agent, conversation, mode) comes from the prompt, never the
+ * click; there is no message of theirs to put 👀 on; it isn't queued in the
+ * conversation's lane; and its cap runs from its first chunk. It may also
+ * never come (the session ended inside the window, or the wake-up was
+ * refused), so nothing within CONTINUATION_START_GRACE_MS of the wake-up, or
+ * an end before anything was said, ends it without a single Slack call (no
+ * "I didn't have anything to add."), logged by code only as
+ * `slack_continuation_missed` with a reason, `not-started` or `said-nothing`.
  */
 
 /** Who a turn is from, and so whose context it runs under (`turnContextFields`). */
@@ -132,6 +153,24 @@ export interface TurnRequest {
   text: string;
 }
 
+/** A woken agent's turn to follow into a prompt's thread, after an Allow. */
+export interface ContinuationRequest {
+  /**
+   * The prompt the Allow answered: where the reply goes (its channel and
+   * thread), who it is for (its asker), and whose turn it is (its user,
+   * agent, conversation and mode). Host-recorded when the prompt was posted.
+   */
+  prompt: Prompt;
+  /** The install the answer came through: the prompt's own (the click gate checked). */
+  install: InstallRow;
+  /** That install's bot token. */
+  botToken: string;
+  /** The `streamReqId` decisions:approve echoed: the woken runner emits under it. */
+  reqId: string;
+  /** ISO instant the agent is woken (the undo window's end), or null. */
+  pendingUntil: string | null;
+}
+
 interface AgentChoice {
   id: string;
   ownerId: string;
@@ -190,6 +229,8 @@ type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'time
 interface Decision {
   outcome: ReplyOutcome;
   fail?: { reason: FailReason; code?: string };
+  /** A woken turn that never began: given up without a word. */
+  notStarted?: true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,9 +246,106 @@ function paragraphBreak(tail: string, next: string): string {
   return '\n'.repeat(Math.max(0, 2 - have));
 }
 
+/**
+ * How the turn a reply follows begins.
+ *
+ *   - `invoke`: the reply starts it itself, with `message` (`agent:invoke`).
+ *     Its cap runs from now, 👀 goes on the person's message (`messageTs`)
+ *     while the agent works, and a reply with nothing to say says so.
+ *   - `woken`: something else starts it (decisions waking the agent after an
+ *     Allow). Its cap runs from its first chunk; nothing within `withinMs`
+ *     (not a chunk, an end or an error), or an end before anything was said,
+ *     ends the reply without a single Slack call.
+ */
+type ReplyStart =
+  | { kind: 'invoke'; message: AgentMessage; messageTs: string }
+  | { kind: 'woken'; withinMs: number };
+
+/** One reply: where it goes, who it is for, whose turn it follows, and how that turn begins. */
+interface ReplySpec {
+  installId: string;
+  teamId: string;
+  botToken: string;
+  channel: string;
+  threadTs: string;
+  /** Slack's id for the person the reply is for: its recipient, and the asker of any prompt it posts. */
+  recipientSlackId: string;
+  mode: TurnMode;
+  userId: string;
+  agentId: string;
+  conversationId: string;
+  /** The turn's reqId: its chunks, its end and its error are matched by it. */
+  reqId: string;
+  start: ReplyStart;
+}
+
 /** Run one turn to the end of its reply. Never rejects. */
 export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
-  const installId = r.install.installId;
+  await followReply(d, {
+    installId: r.install.installId,
+    teamId: r.install.teamId ?? '',
+    botToken: r.botToken,
+    channel: r.channel,
+    threadTs: r.threadTs,
+    recipientSlackId: r.senderSlackId,
+    mode: r.mode,
+    userId: r.userId,
+    agentId: r.agentId,
+    conversationId: r.conversationId,
+    reqId: makeReqId(),
+    start: {
+      kind: 'invoke',
+      // As its sender typed it: `if x &lt; 3` reaches the model as `if x < 3`.
+      message: { role: 'user', content: `${r.label}: ${decodeSlackEntities(r.text)}` },
+      messageTs: r.messageTs,
+    },
+  });
+}
+
+/**
+ * Follow a woken agent's turn into the answered prompt's thread (module
+ * header). The turn's sink is registered before this returns, since the
+ * click handler doesn't await it and the turn may begin at the wake-up.
+ * Not queued in the conversation's lane (the sink must be there by the
+ * wake-up, and a lane could hold it back), and not tracked by the lifetime,
+ * like a turn. Never rejects.
+ */
+export function followContinuation(d: TurnDeps, c: ContinuationRequest): Promise<void> {
+  const p = c.prompt;
+  return followReply(d, {
+    installId: p.installId,
+    teamId: p.teamId,
+    botToken: c.botToken,
+    channel: p.channel,
+    threadTs: p.threadTs,
+    recipientSlackId: p.askerSlackId,
+    mode: p.mode,
+    userId: p.userId,
+    agentId: p.agentId,
+    conversationId: p.conversationId,
+    reqId: c.reqId,
+    start: { kind: 'woken', withinMs: continuationStartMs(c.pendingUntil, d.clock.now()) },
+  });
+}
+
+/**
+ * How long a woken turn has to begin: until the wake-up at `pendingUntil`
+ * (none, one that can't be read, or one already past: from now), then
+ * CONTINUATION_START_GRACE_MS.
+ */
+function continuationStartMs(pendingUntil: string | null, nowMs: number): number {
+  const wakeAt = typeof pendingUntil === 'string' ? Date.parse(pendingUntil) : Number.NaN;
+  const untilWake = Number.isFinite(wakeAt) ? Math.max(0, wakeAt - nowMs) : 0;
+  return untilWake + CONTINUATION_START_GRACE_MS;
+}
+
+/**
+ * Follow one turn into its reply, to the end (module header): the reply
+ * engine `runTurn` and `followContinuation` share. Registers the turn's sink
+ * before its first await. Never rejects.
+ */
+async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
+  const installId = s.installId;
   const quietly = (fn: () => void): void => {
     try {
       fn();
@@ -215,8 +353,9 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
       // A log line never changes the turn.
     }
   };
+  const start = s.start;
 
-  const { source, audience } = turnContextFields(r.mode);
+  const { source, audience } = turnContextFields(s.mode);
   /*
     Whose approval a held call waits for. @ax/decisions files a hold under
     the turn's user. A turn with source 'user' runs as the person who wrote,
@@ -233,19 +372,18 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     gets a prompt, and nor does a turn with no registry to open one in.
   */
   const asking =
-    d.prompts !== undefined && source === 'user' && (r.mode === 'dm' || r.mode === 'attended')
-      ? { prompts: d.prompts, mode: r.mode }
+    d.prompts !== undefined && source === 'user' && (s.mode === 'dm' || s.mode === 'attended')
+      ? { prompts: d.prompts, mode: s.mode }
       : null;
   // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
   const todayLink = `${d.publicOrigin}/workspace`;
 
-  const reqId = makeReqId();
   const ctx = makeAgentContext({
     sessionId: makeReqId(),
-    reqId,
-    agentId: r.agentId,
-    userId: r.userId,
-    conversationId: r.conversationId,
+    reqId: s.reqId,
+    agentId: s.agentId,
+    userId: s.userId,
+    conversationId: s.conversationId,
     source,
     audience,
   });
@@ -256,15 +394,18 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
   });
   const stream = createReplyStream({
     api: d.api,
-    botToken: r.botToken,
+    botToken: s.botToken,
     target: {
-      channel: r.channel,
-      threadTs: r.threadTs,
-      recipientUserId: r.senderSlackId,
-      recipientTeamId: r.install.teamId ?? '',
+      channel: s.channel,
+      threadTs: s.threadTs,
+      recipientUserId: s.recipientSlackId,
+      recipientTeamId: s.teamId,
     },
-    messageTs: r.messageTs,
-    agentLink: `${d.publicOrigin}/workspace/agents/${encodeURIComponent(r.agentId)}`,
+    // 👀 goes only on a message the person sent, and only `working()` puts
+    // it there (below). A woken turn has no such message and never calls it,
+    // so nothing is reacted to.
+    messageTs: start.kind === 'invoke' ? start.messageTs : s.threadTs,
+    agentLink: `${d.publicOrigin}/workspace/agents/${encodeURIComponent(s.agentId)}`,
     todayLink,
     logger: replyLogger,
     clock: d.clock,
@@ -290,6 +431,13 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
    */
   let firstHeld = null as { callId: string | undefined } | null;
   /**
+   * The reply has been given something to show: text, a status, an artifact
+   * or a held call. A woken turn that ends without any is given up quietly.
+   */
+  let said = false;
+  /** The turn has begun: the reply invoked it, or (woken) its first chunk came. */
+  let started = start.kind === 'invoke';
+  /**
    * Text after other work (a tool call or its result, thinking) starts a new
    * paragraph. claude-sdk sends whole text blocks, so without this the block
    * after a tool call is glued to the one before ("…handling.Done!"). Inside
@@ -304,12 +452,19 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
   let textTail = '';
   let otherSinceText = false;
   const onChunk = (c: StreamChunkIn): void => {
+    // A woken turn's first chunk, of any kind: it has begun, and from now it
+    // runs under the cap.
+    if (!started) {
+      started = true;
+      armCap();
+    }
     if (c.kind !== 'text') {
       if (textTail !== '' && c.kind !== undefined && BREAKS_TEXT.has(c.kind)) otherSinceText = true;
     } else if (c.text !== undefined && c.text !== '') {
       const text = otherSinceText ? paragraphBreak(textTail, c.text) + c.text : c.text;
       otherSinceText = false;
       textTail = (textTail + text).slice(-2);
+      said = true;
       stream.text(text);
       return;
     }
@@ -318,23 +473,31 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
         return;
       case 'tool-use':
         if (c.toolCallId !== undefined && c.toolName !== undefined) toolNames.set(c.toolCallId, c.toolName);
+        said = true;
         stream.status(c.activityPhrase ?? COPY.statusDefault);
         return;
       case 'step-summary':
-        if (c.text !== undefined) stream.status(c.text);
+        if (c.text !== undefined) {
+          said = true;
+          stream.status(c.text);
+        }
         return;
       case 'tool-result': {
         // Held: the call never ran and waits for someone's approval. The reply
         // ends saying whose (once), and it is no artifact. When the writer can
         // answer it here, that waits for the call's decision (below).
         if (c.held === true) {
+          said = true;
           if (asking === null) stream.held(approver);
           else if (firstHeld === null) firstHeld = { callId: c.toolCallId };
           return;
         }
         if (c.isError === true || c.toolCallId === undefined) return;
         const tool = toolNames.get(c.toolCallId);
-        if (tool !== undefined && ARTIFACT_TOOLS.has(tool)) stream.artifact();
+        if (tool !== undefined && ARTIFACT_TOOLS.has(tool)) {
+          said = true;
+          stream.artifact();
+        }
         return;
       }
       default:
@@ -343,17 +506,20 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     }
   };
 
-  // Registered before agent:invoke: a fast turn's first chunk can beat the call's return.
+  // Registered before agent:invoke: a fast turn's first chunk can beat the
+  // call's return. And before this function's first await: a woken turn's
+  // follower is started without being awaited.
   const unregister = d.registry.register({
-    reqId,
-    conversationId: r.conversationId,
+    reqId: s.reqId,
+    conversationId: s.conversationId,
     chunk: onChunk,
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
   });
   // 👀 on the sender's message while a cold runner starts, not a blank thread
-  // (walk on kind, 2026-11-13); it comes off once the reply shows.
-  stream.working();
+  // (walk on kind, 2026-11-13); it comes off once the reply shows. A woken
+  // turn has no message of theirs to put it on.
+  if (start.kind === 'invoke') stream.working();
   /**
    * Ask chat-orchestrator to stop the conversation's in-flight turn: the
    * same Stop the web app's button sends (`{ conversationId, userId }`; it
@@ -368,8 +534,8 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
         return;
       }
       const out = await d.bus.call<{ conversationId: string; userId: string }, unknown>(INTERRUPT, ctx, {
-        conversationId: r.conversationId,
-        userId: r.userId,
+        conversationId: s.conversationId,
+        userId: s.userId,
       });
       const interrupted = isRecord(out) && out['interrupted'] === true;
       quietly(() => d.logger.info('slack_turn_interrupted', { installId, reason: 'timeout', interrupted }));
@@ -384,48 +550,65 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     thread could start before the stop lands and be the turn it stops.
   */
   let interrupting: Promise<void> | null = null;
-  const cap = d.clock.setTimeout(() => {
-    // A turn that already ended is not stopped again.
-    if (decided) return;
-    decide({ outcome: 'error', fail: { reason: 'timeout' } });
-    // Sent now, not after the reply: the turn is still burning until it lands.
-    interrupting = interruptTurn();
-  }, TURN_HARD_CAP_MS);
-  let grace: unknown = null;
-
-  const message: AgentMessage = {
-    role: 'user',
-    // As its sender typed it: `if x &lt; 3` reaches the model as `if x < 3`.
-    content: `${r.label}: ${decodeSlackEntities(r.text)}`,
+  let cap: unknown = null;
+  /** The hard cap, from now: armed when the turn begins (`started`), which a woken turn's first chunk is. */
+  const armCap = (): void => {
+    cap = d.clock.setTimeout(() => {
+      // A turn that already ended is not stopped again.
+      if (decided) return;
+      decide({ outcome: 'error', fail: { reason: 'timeout' } });
+      // Sent now, not after the reply: the turn is still burning until it lands.
+      interrupting = interruptTurn();
+    }, TURN_HARD_CAP_MS);
   };
-  void (async () => {
-    try {
-      const outcome = await d.bus.call<{ message: AgentMessage }, unknown>('agent:invoke', ctx, { message });
-      if (isRecord(outcome) && outcome['kind'] === 'terminated') {
-        const raw = outcome['reason'];
-        const code = typeof raw === 'string' && HOST_CODE.test(raw) ? raw : 'runner-error';
-        // Busy: the conversation's session is running a turn of another
-        // mode. Say so and back off; a retry would pay its costs again.
-        decide(
-          code === BUSY
-            ? { outcome: 'busy', fail: { reason: 'busy', code } }
-            : { outcome: 'error', fail: { reason: 'terminated', code } },
-        );
-        return;
-      }
-      // Complete: the turn-end decides. Should it never come, finish anyway.
-      if (!decided) {
-        grace = d.clock.setTimeout(() => decide({ outcome: 'complete' }), TURN_END_GRACE_MS);
-      }
-    } catch (err) {
-      decide({ outcome: 'error', fail: { reason: 'invoke-failed', code: logCode(err) } });
-    }
-  })();
+  let grace: unknown = null;
+  let startBy: unknown = null;
 
-  const { outcome, fail } = await decision;
-  d.clock.clearTimeout(cap);
+  if (start.kind === 'invoke') {
+    armCap();
+    const message = start.message;
+    void (async () => {
+      try {
+        const outcome = await d.bus.call<{ message: AgentMessage }, unknown>('agent:invoke', ctx, { message });
+        if (isRecord(outcome) && outcome['kind'] === 'terminated') {
+          const raw = outcome['reason'];
+          const code = typeof raw === 'string' && HOST_CODE.test(raw) ? raw : 'runner-error';
+          // Busy: the conversation's session is running a turn of another
+          // mode. Say so and back off; a retry would pay its costs again.
+          decide(
+            code === BUSY
+              ? { outcome: 'busy', fail: { reason: 'busy', code } }
+              : { outcome: 'error', fail: { reason: 'terminated', code } },
+          );
+          return;
+        }
+        // Complete: the turn-end decides. Should it never come, finish anyway.
+        if (!decided) {
+          grace = d.clock.setTimeout(() => decide({ outcome: 'complete' }), TURN_END_GRACE_MS);
+        }
+      } catch (err) {
+        decide({ outcome: 'error', fail: { reason: 'invoke-failed', code: logCode(err) } });
+      }
+    })();
+  } else {
+    // Woken: nothing by then (not a chunk, an end or an error) and it isn't
+    // coming. A turn that has begun is never given up here: the cap is its.
+    startBy = d.clock.setTimeout(() => {
+      if (!started) decide({ outcome: 'complete', notStarted: true });
+    }, start.withinMs);
+  }
+
+  const { outcome, fail, notStarted } = await decision;
+  if (cap !== null) d.clock.clearTimeout(cap);
   if (grace !== null) d.clock.clearTimeout(grace);
+  if (startBy !== null) d.clock.clearTimeout(startBy);
   unregister();
+  // Given up without a word: the reply was never given anything, so nothing
+  // of it reached Slack, and nothing is sent now (Review Focus 3).
+  if (notStarted === true) {
+    quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'not-started' }));
+    return;
+  }
   if (fail !== undefined) {
     quietly(() =>
       d.logger.warn('slack_turn_failed', {
@@ -434,6 +617,10 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
         ...(fail.code !== undefined ? { code: fail.code } : {}),
       }),
     );
+  }
+  if (start.kind === 'woken' && outcome === 'complete' && !said) {
+    quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'said-nothing' }));
+    return;
   }
   /*
     A call held for the person who wrote: the decision it waits as. Found,
@@ -447,7 +634,7 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
       found = await findHeldDecision(
         d.bus,
         ctx,
-        { userId: r.userId, agentId: r.agentId, conversationId: r.conversationId, toolCallId: callId },
+        { userId: s.userId, agentId: s.agentId, conversationId: s.conversationId, toolCallId: callId },
         DECISION_LOOKUP_TIMEOUT_MS,
         { installId, logger: d.logger },
       );
@@ -456,21 +643,21 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
   }
   try {
     await stream.finish(outcome);
-    // After the reply, and before the lane lets the conversation's next turn start.
+    // After the reply: for a turn, before its lane lets the conversation's next turn start.
     if (found !== null && asking !== null) {
       await askInThread(
         d,
         asking.prompts,
-        r.botToken,
+        s.botToken,
         {
           installId,
-          teamId: r.install.teamId ?? '',
-          channel: r.channel,
-          threadTs: r.threadTs,
-          askerSlackId: r.senderSlackId,
-          userId: r.userId,
-          agentId: r.agentId,
-          conversationId: r.conversationId,
+          teamId: s.teamId,
+          channel: s.channel,
+          threadTs: s.threadTs,
+          askerSlackId: s.recipientSlackId,
+          userId: s.userId,
+          agentId: s.agentId,
+          conversationId: s.conversationId,
           mode: asking.mode,
         },
         found,
