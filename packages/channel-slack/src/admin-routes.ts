@@ -102,7 +102,7 @@ export const OAUTH_CALLBACK_PATH = '/admin/slack/oauth/callback';
 type InstallOutcome = 'connected' | 'cancelled' | 'failed';
 
 /** Why Slack didn't take a rename, as the admin is told it (a 502). */
-type RenameRefusal = 'slack-config-token' | 'slack-name' | 'slack-error';
+type RenameRefusal = 'slack-config-token' | 'slack-app-gone' | 'slack-name' | 'slack-error';
 
 /** A route's answer, written once at the end: JSON with a status, or a redirect. */
 type Reply = { status: number; body: unknown } | { location: string };
@@ -221,14 +221,16 @@ function createAppError(err: unknown): 'slack-token' | 'slack-name' | 'slack-unc
 
 /**
  * What a rename's failed Slack step tells the admin. Only the update carries
- * the name, so only it can mean `slack-name`. Everything else is
- * `slack-error`: a rename sends the same manifest every time, so trying
- * again is always safe.
+ * the name, so only it can mean `slack-name`, and only it can find the app
+ * gone (`slack-app-gone`). Everything else is `slack-error`: a rename sends
+ * the same manifest every time, so trying again is always safe.
  */
 function renameError(stage: string, err: unknown): RenameRefusal {
   if (!(err instanceof SlackApiError)) return 'slack-error';
   if (CONFIG_TOKEN_REFUSED.has(err.code)) return 'slack-config-token';
   if (stage === 'update-app' && err.code === 'invalid_manifest') return 'slack-name';
+  // A retry can't bring back an app that was deleted on Slack's side.
+  if (stage === 'update-app' && err.code === 'app_not_found') return 'slack-app-gone';
   return 'slack-error';
 }
 

@@ -243,6 +243,11 @@ describe('what an error says', () => {
       null,
       "Slack stopped accepting the configuration token we have, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
     ],
+    [
+      refusal(502, 'slack-app-gone'),
+      null,
+      'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',
+    ],
     [refusal(502, 'slack-error'), null, SLACK_ERROR_COPY.generic],
     [refusal(500, 'internal'), null, SLACK_ERROR_COPY.generic],
     [new TypeError('Failed to fetch'), null, SLACK_ERROR_COPY.generic],

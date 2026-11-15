@@ -1602,12 +1602,13 @@ describe('POST /admin/slack/rename', () => {
       ['update-app', update('ratelimited', 60_000), 'slack-error'],
       ['update-app', update('timeout'), 'slack-error'],
       ['update-app', update('http-503'), 'slack-error'],
-      ['update-app', update('app_not_found'), 'slack-error'],
       ['update-app', update('bad-response'), 'slack-error'],
       ['update-app', new TypeError('not a Slack answer'), 'slack-error'],
       // The name never reaches rotate, so only the update can mean slack-name.
       ['rotate', rotate('invalid_manifest'), 'slack-error'],
       ['rotate', rotate('network'), 'slack-error'],
+      // Rotate names no app, so an app that's gone can only be news from the update.
+      ['rotate', rotate('app_not_found'), 'slack-error'],
     ];
     for (const [stage, err, error] of cases) {
       const { w, installId } = await connectedWorld();
@@ -1631,6 +1632,22 @@ describe('POST /admin/slack/rename', () => {
         },
       ]);
     }
+  });
+
+  it('Slack saying the app is gone (app_not_found at the update) → 502 slack-app-gone, not "try again"; nothing stored', async () => {
+    const { w, installId } = await connectedWorld();
+    w.slack.on.updateApp = async () => {
+      throw new SlackApiError('apps.manifest.update', 'app_not_found');
+    };
+    const mark = w.trail.length;
+    const res = await w.rename();
+    expect(res).toMatchObject({ status: 502 });
+    expect(res.body).toStrictEqual({ error: 'slack-app-gone' });
+    expect(w.trail.slice(mark)).toEqual(ONE_RENAME.slice(0, STOPS_AFTER['update-app']));
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage: 'update-app', code: 'app_not_found' } },
+    ]);
   });
 
   it('a vault fault reading the token → 500, logged code-only, and Slack is never called', async () => {

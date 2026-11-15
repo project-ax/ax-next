@@ -429,6 +429,18 @@ describe('Rename', () => {
     expect(status).toHaveBeenCalledTimes(1);
   });
 
+  it('an app Slack no longer has says to disconnect and connect again, in the dialog', async () => {
+    rename.mockRejectedValueOnce(new SlackAdminError(502, 'slack-app-gone'));
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, 'Ada Helper');
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent(SLACK_ERROR_COPY['slack-app-gone']);
+    expect(alert).not.toHaveTextContent(GENERIC);
+    expect(document.body.textContent).not.toContain('slack-app-gone');
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['a server error', new SlackAdminError(500, 'internal')],
     ['a network failure', new TypeError('Failed to fetch')],
