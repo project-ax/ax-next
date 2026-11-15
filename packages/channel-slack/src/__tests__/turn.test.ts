@@ -1,7 +1,14 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
-import { CONTINUATION_START_GRACE_MS, CONTINUATION_WAKE_MAX_MS, PROMPT_MAX, PROMPT_TTL_MS, TURN_HARD_CAP_MS } from '../limits.js';
+import {
+  CONTINUATION_START_GRACE_MS,
+  CONTINUATION_WAKE_MAX_MS,
+  PROMPT_MAX,
+  PROMPT_TTL_MS,
+  TURN_END_GRACE_MS,
+  TURN_HARD_CAP_MS,
+} from '../limits.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
@@ -131,6 +138,14 @@ interface Script {
    * message came. What the reply had done by then is kept (`afterDark`).
    */
   darkEndFirst?: boolean;
+  /**
+   * And that dark turn-end answers this invoke: chat-orchestrator resolves a
+   * session's OLDEST waiting invoke on a turn-end that names no reqId
+   * (`resolveWaiterFor`), so the invoke returns complete there, before its
+   * own turn has even begun. Its chunks and end then come from the test
+   * (`own`), as the runner sends them.
+   */
+  answeredByDarkEnd?: boolean;
   /** Chunks to fire, in order, each stamped with the invoke's reqId. */
   chunks?: Array<Record<string, unknown>>;
   end?: 'turn-end' | 'turn-error';
@@ -193,18 +208,21 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   const afterDark: AfterDark[] = [];
   // Assigned below, once the fake Slack exists: the fake orchestrator reads it only when invoked.
   let slackCalls: () => SlackCall[] = () => [];
+  /** The runner's events as the IPC listener fires them: under its own ctx, the turn named only in the payload. */
+  const ipcCtxFor = (ctx: AgentContext): AgentContext =>
+    makeAgentContext({
+      sessionId: 'sess_live',
+      agentId: ctx.agentId,
+      userId: ctx.userId,
+      ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
+    });
   bus.registerService(
     'agent:invoke',
     'fake-orchestrator',
     async (ctx, input) => {
       invokes.push({ ctx, input });
       // The IPC listener restamps ctx.reqId; only the payload names the turn.
-      const ipcCtx = makeAgentContext({
-        sessionId: 'sess_live',
-        agentId: ctx.agentId,
-        userId: ctx.userId,
-        ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
-      });
+      const ipcCtx = ipcCtxFor(ctx);
       if (script.darkEndFirst === true) {
         await bus.fire('chat:turn-end', ipcCtx, { reason: 'complete' });
         afterDark.push({
@@ -213,6 +231,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
             .map((c) => c.method)
             .filter((m) => m !== 'addReaction' && m !== 'removeReaction'),
         });
+        if (script.answeredByDarkEnd === true) return { kind: 'complete', messages: [] };
       }
       for (const chunk of script.chunks ?? [{ kind: 'text', text: 'ok' }]) {
         await bus.fire('chat:stream-chunk', ipcCtx, { reqId: ctx.reqId, ...chunk });
@@ -246,11 +265,30 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     text: 'is x &lt; 3?',
   });
 
+  /** The invoked turn's own events, sent by the test: under the first invoke's reqId. */
+  const turnOf = () => {
+    const invoked = invokes[0];
+    if (invoked === undefined) throw new Error('nothing was invoked');
+    return { ipcCtx: ipcCtxFor(invoked.ctx), reqId: invoked.ctx.reqId };
+  };
+
   return {
     invokes,
     lookups,
     prompts,
     afterDark,
+    /** Turn sinks registered now: 1 while a reply waits on its turn. */
+    sinks: () => registry.size(),
+    own: {
+      chunk: async (c: Record<string, unknown>): Promise<void> => {
+        const { ipcCtx, reqId } = turnOf();
+        await bus.fire('chat:stream-chunk', ipcCtx, { reqId, ...c });
+      },
+      end: async (): Promise<void> => {
+        const { ipcCtx, reqId } = turnOf();
+        await bus.fire('chat:turn-end', ipcCtx, { reqId, reason: 'complete' });
+      },
+    },
     /** Every Slack call but 👀's, in order. */
     calls: () => slack.calls.filter((c) => c.method !== 'addReaction' && c.method !== 'removeReaction'),
     reply: () => replyOf(slack.calls),
@@ -403,6 +441,46 @@ describe("runTurn: another turn's dark turn-end is not this one's (TASK-1095)", 
       expect(h.calls().map((c) => c.method)).toEqual(['startStream', 'stopStream']);
     },
   );
+
+  describe("when that dark turn-end also answers the turn's agent:invoke", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("its own turn streaming for longer than the invoke's grace: every word reaches the thread, and its own turn-end ends it", async () => {
+      vi.useFakeTimers();
+      const h = harness({ darkEndFirst: true, answeredByDarkEnd: true });
+      const done = h.run('dm');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.afterDark).toEqual([{ sinks: 1, methods: [] }]);
+      // Its own turn, after the dark one: twice the grace long, a chunk every half of it.
+      for (const part of ['One. ', 'Two. ', 'Three. ', 'Four.']) {
+        await vi.advanceTimersByTimeAsync(TURN_END_GRACE_MS / 2);
+        await h.own.chunk({ kind: 'text', text: part });
+      }
+      expect(h.sinks()).toBe(1);
+      await h.own.end();
+      await done;
+      expect(h.reply()).toBe('One. Two. Three. Four.');
+      expect(h.sinks()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('its own turn going quiet: the grace still finishes the reply, TURN_END_GRACE_MS after its last chunk', async () => {
+      vi.useFakeTimers();
+      const h = harness({ darkEndFirst: true, answeredByDarkEnd: true });
+      const done = h.run('dm');
+      await vi.advanceTimersByTimeAsync(TURN_END_GRACE_MS / 2);
+      await h.own.chunk({ kind: 'text', text: 'Partly done.' });
+      await vi.advanceTimersByTimeAsync(TURN_END_GRACE_MS - 1);
+      expect(h.sinks()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(h.sinks()).toBe(0);
+      expect(h.reply()).toBe('Partly done.');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
 });
 
 describe('runTurn: a call held for approval ends the reply with one line saying who must approve', () => {

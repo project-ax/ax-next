@@ -153,7 +153,8 @@ export const TURN_HARD_CAP_MS = 900_000;
 /**
  * After `agent:invoke` reports a complete turn, how long the reply waits for
  * that turn's `chat:turn-end` before finishing anyway (the same grace
- * @ax/routines gives a fire).
+ * @ax/routines gives a fire). Counted again from each chunk of the turn's
+ * own that comes after the report (turn.ts `armGrace`).
  */
 export const TURN_END_GRACE_MS = 60_000;
 

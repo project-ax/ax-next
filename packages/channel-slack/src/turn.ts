@@ -56,7 +56,9 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  * `chat:turn-error` (error), a `terminated` invoke outcome
  * (`conversation:busy` → busy, never retried; anything else → error), a
  * thrown invoke (error), TURN_END_GRACE_MS after a complete invoke whose
- * turn-end never came (complete), or TURN_HARD_CAP_MS (error). Failures are
+ * turn-end never came (complete; counted from the turn's last chunk when
+ * one came after the invoke answered, since an invoke can answer before its
+ * turn has begun: `armGrace`), or TURN_HARD_CAP_MS (error). Failures are
  * logged as `slack_turn_failed` with a reason and a host code, never text.
  *
  * The cap ends the TURN too, not only its reply: the turn is asked to stop
@@ -452,6 +454,9 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
       started = true;
       armCap();
     }
+    // Its own turn is still going after its invoke answered (see `armGrace`):
+    // the grace runs from this chunk, not from that answer.
+    if (grace !== null && !decided) armGrace();
     if (c.kind !== 'text') {
       if (textTail !== '' && c.kind !== undefined && BREAKS_TEXT.has(c.kind)) otherSinceText = true;
     } else if (c.text !== undefined && c.text !== '') {
@@ -556,6 +561,20 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     }, TURN_HARD_CAP_MS);
   };
   let grace: unknown = null;
+  /**
+   * The invoke answered complete: finish TURN_END_GRACE_MS from now unless
+   * the turn's own turn-end comes first. Pushed back by each chunk of the
+   * turn's own that comes after (`onChunk`): chat-orchestrator answers a
+   * session's oldest waiting invoke on a turn-end that names no reqId (a
+   * warm agent's dark reaction to a Deny, say), so an invoke can answer
+   * before its own turn has even begun, and a fixed grace would cut that
+   * turn's reply short. A turn that has really ended sends no more chunks,
+   * so it is finished as before.
+   */
+  const armGrace = (): void => {
+    if (grace !== null) d.clock.clearTimeout(grace);
+    grace = d.clock.setTimeout(() => decide({ outcome: 'complete' }), TURN_END_GRACE_MS);
+  };
   let startBy: unknown = null;
 
   if (start.kind === 'invoke') {
@@ -577,9 +596,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
           return;
         }
         // Complete: the turn-end decides. Should it never come, finish anyway.
-        if (!decided) {
-          grace = d.clock.setTimeout(() => decide({ outcome: 'complete' }), TURN_END_GRACE_MS);
-        }
+        if (!decided) armGrace();
       } catch (err) {
         decide({ outcome: 'error', fail: { reason: 'invoke-failed', code: logCode(err) } });
       }
