@@ -881,8 +881,9 @@ describe('the click gate: each step refuses on its own (each case valid on every
   });
 
   it('step 9: a subject nothing here can answer: the prompt closes, and nothing runs', async () => {
-    const w = await world();
-    const prompt = w.open(MEL_SUPPORT, { subject: { kind: 'host', host: 'api.example.com', sessionId: 'sess_1' } });
+    // A gate built with no answer for the prompt's kind (a kernel without one).
+    const w = await world({ answers: {} });
+    const prompt = w.open(MEL_SUPPORT);
 
     await w.onClick(INSTALL, w.clickOn(prompt));
 
@@ -892,7 +893,7 @@ describe('the click gate: each step refuses on its own (each case valid on every
     ]);
     expect(w.runs).toEqual([]);
     expect(w.state(prompt)).toBe('gone');
-    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'host', reason: 'unsupported' }]);
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'unsupported' }]);
   });
 
   it("step 9: only the deps' own answers count: one inherited through a prototype never runs", async () => {
@@ -965,9 +966,12 @@ describe('the click gate: one answer per prompt', () => {
   for (const outcome of ['answered', 'closed'] as const) {
     it(`a second click while the prompt is being redrawn (${outcome}) is the silent busy one, never told the prompt is gone`, async () => {
       const redrawing = deferred();
-      const w = await world({ slackHold: { method: 'updateMessage', until: redrawing.promise } });
-      // A subject nothing here answers closes the prompt instead.
-      const prompt = w.open(MEL_DM, outcome === 'closed' ? { subject: { kind: 'skill', skillId: 'skl_1' } } : {});
+      const w = await world({
+        slackHold: { method: 'updateMessage', until: redrawing.promise },
+        // Nothing here to answer the prompt's subject: it closes instead.
+        ...(outcome === 'closed' ? { answers: {} } : {}),
+      });
+      const prompt = w.open(MEL_DM);
 
       const first = w.onClick(INSTALL, w.clickOn(prompt));
       await vi.waitFor(() => expect(w.slack.calls.map((c) => c.method)).toContain('updateMessage'));
@@ -1683,13 +1687,13 @@ describe('the click gate: lines and logs', () => {
       expect(update.args['text']).toBe(line);
       redraws.push({ text: update.args['text'], context: update.args['blocks'] });
     }
-    // The gate's own closings: no access, disconnected, nothing to answer with.
-    const closings = await world();
+    // The gate's own closings: no access, disconnected, nothing to answer with (no answers at all).
+    const closings = await world({ answers: {} });
     const offTeam = closings.open(MEL_SUPPORT);
     closings.agents.setRole(SUPPORT_TEAM, 'usr_mel', null);
     await closings.onClick(INSTALL, closings.clickOn(offTeam));
     closings.agents.setRole(SUPPORT_TEAM, 'usr_mel', 'member');
-    await closings.onClick(INSTALL, closings.clickOn(closings.open(MEL_DM, { subject: { kind: 'skill', skillId: 'skl_1' } })));
+    await closings.onClick(INSTALL, closings.clickOn(closings.open(MEL_DM)));
     await closings.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
     await closings.onClick(INSTALL, closings.clickOn(closings.open(MEL_SUPPORT)));
     for (const update of closings.slack.calls.filter((c) => c.method === 'updateMessage')) {
@@ -1721,8 +1725,11 @@ describe('the click gate: lines and logs', () => {
     await a.onClick(INSTALL, a.clickOn(prompt));
     await a.onClick(INSTALL, a.clickOn(prompt));
     await a.onClick(INSTALL, a.clickOn(prompt));
-    await a.onClick(INSTALL, a.clickOn(a.open(MEL_DM, { subject: { kind: 'skill', skillId: 'skl_secret' } })));
     lines.push(...a.lines);
+    // A close: nothing here answers the prompt's subject.
+    const e = await world({ answers: {} });
+    await e.onClick(INSTALL, e.clickOn(e.open(MEL_DM, { subject: { kind: 'decision', decisionId: 'dec_secret' } })));
+    lines.push(...e.lines);
     // Slack briefly away, an email with no account, and a vault that fails.
     const b = await world({ slackUsers: { [MEL]: new SlackApiError('users.info', 'ratelimited', 1_000) } });
     await b.onClick(INSTALL, b.clickOn(b.open(MEL_DM)));
@@ -1765,7 +1772,7 @@ describe('the click gate: lines and logs', () => {
       'agt_support',
       'conv_mel',
       'dec_0001',
-      'skl_secret',
+      'dec_secret',
       SUMMARY,
       prompt.id,
     ]) {

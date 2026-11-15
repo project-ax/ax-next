@@ -197,11 +197,6 @@ export const PROMPT_REFUSALS_MAX = 20;
  */
 export const PROMPT_SUBJECT_MAX = 300;
 /**
- * The longest host a host prompt keeps (prompts.ts): a DNS name's 253
- * characters, the bound credential-proxy's HOST_RE puts on a host too.
- */
-export const PROMPT_HOST_MAX = 253;
-/**
  * How long a turn that held a call spends finding that call's decision
  * before it ends with the Today link instead of a prompt.
  */

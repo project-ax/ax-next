@@ -118,7 +118,7 @@ export interface AnswerDeps {
   /** The web app's origin, for the Today link. */
   publicOrigin: string;
   logger: Logger;
-  /** One per subject kind. PR A registers `decision`; PR B adds `host` and `skill`. */
+  /** One per subject kind (`decision`). A kind with none here closes its prompt (`unsupported`). */
   answers: Partial<Record<PromptSubject['kind'], SubjectAnswer>>;
 }
 
