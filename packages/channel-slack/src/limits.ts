@@ -156,3 +156,46 @@ export const TURN_HARD_CAP_MS = 900_000;
  * @ax/routines gives a fire).
  */
 export const TURN_END_GRACE_MS = 60_000;
+
+// ── Approval prompts ────────────────────────────────────────────────────────
+// Slack's numbers in this section were read on 2026-11-14 (see
+// `.claude/memory/decisions/2026-11-14-TASK-1095.md`).
+
+/**
+ * A button click's request body: one form field holding Slack's JSON about
+ * the click, which repeats the clicked message.
+ */
+export const INTERACTIONS_MAX_BODY_BYTES = 65_536;
+/**
+ * Random bytes in a prompt's id, the opaque value both of its buttons carry
+ * (base64url: 22 characters; Slack caps a button's value at 2,000).
+ */
+export const PROMPT_ID_BYTES = 16;
+/**
+ * How long a prompt can be answered in Slack: 24 hours. After that, or after
+ * a restart (open prompts live in memory), a click is pointed at Today, where
+ * the request still waits.
+ */
+export const PROMPT_TTL_MS = 86_400_000;
+/**
+ * At most this many prompts are open at once. Past it, the oldest one nobody
+ * is answering is forgotten, and a click on it is pointed at Today.
+ */
+export const PROMPT_MAX = 1_000;
+/**
+ * The longest prompt subject shown (a decision's summary, a host, a skill's
+ * description), in UTF-16 code units (format.ts `cleanPromptSubject`).
+ * Slack's cap on a section's text is 3,000.
+ */
+export const PROMPT_SUBJECT_MAX = 300;
+/**
+ * How long a turn that held a call spends finding that call's decision
+ * before it ends with the Today link instead of a prompt.
+ */
+export const DECISION_LOOKUP_TIMEOUT_MS = 5_000;
+/**
+ * After an Allow, how long past the moment the agent is woken (the end of
+ * the decision's undo window) the thread waits for the agent to start
+ * answering. Nothing by then, and the thread stops waiting without a word.
+ */
+export const CONTINUATION_START_GRACE_MS = 60_000;
