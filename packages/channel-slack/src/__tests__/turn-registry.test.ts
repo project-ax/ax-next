@@ -1,4 +1,4 @@
-import { HookBus, makeAgentContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import {
   TURN_EVENT_HOOKS,
@@ -8,6 +8,15 @@ import {
   type StreamChunkIn,
   type TurnSink,
 } from '../turn-registry.js';
+
+/** A logger that keeps nothing: these tests aren't about the log. */
+const QUIET = { warn: (): void => undefined };
+
+/** A logger that keeps every warn line. */
+function recordingLogger() {
+  const lines: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+  return { lines, logger: { warn: (msg: string, fields?: Record<string, unknown>): void => void lines.push({ msg, fields }) } };
+}
 
 const CONVERSATION = 'conv_alice_slack';
 const REQ = 'req-aaaaaaaaaaaa';
@@ -46,7 +55,7 @@ const ctxFor = (conversationId?: string) =>
 
 describe('createTurnRegistry', () => {
   it("another reqId's chunk is ignored", () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, chunks } = recordingSink();
     r.register(sink);
     r.onStreamChunk({ reqId: 'req-someone-else', kind: 'text', text: 'not yours' });
@@ -55,7 +64,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('a chunk is handed on with only the fields it names, each of the right type', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, chunks } = recordingSink();
     r.register(sink);
     r.onStreamChunk({
@@ -73,7 +82,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('turn-end for the same conversation with a different reqId is ignored', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     r.onTurnEnd(ctxFor(CONVERSATION), { reqId: 'req-another-turn', reason: 'complete' });
@@ -83,7 +92,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('turn-end for another conversation is ignored, even naming this reqId', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     r.onTurnEnd(ctxFor('conv_someone_else'), { reqId: REQ });
@@ -92,7 +101,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('a folded reqId ends the turn', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     r.onTurnEnd(ctxFor(CONVERSATION), { reqId: 'req-the-turn-that-answered', foldedReqIds: [REQ] });
@@ -100,7 +109,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('only a real array of exact ids counts as folded', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     for (const foldedReqIds of [REQ, { 0: REQ }, [`${REQ} `], [REQ.toUpperCase()]]) {
@@ -114,7 +123,7 @@ describe('createTurnRegistry', () => {
 
   it('a turn-end with no reqId ends a turn that has begun: one whose own chunk came (a turn run dark)', () => {
     for (const payload of DARK_ENDS) {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const { sink, seen } = recordingSink();
       r.register(sink);
       r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'hi' });
@@ -132,7 +141,7 @@ describe('createTurnRegistry', () => {
   */
   it("a turn-end with no reqId before the turn has begun is another turn's: it doesn't end this one", () => {
     for (const payload of DARK_ENDS) {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const { sink, seen } = recordingSink();
       r.register(sink);
       r.onTurnEnd(ctxFor(CONVERSATION), payload);
@@ -150,7 +159,7 @@ describe('createTurnRegistry', () => {
 
   it('a turn-end naming this reqId, or folding it, ends it before its first chunk', () => {
     for (const payload of [{ reqId: REQ }, { reqId: 'req-the-turn-that-answered', foldedReqIds: [REQ] }, { foldedReqIds: [REQ] }]) {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const { sink, seen } = recordingSink();
       r.register(sink);
       r.onTurnEnd(ctxFor(CONVERSATION), payload);
@@ -159,7 +168,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('a sink registered again under the same reqId begins afresh: the one before it began, not this one', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const first = recordingSink();
     const undo = r.register(first.sink);
     r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'first' });
@@ -174,7 +183,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('turn-error is matched by reqId only', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     r.onTurnError({ reason: 'chat-run-timeout' });
@@ -186,7 +195,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('malformed payloads are ignored, never thrown on', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     for (const p of [undefined, null, 42, 'x', [], { reqId: 42 }, { kind: 'text' }]) {
@@ -197,7 +206,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('unregister stops delivery, and a sink that throws never breaks the registry', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const thrower = recordingSink({
       chunk: () => {
         throw new Error('sink bug');
@@ -217,7 +226,7 @@ describe('createTurnRegistry', () => {
   });
 
   it('size counts the sinks held now: an undo releases its own, once', () => {
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     expect(r.size()).toBe(0);
     const undoA = r.register(recordingSink().sink);
     const undoB = r.register(recordingSink({ reqId: 'req-bbbbbbbbbbbb' }).sink);
@@ -245,7 +254,7 @@ describe('createTurnRegistry', () => {
     };
 
     it('a host card is routed by the payload reqId only: a matching ctx conversation is not enough', () => {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const mine = recordingSink();
       const other = recordingSink({ reqId: 'req-bbbbbbbbbbbb' });
       r.register(mine.sink);
@@ -262,7 +271,7 @@ describe('createTurnRegistry', () => {
     });
 
     it('a skill card is routed by the firing ctx conversation only, to every sink in it', () => {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const a = recordingSink();
       const b = recordingSink({ reqId: 'req-bbbbbbbbbbbb' });
       const elsewhere = recordingSink({ reqId: 'req-cccccccccccc', conversationId: 'conv_other' });
@@ -282,7 +291,7 @@ describe('createTurnRegistry', () => {
 
     it('needsKey: true for a slot without haveExisting, a non-object slot, or non-array slots; false for [] and all-true', () => {
       const needsKeyFor = (slots: unknown): boolean | undefined => {
-        const r = createTurnRegistry();
+        const r = createTurnRegistry({ logger: QUIET });
         const { sink, permissions } = recordingSink();
         r.register(sink);
         r.onPermissionRequest(ctxFor(CONVERSATION), { ...skillCard, slots });
@@ -303,7 +312,7 @@ describe('createTurnRegistry', () => {
     });
 
     it("a skill card's absent description is the empty string", () => {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const { sink, permissions } = recordingSink();
       r.register(sink);
       const { description: _omit, ...noDescription } = skillCard;
@@ -312,7 +321,7 @@ describe('createTurnRegistry', () => {
     });
 
     it('malformed cards are dropped, never thrown on: other kinds, wrong types, empty ids', () => {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const { sink, seen } = recordingSink();
       r.register(sink);
       const bad: unknown[] = [
@@ -339,7 +348,7 @@ describe('createTurnRegistry', () => {
     });
 
     it('a sink without a permission handler, or one that throws, never breaks the registry', () => {
-      const r = createTurnRegistry();
+      const r = createTurnRegistry({ logger: QUIET });
       const quiet = recordingSink();
       const { permission: _unused, ...rest } = quiet.sink;
       r.register(rest);
@@ -354,7 +363,7 @@ describe('createTurnRegistry', () => {
       expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), skillCard)).not.toThrow();
       expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), hostCard)).not.toThrow();
       // A throwing sink does not stop the next sink in the same conversation.
-      const r2 = createTurnRegistry();
+      const r2 = createTurnRegistry({ logger: QUIET });
       const bad = recordingSink({
         permission: () => {
           throw new Error('sink bug');
@@ -366,11 +375,76 @@ describe('createTurnRegistry', () => {
       r2.onPermissionRequest(ctxFor(CONVERSATION), skillCard);
       expect(good.permissions).toHaveLength(1);
     });
+
+    it('a permission sink that throws is logged by its code alone: never the message, the card or an id', () => {
+      const { lines, logger } = recordingLogger();
+      const r = createTurnRegistry({ logger });
+      const thrower = recordingSink({
+        permission: () => {
+          throw new PluginError({ code: 'sink-broke', plugin: 'test', message: 'api.example.com sess_1 github' });
+        },
+      });
+      r.register(thrower.sink);
+      r.onPermissionRequest(ctxFor(CONVERSATION), hostCard);
+      r.onPermissionRequest(ctxFor(CONVERSATION), skillCard);
+      expect(lines).toEqual([
+        { msg: 'slack_turn_sink_failed', fields: { stage: 'permission', code: 'sink-broke' } },
+        { msg: 'slack_turn_sink_failed', fields: { stage: 'permission', code: 'sink-broke' } },
+      ]);
+      // A plain Error has no code to give: `unknown`, and its message stays out.
+      const r2 = createTurnRegistry({ logger });
+      lines.length = 0;
+      r2.register(
+        recordingSink({
+          permission: () => {
+            throw new Error('api.example.com');
+          },
+        }).sink,
+      );
+      r2.onPermissionRequest(ctxFor(CONVERSATION), hostCard);
+      expect(lines).toEqual([{ msg: 'slack_turn_sink_failed', fields: { stage: 'permission', code: 'unknown' } }]);
+    });
+
+    it('a logger that throws too never breaks the registry, and the next sink still gets the card', () => {
+      const r = createTurnRegistry({
+        logger: {
+          warn: () => {
+            throw new Error('log sink down');
+          },
+        },
+      });
+      const bad = recordingSink({
+        permission: () => {
+          throw new Error('sink bug');
+        },
+      });
+      const good = recordingSink({ reqId: 'req-bbbbbbbbbbbb' });
+      r.register(bad.sink);
+      r.register(good.sink);
+      expect(() => r.onPermissionRequest(ctxFor(CONVERSATION), skillCard)).not.toThrow();
+      expect(good.permissions).toHaveLength(1);
+    });
+  });
+
+  it("a sink's end or error that throws is logged by stage and code; a chunk's is not (one a token would flood the log)", () => {
+    const { lines, logger } = recordingLogger();
+    const r = createTurnRegistry({ logger });
+    const boom = (): never => {
+      throw new PluginError({ code: 'sink-broke', plugin: 'test', message: 'no' });
+    };
+    r.register(recordingSink({ chunk: boom, end: boom, error: boom }).sink);
+    r.onStreamChunk({ reqId: REQ, kind: 'text', text: 'hi' });
+    r.onTurnError({ reqId: REQ });
+    r.onTurnEnd(ctxFor(CONVERSATION), { reqId: REQ });
+    expect(lines).toEqual([
+      { msg: 'slack_turn_sink_failed', fields: { stage: 'error', code: 'sink-broke' } },
+      { msg: 'slack_turn_sink_failed', fields: { stage: 'end', code: 'sink-broke' } },
+    ]);
   });
 
   it('subscribeTurnEvents wires the four hooks on the bus, and its undo removes them', async () => {
     const bus = new HookBus();
-    const r = createTurnRegistry();
+    const r = createTurnRegistry({ logger: QUIET });
     const { sink, seen } = recordingSink();
     r.register(sink);
     const undo = subscribeTurnEvents(bus, r, '@ax/channel-slack/turns');

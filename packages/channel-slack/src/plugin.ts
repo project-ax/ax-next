@@ -293,7 +293,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const api = createSlackApi({ fetchImpl });
         const life = createLifetime();
         lifetime = life;
-        const registry = createTurnRegistry();
+        const registry = createTurnRegistry({ logger });
         // Approval prompts that are open, in memory: a restart closes them (the
         // same request still waits in Today). Unguessable ids need real bytes.
         const prompts = createPromptRegistry({ now, randomBytes, ttlMs: PROMPT_TTL_MS, max: PROMPT_MAX });

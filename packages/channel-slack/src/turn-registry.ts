@@ -1,4 +1,5 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus, Logger } from '@ax/core';
+import { logCode } from './log-code.js';
 
 /**
  * The Slack turns running now (DMs and channel mentions), and the one
@@ -36,7 +37,10 @@ import type { AgentContext, HookBus } from '@ax/core';
  *
  * Payloads are runner output: every field is checked with typeof, and a
  * chunk is handed on with only the fields named in StreamChunkIn. A sink
- * that throws never breaks the registry or the bus.
+ * that throws never breaks the registry or the bus. Its end, error or
+ * permission throwing is logged (`slack_turn_sink_failed`, the stage and the
+ * error's code only: never its message, the card or an id); a chunk's is
+ * not, as one broken sink would log once per streamed piece.
  */
 
 /** The chat events the registry needs, in the order it subscribes to them. */
@@ -142,13 +146,12 @@ function narrowPermission(payload: Record<string, unknown>): PermissionIn | null
   return null;
 }
 
-/** A sink's own failure stays its own. */
-function safely(fn: () => void): void {
-  try {
-    fn();
-  } catch {
-    // Nothing to do: the sink's turn still ends by its other paths.
-  }
+/** Where a sink threw: the registry call that handed it something. */
+type SinkStage = 'chunk' | 'end' | 'error' | 'permission';
+
+export interface TurnRegistryDeps {
+  /** Hears a sink's end, error or permission throwing, by stage and code. */
+  logger: Pick<Logger, 'warn'>;
 }
 
 interface Entry {
@@ -157,8 +160,23 @@ interface Entry {
   begun: boolean;
 }
 
-export function createTurnRegistry(): TurnRegistry {
+export function createTurnRegistry(d: TurnRegistryDeps): TurnRegistry {
   const byReqId = new Map<string, Entry>();
+
+  /** A sink's own failure stays its own: its turn still ends by its other paths. */
+  const safely = (stage: SinkStage, fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      // A chunk's isn't logged: one broken sink would log once per streamed piece (header).
+      if (stage === 'chunk') return;
+      try {
+        d.logger.warn('slack_turn_sink_failed', { stage, code: logCode(err) });
+      } catch {
+        // A log line never breaks the registry.
+      }
+    }
+  };
 
   const entryFor = (payload: unknown): Entry | undefined => {
     if (!isRecord(payload)) return undefined;
@@ -181,7 +199,7 @@ export function createTurnRegistry(): TurnRegistry {
       entry.begun = true;
       const sink = entry.sink;
       const chunk = narrowChunk(sink.reqId, payload as Record<string, unknown>);
-      safely(() => sink.chunk(chunk));
+      safely('chunk', () => sink.chunk(chunk));
     },
 
     onTurnEnd(ctx, payload) {
@@ -199,13 +217,13 @@ export function createTurnRegistry(): TurnRegistry {
           // Dark: a turn that hasn't begun isn't the one that ended (header).
           if (!named && !begun) continue;
         }
-        safely(() => sink.end());
+        safely('end', () => sink.end());
       }
     },
 
     onTurnError(payload) {
       const sink = entryFor(payload)?.sink;
-      if (sink !== undefined) safely(() => sink.error());
+      if (sink !== undefined) safely('error', () => sink.error());
     },
 
     onPermissionRequest(ctx, payload) {
@@ -216,7 +234,7 @@ export function createTurnRegistry(): TurnRegistry {
         const sink = entryFor(payload)?.sink;
         if (sink?.permission !== undefined) {
           const deliver = sink.permission.bind(sink);
-          safely(() => deliver(card));
+          safely('permission', () => deliver(card));
         }
         return;
       }
@@ -225,7 +243,7 @@ export function createTurnRegistry(): TurnRegistry {
       for (const { sink } of [...byReqId.values()]) {
         if (sink.conversationId !== conversationId || sink.permission === undefined) continue;
         const deliver = sink.permission.bind(sink);
-        safely(() => deliver(card));
+        safely('permission', () => deliver(card));
       }
     },
 

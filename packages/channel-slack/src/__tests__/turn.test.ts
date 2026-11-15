@@ -232,13 +232,13 @@ function skillCard(skillId: string, o: { description?: string; slots?: unknown[]
 
 function harness(script: Script = {}, o: HarnessOptions = {}) {
   const bus = new HookBus();
-  const registry = createTurnRegistry();
-  subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
   const lines: LogLine[] = [];
   const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
     lines.push({ level, msg, fields });
   };
   const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
+  const registry = createTurnRegistry({ logger });
+  subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
   const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
   const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
   /** proxy:add-host's calls. Only an Allow makes one (permission-prompts.ts): a turn never does. */
@@ -1191,14 +1191,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     } = {},
   ) {
     const bus = new HookBus();
-    const registry = createTurnRegistry();
-    subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
     const slack = fakeSlack(o.updateFails === true ? { updateMessageFails: true } : {});
     const lines: LogLine[] = [];
     const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
       lines.push({ level, msg, fields });
     };
     const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
+    const registry = createTurnRegistry({ logger });
+    subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
     const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
     if (o.decisions !== undefined) {
       const rows = o.decisions;
