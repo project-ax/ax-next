@@ -169,13 +169,18 @@ export interface Prompt extends PromptContext {
   expiresAt: number;
 }
 
-export type Claim = { ok: true; prompt: Prompt } | { ok: false; reason: 'gone' | 'busy' };
+export type Claim =
+  | { ok: true; prompt: Prompt }
+  | { ok: false; reason: 'gone' | 'busy' }
+  // The clicker isn't the asker: no lock taken, nothing to release.
+  | { ok: false; reason: 'not-asker'; prompt: Prompt };
 
 export interface PromptRegistry {
   add(c: PromptContext, subject: PromptSubject, subjectText: string): Prompt;
   posted(id: string, messageTs: string): void;
   remove(id: string): void;
-  claim(id: string): Claim;
+  /** Only the prompt's asker can take it; anyone else's click takes no lock (review fix: a bystander can't make the asker's click `busy`). */
+  claim(id: string, slackUserId: string): Claim;
   settle(id: string): void;
   release(id: string): void;
   /** True the first time `slackUserId` is refused on this prompt (one ephemeral each). */
@@ -191,7 +196,7 @@ export function createPromptRegistry(o: {
 }): PromptRegistry;
 ```
 
-- [ ] **Step 1: Write the failing tests.** `add` mints a 22-char base64url id from `randomBytes(PROMPT_ID_BYTES)` (a fake `randomBytes` makes it deterministic) and refuses (throws) a context whose `mode` is anything but `'dm' | 'attended'` at runtime (a cast `'external'` must throw: defense in depth for a type the caller could bypass); `claim` on an open prompt → `{ok:true}` and marks it busy; a second `claim` → `{ok:false, reason:'busy'}`; after `release`, `claim` works again; after `settle`, `claim` → `'gone'`; an unknown id, or one past `expiresAt` (fake clock), → `'gone'` and the expired entry is dropped; `add` beyond `max` evicts the oldest NOT-busy entry first (a busy one is never evicted mid-answer); `firstRefusal(id, u)` is true once per user, false after, and the per-prompt set is bounded (20 users; beyond that it answers false); `posted` records `messageTs`; `size()` counts live entries.
+- [ ] **Step 1: Write the failing tests.** `add` mints a 22-char base64url id from `randomBytes(PROMPT_ID_BYTES)` (a fake `randomBytes` makes it deterministic) and refuses (throws) a context whose `mode` is anything but `'dm' | 'attended'` at runtime (a cast `'external'` must throw: defense in depth for a type the caller could bypass); `claim(id, asker)` on an open prompt → `{ok:true}` and marks it busy; `claim(id, anyoneElse)` → `{ok:false, reason:'not-asker', prompt}` and takes NO lock, so the asker's claim right after it is `ok` (and a non-asker is `not-asker`, never `busy`, while the asker's click is being answered); a second `claim` → `{ok:false, reason:'busy'}`; after `release`, `claim` works again; after `settle`, `claim` → `'gone'`; an unknown id, or one past `expiresAt` (fake clock), → `'gone'` and the expired entry is dropped; `add` beyond `max` evicts the oldest NOT-busy entry first (a busy one is never evicted mid-answer); `firstRefusal(id, u)` is true once per user, false after, and the per-prompt set is bounded (20 users; beyond that it answers false); `posted` records `messageTs`; `size()` counts live entries.
 - [ ] **Step 2: Run, expect FAIL.**
 - [ ] **Step 3: Implement** with one `Map` in insertion order; expiry swept lazily on `add` and `claim`. No timers (nothing to unref, nothing to leak).
 - [ ] **Step 4: Run, expect PASS.**
@@ -276,20 +281,20 @@ export interface AnswerDeps {
 }
 export function createClickHandler(d: AnswerDeps): ClickHandler;
 ```
-- The gate, exactly in this order. Every refusal releases the claim (unless it says settle), logs `slack_prompt_declined {installId, kind, reason}` (`kind` is absent before step 2), and calls no action hook:
+- The gate, exactly in this order. Every refusal releases the claim this click took (unless it says settle); `gone`, `busy` and `not-asker` took none, and must NOT release (a release there would drop the asker's own lock), logs `slack_prompt_declined {installId, kind, reason}` (`kind` is absent before step 2), and calls no action hook:
   1. Bot token from `secrets.get(install, 'bot-token')`; missing or throws → log `slack_prompt_failed {installId, stage:'bot-token'}` and stop (nothing can be said without it; no claim was taken).
-  2. `claim(click.promptId)`: `'gone'` → ephemeral `COPY.promptGone(todayLink)` to the clicker (thread: `click.threadTs` when present), reason `gone`; `'busy'` → silence, reason `busy`.
+  2. `claim(click.promptId, click.slackUserId)`: `'gone'` → ephemeral `COPY.promptGone(todayLink)` to the clicker (thread: `click.threadTs` when present), reason `gone`; `'busy'` → silence, reason `busy`. `'not-asker'` took no lock (nothing to release) and carries the prompt: run step 3 on it, then step 4.
   3. `prompt.installId !== install.installId || prompt.channel !== click.channel` → silence, reason `mismatch`.
-  4. `click.slackUserId !== prompt.askerSlackId` → ephemeral `COPY.promptOnlyAsker` (only when `firstRefusal` is true), reason `not-asker`. **No users.info, no AX lookup for them.**
+  4. The registry said `'not-asker'` (the clicker isn't `prompt.askerSlackId`; the registry compares, so a bystander's click never holds the prompt's lock) → ephemeral `COPY.promptOnlyAsker` (only when `firstRefusal` is true), reason `not-asker`. **No users.info, no AX lookup for them.** The gate keeps its own `click.slackUserId !== prompt.askerSlackId` check after an `ok` claim as defense in depth.
   5. `admitSender(api, botToken, click.slackUserId, install.teamId)` not ok → temporary failure: ephemeral `COPY.promptFailed`; otherwise silence; reason `not-admitted`.
   6. `findSenderUser(...)` (throws → `promptFailed`, release) `!== prompt.userId` → ephemeral `COPY.promptOnlyAsker`, reason `not-mapped`.
   7. `agentAccess(bus, ctx, prompt.agentId, prompt.userId)`: `'no' | 'agent-gone'` → settle, update the prompt to `COPY.promptClosed`, reason `no-access`; a throw → `promptFailed`, release.
   8. `prompt.mode === 'attended'`: `channels.get(installId, channel)` is null or names another agent → settle, update to `COPY.promptClosed`, reason `disconnected` (Review Focus 5). A throw → `promptFailed`, release.
   9. `answers[prompt.subject.kind]` absent → settle, `COPY.promptClosed`, reason `unsupported`. Else call it with `ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: prompt.agentId, userId: prompt.userId, conversationId: prompt.conversationId, logger })`. A throw → ephemeral `promptFailed`, release, log `slack_prompt_failed {stage:'answer', code}`.
   10. `api.updateMessage` on `prompt.messageTs ?? click.messageTs` with `outcomeBlocks({ subject: prompt.subjectText, line })` (a failure is logged `slack_prompt_failed {stage:'update'}`, never fatal); `settle` or `release` per `Answer.settle`; log `slack_prompt_answered {installId, kind, action}`; then `answer.follow?.()`, not awaited.
-- A `finally` releases a claim nothing settled.
+- A `finally` releases a claim THIS click took (an `ok` claim) that nothing settled, never one it didn't take.
 
-- [ ] **Step 1: Write the failing tests** (fake api recording calls, a real `createPromptRegistry`, fake bus with `auth:find-user-by-email` and `agents:resolve`, a recording `answers.decision`). Right person → the answer runs once with the prompt's user and agent, the prompt message is updated with the answer's line and no buttons, the prompt is settled. **Anyone else's click → refused, ephemeral `COPY.promptOnlyAsker` once (a second click by the same person: nothing), no users.info call, the answer never runs** (card acceptance). One test per gate step 1–9 proving that step alone refuses: each case is valid on every other rule (mutation-proof). Double click: two `onClick` calls racing, the answer gated on a deferred promise → the answer runs once, one update, the second click silent (Review Focus 1). A `gone` id → ephemeral `promptGone` and no answer (Review Focus 2). The answer's ctx always carries the prompt's `userId`, `agentId` and `conversationId`, whoever clicked.
+- [ ] **Step 1: Write the failing tests** (fake api recording calls, a real `createPromptRegistry`, fake bus with `auth:find-user-by-email` and `agents:resolve`, a recording `answers.decision`). Right person → the answer runs once with the prompt's user and agent, the prompt message is updated with the answer's line and no buttons, the prompt is settled. **Anyone else's click → refused, ephemeral `COPY.promptOnlyAsker` once (a second click by the same person: nothing), no users.info call, the answer never runs** (card acceptance). One test per gate step 1–9 proving that step alone refuses: each case is valid on every other rule (mutation-proof). Double click: two `onClick` calls racing, the answer gated on a deferred promise → the answer runs once, one update, the second click silent (Review Focus 1). A `gone` id → ephemeral `promptGone` and no answer (Review Focus 2). A bystander's click before the asker's, and one during the asker's pending answer → the asker's click still answers exactly once (never `busy`), and the bystander's refusal releases nothing (the asker's second click during the pending answer stays silent). The answer's ctx always carries the prompt's `userId`, `agentId` and `conversationId`, whoever clicked.
 - [ ] **Step 2: Run, expect FAIL.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Mutation check (protocol in yolo-ship): delete each of gate steps 4, 5, 6, 7, 8 in turn; predict which tests fail before each run; every mutant must be killed.

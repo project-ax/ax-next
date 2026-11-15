@@ -15,7 +15,9 @@ import { PROMPT_ID_BYTES, PROMPT_REFUSALS_MAX } from './limits.js';
  *     `remove` when the post failed.
  *   - `claim` when a click on it is handled, one click at a time: another
  *     claim while one is being handled is `busy`, and an id that isn't open
- *     is `gone`.
+ *     is `gone`. Only the asker's click takes it: anyone else's is
+ *     `not-asker` and takes nothing, so a bystander's click can never make
+ *     the asker's own click `busy`.
  *   - Then `settle` (answered, or it can't be answered here: gone for good)
  *     or `release` (a failure the asker can retry: open again).
  *
@@ -85,7 +87,13 @@ export interface Prompt extends PromptContext {
   readonly expiresAt: number;
 }
 
-export type Claim = { ok: true; prompt: Prompt } | { ok: false; reason: 'gone' | 'busy' };
+export type Claim =
+  | { ok: true; prompt: Prompt }
+  | { ok: false; reason: 'gone' | 'busy' }
+  // The clicker isn't the asker. Nothing was taken, so there is nothing to
+  // release; the prompt comes back so the gate can check it is this
+  // install's and this channel's before it says anything (`firstRefusal`).
+  | { ok: false; reason: 'not-asker'; prompt: Prompt };
 
 export interface PromptRegistry {
   /** Open a prompt for the turn `c` describes. Throws a PromptRegistryError when it can't. */
@@ -94,8 +102,8 @@ export interface PromptRegistry {
   posted(id: string, messageTs: string): void;
   /** Forget a prompt: its post failed. */
   remove(id: string): void;
-  /** Take an open prompt to answer a click on it. */
-  claim(id: string): Claim;
+  /** Take an open prompt to answer `slackUserId`'s click on it. Only its asker can take it. */
+  claim(id: string, slackUserId: string): Claim;
   /** The claimed prompt is answered, or can't be answered here: gone for good. */
   settle(id: string): void;
   /** The claimed prompt wasn't answered: open again. */
@@ -225,10 +233,12 @@ export function createPromptRegistry(o: {
 
     remove: forget,
 
-    claim(id) {
+    claim(id, slackUserId) {
       sweep(now());
       const entry = entries.get(id);
       if (entry === undefined) return { ok: false, reason: 'gone' };
+      // Before the lock: only the asker may ever hold it.
+      if (slackUserId !== entry.prompt.askerSlackId) return { ok: false, reason: 'not-asker', prompt: entry.prompt };
       if (entry.busy) return { ok: false, reason: 'busy' };
       entry.busy = true;
       return { ok: true, prompt: entry.prompt };

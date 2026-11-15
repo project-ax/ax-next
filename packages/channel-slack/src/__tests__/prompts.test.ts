@@ -165,7 +165,8 @@ describe('createPromptRegistry: add', () => {
     expect(prompt.subject).toEqual({ kind: 'decision', decisionId: 'dec_0001' });
     // Changing what was handed in changes nothing kept.
     wider.askerSlackId = 'U07ADA00001';
-    expect(prompts.claim(prompt.id)).toMatchObject({ ok: true, prompt: { askerSlackId: 'U07MEL00001' } });
+    expect(prompts.claim(prompt.id, 'U07ADA00001')).toMatchObject({ ok: false, reason: 'not-asker' });
+    expect(prompts.claim(prompt.id, 'U07MEL00001')).toMatchObject({ ok: true, prompt: { askerSlackId: 'U07MEL00001' } });
   });
 
   it('hands out frozen prompts: nobody holding one can change who may answer it, or what it asks', () => {
@@ -178,7 +179,8 @@ describe('createPromptRegistry: add', () => {
       (prompt.subject as { decisionId: string }).decisionId = 'dec_9999';
     }).toThrow(TypeError);
     prompts.posted(prompt.id, '1763121601.000300');
-    const claim = prompts.claim(prompt.id);
+    expect(prompts.claim(prompt.id, 'U07ADA00001')).toMatchObject({ ok: false, reason: 'not-asker' });
+    const claim = prompts.claim(prompt.id, 'U07MEL00001');
     expect(claim).toMatchObject({
       ok: true,
       prompt: { askerSlackId: 'U07MEL00001', subject: { decisionId: 'dec_0001' }, messageTs: '1763121601.000300' },
@@ -228,7 +230,7 @@ describe('createPromptRegistry: add', () => {
     const err = refused(() => prompts.add(ADA, { kind: 'decision', decisionId: 'dec_0002' }, SUMMARY));
     expect(err.code).toBe('prompt-id-unusable');
     expect(prompts.size()).toBe(1);
-    expect(prompts.claim(FIRST_ID)).toMatchObject({
+    expect(prompts.claim(FIRST_ID, MEL.askerSlackId)).toMatchObject({
       ok: true,
       prompt: { askerSlackId: 'U07MEL00001', subject: { decisionId: 'dec_0001' } },
     });
@@ -248,27 +250,27 @@ describe('createPromptRegistry: claim, settle, release', () => {
   it('a claim takes an open prompt once: another claim while it is being answered is busy', () => {
     const { prompts } = registry();
     const prompt = prompts.add(MEL, HELD, SUMMARY);
-    expect(prompts.claim(prompt.id)).toEqual({ ok: true, prompt });
-    expect(prompts.claim(prompt.id)).toEqual(BUSY);
-    expect(prompts.claim(prompt.id)).toEqual(BUSY);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual({ ok: true, prompt });
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(BUSY);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(BUSY);
   });
 
   it('release makes a claimed prompt answerable again (a failure the asker can retry)', () => {
     const { prompts } = registry();
     const prompt = prompts.add(MEL, HELD, SUMMARY);
-    expect(prompts.claim(prompt.id).ok).toBe(true);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId).ok).toBe(true);
     prompts.release(prompt.id);
-    expect(prompts.claim(prompt.id)).toEqual({ ok: true, prompt });
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual({ ok: true, prompt });
   });
 
   it('settle ends a prompt for good: a later claim finds it gone, and a late release brings nothing back', () => {
     const { prompts } = registry();
     const prompt = prompts.add(MEL, HELD, SUMMARY);
-    expect(prompts.claim(prompt.id).ok).toBe(true);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId).ok).toBe(true);
     prompts.settle(prompt.id);
-    expect(prompts.claim(prompt.id)).toEqual(GONE);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(GONE);
     prompts.release(prompt.id);
-    expect(prompts.claim(prompt.id)).toEqual(GONE);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(GONE);
     expect(prompts.size()).toBe(0);
   });
 
@@ -276,18 +278,47 @@ describe('createPromptRegistry: claim, settle, release', () => {
     const { prompts } = registry();
     const mel = prompts.add(MEL, HELD, SUMMARY);
     const ada = prompts.add(ADA, { kind: 'decision', decisionId: 'dec_0002' }, SUMMARY);
-    expect(prompts.claim(mel.id).ok).toBe(true);
+    expect(prompts.claim(mel.id, mel.askerSlackId).ok).toBe(true);
     prompts.settle(mel.id);
-    expect(prompts.claim(ada.id)).toEqual({ ok: true, prompt: ada });
+    expect(prompts.claim(ada.id, ada.askerSlackId)).toEqual({ ok: true, prompt: ada });
+  });
+
+  it("only the asker can take a prompt: anyone else's click is not-asker, takes no lock, and the asker's click still gets in", () => {
+    const { prompts } = registry();
+    const prompt = prompts.add(MEL, HELD, SUMMARY);
+    // Ada clicks Mel's prompt first, twice. Neither click holds it.
+    expect(prompts.claim(prompt.id, ADA.askerSlackId)).toEqual({ ok: false, reason: 'not-asker', prompt });
+    expect(prompts.claim(prompt.id, ADA.askerSlackId)).toEqual({ ok: false, reason: 'not-asker', prompt });
+    // Ada's id spelled another way is still not Mel's.
+    expect(prompts.claim(prompt.id, MEL.askerSlackId.toLowerCase())).toEqual({ ok: false, reason: 'not-asker', prompt });
+    expect(prompts.claim(prompt.id, '')).toEqual({ ok: false, reason: 'not-asker', prompt });
+    expect(prompts.claim(prompt.id, MEL.askerSlackId)).toEqual({ ok: true, prompt });
+  });
+
+  it("while the asker's click is being answered, anyone else is still told not-asker, not busy, and the lock stays the asker's", () => {
+    const { prompts } = registry();
+    const prompt = prompts.add(MEL, HELD, SUMMARY);
+    expect(prompts.claim(prompt.id, MEL.askerSlackId).ok).toBe(true);
+    expect(prompts.claim(prompt.id, ADA.askerSlackId)).toEqual({ ok: false, reason: 'not-asker', prompt });
+    expect(prompts.claim(prompt.id, MEL.askerSlackId)).toEqual(BUSY);
+    prompts.release(prompt.id);
+    expect(prompts.claim(prompt.id, MEL.askerSlackId)).toEqual({ ok: true, prompt });
+  });
+
+  it('a click on a prompt that is not there is gone, whoever clicks', () => {
+    const { prompts } = registry();
+    prompts.add(MEL, HELD, SUMMARY);
+    expect(prompts.claim(SECOND_ID, ADA.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(SECOND_ID, MEL.askerSlackId)).toEqual(GONE);
   });
 
   it('an id it never handed out is gone, whatever it spells', () => {
     const { prompts } = registry();
     prompts.add(MEL, HELD, SUMMARY);
     for (const id of [SECOND_ID, FIRST_ID.toLowerCase(), '', '__proto__', 'constructor', 'toString']) {
-      expect(prompts.claim(id), id).toEqual(GONE);
+      expect(prompts.claim(id, MEL.askerSlackId), id).toEqual(GONE);
     }
-    expect(prompts.claim(FIRST_ID).ok).toBe(true);
+    expect(prompts.claim(FIRST_ID, MEL.askerSlackId).ok).toBe(true);
   });
 });
 
@@ -299,27 +330,27 @@ describe('createPromptRegistry: expiry', () => {
     const prompt = prompts.add(MEL, HELD, SUMMARY);
     expect(prompt.expiresAt).toBe(NOW_MS + 60_000);
     at(NOW_MS + 59_999);
-    expect(prompts.claim(prompt.id).ok).toBe(true);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId).ok).toBe(true);
     prompts.release(prompt.id);
     at(NOW_MS + 60_000);
-    expect(prompts.claim(prompt.id)).toEqual(GONE);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(GONE);
     // Dropped, not just hidden: back inside its window it is still gone.
     at(NOW_MS);
-    expect(prompts.claim(prompt.id)).toEqual(GONE);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(GONE);
     expect(prompts.size()).toBe(0);
   });
 
   it('one being answered when it expires stays under its answer (another click is busy, not gone), and goes once released', () => {
     const { prompts, at } = registry();
     const prompt = prompts.add(MEL, HELD, SUMMARY);
-    expect(prompts.claim(prompt.id).ok).toBe(true);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId).ok).toBe(true);
     at(NOW_MS + 60_001);
     // Adding sweeps expired prompts: this one is being answered, so it stays.
     prompts.add(ADA, HELD, SUMMARY);
-    expect(prompts.claim(prompt.id)).toEqual(BUSY);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(BUSY);
     expect(prompts.size()).toBe(2);
     prompts.release(prompt.id);
-    expect(prompts.claim(prompt.id)).toEqual(GONE);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual(GONE);
     expect(prompts.size()).toBe(1);
   });
 
@@ -332,8 +363,8 @@ describe('createPromptRegistry: expiry', () => {
     const second = prompts.add(ADA, HELD, SUMMARY);
     // The second has expired; the first has not.
     at(NOW_MS + 60_050);
-    expect(prompts.claim(second.id)).toEqual(GONE);
-    expect(prompts.claim(first.id).ok).toBe(true);
+    expect(prompts.claim(second.id, second.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(first.id, first.askerSlackId).ok).toBe(true);
   });
 
   it('at max, adding drops an expired prompt before it forgets a live one, even when the expired one is younger', () => {
@@ -344,9 +375,9 @@ describe('createPromptRegistry: expiry', () => {
     const expired = prompts.add(ADA, HELD, SUMMARY);
     at(NOW_MS + 60_050);
     const added = prompts.add(MEL, { kind: 'decision', decisionId: 'dec_0003' }, SUMMARY);
-    expect(prompts.claim(live.id).ok).toBe(true);
-    expect(prompts.claim(expired.id)).toEqual(GONE);
-    expect(prompts.claim(added.id).ok).toBe(true);
+    expect(prompts.claim(live.id, live.askerSlackId).ok).toBe(true);
+    expect(prompts.claim(expired.id, expired.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(added.id, added.askerSlackId).ok).toBe(true);
   });
 });
 
@@ -358,42 +389,42 @@ describe('createPromptRegistry: max', () => {
     const [a, b, c] = [1, 2, 3].map((n) => prompts.add(MEL, { kind: 'decision', decisionId: `dec_000${n}` }, SUMMARY));
     const d = prompts.add(ADA, HELD, SUMMARY);
     expect(prompts.size()).toBe(3);
-    expect(prompts.claim(a!.id)).toEqual(GONE);
-    for (const p of [b!, c!, d]) expect(prompts.claim(p.id).ok).toBe(true);
+    expect(prompts.claim(a!.id, a!.askerSlackId)).toEqual(GONE);
+    for (const p of [b!, c!, d]) expect(prompts.claim(p.id, p.askerSlackId).ok).toBe(true);
   });
 
   it('past max, a prompt being answered is never forgotten under its answer: the oldest idle one goes instead', () => {
     const { prompts } = registry({ max: 3 });
     const [a, b, c] = [1, 2, 3].map((n) => prompts.add(MEL, { kind: 'decision', decisionId: `dec_000${n}` }, SUMMARY));
-    expect(prompts.claim(a!.id).ok).toBe(true);
+    expect(prompts.claim(a!.id, a!.askerSlackId).ok).toBe(true);
     const d = prompts.add(ADA, HELD, SUMMARY);
     expect(prompts.size()).toBe(3);
-    expect(prompts.claim(b!.id)).toEqual(GONE);
-    expect(prompts.claim(a!.id)).toEqual(BUSY);
+    expect(prompts.claim(b!.id, b!.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(a!.id, a!.askerSlackId)).toEqual(BUSY);
     prompts.release(a!.id);
-    for (const p of [a!, c!, d]) expect(prompts.claim(p.id).ok).toBe(true);
+    for (const p of [a!, c!, d]) expect(prompts.claim(p.id, p.askerSlackId).ok).toBe(true);
   });
 
   it('with every open prompt being answered, adding refuses rather than grow past max', () => {
     const { prompts } = registry({ max: 2 });
     const a = prompts.add(MEL, HELD, SUMMARY);
     const b = prompts.add(ADA, HELD, SUMMARY);
-    expect(prompts.claim(a.id).ok).toBe(true);
-    expect(prompts.claim(b.id).ok).toBe(true);
+    expect(prompts.claim(a.id, a.askerSlackId).ok).toBe(true);
+    expect(prompts.claim(b.id, b.askerSlackId).ok).toBe(true);
 
     const err = refused(() => prompts.add(MEL, { kind: 'decision', decisionId: 'dec_0003' }, SUMMARY));
     expect(err.code).toBe('prompts-full');
     // What a caller logs: the code, never the message.
     expect(logCode(err)).toBe('prompts-full');
     expect(prompts.size()).toBe(2);
-    expect(prompts.claim(a.id)).toEqual(BUSY);
-    expect(prompts.claim(b.id)).toEqual(BUSY);
+    expect(prompts.claim(a.id, a.askerSlackId)).toEqual(BUSY);
+    expect(prompts.claim(b.id, b.askerSlackId)).toEqual(BUSY);
 
     // Once one is released, it is the oldest idle one, and makes room.
     prompts.release(a.id);
     const c = prompts.add(MEL, { kind: 'decision', decisionId: 'dec_0003' }, SUMMARY);
-    expect(prompts.claim(a.id)).toEqual(GONE);
-    expect(prompts.claim(c.id).ok).toBe(true);
+    expect(prompts.claim(a.id, a.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(c.id, c.askerSlackId).ok).toBe(true);
   });
 });
 
@@ -424,7 +455,7 @@ describe('createPromptRegistry: firstRefusal', () => {
   it('is false for a prompt it does not hold: nobody is told anything about a prompt that is not there', () => {
     const { prompts } = registry();
     const mel = prompts.add(MEL, HELD, SUMMARY);
-    expect(prompts.claim(mel.id).ok).toBe(true);
+    expect(prompts.claim(mel.id, mel.askerSlackId).ok).toBe(true);
     prompts.settle(mel.id);
     expect(prompts.firstRefusal(mel.id, 'U07ADA00001')).toBe(false);
     expect(prompts.firstRefusal(SECOND_ID, 'U07ADA00001')).toBe(false);
@@ -438,7 +469,7 @@ describe('createPromptRegistry: posted, remove, size', () => {
     const { prompts } = registry();
     const prompt = prompts.add(MEL, HELD, SUMMARY);
     prompts.posted(prompt.id, '1763121601.000300');
-    expect(prompts.claim(prompt.id)).toEqual({ ok: true, prompt: { ...prompt, messageTs: '1763121601.000300' } });
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual({ ok: true, prompt: { ...prompt, messageTs: '1763121601.000300' } });
   });
 
   it("posted for an id it doesn't hold changes nothing", () => {
@@ -446,8 +477,8 @@ describe('createPromptRegistry: posted, remove, size', () => {
     const prompt = prompts.add(MEL, HELD, SUMMARY);
     prompts.posted(SECOND_ID, '1763121601.000300');
     expect(prompts.size()).toBe(1);
-    expect(prompts.claim(SECOND_ID)).toEqual(GONE);
-    expect(prompts.claim(prompt.id)).toEqual({ ok: true, prompt });
+    expect(prompts.claim(SECOND_ID, MEL.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(prompt.id, prompt.askerSlackId)).toEqual({ ok: true, prompt });
   });
 
   it('remove forgets a prompt (its post failed): a click on it finds it gone', () => {
@@ -457,8 +488,8 @@ describe('createPromptRegistry: posted, remove, size', () => {
     prompts.remove(mel.id);
     // An id it never handed out: nothing to forget, nothing breaks.
     prompts.remove('AAAAAAAAAAAAAAAAAAAAAA');
-    expect(prompts.claim(mel.id)).toEqual(GONE);
-    expect(prompts.claim(ada.id)).toEqual({ ok: true, prompt: ada });
+    expect(prompts.claim(mel.id, mel.askerSlackId)).toEqual(GONE);
+    expect(prompts.claim(ada.id, ada.askerSlackId)).toEqual({ ok: true, prompt: ada });
     expect(prompts.size()).toBe(1);
   });
 
@@ -468,7 +499,7 @@ describe('createPromptRegistry: posted, remove, size', () => {
     const a = prompts.add(MEL, HELD, SUMMARY);
     const b = prompts.add(ADA, HELD, SUMMARY);
     expect(prompts.size()).toBe(2);
-    expect(prompts.claim(a.id).ok).toBe(true);
+    expect(prompts.claim(a.id, a.askerSlackId).ok).toBe(true);
     expect(prompts.size()).toBe(2);
     prompts.settle(a.id);
     expect(prompts.size()).toBe(1);
