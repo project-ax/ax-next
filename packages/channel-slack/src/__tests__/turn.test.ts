@@ -125,9 +125,23 @@ function replyOf(calls: readonly SlackCall[]): string {
 // ── The fake orchestrator: agent:invoke fires the turn's events on the bus ─
 
 interface Script {
+  /**
+   * Before anything of its own, another turn in the conversation ends dark
+   * (no reqId): a warm agent's reaction to a Deny, still running when the
+   * message came. What the reply had done by then is kept (`afterDark`).
+   */
+  darkEndFirst?: boolean;
   /** Chunks to fire, in order, each stamped with the invoke's reqId. */
   chunks?: Array<Record<string, unknown>>;
   end?: 'turn-end' | 'turn-error';
+}
+
+/** The reply as it stood right after another turn's dark turn-end. */
+interface AfterDark {
+  /** Turn sinks still registered: 1 while the reply waits for its own turn. */
+  sinks: number;
+  /** Every Slack call by then but 👀's. */
+  methods: string[];
 }
 
 const quiet: Logger = {
@@ -176,6 +190,9 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     ttlMs: PROMPT_TTL_MS,
     max: PROMPT_MAX,
   });
+  const afterDark: AfterDark[] = [];
+  // Assigned below, once the fake Slack exists: the fake orchestrator reads it only when invoked.
+  let slackCalls: () => SlackCall[] = () => [];
   bus.registerService(
     'agent:invoke',
     'fake-orchestrator',
@@ -188,6 +205,15 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
         userId: ctx.userId,
         ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
       });
+      if (script.darkEndFirst === true) {
+        await bus.fire('chat:turn-end', ipcCtx, { reason: 'complete' });
+        afterDark.push({
+          sinks: registry.size(),
+          methods: slackCalls()
+            .map((c) => c.method)
+            .filter((m) => m !== 'addReaction' && m !== 'removeReaction'),
+        });
+      }
       for (const chunk of script.chunks ?? [{ kind: 'text', text: 'ok' }]) {
         await bus.fire('chat:stream-chunk', ipcCtx, { reqId: ctx.reqId, ...chunk });
       }
@@ -202,6 +228,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     { timeoutMs: Number.POSITIVE_INFINITY, stallWarnMs: Number.POSITIVE_INFINITY },
   );
   const slack = fakeSlack(o.postBlocksFails === true ? { postBlocksFails: true } : {});
+  slackCalls = () => slack.calls;
 
   const request = (mode: TurnMode): TurnRequest => ({
     mode,
@@ -223,6 +250,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     invokes,
     lookups,
     prompts,
+    afterDark,
     /** Every Slack call but 👀's, in order. */
     calls: () => slack.calls.filter((c) => c.method !== 'addReaction' && c.method !== 'removeReaction'),
     reply: () => replyOf(slack.calls),
@@ -353,6 +381,28 @@ describe("runTurn: the agent runs as the request says, under its mode's context"
     expect(input).toEqual({ message: { role: 'user', content: `${LABEL}: is x < 3?` } });
     expect(h.reply()).toBe('ok');
   });
+});
+
+describe("runTurn: another turn's dark turn-end is not this one's (TASK-1095)", () => {
+  /*
+    A Deny in Slack wakes the warm agent with no continuation id
+    (decisions:dismiss takes none), so its reaction runs dark and its
+    turn-end names no turn. The person's next message, sent right after the
+    Deny, has its turn registered by then. Ending it there gave them "I
+    didn't have anything to add." and dropped their real answer.
+  */
+  it.each(['dm', 'attended', 'external'] as const)(
+    'a %s turn: a dark turn-end before its first chunk leaves the reply waiting, and its own chunks and end finish it',
+    async (mode) => {
+      const h = harness({ darkEndFirst: true, chunks: [{ kind: 'text', text: 'Here is what I found.' }] });
+      await h.run(mode);
+      // Right after the dark turn-end: still waiting for its own turn, nothing said.
+      expect(h.afterDark).toEqual([{ sinks: 1, methods: [] }]);
+      // Then the person's real answer, ended by its own turn-end.
+      expect(h.reply()).toBe('Here is what I found.');
+      expect(h.calls().map((c) => c.method)).toEqual(['startStream', 'stopStream']);
+    },
+  );
 });
 
 describe('runTurn: a call held for approval ends the reply with one line saying who must approve', () => {
@@ -789,20 +839,33 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a dark turn-end (no reqId) in the prompt's conversation ends a follower still waiting: quietly, as said-nothing", async () => {
-    // Known residual: a warm agent's turn run dark (a reaction to a Deny, say)
-    // ends every sink of its conversation, this one included.
+  it("a dark turn-end (no reqId) in the prompt's conversation before the continuation began is another turn's: the follower keeps waiting, and follows its own", async () => {
+    // A warm agent's turn run dark (its reaction to a Deny on another prompt,
+    // say) used to end this wait too, and the continuation then streamed to nobody.
     vi.useFakeTimers();
     const h = follower();
     const done = h.follow(inTenSeconds());
     await h.end('');
+    expect(h.registry.size()).toBe(1);
+    expect(h.lines).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await h.chunk({ kind: 'text', text: 'Sent it to Bob.' });
+    await h.end();
     await done;
-    expect(h.all()).toEqual([]);
+    expect(h.reply()).toBe('Sent it to Bob.');
+    expect(h.lines).toEqual([]);
     expect(h.registry.size()).toBe(0);
-    expect(h.lines).toEqual([
-      { level: 'info', msg: 'slack_continuation_missed', fields: { installId: CONTEXT.installId, reason: 'said-nothing' } },
-    ]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a dark turn-end once the continuation has begun ends it, as its own', async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.chunk({ kind: 'text', text: 'Sent it to Bob.' });
+    await h.end('');
+    await done;
+    expect(h.reply()).toBe('Sent it to Bob.');
+    expect(h.registry.size()).toBe(0);
   });
 
   it.each([
