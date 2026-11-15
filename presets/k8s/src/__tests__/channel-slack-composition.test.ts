@@ -357,6 +357,11 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
         answer = { ok: true };
       }
       break;
+    case 'apps.manifest.update':
+      // TASK-1096: the rename. Slack answers the app id, and whether the new
+      // manifest's scopes need the workspace to Allow again (a name doesn't).
+      answer = { ok: true, app_id: APP_ID, permissions_updated: false };
+      break;
     case 'apps.icon.set':
     case 'apps.manifest.delete':
     case 'chat.appendStream':
@@ -806,6 +811,35 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // The four secrets went into the real vault, globally.
     expect(await readSecret(installId, 'bot-token')).toBe(BOT_TOKEN);
     expect(await readSecret(installId, 'signing-secret')).toBe(SIGNING_SECRET);
+    actor = null;
+
+    // 2b. The admin renames the bot (TASK-1096). The route rotates the stored
+    //     configuration token, then sends Slack the WHOLE manifest (Slack
+    //     replaces it on update) with only the two name fields changed. The row
+    //     shows the new name only after Slack said yes. Nothing else in the
+    //     scenario reads the name, and Disconnect at step 6 cleans the install up.
+    const renameMark = slackCalls.length;
+    actor = { id: ADMIN, isAdmin: true };
+    const rename = await callRoute('POST', '/admin/slack/rename', { body: jsonBody({ botName: 'Canopy Helper' }) });
+    expect(rename).toMatchObject({ status: 200, body: { botName: 'Canopy Helper' } });
+    const renameCalls = slackCalls.slice(renameMark);
+    expect(renameCalls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.update']);
+    expect(renameCalls[0]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
+    const update = renameCalls[1]!;
+    expect(update.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
+    expect(update.body['app_id']).toBe(APP_ID);
+    const renamedManifest = JSON.parse(String(created.body['manifest'])) as {
+      display_information: { name: string };
+      features: { bot_user: { display_name: string } };
+    };
+    renamedManifest.display_information.name = 'Canopy Helper';
+    renamedManifest.features.bot_user.display_name = 'Canopy Helper';
+    expect(JSON.parse(String(update.body['manifest']))).toEqual(renamedManifest);
+    expect(await query('SELECT bot_name FROM channel_slack_v1_installs')).toEqual([{ bot_name: 'Canopy Helper' }]);
+    expect(await callRoute('GET', '/admin/slack')).toMatchObject({
+      status: 200,
+      body: { state: 'connected', botName: 'Canopy Helper' },
+    });
     actor = null;
 
     // 3. Alice DMs the bot. The reply streams into her thread, from her own
