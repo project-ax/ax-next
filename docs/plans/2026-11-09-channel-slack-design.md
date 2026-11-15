@@ -372,12 +372,14 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - Artifacts and charts become a link to the agent's page in the web app (no
      per-artifact or per-conversation page exists yet).
    - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its
-     conversation (matched the way channel-web matches it), `chat:turn-error`,
-     a `terminated` invoke outcome, 60 seconds after a complete invoke outcome
-     with no turn-end, or a 15-minute hard cap. At the cap the turn itself is
-     also stopped (`agent:interrupt`, best-effort), not only its reply. Up to 3
-     turns per conversation run or wait in order; a fourth message gets a
-     "still working" reply.
+     conversation (matched the way channel-web matches it, except that a
+     turn-end naming no turn ends only a turn that has begun: TASK-1095),
+     `chat:turn-error`, a `terminated` invoke outcome, 60 seconds after a
+     complete invoke outcome (or after the turn's last chunk, when one came
+     later) with no turn-end, or a 15-minute hard cap. At the cap the turn
+     itself is also stopped (`agent:interrupt`, best-effort), not only its
+     reply. Up to 3 turns per conversation run or wait in order; a fourth
+     message gets a "still working" reply.
 6. **Approvals.** What a person sees when a call needs an OK (TASK-1095, PR A):
    - **A held call in a DM or an attended channel turn.** After the reply, the
      bot posts a prompt in the thread: the decision's own summary, **Allow** and
@@ -385,22 +387,29 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      from outside AX's own wording, so it is cleaned and drawn as plain text.
    - **Only the asker may answer**, and every click is proved again before any
      action: the prompt is still open and was posted for this install and
-     channel; the signed click's Slack user is the person who asked; Slack still
-     admits them (`users.info`); their verified email maps to the prompt's AX
-     user; that user still reaches the agent; and, for a channel, the channel is
-     still connected to that agent. In a channel the agent access must be full
-     (`yes`); a DM also accepts a team agent the person can only chat with
-     (`not-team`). Nothing is taken from the message text or a button label.
-     Anyone else gets one private line ("Only the person who asked can answer
-     this"). One answer per prompt: a second click while one is being handled is
-     silent.
+     channel, and the click is on the prompt's own message (once its message
+     is known); the signed click's Slack user is the person who asked; Slack
+     still admits them (`users.info`); their verified email maps to the
+     prompt's AX user; that user still reaches the agent; and, for a channel,
+     the channel is still connected to that agent. In a channel the agent
+     access must be full (`yes`); a DM also accepts a team agent the person
+     can only chat with (`not-team`). Nothing is taken from the message text
+     or a button label. Anyone else gets one private line ("Only the person
+     who asked can answer this"). One answer per prompt: a second click while
+     one is being handled is silent.
    - **Allow** calls `decisions:approve` as that user, once (no "always allow",
      no Undo). The prompt then reads what really happened (done, will be picked
      up, parked for the next ask, expired, changed, did not run). When the agent
      is woken by the approval (a warm session, after the 10-second undo window),
      the bot follows that continuation into the thread. The follower starts the
      moment `decisions:approve` returns, not after the prompt is redrawn, so
-     the first words aren't missed. **Deny** calls `decisions:dismiss`.
+     the first words aren't missed. If the agent never carries on in the
+     thread (its session ended inside the undo window, the wake-up was
+     refused, or it woke and said nothing), nothing is posted there: the
+     prompt's "I'll pick it up in a moment." is redrawn with what the decision
+     says by then (`decisions:get`, read the way Today's receipt reads it:
+     done, waiting for the next ask, failed, and so on). **Deny** calls
+     `decisions:dismiss`.
    - **An answer that takes over 30 seconds** (a slow hook) tells the asker it
      is still working and keeps the prompt taken until it lands; it is not
      retried by a second click. Other slow steps release with "try again".
@@ -547,9 +556,28 @@ connectors. The protections are:
   isn't posted to Slack (only Slack clicks are followed).
 - **A late connector approval** (after the warm session ended) parks until the
   agent's next identical call, as in web chats.
-- **The agent's reaction to a Deny** runs without a stream; and a woken
-  continuation has no lane slot, so a message sent meanwhile may fold into it.
-- **A host prompt shows the host** to everyone in the connected channel.
+- **The agent's reaction to a Deny** runs without a stream (`decisions:dismiss`
+  takes no continuation id), and its turn-end names no turn. That end no
+  longer ends a Slack reply whose own turn hasn't begun, and the invoke it
+  answers early (chat-orchestrator resolves a session's oldest waiting invoke
+  on such an end) keeps its reply open while its own turn streams. What's
+  left: a message the runner folds INTO that dark reaction is answered there,
+  out of Slack's sight, and its reply says it had nothing to add; and a reply
+  whose invoke was answered early still ends if its own turn goes quiet for
+  60 seconds (a long tool call). A woken continuation has no lane slot either,
+  so a message sent meanwhile may fold into it.
+- **A missed continuation's redraw** needs `decisions:get`. Without it, or
+  when the read fails or takes over 5 seconds, the prompt keeps "I'll pick it
+  up in a moment."; it also keeps it while a host replay of the call is still
+  running when the thread stops waiting.
+- **A prompt answered in Today first** shows Today's answer, whichever button
+  was clicked: decisions absorbs the second answer and hands back the stored
+  row, so an Allow clicked after a Deny in Today reads "Denied. I won't do
+  it." under the click, and a Deny after an approval reads "Allowed…".
+- **A click on a prompt that isn't open any more** (answered, expired, or
+  forgotten by a restart) gets its clicker a private "this isn't waiting here
+  anymore" every time, from anyone, with no bound: each is a Slack call. (A
+  refused clicker on an open prompt is told once per prompt.)
 - **Refused clickers cost** one vault read each and, once per prompt, one
   private line.
 - **Only one yes per agent and call** can stand at a time (a team-mate's
