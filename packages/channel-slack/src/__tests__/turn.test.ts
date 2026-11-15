@@ -4,12 +4,14 @@ import { COPY } from '../copy.js';
 import {
   CONTINUATION_START_GRACE_MS,
   CONTINUATION_WAKE_MAX_MS,
+  PERMISSION_PROMPTS_PER_TURN_MAX,
   PROMPT_MAX,
   PROMPT_TTL_MS,
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
-import { outcomeBlocks } from '../blocks.js';
+import { linkOnlyBlocks, outcomeBlocks } from '../blocks.js';
+import { cleanPromptSubject } from '../format.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
@@ -24,6 +26,7 @@ import {
   type TurnRequest,
 } from '../turn.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
+import { spellsMention } from './lenient-decoder.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -154,6 +157,15 @@ interface Script {
   answeredByDarkEnd?: boolean;
   /** Chunks to fire, in order, each stamped with the invoke's reqId. */
   chunks?: Array<Record<string, unknown>>;
+  /**
+   * Then cards asking the person's OK, in order. A host card is fired as
+   * chat-orchestrator fires the egress wall's: under the egress proxy's ctx,
+   * never the turn's, the turn named only by the payload's reqId (the
+   * invoke's, unless the card names another). A skill card is fired as
+   * @ax/skill-broker fires request_capability's: under the runner's IPC ctx,
+   * whose conversation is the turn's, and no reqId at all.
+   */
+  cards?: Array<Record<string, unknown>>;
   end?: 'turn-end' | 'turn-error';
 }
 
@@ -165,14 +177,6 @@ interface AfterDark {
   methods: string[];
 }
 
-const quiet: Logger = {
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-  child: () => quiet,
-};
-
 interface HarnessOptions {
   /**
    * @ax/decisions' read, answering these rows for the turn's conversation.
@@ -183,14 +187,69 @@ interface HarnessOptions {
   lookupFails?: boolean;
   /** Slack refuses a prompt's post. */
   postBlocksFails?: boolean;
+  /** credential-proxy's `proxy:add-host` is not on the bus (a kernel booted without it). */
+  noProxy?: boolean;
+  /** chat-orchestrator's `agent:apply-capability-grant` is not on the bus. */
+  noSkillGrant?: boolean;
+  /** @ax/conversations' `conversations:get` is not on the bus. */
+  noConversationGet?: boolean;
+}
+
+/** What Allow on a skill prompt calls (permission-prompts.ts), recorded: a turn never calls either. */
+function skillServices(bus: HookBus, o: Pick<HarnessOptions, 'noSkillGrant' | 'noConversationGet'> = {}) {
+  const calls: Array<{ hook: string; input: unknown }> = [];
+  if (o.noConversationGet !== true) {
+    bus.registerService('conversations:get', 'fake-conversations', async (_ctx, input) => {
+      calls.push({ hook: 'conversations:get', input });
+      throw new Error('a turn must not read its conversation back');
+    });
+  }
+  if (o.noSkillGrant !== true) {
+    bus.registerService('agent:apply-capability-grant', 'fake-chat-orchestrator', async (_ctx, input) => {
+      calls.push({ hook: 'agent:apply-capability-grant', input });
+      throw new Error('a turn must not attach a skill');
+    });
+  }
+  return calls;
+}
+
+/** A catalog skill's description, as the card carries it. */
+const DESCRIPTION = 'Reads and sends email from your Gmail account.';
+/** A slot the person has no key for yet: Slack never collects one, so the card goes to the web app. */
+const KEYLESS_SLOT = { slot: 'api_key', kind: 'api-key', service: 'gmail', haveExisting: false };
+
+/** request_capability's card for `skillId`, as @ax/skill-broker fires it: a skill that needs nothing but a yes, unless `slots` says otherwise. */
+function skillCard(skillId: string, o: { description?: string; slots?: unknown[] } = {}): Record<string, unknown> {
+  return {
+    kind: 'skill',
+    skillId,
+    description: o.description ?? DESCRIPTION,
+    hosts: ['gmail.googleapis.com'],
+    slots: o.slots ?? [],
+    packages: { npm: [], pypi: [] },
+  };
 }
 
 function harness(script: Script = {}, o: HarnessOptions = {}) {
   const bus = new HookBus();
-  const registry = createTurnRegistry();
+  const lines: LogLine[] = [];
+  const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
+    lines.push({ level, msg, fields });
+  };
+  const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
+  const registry = createTurnRegistry({ logger });
   subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
   const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
   const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
+  /** proxy:add-host's calls. Only an Allow makes one (permission-prompts.ts): a turn never does. */
+  const addHosts: Array<{ ctx: AgentContext; input: unknown }> = [];
+  if (o.noProxy !== true) {
+    bus.registerService('proxy:add-host', 'fake-credential-proxy', async (ctx, input) => {
+      addHosts.push({ ctx, input });
+      return { added: true };
+    });
+  }
+  const skillCalls = skillServices(bus, o);
   if (o.decisions !== undefined || o.lookupFails === true) {
     bus.registerService('decisions:recent-for-conversation', 'fake-decisions', async (ctx, input) => {
       lookups.push({ ctx, input });
@@ -222,6 +281,8 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
       userId: ctx.userId,
       ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
     });
+  /** The egress proxy's events reach chat-orchestrator under no turn's ctx: no user, agent or conversation. */
+  const egressCtx = makeAgentContext({ sessionId: 'credential-proxy', agentId: '', userId: '' });
   bus.registerService(
     'agent:invoke',
     'fake-orchestrator',
@@ -241,6 +302,10 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
       }
       for (const chunk of script.chunks ?? [{ kind: 'text', text: 'ok' }]) {
         await bus.fire('chat:stream-chunk', ipcCtx, { reqId: ctx.reqId, ...chunk });
+      }
+      for (const card of script.cards ?? []) {
+        if (card['kind'] === 'skill') await bus.fire('chat:permission-request', ipcCtx, card);
+        else await bus.fire('chat:permission-request', egressCtx, { reqId: ctx.reqId, ...card });
       }
       if (script.end === 'turn-error') {
         await bus.fire('chat:turn-error', ipcCtx, { reqId: ctx.reqId, reason: 'chat-run-timeout' });
@@ -281,8 +346,13 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   return {
     invokes,
     lookups,
+    addHosts,
+    skillCalls,
     prompts,
     afterDark,
+    lines,
+    /** The fields of every line logged as `msg`, in order. */
+    logged: (msg: string) => lines.filter((l) => l.msg === msg).map((l) => l.fields),
     /** Turn sinks registered now: 1 while a reply waits on its turn. */
     sinks: () => registry.size(),
     own: {
@@ -308,7 +378,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
           registry,
           prompts,
           publicOrigin: PUBLIC_ORIGIN,
-          logger: quiet,
+          logger,
           clock: systemClock,
         },
         request(mode),
@@ -702,6 +772,372 @@ describe('runTurn: a held call the person who wrote can answer gets a prompt aft
   });
 });
 
+describe('runTurn: a host the sandbox was refused gets a prompt after the reply, when the person who wrote can allow it (TASK-1095)', () => {
+  const SAID = { kind: 'text', text: 'I could not reach that site.' };
+  const CHANNEL = 'C07SUPPORT1';
+  const THREAD = '1763035200.000100';
+  /** The turn's live sandbox session, as the egress proxy names it on the card. */
+  const SESSION = 'sess_live';
+  /** The egress wall's card for `host`: chat-orchestrator fires it while the turn runs. */
+  const hostCard = (host: string): Record<string, unknown> => ({ kind: 'host', host, sessionId: SESSION });
+  const heldCall = (id: string): Array<Record<string, unknown>> => [
+    { kind: 'tool-use', toolCallId: id, toolName: 'mcp__gmail__send_email', input: {} },
+    { kind: 'tool-result', toolCallId: id, output: 'Held for approval', held: true },
+  ];
+  type Block = { type: string; text?: { text?: string } };
+  const posts = (calls: readonly SlackCall[]): SlackCall[] => calls.filter((c) => c.method === 'postBlocks');
+  /** What each posted prompt asks: its section's text. */
+  const subjects = (calls: readonly SlackCall[]): string[] =>
+    posts(calls).map((c) => (c.args['blocks'] as Block[])[0]!.text!.text!);
+
+  it.each(['dm', 'attended'] as const)(
+    "a %s turn: after the reply, one prompt to connect to the host, for the turn's own live session, linking nowhere",
+    async (mode) => {
+      const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] });
+      await h.run(mode);
+
+      // The reply is the agent's own words; the prompt follows it, once its stream has stopped.
+      expect(h.streamed()).toBe('I could not reach that site.');
+      const methods = h.calls().map((c) => c.method);
+      expect(methods.filter((m) => m === 'postBlocks')).toHaveLength(1);
+      expect(methods.at(-1)).toBe('postBlocks');
+      expect(methods.indexOf('postBlocks')).toBeGreaterThan(methods.lastIndexOf('stopStream'));
+      expect(methods).not.toContain('postMessage');
+      const post = h.calls().at(-1)!;
+      expect(post.token).toBe(BOT_TOKEN);
+      expect(post.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
+      const blocks = post.args['blocks'] as Block[];
+      // The host is shown only as the subject: plain_text.
+      expect(blocks[0]).toEqual({
+        type: 'section',
+        text: { type: 'plain_text', text: COPY.hostSubject('api.example.com'), emoji: false },
+      });
+      // Nothing about a blocked host waits in Today (channel-web keeps host cards out of it): no Today line.
+      expect(blocks.at(-1)).toEqual({ type: 'context', elements: [{ type: 'mrkdwn', text: COPY.promptOnlyAsker }] });
+      expect(JSON.stringify(post.args)).not.toContain(TODAY);
+
+      // Its buttons name an open prompt for that host and that session, answerable only by the sender, run as the turn ran.
+      const id = promptIdOf(post);
+      expect(h.prompts.claim(id, 'U07SOMEONE1')).toMatchObject({ ok: false, reason: 'not-asker' });
+      const claim = h.prompts.claim(id, SENDER);
+      expect(claim.ok && claim.prompt).toMatchObject({
+        installId: INSTALL.installId,
+        teamId: INSTALL.teamId,
+        channel: CHANNEL,
+        threadTs: THREAD,
+        askerSlackId: SENDER,
+        userId: 'usr_alice',
+        agentId: 'agt_support',
+        conversationId: 'conv_support_thread',
+        mode,
+        subject: { kind: 'host', host: 'api.example.com', sessionId: SESSION },
+        subjectText: COPY.hostSubject('api.example.com'),
+        messageTs: PROMPT_TS,
+      });
+      expect(h.prompts.size()).toBe(1);
+      // The turn only asks: nothing is let through until the person answers.
+      expect(h.addHosts).toEqual([]);
+      expect(h.logged('slack_permission_skipped')).toEqual([]);
+    },
+  );
+
+  it('a host the proxy would never take is never shown: no prompt, counted in the log without it', async () => {
+    const tooLong = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(62)}`;
+    expect(tooLong).toHaveLength(254);
+    const refused = ['<!channel>', 'a b', 'EXAMPLE.com', tooLong];
+    const h = harness({ chunks: [SAID], cards: refused.map(hostCard) });
+    await h.run('attended');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([
+      { installId: INSTALL.installId, reason: 'invalid-host', count: refused.length },
+    ]);
+    const all = JSON.stringify(h.lines) + JSON.stringify(h.calls());
+    for (const host of ['<!channel>', 'EXAMPLE.com', tooLong]) expect(all, host).not.toContain(host);
+  });
+
+  it('two cards for one host: one prompt', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com'), hostCard('api.example.com')] });
+    await h.run('dm');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('api.example.com')]);
+    expect(h.prompts.size()).toBe(1);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  it(`more hosts than PERMISSION_PROMPTS_PER_TURN_MAX: prompts for the first ones, in the order they came; the rest counted, a repeat not`, async () => {
+    const hosts = ['one.example.com', 'two.example.com', 'three.example.com', 'four.example.com'];
+    expect(hosts).toHaveLength(PERMISSION_PROMPTS_PER_TURN_MAX + 1);
+    // A repeat of one already asked about, once the cap is reached: the same prompt, not one over the cap.
+    const cards = [...hosts.slice(0, -1), hosts[0]!, hosts.at(-1)!].map(hostCard);
+    const h = harness({ chunks: [SAID], cards });
+    await h.run('attended');
+    expect(subjects(h.calls())).toEqual(hosts.slice(0, PERMISSION_PROMPTS_PER_TURN_MAX).map((x) => COPY.hostSubject(x)));
+    expect(h.prompts.size()).toBe(PERMISSION_PROMPTS_PER_TURN_MAX);
+    expect(h.logged('slack_permission_skipped')).toEqual([{ installId: INSTALL.installId, reason: 'cap', count: 1 }]);
+  });
+
+  // Card acceptance: an outsider's turn never shows buttons.
+  it("an outsider's turn: no prompt and nothing opened, counted as an outsider's", async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] });
+    await h.run('external');
+    expect(h.reply()).toBe('I could not reach that site.');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.addHosts).toEqual([]);
+    expect(h.logged('slack_permission_skipped')).toEqual([{ installId: INSTALL.installId, reason: 'outsider', count: 1 }]);
+  });
+
+  it("a held call and a refused host in one turn: the held call's prompt first, then the host's; only the first links Today", async () => {
+    const h = harness(
+      { chunks: [SAID, ...heldCall('toolu_held')], cards: [hostCard('api.example.com')] },
+      { decisions: [decisionRow('dec_held', 'toolu_held')] },
+    );
+    await h.run('attended');
+    expect(subjects(h.calls())).toEqual([SUMMARY, COPY.hostSubject('api.example.com')]);
+    const [held, host] = posts(h.calls()).map((c) => JSON.stringify(c.args['blocks']));
+    expect(held).toContain(TODAY);
+    expect(host).not.toContain(TODAY);
+    expect(h.prompts.size()).toBe(2);
+  });
+
+  it('without proxy:add-host on the bus, a refused host is not offered: no prompt, counted as unavailable', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] }, { noProxy: true });
+    await h.run('dm');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([
+      { installId: INSTALL.installId, reason: 'unavailable', count: 1 },
+    ]);
+  });
+
+  it("another turn's host card is not this one's", async () => {
+    const h = harness({ chunks: [SAID], cards: [{ ...hostCard('api.example.com'), reqId: 'req-0ther0000001' }] });
+    await h.run('dm');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  it("another turn's host card beside this turn's own: only this turn's is asked", async () => {
+    const h = harness({
+      chunks: [SAID],
+      cards: [{ ...hostCard('api.example.com'), reqId: 'req-0ther0000001' }, hostCard('files.example.org')],
+    });
+    await h.run('dm');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('files.example.org')]);
+    expect(h.prompts.size()).toBe(1);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  it('Slack refuses the prompt: nothing is left open, and nothing else is posted', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')] }, { postBlocksFails: true });
+    await h.run('attended');
+    expect(posts(h.calls())).toHaveLength(1);
+    expect(h.calls().map((c) => c.method)).not.toContain('postMessage');
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_reply_failed')).toEqual([
+      { installId: INSTALL.installId, stage: 'prompt', code: 'invalid_blocks' },
+    ]);
+  });
+
+  it('a refused host, then the turn fails: the failure line, then the prompt', async () => {
+    const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')], end: 'turn-error' });
+    await h.run('dm');
+    expect(h.streamed()).toBe(`I could not reach that site.\n\n${COPY.turnFailed}`);
+    expect(h.calls().at(-1)!.method).toBe('postBlocks');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('api.example.com')]);
+    expect(h.prompts.size()).toBe(1);
+  });
+});
+
+describe('runTurn: a catalog skill the agent asked to use gets a prompt after the reply, when the person who wrote can connect it (TASK-1095)', () => {
+  const SAID = { kind: 'text', text: 'I need one more thing for that.' };
+  const CHANNEL = 'C07SUPPORT1';
+  const THREAD = '1763035200.000100';
+  const SUBJECT = COPY.skillSubject('gmail-sender', DESCRIPTION);
+  type Block = { type: string; text?: { text?: string } };
+  const posts = (calls: readonly SlackCall[]): SlackCall[] => calls.filter((c) => c.method === 'postBlocks');
+  const subjects = (calls: readonly SlackCall[]): string[] =>
+    posts(calls).map((c) => (c.args['blocks'] as Block[])[0]!.text!.text!);
+  /** A skill that needs a key first, posted the way it must be: its subject and the web app, nothing to click. */
+  const toTheWebApp = (subject: string = SUBJECT) =>
+    JSON.parse(
+      JSON.stringify({ channel: CHANNEL, threadTs: THREAD, ...linkOnlyBlocks({ subject, line: COPY.skillNeedsWeb(TODAY) }) }),
+    ) as Record<string, unknown>;
+
+  it.each(['dm', 'attended'] as const)(
+    "a %s turn: after the reply, one prompt to connect the skill, linking Today, where the same request waits",
+    async (mode) => {
+      const h = harness({ chunks: [SAID], cards: [skillCard('gmail-sender')] });
+      await h.run(mode);
+
+      expect(h.streamed()).toBe('I need one more thing for that.');
+      const methods = h.calls().map((c) => c.method);
+      expect(methods.filter((m) => m === 'postBlocks')).toHaveLength(1);
+      expect(methods.at(-1)).toBe('postBlocks');
+      expect(methods.indexOf('postBlocks')).toBeGreaterThan(methods.lastIndexOf('stopStream'));
+      expect(methods).not.toContain('postMessage');
+      const post = h.calls().at(-1)!;
+      expect(post.token).toBe(BOT_TOKEN);
+      expect(post.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
+      const blocks = post.args['blocks'] as Block[];
+      // The catalog's description, shown only as the subject: plain_text.
+      expect(blocks[0]).toEqual({ type: 'section', text: { type: 'plain_text', text: SUBJECT, emoji: false } });
+      // A skill card waits in Today too (channel-web keeps it there): the prompt links it.
+      expect(blocks.at(-1)).toEqual({
+        type: 'context',
+        elements: [
+          { type: 'mrkdwn', text: COPY.promptOnlyAsker },
+          { type: 'mrkdwn', text: COPY.promptToday(TODAY) },
+        ],
+      });
+
+      // Its buttons name an open prompt for that skill, answerable only by the sender, run as the turn ran.
+      const id = promptIdOf(post);
+      expect(h.prompts.claim(id, 'U07SOMEONE1')).toMatchObject({ ok: false, reason: 'not-asker' });
+      const claim = h.prompts.claim(id, SENDER);
+      expect(claim.ok && claim.prompt).toMatchObject({
+        installId: INSTALL.installId,
+        teamId: INSTALL.teamId,
+        channel: CHANNEL,
+        threadTs: THREAD,
+        askerSlackId: SENDER,
+        userId: 'usr_alice',
+        agentId: 'agt_support',
+        conversationId: 'conv_support_thread',
+        mode,
+        subject: { kind: 'skill', skillId: 'gmail-sender' },
+        subjectText: SUBJECT,
+        messageTs: PROMPT_TS,
+      });
+      expect(h.prompts.size()).toBe(1);
+      // The turn only asks: nothing is read back and nothing attached until the person answers.
+      expect(h.skillCalls).toEqual([]);
+      expect(h.logged('slack_permission_skipped')).toEqual([]);
+    },
+  );
+
+  it('a skill that needs a key: its subject and a link to the web app, with nothing to click and nothing opened', async () => {
+    const h = harness({ chunks: [SAID], cards: [skillCard('gmail-sender', { slots: [KEYLESS_SLOT] })] });
+    await h.run('attended');
+
+    const sent = posts(h.calls());
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.args).toEqual(toTheWebApp());
+    const payload = JSON.stringify(sent[0]!.args);
+    for (const clickable of ['"actions"', '"button"', '"action_id"', '"value"']) expect(payload).not.toContain(clickable);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.calls().map((c) => c.method)).not.toContain('postMessage');
+    expect(h.skillCalls).toEqual([]);
+  });
+
+  it.each([
+    ['the grant', { noSkillGrant: true }],
+    ['the ownership read the grant needs first', { noConversationGet: true }],
+  ] as const)('without %s on the bus, a skill is not answered here: a link to the web app instead', async (_name, o) => {
+    const h = harness({ chunks: [SAID], cards: [skillCard('gmail-sender')] }, o);
+    await h.run('dm');
+    expect(posts(h.calls()).map((c) => c.args)).toEqual([toTheWebApp()]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  // Card acceptance: an outsider's turn never shows buttons.
+  it("an outsider's turn: nothing posted and nothing opened, not even a link, counted as an outsider's", async () => {
+    const h = harness({
+      chunks: [SAID],
+      cards: [skillCard('gmail-sender'), skillCard('drive-reader', { slots: [KEYLESS_SLOT] })],
+    });
+    await h.run('external');
+    expect(h.reply()).toBe('I need one more thing for that.');
+    expect(posts(h.calls())).toEqual([]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.skillCalls).toEqual([]);
+    expect(h.logged('slack_permission_skipped')).toEqual([{ installId: INSTALL.installId, reason: 'outsider', count: 2 }]);
+  });
+
+  it('two cards for one skill: one prompt', async () => {
+    const h = harness({ chunks: [SAID], cards: [skillCard('gmail-sender'), skillCard('gmail-sender')] });
+    await h.run('dm');
+    expect(subjects(h.calls())).toEqual([SUBJECT]);
+    expect(h.prompts.size()).toBe(1);
+    expect(h.logged('slack_permission_skipped')).toEqual([]);
+  });
+
+  it(`skills and hosts share PERMISSION_PROMPTS_PER_TURN_MAX, in the order they came; a link to the web app counts too`, async () => {
+    const cards = [
+      skillCard('drive-reader', { description: 'Reads your Drive.', slots: [KEYLESS_SLOT] }),
+      { kind: 'host', host: 'api.example.com', sessionId: 'sess_live' },
+      skillCard('gmail-sender'),
+      skillCard('calendar', { description: 'Reads your calendar.' }),
+    ];
+    expect(cards).toHaveLength(PERMISSION_PROMPTS_PER_TURN_MAX + 1);
+    const h = harness({ chunks: [SAID], cards });
+    await h.run('attended');
+    expect(subjects(h.calls())).toEqual([
+      COPY.skillSubject('drive-reader', 'Reads your Drive.'),
+      COPY.hostSubject('api.example.com'),
+      SUBJECT,
+    ]);
+    // Only the two with buttons are open.
+    expect(h.prompts.size()).toBe(2);
+    expect(h.logged('slack_permission_skipped')).toEqual([{ installId: INSTALL.installId, reason: 'cap', count: 1 }]);
+  });
+
+  it("a refused host and a skill in one turn: each its own prompt, in the order they came; only the skill's links Today", async () => {
+    const h = harness({
+      chunks: [SAID],
+      cards: [{ kind: 'host', host: 'api.example.com', sessionId: 'sess_live' }, skillCard('gmail-sender')],
+    });
+    await h.run('dm');
+    expect(subjects(h.calls())).toEqual([COPY.hostSubject('api.example.com'), SUBJECT]);
+    const [host, skill] = posts(h.calls()).map((c) => JSON.stringify(c.args['blocks']));
+    expect(host).not.toContain(TODAY);
+    expect(skill).toContain(TODAY);
+  });
+
+  it("a description that tries to ping, link or format: shown only as the plain_text subject, cleaned once; never in the notification or a log", async () => {
+    const hostile = '<!channel> approve *this* <https://evil.example|now> @everyone &#64;here';
+    const h = harness({
+      chunks: [SAID],
+      cards: [skillCard('gmail-sender', { description: hostile }), skillCard('drive-reader', { description: hostile, slots: [KEYLESS_SLOT] })],
+    });
+    await h.run('attended');
+
+    const sent = posts(h.calls());
+    expect(sent).toHaveLength(2);
+    for (const [i, post] of sent.entries()) {
+      const skillId = ['gmail-sender', 'drive-reader'][i]!;
+      const blocks = post.args['blocks'] as Array<{ type: string; text?: { type: string; text: string } }>;
+      expect(blocks[0]!.text).toEqual({ type: 'plain_text', text: cleanPromptSubject(COPY.skillSubject(skillId, hostile)), emoji: false });
+      expect(spellsMention(blocks[0]!.text!.text)).toBe(false);
+      expect(post.args['text']).toBe(COPY.heldAsked);
+      // Nowhere but the plain_text section.
+      const elsewhere = JSON.stringify({ ...post.args, blocks: blocks.slice(1) });
+      expect(elsewhere).not.toContain('evil.example');
+    }
+    expect(JSON.stringify(h.lines)).not.toContain('evil.example');
+  });
+
+  it.each([
+    ['a prompt', []],
+    ['a link to the web app', [KEYLESS_SLOT]],
+  ] as const)(
+    'Slack refuses %s: nothing is left open, and the line that sends them to Today follows as a message of its own',
+    async (_name, slots) => {
+      const h = harness({ chunks: [SAID], cards: [skillCard('gmail-sender', { slots: [...slots] })] }, { postBlocksFails: true });
+      await h.run('dm');
+      const calls = h.calls();
+      expect(calls.slice(-2).map((c) => c.method)).toEqual(['postBlocks', 'postMessage']);
+      expect(calls.at(-1)!.args).toEqual({ channel: CHANNEL, threadTs: THREAD, markdownText: COPY.heldForSender(TODAY) });
+      expect(h.prompts.size()).toBe(0);
+      expect(h.logged('slack_reply_failed')).toEqual([
+        { installId: INSTALL.installId, stage: 'prompt', code: 'invalid_blocks' },
+      ]);
+    },
+  );
+});
+
 // ── Following a woken agent's turn into the prompt's thread (Task 8) ───────
 
 /**
@@ -755,14 +1191,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     } = {},
   ) {
     const bus = new HookBus();
-    const registry = createTurnRegistry();
-    subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
     const slack = fakeSlack(o.updateFails === true ? { updateMessageFails: true } : {});
     const lines: LogLine[] = [];
     const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
       lines.push({ level, msg, fields });
     };
     const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
+    const registry = createTurnRegistry({ logger });
+    subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
     const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
     if (o.decisions !== undefined) {
       const rows = o.decisions;
@@ -788,6 +1224,8 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
       interrupts.push({ ctx, input });
       return { interrupted: true };
     });
+    // What a skill prompt's Allow calls: a follower never calls either.
+    const skillCalls = skillServices(bus);
     let minted = 0;
     const prompts = createPromptRegistry({
       now: () => Date.now(),
@@ -821,6 +1259,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
       lookups,
       gets,
       interrupts,
+      skillCalls,
       /** Every Slack call, 👀 included. */
       all: () => slack.calls,
       reply: () => replyOf(slack.calls),
@@ -833,6 +1272,8 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
         bus.fire('chat:stream-chunk', ipcCtx, { reqId, ...c }),
       end: (reqId: string = CONTINUATION) => bus.fire('chat:turn-end', ipcCtx, { reqId, reason: 'user-message-wait' }),
       error: () => bus.fire('chat:turn-error', ipcCtx, { reqId: CONTINUATION, reason: 'chat-run-timeout' }),
+      /** A card as @ax/skill-broker fires request_capability's: under the runner's IPC ctx, the conversation's, no reqId. */
+      card: (c: Record<string, unknown>) => bus.fire('chat:permission-request', ipcCtx, c),
     };
   }
 
@@ -1282,4 +1723,100 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
       expect(h.lines).toEqual([]);
     },
   );
+
+  // ── A skill card in a continuation ──
+  // In Slack, request_capability is itself held (tool-policy), so its card
+  // fires in the continuation that follows its Allow: the woken agent
+  // re-issues the call, and the broker fires the card under the runner's ctx.
+
+  /** The skill prompt the continuation posted: its subject, its Today line, and the open prompt its buttons name. */
+  const skillPromptIn = (h: ReturnType<typeof follower>, mode: 'dm' | 'attended' = 'attended') => {
+    const posts = h.all().filter((c) => c.method === 'postBlocks');
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
+    const blocks = posts[0]!.args['blocks'] as Array<{ type: string; text?: { text?: string }; elements?: unknown[] }>;
+    expect(blocks[0]!.text!.text).toBe(COPY.skillSubject('gmail-sender', DESCRIPTION));
+    expect(blocks.at(-1)!.elements).toContainEqual({ type: 'mrkdwn', text: COPY.promptToday(TODAY) });
+    const claim = h.prompts.claim(promptIdOf(posts[0]!), SENDER);
+    expect(claim.ok && claim.prompt).toMatchObject({
+      ...CONTEXT,
+      mode,
+      subject: { kind: 'skill', skillId: 'gmail-sender' },
+      subjectText: COPY.skillSubject('gmail-sender', DESCRIPTION),
+      messageTs: PROMPT_TS,
+    });
+    expect(h.prompts.size()).toBe(1);
+  };
+
+  it.each(['dm', 'attended'] as const)(
+    "a skill card in a continuation of a %s prompt: after its reply, a prompt to connect the skill in the same thread, for the same person",
+    async (mode) => {
+      const h = follower({ mode });
+      const done = h.follow(inTenSeconds());
+      await h.chunk({ kind: 'tool-use', toolCallId: 'toolu_cap', toolName: 'request_capability', activityPhrase: 'Asking to connect a service' });
+      await h.card(skillCard('gmail-sender'));
+      await h.chunk({ kind: 'tool-result', toolCallId: 'toolu_cap', output: '{"status":"requested"}' });
+      await h.end();
+      await done;
+
+      expect(h.all().map((c) => c.method)).toEqual(['startStream', 'stopStream', 'postBlocks']);
+      skillPromptIn(h, mode);
+      expect(h.skillCalls).toEqual([]);
+      expect(h.lines).toEqual([]);
+    },
+  );
+
+  it(
+    "a continuation whose only output is a skill card: no reply of its own (no \"I didn't have anything to add.\"); " +
+      'the answered prompt is redrawn with what its decision says, then the skill is asked about',
+    async () => {
+      const h = follower({ get: () => storedRow('executed', { consumedAt: '2026-11-14T12:00:11.000Z' }) });
+      const done = h.follow(inTenSeconds());
+      await h.card(skillCard('gmail-sender'));
+      await h.end();
+      await done;
+
+      expect(h.all().map((c) => c.method)).toEqual(['updateMessage', 'postBlocks']);
+      expect(h.all()[0]).toEqual(redrawnWith(COPY.decisionDone));
+      expect(h.reply()).toBe('');
+      skillPromptIn(h);
+      expect(h.lines).toEqual([missed('said-nothing')]);
+    },
+  );
+
+  it('a continuation that never began: a skill card heard in its conversation is still asked about once it is given up, and nothing else is said', async () => {
+    vi.useFakeTimers();
+    const h = follower({ get: () => storedRow('approved-pending-agent') });
+    const done = h.follow(inTenSeconds());
+    await h.card(skillCard('gmail-sender'));
+    await vi.advanceTimersByTimeAsync(10_000 + CONTINUATION_START_GRACE_MS);
+    await done;
+
+    expect(h.all().map((c) => c.method)).toEqual(['updateMessage', 'postBlocks']);
+    expect(h.all()[0]).toEqual(redrawnWith(COPY.decisionAllowedNextTime));
+    skillPromptIn(h);
+    expect(h.lines).toEqual([missed('not-started')]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a skill that needs a key, in a continuation that said nothing else: the link to the web app, and nothing to click', async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await h.card(skillCard('gmail-sender', { slots: [KEYLESS_SLOT] }));
+    await h.end();
+    await done;
+
+    const posts = h.all().filter((c) => c.method === 'postBlocks');
+    expect(posts.map((c) => c.args)).toEqual([
+      JSON.parse(
+        JSON.stringify({
+          channel: CHANNEL,
+          threadTs: THREAD,
+          ...linkOnlyBlocks({ subject: COPY.skillSubject('gmail-sender', DESCRIPTION), line: COPY.skillNeedsWeb(TODAY) }),
+        }),
+      ),
+    ]);
+    expect(h.prompts.size()).toBe(0);
+    expect(h.reply()).toBe('');
+  });
 });

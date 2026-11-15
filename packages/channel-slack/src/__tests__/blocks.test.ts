@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACTION_ALLOW, ACTION_DENY, actionOf, outcomeBlocks, promptBlocks } from '../blocks.js';
+import { ACTION_ALLOW, ACTION_DENY, actionOf, linkOnlyBlocks, outcomeBlocks, promptBlocks } from '../blocks.js';
 import { COPY } from '../copy.js';
 import { cleanPromptSubject } from '../format.js';
 import { PROMPT_SUBJECT_MAX } from '../limits.js';
@@ -135,6 +135,18 @@ describe('promptBlocks: an approval prompt', () => {
     expect(lines.map((t) => t.text)).toContain(COPY.promptToday(TODAY));
   });
 
+  it("for a request that doesn't wait in Today (a blocked host): no Today line, and nothing else changes", () => {
+    const linked = promptBlocks({ subject: SUBJECT, promptId: PROMPT_ID, todayLink: TODAY });
+    const unlinked = promptBlocks({ subject: SUBJECT, promptId: PROMPT_ID, todayLink: null });
+    expect(unlinked.blocks.at(-1)).toStrictEqual({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: COPY.promptOnlyAsker }],
+    });
+    expect(unlinked.text).toBe(linked.text);
+    expect(unlinked.blocks.slice(0, -1)).toStrictEqual(linked.blocks.slice(0, -1));
+    expect(JSON.stringify(unlinked)).not.toMatch(/https?:/);
+  });
+
   it('both buttons carry the prompt id and nothing else, and fit Slack: labels, action ids and values', () => {
     const out = prompt(SUBJECT);
     const both = buttons(out.blocks);
@@ -179,6 +191,20 @@ describe('promptBlocks: an approval prompt', () => {
       }
     },
   );
+
+  it('a hostile-looking skill id, in the skill subject, pings nobody and stays plain_text', () => {
+    // Not a real catalog id (those are `^[a-z][a-z0-9-]{0,63}$`): the draw doesn't lean on that.
+    for (const id of ['<!here>', '@channel', 'x<!channel>', '&#64;everyone-<@U0123ABCD>']) {
+      const out = prompt(COPY.skillSubject(id, 'Sends email.'));
+      const shown = sectionText(out);
+      expect(shown.type, id).toBe('plain_text');
+      expect(shown.text, id).not.toMatch(/<[!@#]/);
+      expect(spellsMention(shown.text), id).toBe(false);
+      for (const t of [out.text, ...textObjects(out.blocks).map((x) => x.text)]) {
+        expect(spellsMention(t), `${id}: ${t.slice(0, 40)}`).toBe(false);
+      }
+    }
+  });
 
   it('a short hostile subject still reads as written: only invisible marks are added', () => {
     for (const subject of ['<!channel> approve', '@here now', '&#64;everyone']) {
@@ -227,6 +253,45 @@ describe('outcomeBlocks: a prompt once answered', () => {
         const all = objectsIn(out.blocks);
         expect(all.filter((o) => o['type'] === 'actions' || o['type'] === 'button')).toEqual([]);
         expect(all.filter((o) => 'value' in o || 'action_id' in o)).toEqual([]);
+      }
+    }
+  });
+});
+
+describe("linkOnlyBlocks: a request Slack can't take, sent to the web app", () => {
+  /** A catalog skill's description, framed as a skill prompt frames it. */
+  const SKILL = COPY.skillSubject('gmail', 'Reads and sends email from your Gmail account.');
+  const LINE = COPY.skillNeedsWeb(TODAY);
+
+  it('is the subject, then the line, and nothing to click; the notification is the generic ask, never the subject', () => {
+    expect(linkOnlyBlocks({ subject: SKILL, line: LINE })).toStrictEqual({
+      text: COPY.heldAsked,
+      blocks: [
+        { type: 'section', text: { type: 'plain_text', text: SKILL, emoji: false } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: LINE }] },
+      ],
+    });
+  });
+
+  it('leaves nothing to click, for any subject: no actions block, no button, no action_id and no value anywhere', () => {
+    for (const subject of [SKILL, '', ...HOSTILE_SUBJECTS]) {
+      const all = objectsIn(linkOnlyBlocks({ subject, line: LINE }).blocks);
+      expect(all.filter((o) => o['type'] === 'actions' || o['type'] === 'button')).toEqual([]);
+      expect(all.filter((o) => 'value' in o || 'action_id' in o || 'block_id' in o)).toEqual([]);
+    }
+  });
+
+  it("draws the subject as a prompt does: cleaned once, plain_text only, never in the notification", () => {
+    for (const subject of [SKILL, INVISIBLE_ONLY, ...HOSTILE_SUBJECTS]) {
+      const out = linkOnlyBlocks({ subject, line: LINE });
+      expect(out.blocks[0]).toStrictEqual(prompt(subject).blocks[0]);
+      const shown = sectionText(out);
+      expect(shown.type).toBe('plain_text');
+      expect(spellsMention(shown.text)).toBe(false);
+      expect(shown.text.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+      expect(out.text).toBe(COPY.heldAsked);
+      for (const t of [out.text, ...textObjects(out.blocks).map((x) => x.text)]) {
+        expect(spellsMention(t), t.slice(0, 40)).toBe(false);
       }
     }
   });

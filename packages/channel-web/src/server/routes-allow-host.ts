@@ -2,11 +2,17 @@
  * POST /api/chat/allow-host — the reactive egress wall's grant route (TASK-37).
  *
  * The browser's <PermissionCard> "Allow access to <host>?" card POSTs
- * `{ sessionId, host }` here when the user grants. This route is the ONLY
- * caller of the host-internal `proxy:add-host` service hook — the untrusted
- * runner can never reach `proxy:add-host` (it's not an IPC action; fork #1),
- * so the only path to widening a session's live egress allowlist is an
- * authenticated, CSRF-gated user action.
+ * `{ sessionId, host }` here when the user grants. This route is one of two
+ * callers of the host-internal `proxy:add-host` service hook, and each proves
+ * a person's own action:
+ *  - this route: an authenticated, CSRF-gated request from the owner's
+ *    browser;
+ *  - channel-slack's permission-prompts.ts: a Slack-signed click on a host
+ *    prompt by the prompt's asker (re-proved by its click gate), called as
+ *    the prompt's AX user for exactly the prompt's live { sessionId, host }.
+ * The untrusted runner can never reach `proxy:add-host` (it's not an IPC
+ * action; fork #1), so widening a session's live egress allowlist always
+ * takes a person's action, and the proxy re-checks ownership either way.
  *
  * Security posture:
  *  - Auth: `auth:require-user` → 401 when unauthenticated (any other failure

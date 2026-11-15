@@ -367,9 +367,9 @@ describe('cleanStatusTitle', () => {
 describe('cleanPromptSubject', () => {
   const RLO = String.fromCharCode(0x202e);
 
-  it('a U+202E becomes a space, and a 400-character subject is clamped to its own cap, not the title cap', () => {
+  it('a U+202E becomes a space, and a subject past its cap is clamped to its own cap, not the title cap', () => {
     expect(cleanPromptSubject(`Reading${RLO}liame`)).toBe('Reading liame');
-    const long = cleanPromptSubject('x'.repeat(400));
+    const long = cleanPromptSubject('x'.repeat(PROMPT_SUBJECT_MAX + 100));
     expect(long).toBe('x'.repeat(PROMPT_SUBJECT_MAX));
     expect(PROMPT_SUBJECT_MAX).toBeGreaterThan(STATUS_TITLE_MAX);
   });

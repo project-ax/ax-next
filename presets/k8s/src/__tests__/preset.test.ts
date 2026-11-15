@@ -1330,6 +1330,15 @@ describe('@ax/preset-k8s wiring', () => {
         hook,
         degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
       })),
+      // A host the sandbox was refused gets Allow and Deny in the thread, for the live session only.
+      // Its producer is @ax/credential-proxy (the check below).
+      { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
+      // A catalog skill the agent asked to use gets Allow and Deny too: its conversation is read back
+      // (@ax/conversations), then the skill is attached (@ax/chat-orchestrator), as the web app does.
+      ...['agent:apply-capability-grant', 'conversations:get'].map((hook) => ({
+        hook,
+        degradation: 'a skill request in a Slack turn links to the web app instead of showing buttons',
+      })),
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',
@@ -1341,6 +1350,8 @@ describe('@ax/preset-k8s wiring', () => {
       'chat:stream-chunk',
       'chat:turn-end',
       'chat:turn-error',
+      // A card asking the person's OK (a blocked host, a skill): Slack turns hear them too (TASK-1095).
+      'chat:permission-request',
     ]);
     // Every hard call has a producer in this preset, and so do the optional ones.
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));

@@ -410,7 +410,7 @@ function world(o: {
   }
 
   const slack = fakeSlack(o.slackFail !== undefined ? { fail: o.slackFail } : {});
-  const registry = createTurnRegistry();
+  const registry = createTurnRegistry({ logger });
   let minted = 0;
   // The open approval prompts (TASK-1095), as the plugin keeps them.
   const prompts = createPromptRegistry({

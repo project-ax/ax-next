@@ -15,16 +15,18 @@ import {
   CONTINUATION_START_GRACE_MS,
   CONTINUATION_WAKE_MAX_MS,
   DECISION_LOOKUP_TIMEOUT_MS,
+  PERMISSION_PROMPTS_PER_TURN_MAX,
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from './limits.js';
 import { logCode } from './log-code.js';
-import { postPrompt } from './prompt-post.js';
-import type { Prompt, PromptContext, PromptRegistry } from './prompts.js';
+import { ADD_HOST, hostSubject, skillPromptFor } from './permission-prompts.js';
+import { postLinkOnly, postPrompt } from './prompt-post.js';
+import type { Prompt, PromptContext, PromptRegistry, PromptSubject } from './prompts.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
-import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
+import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.js';
 
 /**
  * One Slack turn: a person's message to an agent, the reply streamed back
@@ -60,6 +62,31 @@ import type { StreamChunkIn, TurnRegistry } from './turn-registry.js';
  *   - Any other turn runs as someone else for them (the person who connected
  *     the channel, the agent's owner), whom they can't reach: the reply says
  *     the owner was asked, and nothing is looked up or posted.
+ *
+ * The two `chat:permission-request` cards get a prompt too, in a DM or an
+ * attended turn only (permission-prompts.ts): after the reply, and after a
+ * held call's prompt, in the order the cards came, one per host and one per
+ * skill, at most PERMISSION_PROMPTS_PER_TURN_MAX between them.
+ *
+ *   - A host the sandbox was refused while the turn ran (the egress wall's
+ *     card) is shown only once it passes the egress proxy's own HOST_RE,
+ *     and its prompt links nowhere (nothing about a blocked host waits in
+ *     Today).
+ *   - A catalog skill the agent asked to use (request_capability's card;
+ *     in Slack, in the continuation after that call's own hold was
+ *     allowed) is asked about with its id and description, and its prompt links
+ *     Today, where the same card waits. One that needs a key, or a bus
+ *     without what its Allow calls, gets a link to the web app instead,
+ *     with nothing to click.
+ *
+ * Should a prompt or a link for something that waits in Today not be
+ * posted, the line that sends the person to Today follows instead, as for a
+ * held call. A card that gets no prompt is counted, and logged by reason
+ * and count once the turn has ended (`slack_permission_skipped`):
+ * `outsider` (the turn's writer can't answer it here), `unavailable`
+ * (nothing to call on a host's Allow: no `proxy:add-host`), `invalid-host`,
+ * or `cap`. A woken turn's cards are asked about even when it said nothing
+ * else, or never began: a card is all some continuations have to say.
  *
  * The reply ends at the first of: the turn's `chat:turn-end` (complete), its
  * `chat:turn-error` (error), a `terminated` invoke outcome
@@ -242,6 +269,27 @@ const INTERRUPT = 'agent:interrupt';
 
 type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'timeout';
 
+/** Why a card asking the person's OK got no prompt (module header): logged as a count. */
+type PermissionSkip = 'outsider' | 'unavailable' | 'invalid-host' | 'cap';
+
+/**
+ * What a reply asks the person in its thread once its turn has ended
+ * (`askInThread`):
+ *
+ *   - `prompt`: Allow and Deny (prompt-post.ts). `inToday`: the same request
+ *     waits in their Today too (a held call, a skill), so the prompt links
+ *     it, and should the prompt not be posted, the line that sends them
+ *     there follows instead. A host doesn't (channel-web keeps host cards
+ *     out of Today): its prompt links nowhere, and has nothing to fall back
+ *     to.
+ *   - `web`: a request Slack can't take (a skill that needs a key): its
+ *     subject and a line sending them to the web app, nothing to click,
+ *     nothing opened. It waits in Today too, so it falls back the same way.
+ */
+type Ask =
+  | { kind: 'prompt'; subject: PromptSubject; subjectText: string; inToday: boolean }
+  | { kind: 'web'; subjectText: string };
+
 interface Decision {
   outcome: ReplyOutcome;
   fail?: { reason: FailReason; code?: string };
@@ -423,14 +471,30 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   */
   const approver = source === 'user' ? 'sender' : 'owner';
   /*
-    Whether the person who wrote can answer a held call here, with a prompt
-    (TASK-1095): only when the turn runs as them, `source` 'user', which is
-    exactly a DM or an attended turn. The mode is narrowed again for the
-    registry, which refuses any other mode itself. An outsider's turn never
-    gets a prompt.
+    Whether the person who wrote can answer a held call, or a card, here,
+    with a prompt (TASK-1095): only when the turn runs as them, `source`
+    'user', which is exactly a DM or an attended turn. The mode is narrowed
+    again for the registry, which refuses any other mode itself. An
+    outsider's turn never gets a prompt. `context` is every prompt's: where
+    it goes, who may answer it, and whose turn the answer runs as.
   */
   const asking =
-    source === 'user' && (s.mode === 'dm' || s.mode === 'attended') ? { prompts: d.prompts, mode: s.mode } : null;
+    source === 'user' && (s.mode === 'dm' || s.mode === 'attended')
+      ? {
+          prompts: d.prompts,
+          context: {
+            installId,
+            teamId: s.teamId,
+            channel: s.channel,
+            threadTs: s.threadTs,
+            askerSlackId: s.recipientSlackId,
+            userId: s.userId,
+            agentId: s.agentId,
+            conversationId: s.conversationId,
+            mode: s.mode,
+          } satisfies PromptContext,
+        }
+      : null;
   // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
   const todayLink = `${d.publicOrigin}/workspace`;
 
@@ -565,6 +629,65 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     }
   };
 
+  /*
+    The cards asking the person's OK that this turn heard, as what to ask
+    after its reply, in the order they came (module header). Never more
+    kept than the cap: anything else is only counted.
+  */
+  const permissions: Array<{ key: string; ask: Ask }> = [];
+  const skipped = new Map<PermissionSkip, number>();
+  const skip = (reason: PermissionSkip): void => {
+    skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
+  };
+  /** What to ask about one card, keyed by what it asks for; null when it is not asked about (counted). */
+  const askFor = (p: PermissionIn): { key: string; ask: Ask } | null => {
+    if (p.kind === 'skill') {
+      // Buttons only for a skill that needs nothing but a yes: anything else, the web app.
+      const shown = skillPromptFor(p, d.bus);
+      return {
+        key: `skill:${p.skillId}`,
+        ask:
+          shown.kind === 'buttons'
+            ? { kind: 'prompt', subject: { kind: 'skill', skillId: p.skillId }, subjectText: shown.subjectText, inToday: true }
+            : { kind: 'web', subjectText: shown.subjectText },
+      };
+    }
+    if (!d.bus.hasService(ADD_HOST)) {
+      skip('unavailable');
+      return null;
+    }
+    // The host is the sandbox's: shown only once the proxy's own pattern takes it.
+    const subjectText = hostSubject(p.host);
+    if (subjectText === null) {
+      skip('invalid-host');
+      return null;
+    }
+    return {
+      key: `host:${p.host}`,
+      ask: { kind: 'prompt', subject: { kind: 'host', host: p.host, sessionId: p.sessionId }, subjectText, inToday: false },
+    };
+  };
+  const onPermission = (p: PermissionIn): void => {
+    if (asking === null) {
+      skip('outsider');
+      return;
+    }
+    const card = askFor(p);
+    if (card === null) return;
+    // One prompt per host, one per skill: a repeat is that prompt, never one over the cap.
+    if (permissions.some((q) => q.key === card.key)) return;
+    if (permissions.length >= PERMISSION_PROMPTS_PER_TURN_MAX) {
+      skip('cap');
+      return;
+    }
+    permissions.push(card);
+  };
+  /** Every card's ask, in the order the cards came. */
+  const askPermissions = async (): Promise<void> => {
+    if (asking === null) return;
+    for (const { ask } of permissions) await askInThread(d, asking.prompts, s.botToken, asking.context, ask, todayLink);
+  };
+
   // Registered before agent:invoke: a fast turn's first chunk can beat the
   // call's return. And before this function's first await: a woken turn's
   // follower is started without being awaited.
@@ -574,6 +697,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     chunk: onChunk,
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
+    permission: onPermission,
   });
   // 👀 on the sender's message while a cold runner starts, not a blank thread
   // (walk on kind, 2026-11-13); it comes off once the reply shows. A woken
@@ -674,12 +798,20 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   if (grace !== null) d.clock.clearTimeout(grace);
   if (startBy !== null) d.clock.clearTimeout(startBy);
   unregister();
+  // Every card the turn will hear has come: what got no prompt, by reason and count only (never a host).
+  for (const [reason, count] of skipped) {
+    quietly(() => d.logger.info('slack_permission_skipped', { installId, reason, count }));
+  }
   // Given up without a word: the reply was never given anything, so nothing
   // of it reached Slack, and nothing is sent in the thread now (Review Focus
   // 3). Only the prompt is redrawn, with what its decision says (`missed`).
+  // A card heard in the conversation meanwhile is still asked about: it is
+  // the person's own (a conversation is one person's), and nothing else
+  // would ask them here.
   if (notStarted === true) {
     quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'not-started' }));
     if (start.kind === 'woken') await start.missed(ctx);
+    await askPermissions();
     return;
   }
   if (fail !== undefined) {
@@ -694,6 +826,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   if (start.kind === 'woken' && outcome === 'complete' && !said) {
     quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'said-nothing' }));
     await start.missed(ctx);
+    // A continuation whose only output was a card (the skill request_capability
+    // asks for, re-issued after its Allow): no reply to put it after, so it is
+    // asked about on its own.
+    await askPermissions();
     return;
   }
   /*
@@ -723,21 +859,13 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
         d,
         asking.prompts,
         s.botToken,
-        {
-          installId,
-          teamId: s.teamId,
-          channel: s.channel,
-          threadTs: s.threadTs,
-          askerSlackId: s.recipientSlackId,
-          userId: s.userId,
-          agentId: s.agentId,
-          conversationId: s.conversationId,
-          mode: asking.mode,
-        },
-        found,
+        asking.context,
+        { kind: 'prompt', subject: { kind: 'decision', decisionId: found.decisionId }, subjectText: found.summary, inToday: true },
         todayLink,
       );
     }
+    // Then the cards', in the order they came.
+    await askPermissions();
   } finally {
     // The sender has their reply; the lane waits for the stop (see `interrupting`).
     if (interrupting !== null) await interrupting;
@@ -745,27 +873,28 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
 }
 
 /**
- * After a reply that ended with the ask: the prompt for the held call's
- * decision, in the reply's thread, for the person `c` says asked
- * (prompt-post.ts). Should it not be posted, the line that sends them to
- * their own Today instead, as a message of its own: one try, logged by code
- * when it fails (`slack_reply_failed`, stage `held`). Never rejects.
+ * After a reply: one `ask` in the reply's thread, for the person `c` says
+ * asked (prompt-post.ts). Should a request that waits in their Today not be
+ * shown here, the line that sends them to their own Today follows instead,
+ * as a message of its own: one try, logged by code when it fails
+ * (`slack_reply_failed`, stage `held`). A host has no such line. Never
+ * rejects.
  */
 async function askInThread(
   d: Pick<TurnDeps, 'api' | 'logger' | 'clock'>,
   prompts: PromptRegistry,
   botToken: string,
   c: PromptContext,
-  found: HeldDecision,
+  ask: Ask,
   todayLink: string,
 ): Promise<void> {
-  const posted = await postPrompt(
-    { api: d.api, botToken, prompts, logger: d.logger, todayLink, clock: d.clock },
-    c,
-    { kind: 'decision', decisionId: found.decisionId },
-    found.summary,
-  );
-  if (posted) return;
+  const posting = { api: d.api, botToken, logger: d.logger, clock: d.clock };
+  const posted =
+    ask.kind === 'web'
+      ? await postLinkOnly(posting, c, ask.subjectText, COPY.skillNeedsWeb(todayLink))
+      : await postPrompt({ ...posting, prompts, todayLink: ask.inToday ? todayLink : null }, c, ask.subject, ask.subjectText);
+  // Nothing about a blocked host waits in Today: nothing to send them to.
+  if (posted || (ask.kind === 'prompt' && !ask.inToday)) return;
   try {
     await d.api.postMessage(botToken, {
       channel: c.channel,

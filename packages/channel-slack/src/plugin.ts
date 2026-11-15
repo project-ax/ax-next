@@ -37,6 +37,7 @@ import {
 import { logCode } from './log-code.js';
 import { runMigrations, type ChannelSlackDatabase } from './migrations.js';
 import { createMutex } from './mutex.js';
+import { createHostAnswer, createSkillAnswer } from './permission-prompts.js';
 import { createPromptRegistry } from './prompts.js';
 import { systemClock } from './reply-stream.js';
 import { createEventRouter } from './router.js';
@@ -111,7 +112,16 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // they are first; its answer for a decision (decision-answer.ts) calls
 // `decisions:approve` or `decisions:dismiss` as the asker, and after an Allow
 // the agent's next turn is followed into the thread (turn.ts
-// `followContinuation`). External turns never get buttons.
+// `followContinuation`). External turns never get buttons. A host the
+// sandbox was refused mid-turn (the egress wall's `chat:permission-request`
+// card) gets a prompt after the reply too, and its Allow lets that host
+// through for the conversation's live session only, as the asker
+// (permission-prompts.ts: `proxy:add-host`). So does a catalog skill the
+// agent asked to use (request_capability's card): its Allow reads the
+// conversation back as the asker and checks its agent, as the web app's
+// `/api/chat/permission-decision` does, then attaches the skill
+// (`conversations:get`, then `agent:apply-capability-grant`). A skill that
+// needs a key gets a link to the web app instead: Slack never collects one.
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/channel-slack';
@@ -134,10 +144,11 @@ export interface ChannelSlackConfig {
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
 const AGENTS_DELETED = 'agents:deleted';
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
-/** The subscriber name for the three chat events Slack turns read. */
+/** The subscriber name for the four chat events Slack turns read. */
 export const TURN_EVENTS_KEY = `${PLUGIN_NAME}/turns`;
 
 const HELD_DEGRADATION = 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons';
+const SKILL_DEGRADATION = 'a skill request in a Slack turn links to the web app instead of showing buttons';
 
 const RESET_LEFT_APP_HINT =
   'The reset removed this install from AX, not from Slack. Delete the app at ' +
@@ -222,6 +233,14 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         { hook: 'decisions:get', degradation: HELD_DEGRADATION },
         { hook: 'decisions:approve', degradation: HELD_DEGRADATION },
         { hook: 'decisions:dismiss', degradation: HELD_DEGRADATION },
+        // Allow on a refused host's prompt (permission-prompts.ts). Without
+        // it the turn offers no prompt for the host (turn.ts checks first).
+        { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
+        // Allow on a skill prompt: the conversation read back (its owner and
+        // agent), then the grant (permission-prompts.ts). Without either, a
+        // skill card gets a link to the web app instead (skillPromptFor).
+        { hook: 'agent:apply-capability-grant', degradation: SKILL_DEGRADATION },
+        { hook: 'conversations:get', degradation: SKILL_DEGRADATION },
       ],
       subscribes: [RESET_CLEANUP, AGENTS_DELETED, MEMORY_PRE_CAPTURE_HOOK, ...TURN_EVENT_HOOKS],
     },
@@ -274,7 +293,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const api = createSlackApi({ fetchImpl });
         const life = createLifetime();
         lifetime = life;
-        const registry = createTurnRegistry();
+        const registry = createTurnRegistry({ logger });
         // Approval prompts that are open, in memory: a restart closes them (the
         // same request still waits in Today). Unguessable ids need real bytes.
         const prompts = createPromptRegistry({ now, randomBytes, ttlMs: PROMPT_TTL_MS, max: PROMPT_MAX });
@@ -369,6 +388,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                     publicOrigin,
                     follow: (c) => void followContinuation(turnDeps, c),
                   }),
+                  host: createHostAnswer({ bus }),
+                  skill: createSkillAnswer({ bus, publicOrigin }),
                 },
               }),
             }),

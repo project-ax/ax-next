@@ -30,6 +30,14 @@ const ARGS: Record<string, unknown[][]> = {
   decisionFailed: [[TODAY], [HOSTILE]],
   decisionInterrupted: [[TODAY], [HOSTILE]],
   decisionNotRun: [[TODAY], [HOSTILE]],
+  // A host prompt's subject (plain_text, cleaned at draw). Only a host past HOST_RE ever reaches it
+  // (permission-prompts.ts `hostSubject`): lowercase letters, digits, dots and dashes.
+  hostSubject: [['api.example.com']],
+  // A skill prompt's subject (plain_text): a catalog skill's id and description, kept raw and cleaned where
+  // they are drawn (blocks.ts), so a hostile one is pinned there (blocks.test.ts, turn.test.ts), not here.
+  skillSubject: [['gmail', 'Reads and sends email from your Gmail account.'], ['gmail', '']],
+  skillNeedsWeb: [[TODAY], [HOSTILE]],
+  skillFailed: [[TODAY], [HOSTILE]],
   slashNotMapped: [[ORIGIN]],
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
@@ -77,6 +85,15 @@ describe('COPY: everything the bot says in Slack', () => {
         'decisionFailed',
         'decisionInterrupted',
         'decisionNotRun',
+        'hostSubject',
+        'hostAllowed',
+        'hostEnded',
+        'hostDenied',
+        'skillSubject',
+        'skillAllowed',
+        'skillDenied',
+        'skillNeedsWeb',
+        'skillFailed',
         'noAgent',
         'notMapped',
         'queueFull',
@@ -150,9 +167,25 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     ['decisionFailed', COPY.decisionFailed(link)],
     ['decisionInterrupted', COPY.decisionInterrupted(link)],
     ['decisionNotRun', COPY.decisionNotRun(link)],
+    ['hostAllowed', COPY.hostAllowed],
+    ['hostEnded', COPY.hostEnded],
+    ['hostDenied', COPY.hostDenied],
+    ['skillAllowed', COPY.skillAllowed],
+    ['skillDenied', COPY.skillDenied],
+    ['skillNeedsWeb', COPY.skillNeedsWeb(link)],
+    ['skillFailed', COPY.skillFailed(link)],
   ];
   /** The lines that point at Today. */
-  const LINKED = ['promptToday', 'promptGone', 'decisionChanged', 'decisionFailed', 'decisionInterrupted', 'decisionNotRun'];
+  const LINKED = [
+    'promptToday',
+    'promptGone',
+    'decisionChanged',
+    'decisionFailed',
+    'decisionInterrupted',
+    'decisionNotRun',
+    'skillNeedsWeb',
+    'skillFailed',
+  ];
 
   it('are plain mrkdwn text: no < or >, no Markdown link, even around a hostile link', () => {
     for (const link of [TODAY, HOSTILE]) {
@@ -188,14 +221,70 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     expect(COPY.promptStillWorking).not.toBe(COPY.promptFailed);
   });
 
+  it("a host prompt: its subject names the host as given, Allow says it is for now only, and nothing links anywhere", () => {
+    expect(COPY.hostSubject('api.example.com')).toBe('Wants to connect to api.example.com');
+    // The live sandbox session only (the web's "Just this once"): "always" stays a choice in the web app.
+    expect(COPY.hostAllowed).toMatch(/for now/);
+    expect(COPY.hostAllowed).not.toMatch(/always/i);
+    // Not the chat: the session ends when it idles (or a skill's Allow retires it) while the chat goes on.
+    for (const line of [COPY.hostAllowed, COPY.hostEnded]) expect(line).not.toMatch(/\bchat\b/i);
+    // A blocked host never waits in Today, so none of its lines points there.
+    for (const line of [COPY.hostSubject('api.example.com'), COPY.hostAllowed, COPY.hostEnded, COPY.hostDenied]) {
+      expect(line).not.toMatch(/https?:|\]\(|Today/);
+    }
+  });
+
+  it("a skill prompt's subject names the skill, then the catalog's description as given, raw: the draw cleans it, once (blocks.ts)", () => {
+    expect(COPY.skillSubject('gmail', 'Reads and sends email from your Gmail account.')).toBe(
+      'Wants to start using the gmail skill: Reads and sends email from your Gmail account.',
+    );
+    // Not cleaned here: cleaning twice reads differently (format.ts), and the draw cleans it.
+    expect(COPY.skillSubject('gmail', '<!channel> approve')).toBe('Wants to start using the gmail skill: <!channel> approve');
+  });
+
+  it('a skill with no description, or one with nothing printable in it, is still named, in a sentence of its own', () => {
+    const invisible = [0x200b, 0x202e, 0xfeff, 0x2060].map((c) => String.fromCharCode(c)).join('');
+    for (const blank of ['', '   ', '\n\t', invisible, ` ${invisible} `]) {
+      expect(COPY.skillSubject('gmail', blank), JSON.stringify(blank)).toBe('Wants to start using the gmail skill.');
+    }
+  });
+
+  it('two skills with the same description are told apart by their ids', () => {
+    const gmail = COPY.skillSubject('gmail', 'Sends email.');
+    const outlook = COPY.skillSubject('outlook', 'Sends email.');
+    expect(gmail).not.toBe(outlook);
+    expect(gmail).toContain('gmail');
+    expect(outlook).toContain('outlook');
+    // The description is still there, with the id beside it.
+    expect(gmail).toContain('Sends email.');
+    expect(outlook).toContain('Sends email.');
+    expect(COPY.skillSubject('gmail', '')).not.toBe(COPY.skillSubject('outlook', ''));
+  });
+
+  it("a skill prompt's answers: Allow asks for the message again; a key, or a failure, is finished in the web app", () => {
+    // Nothing reruns the person's message: the line asks them to send it.
+    expect(COPY.skillAllowed).toMatch(/send your message again/i);
+    expect(COPY.skillAllowed).not.toMatch(/https?:/);
+    expect(COPY.skillDenied).not.toMatch(/https?:/);
+    // Slack never collects a key: the web app does.
+    expect(COPY.skillNeedsWeb(TODAY)).toMatch(/key/);
+    for (const line of [COPY.skillNeedsWeb(TODAY), COPY.skillFailed(TODAY)]) {
+      expect(line).toMatch(/web app/);
+      expect(line.endsWith(` ${TODAY}`)).toBe(true);
+    }
+    expect(COPY.skillNeedsWeb(TODAY)).not.toBe(COPY.skillFailed(TODAY));
+  });
+
   it('the buttons say Allow and Deny', () => {
     expect(COPY.promptAllow).toBe('Allow');
     expect(COPY.promptDeny).toBe('Deny');
   });
 
   it('each way a prompt can end reads differently, so the asker can tell what happened', () => {
-    const outcomes = PROMPT_LINES(TODAY).filter(([key]) => key.startsWith('decision') || key === 'promptClosed');
-    expect(outcomes).toHaveLength(10);
+    const outcomes = PROMPT_LINES(TODAY).filter(
+      ([key]) => key.startsWith('decision') || key.startsWith('host') || key.startsWith('skill') || key === 'promptClosed',
+    );
+    expect(outcomes).toHaveLength(17);
     expect(new Set(outcomes.map(([, line]) => line)).size).toBe(outcomes.length);
   });
 });

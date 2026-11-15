@@ -19,7 +19,14 @@ import type { SlackBlock } from './slack-api.js';
  *   - The CONTEXT is COPY lines only, mrkdwn so that the bare Today URL is a
  *     link: who may answer, and Today, where the same question waits. The
  *     link is how an install connected before buttons existed (Slack has
- *     nowhere to send its clicks) still gets an answer in.
+ *     nowhere to send its clicks) still gets an answer in. A question that
+ *     doesn't wait in Today (a host the sandbox was refused: channel-web
+ *     keeps those out of it) gets no Today line, since it would send the
+ *     person nowhere.
+ *
+ * A request Slack can't take at all (a skill that needs a key) is drawn
+ * with `linkOnlyBlocks`: its subject, and a line sending the person to the
+ * web app, with no buttons.
  *
  * Give `outcomeBlocks` the subject exactly as `promptBlocks` got it: each
  * cleans it, and cleaning cleaned text reads differently (format.ts), so an
@@ -67,13 +74,16 @@ function subjectSection(subject: string): SlackBlock {
 
 /**
  * An open prompt: the subject, then Allow and Deny (both carrying
- * `promptId`), then who may answer and the Today link. `text` is the
- * notification and the fallback: the generic ask, never the subject.
+ * `promptId`), then who may answer and the Today link (none when `todayLink`
+ * is null: the question doesn't wait in Today). `text` is the notification
+ * and the fallback: the generic ask, never the subject.
  */
-export function promptBlocks(i: { subject: string; promptId: string; todayLink: string }): {
+export function promptBlocks(i: { subject: string; promptId: string; todayLink: string | null }): {
   text: string;
   blocks: SlackBlock[];
 } {
+  const context = [mrkdwn(COPY.promptOnlyAsker)];
+  if (i.todayLink !== null) context.push(mrkdwn(COPY.promptToday(i.todayLink)));
   return {
     text: COPY.heldAsked,
     blocks: [
@@ -91,7 +101,7 @@ export function promptBlocks(i: { subject: string; promptId: string; todayLink: 
           { type: 'button', text: plainText(COPY.promptDeny), action_id: ACTION_DENY, value: i.promptId },
         ],
       },
-      { type: 'context', elements: [mrkdwn(COPY.promptOnlyAsker), mrkdwn(COPY.promptToday(i.todayLink))] },
+      { type: 'context', elements: context },
     ],
   };
 }
@@ -103,6 +113,20 @@ export function promptBlocks(i: { subject: string; promptId: string; todayLink: 
 export function outcomeBlocks(i: { subject: string; line: string }): { text: string; blocks: SlackBlock[] } {
   return {
     text: i.line,
+    blocks: [subjectSection(i.subject), { type: 'context', elements: [mrkdwn(i.line)] }],
+  };
+}
+
+/**
+ * A request that can't be answered in Slack (a skill that needs a key
+ * first): the same section as a prompt's, then `line` (a COPY line sending
+ * the person to the web app), and nothing to click. Nothing is opened for
+ * it either, so no id goes anywhere. `text` is the notification, as a
+ * prompt's is: the generic ask, never the subject.
+ */
+export function linkOnlyBlocks(i: { subject: string; line: string }): { text: string; blocks: SlackBlock[] } {
+  return {
+    text: COPY.heldAsked,
     blocks: [subjectSection(i.subject), { type: 'context', elements: [mrkdwn(i.line)] }],
   };
 }

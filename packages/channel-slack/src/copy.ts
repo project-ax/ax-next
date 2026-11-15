@@ -1,4 +1,4 @@
-import { mrkdwnEscape, neutralizeSlackControls } from './format.js';
+import { cleanPromptSubject, mrkdwnEscape, neutralizeSlackControls } from './format.js';
 import { SLASH_COMMAND } from './manifest.js';
 
 /**
@@ -21,7 +21,11 @@ import { SLASH_COMMAND } from './manifest.js';
  * are plain_text): a link is a bare URL, and no line holds a `<` or `>` of
  * its own (mrkdwn reads `<…>` as a link). A name from outside goes through
  * `shown`. A prompt's subject is never a COPY line: it is outside text,
- * shown as `plain_text` (format.ts `cleanPromptSubject`).
+ * shown as `plain_text` (format.ts `cleanPromptSubject`). Two lines frame
+ * outside text as a subject, raw, cleaned where it is drawn: `hostSubject`
+ * (a host past the egress proxy's HOST_RE, permission-prompts.ts) and
+ * `skillSubject` (a catalog skill's id and description, which can hold anything).
+ * Neither is ever mrkdwn, a notification or a log.
  */
 
 /**
@@ -115,6 +119,51 @@ export const COPY = {
     `Allowed, but it was interrupted, so I can't tell whether it finished. Check Today before trying again: ${shown(todayLink)}`,
   decisionNotRun: (todayLink: string) =>
     `I couldn't do that just now. You can try again from Today: ${shown(todayLink)}`,
+
+  // ── A host the sandbox was refused (permission-prompts.ts) ─────────────────
+  /*
+    `hostSubject` is the prompt's subject, plain_text: only ever a host that
+    passed HOST_RE (lowercase letters, digits, dots and dashes), never mrkdwn.
+    The other three take the buttons' place once the asker has answered.
+    Allow lets the host through for the conversation's LIVE sandbox session
+    only: the web app's "Just this once", not the whole chat. That session
+    ends when it idles (or when a skill's Allow retires it) while the chat
+    goes on, so the lines say "for now", never "this chat". `hostEnded` is
+    Allow on a session already gone. "Always" stays a web choice, and
+    nothing about a blocked host waits in Today, so none of them links there.
+  */
+  hostSubject: (host: string) => `Wants to connect to ${host}`,
+  hostAllowed: "Allowed for now. Ask me again and I'll try it.",
+  hostEnded: "I'd already finished working on that, so nothing changed. If I need it again, I'll ask.",
+  hostDenied: "Okay. I won't connect to it.",
+
+  // ── A catalog skill the agent asked to use (permission-prompts.ts) ─────────
+  /*
+    `skillSubject` is the prompt's subject, plain_text: the skill's id, then
+    the catalog skill's description as its card carries it, both raw (the draw
+    cleans the whole subject, once). The id is no model text: the card only
+    fires after `skills:get` finds an exact catalog match, and a catalog id
+    is a manifest name, `^[a-z][a-z0-9-]{0,63}$` (skills-parser NAME_RE; the
+    broker's own SKILL_ID_RE is wider, and allows dots). It is still cleaned
+    and drawn as plain_text with the rest, never trusted for its shape. The id is what tells two skills with the same, or
+    no, description apart. A description with nothing printable in it reads
+    as a sentence of its own, not as a colon with nothing after it. Allow
+    attaches the skill for the person, and nothing reruns their message, so
+    `skillAllowed` asks them to send it again. A skill card waits in Today
+    too, so the two that send the person to the web app link Today.
+    `skillNeedsWeb` stands where the buttons would be when Slack can't take
+    the request (a key to enter, which Slack never collects);
+    `skillFailed` replaces them when an Allow couldn't connect it.
+  */
+  skillSubject: (skillId: string, description: string) =>
+    cleanPromptSubject(description) === ''
+      ? `Wants to start using the ${skillId} skill.`
+      : `Wants to start using the ${skillId} skill: ${description}`,
+  skillAllowed: "Connected. Send your message again and I'll use it.",
+  skillDenied: "Okay. I won't use it.",
+  skillNeedsWeb: (todayLink: string) =>
+    `This one needs a key or a closer look first. Finish it in the web app: ${shown(todayLink)}`,
+  skillFailed: (todayLink: string) => `I couldn't connect it from here. Finish it in the web app: ${shown(todayLink)}`,
 
   // ── Before a channel mention's turn (mrkdwn, shown only to its sender) ────
   /*

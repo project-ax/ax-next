@@ -910,9 +910,14 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
       //     callable by the UNTRUSTED runner; exposing this over IPC would let
       //     the agent widen its own egress allowlist and defeat the entire
       //     reactive wall (invariant #5; design §10 — human in the loop on
-      //     every security decision). The only caller is the authenticated
-      //     owner's browser via a CSRF-gated channel-web route. Ownership is
-      //     re-validated here against SessionConfig.userId — the proxy owns
+      //     every security decision). Two callers, each a person's own click:
+      //       - channel-web's POST /api/chat/allow-host: the authenticated
+      //         owner's browser, CSRF-gated;
+      //       - channel-slack's permission-prompts.ts: a Slack-signed click
+      //         on a host prompt by the prompt's asker (re-proved by the
+      //         click gate), called as the prompt's AX user for exactly the
+      //         prompt's live { sessionId, host }.
+      //     Ownership is re-validated here against SessionConfig.userId — the proxy owns
       //     the session→owner fact (one source of truth, I4), so a forged
       //     sessionId can never widen another user's session. Capability
       //     minimized: a single host to a single session, never blanket egress.

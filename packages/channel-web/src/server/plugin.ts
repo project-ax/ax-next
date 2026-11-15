@@ -194,8 +194,9 @@ export function createChannelWebServerPlugin(
         // TASK-37 — the reactive egress wall's grant route calls the
         // host-internal proxy:add-host service hook. channel-web only loads in
         // the k8s preset, which always loads @ax/credential-proxy, so this is a
-        // hard dep (the route is the ONLY caller — the untrusted runner can't
-        // reach this hook over IPC).
+        // hard dep (the route and channel-slack's host-prompt Allow are the
+        // only two callers — the untrusted runner can't reach this hook over
+        // IPC).
         'proxy:add-host',
         // TASK-42 — the Settings "Connections" surface composes a per-(user,
         // agent) merged skills read here (the BFF — it can't live in @ax/skills

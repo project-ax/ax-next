@@ -191,11 +191,26 @@ export const PROMPT_MAX = 1_000;
  */
 export const PROMPT_REFUSALS_MAX = 20;
 /**
- * The longest prompt subject shown (a decision's summary, a host, a skill's
- * description), in UTF-16 code units (format.ts `cleanPromptSubject`).
- * Slack's cap on a section's text is 3,000.
+ * The longest prompt subject shown (a decision's summary, a host, or a
+ * skill's id and description), in UTF-16 code units (format.ts
+ * `cleanPromptSubject`). A skill's is the longest: its sentence (about 25),
+ * a 64-character id, a colon and a 240-character description come to 337,
+ * so this leaves room for it whole. Slack's cap on a section's text is 3,000.
  */
-export const PROMPT_SUBJECT_MAX = 300;
+export const PROMPT_SUBJECT_MAX = 400;
+/**
+ * The longest host a host prompt keeps (prompts.ts): a DNS name's 253
+ * characters, the bound credential-proxy's HOST_RE puts on a host too.
+ */
+export const PROMPT_HOST_MAX = 253;
+/**
+ * The most permission prompts (a host the sandbox was refused, a skill the
+ * agent asked to use, a skill's link to the web app) one reply posts after
+ * it. Each is a message in the thread, and Slack takes about one a second
+ * per channel; anything past this is counted in the log
+ * (`slack_permission_skipped`), and the agent asks again when it needs to.
+ */
+export const PERMISSION_PROMPTS_PER_TURN_MAX = 3;
 /**
  * How long a turn that held a call spends finding that call's decision
  * before it ends with the Today link instead of a prompt.
