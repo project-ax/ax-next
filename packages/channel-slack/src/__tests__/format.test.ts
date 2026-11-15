@@ -402,6 +402,17 @@ describe('cleanPromptSubject', () => {
     expect(cut).toBe(`${'x'.repeat(PROMPT_SUBJECT_MAX - 6)}(@${ZWSP}her`);
   });
 
+  it("neutralizes before the first cut: an earlier mark can't push a broadcast word to the end unmarked", () => {
+    // Exactly at the cap, so nothing is cut until the `<!` mark lengthens it; `@heres` is a name until then.
+    // Cut first and marked after, the last cut would take the `s` and leave a live `@here`.
+    const subject = `<!${'x'.repeat(PROMPT_SUBJECT_MAX - 8)}@heres`;
+    expect(subject).toHaveLength(PROMPT_SUBJECT_MAX);
+    const out = cleanPromptSubject(subject);
+    expect(out.length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+    expect(BROADCAST.test(out)).toBe(false);
+    expect(out).toBe(`<${ZWSP}!${'x'.repeat(PROMPT_SUBJECT_MAX - 8)}@${ZWSP}her`);
+  });
+
   it('a broadcast spelled in entities decodes to nothing: the mark, and only the mark, stops it', () => {
     for (const subject of ['&#64;everyone', '&#x40;channel', '&commat;here', '&lt;!channel&gt;']) {
       const out = cleanPromptSubject(subject);
