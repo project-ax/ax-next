@@ -758,6 +758,19 @@ describe('decisions store — whose yes it is (TASK-1095)', () => {
     }
   });
 
+  it("an outsider's turn with no conversation never takes a yes raised with none: one empty conversation is not another's", async () => {
+    for (const [leg, s] of await approvedOnBoth(
+      { attendance: 'unattended', conversationId: '' },
+      'approved-pending-agent',
+    )) {
+      expect(await s.takeApproval('a1', 'fp-1', { ...OUTSIDER, conversationId: '' }, T_LATE), leg).toBeNull();
+      expect(await s.findRoutineApproval('a1', { ...OUTSIDER, conversationId: '' }, 'fp-1', T_LATE), leg).toBeNull();
+      expect((await s.get('dec_1'))!.consumedAt, leg).toBeNull();
+      // The counter-control: its owner's own turn still takes it.
+      expect((await s.takeApproval('a1', 'fp-1', { ...OWNER, conversationId: '' }, T_LATE))?.id, leg).toBe('dec_1');
+    }
+  });
+
   it("a member's own turn takes their yes from any conversation: the conversation rule is the outsider's only", async () => {
     for (const [leg, s] of await approvedOnBoth(
       { attendance: 'unattended' },
