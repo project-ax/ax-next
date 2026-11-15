@@ -20,7 +20,9 @@ import { logCode } from './log-code.js';
  *     deadline. Logged by code (`slack_prompt_failed`, stage `lookup`).
  *
  * The answer is another plugin's output, so every field read from it is
- * checked with typeof. The summary is kept exactly as decisions wrote it:
+ * checked with typeof, and a row must name this turn's own user, agent and
+ * conversation (the lookup is scoped to them, but a foreign row is not taken
+ * on that word). The summary is kept exactly as decisions wrote it:
  * host-authored, but outside text to Slack, so whoever shows it cleans it
  * (blocks.ts), and nothing here does.
  */
@@ -98,6 +100,8 @@ export async function findHeldDecision(
   for (const row of rows) {
     if (!isRecord(row)) continue;
     const { id, status, summary, call } = row;
+    // Decisions scopes the read to the turn already; this does not rest on it.
+    if (row['ownerUserId'] !== q.userId || row['agentId'] !== q.agentId || row['conversationId'] !== q.conversationId) continue;
     if (typeof id !== 'string' || id.length === 0 || typeof summary !== 'string') continue;
     if (status !== 'pending' || !isRecord(call) || call['id'] !== q.toolCallId) continue;
     return { decisionId: id, summary };

@@ -169,6 +169,18 @@ describe("findHeldDecision: the held call's pending decision", () => {
     },
   );
 
+  it.each([
+    ['another user', { ownerUserId: 'usr_eve' }],
+    ['another agent', { agentId: 'agt_other' }],
+    ['another conversation', { conversationId: 'conv_other' }],
+    ['no owner', { ownerUserId: undefined }],
+  ])('a pending row for the same call id but %s is not this turn\'s: ignored, and the turn\'s own row is found', async (_name, over) => {
+    const d = decisions({ rows: [row({ id: 'dec_foreign', ...over }), row({ id: 'dec_mine' })] });
+    expect(await d.find()).toEqual({ decisionId: 'dec_mine', summary: SUMMARY });
+    const alone = decisions({ rows: [row({ id: 'dec_foreign', ...over })] });
+    expect(await alone.find()).toBeNull();
+  });
+
   it('only other calls are pending: no decision', async () => {
     const d = decisions({ rows: [otherCall('dec_a'), otherCall('dec_b')] });
     expect(await d.find()).toBeNull();

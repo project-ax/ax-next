@@ -1,6 +1,7 @@
 import type { Logger } from '@ax/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
+import { cleanPromptSubject } from '../format.js';
 import { PROMPT_SUBJECT_MAX, REPLY_RATE_LIMIT_RETRIES } from '../limits.js';
 import { postPrompt } from '../prompt-post.js';
 import { createPromptRegistry, type PromptContext, type PromptRegistry, type PromptSubject } from '../prompts.js';
@@ -202,6 +203,21 @@ describe("postPrompt: an approval prompt in the turn's thread", () => {
     // What the prompt shows is that same text (cleaning leaves this one as it is).
     const blocks = w.slack.calls[0]!.args['blocks'] as Array<{ type: string; text?: { text: string } }>;
     expect(blocks[0]!.text!.text).toBe(cut);
+  });
+
+  it('a subject cleaning would change is kept raw, and drawn cleaned: the registry never holds the cleaned form', async () => {
+    const w = world();
+    const zeroWidth = String.fromCharCode(0x200b);
+    const raw = `Wants to ping <!channel> &amp; more  ${zeroWidth}things`;
+    // Cleaning really does change it, and cleaning twice changes it again (format.ts), which is why it is kept raw.
+    expect(cleanPromptSubject(raw)).not.toBe(raw);
+    expect(cleanPromptSubject(cleanPromptSubject(raw))).not.toBe(cleanPromptSubject(raw));
+    expect(await w.post(MEL_SUPPORT, HELD, raw)).toBe(true);
+
+    const claim = w.prompts.claim(FIRST_ID, MEL);
+    expect(claim.ok && claim.prompt.subjectText).toBe(raw);
+    const blocks = w.slack.calls[0]!.args['blocks'] as Array<{ type: string; text?: { text: string } }>;
+    expect(blocks[0]!.text!.text).toBe(cleanPromptSubject(raw));
   });
 
   it('Slack refuses the post: no prompt is left open, and the failure is logged by its code', async () => {
