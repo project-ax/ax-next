@@ -11,7 +11,8 @@
  *   not-connected  the three steps and the form, or, without a public https
  *                  address, why Slack can't reach us yet (and no form)
  *   pending        the app exists but nobody clicked Allow: continue or cancel
- *   connected      the workspace, the bot, who added the token and when
+ *   connected      the workspace, the bot (with Rename), who added the token
+ *                  and when
  *
  * THE TWO PASTED TOKENS NEVER LIVE IN REACT STATE. They are uncontrolled
  * password inputs (so React never writes them into a `value` attribute),
@@ -58,6 +59,7 @@ import {
   disconnectSlack,
   fetchSlackStatus,
   goToSlack,
+  renameSlackBot,
   resumeSlackInstall,
   slackErrorCopy,
   slackStateChanged,
@@ -71,11 +73,16 @@ const SLACK_APPS_URL = 'https://api.slack.com/apps';
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; status: SlackStatusRead };
 
 /** A note above the tab that outlives the re-read after it. */
-type Notice = { kind: 'disconnected'; appDeleted: boolean } | { kind: 'changed' };
+type Notice =
+  | { kind: 'disconnected'; appDeleted: boolean }
+  | { kind: 'renamed'; botName: string }
+  | { kind: 'changed' };
 
 interface Actions {
   /** A disconnect went through: say what's left to do, then read again. */
   onDisconnected: (appDeleted: boolean) => void;
+  /** A rename went through: say what Slack shows now, then read again. */
+  onRenamed: (botName: string) => void;
   /** Someone else changed things first: read again, and say why it moved. */
   onChanged: () => void;
 }
@@ -414,6 +421,138 @@ function DisconnectDialog({
   );
 }
 
+/**
+ * The form inside the Rename dialog. It lives under `DialogContent`, so every
+ * opening mounts it fresh: prefilled with the current name, no leftover error.
+ * `busy` belongs to the dialog, which must also refuse to close mid-request.
+ */
+function RenameForm({
+  current,
+  busy,
+  setBusy,
+  onCancel,
+  onRenamed,
+  onChanged,
+}: {
+  current: string;
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+  onCancel: () => void;
+} & Pick<Actions, 'onRenamed' | 'onChanged'>) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [name, setName] = useState(current);
+  const [error, setError] = useState<{ field: SlackErrorField; message: string } | null>(null);
+
+  // The next step after a refused name is changing it.
+  useEffect(() => {
+    if (error !== null && error.field === 'botName') inputRef.current?.focus();
+  }, [error]);
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { botName } = await renameSlackBot(name);
+      onRenamed(botName);
+    } catch (err) {
+      setBusy(false);
+      if (slackStateChanged(err)) {
+        onChanged();
+        return;
+      }
+      setError(slackErrorCopy(err));
+    }
+  }
+
+  const nameError = error !== null && error.field === 'botName' ? error.message : null;
+
+  return (
+    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
+      <DialogHeader>
+        <DialogTitle>Rename the bot</DialogTitle>
+        <DialogDescription>Only the name changes. Conversations and connected channels keep working.</DialogDescription>
+      </DialogHeader>
+      <FieldGroup>
+        <Field data-invalid={nameError !== null || undefined}>
+          <FieldLabel htmlFor="slack-rename-bot-name">Bot name</FieldLabel>
+          <Input
+            id="slack-rename-bot-name"
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={busy}
+            aria-invalid={nameError !== null || undefined}
+            aria-describedby={
+              nameError !== null ? 'slack-rename-bot-name-hint slack-rename-bot-name-error' : 'slack-rename-bot-name-hint'
+            }
+          />
+          <FieldDescription id="slack-rename-bot-name-hint">The name people see in Slack.</FieldDescription>
+          {nameError !== null && <FieldError id="slack-rename-bot-name-error">{nameError}</FieldError>}
+        </Field>
+      </FieldGroup>
+      {error !== null && error.field === null && (
+        <Alert variant="destructive">
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      )}
+      <DialogFooter className="gap-2">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? <Busy>Renaming…</Busy> : 'Rename'}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+function RenameDialog({
+  open,
+  onOpenChange,
+  current,
+  onRenamed,
+  onChanged,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  current: string;
+} & Pick<Actions, 'onRenamed' | 'onChanged'>) {
+  const [busy, setBusy] = useState(false);
+  // Escape and the overlay wait while Slack answers.
+  const close = (next: boolean) => {
+    if (busy) return;
+    onOpenChange(next);
+  };
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent>
+        <RenameForm
+          current={current}
+          busy={busy}
+          setBusy={setBusy}
+          onCancel={() => close(false)}
+          // The tab re-reads next. Don't count on that remounting this dialog:
+          // a re-read that lands before React paints "loading" would leave it
+          // open, so whichever way the request ended, it closes itself.
+          onRenamed={(botName) => {
+            setBusy(false);
+            onOpenChange(false);
+            onRenamed(botName);
+          }}
+          onChanged={() => {
+            setBusy(false);
+            onOpenChange(false);
+            onChanged();
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { state: 'pending' }> } & Actions) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -473,6 +612,7 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
 
 function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { state: 'connected' }> } & Actions) {
   const [confirming, setConfirming] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   return (
     <Card variant="settings">
       <CardHeader>
@@ -488,7 +628,12 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
         <dl className="flex flex-col text-sm">
           <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
             <dt>Bot name</dt>
-            <dd className="text-muted-foreground">{status.botName}</dd>
+            <dd className="flex items-center gap-3">
+              <span className="text-muted-foreground">{status.botName}</span>
+              <Button variant="outline" size="sm" onClick={() => setRenaming(true)}>
+                Rename
+              </Button>
+            </dd>
           </div>
           <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
             <dt>Configuration token</dt>
@@ -503,6 +648,13 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
           Disconnect
         </Button>
       </CardFooter>
+      <RenameDialog
+        open={renaming}
+        onOpenChange={setRenaming}
+        current={status.botName}
+        onRenamed={actions.onRenamed}
+        onChanged={actions.onChanged}
+      />
       <DisconnectDialog open={confirming} onOpenChange={setConfirming} kind="connected" {...actions} />
     </Card>
   );
@@ -556,6 +708,13 @@ export function SlackTab() {
     },
     [read],
   );
+  const onRenamed = useCallback(
+    (botName: string) => {
+      setNotice({ kind: 'renamed', botName });
+      void read();
+    },
+    [read],
+  );
   const onChanged = useCallback(() => {
     setNotice({ kind: 'changed' });
     void read();
@@ -564,6 +723,11 @@ export function SlackTab() {
   return (
     <div className="flex flex-col gap-6 font-sans">
       {notice?.kind === 'disconnected' && <DisconnectedNotice appDeleted={notice.appDeleted} />}
+      {notice?.kind === 'renamed' && (
+        <Alert>
+          <AlertDescription>Renamed. People in Slack now see the bot as {notice.botName}.</AlertDescription>
+        </Alert>
+      )}
       {notice?.kind === 'changed' && (
         <Alert>
           <AlertDescription>This changed while you were here, so we&apos;ve refreshed it.</AlertDescription>
@@ -572,7 +736,7 @@ export function SlackTab() {
       {load.kind === 'loading' && <Loading />}
       {load.kind === 'error' && <ReadError onRetry={() => void read()} />}
       {load.kind === 'ready' && (
-        <StatusView status={load.status} onDisconnected={onDisconnected} onChanged={onChanged} />
+        <StatusView status={load.status} onDisconnected={onDisconnected} onRenamed={onRenamed} onChanged={onChanged} />
       )}
     </div>
   );

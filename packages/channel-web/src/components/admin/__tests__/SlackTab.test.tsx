@@ -12,7 +12,9 @@ import {
   disconnectSlack,
   fetchSlackStatus,
   goToSlack,
+  renameSlackBot,
   resumeSlackInstall,
+  SLACK_ERROR_COPY,
   type SlackStatusRead,
 } from '@/lib/slack-admin';
 import { CONFIG_ACCESS_PREFIX, CONFIG_REFRESH_PREFIX, fakeConfigAccessToken, fakeConfigRefreshToken } from '@/test-utils/fake-slack-tokens';
@@ -23,6 +25,7 @@ vi.mock('@/lib/slack-admin', async (original) => ({
   connectSlack: vi.fn(),
   resumeSlackInstall: vi.fn(),
   disconnectSlack: vi.fn(),
+  renameSlackBot: vi.fn(),
   goToSlack: vi.fn(),
 }));
 
@@ -53,6 +56,7 @@ const status = vi.mocked(fetchSlackStatus);
 const connect = vi.mocked(connectSlack);
 const resume = vi.mocked(resumeSlackInstall);
 const disconnect = vi.mocked(disconnectSlack);
+const rename = vi.mocked(renameSlackBot);
 const navigate = vi.mocked(goToSlack);
 
 beforeEach(() => {
@@ -356,5 +360,134 @@ describe('Disconnect', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/One more step only you can do/)).toBeNull();
     expect(status).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Rename', () => {
+  const GENERIC = 'Something went wrong talking to Slack. Try again in a minute.';
+
+  async function openDialog() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename' }));
+    return screen.findByRole('dialog', { name: 'Rename the bot' });
+  }
+  function nameInput(dialog: HTMLElement): HTMLInputElement {
+    return within(dialog).getByLabelText('Bot name') as HTMLInputElement;
+  }
+  function submit(dialog: HTMLElement, value: string) {
+    fireEvent.change(nameInput(dialog), { target: { value } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+  }
+
+  it('the connected card shows the name with a Rename button; the dialog opens with that name filled in', async () => {
+    renderTab(CONNECTED);
+    expect(await screen.findByText('canopy')).toBeInTheDocument();
+    const dialog = await openDialog();
+    expect(dialog).toHaveTextContent('Only the name changes. Conversations and connected channels keep working.');
+    expect(within(dialog).getByText('The name people see in Slack.')).toBeInTheDocument();
+    expect(nameInput(dialog).value).toBe('canopy');
+  });
+
+  it('Rename sends the name as typed, then says what Slack shows now and reads the tab again', async () => {
+    rename.mockResolvedValueOnce({ botName: 'Ada Helper' });
+    renderTab(CONNECTED, { ...CONNECTED, botName: 'Ada Helper' });
+    const dialog = await openDialog();
+    submit(dialog, '  Ada   Helper ');
+    expect(rename).toHaveBeenCalledWith('  Ada   Helper ');
+    expect(await screen.findByText('Renamed. People in Slack now see the bot as Ada Helper.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('Ada Helper')).toBeInTheDocument();
+  });
+
+  it.each([
+    [new SlackAdminError(400, 'invalid-bot-name', 'reserved'), 'Slack keeps that name for itself. Pick another.'],
+    [new SlackAdminError(502, 'slack-name'), "Slack didn't accept that bot name. Try another."],
+  ])('a name Slack can\'t use stays in the dialog, under the field (%#)', async (err, message) => {
+    rename.mockRejectedValueOnce(err);
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, 'Slackbot');
+    expect(await within(dialog).findByText(message)).toBeInTheDocument();
+    const field = nameInput(dialog);
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(message));
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(screen.getByRole('dialog', { name: 'Rename the bot' })).toBeInTheDocument();
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it('a configuration token Slack no longer accepts says what to do, in the dialog', async () => {
+    rename.mockRejectedValueOnce(new SlackAdminError(502, 'slack-config-token'));
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, 'Ada Helper');
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent(SLACK_ERROR_COPY['slack-config-token']);
+    expect(document.body.textContent).not.toContain('slack-config-token');
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a server error', new SlackAdminError(500, 'internal')],
+    ['a network failure', new TypeError('Failed to fetch')],
+  ])('other trouble reads as the generic sentence and changes nothing (%s)', async (_label, err) => {
+    rename.mockRejectedValueOnce(err);
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, 'Ada Helper');
+    expect(await within(dialog).findByText(GENERIC)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Failed to fetch');
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it('someone else disconnected meanwhile: it refreshes and says so', async () => {
+    rename.mockRejectedValueOnce(new SlackAdminError(409, 'not-connected'));
+    renderTab(CONNECTED, NOT_CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, 'Ada Helper');
+    expect(await screen.findByText("This changed while you were here, so we've refreshed it.")).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Connect' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('is one request at a time: Rename and Cancel wait while Slack answers', async () => {
+    let finish!: (v: { botName: string }) => void;
+    rename.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    renderTab(CONNECTED, { ...CONNECTED, botName: 'Ada Helper' });
+    const dialog = await openDialog();
+    fireEvent.change(nameInput(dialog), { target: { value: 'Ada Helper' } });
+    const go = within(dialog).getByRole('button', { name: 'Rename' });
+    fireEvent.click(go);
+    const busy = await within(dialog).findByRole('button', { name: /Renaming/ });
+    fireEvent.click(busy);
+    fireEvent.click(busy);
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(busy).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Rename the bot' })).toBeInTheDocument();
+    finish({ botName: 'Ada Helper' });
+    expect(await screen.findByText('Renamed. People in Slack now see the bot as Ada Helper.')).toBeInTheDocument();
+  });
+
+  it('Cancel closes without a request, and opening again starts from the current name', async () => {
+    rename.mockRejectedValueOnce(new SlackAdminError(500, 'internal'));
+    renderTab(CONNECTED);
+    let dialog = await openDialog();
+    fireEvent.change(nameInput(dialog), { target: { value: 'Half typed' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(rename).not.toHaveBeenCalled();
+    dialog = await openDialog();
+    expect(nameInput(dialog).value).toBe('canopy');
+
+    // An error left behind by a failed try doesn't survive a close either.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    expect(await within(dialog).findByText(GENERIC)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    dialog = await openDialog();
+    expect(within(dialog).queryByText(GENERIC)).toBeNull();
+    expect(nameInput(dialog).value).toBe('canopy');
   });
 });
