@@ -861,6 +861,23 @@ describe('decisions store — whose yes it is (TASK-1095)', () => {
       expect((await s.get('dec_1b'))!.status, leg).toBe('pending');
     }
   });
+
+  it('an authorising row written directly meets the same per-person slot, on both stores', async () => {
+    // The insert path of the slot, which the fake mirrors separately from the claim.
+    const standing = { status: 'approved-pending-agent', resolvedAt: T_SOON } as const;
+    for (const [leg, s] of [
+      ['postgres', await freshStore()],
+      ['fake', createFakeStore()],
+    ] as const) {
+      await s.create(base(standing));
+      await s.create(base({ ...standing, id: 'dec_u2', ownerUserId: 'u2', conversationId: 'c2' }));
+      await expect(
+        s.create(base({ ...standing, id: 'dec_1b', conversationId: 'c3' })),
+        leg,
+      ).rejects.toThrow();
+      expect(await s.get('dec_1b'), leg).toBeNull();
+    }
+  });
 });
 
 /**
@@ -881,12 +898,18 @@ const PREVIOUS_RELEASE_INDEX = [
 ] as const;
 
 describe('decisions migration — one standing yes per person, agent and call (TASK-1095)', () => {
-  /** Every UNIQUE index on the table but its primary key: where the guarantee lives. */
+  /**
+   * Every UNIQUE index on the table but its primary key: where the guarantee
+   * lives. With its oid, so "changes nothing" also means "rebuilt nothing": a
+   * swap at every boot would hold the table's write lock on every boot.
+   */
   async function uniqueIndexes(
     db: Kysely<DecisionsDatabase>,
-  ): Promise<Array<{ indexname: string; indexdef: string }>> {
-    const { rows } = await sql<{ indexname: string; indexdef: string }>`
-      SELECT indexname, indexdef FROM pg_indexes
+  ): Promise<Array<{ indexname: string; indexdef: string; oid: string }>> {
+    const { rows } = await sql<{ indexname: string; indexdef: string; oid: string }>`
+      SELECT indexname, indexdef,
+             to_regclass(format('%I.%I', schemaname, indexname))::oid::text AS oid
+        FROM pg_indexes
        WHERE schemaname = current_schema()
          AND tablename = 'decisions_v1_decisions'
          AND indexdef LIKE 'CREATE UNIQUE INDEX %'
