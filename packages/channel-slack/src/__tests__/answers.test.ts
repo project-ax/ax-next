@@ -1,0 +1,1339 @@
+import { HookBus, PluginError, type AgentContext, type Logger } from '@ax/core';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createClickHandler, type Answer, type AnswerDeps, type SubjectAnswer } from '../answers.js';
+import { promptBlocks, type PromptAction } from '../blocks.js';
+import type { ChannelStore } from '../channel-store.js';
+import { COPY } from '../copy.js';
+import type { ButtonClick } from '../interactions.js';
+import { PROMPT_MAX, PROMPT_STEP_TIMEOUT_MS, PROMPT_TTL_MS } from '../limits.js';
+import {
+  createPromptRegistry,
+  type Prompt,
+  type PromptContext,
+  type PromptRegistry,
+  type PromptSubject,
+} from '../prompts.js';
+import type { SecretName, SecretStore } from '../secrets.js';
+import { SlackApiError, type SlackApi } from '../slack-api.js';
+import type { InstallRow } from '../store.js';
+import { fakeAgents, type FakeAgent } from './fake-agents.js';
+import { fakeBotToken } from './fake-slack-tokens.js';
+import { memoryChannelStore } from './memory-channel-store.js';
+
+/*
+  The click gate (answers.ts), through the ClickHandler the interactions
+  route hands each click to. The rules pinned here: only the person whose
+  turn it was can answer a prompt, proved again from Slack and AX on every
+  click and never from the message; each step refuses on its own; one
+  answer per prompt; a bystander's click never takes the prompt's lock;
+  every step has a deadline; a prompt is redrawn only with COPY lines; and
+  logs carry codes, never ids, emails or text.
+*/
+
+// ── Fixtures ────────────────────────────────────────────────────────────────
+
+const PUBLIC_ORIGIN = 'https://ax.example';
+/** Today in the web app, where a prompt's request also waits. */
+const TODAY = 'https://ax.example/workspace';
+const INSTALL_ID = 'q3VtZ0xH4kTn9Wb2LmPa1A';
+const TEAM_ID = 'T07ABCDEF12';
+const BOT_TOKEN = fakeBotToken('ANSWERSTESTSECRET');
+
+const INSTALL: InstallRow = {
+  installId: INSTALL_ID,
+  status: 'active',
+  appId: 'A07QF9ZK2MN',
+  clientId: '7512345678901.7598765432109',
+  botName: 'canopy-works',
+  teamId: TEAM_ID,
+  teamName: 'Canopy Works',
+  botUserId: 'U07BOTUSER1',
+  connectedByUserId: 'usr_admin',
+  createdAt: new Date('2026-11-13T10:00:00Z'),
+  installedAt: new Date('2026-11-13T10:05:00Z'),
+};
+/** A second install for the same workspace: its own app, its own prompts. */
+const OTHER_INSTALL: InstallRow = { ...INSTALL, installId: 'Wd3sQ8nLz1Kc6Vb0Xp4TrA', appId: 'A07OTHERAPP' };
+
+/** Mel: whose turn it was, in her DM and in #support. */
+const MEL = 'U07MEL00001';
+/** Ada and Ben: members of the support team too, reading Mel's thread in #support. */
+const ADA = 'U07ADA00001';
+const BEN = 'U07BEN00001';
+const DM_MEL = 'D07DMMEL001';
+const SUPPORT = 'C07SUPPORT1';
+const RANDOM = 'C07RANDOM01';
+/** The thread the prompt was posted in, and the prompt message itself. */
+const THREAD_TS = '1763121600.000100';
+const PROMPT_TS = '1763121660.000200';
+/** An id shaped like a prompt's that no registry ever minted. */
+const NEVER_MINTED = 'Rk2pX9vQ_mL4wT7nB1cZ-A';
+
+/** A users.info `user`, as Slack answers it for a full member with a confirmed email. */
+function member(id: string, email: string, over: Record<string, unknown> = {}) {
+  return {
+    id,
+    team_id: TEAM_ID,
+    deleted: false,
+    is_bot: false,
+    is_restricted: false,
+    is_ultra_restricted: false,
+    is_email_confirmed: true,
+    profile: { email, real_name: id, display_name: '' },
+    ...over,
+  };
+}
+
+const MEL_EMAIL = 'mel@canopyworks.com';
+const SLACK_USERS: Record<string, unknown> = {
+  [MEL]: member(MEL, MEL_EMAIL),
+  [ADA]: member(ADA, 'ada@canopyworks.com'),
+  [BEN]: member(BEN, 'ben@canopyworks.com'),
+};
+/** auth:find-user-by-email's answer, by the email exactly as users.info gave it. Null: no account. */
+const AX_USERS: Record<string, string | null> = {
+  [MEL_EMAIL]: 'usr_mel',
+  'ada@canopyworks.com': 'usr_ada',
+  'ben@canopyworks.com': 'usr_ben',
+};
+
+const SUPPORT_TEAM = 'team_support';
+const MEL_AGENT: FakeAgent = {
+  id: 'agt_mel',
+  displayName: 'Mel',
+  visibility: 'personal',
+  ownerType: 'user',
+  ownerId: 'usr_mel',
+};
+const SUPPORT_AGENT: FakeAgent = {
+  id: 'agt_support',
+  displayName: 'Support',
+  visibility: 'team',
+  ownerType: 'team',
+  ownerId: SUPPORT_TEAM,
+};
+/** Another of the support team's agents: a channel can be connected to it instead. */
+const OPS_AGENT: FakeAgent = { ...SUPPORT_AGENT, id: 'agt_ops', displayName: 'Ops' };
+
+/** Mel's DM turn that held a call. */
+const MEL_DM: PromptContext = {
+  installId: INSTALL_ID,
+  teamId: TEAM_ID,
+  channel: DM_MEL,
+  threadTs: THREAD_TS,
+  askerSlackId: MEL,
+  userId: 'usr_mel',
+  agentId: 'agt_mel',
+  conversationId: 'conv_mel_dm',
+  mode: 'dm',
+};
+/** Mel's attended turn in #support, which is connected to the support team's agent. */
+const MEL_SUPPORT: PromptContext = {
+  ...MEL_DM,
+  channel: SUPPORT,
+  agentId: 'agt_support',
+  conversationId: 'conv_mel_support',
+  mode: 'attended',
+};
+
+const HELD: PromptSubject = { kind: 'decision', decisionId: 'dec_0001' };
+/** A decision's host-authored summary, exactly as the turn handed it to promptBlocks. */
+const SUMMARY = 'Wants to gain access to a new service or key';
+
+/** The prompt redrawn with `line`, as Slack should get it: the subject, then the line, and nothing to click. */
+function redrawn(channel: string, line: string, ts = PROMPT_TS) {
+  return {
+    channel,
+    ts,
+    text: line,
+    blocks: [
+      { type: 'section', text: { type: 'plain_text', text: SUMMARY, emoji: false } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: line }] },
+    ],
+  };
+}
+
+/** A private line to `user` in the prompt's thread. */
+function told(channel: string, user: string, text: string) {
+  return { method: 'postEphemeral', token: BOT_TOKEN, args: { channel, user, text, threadTs: THREAD_TS } };
+}
+
+const MEL_LOOKED_UP = { method: 'usersInfo', token: BOT_TOKEN, args: { user: MEL } };
+
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+/** A promise that never settles: a hung call. */
+const never = (): Promise<never> => new Promise<never>(() => {});
+
+// ── The fake Slack ──────────────────────────────────────────────────────────
+
+type Method = keyof SlackApi;
+interface SlackCall {
+  method: Method;
+  token: string;
+  args: Record<string, unknown>;
+}
+
+function fakeSlack(o: { users: Record<string, unknown>; hang?: Method }) {
+  const calls: SlackCall[] = [];
+  const record = async (method: Method, token: string, args: Record<string, unknown>): Promise<void> => {
+    calls.push({ method, token, args: JSON.parse(JSON.stringify(args)) as Record<string, unknown> });
+    if (o.hang === method) await never();
+  };
+  /** A method the gate must never call: recorded too, so an exact call list shows it. */
+  const notHere =
+    (method: Method) =>
+    async (): Promise<never> => {
+      calls.push({ method, token: '', args: {} });
+      throw new Error(`the click gate must not call ${method}`);
+    };
+  const api: SlackApi = {
+    rotateConfigToken: notHere('rotateConfigToken'),
+    createApp: notHere('createApp'),
+    deleteApp: notHere('deleteApp'),
+    setAppIcon: notHere('setAppIcon'),
+    oauthAccess: notHere('oauthAccess'),
+    async usersInfo(token, user) {
+      await record('usersInfo', token, { user });
+      const answer = o.users[user];
+      if (answer instanceof Error) throw answer;
+      if (answer === undefined) throw new SlackApiError('users.info', 'user_not_found');
+      return answer;
+    },
+    postMessage: notHere('postMessage'),
+    postBlocks: notHere('postBlocks'),
+    async updateMessage(token, a) {
+      await record('updateMessage', token, { ...a });
+    },
+    async postEphemeral(token, a) {
+      await record('postEphemeral', token, { ...a });
+    },
+    startStream: notHere('startStream'),
+    appendStream: notHere('appendStream'),
+    stopStream: notHere('stopStream'),
+    addReaction: notHere('addReaction'),
+    removeReaction: notHere('removeReaction'),
+    conversationsInfo: notHere('conversationsInfo'),
+    conversationsList: notHere('conversationsList'),
+    conversationsJoin: notHere('conversationsJoin'),
+  };
+  return { api, calls };
+}
+
+// ── The world ───────────────────────────────────────────────────────────────
+
+interface Line {
+  level: string;
+  msg: string;
+  fields: Record<string, unknown>;
+}
+
+interface Run {
+  ctx: AgentContext;
+  prompt: Prompt;
+  action: PromptAction;
+  extra: { install: InstallRow; botToken: string };
+}
+
+type Fault = 'fails' | 'hang';
+
+interface WorldOptions {
+  /** users.info's answers by Slack id, over SLACK_USERS. An Error is thrown. */
+  slackUsers?: Record<string, unknown>;
+  /** auth:find-user-by-email's answers by email, over AX_USERS. */
+  axUsers?: Record<string, string | null>;
+  /** The vault's answer for the bot token: one, none, a failure, or a read that never ends. */
+  botToken?: string | null | Error | 'hang';
+  findUser?: Fault;
+  resolve?: Fault;
+  binding?: Fault;
+  /** This Slack method never answers. */
+  slackHang?: Method;
+  /** What the decision answer gives back; `n` is its run (1-based). Its default: Allowed or Denied, settled. */
+  answer?: (n: number) => Answer | Promise<Answer>;
+  /** The answers by subject kind, instead of the recording decision answer. */
+  answers?: AnswerDeps['answers'];
+  /** Wrap the real registry (a broken one, say). */
+  registry?: (real: PromptRegistry) => PromptRegistry;
+}
+
+const fault = (plugin: string) =>
+  new PluginError({ code: 'store-unavailable', plugin, message: `${plugin} down: ${MEL_EMAIL}` });
+
+async function world(o: WorldOptions = {}) {
+  const lines: Line[] = [];
+  const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
+    lines.push({ level, msg, fields: { ...fields } });
+  };
+  const logger: Logger = {
+    debug: at('debug'),
+    info: at('info'),
+    warn: at('warn'),
+    error: at('error'),
+    child: () => logger,
+  };
+
+  // The bus never reports a stall of its own: a hung fake is the test's point.
+  const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+  const findUser: Array<{ ctx: AgentContext; email: unknown }> = [];
+  bus.registerService('auth:find-user-by-email', 'fake-auth', async (ctx, input) => {
+    const email = (input as { email: unknown }).email;
+    findUser.push({ ctx, email });
+    if (o.findUser === 'hang') return never();
+    if (o.findUser === 'fails') throw fault('fake-auth');
+    const users: Record<string, string | null> = { ...AX_USERS, ...o.axUsers };
+    const userId = typeof email === 'string' ? users[email] : undefined;
+    return typeof userId === 'string' ? { userId } : null;
+  });
+
+  // agents:resolve answered the way @ax/agents answers it (fake-agents.ts),
+  // behind a door this world can jam or break.
+  const agentsBus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+  const agents = fakeAgents(agentsBus);
+  agents.addAgent(MEL_AGENT);
+  agents.addAgent(SUPPORT_AGENT);
+  agents.addAgent(OPS_AGENT);
+  agents.setRole(SUPPORT_TEAM, 'usr_mel', 'member');
+  agents.setRole(SUPPORT_TEAM, 'usr_ada', 'member');
+  agents.setRole(SUPPORT_TEAM, 'usr_ben', 'member');
+  const resolved: Array<{ ctx: AgentContext; input: unknown }> = [];
+  bus.registerService('agents:resolve', 'fake-agents', async (ctx, input) => {
+    resolved.push({ ctx, input });
+    if (o.resolve === 'hang') return never();
+    if (o.resolve === 'fails') throw fault('fake-agents');
+    return agentsBus.call('agents:resolve', ctx, input);
+  });
+
+  // #support is connected to the support team's agent.
+  const channels = memoryChannelStore();
+  await channels.store.upsert({
+    installId: INSTALL_ID,
+    channelId: SUPPORT,
+    agentId: SUPPORT_AGENT.id,
+    connectedByUserId: 'usr_ada',
+    channelName: 'support',
+  });
+  const bindingReads: Array<[string, string]> = [];
+  const channelStore: Pick<ChannelStore, 'get'> = {
+    async get(installId, channelId) {
+      bindingReads.push([installId, channelId]);
+      if (o.binding === 'hang') return never();
+      if (o.binding === 'fails') throw new Error(`database down reading ${channelId}`);
+      return channels.store.get(installId, channelId);
+    },
+  };
+
+  const vault: Array<{ installId: string; name: SecretName }> = [];
+  const secrets: Pick<SecretStore, 'get'> = {
+    async get(install, name) {
+      vault.push({ installId: install.installId, name });
+      const answer = o.botToken === undefined ? BOT_TOKEN : o.botToken;
+      if (answer === 'hang') return never();
+      if (answer instanceof Error) throw answer;
+      return name === 'bot-token' ? answer : null;
+    },
+  };
+
+  const slack = fakeSlack({ users: { ...SLACK_USERS, ...o.slackUsers }, ...(o.slackHang ? { hang: o.slackHang } : {}) });
+
+  let nowMs = Date.parse('2026-11-14T12:00:00.000Z');
+  let minted = 0;
+  const real = createPromptRegistry({
+    now: () => nowMs,
+    // Call n of randomBytes fills every byte with n: one id per prompt, the same every run.
+    randomBytes: (size) => Buffer.alloc(size, ++minted),
+    ttlMs: PROMPT_TTL_MS,
+    max: PROMPT_MAX,
+  });
+  const prompts = o.registry === undefined ? real : o.registry(real);
+
+  const runs: Run[] = [];
+  const decision: SubjectAnswer = async (ctx, prompt, action, extra) => {
+    runs.push({ ctx, prompt, action, extra });
+    if (o.answer !== undefined) return o.answer(runs.length);
+    return { line: action === 'deny' ? COPY.decisionDenied : COPY.decisionAllowed, settle: true };
+  };
+
+  const onClick = createClickHandler({
+    bus,
+    api: slack.api,
+    secrets,
+    prompts,
+    channels: channelStore,
+    publicOrigin: PUBLIC_ORIGIN,
+    logger,
+    answers: o.answers ?? { decision },
+  });
+
+  return {
+    onClick,
+    slack,
+    lines,
+    runs,
+    findUser,
+    resolved,
+    bindingReads,
+    vault,
+    agents,
+    channels,
+    /** Open a prompt for the turn `c`, recorded as posted at PROMPT_TS unless `posted` is false. */
+    open(c: PromptContext = MEL_DM, p: { subject?: PromptSubject; subjectText?: string; posted?: boolean } = {}): Prompt {
+      const prompt = real.add(c, p.subject ?? HELD, p.subjectText ?? SUMMARY);
+      if (p.posted !== false) real.posted(prompt.id, PROMPT_TS);
+      return prompt;
+    },
+    /** Mel's click on Allow on `prompt`, as the interactions route reads one. */
+    clickOn(prompt: Prompt, over: Partial<ButtonClick> = {}): ButtonClick {
+      return {
+        slackUserId: MEL,
+        channel: prompt.channel,
+        messageTs: PROMPT_TS,
+        threadTs: THREAD_TS,
+        action: 'allow',
+        promptId: prompt.id,
+        ...over,
+      };
+    },
+    /** The prompt as its asker would find it now, left exactly as it was. */
+    state(prompt: Prompt): 'open' | 'busy' | 'gone' {
+      const claim = real.claim(prompt.id, prompt.askerSlackId);
+      if (claim.ok) {
+        real.release(prompt.id);
+        return 'open';
+      }
+      return claim.reason === 'busy' ? 'busy' : 'gone';
+    },
+    /** Move the registry's clock. */
+    later(ms: number): void {
+      nowMs += ms;
+    },
+    /** The fields of every line logged as `msg`, in order. */
+    logged(msg: string): Array<Record<string, unknown>> {
+      return lines.filter((l) => l.msg === msg).map((l) => l.fields);
+    },
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// ── The asker's own click ───────────────────────────────────────────────────
+
+describe('the click gate: the asker answers', () => {
+  it("Mel's Allow on her DM prompt: the answer runs once, as the prompt's user, agent and conversation; the prompt shows its line in place of the buttons, and is settled", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.runs).toHaveLength(1);
+    const run = w.runs[0]!;
+    expect(run.prompt.id).toBe(prompt.id);
+    expect(run.action).toBe('allow');
+    expect(run.extra.install).toBe(INSTALL);
+    expect(run.extra.botToken).toBe(BOT_TOKEN);
+    expect({
+      sessionId: run.ctx.sessionId,
+      userId: run.ctx.userId,
+      agentId: run.ctx.agentId,
+      conversationId: run.ctx.conversationId,
+    }).toEqual({ sessionId: 'channel-slack', userId: 'usr_mel', agentId: 'agt_mel', conversationId: 'conv_mel_dm' });
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_answered')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', action: 'allow', settled: true },
+    ]);
+  });
+
+  it("proves who Mel is from users.info's email and AX, and reads no channel binding for a DM", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.vault).toEqual([{ installId: INSTALL_ID, name: 'bot-token' }]);
+    expect(w.findUser.map((f) => f.email)).toEqual([MEL_EMAIL]);
+    expect(w.resolved.map((r) => r.input)).toEqual([{ agentId: 'agt_mel', userId: 'usr_mel' }]);
+    expect(w.bindingReads).toEqual([]);
+  });
+
+  it("Mel's Deny on her prompt in #support: handed to the answer as deny, once #support is still connected to the agent", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+
+    expect(w.runs.map((r) => [r.action, r.ctx.userId, r.ctx.agentId, r.ctx.conversationId])).toEqual([
+      ['deny', 'usr_mel', 'agt_support', 'conv_mel_support'],
+    ]);
+    expect(w.bindingReads).toEqual([[INSTALL_ID, SUPPORT]]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.decisionDenied) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it('the redrawn prompt shows its subject exactly as the prompt drew it: from the raw subject, cleaned once', async () => {
+    const hostile = '<!channel> approve @here, &#64;everyone';
+    const w = await world();
+    const prompt = w.open(MEL_DM, { subjectText: hostile });
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    const update = w.slack.calls.find((c) => c.method === 'updateMessage');
+    const asked = promptBlocks({ subject: hostile, promptId: prompt.id, todayLink: TODAY });
+    expect((update?.args['blocks'] as unknown[])[0]).toEqual(asked.blocks[0]);
+  });
+
+  it("the answer's follow-up starts after the prompt is redrawn and settled, and is never awaited", async () => {
+    const seen: Array<{ calls: number; state: string }> = [];
+    let look = (): void => {};
+    const w = await world({
+      answer: () => ({
+        line: COPY.decisionAllowed,
+        settle: true,
+        // Never settles: a click that awaited it would never end.
+        follow: () => {
+          look();
+          return never();
+        },
+      }),
+    });
+    const prompt = w.open(MEL_DM);
+    look = () => {
+      seen.push({ calls: w.slack.calls.length, state: w.state(prompt) });
+    };
+
+    const outcome = await Promise.race([
+      w.onClick(INSTALL, w.clickOn(prompt)).then(() => 'returned'),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ]);
+
+    expect(outcome).toBe('returned');
+    // The usersInfo call and the redraw were both made, and the prompt was settled, before it started.
+    expect(seen).toEqual([{ calls: 2, state: 'gone' }]);
+  });
+
+  it('a follow-up that throws is logged with its code, and the click still ends quietly', async () => {
+    const w = await world({
+      answer: () => ({
+        line: COPY.decisionAllowed,
+        settle: true,
+        follow: () => {
+          throw fault('fake-follow');
+        },
+      }),
+    });
+    const prompt = w.open(MEL_DM);
+
+    await expect(w.onClick(INSTALL, w.clickOn(prompt))).resolves.toBeUndefined();
+
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'follow', code: 'store-unavailable' },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+});
+
+// ── Anyone else's click ─────────────────────────────────────────────────────
+
+describe('the click gate: anyone else is refused (card acceptance)', () => {
+  it("Ada's clicks on Mel's prompt: one private 'only the asker' line, no users.info, no AX lookup, no answer; her second click says nothing", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA, action: 'deny' }));
+
+    expect(w.slack.calls).toEqual([told(SUPPORT, ADA, COPY.promptOnlyAsker)]);
+    expect(w.runs).toEqual([]);
+    expect(w.findUser).toEqual([]);
+    expect(w.resolved).toEqual([]);
+    expect(w.bindingReads).toEqual([]);
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', reason: 'not-asker' },
+      { installId: INSTALL_ID, kind: 'decision', reason: 'not-asker' },
+    ]);
+    // Still Mel's to answer.
+    expect(w.state(prompt)).toBe('open');
+    await w.onClick(INSTALL, w.clickOn(prompt));
+    expect(w.runs).toHaveLength(1);
+  });
+
+  it("a bystander's click never takes the lock: Ada before Mel, Ben while Mel's answer runs; Mel's click answers exactly once", async () => {
+    const gate = deferred();
+    const w = await world({
+      answer: async () => {
+        await gate.promise;
+        return { line: COPY.decisionAllowed, settle: true };
+      },
+    });
+    const prompt = w.open(MEL_SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
+    const mels = w.onClick(INSTALL, w.clickOn(prompt));
+    await vi.waitFor(() => expect(w.runs).toHaveLength(1));
+    // While Mel's answer runs: Ben is told, never "busy"; Ada was told already.
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: BEN }));
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
+    // Their refusals let go of nothing: Mel's own second click is still the busy one.
+    await w.onClick(INSTALL, w.clickOn(prompt));
+    gate.release();
+    await mels;
+
+    expect(w.runs).toHaveLength(1);
+    expect(w.slack.calls.map((c) => [c.method, c.args['user'] ?? null])).toEqual([
+      ['postEphemeral', ADA],
+      ['usersInfo', MEL],
+      ['postEphemeral', BEN],
+      ['updateMessage', null],
+    ]);
+    expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).toEqual([
+      'not-asker',
+      'not-asker',
+      'not-asker',
+      'busy',
+    ]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it('defense in depth: even a registry that hands anyone the lock gets no bystander past the gate, and the lock it took is let go', async () => {
+    // Broken on purpose: every claim is taken as if Mel clicked.
+    const w = await world({ registry: (real) => ({ ...real, claim: (id) => real.claim(id, MEL) }) });
+    const prompt = w.open(MEL_SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
+
+    expect(w.slack.calls).toEqual([told(SUPPORT, ADA, COPY.promptOnlyAsker)]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+  });
+});
+
+// ── Each step, alone ────────────────────────────────────────────────────────
+
+describe('the click gate: each step refuses on its own (each case valid on every other rule)', () => {
+  it('step 1: no bot token: nothing is taken, said or answered', async () => {
+    const w = await world({ botToken: null });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([{ installId: INSTALL_ID, stage: 'bot-token', code: 'missing' }]);
+  });
+
+  it("step 1: a vault read that fails: the same, logged with the failure's code only", async () => {
+    const w = await world({ botToken: fault('fake-vault') });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, stage: 'bot-token', code: 'store-unavailable' },
+    ]);
+  });
+
+  it("step 2: a prompt this process doesn't have (after a restart): the clicker is pointed at Today, privately, in the clicked thread (Review Focus 2)", async () => {
+    const w = await world();
+
+    await w.onClick(INSTALL, {
+      slackUserId: MEL,
+      channel: DM_MEL,
+      messageTs: PROMPT_TS,
+      threadTs: THREAD_TS,
+      action: 'allow',
+      promptId: NEVER_MINTED,
+    });
+
+    expect(w.slack.calls).toEqual([told(DM_MEL, MEL, COPY.promptGone(TODAY))]);
+    expect(w.runs).toEqual([]);
+    expect(w.findUser).toEqual([]);
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'gone' }]);
+  });
+
+  it('step 2: a prompt past its TTL is gone too, and a click on a message Slack named no thread for gets its line unthreaded', async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+    w.later(PROMPT_TTL_MS);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { threadTs: null }));
+
+    expect(w.slack.calls).toEqual([
+      { method: 'postEphemeral', token: BOT_TOKEN, args: { channel: DM_MEL, user: MEL, text: COPY.promptGone(TODAY) } },
+    ]);
+    expect(w.runs).toEqual([]);
+  });
+
+  it("step 3: a click that came in on another install than the prompt's: silence, and the prompt stays open", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(OTHER_INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: OTHER_INSTALL.installId, kind: 'decision', reason: 'mismatch' },
+    ]);
+  });
+
+  it("step 3: a click from another channel than the prompt's: silence, a bystander's too (step 3 runs before step 4)", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { channel: RANDOM }));
+    await w.onClick(INSTALL, w.clickOn(prompt, { channel: RANDOM, slackUserId: ADA }));
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).toEqual(['mismatch', 'mismatch']);
+  });
+
+  it('step 5: Mel is a guest now: silence, nothing runs, and the prompt stays open', async () => {
+    const w = await world({ slackUsers: { [MEL]: member(MEL, MEL_EMAIL, { is_restricted: true }) } });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP]);
+    expect(w.runs).toEqual([]);
+    expect(w.findUser).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', reason: 'not-admitted', code: 'guest' },
+    ]);
+  });
+
+  it('step 5: an install row with no workspace on record admits nobody, without asking Slack: silence', async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick({ ...INSTALL, teamId: null }, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', reason: 'not-admitted', code: 'other-workspace' },
+    ]);
+  });
+
+  it('step 5: users.info answered about someone else: silence', async () => {
+    const w = await world({ slackUsers: { [MEL]: member(ADA, 'ada@canopyworks.com') } });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+  });
+
+  it("step 5: users.info failed only because Slack was briefly unavailable: 'try again', privately, and the prompt stays open", async () => {
+    const w = await world({ slackUsers: { [MEL]: new SlackApiError('users.info', 'ratelimited', 1_000) } });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptFailed)]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+  });
+
+  it("step 6: Mel's verified email maps to no AX account now: 'only the asker', privately; nothing runs; the prompt stays open", async () => {
+    const w = await world({ axUsers: { [MEL_EMAIL]: null } });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptOnlyAsker)]);
+    expect(w.runs).toEqual([]);
+    expect(w.resolved).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'not-mapped' }]);
+  });
+
+  it("step 6: it maps to someone else's account: the same", async () => {
+    const w = await world({ axUsers: { [MEL_EMAIL]: 'usr_someone_else' } });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptOnlyAsker)]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+  });
+
+  it("step 6: the account lookup fails: 'try again', privately; the prompt stays open", async () => {
+    const w = await world({ findUser: 'fails' });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptFailed)]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'find-user', code: 'store-unavailable' },
+    ]);
+  });
+
+  it("step 7: Mel can't use #support's agent anymore (off its team): the prompt closes, and nothing runs (Review Focus 5)", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_SUPPORT);
+    w.agents.setRole(SUPPORT_TEAM, 'usr_mel', null);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.promptClosed) },
+    ]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'no-access' }]);
+  });
+
+  it('step 7: her agent was deleted: the prompt closes, and nothing runs', async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+    w.agents.agents.delete(MEL_AGENT.id);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.promptClosed) },
+    ]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+  });
+
+  it("step 7: a channel prompt's agent that agents no longer calls a team agent: closes (a DM's personal agent is fine)", async () => {
+    const w = await world();
+    // #support connected to Mel's personal agent: what agents:resolve would now say about a demoted team agent.
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+    await w.channels.store.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT,
+      agentId: MEL_AGENT.id,
+      connectedByUserId: 'usr_ada',
+      channelName: 'support',
+    });
+    const prompt = w.open({ ...MEL_SUPPORT, agentId: MEL_AGENT.id });
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'no-access' }]);
+  });
+
+  it("step 7: the agents lookup fails: 'try again', privately; the prompt stays open", async () => {
+    const w = await world({ resolve: 'fails' });
+    const prompt = w.open(MEL_SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(SUPPORT, MEL, COPY.promptFailed)]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'agent-access', code: 'store-unavailable' },
+    ]);
+  });
+
+  it('step 8: #support was disconnected since the turn: the prompt closes, and nothing runs (Review Focus 5)', async () => {
+    const w = await world();
+    const prompt = w.open(MEL_SUPPORT);
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.promptClosed) },
+    ]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', reason: 'disconnected' },
+    ]);
+  });
+
+  it('step 8: #support is connected to another agent now: the same', async () => {
+    const w = await world();
+    const prompt = w.open(MEL_SUPPORT);
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+    await w.channels.store.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT,
+      agentId: OPS_AGENT.id,
+      connectedByUserId: 'usr_ada',
+      channelName: 'support',
+    });
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).toEqual(['disconnected']);
+  });
+
+  it("step 8: the binding read fails: 'try again', privately; the prompt stays open", async () => {
+    const w = await world({ binding: 'fails' });
+    const prompt = w.open(MEL_SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(SUPPORT, MEL, COPY.promptFailed)]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([{ installId: INSTALL_ID, kind: 'decision', stage: 'binding', code: 'unknown' }]);
+  });
+
+  it('step 9: a subject nothing here can answer: the prompt closes, and nothing runs', async () => {
+    const w = await world();
+    const prompt = w.open(MEL_SUPPORT, { subject: { kind: 'host', host: 'api.example.com', sessionId: 'sess_1' } });
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.promptClosed) },
+    ]);
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'host', reason: 'unsupported' }]);
+  });
+
+  it("step 9: an answer that fails: 'try again', privately, the prompt stays open, and Mel's next click answers it", async () => {
+    const w = await world({
+      answer: (n) => {
+        if (n === 1) throw fault('fake-decisions');
+        return { line: COPY.decisionAllowed, settle: true };
+      },
+    });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptFailed)]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'store-unavailable' },
+    ]);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.runs).toHaveLength(2);
+    expect(w.slack.calls.filter((c) => c.method === 'updateMessage')).toHaveLength(1);
+    expect(w.state(prompt)).toBe('gone');
+  });
+});
+
+// ── One answer per prompt ───────────────────────────────────────────────────
+
+describe('the click gate: one answer per prompt', () => {
+  it('a double click: the answer runs once, the prompt is redrawn once, and the second click says nothing (Review Focus 1)', async () => {
+    const gate = deferred();
+    const w = await world({
+      answer: async () => {
+        await gate.promise;
+        return { line: COPY.decisionAllowed, settle: true };
+      },
+    });
+    const prompt = w.open(MEL_DM);
+
+    const first = w.onClick(INSTALL, w.clickOn(prompt));
+    const second = w.onClick(INSTALL, w.clickOn(prompt));
+    await vi.waitFor(() => expect(w.runs).toHaveLength(1));
+    gate.release();
+    await Promise.all([first, second]);
+
+    expect(w.runs).toHaveLength(1);
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['usersInfo', 'updateMessage']);
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+  });
+
+  it('an answer that leaves the prompt open: no redraw (its buttons stay), its line privately, and the prompt can be answered again', async () => {
+    const w = await world({ answer: () => ({ line: COPY.promptFailed, settle: false }) });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP, told(DM_MEL, MEL, COPY.promptFailed)]);
+    expect(w.state(prompt)).toBe('open');
+    expect(w.logged('slack_prompt_answered')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', action: 'allow', settled: false },
+    ]);
+  });
+
+  it("an answer that doesn't say false settles the prompt: one answer per prompt fails closed", async () => {
+    const w = await world({ answer: () => ({ line: COPY.decisionAllowed }) as Answer });
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.state(prompt)).toBe('gone');
+  });
+});
+
+// ── Where the prompt is redrawn ─────────────────────────────────────────────
+
+describe('the click gate: which message is redrawn', () => {
+  it("a click that beat the prompt's own post (no ts recorded yet): the clicked message is redrawn", async () => {
+    const clicked = '1763121661.000300';
+    const w = await world();
+    const prompt = w.open(MEL_DM, { posted: false });
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: clicked }));
+
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(DM_MEL, COPY.decisionAllowed, clicked) },
+    ]);
+  });
+
+  it("once the prompt's ts is recorded, that message is redrawn, whatever message the click names", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: '1763121699.000900' }));
+
+    expect(w.slack.calls[1]).toEqual({
+      method: 'updateMessage',
+      token: BOT_TOKEN,
+      args: redrawn(DM_MEL, COPY.decisionAllowed, PROMPT_TS),
+    });
+  });
+
+  it("no ts it can use (none recorded, and the click's isn't a Slack ts): nothing is redrawn, it's logged, and the answer stands", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM, { posted: false });
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { messageTs: '<!channel>' }));
+
+    expect(w.runs).toHaveLength(1);
+    expect(w.slack.calls).toEqual([MEL_LOOKED_UP]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'update', code: 'no-message' },
+    ]);
+  });
+
+  it("a redraw Slack refuses is logged and isn't fatal: the prompt is still settled", async () => {
+    const w = await world();
+    const prompt = w.open(MEL_DM);
+    w.slack.api.updateMessage = async () => {
+      throw new SlackApiError('chat.update', 'message_not_found');
+    };
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'decision', stage: 'update', code: 'message_not_found' },
+    ]);
+    expect(w.logged('slack_prompt_answered')).toHaveLength(1);
+  });
+});
+
+// ── Deadlines ───────────────────────────────────────────────────────────────
+
+describe('the click gate: every step has a deadline', () => {
+  /**
+   * One step that never answers, and what the click does once the deadline
+   * passes: Mel is told to try again (a step inside the claim) with the
+   * prompt open again, or the click just ends (a step outside it).
+   */
+  const HUNG: Array<{
+    step: string;
+    options: WorldOptions;
+    context: PromptContext;
+    /** Whether the click is on a prompt this process has. */
+    known: boolean;
+    then: { state: 'open' | 'gone'; failed: Record<string, unknown> | null; told: string | null; runs: number };
+  }> = [
+    {
+      step: 'the bot token read',
+      options: { botToken: 'hang' },
+      context: MEL_DM,
+      known: true,
+      then: {
+        state: 'open',
+        failed: { installId: INSTALL_ID, stage: 'bot-token', code: 'timeout' },
+        told: null,
+        runs: 0,
+      },
+    },
+    {
+      step: 'users.info',
+      options: { slackHang: 'usersInfo' },
+      context: MEL_DM,
+      known: true,
+      then: { state: 'open', failed: null, told: COPY.promptFailed, runs: 0 },
+    },
+    {
+      step: 'the account lookup',
+      options: { findUser: 'hang' },
+      context: MEL_DM,
+      known: true,
+      then: {
+        state: 'open',
+        failed: { installId: INSTALL_ID, kind: 'decision', stage: 'find-user', code: 'timeout' },
+        told: COPY.promptFailed,
+        runs: 0,
+      },
+    },
+    {
+      step: 'the agents lookup',
+      options: { resolve: 'hang' },
+      context: MEL_DM,
+      known: true,
+      then: {
+        state: 'open',
+        failed: { installId: INSTALL_ID, kind: 'decision', stage: 'agent-access', code: 'timeout' },
+        told: COPY.promptFailed,
+        runs: 0,
+      },
+    },
+    {
+      step: 'the binding read',
+      options: { binding: 'hang' },
+      context: MEL_SUPPORT,
+      known: true,
+      then: {
+        state: 'open',
+        failed: { installId: INSTALL_ID, kind: 'decision', stage: 'binding', code: 'timeout' },
+        told: COPY.promptFailed,
+        runs: 0,
+      },
+    },
+    {
+      step: 'the answer',
+      options: { answer: () => never() },
+      context: MEL_DM,
+      known: true,
+      then: {
+        state: 'open',
+        failed: { installId: INSTALL_ID, kind: 'decision', stage: 'answer', code: 'timeout' },
+        told: COPY.promptFailed,
+        runs: 1,
+      },
+    },
+    {
+      step: 'the redraw',
+      options: { slackHang: 'updateMessage' },
+      context: MEL_DM,
+      known: true,
+      then: {
+        state: 'gone',
+        failed: { installId: INSTALL_ID, kind: 'decision', stage: 'update', code: 'timeout' },
+        told: null,
+        runs: 1,
+      },
+    },
+    {
+      step: 'a private line',
+      options: { slackHang: 'postEphemeral' },
+      context: MEL_DM,
+      known: false,
+      then: {
+        state: 'open',
+        failed: { installId: INSTALL_ID, stage: 'ephemeral', code: 'timeout' },
+        told: COPY.promptGone(TODAY),
+        runs: 0,
+      },
+    },
+  ];
+
+  for (const c of HUNG) {
+    it(`${c.step} that never answers ends the click at PROMPT_STEP_TIMEOUT_MS, and not a moment before`, async () => {
+      vi.useFakeTimers();
+      const w = await world(c.options);
+      const prompt = w.open(c.context);
+      let ended = false;
+      const click = w.onClick(INSTALL, w.clickOn(prompt, c.known ? {} : { promptId: NEVER_MINTED })).then(() => {
+        ended = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS - 1);
+      expect(ended).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ended).toBe(true);
+      await click;
+
+      expect(w.state(prompt)).toBe(c.then.state);
+      expect(w.logged('slack_prompt_failed')).toEqual(c.then.failed === null ? [] : [c.then.failed]);
+      const ephemerals = w.slack.calls.filter((call) => call.method === 'postEphemeral').map((call) => call.args['text']);
+      expect(ephemerals).toEqual(c.then.told === null ? [] : [c.then.told]);
+      expect(w.runs).toHaveLength(c.then.runs);
+    });
+  }
+
+  it("while a step hangs, the prompt stays taken: Mel's second click is the silent busy one", async () => {
+    vi.useFakeTimers();
+    const w = await world({ answer: () => never() });
+    const prompt = w.open(MEL_DM);
+    const first = w.onClick(INSTALL, w.clickOn(prompt));
+    await vi.advanceTimersByTimeAsync(PROMPT_STEP_TIMEOUT_MS - 1);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, reason: 'busy' }]);
+    await vi.advanceTimersByTimeAsync(1);
+    await first;
+    expect(w.state(prompt)).toBe('open');
+  });
+
+  it('leaves no timer behind once a click is answered', async () => {
+    vi.useFakeTimers();
+    const w = await world();
+    const answered = w.open(MEL_SUPPORT);
+    const refused = w.open(MEL_DM);
+
+    await w.onClick(INSTALL, w.clickOn(answered));
+    await w.onClick(INSTALL, w.clickOn(refused, { slackUserId: ADA, channel: DM_MEL }));
+    await w.onClick(INSTALL, w.clickOn(refused, { promptId: NEVER_MINTED }));
+
+    expect(w.runs).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+// ── What a prompt is redrawn with, and what is logged ───────────────────────
+
+describe('the click gate: lines and logs', () => {
+  /** Every COPY value, with the lines that take Today's link given it. */
+  const COPY_LINES = new Set<string>([
+    ...Object.values(COPY).filter((v): v is string => typeof v === 'string'),
+    ...[
+      COPY.heldForSender,
+      COPY.promptToday,
+      COPY.promptGone,
+      COPY.decisionChanged,
+      COPY.decisionFailed,
+      COPY.decisionNotRun,
+    ].map((line) => line(TODAY)),
+  ]);
+
+  it("every line a prompt is redrawn with is a COPY line: the gate's own, or the answer's exactly as given", async () => {
+    const redraws: Array<{ text: unknown; context: unknown }> = [];
+    const lines = [COPY.decisionAllowed, COPY.decisionChanged(TODAY), COPY.decisionDenied];
+    for (const line of lines) {
+      const w = await world({ answer: () => ({ line, settle: true }) });
+      await w.onClick(INSTALL, w.clickOn(w.open(MEL_DM)));
+      const update = w.slack.calls.find((c) => c.method === 'updateMessage')!;
+      expect(update.args['text']).toBe(line);
+      redraws.push({ text: update.args['text'], context: update.args['blocks'] });
+    }
+    // The gate's own closings: no access, disconnected, nothing to answer with.
+    const closings = await world();
+    const offTeam = closings.open(MEL_SUPPORT);
+    closings.agents.setRole(SUPPORT_TEAM, 'usr_mel', null);
+    await closings.onClick(INSTALL, closings.clickOn(offTeam));
+    closings.agents.setRole(SUPPORT_TEAM, 'usr_mel', 'member');
+    await closings.onClick(INSTALL, closings.clickOn(closings.open(MEL_DM, { subject: { kind: 'skill', skillId: 'skl_1' } })));
+    await closings.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+    await closings.onClick(INSTALL, closings.clickOn(closings.open(MEL_SUPPORT)));
+    for (const update of closings.slack.calls.filter((c) => c.method === 'updateMessage')) {
+      expect(update.args['text']).toBe(COPY.promptClosed);
+      redraws.push({ text: update.args['text'], context: update.args['blocks'] });
+    }
+
+    expect(redraws).toHaveLength(6);
+    for (const r of redraws) {
+      expect(COPY_LINES.has(r.text as string), String(r.text)).toBe(true);
+      const context = (r.context as Array<{ type: string; elements?: Array<{ text: string }> }>).find(
+        (b) => b.type === 'context',
+      );
+      expect(context?.elements?.map((e) => e.text)).toEqual([r.text]);
+    }
+  });
+
+  it('logs name the install, the kind, a reason, stage, action or code, and a boolean: never an id, an email, a token or the subject', async () => {
+    const lines: Line[] = [];
+    // A bystander, a gone prompt, an answer that fails and then lands, and a close.
+    const a = await world({
+      answer: (n) => {
+        if (n === 1) throw fault('fake-decisions');
+        return { line: COPY.decisionAllowed, settle: true };
+      },
+    });
+    const prompt = a.open(MEL_SUPPORT);
+    await a.onClick(INSTALL, a.clickOn(prompt, { slackUserId: ADA }));
+    await a.onClick(INSTALL, a.clickOn(prompt));
+    await a.onClick(INSTALL, a.clickOn(prompt));
+    await a.onClick(INSTALL, a.clickOn(prompt));
+    await a.onClick(INSTALL, a.clickOn(a.open(MEL_DM, { subject: { kind: 'skill', skillId: 'skl_secret' } })));
+    lines.push(...a.lines);
+    // Slack briefly away, an email with no account, and a vault that fails.
+    const b = await world({ slackUsers: { [MEL]: new SlackApiError('users.info', 'ratelimited', 1_000) } });
+    await b.onClick(INSTALL, b.clickOn(b.open(MEL_DM)));
+    lines.push(...b.lines);
+    const c = await world({ axUsers: { [MEL_EMAIL]: null } });
+    await c.onClick(INSTALL, c.clickOn(c.open(MEL_DM)));
+    lines.push(...c.lines);
+    const d = await world({ botToken: fault('fake-vault') });
+    await d.onClick(INSTALL, d.clickOn(d.open(MEL_DM)));
+    lines.push(...d.lines);
+
+    expect(new Set(lines.map((l) => l.msg))).toEqual(
+      new Set([
+        'slack_prompt_declined',
+        'slack_prompt_failed',
+        'slack_prompt_answered',
+        // findSenderUser's own line on a miss.
+        'slack_sender_not_mapped',
+      ]),
+    );
+    const allowed = new Set(['installId', 'kind', 'reason', 'stage', 'action', 'code', 'settled']);
+    for (const line of lines) {
+      for (const [key, value] of Object.entries(line.fields)) {
+        expect(allowed.has(key), `${line.msg}.${key}`).toBe(true);
+        expect(['string', 'boolean'], `${line.msg}.${key}`).toContain(typeof value);
+      }
+    }
+    const all = JSON.stringify(lines);
+    for (const leak of [
+      MEL,
+      ADA,
+      DM_MEL,
+      SUPPORT,
+      THREAD_TS,
+      PROMPT_TS,
+      BOT_TOKEN,
+      MEL_EMAIL,
+      'usr_mel',
+      'agt_mel',
+      'agt_support',
+      'conv_mel',
+      'dec_0001',
+      'skl_secret',
+      SUMMARY,
+      prompt.id,
+    ]) {
+      expect(all, leak).not.toContain(leak);
+    }
+  });
+});
