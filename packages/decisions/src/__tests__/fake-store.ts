@@ -12,9 +12,10 @@
  * which open row a new identical hold is folded into (TASK-286). Those are
  * `firstTriedTwin` and `reusableOpenRow`, imported from the real store, so the
  * two cannot disagree about them; only the selection (same key, answered at or
- * after this row was raised) is written out here. The two races the rule
- * depends on, the advisory lock and `FOR UPDATE`, stay Postgres-only in
- * `store.test.ts`: one JS thread cannot race itself.
+ * after this row was raised) is written out here. Likewise who counts as an
+ * outsider when a yes is taken (`takesOnlyUnattended`, TASK-1095). The two
+ * races the rule depends on, the advisory lock and `FOR UPDATE`, stay
+ * Postgres-only in `store.test.ts`: one JS thread cannot race itself.
  */
 import { RECEIPT_STATUSES } from '../receipts.js';
 import {
@@ -22,6 +23,7 @@ import {
   firstTriedTwin,
   IdenticalCallAlreadyTriedError,
   reusableOpenRow,
+  takesOnlyUnattended,
   type DecisionStore,
 } from '../store.js';
 import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js';
@@ -490,12 +492,15 @@ export function createFakeStore(): FakeStore {
       return reclaimed;
     },
 
-    async takeApproval(agentId, callFingerprint, nowIso) {
+    async takeApproval(agentId, callFingerprint, taker, nowIso) {
       trip('takeApproval');
       for (const [id, row] of rows) {
         if (
           row.agentId === agentId &&
           row.callFingerprint === callFingerprint &&
+          // TASK-1095: the real store's who-rule (`ApprovalTaker`).
+          row.ownerUserId === taker.userId &&
+          (!takesOnlyUnattended(taker) || row.attendance === 'unattended') &&
           AUTHORISING_STATUSES.includes(row.status) &&
           row.consumedAt === null &&
           row.replayDueAt === null &&
@@ -510,12 +515,13 @@ export function createFakeStore(): FakeStore {
       return null;
     },
 
-    async findRoutineApproval(agentId, userId, fingerprint, nowIso) {
+    async findRoutineApproval(agentId, taker, fingerprint, nowIso) {
       return (
         [...rows.values()].find(
           (r) =>
             r.agentId === agentId &&
-            r.ownerUserId === userId &&
+            r.ownerUserId === taker.userId &&
+            (!takesOnlyUnattended(taker) || r.attendance === 'unattended') &&
             r.callFingerprint === fingerprint &&
             AUTHORISING_STATUSES.includes(r.status) &&
             r.expiresAt > nowIso &&

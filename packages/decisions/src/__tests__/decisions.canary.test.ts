@@ -2065,6 +2065,146 @@ describe('decisions canary — attendance and delivery', () => {
 });
 
 /**
+ * TASK-1095 review. A standing yes is one person's answer about one call. Now
+ * that a Slack thread is attended, a yes stands from the click until the warm
+ * agent re-issues its call (the undo window at least), and a late connector yes
+ * until the next identical call. Who may spend it, over the real gate, store
+ * and policy: the asker's own turn. Not a team-mate's on the same agent, and
+ * not an outsider's, which runs AS the asker when the asker connected the
+ * channel.
+ */
+describe('decisions canary — whose yes it is (TASK-1095)', () => {
+  /** `slackChannels()` plus a thread of u2's: a second member of the same team agent. */
+  function teamChannels(): Record<string, Channel> {
+    return {
+      ...slackChannels(),
+      'conv-slack-u2': { origin: 'slack', activeSessionId: 'sess-slack-u2', userId: 'u2' },
+    };
+  }
+
+  function teamMateCtx(h: TestHarness): AgentContext {
+    return h.ctx({
+      agentId: 'a1',
+      userId: 'u2',
+      conversationId: 'conv-slack-u2',
+      sessionId: 's-slack-u2',
+      source: 'user',
+    });
+  }
+
+  it("a team-mate's identical call on the same team agent is their own question, not a ride on the asker's yes", async () => {
+    const h = await boot({}, undefined, teamChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    expect((await approve(h, mine, id)).path).toBe('agent-executes');
+
+    const teamMate = teamMateCtx(h);
+    const theirId = await holdAndId(h, teamMate, CALL);
+    expect(theirId).not.toBe(id);
+    const theirQueue = await h.bus.call<unknown, DecisionsListOutput>('decisions:list', teamMate, {
+      userId: 'u2',
+      status: 'pending',
+    });
+    expect(theirQueue.decisions.map((d) => d.id)).toEqual([theirId]);
+
+    // The asker's yes is untouched, and theirs to spend, once.
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("the team-mate's own yes waits while the asker's stands, and goes through once it is spent", async () => {
+    // The index keeps one standing yes per (agent, call shape), whoever owns
+    // it. Refused in the open (CLAIM_REFUSED_DETAIL) and left answerable:
+    // an approval that waits, never a call made on somebody else's yes.
+    const h = await boot({}, undefined, teamChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    await approve(h, mine, id);
+    const teamMate = teamMateCtx(h);
+    const theirId = await holdAndId(h, teamMate, CALL);
+    const approveTheirs = (): Promise<DecisionsApproveOutput> =>
+      h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', teamMate, {
+        decisionId: theirId,
+        userId: 'u2',
+      });
+
+    const waiting = await approveTheirs();
+    expect(waiting.error).toBe(CLAIM_REFUSED_DETAIL);
+    expect(waiting.decision!.status).toBe('pending');
+
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    const through = await approveTheirs();
+    expect(through.error).toBeNull();
+    expect(through.path).toBe('agent-executes');
+    expect((await h.bus.fire('tool:pre-call', teamMate, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', teamMate, CALL))).toBe(true);
+  });
+
+  it("an outsider's identical call cannot spend a member's yes, though its turn runs as that member", async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    await approve(h, mine, id);
+
+    // u1 connected the channel, so the outsider's turn runs as u1, in a
+    // conversation of its own.
+    const outsiderId = await holdAndId(h, slackCtx(h, 'external'), CALL);
+    expect(outsiderId).not.toBe(id);
+    // A question in u1's Today, on the unattended path like any outsider's.
+    expect((await readDecision(h, mine, outsiderId)).attendance).toBe('unattended');
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("a member's yes handed to a session that runs an outsider's turns is not spent there", async () => {
+    // channel-slack gives an outsider's turns a conversation of their own
+    // (router.ts, the `:external` key), so a member's thread should never have
+    // such a session behind it. Pinned for the day one does: decisions wakes
+    // the conversation's active session, and a runner there re-issues the
+    // call under its session's `source: 'external'`.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, slackChannels());
+    const mine = slackCtx(h, 'user');
+    const id = await holdAndId(h, mine, CALL);
+    const out = await h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', mine, {
+      decisionId: id,
+      userId: 'u1',
+      continuationReqId: 'req-slack-1',
+      requestShownInFull: false,
+    });
+    expect(out.path).toBe('agent-executes');
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
+    expect(h.delivered[0]).toMatchObject({
+      sessionId: 'sess-slack',
+      entry: { decisionId: id, outcome: 'approved', reqId: 'req-slack-1' },
+    });
+
+    const woken = slackCtx(h, 'external', 'conv-slack', 'sess-slack');
+    expect(isHold(await h.bus.fire('tool:pre-call', woken, CALL))).toBe(true);
+    expect((await readDecision(h, mine, id)).consumedAt).toBeNull();
+    // The member's own next turn still has it, once.
+    expect((await h.bus.fire('tool:pre-call', mine, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', mine, CALL))).toBe(true);
+  });
+
+  it("an outsider's own question, answered from Today, is still spent by the outsider's turn", async () => {
+    // The counter-control: the rule keeps an outsider off a member's yes, not
+    // off its own. A tool the host cannot make (sandbox-only), so the yes
+    // parks for the agent's next identical call.
+    const h = await boot({}, undefined, slackChannels());
+    const outsider = slackCtx(h, 'external');
+    const id = await holdAndId(h, outsider, SANDBOX_CALL);
+    expect((await approve(h, userCtx(h), id)).decision!.status).toBe('approved-pending-agent');
+
+    expect((await h.bus.fire('tool:pre-call', outsider, SANDBOX_CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', outsider, SANDBOX_CALL))).toBe(true);
+  });
+});
+
+/**
  * A decision drafted at 7am and approved at 1pm may be approving a world that
  * no longer exists (design §3.4, AW-7).
  *

@@ -53,6 +53,7 @@ export type { DeliveryResult, ResolutionOutcome } from './delivery.js';
 export type { PolicyAnswer, PreCallDeps, PreCallSubscriber } from './pre-call.js';
 export { createDecisionsStore } from './store.js';
 export type {
+  ApprovalTaker,
   DecisionCountFilter,
   DecisionListFilter,
   DecisionReceiptFilter,

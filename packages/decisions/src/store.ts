@@ -298,6 +298,40 @@ export interface DecisionReceiptFilter {
   before?: string | undefined;
 }
 
+/**
+ * WHO IS SPENDING a standing yes: the turn that made the call (TASK-1095).
+ *
+ * A yes is one person's answer about one call. The partial unique index keys
+ * it on (agent, call shape) alone, and the take used to as well, so a
+ * team-mate's byte-identical call on a shared agent, or an outsider's turn run
+ * as whoever connected a Slack channel, could spend somebody else's yes: the
+ * call then ran in THAT turn, as that turn's user (TASK-1094 residual 2,
+ * widened when Slack threads became attended). So a take names its spender:
+ *
+ *   * `userId`: the turn's user. Only their own yes (the row's owner).
+ *   * `outsider`: `isOutsiderTurn(ctx)`, someone with no access to the agent
+ *     may be present. Such a turn runs AS a member (the person who connected
+ *     the channel), so the owner match alone cannot keep it off that member's
+ *     own yes. It spends only an `unattended` one: a yes its user gave from
+ *     Today to a question an unattended turn asked. Never a yes a person gave
+ *     in their own chat. Anything but an explicit `false` reads as an outsider
+ *     (`takesOnlyUnattended`), failing closed as `isOutsiderTurn` does.
+ *
+ * A yes the spender may not take is left standing for its owner.
+ */
+export interface ApprovalTaker {
+  userId: string;
+  outsider: boolean;
+}
+
+/**
+ * The outsider half of `ApprovalTaker`'s rule, shared with the in-memory fake
+ * so the two stores cannot disagree about it.
+ */
+export function takesOnlyUnattended(taker: ApprovalTaker): boolean {
+  return taker.outsider !== false;
+}
+
 export interface DecisionStore {
   create(decision: Decision): Promise<Decision>;
 
@@ -321,23 +355,23 @@ export interface DecisionStore {
    * fails to raise, or an undo that 500s, is worse than the duplicate either
    * would be preventing.
    *
-   * THE KEY IS (agent_id, call_fingerprint) — the same key the standing
-   * authorisation is keyed on, because that is the collision being removed:
-   * `decisions_v1_authorised_unconsumed` has no conversation in it, so two
-   * open rows in two of one person's threads are two cards for ONE
+   * THE KEY IS (agent_id, call_fingerprint) — the key of the index the
+   * standing authorisation lives under, because that is the collision being
+   * removed: `decisions_v1_authorised_unconsumed` has no conversation in it, so
+   * two open rows in two of one person's threads are two cards for ONE
    * authorisation, and approving the second is exactly the refusal this
    * exists to make unreachable.
    *
-   * PLUS THE OWNER, which is the one place it is deliberately NARROWER than
-   * that index. Reads are owner-scoped; handing user B the id of user A's row
-   * on a shared team agent would give B a question they cannot see, answer or
-   * dismiss — a question nobody can answer is worse than two that collide. The
-   * collision that leaves has two outcomes: refused where nothing has gone out
-   * yet (the index), and a SECOND SEND where the host has already replayed and
-   * freed the index slot. The `restore` race used to share both; TASK-286's
-   * approve-time check (`claimForApproval`) now refuses its second send, but
-   * that check is owner-scoped like this collapse, so the two-owner second send
-   * remains. Pinned by a test rather than left to be rediscovered.
+   * PLUS THE OWNER, deliberately NARROWER than that index (as taking a yes is,
+   * `takeApproval`, TASK-1095). Reads are owner-scoped; handing user B the id
+   * of user A's row on a shared team agent would give B a question they cannot
+   * see, answer or dismiss — a question nobody can answer is worse than two that
+   * collide. The collision that leaves has two outcomes: refused where nothing
+   * has gone out yet (the index), and a SECOND SEND where the host has already
+   * replayed and freed the index slot. The `restore` race used to share both;
+   * TASK-286's approve-time check (`claimForApproval`) now refuses its second
+   * send, but that check is owner-scoped like this collapse, so the two-owner
+   * second send remains. Pinned by a test rather than left to be rediscovered.
    *
    * ONE OPEN ROW IS NEVER HANDED BACK (TASK-286): a card whose identical twin
    * already ran or went out with no answer. Approving it is refused for good,
@@ -681,30 +715,34 @@ export interface DecisionStore {
 
   /**
    * Consume the standing authorisation for this (agent, call shape), if there
-   * is one. A SINGLE conditional UPDATE...RETURNING, so two concurrent callers
-   * — the warm agent retrying its call and (from AW-5) a host replay — cannot
-   * both win.
+   * is one AND it is `taker`'s to spend (TASK-1095, `ApprovalTaker`): their
+   * own, and for an outsider's turn an `unattended` one only. A SINGLE
+   * conditional UPDATE...RETURNING, so two concurrent callers — the warm agent
+   * retrying its call and (from AW-5) a host replay — cannot both win.
+   *
+   * A yes `taker` may not spend stays exactly as it was, standing for its
+   * owner. It also keeps the partial unique index's slot, which has no owner in
+   * it: until its owner's turn spends it, a team-mate's approval of their own
+   * identical call is refused (`DuplicateAuthorisationError`, said as
+   * `CLAIM_REFUSED_DETAIL`). The safe direction: an approval that waits, never
+   * a call made on somebody else's yes.
    */
-  takeApproval(agentId: string, callFingerprint: string, nowIso: string): Promise<Decision | null>;
+  takeApproval(
+    agentId: string,
+    callFingerprint: string,
+    taker: ApprovalTaker,
+    nowIso: string,
+  ): Promise<Decision | null>;
 
   /**
-   * DELETE EVERY DECISION FOR AN AGENT, whatever its status and whoever owns it
-   * (TASK-718). Backs the `agents:deleted` subscriber: `agent_id` is an opaque
-   * key with no FK to the agents table, so without this the rows outlive the
-   * agent forever.
-   *
-   * The one method here that is deliberately NOT owner-scoped. A team agent
-   * raises holds for several people, and a delete scoped to one owner would
-   * strand the rest. Terminal rows go too: with the agent gone there is nobody
-   * left for a receipt to be filed under, and a decision's `call_json` is the
-   * model's own words, held verbatim.
-   *
-   * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
-   * caller meant, so it is refused rather than run.
+   * The newest standing yes a routine write may go ahead on, if `taker` may
+   * rely on it: the same who-rule as `takeApproval` (TASK-1095). A read. The
+   * routine executor consumes the row (`claimRoutineAuthority`), and reaches
+   * it only after the gate let the call through on this answer.
    */
   findRoutineApproval(
     agentId: string,
-    userId: string,
+    taker: ApprovalTaker,
     fingerprint: string,
     nowIso: string,
   ): Promise<Decision | null>;
@@ -737,6 +775,22 @@ export interface DecisionStore {
     granted: boolean,
   ): Promise<void>;
   recoverRoutineReplays(nowIso: string, claimedBeforeIso: string): Promise<void>;
+
+  /**
+   * DELETE EVERY DECISION FOR AN AGENT, whatever its status and whoever owns it
+   * (TASK-718). Backs the `agents:deleted` subscriber: `agent_id` is an opaque
+   * key with no FK to the agents table, so without this the rows outlive the
+   * agent forever.
+   *
+   * The one method here that is deliberately NOT owner-scoped. A team agent
+   * raises holds for several people, and a delete scoped to one owner would
+   * strand the rest. Terminal rows go too: with the agent gone there is nobody
+   * left for a receipt to be filed under, and a decision's `call_json` is the
+   * model's own words, held verbatim.
+   *
+   * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
+   * caller meant, so it is refused rather than run.
+   */
   deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
 }
 
@@ -1395,8 +1449,8 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
-    async takeApproval(agentId, callFingerprint, nowIso) {
-      const row = await db
+    async takeApproval(agentId, callFingerprint, taker, nowIso) {
+      let take = db
         .updateTable(table)
         // TASK-574: an agent that took the approval up on its own (a message
         // woke it inside the undo window) needs no hand-over any more — and
@@ -1405,6 +1459,10 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .set({ consumed_at: new Date(nowIso), delivery_due_at: null })
         .where('agent_id', '=', agentId)
         .where('call_fingerprint', '=', callFingerprint)
+        // TASK-1095: the spender's OWN yes. On a team agent a member's
+        // byte-identical call is their own question, never a ride on a
+        // team-mate's answer (`ApprovalTaker`).
+        .where('owner_user_id', '=', taker.userId)
         // Both authorising statuses. `approved-pending-agent` exists precisely
         // so the agent can take the call up on its next run — refusing it here
         // would make the status a dead end and the receipt a lie.
@@ -1422,23 +1480,26 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // And a replay that ALREADY ran leaves nothing to authorise. Without
         // this, an agent making the identical call on its next run would sail
         // through the gate on a yes the host already spent.
-        .where('replayed_at', 'is', null)
-        .returningAll()
-        .executeTakeFirst();
+        .where('replayed_at', 'is', null);
+      // TASK-1095: and an outsider's turn, which runs AS a member, never spends
+      // a yes that member gave in their own chat (`ApprovalTaker`).
+      if (takesOnlyUnattended(taker)) take = take.where('attendance', '=', 'unattended');
+      const row = await take.returningAll().executeTakeFirst();
       return row === undefined ? null : toDecision(row);
     },
 
-    async findRoutineApproval(agentId, userId, fingerprint, nowIso) {
-      const row = await db
+    async findRoutineApproval(agentId, taker, fingerprint, nowIso) {
+      let find = db
         .selectFrom(table)
         .selectAll()
         .where('agent_id', '=', agentId)
-        .where('owner_user_id', '=', userId)
+        .where('owner_user_id', '=', taker.userId)
         .where('call_fingerprint', '=', fingerprint)
         .where('status', 'in', AUTHORISING_STATUSES as string[])
-        .where('expires_at', '>', new Date(nowIso))
-        .orderBy('created_at', 'desc')
-        .executeTakeFirst();
+        .where('expires_at', '>', new Date(nowIso));
+      // TASK-1095: the same who-rule as `takeApproval`.
+      if (takesOnlyUnattended(taker)) find = find.where('attendance', '=', 'unattended');
+      const row = await find.orderBy('created_at', 'desc').executeTakeFirst();
       return row ? toDecision(row) : null;
     },
     async hasRoutineAuthority(input) {

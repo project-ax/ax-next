@@ -460,9 +460,10 @@ export const CONNECTOR_POLICY_UNREADABLE_DETAIL =
  * says why now.
  *
  * Deliberately vague about WHICH row is holding the slot. Naming it would mean
- * reading a row this caller was never entitled to see — the standing
- * authorisation is keyed on `(agent, fingerprint)`, not on the owner, so on a
- * team agent it can belong to somebody else.
+ * reading a row this caller was never entitled to see — the slot is keyed on
+ * `(agent, fingerprint)`, not on the owner, so on a team agent it can belong to
+ * somebody else. (And only that person's own turn can spend their yes,
+ * TASK-1095, so a team-mate's approval waits until they have.)
  */
 export const CLAIM_REFUSED_DETAIL =
   'An identical request from this agent is already approved and has not been ' +

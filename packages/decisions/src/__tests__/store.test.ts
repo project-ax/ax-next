@@ -12,6 +12,7 @@ import {
   DuplicateAuthorisationError,
   IdenticalCallAlreadyTriedError,
   openHoldLockKey,
+  type ApprovalTaker,
   type DecisionStore,
 } from '../store.js';
 import { receiptFor } from '../receipts.js';
@@ -74,6 +75,8 @@ const T0 = '2026-08-20T09:00:00.000Z';
 const T_SOON = '2026-08-20T09:00:05.000Z';
 const T_LATE = '2026-08-20T13:00:00.000Z';
 const EXPIRES = '2026-08-22T09:00:00.000Z';
+/** The rows' owner taking their own yes, in their own turn (TASK-1095 `ApprovalTaker`). */
+const OWNER = { userId: 'u1', outsider: false } as const;
 
 function base(over: Partial<Decision> = {}): Decision {
   return {
@@ -382,7 +385,7 @@ describe('decisions store — the standing authorisation', () => {
     const s = await freshStore();
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
-    expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
+    expect((await s.takeApproval('a1', 'fp-1', OWNER, T_SOON))!.id).toBe('dec_1');
 
     // Raised AFTER the first was answered: a later ask. A hold raised before that answer is its co-open twin (TASK-286), refused below.
     await s.create(base({ id: 'dec_2', createdAt: T_LATE }));
@@ -394,23 +397,23 @@ describe('decisions store — the standing authorisation', () => {
     const s = await freshStore();
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
-    expect(await s.takeApproval('a2', 'fp-1', T_SOON)).toBeNull();
+    expect(await s.takeApproval('a2', 'fp-1', OWNER, T_SOON)).toBeNull();
   });
 
   it('takeApproval is one-shot', async () => {
     const s = await freshStore();
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
-    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).not.toBeNull();
-    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_SOON)).not.toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_SOON)).toBeNull();
   });
 
   it('never hands an authorisation to a decision that was not approved', async () => {
     const s = await freshStore();
     await s.create(base());
-    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_SOON)).toBeNull();
     await s.markDismissed('dec_1', T_SOON);
-    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_SOON)).toBeNull();
   });
 
   it('exactly one of two concurrent takeApproval calls wins', async () => {
@@ -421,8 +424,8 @@ describe('decisions store — the standing authorisation', () => {
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
 
     const [a, b] = await Promise.all([
-      s.takeApproval('a1', 'fp-1', T_SOON),
-      s.takeApproval('a1', 'fp-1', T_SOON),
+      s.takeApproval('a1', 'fp-1', OWNER, T_SOON),
+      s.takeApproval('a1', 'fp-1', OWNER, T_SOON),
     ]);
     expect([a, b].filter((r) => r !== null)).toHaveLength(1);
   });
@@ -433,7 +436,7 @@ describe('decisions store — the standing authorisation', () => {
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
 
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => s.takeApproval('a1', 'fp-1', T_SOON)),
+      Array.from({ length: 8 }, () => s.takeApproval('a1', 'fp-1', OWNER, T_SOON)),
     );
     expect(results.filter((r) => r !== null)).toHaveLength(1);
   });
@@ -486,7 +489,7 @@ describe('decisions store — undo', () => {
     expect(restored!.status).toBe('pending');
     expect(restored!.resolvedAt).toBeNull();
     // The standing authorisation is gone with it.
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
   });
 
   it('refuses to restore an authorisation that has already been consumed', async () => {
@@ -495,7 +498,7 @@ describe('decisions store — undo', () => {
     const s = await freshStore();
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
-    await s.takeApproval('a1', 'fp-1', T_SOON);
+    await s.takeApproval('a1', 'fp-1', OWNER, T_SOON);
     expect(await s.restore('dec_1')).toBeNull();
   });
 
@@ -601,11 +604,11 @@ describe('decisions store — the authorisation the agent takes up', () => {
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'approved-pending-agent' });
 
-    const taken = await s.takeApproval('a1', 'fp-1', T_LATE);
+    const taken = await s.takeApproval('a1', 'fp-1', OWNER, T_LATE);
     expect(taken!.id).toBe('dec_1');
     expect(taken!.status).toBe('approved-pending-agent');
     // Still one-shot.
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
   });
 
   it('takeApproval REFUSES a row whose deferred replay has not run yet', async () => {
@@ -619,7 +622,7 @@ describe('decisions store — the authorisation the agent takes up', () => {
       replayDueAt: T_REPLAY_DUE,
     });
 
-    expect(await s.takeApproval('a1', 'fp-1', T_REPLAY_EARLY)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_REPLAY_EARLY)).toBeNull();
 
     // …and it stays refused once the sweep has TAKEN the replay. The claim
     // clears `replay_due_at`, so an earlier version of this predicate re-opened
@@ -630,11 +633,11 @@ describe('decisions store — the authorisation the agent takes up', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]!.replayDueAt).toBeNull();
     expect(claimed[0]!.replayClaimedAt).toBe(T_LATE);
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
 
     // And it is still refused after the call has actually gone out.
     await s.markReplayed('dec_1', T_LATE);
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
   });
 
   it('takeApproval REFUSES a row whose IMMEDIATE replay is in flight', async () => {
@@ -649,7 +652,7 @@ describe('decisions store — the authorisation the agent takes up', () => {
       replayClaimedAt: T_SOON,
     });
 
-    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_SOON)).toBeNull();
     // Undo is refused in that window too: the call is already on its way out.
     expect(await s.restore('dec_1')).toBeNull();
   });
@@ -660,7 +663,98 @@ describe('decisions store — the authorisation the agent takes up', () => {
     const s = await freshStore();
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
-    expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
+    expect((await s.takeApproval('a1', 'fp-1', OWNER, T_SOON))!.id).toBe('dec_1');
+  });
+});
+
+/**
+ * TASK-1095. A standing yes is one person's answer about one call, so only that
+ * person's turn may spend it, and an outsider's turn (someone with no access to
+ * the agent, run as whoever connected the Slack channel) only a yes given on
+ * the unattended path, never one a person gave in their own chat
+ * (`ApprovalTaker`). Both stores, so the fake the gate's unit tests run on
+ * cannot drift from the SQL.
+ */
+describe('decisions store — whose yes it is (TASK-1095)', () => {
+  const TEAM_MATE = { userId: 'u2', outsider: false } as const;
+  /** An outsider's turn runs AS the person who connected the channel. */
+  const OUTSIDER = { userId: 'u1', outsider: true } as const;
+
+  /** u1's `dec_1`, claimed into `status`, on real Postgres and on the fake. */
+  async function approvedOnBoth(
+    over: Partial<Decision>,
+    status: 'executed' | 'approved-pending-agent' = 'executed',
+  ): Promise<Array<[string, DecisionStore]>> {
+    const legs: Array<[string, DecisionStore]> = [
+      ['postgres', await freshStore()],
+      ['fake', createFakeStore()],
+    ];
+    for (const [, s] of legs) {
+      await s.create(base(over));
+      await s.claimForApproval('dec_1', { nowIso: T_SOON, status });
+    }
+    return legs;
+  }
+
+  it("a team-mate's identical call on the same agent takes nothing, and the yes stands for its owner", async () => {
+    for (const [leg, s] of await approvedOnBoth({ attendance: 'attended' })) {
+      expect(await s.takeApproval('a1', 'fp-1', TEAM_MATE, T_SOON), leg).toBeNull();
+      expect((await s.get('dec_1'))!.consumedAt, leg).toBeNull();
+      // The counter-control: the refusal is about whose yes, not a take that
+      // stopped working.
+      expect((await s.takeApproval('a1', 'fp-1', OWNER, T_SOON))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it("a parked yes waits for its owner's next identical call, not a team-mate's", async () => {
+    for (const [leg, s] of await approvedOnBoth(
+      { attendance: 'unattended' },
+      'approved-pending-agent',
+    )) {
+      expect(await s.takeApproval('a1', 'fp-1', TEAM_MATE, T_LATE), leg).toBeNull();
+      expect((await s.takeApproval('a1', 'fp-1', OWNER, T_LATE))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it("an outsider's turn never takes an attended yes, though it runs as that yes's owner", async () => {
+    for (const [leg, s] of await approvedOnBoth({ attendance: 'attended' })) {
+      expect(await s.takeApproval('a1', 'fp-1', OUTSIDER, T_SOON), leg).toBeNull();
+      expect((await s.get('dec_1'))!.consumedAt, leg).toBeNull();
+      expect((await s.takeApproval('a1', 'fp-1', OWNER, T_SOON))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it("an outsider's turn takes an unattended yes: its own question, answered from Today", async () => {
+    // The counter-control for the test above: an outsider rule that took
+    // nothing at all would pass it too.
+    for (const [leg, s] of await approvedOnBoth(
+      { attendance: 'unattended' },
+      'approved-pending-agent',
+    )) {
+      expect((await s.takeApproval('a1', 'fp-1', OUTSIDER, T_LATE))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it('a taker that does not say `outsider: false` is taken for an outsider: it fails closed', async () => {
+    for (const [leg, s] of await approvedOnBoth({ attendance: 'attended' })) {
+      const unsaid = { userId: 'u1' } as unknown as ApprovalTaker;
+      expect(await s.takeApproval('a1', 'fp-1', unsaid, T_SOON), leg).toBeNull();
+      expect(await s.findRoutineApproval('a1', unsaid, 'fp-1', T_SOON), leg).toBeNull();
+    }
+  });
+
+  it("findRoutineApproval, the same rule: no team-mate's and no outsider's turn goes ahead on an attended yes", async () => {
+    for (const [leg, s] of await approvedOnBoth({ attendance: 'attended' })) {
+      expect(await s.findRoutineApproval('a1', TEAM_MATE, 'fp-1', T_SOON), leg).toBeNull();
+      expect(await s.findRoutineApproval('a1', OUTSIDER, 'fp-1', T_SOON), leg).toBeNull();
+      expect((await s.findRoutineApproval('a1', OWNER, 'fp-1', T_SOON))?.id, leg).toBe('dec_1');
+    }
+  });
+
+  it("findRoutineApproval: an outsider's turn goes ahead on an unattended yes", async () => {
+    for (const [leg, s] of await approvedOnBoth({ attendance: 'unattended' })) {
+      expect((await s.findRoutineApproval('a1', OUTSIDER, 'fp-1', T_SOON))?.id, leg).toBe('dec_1');
+    }
   });
 });
 
@@ -683,7 +777,7 @@ describe('decisions store — claimReplayFlight', () => {
       await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
       if (Object.keys(over).length > 0) {
         // The one column each case is about, set the way the real path sets it.
-        if (over.consumedAt !== undefined) await s.takeApproval('a1', 'fp-1', T_SOON);
+        if (over.consumedAt !== undefined) await s.takeApproval('a1', 'fp-1', OWNER, T_SOON);
         if (over.replayedAt !== undefined) await s.markReplayed('dec_1', T_SOON);
       }
     }
@@ -700,7 +794,7 @@ describe('decisions store — claimReplayFlight', () => {
       // And the row is now closed to undo and to the agent, which is the whole
       // reason the flight is taken before the call rather than after it.
       expect(await s.restore('dec_1')).toBeNull();
-      expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+      expect(await s.takeApproval('a1', 'fp-1', OWNER, T_SOON)).toBeNull();
     }
   });
 
@@ -882,7 +976,7 @@ describe('decisions store — deferred deliveries (TASK-574)', () => {
   it('an agent that took the approval up itself is not handed it again', async () => {
     const s = await freshStore();
     await approvedAttended(s);
-    const taken = await s.takeApproval('a1', 'fp-1', T_SOON);
+    const taken = await s.takeApproval('a1', 'fp-1', OWNER, T_SOON);
     expect(taken!.deliveryDueAt).toBeNull();
     expect(await s.claimDueDeliveries(T_LATE, 10)).toEqual([]);
   });
@@ -910,7 +1004,7 @@ describe('decisions store — a replay that failed', () => {
     // An action that did not happen must not leave behind a yes the agent can
     // quietly cash in later: the partial index does not cover `failed`, and
     // neither does `takeApproval`.
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
   });
 
   it('parkForAgent moves an executed claim to the agent without touching the yes', async () => {
@@ -926,7 +1020,7 @@ describe('decisions store — a replay that failed', () => {
     const parked = await s.parkForAgent('dec_1');
     expect(parked!.status).toBe('approved-pending-agent');
     expect(parked!.replayDueAt).toBeNull();
-    expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
+    expect((await s.takeApproval('a1', 'fp-1', OWNER, T_LATE))!.id).toBe('dec_1');
   });
 });
 
@@ -959,7 +1053,7 @@ describe('decisions store — undo, with a replay pending', () => {
     const restored = await s.restore('dec_1');
     expect(restored!.status).toBe('pending');
     expect(restored!.resolvedAt).toBeNull();
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
   });
 });
 
@@ -1008,7 +1102,7 @@ describe('decisions store — expiry does not rewrite history', () => {
     expect((await s.get('dec_approved'))!.status).toBe('executed');
     expect((await s.get('dec_parked'))!.status).toBe('approved-pending-agent');
     // And the standing authorisation survived the sweep.
-    expect((await s.takeApproval('a1', 'fp-2', T_LATE))!.id).toBe('dec_parked');
+    expect((await s.takeApproval('a1', 'fp-2', OWNER, T_LATE))!.id).toBe('dec_parked');
   });
 });
 
@@ -1037,7 +1131,7 @@ describe('decisions store — a replay that actually ran', () => {
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     await s.markReplayed('dec_1', T_SOON);
 
-    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
   });
 
   it('refuses the undo — the host already made the call', async () => {
@@ -1143,7 +1237,7 @@ describe('decisions store — a replay that actually ran', () => {
     expect(parked!.replayedAt).toBeNull();
 
     // The whole point of the status: the agent performs it on its next run.
-    expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
+    expect((await s.takeApproval('a1', 'fp-1', OWNER, T_LATE))!.id).toBe('dec_1');
   });
 });
 
@@ -1665,7 +1759,7 @@ describe('decisions store — an outcome nobody reported (TASK-1046)', () => {
         error: null,
       });
       // Spent like any other abandoned row: an identical agent call holds again.
-      expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+      expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
     }
   });
 
@@ -1690,7 +1784,7 @@ describe('decisions store — an outcome nobody reported (TASK-1046)', () => {
       expect(await s.markOutcomeUnknown('dec_1', T_ANSWERLESS)).not.toBeNull();
 
       // It authorises nothing: an identical agent call is held again…
-      expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+      expect(await s.takeApproval('a1', 'fp-1', OWNER, T_LATE)).toBeNull();
       // …and the index slot is free, so the same call can be held and
       // approved again.
       // Raised AFTER the first was answered: a later ask. A hold raised before that answer is its co-open twin (TASK-286), refused below.
@@ -1937,7 +2031,7 @@ describe('decisions store — an approval whose identical twin already went out 
       for (const [leg, s] of await both()) {
         await openTwins(s);
         expect(await s.claimForApproval('dec_1', { nowIso: T_APPROVED, status }), leg).not.toBeNull();
-        expect((await s.takeApproval('a1', 'fp-1', T_APPROVED))!.id, leg).toBe('dec_1');
+        expect((await s.takeApproval('a1', 'fp-1', OWNER, T_APPROVED))!.id, leg).toBe('dec_1');
 
         const err = await settled(claim(s, 'dec_2'));
         expect(err, leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
