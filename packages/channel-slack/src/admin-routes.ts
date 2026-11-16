@@ -375,7 +375,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     try {
       await d.secrets.put(owner, 'client-secret', app.clientSecret);
       await d.secrets.put(owner, 'signing-secret', app.signingSecret);
-      // The pasted one, until the first rotate (Rename, Disconnect) replaces it.
+      // The pasted one, until a rotate (Rename, Disconnect) saves its replacement.
       await d.secrets.put(owner, 'config-refresh-token', refreshToken);
       await d.store.insertPending({
         installId,

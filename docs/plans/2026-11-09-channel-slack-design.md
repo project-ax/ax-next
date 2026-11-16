@@ -220,7 +220,7 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 
 - It's admin-only to set, and nobody can ever read it back.
 - Admin settings shows who added the token (an AX admin; configuration tokens
-  belong to one person). The token AX holds changes with every rotate (step 5). Pasting in a different one isn't built yet (TASK-1128). Until
+  belong to one person). The token AX holds changes with every rotate whose new token it manages to save (step 5). Pasting in a different one isn't built yet (TASK-1128). Until
   then, a token that stops working means Disconnect, then Connect with a new
   one.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
@@ -300,7 +300,7 @@ A team agent that wants its own `@ada`:
 1. The owner clicks **Request Slack bot** in agent settings and picks the name
    and avatar. AX checks Slack's name rules, and **rejects a name already used
    by its other bots in that workspace**. Slack itself allows duplicates: it
-   quietly gives the second bot a suffixed handle (`axspikea2`), and in the
+   quietly gives the second bot a suffixed `name` field (`axspikea2`), and in the
    spike the duplicate fooled even the person testing it (§7 Q5).
 2. The workspace's AX-side Slack admins get a DM from the shared bot:
    **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**. The
@@ -311,7 +311,7 @@ A team agent that wants its own `@ada`:
    approve step. Only someone who's allowed to install apps can click Allow, and
    the configuration token doesn't skip it.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
-   bot's real handle as read back from `users.info`. Until then the agent keeps
+   bot's real `name` field as read back from `users.info`. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
 
 Everything except Allow is automatic. In the spike, Slack sent no challenge and

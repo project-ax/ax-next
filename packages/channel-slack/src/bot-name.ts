@@ -83,8 +83,8 @@ function trimSeparators(s: string): string {
  * admin sees is the @handle people will type. Accents are dropped (NFKD, then
  * every combining mark), the rest is lowercased, each run of anything outside
  * `[a-z0-9._-]` becomes one `-`, separators are trimmed from both ends, and the
- * result is cut to the handle's 21 characters. A result Slack would refuse
- * (nothing left, or a name whose handle is a reserved word, such as
+ * result is cut to the `name` field's 21 characters. A result Slack would refuse
+ * (nothing left, or a name whose `name` field is a reserved word, such as
  * `slack-bot`) falls back to `ax`, as does no name.
  */
 export function defaultBotName(brandingName: string | null): string {
