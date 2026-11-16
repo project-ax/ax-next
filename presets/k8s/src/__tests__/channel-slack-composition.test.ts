@@ -99,6 +99,9 @@ const BOT_TOKEN = join('xo', 'xb-', '1111-2222-', 'COMPOSITIONBOT');
 const CONFIG_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONACCESS');
 const CONFIG_REFRESH_TOKEN = join('xo', 'xe-', '1-', 'COMPOSITIONREFRESH');
 const ROTATED_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONROTATED');
+// Slack mints a NEW refresh token on every rotate and retires the old one a few
+// minutes later, so the fake numbers them: a test can tell which one it holds.
+const rotatedRefreshToken = (n: number): string => join('xo', 'xe-', '1-', 'COMPOSITIONROTATEDREFRESH', String(n));
 
 interface SlackPerson {
   slackId: string;
@@ -258,6 +261,7 @@ interface SlackCall {
 
 const slackCalls: SlackCall[] = [];
 let streamSeq = 0;
+let rotateSeq = 0;
 let promptSeq = 0;
 
 function slackUser(p: SlackPerson): Record<string, unknown> {
@@ -341,7 +345,13 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
       };
       break;
     case 'tooling.tokens.rotate':
-      answer = { ok: true, token: ROTATED_ACCESS_TOKEN, exp: 4_102_444_800 };
+      rotateSeq += 1;
+      answer = {
+        ok: true,
+        token: ROTATED_ACCESS_TOKEN,
+        refresh_token: rotatedRefreshToken(rotateSeq),
+        exp: 4_102_444_800,
+      };
       break;
     case 'chat.startStream':
       streamSeq += 1;
@@ -836,6 +846,11 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     renamedManifest.features.bot_user.display_name = 'Canopy Helper';
     expect(JSON.parse(String(update.body['manifest']))).toEqual(renamedManifest);
     expect(await query('SELECT bot_name FROM channel_slack_v1_installs')).toEqual([{ bot_name: 'Canopy Helper' }]);
+    // The route stored the refresh token Slack minted (before it sent the
+    // update), because Slack retires the one it just rotated.
+    const kept = await readSecret(installId, 'config-refresh-token');
+    expect(kept).toBe(rotatedRefreshToken(rotateSeq));
+    expect(kept).not.toBe(CONFIG_REFRESH_TOKEN);
     expect(await callRoute('GET', '/admin/slack')).toMatchObject({
       status: 200,
       body: { state: 'connected', botName: 'Canopy Helper' },
@@ -952,13 +967,14 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(invokes).toHaveLength(3);
 
     // 6. Disconnect deletes the Slack app with a freshly rotated access
-    //    token, then the row and all four secrets are gone.
+    //    token, then the row and all four secrets are gone. It rotates the
+    //    token the rename stored, because Slack retires a rotated one.
     actor = { id: ADMIN, isAdmin: true };
     mark = slackCalls.length;
     const disconnect = await callRoute('POST', '/admin/slack/disconnect', { body: jsonBody({}) });
     expect(disconnect).toMatchObject({ status: 200, body: { appDeleted: true } });
     expect(slackCalls.slice(mark).map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
-    expect(slackCalls.slice(mark)[0]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
+    expect(slackCalls.slice(mark)[0]!.body).toEqual({ refresh_token: kept });
     expect(slackCalls.slice(mark)[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
     expect(await query('SELECT install_id FROM channel_slack_v1_installs')).toEqual([]);
     for (const name of ['bot-token', 'signing-secret', 'client-secret', 'config-refresh-token']) {
