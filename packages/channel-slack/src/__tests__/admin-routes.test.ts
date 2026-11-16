@@ -1839,7 +1839,9 @@ describe('POST /admin/slack/rename', () => {
     expect(await w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
     expect(w.memory.calls.at(-1)).toEqual({ method: 'setBotName', args: [installId, 'Ada Helper'] });
     expect(w.memory.rows.size).toBe(0);
-    // The token it had just stored goes too: no live configuration token outlives a reset.
+    // The token it had just stored goes too. The rename takes it back itself:
+    // a reset's own sweep of leftover secrets (plugin.ts) only catches one
+    // stored before the sweep ran.
     expect(w.vault.has(secretRef(installId, 'config-refresh-token'))).toBe(false);
     expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token');
     expect(w.lines).toEqual([]);

@@ -632,9 +632,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         await d.store.setBotName(install.installId, name.name);
       } catch (err) {
         if (err instanceof InstallStoreError) {
-          // Gone meanwhile: a reset removes installs without this lock. And
-          // take back the token just stored: a reset wipes the vault, and a
-          // live configuration token must not outlive it.
+          // Gone meanwhile: a reset removes installs without this lock. Once
+          // the rows are gone it deletes what is left of their secrets
+          // (plugin.ts); this takes back a token stored after that. Still
+          // left live, where no route can reach it: one stored after the
+          // reset's sweep when Slack then refused the update (that 502
+          // returns before here), and any whose delete fails (logged).
           await d.secrets.remove(install, 'config-refresh-token');
           return json(409, { error: 'not-connected' });
         }
