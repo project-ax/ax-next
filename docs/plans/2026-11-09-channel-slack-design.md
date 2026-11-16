@@ -194,16 +194,18 @@ recalled in a channel.
    the bot token. This click is the only one a person must make, and only
    someone with install rights can make it.
 5. AX keeps the **refresh token** and gets a fresh access token from it with
-   `tooling.tokens.rotate` whenever it needs one. Access tokens are never stored
-   past their 12 hours.
+   `tooling.tokens.rotate` whenever it needs one. Each rotate also hands back a
+   new refresh token, and Slack retires the old one a few minutes later (§7,
+   configuration tokens), so AX stores the new one before it uses the access
+   token (TASK-1129). Access tokens are never stored past their 12 hours.
 
 **Renaming:** Admin › Slack → **Rename** (TASK-1096), once Slack is connected.
 AX checks the name (§7 Q3) and applies it with `apps.manifest.update`, using an
 access token minted from the stored refresh token. Slack replaces the whole
 manifest on update, so AX sends all of it as this build makes it, with only the
-name changed. There's no reinstall, and the bot token keeps working (§7 Q3). The
-name people see changes; the @handle underneath stays as it was at install.
-Slack shows mentions by current name, so people don't notice. If the stored
+name changed. There's no reinstall, and the bot token keeps working (§7 Q3). People
+see, and @mention, the bot by its new name: on the TASK-1097 walk,
+`@ax` became `@ax-walk`. If the stored
 token can't be used (Slack refuses it, or its owner can't manage the app), or
 the Slack app was deleted on Slack's side, the tab says
 so and the fix is Disconnect, then Connect again.
@@ -212,13 +214,13 @@ so and the fix is Disconnect, then Connect again.
 configuration **refresh token**. All live in the credentials store, readable
 only by `@ax/channel-slack`.
 
-The refresh token is the dangerous one. It can create apps in the workspace,
-and it **outlives both renewal and `auth.revoke`** (§7, configuration tokens),
-so AX can't retire it through the API. Hence:
+The refresh token is the dangerous one. It can create apps in the workspace.
+Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
+(§7, configuration tokens), so AX can't retire it through the API. Hence:
 
 - It's admin-only to set, and nobody can ever read it back.
 - Admin settings shows who added the token (an AX admin; configuration tokens
-  belong to one person). Replacing it isn't built yet (TASK-1128). Until
+  belong to one person). The token AX holds changes with every rotate (step 5). Pasting in a different one isn't built yet (TASK-1128). Until
   then, a token that stops working means Disconnect, then Connect with a new
   one.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
@@ -726,13 +728,13 @@ and the configuration token revoked. "Tested" means we watched it happen;
 |---|---|---|---|
 | 1 | Does the event URL need verifying? | **No.** Neither `apps.manifest.create` nor `apps.manifest.update` sent a `url_verification` challenge. A DM to the installed bot arrived as a signed `event_callback` (`message`, `channel_type: im`) with no Verify click. The manifest docs say the URL must be "manually verified"; in practice it wasn't needed. | Tested |
 | 2 | Avatar by API? | **Yes.** `apps.icon.set` with the configuration token and a PNG returned `ok`. | Tested |
-| 3 | Rename | `apps.manifest.update` changing only the name: `permissions_updated: false`, no reinstall, and the bot token kept working. `real_name` changed; the @handle (`name`) **stayed as it was at install**. | Tested |
+| 3 | Rename | `apps.manifest.update` changing only the name: `permissions_updated: false`, no reinstall, and the bot token kept working. `real_name` changed and the `name` field stayed as it was at install, but **the @handle people see and type follows the new name**: on the TASK-1097 walk, `@ax` became `@ax-walk`. | Tested (spike; handle corrected by the TASK-1097 walk) |
 | 3 | Name rules | Accepted: ASCII letters, digits, spaces, `-`, `_`, `.`, and long names. Rejected by `apps.manifest.validate`: reserved words (`slackbot`, `here`, `channel`, `everyone` → `invalid_reserved_word`), non-ASCII (`Café` → `bad_username`), and other symbols (`!!` → `invalid_name_specials`). The handle drops hyphens: `ax-spike-a` became `axspikea`. Docs: at most 21 characters for the handle, 35 for the app name, 80 for the bot's display name. | Tested + docs |
 | 4 | App approval | An admin installing a manifest-created app saw only Slack's normal Allow screen: no request, no wait. Slack's approval API (`admin.apps.approve`) is Enterprise-only. **Not seen:** what a regular member gets; the docs say members can't install restricted apps. The design needs no member installs. | Tested (admin only) + docs |
 | 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got handle `axspikea2`. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
 | 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API; past 10 minutes or 12,000 characters, a new stream in the same thread (§5). | Docs |
 | 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
-| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair, and **the old refresh token and earlier access tokens keep working**. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). | Tested |
+| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a few minutes, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). The spike reused the old one inside those minutes and read it as "keeps working"; the TASK-1097 walk saw it work four times over 18 s, then found it dead within 6 minutes on one install and within 3 hours on another. Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). | Tested (spike; corrected by the TASK-1097 walk) |
 | — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
 
 ## 8. Open questions
