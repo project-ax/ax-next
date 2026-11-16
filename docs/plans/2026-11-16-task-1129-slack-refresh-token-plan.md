@@ -209,9 +209,10 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
   - `secrets.ts:31-33` becomes exactly:
     ```
      * The configuration refresh token stored here starts as the one the admin
-     * pasted. Every rotate replaces it with the one Slack mints alongside
-     * (admin-routes.ts), because Slack retires a rotated refresh token within
-     * minutes to hours (slack-api.ts).
+     * pasted. After each rotate, admin-routes.ts writes the one Slack mints
+     * alongside over it, because Slack retires a rotated refresh token within
+     * minutes to hours (slack-api.ts). If that write fails, the old one stays,
+     * and works only until Slack retires it.
     ```
 
 - [ ] **Step 5: Run tests, build, lint**

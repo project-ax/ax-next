@@ -29,9 +29,10 @@ import { logCode } from './log-code.js';
  * caller, and no log line carries one: failures log the install and a code.
  *
  * The configuration refresh token stored here starts as the one the admin
- * pasted. Every rotate replaces it with the one Slack mints alongside
- * (admin-routes.ts), because Slack retires a rotated refresh token within
- * minutes to hours (slack-api.ts).
+ * pasted. After each rotate, admin-routes.ts writes the one Slack mints
+ * alongside over it, because Slack retires a rotated refresh token within
+ * minutes to hours (slack-api.ts). If that write fails, the old one stays,
+ * and works only until Slack retires it.
  */
 
 export const SECRET_NAMES = Object.freeze([
