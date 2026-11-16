@@ -40,7 +40,7 @@ import {
 import { secretRef } from '../secrets.js';
 import { createInstallStore } from '../store.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
-import { fakeBotToken } from './fake-slack-tokens.js';
+import { fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 
 /*
   The plugin's turn queue, watched rather than slept on: the real queue, with
@@ -95,6 +95,10 @@ interface Services {
   credentialSets: number;
   /** Every credentials:get, by ref. */
   credentialGets: string[];
+  /** Every credentials:delete, by ref. */
+  credentialDeletes: string[];
+  /** `<hook> <ref>` → what that credentials:get or credentials:delete throws instead. */
+  vaultFailures: Map<string, Error>;
   /** Every agent:invoke's ctx and input. */
   invokes?: Array<{ ctx: AgentContext; input: unknown }>;
   /** The booted bus, so the fake orchestrator can fire the turn's events. */
@@ -109,7 +113,15 @@ interface Services {
   turnScript?: (bus: HookBus, ctx: AgentContext) => Promise<void>;
 }
 
-const newServices = (): Services => ({ routes: [], vault: new Map(), credentialSets: 0, credentialGets: [], invokes: [] });
+const newServices = (): Services => ({
+  routes: [],
+  vault: new Map(),
+  credentialSets: 0,
+  credentialGets: [],
+  credentialDeletes: [],
+  vaultFailures: new Map(),
+  invokes: [],
+});
 
 function fakeServices(s: Services) {
   return {
@@ -132,6 +144,8 @@ function fakeServices(s: Services) {
     'credentials:get': async (_ctx: unknown, input: unknown) => {
       const { ref } = input as { ref: string };
       s.credentialGets.push(ref);
+      const failure = s.vaultFailures.get(`credentials:get ${ref}`);
+      if (failure !== undefined) throw failure;
       const value = s.vault.get(ref);
       if (value === undefined) {
         throw new PluginError({ code: 'credential-not-found', plugin: 'mock', message: 'none' });
@@ -144,7 +158,11 @@ function fakeServices(s: Services) {
       s.vault.set(ref, new TextDecoder().decode(payload));
     },
     'credentials:delete': async (_ctx: unknown, input: unknown) => {
-      s.vault.delete((input as { ref: string }).ref);
+      const { ref } = input as { ref: string };
+      s.credentialDeletes.push(ref);
+      const failure = s.vaultFailures.get(`credentials:delete ${ref}`);
+      if (failure !== undefined) throw failure;
+      s.vault.delete(ref);
     },
     // The DM path: Alice's verified email maps, to one personal agent. Ada's maps to her
     // account, so her mention in #support runs attended.
@@ -675,7 +693,7 @@ describe('@ax/channel-slack plugin', () => {
       cookieKey: Buffer.alloc(32, 1),
       allowedOrigins: ['http://localhost'],
     });
-    const s: Services = { routes: [], vault: new Map(), credentialSets: 0, credentialGets: [] };
+    const s: Services = newServices();
     const { 'http:register-route': _captured, ...services } = fakeServices(s);
     const harness = await createTestHarness({
       services,
@@ -1224,10 +1242,22 @@ describe('@ax/channel-slack plugin', () => {
 
     // A reset fired on THIS bus forgets it too. (`ax admin reset-bootstrap`
     // fires it on the CLI's own bus, so the host relies on the TTL; plugin.ts.)
-    await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
-    await insertActiveInstall();
+    // The delete is made to skip the row (as in the next test group), so the
+    // install and its secret both stay: only the reset's own `clear()` can make
+    // the next request read the vault again, and the cache can't be emptied by
+    // the sweep that reads and removes a removed install's secrets.
+    const beforeReset = signingReads();
+    await withDeleteTrigger(
+      `IF OLD.install_id = '${INSTALL_ID}' THEN RETURN NULL; END IF; RETURN OLD;`,
+      async () => {
+        const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+        expect(fired.rejected).toBe(false);
+      },
+    );
+    expect(await installCount()).toBe(1);
+    expect(s.vault.has(secretRef(INSTALL_ID, 'signing-secret'))).toBe(true);
     expect((await post({ 'content-type': 'application/json' })).status).toBe(401);
-    expect(signingReads()).toBe(3);
+    expect(signingReads()).toBe(beforeReset + 1);
   });
 
   it('stopAdmission makes the events route answer 503 before any lookup', async () => {
@@ -1353,6 +1383,151 @@ describe('@ax/channel-slack plugin', () => {
     );
   });
 
+  /*
+    A reset takes no admin lock, and it isn't one step: credentials-store-db
+    wipes the vault first, other plugins truncate their tables, and only then
+    does channel-slack remove the install rows. A rename running in between
+    can store the configuration refresh token Slack just minted AFTER the wipe
+    and still find its row for setBotName (TASK-1129 review, F1).
+  */
+  it('a rename that stores its new configuration token after the reset wiped the vault, but before the install row went, leaves no token behind (TASK-1129)', async () => {
+    const ref = secretRef(INSTALL_ID, 'config-refresh-token');
+    const minted = fakeConfigRefreshToken('RESETRACEMINTEDSECRET');
+    // Slack: the rotate waits for the test, then mints `minted`; the update is taken.
+    const rotating = deferred();
+    const answerRotate = deferred();
+    const fetchImpl: typeof fetch = async (input) => {
+      let answer: Record<string, unknown> = { ok: true };
+      if (String(input) === 'https://slack.com/api/tooling.tokens.rotate') {
+        rotating.release();
+        await answerRotate.promise;
+        answer = {
+          ok: true,
+          token: fakeConfigAccessToken('RESETRACEACCESSSECRET'),
+          refresh_token: minted,
+          exp: Math.floor(NOW_MS / 1000) + 43_200,
+        };
+      }
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { s, call, harness } = await boot({ fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(ref, fakeConfigRefreshToken());
+    // The reset's first steps, as a real one runs them before channel-slack's
+    // subscriber: the vault wipe, then a pause standing in for the TRUNCATEs.
+    const wiped = deferred();
+    const truncated = deferred();
+    harness.bus.subscribe(
+      'bootstrap:reset-cleanup',
+      'test/credentials-wipe',
+      async () => {
+        s.vault.clear();
+        wiped.release();
+        await truncated.promise;
+        return undefined;
+      },
+      { priority: -1 },
+    );
+
+    const renamed = call(
+      'POST',
+      '/admin/slack/rename',
+      request('POST', '/admin/slack/rename', {
+        as: ADMIN.id,
+        body: Buffer.from(JSON.stringify({ botName: 'Raced Name' })),
+      }),
+    );
+    await rotating.promise; // the stored token is read and sent to Slack
+    const reset = harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    await wiped.promise; // the vault is empty; the install row is still there
+    answerRotate.release();
+    // The row was still there for setBotName, so the rename worked...
+    expect(await renamed).toEqual({ status: 200, body: { botName: 'Raced Name' }, done: true });
+    // ...and stored the token Slack minted after the wipe.
+    expect(s.vault.get(ref)).toBe(minted);
+
+    truncated.release();
+    expect((await reset).rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    // It goes with the install's row: no route could ever reach it again.
+    expect(s.vault.has(ref)).toBe(false);
+    // Only what was still stored is deleted (see the next test).
+    expect(s.credentialDeletes).toEqual([ref]);
+  });
+
+  it('a reset deletes none of the secrets the vault wipe already took, so it writes no tombstone rows (TASK-1129)', async () => {
+    // The vault deletes by writing an empty row in a secret's place, and
+    // `ax admin reset-bootstrap` must leave no credential rows behind.
+    const { harness, s } = await boot();
+    await insertActiveInstall();
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    expect(s.credentialDeletes).toEqual([]);
+  });
+
+  it('a secret the reset finds still stored but cannot delete never fails it: logged by install, name and code only (TASK-1129)', async () => {
+    const { harness, s } = await boot();
+    await insertActiveInstall();
+    const configRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    const botRef = secretRef(INSTALL_ID, 'bot-token');
+    // Both stored after the vault wipe, as a racing rename or OAuth callback would.
+    const leftover = fakeConfigRefreshToken('RESETLEFTOVERSECRET');
+    s.vault.set(configRef, leftover);
+    s.vault.set(botRef, BOT_TOKEN);
+    s.vaultFailures.set(
+      `credentials:delete ${configRef}`,
+      Object.assign(new Error(`vault down holding ${leftover}`), { code: 'ECONNRESET' }),
+    );
+    // A read that fails is no proof the secret is gone: it is deleted anyway.
+    s.vaultFailures.set(
+      `credentials:get ${botRef}`,
+      Object.assign(new Error(`vault down holding ${BOT_TOKEN}`), { code: 'ECONNRESET' }),
+    );
+    const logs = captureLogs();
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    expect(logs.filter((l) => l['msg'] === 'slack_install_removed_by_reset').map((l) => l['installId'])).toEqual([
+      INSTALL_ID,
+    ]);
+    expect(s.credentialDeletes).toEqual([botRef, configRef]);
+    expect(s.vault.has(botRef)).toBe(false);
+
+    const failed = logs.filter((l) => l['msg'] === 'slack_secret_remove_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      level: 'error',
+      installId: INSTALL_ID,
+      stage: 'config-refresh-token',
+      code: 'ECONNRESET',
+    });
+    expect(Object.keys(failed[0]!).sort()).toEqual(['code', 'installId', 'level', 'msg', 'reqId', 'stage', 'ts']);
+    expect(logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed')).toEqual([]);
+    const all = JSON.stringify(logs);
+    for (const secret of [leftover, BOT_TOKEN, 'vault down']) expect(all).not.toContain(secret);
+  });
+
+  it('a log line that throws during a reset still leaves no secret behind (TASK-1129)', async () => {
+    const { harness, s } = await boot();
+    await insertActiveInstall();
+    const configRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    s.vault.set(configRef, fakeConfigRefreshToken('RESETLOGTHROWSSECRET'));
+    // The logger writes JSON lines to stdout: make the "removed" line throw.
+    const write = process.stdout.write.bind(process.stdout);
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+      if (String(chunk).includes('slack_install_removed_by_reset')) throw new Error('log sink is down');
+      return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stdout.write);
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    expect(s.vault.has(configRef)).toBe(false);
+    expect(s.credentialDeletes).toEqual([configRef]);
+  });
+
   it('the settings routes are mounted behind the person and the agent: 401 signed out, 404 to an outsider, the section to a team admin', async () => {
     const { call } = await boot();
     const path = '/settings/slack/:agentId';
@@ -1451,7 +1626,7 @@ describe('@ax/channel-slack plugin', () => {
     // A thread kept out of memory before this restart.
     await runMigrations(probe);
     await keptOutThread('conv_kept_out');
-    const s: Services = { routes: [], vault: new Map(), credentialSets: 0, credentialGets: [] };
+    const s: Services = newServices();
     const services = fakeServices(s);
     const inner = new HookBus();
     const db: Plugin = createDatabasePostgresPlugin({ connectionString });
@@ -1504,7 +1679,7 @@ describe('@ax/channel-slack plugin', () => {
 
   it('a failed route registration unwinds the routes already registered', async () => {
     const plugin = createChannelSlackPlugin({ publicOrigin: HTTPS_ORIGIN });
-    const s: Services = { routes: [], vault: new Map(), credentialSets: 0, credentialGets: [] };
+    const s: Services = newServices();
     const services = fakeServices(s);
     const bus = new HookBus();
     let registered = 0;

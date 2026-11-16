@@ -42,9 +42,9 @@ import { createPromptRegistry } from './prompts.js';
 import { systemClock } from './reply-stream.js';
 import { createEventRouter } from './router.js';
 import { cacheSigningSecrets, type SigningSecretCache } from './secret-cache.js';
-import { createSecretStore } from './secrets.js';
+import { SECRET_NAMES, createSecretStore, type SecretOwner, type SecretStore } from './secrets.js';
 import { createSlackApi } from './slack-api.js';
-import { createInstallStore, type InstallStore } from './store.js';
+import { createInstallStore, type InstallStore, type RemovedInstall } from './store.js';
 import { createKeyedQueue } from './turn-queue.js';
 import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './turn-registry.js';
 import { followContinuation, type TurnDeps } from './turn.js';
@@ -467,6 +467,16 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
  * is logged code-only and doesn't fail the reset (the bus never lets a
  * subscriber's throw do that either); re-running the reset retries it.
  *
+ * credentials-store-db wipes the vault before this runs, and the admin routes
+ * don't wait for a reset: a step that still finds its install's row can store
+ * a secret after the wipe (the refresh token a Rename's rotate just minted,
+ * an OAuth callback's bot token, a Connect's first three). So once the rows
+ * are gone, whatever is still stored of each removed install's secrets goes
+ * too. A Rename that stores its token later finds the row gone at setBotName
+ * and deletes the token itself (admin-routes.ts). Only what is still stored
+ * is deleted: the vault deletes by writing an empty row in a secret's place,
+ * and a reset leaves no credential rows behind.
+ *
  * The reset runs in the CLI's own process, which loads this plugin for that
  * reason, so the `clear()` below empties the CLI's signing-secret cache, not
  * the running host's. The host's copy of a wiped secret lasts at most
@@ -481,11 +491,13 @@ function subscribeResetCleanup(
 ): void {
   bus.subscribe(RESET_CLEANUP, RESET_CLEANUP_KEY, async () => {
     secrets.clear();
+    let removed: RemovedInstall[] = [];
     try {
       // The row is the only record of the Slack app's id, and the app stays
       // live in Slack after the delete. Say which ones, by id only (no
       // secret, no client id), so the operator can remove them.
-      for (const install of await store.removeAll()) {
+      removed = await store.removeAll();
+      for (const install of removed) {
         logger.warn('slack_install_removed_by_reset', {
           installId: install.installId,
           appId: install.appId,
@@ -500,6 +512,29 @@ function subscribeResetCleanup(
         // Nothing left to report it with.
       }
     }
+    // Outside the try, so a log line that throws can't leave a secret behind.
+    for (const install of removed) await deleteLeftoverSecrets(secrets, install);
     return undefined;
   });
+}
+
+/**
+ * Delete whatever is still stored of a removed install's secrets. A read that
+ * fails is no proof a secret is gone, so that one is deleted anyway. Never
+ * throws: `remove` logs a failed delete by install, name and code.
+ */
+async function deleteLeftoverSecrets(secrets: SecretStore, install: RemovedInstall): Promise<void> {
+  // Read as no one in particular, as `remove` deletes: the admin who
+  // connected the install may be gone with the reset, and a global-only read
+  // doesn't depend on who asks.
+  const owner: SecretOwner = { installId: install.installId, connectedByUserId: 'system' };
+  for (const name of SECRET_NAMES) {
+    let stored = true;
+    try {
+      stored = (await secrets.get(owner, name)) !== null;
+    } catch {
+      // Unknown: delete it.
+    }
+    if (stored) await secrets.remove(install, name);
+  }
 }

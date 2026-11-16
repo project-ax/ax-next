@@ -28,9 +28,11 @@ import { logCode } from './log-code.js';
  * (scripts/__tests__/channel-slack-boundaries.test.js), not at runtime. No method here returns a value anywhere but to its
  * caller, and no log line carries one: failures log the install and a code.
  *
- * The configuration refresh token stored here is exactly the one the admin
- * pasted. Rotating mints a new pair, but the client never hands the new
- * refresh token back (slack-api.ts), so nothing can store it.
+ * The configuration refresh token stored here starts as the one the admin
+ * pasted. After each rotate, admin-routes.ts writes the one Slack mints
+ * alongside over it, because Slack retires a rotated refresh token within
+ * minutes to hours (slack-api.ts). If that write fails, the old one stays,
+ * and works only until Slack retires it.
  */
 
 export const SECRET_NAMES = Object.freeze([
@@ -101,11 +103,13 @@ export function createSecretStore(bus: HookBus, opts: { logger?: Logger } = {}):
       });
     } catch (err) {
       try {
-        ctx.logger.warn('slack_secret_remove_failed', {
-          installId: install.installId,
-          stage: name,
-          code: logCode(err),
-        });
+        const fields = { installId: install.installId, stage: name, code: logCode(err) };
+        // The configuration refresh token is the one secret that outlives the
+        // Slack app: left behind, it can still create apps in the workspace,
+        // even after Disconnect deleted this one, until someone revokes it on
+        // Slack's page.
+        if (name === 'config-refresh-token') ctx.logger.error('slack_secret_remove_failed', fields);
+        else ctx.logger.warn('slack_secret_remove_failed', fields);
       } catch {
         // Nothing left to report it with; any remaining deletes still run.
       }

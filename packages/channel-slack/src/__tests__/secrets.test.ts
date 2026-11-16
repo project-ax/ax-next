@@ -267,6 +267,28 @@ describe('createSecretStore', () => {
     ]);
   });
 
+  it('a configuration refresh token that will not delete is logged at error: it outlives the Slack app (TASK-1129)', async () => {
+    const vault = fakeVault({
+      hook: 'credentials:delete',
+      ref: secretRef(INSTALL.installId, 'config-refresh-token'),
+      error: new PluginError({
+        code: 'timeout',
+        plugin: '@ax/credentials',
+        message: `vault slow for ${VALUES['config-refresh-token']}`,
+      }),
+    });
+    const { logger, lines } = recordingLogger();
+    const secrets = createSecretStore(vault.bus, { logger });
+    await expect(secrets.removeAll({ installId: INSTALL.installId })).resolves.toBeUndefined();
+    expect(lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_secret_remove_failed',
+        fields: { installId: INSTALL.installId, stage: 'config-refresh-token', code: 'timeout' },
+      },
+    ]);
+  });
+
   it('removeAll never throws, even when every delete fails with no readable code', async () => {
     const bus = new HookBus();
     bus.registerService('credentials:delete', '@ax/credentials', async () => {

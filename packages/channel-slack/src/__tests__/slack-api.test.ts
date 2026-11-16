@@ -537,7 +537,7 @@ describe('requests', () => {
     expect(formOf(req!)).toStrictEqual({ refresh_token: REFRESH });
   });
 
-  it('rotateConfigToken returns only accessToken and expiresAt, never the minted refresh token', async () => {
+  it('rotateConfigToken returns the access token, the refresh token Slack minted to replace the one sent, and expiresAt', async () => {
     const slack = fakeSlack(() =>
       okJson({
         token: NEW_ACCESS,
@@ -549,24 +549,46 @@ describe('requests', () => {
       }),
     );
     const out = await createSlackApi({ fetchImpl: slack.fetchImpl }).rotateConfigToken(REFRESH);
-    expect(Object.keys(out).sort()).toStrictEqual(['accessToken', 'expiresAt']);
-    expect(out).toStrictEqual({ accessToken: NEW_ACCESS, expiresAt: 1_800_000_000_000 });
-    expect(JSON.stringify(out)).not.toContain('MINTEDREFRESH');
+    expect(out).toStrictEqual({
+      accessToken: NEW_ACCESS,
+      refreshToken: MINTED_REFRESH,
+      expiresAt: 1_800_000_000_000,
+    });
   });
 
-  it('rotateConfigToken without a usable token or exp → bad-response', async () => {
-    for (const body of [
-      { exp: 1_800_000_000 },
-      { token: NEW_ACCESS },
-      { token: NEW_ACCESS, exp: '1800000000' },
-      { token: NEW_ACCESS, exp: 1.5 },
-      { token: 'has a space', exp: 1_800_000_000 },
-    ]) {
+  it('rotateConfigToken without a usable token, refresh_token or exp → bad-response, and the error carries none of it', async () => {
+    // Valid on every rule. Each case breaks exactly one field (an undefined
+    // one is left out of the JSON), so it can only fail on that field's rule.
+    const GOOD = { token: NEW_ACCESS, refresh_token: MINTED_REFRESH, exp: 1_800_000_000 };
+    const broken: Array<Record<string, unknown>> = [
+      { ...GOOD, token: undefined },
+      { ...GOOD, token: 'has a space' },
+      { ...GOOD, exp: undefined },
+      { ...GOOD, exp: '1800000000' },
+      { ...GOOD, exp: 1.5 },
+      { ...GOOD, exp: 0 },
+      { ...GOOD, refresh_token: undefined },
+      { ...GOOD, refresh_token: '' },
+      { ...GOOD, refresh_token: 'has a space' },
+      { ...GOOD, refresh_token: 'r\r\nx-injected: 1' },
+      { ...GOOD, refresh_token: 42 },
+      { ...GOOD, refresh_token: null },
+      { ...GOOD, refresh_token: 'r'.repeat(513) },
+    ];
+    for (const body of broken) {
+      const label = JSON.stringify(body);
       const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(body)).fetchImpl });
-      expect((await failure(api.rotateConfigToken(REFRESH))).code, JSON.stringify(body)).toBe(
-        'bad-response',
-      );
+      const err = await failure(api.rotateConfigToken(REFRESH));
+      expect(err.code, label).toBe('bad-response');
+      expect(err.message, label).toBe('slack tooling.tokens.rotate: bad-response');
+      const dump = [err.message, String(err), err.stack ?? '', JSON.stringify(err), JSON.stringify(Object.entries(err))].join('\n');
+      for (const secret of [NEW_ACCESS, MINTED_REFRESH, REFRESH]) expect(dump, label).not.toContain(secret);
     }
+    // The longest refresh token the rule allows still goes through.
+    const longest = createSlackApi({
+      fetchImpl: fakeSlack(() => okJson({ ...GOOD, refresh_token: 'r'.repeat(512) })).fetchImpl,
+    });
+    expect((await longest.rotateConfigToken(REFRESH)).refreshToken).toHaveLength(512);
   });
 
   it('createApp sends the manifest as a JSON string in a form body, with the config token', async () => {

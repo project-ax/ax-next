@@ -38,10 +38,17 @@
  * Slack echoed back as its error would be lowercase hex. An error never carries a token, a URL, a header, a
  * byte of the answer or an underlying error, so it is safe to log as it is.
  *
- * `rotateConfigToken` deliberately returns no refresh token. Rotating mints a
- * new live pair while the old ones keep working (TASK-1090 spike), and the
- * one AX keeps is the one the admin pasted and can Revoke on Slack's page.
- * Not returning the new one means no caller can store it.
+ * `rotateConfigToken` hands back the refresh token Slack mints with the
+ * access token. Slack retires the refresh token it was sent some time after
+ * the rotate, so the caller must store the new one before it uses the access
+ * token, or the install loses its configuration token. How long the old one
+ * lasts isn't pinned down. MEASURED on the TASK-1097 walk: it still worked
+ * 18 s after its first rotate, and Slack refused it about 6 minutes after the
+ * first rotate on one install and within 3 hours on the other. The 6 minutes
+ * has a confound (the
+ * admin also saved an app setting on api.slack.com in that gap, which may be
+ * what retired it); the walk report names no confound for the 3 hours. The TASK-1090 spike reused the old
+ * one before Slack refused it, and read that as "keeps working".
  */
 import { ResponseTooLargeError, capResponseBody } from '@ax/core/response-cap';
 import {
@@ -102,6 +109,8 @@ export type StreamChunkOut =
 
 export interface RotatedConfigToken {
   accessToken: string;
+  /** The refresh token to keep from now on: Slack retires the one that was sent some time after this rotate (header). */
+  refreshToken: string;
   /** Epoch milliseconds. */
   expiresAt: number;
 }
@@ -141,6 +150,11 @@ export interface SlackChannel {
 }
 
 export interface SlackApi {
+  /**
+   * A configuration access token for one use, and the refresh token that
+   * replaces the one sent. The caller must store `refreshToken` before it
+   * uses `accessToken` (header).
+   */
   rotateConfigToken(refreshToken: string): Promise<RotatedConfigToken>;
   createApp(configToken: string, manifest: Record<string, unknown>): Promise<CreatedApp>;
   /**
@@ -448,15 +462,22 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
   }
 
   return {
-    async rotateConfigToken(refreshToken) {
+    async rotateConfigToken(sent) {
       const method = 'tooling.tokens.rotate';
-      const r = await call(method, { kind: 'none' }, form({ refresh_token: refreshToken }));
+      const r = await call(method, { kind: 'none' }, form({ refresh_token: sent }));
       const accessToken = tokenOf(r['token']);
+      const refreshToken = tokenOf(r['refresh_token']);
       const exp = r['exp'];
-      if (accessToken === null || typeof exp !== 'number' || !Number.isSafeInteger(exp) || exp <= 0) {
+      if (
+        accessToken === null ||
+        refreshToken === null ||
+        typeof exp !== 'number' ||
+        !Number.isSafeInteger(exp) ||
+        exp <= 0
+      ) {
         throw badResponse(method);
       }
-      return { accessToken, expiresAt: exp * 1000 };
+      return { accessToken, refreshToken, expiresAt: exp * 1000 };
     },
 
     async createApp(configToken, manifest) {
