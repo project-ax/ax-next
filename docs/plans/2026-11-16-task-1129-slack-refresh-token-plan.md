@@ -12,7 +12,7 @@
 
 ## The problem, measured
 
-On real Slack (TASK-1097 walk), a configuration refresh token keeps working for a while after its first rotate (four rotates over 18 s all worked), then Slack answers `invalid_refresh_token`: dead within 6 minutes on one install and within 3 hours on the other. The 6 minutes has a confound (the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it); the 3 hours doesn't. So the window is somewhere between 18 s and 3 hours, and isn't pinned down (whole-branch review F3). TASK-1090's spike re-checked inside that window and recorded "the old refresh token keeps working". TASK-1093 then stored the pasted refresh token forever and made `rotateConfigToken` drop the new one on purpose, and TASK-1096 reused the stored one for every rename. Result: Rename works once per install, and Disconnect after any rename can't delete the app.
+On real Slack (TASK-1097 walk), a configuration refresh token keeps working for a while after its first rotate (four rotates over 18 s all worked), then Slack answers `invalid_refresh_token`: dead about 6 minutes after the first rotate on one install and within 3 hours on the other. The 6 minutes has a confound (the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it); the walk report names no confound for the 3 hours. So the window is somewhere between 18 s and 3 hours, and isn't pinned down (whole-branch review F3). TASK-1090's spike re-checked inside that window and recorded "the old refresh token keeps working". TASK-1093 then stored the pasted refresh token forever and made `rotateConfigToken` drop the new one on purpose, and TASK-1096 reused the stored one for every rename. Result: Rename works once per install, and Disconnect after any rename can't delete the app.
 
 ## Design (decided; see the decisions shard for alternatives)
 
@@ -112,10 +112,11 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
    * the rotate, so the caller must store the new one before it uses the access
    * token, or the install loses its configuration token. How long the old one
    * lasts isn't pinned down. MEASURED on the TASK-1097 walk: it still worked
-   * 18 s after its first rotate, and Slack refused it within 6 minutes on one
-   * install and within 3 hours on the other. The 6 minutes has a confound (the
+   * 18 s after its first rotate, and Slack refused it about 6 minutes after the
+   * first rotate on one install and within 3 hours on the other. The 6 minutes
+   * has a confound (the
    * admin also saved an app setting on api.slack.com in that gap, which may be
-   * what retired it); the 3 hours doesn't. The TASK-1090 spike reused the old
+   * what retired it); the walk report names no confound for the 3 hours. The TASK-1090 spike reused the old
    * one before Slack refused it, and read that as "keeps working".
   ```
 
@@ -322,7 +323,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
 
 - [ ] **Step 5: Design §7, Configuration tokens** (`:735`). The answer cell becomes:
   ```
-  Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead within 6 minutes on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The 3 hours has none (nobody touched the tokens page). The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds after a rename) is unmeasured (TASK-1134).
+  Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead about 6 minutes after the first rotate on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The walk report names no confound for the 3 hours. The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds after a rename) is unmeasured (TASK-1134).
   ```
   The source cell becomes `Tested (spike; corrected by the TASK-1097 walk)`.
 

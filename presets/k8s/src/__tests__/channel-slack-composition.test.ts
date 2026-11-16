@@ -99,8 +99,8 @@ const BOT_TOKEN = join('xo', 'xb-', '1111-2222-', 'COMPOSITIONBOT');
 const CONFIG_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONACCESS');
 const CONFIG_REFRESH_TOKEN = join('xo', 'xe-', '1-', 'COMPOSITIONREFRESH');
 const ROTATED_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONROTATED');
-// Slack mints a NEW refresh token on every rotate and retires the old one a few
-// minutes later, so the fake numbers them: a test can tell which one it holds.
+// Slack mints a NEW refresh token on every rotate and retires the old one some time
+// after the rotate (minutes to hours), so the fake numbers them: a test can tell which one it holds.
 const rotatedRefreshToken = (n: number): string => join('xo', 'xe-', '1-', 'COMPOSITIONROTATEDREFRESH', String(n));
 
 interface SlackPerson {

@@ -43,10 +43,11 @@
  * the rotate, so the caller must store the new one before it uses the access
  * token, or the install loses its configuration token. How long the old one
  * lasts isn't pinned down. MEASURED on the TASK-1097 walk: it still worked
- * 18 s after its first rotate, and Slack refused it within 6 minutes on one
- * install and within 3 hours on the other. The 6 minutes has a confound (the
+ * 18 s after its first rotate, and Slack refused it about 6 minutes after the
+ * first rotate on one install and within 3 hours on the other. The 6 minutes
+ * has a confound (the
  * admin also saved an app setting on api.slack.com in that gap, which may be
- * what retired it); the 3 hours doesn't. The TASK-1090 spike reused the old
+ * what retired it); the walk report names no confound for the 3 hours. The TASK-1090 spike reused the old
  * one before Slack refused it, and read that as "keeps working".
  */
 import { ResponseTooLargeError, capResponseBody } from '@ax/core/response-cap';
