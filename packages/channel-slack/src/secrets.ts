@@ -30,8 +30,8 @@ import { logCode } from './log-code.js';
  *
  * The configuration refresh token stored here starts as the one the admin
  * pasted. Every rotate replaces it with the one Slack mints alongside
- * (admin-routes.ts), because Slack retires a rotated refresh token a few
- * minutes later.
+ * (admin-routes.ts), because Slack retires a rotated refresh token within
+ * minutes to hours (slack-api.ts).
  */
 
 export const SECRET_NAMES = Object.freeze([

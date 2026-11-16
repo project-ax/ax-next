@@ -45,10 +45,11 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     Disconnect and Rename read it, each to mint one access token that is
  *     used once: Disconnect to delete the app, Rename to update its
  *     manifest. That rotate also mints a new refresh token, and Slack
- *     retires the old one a few minutes later (MEASURED, TASK-1097 walk), so
- *     the new one replaces it in the vault BEFORE the access token is used.
- *     If that write fails, Rename stops (a retry within those minutes still
- *     works with the old token) and Disconnect deletes the app anyway.
+ *     retires the old one within minutes to hours (MEASURED, TASK-1097 walk;
+ *     slack-api.ts), so the new one replaces it in the vault BEFORE the
+ *     access token is used. If that write fails, Rename stops (a retry soon
+ *     after may still work with the old token) and Disconnect deletes the
+ *     app anyway.
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
  *     an install, a stage or reason, and a code.
@@ -456,10 +457,10 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
 
   /**
    * Keep the refresh token a rotate just minted, in place of the one it was
-   * minted from. Slack retires a rotated refresh token a few minutes later
-   * (MEASURED, TASK-1097 walk), so without this the install's configuration
-   * token dies after its first use. True when stored. A failure is logged
-   * here, code-only, and the stored token then has minutes left.
+   * minted from. Slack retires a rotated refresh token within minutes to
+   * hours (slack-api.ts), so without this the install's configuration token
+   * dies after its first use. True when stored. A failure is logged here,
+   * code-only, and the stored token then works only until Slack retires it.
    */
   async function saveRotatedToken(install: InstallRow, refreshToken: string): Promise<boolean> {
     try {
@@ -511,8 +512,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * admin is told. A vault fault reading the token throws: the route's 500.
    *
    * The new refresh token is stored first. If that fails, nothing is sent
-   * (`'token-not-kept'`): a retry within the next few minutes still works
-   * with the old one.
+   * (`'token-not-kept'`): a retry soon after may still work with the old one.
    */
   async function updateSlackApp(
     install: InstallRow,

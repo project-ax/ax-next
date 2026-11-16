@@ -39,10 +39,15 @@
  * byte of the answer or an underlying error, so it is safe to log as it is.
  *
  * `rotateConfigToken` hands back the refresh token Slack mints with the
- * access token. Slack retires the refresh token it was sent a few minutes
- * after the rotate (MEASURED on the TASK-1097 walk; the TASK-1090 spike only
- * checked inside those minutes), so the caller must store the new one before
- * it uses the access token, or the install loses its configuration token.
+ * access token. Slack retires the refresh token it was sent some time after
+ * the rotate, so the caller must store the new one before it uses the access
+ * token, or the install loses its configuration token. How long the old one
+ * lasts isn't pinned down. MEASURED on the TASK-1097 walk: it still worked
+ * 18 s after its first rotate, and Slack refused it within 6 minutes on one
+ * install and within 3 hours on the other. The 6 minutes has a confound (the
+ * admin also saved an app setting on api.slack.com in that gap, which may be
+ * what retired it); the 3 hours doesn't. The TASK-1090 spike reused the old
+ * one before Slack refused it, and read that as "keeps working".
  */
 import { ResponseTooLargeError, capResponseBody } from '@ax/core/response-cap';
 import {
@@ -103,7 +108,7 @@ export type StreamChunkOut =
 
 export interface RotatedConfigToken {
   accessToken: string;
-  /** The refresh token to keep from now on: Slack retires the one that was sent a few minutes after this rotate. */
+  /** The refresh token to keep from now on: Slack retires the one that was sent some time after this rotate (header). */
   refreshToken: string;
   /** Epoch milliseconds. */
   expiresAt: number;

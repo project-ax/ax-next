@@ -12,7 +12,7 @@
 
 ## The problem, measured
 
-On real Slack (TASK-1097 walk), a configuration refresh token keeps working for a few minutes after its first rotate (four rotates over 18 s all worked), then Slack answers `invalid_refresh_token` (dead within 6 minutes on one install, within 3 hours on another). TASK-1090's spike re-checked inside that window and recorded "the old refresh token keeps working". TASK-1093 then stored the pasted refresh token forever and made `rotateConfigToken` drop the new one on purpose, and TASK-1096 reused the stored one for every rename. Result: Rename works once per install, and Disconnect after any rename can't delete the app.
+On real Slack (TASK-1097 walk), a configuration refresh token keeps working for a while after its first rotate (four rotates over 18 s all worked), then Slack answers `invalid_refresh_token`: dead within 6 minutes on one install and within 3 hours on the other. The 6 minutes has a confound (the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it); the 3 hours doesn't. So the window is somewhere between 18 s and 3 hours, and isn't pinned down (whole-branch review F3). TASK-1090's spike re-checked inside that window and recorded "the old refresh token keeps working". TASK-1093 then stored the pasted refresh token forever and made `rotateConfigToken` drop the new one on purpose, and TASK-1096 reused the stored one for every rename. Result: Rename works once per install, and Disconnect after any rename can't delete the app.
 
 ## Design (decided; see the decisions shard for alternatives)
 
@@ -94,7 +94,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
 
 - [ ] **Step 3: Implement**
 
-  In `rotateConfigToken`: `const refreshToken = tokenOf(r['refresh_token']);`, add `refreshToken === null` to the existing `bad-response` guard, return `{ accessToken, refreshToken, expiresAt: exp * 1000 }`. Add `refreshToken: string` to `RotatedConfigToken` with the doc `/** The refresh token to keep from now on: Slack retires the one that was sent a few minutes after this rotate. */`.
+  In `rotateConfigToken`: `const refreshToken = tokenOf(r['refresh_token']);`, add `refreshToken === null` to the existing `bad-response` guard, return `{ accessToken, refreshToken, expiresAt: exp * 1000 }`. Add `refreshToken: string` to `RotatedConfigToken` with the doc `/** The refresh token to keep from now on: Slack retires the one that was sent some time after this rotate (header). */`.
 
   Put this doc on `SlackApi.rotateConfigToken`:
   ```ts
@@ -108,10 +108,15 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
   Replace the header paragraph at `:41-44` with exactly:
   ```
    * `rotateConfigToken` hands back the refresh token Slack mints with the
-   * access token. Slack retires the refresh token it was sent a few minutes
-   * after the rotate (MEASURED on the TASK-1097 walk; the TASK-1090 spike only
-   * checked inside those minutes), so the caller must store the new one before
-   * it uses the access token, or the install loses its configuration token.
+   * access token. Slack retires the refresh token it was sent some time after
+   * the rotate, so the caller must store the new one before it uses the access
+   * token, or the install loses its configuration token. How long the old one
+   * lasts isn't pinned down. MEASURED on the TASK-1097 walk: it still worked
+   * 18 s after its first rotate, and Slack refused it within 6 minutes on one
+   * install and within 3 hours on the other. The 6 minutes has a confound (the
+   * admin also saved an app setting on api.slack.com in that gap, which may be
+   * what retired it); the 3 hours doesn't. The TASK-1090 spike reused the old
+   * one before Slack refused it, and read that as "keeps working".
   ```
 
 - [ ] **Step 4: Run tests and build**
@@ -151,7 +156,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
 
   - Add, near `MINTED_ACCESS` (`:40`): `const mintedRefresh = (n: number): string => fakeConfigRefreshToken(\`MINTEDREFRESH${n}SECRET\`);`
   - In `fakeSlack`: a `Set<string>` of refresh tokens already rotated, a mint counter, and a mutable flag on the returned object, `rotatedStillWork` (default `false`).
-  - The default `on.rotateConfigToken(refreshToken)`: if the token was rotated before and `rotatedStillWork` is false, throw `new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token')`. Otherwise record it, bump the counter and return `{ accessToken: MINTED_ACCESS, refreshToken: mintedRefresh(n), expiresAt: NOW_MS + 43_200_000 }`. Doc comment: Slack retires a rotated refresh token minutes later (MEASURED, TASK-1097 walk). This fake retires it at once, so any path that rotates one token twice fails.
+  - The default `on.rotateConfigToken(refreshToken)`: if the token was rotated before and `rotatedStillWork` is false, throw `new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token')`. Otherwise record it, bump the counter and return `{ accessToken: MINTED_ACCESS, refreshToken: mintedRefresh(n), expiresAt: NOW_MS + 43_200_000 }`. Doc comment: Slack retires a rotated refresh token within minutes to hours (MEASURED, TASK-1097 walk; slack-api.ts). This fake retires it at once, so any path that rotates one token twice fails.
   - `ONE_RENAME` (`:1416`) becomes `['store:current', 'vault:get config-refresh-token', 'slack:rotateConfigToken', 'vault:set config-refresh-token', 'slack:updateApp', 'store:setBotName']`. `STOPS_AFTER` becomes `{ 'config-token': 2, rotate: 3, 'save-config-token': 4, 'update-app': 5 }`.
 
 - [ ] **Step 2: Write the tests.** The Review Focus cites these by letter. "Ref" below is `secretRef(installId, 'config-refresh-token')`.
@@ -160,7 +165,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
   - **a.** Happy test (`:1429`): trail is the new `ONE_RENAME`. Also `expect(w.vault.get(ref)).toBe(mintedRefresh(1))`.
   - **b. NEW** `'two renames in a row, then Disconnect: each rotate spends the token the one before it stored, so all three work (TASK-1129)'`: `connectedWorld()`, then rename `'First Name'` → 200, rename `'Second Name'` → 200, disconnect → `{ status: 200, body: { appDeleted: true } }`. The rotate args in order are `[REFRESH, mintedRefresh(1), mintedRefresh(2)]`. `w.lines` is `[]`. `w.vault.size` is 0. (Fails on main: the second rename answers 502 `slack-config-token`.)
   - **c. NEW** `'the new refresh token is stored before Slack is asked to update: an update Slack refuses still leaves it stored, and the next rename works'`: `updateApp` throws `SlackApiError('apps.manifest.update', 'ratelimited', 60_000)` → 502 `slack-error`, and the vault ref holds `mintedRefresh(1)`. Restore `on.updateApp = async () => {}`, rename again → 200. Rotate args are `[REFRESH, mintedRefresh(1)]`.
-  - **d. NEW** `'storing the new refresh token failing → 500; Slack is never asked to update and the old token stays; a retry while Slack still honours it lands'`: after `connectedWorld()`, `w.vaultFailures.set('credentials:set config-refresh-token', Object.assign(new Error(\`vault down ${REFRESH}\`), { code: 'ECONNRESET' }))`. Rename → `{ status: 500, body: { error: 'internal' } }`. The trail slice equals `ONE_RENAME.slice(0, STOPS_AFTER['save-config-token'])`. `updates(w)` is `[]`. The vault ref is still `REFRESH`. The row keeps `'Canopy Bot'`. `w.lines` equals exactly `[{ level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' } }]`. Then delete the failure, set `w.slack.rotatedStillWork = true` (the old token's few minutes), rename → 200, and the vault ref holds `mintedRefresh(2)`.
+  - **d. NEW** `'storing the new refresh token failing → 500; Slack is never asked to update and the old token stays; a retry while Slack still honours it lands'`: after `connectedWorld()`, `w.vaultFailures.set('credentials:set config-refresh-token', Object.assign(new Error(\`vault down ${REFRESH}\`), { code: 'ECONNRESET' }))`. Rename → `{ status: 500, body: { error: 'internal' } }`. The trail slice equals `ONE_RENAME.slice(0, STOPS_AFTER['save-config-token'])`. `updates(w)` is `[]`. The vault ref is still `REFRESH`. The row keeps `'Canopy Bot'`. `w.lines` equals exactly `[{ level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' } }]`. Then delete the failure, set `w.slack.rotatedStillWork = true` (the time before Slack retires the old token), rename → 200, and the vault ref holds `mintedRefresh(2)`.
   - **e.** Replace `:1779` with `'writes the vault once, with the refresh token Slack minted; the minted access token goes nowhere but updateApp, the minted refresh token nowhere but the vault'`: vault calls since the mark are `[{ hook: 'credentials:get', ref }, { hook: 'credentials:set', ref }]`. The vault ref is `mintedRefresh(1)`. The access-token filter is unchanged (`['updateApp']`). No Slack call's args contain `'MINTEDREFRESH'` (check `JSON.stringify(c.args)`).
   - **f.** Extend `:1687` (reset mid-rename): also `expect(w.vault.has(ref)).toBe(false)` and `expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token')`. `w.lines` stays `[]`.
   - **g.** Update `:1698` (rename then disconnect): the disconnect's part of the trail is `['store:current', 'vault:get config-refresh-token', 'slack:rotateConfigToken', 'vault:set config-refresh-token', 'slack:deleteApp']`, and its rotate arg is `mintedRefresh(1)`.
@@ -183,9 +188,9 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
 
 - [ ] **Step 4: Implement in `admin-routes.ts`**
 
-  - `saveRotatedToken` (Interfaces above), placed before `deleteSlackApp`, with the doc: "Keep the refresh token a rotate just minted, in place of the one it was minted from. Slack retires a rotated refresh token a few minutes later (MEASURED, TASK-1097 walk), so without this the install's configuration token dies after its first use. True when stored. A failure is logged here, code-only, and the stored token then has minutes left."
+  - `saveRotatedToken` (Interfaces above), placed before `deleteSlackApp`, with the doc: "Keep the refresh token a rotate just minted, in place of the one it was minted from. Slack retires a rotated refresh token within minutes to hours (slack-api.ts), so without this the install's configuration token dies after its first use. True when stored. A failure is logged here, code-only, and the stored token then works only until Slack retires it."
   - `deleteSlackApp`: `const minted = await d.api.rotateConfigToken(refreshToken);` then `await saveRotatedToken(install, minted.refreshToken);` (the result is deliberately unused), then `stage = 'delete-app'` and `deleteApp(minted.accessToken, …)`. Add to its doc: the new refresh token is stored first, for the retry `disconnect()` keeps the secrets for when the row won't delete. If that store fails, the app is still deleted with the token in hand.
-  - `updateSlackApp`: after the rotate, `if (!(await saveRotatedToken(install, minted.refreshToken))) return 'token-not-kept';`, then `stage = 'update-app'` and `updateApp(minted.accessToken, …)`. Add to its doc: the new refresh token is stored first, and if that fails nothing is sent (`'token-not-kept'`; a retry within the next few minutes still works with the old one).
+  - `updateSlackApp`: after the rotate, `if (!(await saveRotatedToken(install, minted.refreshToken))) return 'token-not-kept';`, then `stage = 'update-app'` and `updateApp(minted.accessToken, …)`. Add to its doc: the new refresh token is stored first, and if that fails nothing is sent (`'token-not-kept'`; a retry soon after may still work with the old one).
   - `rename`: before the 502 mapping, `if (refusal === 'token-not-kept') return INTERNAL;`. In the `InstallStoreError` branch, `await d.secrets.remove(install, 'config-refresh-token');` before `return json(409, { error: 'not-connected' })`, with a comment saying why: a reset removes installs without the admin lock. (As built, after the whole-branch review's F1: the reset deletes what is left of a removed install's secrets once the rows are gone, and this undo takes back a token stored after that sweep.)
   - Header `:44-48`: replace the REFRESH bullet with exactly:
     ```
@@ -193,10 +198,11 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
      *     Disconnect and Rename read it, each to mint one access token that is
      *     used once: Disconnect to delete the app, Rename to update its
      *     manifest. That rotate also mints a new refresh token, and Slack
-     *     retires the old one a few minutes later (MEASURED, TASK-1097 walk), so
-     *     the new one replaces it in the vault BEFORE the access token is used.
-     *     If that write fails, Rename stops (a retry within those minutes still
-     *     works with the old token) and Disconnect deletes the app anyway.
+     *     retires the old one within minutes to hours (MEASURED, TASK-1097 walk;
+     *     slack-api.ts), so the new one replaces it in the vault BEFORE the
+     *     access token is used. If that write fails, Rename stops (a retry soon
+     *     after may still work with the old token) and Disconnect deletes the
+     *     app anyway.
     ```
   - `CONFIG_TOKEN_REFUSED` doc `:129-136`: "rotate's `invalid_refresh_token` once it was revoked on Slack's page" becomes "rotate's `invalid_refresh_token`: revoked on Slack's page, or retired by Slack after a rotate whose new token wasn't kept".
   - `:373` comment becomes `// The pasted one, until the first rotate (Rename, Disconnect) replaces it.`
@@ -204,8 +210,8 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
     ```
      * The configuration refresh token stored here starts as the one the admin
      * pasted. Every rotate replaces it with the one Slack mints alongside
-     * (admin-routes.ts), because Slack retires a rotated refresh token a few
-     * minutes later.
+     * (admin-routes.ts), because Slack retires a rotated refresh token within
+     * minutes to hours (slack-api.ts).
     ```
 
 - [ ] **Step 5: Run tests, build, lint**
@@ -288,9 +294,9 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
   ```
   5. AX keeps the **refresh token** and gets a fresh access token from it with
      `tooling.tokens.rotate` whenever it needs one. Each rotate also hands back a
-     new refresh token, and Slack retires the old one a few minutes later (§7,
-     configuration tokens), so AX stores the new one before it uses the access
-     token (TASK-1129). Access tokens are never stored past their 12 hours.
+     new refresh token, and Slack retires the old one within minutes to hours
+     (§7, configuration tokens), so AX stores the new one before it uses the
+     access token (TASK-1129). Access tokens are never stored past their 12 hours.
   ```
 
 - [ ] **Step 2: Design §3, Renaming** (`:204-206`). Replace "The name people see changes; the @handle underneath stays as it was at install. Slack shows mentions by current name, so people don't notice." with:
@@ -315,7 +321,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
 
 - [ ] **Step 5: Design §7, Configuration tokens** (`:735`). The answer cell becomes:
   ```
-  Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a few minutes, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). The spike reused the old one inside those minutes and read it as "keeps working"; the TASK-1097 walk saw it work four times over 18 s, then found it dead within 6 minutes on one install and within 3 hours on another. Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3).
+  Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead within 6 minutes on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The 3 hours has none (nobody touched the tokens page). The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds after a rename) is unmeasured (TASK-1134).
   ```
   The source cell becomes `Tested (spike; corrected by the TASK-1097 walk)`.
 
@@ -327,7 +333,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
     '@ax/channel-slack': patch
     ---
 
-    Renaming the Slack bot now works more than once. Every time we use the configuration token, Slack hands us a fresh one and retires the old one a few minutes later. We used to keep the old one, so the second rename, and Disconnect after a rename, found it dead. Now we keep the fresh one each time. If we ever can't save it, we stop and ask you to try again in a minute, while the old one still works.
+    Renaming the Slack bot now works more than once. Every time we use the configuration token, Slack hands us a fresh one and retires the old one some time later (minutes to hours, as far as we can tell). We used to keep the old one, so the second rename, and Disconnect after a rename, found it dead. Now we keep the fresh one each time. If we ever can't save it, we stop and ask you to try again. Sooner is better: the old one may still work for a little while.
     ```
 
 - [ ] **Step 7: Sweep the prose spellings** (yolo-ship rule 5)
@@ -357,7 +363,7 @@ Order: 1 → 2 → 3 → 4. Until Task 3 lands, the preset-k8s composition test 
    - "Not measurable in CI: the real-Slack acceptance (two renames in a row, then Disconnect deletes the app) belongs to the TASK-1134 walk";
    - deploy note: TASK-1096's Rename should deploy only with this fix (prod rev 86 has neither, and its single rotate at Disconnect is unaffected).
 2. **After the PR exists**, comment on merged PR #1183 (it says the handle stays and that reusing the refresh token is safe). Use this text, with handles only in backticks:
-   > Correction (TASK-1129, #<this PR>): on real Slack (TASK-1097 walk) two things here turned out wrong. The bot's handle does change on rename (`@ax` became `@ax-walk`). And reusing the stored configuration refresh token across renames isn't safe: Slack retires a rotated refresh token a few minutes after the rotate, so Rename worked once per install. TASK-1129 stores the refresh token every rotate returns, before using the access token, for Rename and Disconnect alike.
+   > Correction (TASK-1129, #<this PR>): on real Slack (TASK-1097 walk) two things here turned out wrong. The bot's handle does change on rename (`@ax` became `@ax-walk`). And reusing the stored configuration refresh token across renames isn't safe: Slack retires a rotated refresh token some time after the rotate (within minutes to hours on that walk), so Rename worked once per install. TASK-1129 stores the refresh token every rotate returns, before using the access token, for Rename and Disconnect alike.
 3. **Handoff `learnings:`**:
    - **TASK-1134**: its walk must cover the four "Unmeasured" items in the shard. These are the card's acceptance; Revoke on Slack's page after a rotate; whether earlier access tokens die; and whether an idle, never-rotated refresh token expires.
    - **TASK-1128**: the stored configuration token now changes on every rotate. Any replace route must take the same admin lock and write the same ref.

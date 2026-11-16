@@ -315,9 +315,10 @@ function fakeSlack(trail: string[]) {
   /** What each call does; a test swaps one out. */
   const on: SlackBehaviour = {
     /**
-     * Slack retires a rotated refresh token minutes later (MEASURED, TASK-1097
-     * walk). This fake retires it at once, so any path that rotates one token
-     * twice fails. `rotatedStillWork` stands in for Slack's few minutes.
+     * Slack retires a rotated refresh token within minutes to hours (MEASURED,
+     * TASK-1097 walk; slack-api.ts). This fake retires it at once, so any path
+     * that rotates one token twice fails. `rotatedStillWork` stands in for the
+     * time before Slack retires it.
      */
     rotateConfigToken: async (refreshToken) => {
       if (rotated.has(refreshToken) && !slack.rotatedStillWork) {
@@ -378,7 +379,7 @@ function fakeSlack(trail: string[]) {
     api,
     calls,
     on,
-    /** A rotated refresh token still works, as it does on Slack for a few minutes after its rotate. */
+    /** A rotated refresh token still works, as it does on Slack for a while after its rotate. */
     rotatedStillWork: false,
   };
   return slack;
@@ -1610,7 +1611,7 @@ describe('POST /admin/slack/rename', () => {
       { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' } },
     ]);
 
-    // Within the old token's few minutes, trying again rotates it again and keeps what that mints.
+    // While Slack still honours the old token, trying again rotates it again and keeps what that mints.
     w.vaultFailures.delete('credentials:set config-refresh-token');
     w.slack.rotatedStillWork = true;
     expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });

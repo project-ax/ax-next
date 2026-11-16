@@ -195,9 +195,9 @@ recalled in a channel.
    someone with install rights can make it.
 5. AX keeps the **refresh token** and gets a fresh access token from it with
    `tooling.tokens.rotate` whenever it needs one. Each rotate also hands back a
-   new refresh token, and Slack retires the old one a few minutes later (§7,
-   configuration tokens), so AX stores the new one before it uses the access
-   token (TASK-1129). Access tokens are never stored past their 12 hours.
+   new refresh token, and Slack retires the old one within minutes to hours
+   (§7, configuration tokens), so AX stores the new one before it uses the
+   access token (TASK-1129). Access tokens are never stored past their 12 hours.
 
 **Renaming:** Admin › Slack → **Rename** (TASK-1096), once Slack is connected.
 AX checks the name (§7 Q3) and applies it with `apps.manifest.update`, using an
@@ -225,7 +225,9 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
   one.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
-  can't do that last step itself.
+  can't do that last step itself. Whether that Revoke also ends the refresh
+  tokens rotates have minted since (the one AX holds after a rename) is
+  unmeasured (TASK-1134).
 
 ### Scopes (smallest set)
 
@@ -734,7 +736,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 | 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got handle `axspikea2`. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
 | 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API; past 10 minutes or 12,000 characters, a new stream in the same thread (§5). | Docs |
 | 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
-| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a few minutes, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). The spike reused the old one inside those minutes and read it as "keeps working"; the TASK-1097 walk saw it work four times over 18 s, then found it dead within 6 minutes on one install and within 3 hours on another. Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). | Tested (spike; corrected by the TASK-1097 walk) |
+| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead within 6 minutes on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The 3 hours has none (nobody touched the tokens page). The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds after a rename) is unmeasured (TASK-1134). | Tested (spike; corrected by the TASK-1097 walk) |
 | — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
 
 ## 8. Open questions
