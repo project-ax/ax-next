@@ -41,11 +41,14 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   - The pasted ACCESS token creates the app and sets its icon (and, if
  *     Connect fails halfway, deletes the app again). Then it is dropped. It
  *     is never stored.
- *   - The pasted REFRESH token is stored verbatim and no route ever returns
- *     it. Only Disconnect and Rename read it, each to mint one access token
- *     that is used once: Disconnect to delete the app, Rename to update its
- *     manifest. Slack mints a new refresh token alongside, which the client
- *     never hands back (slack-api.ts), so nothing can store it.
+ *   - The pasted REFRESH token is stored, and no route ever returns it. Only
+ *     Disconnect and Rename read it, each to mint one access token that is
+ *     used once: Disconnect to delete the app, Rename to update its
+ *     manifest. That rotate also mints a new refresh token, and Slack
+ *     retires the old one a few minutes later (MEASURED, TASK-1097 walk), so
+ *     the new one replaces it in the vault BEFORE the access token is used.
+ *     If that write fails, Rename stops (a retry within those minutes still
+ *     works with the old token) and Disconnect deletes the app anyway.
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
  *     an install, a stage or reason, and a code.
@@ -129,10 +132,11 @@ const TOKEN_ERRORS: ReadonlySet<string> = new Set([
 /**
  * Slack refusing a rename over the STORED configuration token itself, which
  * no retry fixes. Either it is dead (TOKEN_ERRORS, or rotate's
- * `invalid_refresh_token` once it was revoked on Slack's page), or it works
- * but its owner can't manage this app (`no_permission`,
- * `app_not_owned_by_manager_app`, both listed for `apps.manifest.update`).
- * The remedy is the same for all: Disconnect, then Connect with a new token.
+ * `invalid_refresh_token`: revoked on Slack's page, or retired by Slack after
+ * a rotate whose new token wasn't kept), or it works but its owner can't
+ * manage this app (`no_permission`, `app_not_owned_by_manager_app`, both
+ * listed for `apps.manifest.update`). The remedy is the same for all:
+ * Disconnect, then Connect with a new token.
  */
 const CONFIG_TOKEN_REFUSED: ReadonlySet<string> = new Set([
   ...TOKEN_ERRORS,
@@ -370,7 +374,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     try {
       await d.secrets.put(owner, 'client-secret', app.clientSecret);
       await d.secrets.put(owner, 'signing-secret', app.signingSecret);
-      // Verbatim: the token the admin sees, and can Revoke, on Slack's page.
+      // The pasted one, until the first rotate (Rename, Disconnect) replaces it.
       await d.secrets.put(owner, 'config-refresh-token', refreshToken);
       await d.store.insertPending({
         installId,
@@ -451,10 +455,31 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
+   * Keep the refresh token a rotate just minted, in place of the one it was
+   * minted from. Slack retires a rotated refresh token a few minutes later
+   * (MEASURED, TASK-1097 walk), so without this the install's configuration
+   * token dies after its first use. True when stored. A failure is logged
+   * here, code-only, and the stored token then has minutes left.
+   */
+  async function saveRotatedToken(install: InstallRow, refreshToken: string): Promise<boolean> {
+    try {
+      await d.secrets.put(install, 'config-refresh-token', refreshToken);
+      return true;
+    } catch (err) {
+      failed('save-config-token', err, install.installId);
+      return false;
+    }
+  }
+
+  /**
    * Delete the Slack app with an access token minted from the stored refresh
    * token. The minted token is used once. True when the app is gone: deleted
    * now, or already deleted on Slack's side (`app_not_found`, say from
    * api.slack.com/apps), which is what Disconnect wanted anyway.
+   *
+   * The new refresh token is stored first, for the retry `disconnect()` keeps
+   * the secrets for when the row won't delete. If that store fails, the app
+   * is still deleted with the token in hand.
    */
   async function deleteSlackApp(install: InstallRow): Promise<boolean> {
     let stage = 'config-token';
@@ -465,9 +490,11 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         return false;
       }
       stage = 'rotate';
-      const { accessToken } = await d.api.rotateConfigToken(refreshToken);
+      const minted = await d.api.rotateConfigToken(refreshToken);
+      // Whether it was stored doesn't change what happens next: it is logged.
+      await saveRotatedToken(install, minted.refreshToken);
       stage = 'delete-app';
-      await d.api.deleteApp(accessToken, install.appId);
+      await d.api.deleteApp(minted.accessToken, install.appId);
       return true;
     } catch (err) {
       if (stage === 'delete-app' && err instanceof SlackApiError && err.code === 'app_not_found') return true;
@@ -482,8 +509,15 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * manifest on update, so a part of one would drop the rest (the approval
    * buttons, `/ax`, the scopes). Null when Slack took it, else what the
    * admin is told. A vault fault reading the token throws: the route's 500.
+   *
+   * The new refresh token is stored first. If that fails, nothing is sent
+   * (`'token-not-kept'`): a retry within the next few minutes still works
+   * with the old one.
    */
-  async function updateSlackApp(install: InstallRow, botName: string): Promise<RenameRefusal | null> {
+  async function updateSlackApp(
+    install: InstallRow,
+    botName: string,
+  ): Promise<RenameRefusal | 'token-not-kept' | null> {
     const refreshToken = await d.secrets.get(install, 'config-refresh-token');
     if (refreshToken === null) {
       log('warn', 'slack_admin_failed', { installId: install.installId, stage: 'config-token', code: 'missing' });
@@ -492,9 +526,10 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     const manifest = buildAppManifest(botName, slackUrls(d.publicOrigin, install.installId));
     let stage = 'rotate';
     try {
-      const { accessToken } = await d.api.rotateConfigToken(refreshToken);
+      const minted = await d.api.rotateConfigToken(refreshToken);
+      if (!(await saveRotatedToken(install, minted.refreshToken))) return 'token-not-kept';
       stage = 'update-app';
-      await d.api.updateApp(accessToken, install.appId, manifest);
+      await d.api.updateApp(minted.accessToken, install.appId, manifest);
       return null;
     } catch (err) {
       failed(stage, err, install.installId);
@@ -589,14 +624,20 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       // The manifest carries the URLs Slack calls back on: https only, as at Connect.
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
       const refusal = await updateSlackApp(install, name.name);
+      if (refusal === 'token-not-kept') return INTERNAL;
       if (refusal !== null) return json(502, { error: refusal });
       // Last, so the row only ever shows a name Slack took. If this write
       // fails, Slack has the name already, and a retry sends the same manifest.
       try {
         await d.store.setBotName(install.installId, name.name);
       } catch (err) {
-        // Gone meanwhile: a reset removes installs without this lock.
-        if (err instanceof InstallStoreError) return json(409, { error: 'not-connected' });
+        if (err instanceof InstallStoreError) {
+          // Gone meanwhile: a reset removes installs without this lock. And
+          // take back the token just stored: a reset wipes the vault, and a
+          // live configuration token must not outlive it.
+          await d.secrets.remove(install, 'config-refresh-token');
+          return json(409, { error: 'not-connected' });
+        }
         throw err;
       }
       return json(200, { botName: name.name });

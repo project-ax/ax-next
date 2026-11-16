@@ -38,10 +38,21 @@ const NOW_MS = Date.parse('2026-11-13T12:00:00.000Z');
 const ACCESS = fakeConfigAccessToken();
 const REFRESH = fakeConfigRefreshToken();
 const MINTED_ACCESS = fakeConfigAccessToken('MINTEDACCESSSECRET');
+/** The refresh token the fake Slack mints with its nth rotate, counting from 1. */
+const mintedRefresh = (n: number): string => fakeConfigRefreshToken(`MINTEDREFRESH${n}SECRET`);
 const CLIENT_SECRET = 'CLIENTSECRET0123456789abcdef';
 const SIGNING_SECRET = 'SIGNINGSECRET3f1c2b9a8e7d6c5b';
 const BOT_TOKEN = fakeBotToken();
-const SECRETS = [ACCESS, REFRESH, MINTED_ACCESS, CLIENT_SECRET, SIGNING_SECRET, BOT_TOKEN];
+const SECRETS = [
+  ACCESS,
+  REFRESH,
+  MINTED_ACCESS,
+  mintedRefresh(1),
+  mintedRefresh(2),
+  CLIENT_SECRET,
+  SIGNING_SECRET,
+  BOT_TOKEN,
+];
 
 const APP: CreatedApp = {
   appId: 'A07QF9ZK2MN',
@@ -298,9 +309,24 @@ interface SlackBehaviour {
 
 function fakeSlack(trail: string[]) {
   const calls: Array<{ method: keyof SlackBehaviour; args: unknown[] }> = [];
+  /** Every refresh token a rotate was sent, and how many refresh tokens the rotates minted. */
+  const rotated = new Set<string>();
+  let mints = 0;
   /** What each call does; a test swaps one out. */
   const on: SlackBehaviour = {
-    rotateConfigToken: async () => ({ accessToken: MINTED_ACCESS, expiresAt: NOW_MS + 43_200_000 }),
+    /**
+     * Slack retires a rotated refresh token minutes later (MEASURED, TASK-1097
+     * walk). This fake retires it at once, so any path that rotates one token
+     * twice fails. `rotatedStillWork` stands in for Slack's few minutes.
+     */
+    rotateConfigToken: async (refreshToken) => {
+      if (rotated.has(refreshToken) && !slack.rotatedStillWork) {
+        throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
+      }
+      rotated.add(refreshToken);
+      mints += 1;
+      return { accessToken: MINTED_ACCESS, refreshToken: mintedRefresh(mints), expiresAt: NOW_MS + 43_200_000 };
+    },
     createApp: async () => ({ ...APP }),
     updateApp: async () => {},
     deleteApp: async () => {},
@@ -348,7 +374,14 @@ function fakeSlack(trail: string[]) {
     appendStream: notHere,
     stopStream: notHere,
   };
-  return { api, calls, on };
+  const slack = {
+    api,
+    calls,
+    on,
+    /** A rotated refresh token still works, as it does on Slack for a few minutes after its rotate. */
+    rotatedStillWork: false,
+  };
+  return slack;
 }
 
 // ── The routes' surroundings ────────────────────────────────────────────────
@@ -1301,9 +1334,20 @@ describe('GET /admin/slack/oauth/callback', () => {
 describe('POST /admin/slack/disconnect', () => {
   it('rotate + deleteApp succeed → { appDeleted: true }, row and four secrets removed', async () => {
     const { w, installId } = await connectedWorld();
+    const mark = w.trail.length;
     const res = await w.disconnect(GRACE);
     expect(res).toMatchObject({ status: 200, body: { appDeleted: true } });
     expect(Object.keys(res.body as object)).toEqual(['appDeleted']);
+    // The refresh token Slack minted is stored before the app is deleted.
+    expect(w.trail.slice(mark)).toEqual([
+      'store:current',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:remove',
+      ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+    ]);
     expect(
       w.slack.calls
         .filter((c) => c.method === 'rotateConfigToken' || c.method === 'deleteApp')
@@ -1390,13 +1434,44 @@ describe('POST /admin/slack/disconnect', () => {
     expect(w.slack.calls).toEqual([]);
   });
 
-  it('never calls credentials:set, and the minted access token goes nowhere but deleteApp', async () => {
-    const { w } = await connectedWorld();
+  it('writes only the refresh token Slack minted, before deleting the app; the minted access token goes nowhere but deleteApp', async () => {
+    const { w, installId } = await connectedWorld();
     const before = w.vaultCalls.length;
     await w.disconnect();
-    expect(w.vaultCalls.slice(before).map((c) => c.hook)).not.toContain('credentials:set');
+    expect(w.vaultCalls.slice(before).map((c) => c.hook)).toEqual([
+      'credentials:get',
+      'credentials:set',
+      'credentials:delete',
+      'credentials:delete',
+      'credentials:delete',
+      'credentials:delete',
+    ]);
+    expect(w.vaultCalls.slice(before).filter((c) => c.hook === 'credentials:set')).toEqual([
+      { hook: 'credentials:set', ref: secretRef(installId, 'config-refresh-token') },
+    ]);
     expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS)).map((c) => c.method)).toEqual([
       'deleteApp',
+    ]);
+  });
+
+  it('storing the new refresh token failing still deletes the app with the token in hand; the row and secrets go; one error line', async () => {
+    const { w, installId } = await connectedWorld();
+    w.vaultFailures.set(
+      'credentials:set config-refresh-token',
+      Object.assign(new Error(`vault down ${REFRESH}`), { code: 'ECONNRESET' }),
+    );
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
+      [MINTED_ACCESS, APP.appId],
+    ]);
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+    expect(w.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_admin_failed',
+        fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' },
+      },
     ]);
   });
 
@@ -1405,23 +1480,33 @@ describe('POST /admin/slack/disconnect', () => {
     w.memory.failures.set('remove', new Error('connection reset'));
     expect(await w.disconnect()).toMatchObject({ status: 500, body: { error: 'internal' } });
     expect(w.vault.has(secretRef(installId, 'bot-token'))).toBe(true);
+    // The token the retry needs: the one Slack minted, not the one it retired.
+    expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(1));
     w.memory.failures.delete('remove');
-    expect((await w.disconnect()).status).toBe(200);
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').at(-1)!.args).toEqual([
+      mintedRefresh(1),
+    ]);
     expect(w.vault.size).toBe(0);
   });
 });
 
 describe('POST /admin/slack/rename', () => {
-  /** Everything one rename touches, in order: the row, the vault, Slack twice, and the row last. */
+  /**
+   * Everything one rename touches, in order: the row, the vault, a rotate,
+   * the vault again (the refresh token the rotate minted, stored before the
+   * access token is used), the update, and the row last.
+   */
   const ONE_RENAME = [
     'store:current',
     'vault:get config-refresh-token',
     'slack:rotateConfigToken',
+    'vault:set config-refresh-token',
     'slack:updateApp',
     'store:setBotName',
   ];
   /** How far into ONE_RENAME a rename gets before a step fails. */
-  const STOPS_AFTER = { 'config-token': 2, rotate: 3, 'update-app': 4 } as const;
+  const STOPS_AFTER = { 'config-token': 2, rotate: 3, 'save-config-token': 4, 'update-app': 5 } as const;
   /** The two fields a rename changes, as a test reads them out of a manifest. */
   type ManifestNames = { display_information: { name: string }; features: { bot_user: { display_name: string } } };
   const updates = (w: World) => w.slack.calls.filter((c) => c.method === 'updateApp');
@@ -1467,7 +1552,69 @@ describe('POST /admin/slack/rename', () => {
 
     expect(onlyRow(w).botName).toBe('Ada Helper');
     expect((await w.status()).body).toMatchObject({ state: 'connected', botName: 'Ada Helper' });
+    // The refresh token the rotate minted replaced the pasted one.
+    expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(1));
     expect(w.lines).toEqual([]);
+  });
+
+  it('two renames in a row, then Disconnect: each rotate spends the token the one before it stored, so all three work (TASK-1129)', async () => {
+    const { w } = await connectedWorld();
+    expect(await w.rename({ botName: 'First Name' })).toMatchObject({ status: 200, body: { botName: 'First Name' } });
+    expect(await w.rename({ botName: 'Second Name' })).toMatchObject({
+      status: 200,
+      body: { botName: 'Second Name' },
+    });
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0])).toEqual([
+      REFRESH,
+      mintedRefresh(1),
+      mintedRefresh(2),
+    ]);
+    expect(w.lines).toEqual([]);
+    expect(w.vault.size).toBe(0);
+  });
+
+  it('the new refresh token is stored before Slack is asked to update: an update Slack refuses still leaves it stored, and the next rename works', async () => {
+    const { w, installId } = await connectedWorld();
+    w.slack.on.updateApp = async () => {
+      throw new SlackApiError('apps.manifest.update', 'ratelimited', 60_000);
+    };
+    expect(await w.rename()).toMatchObject({ status: 502, body: { error: 'slack-error' } });
+    expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(1));
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage: 'update-app', code: 'ratelimited' } },
+    ]);
+
+    w.slack.on.updateApp = async () => {};
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0])).toEqual([
+      REFRESH,
+      mintedRefresh(1),
+    ]);
+  });
+
+  it('storing the new refresh token failing → 500; Slack is never asked to update and the old token stays; a retry while Slack still honours it lands', async () => {
+    const { w, installId } = await connectedWorld();
+    const ref = secretRef(installId, 'config-refresh-token');
+    w.vaultFailures.set(
+      'credentials:set config-refresh-token',
+      Object.assign(new Error(`vault down ${REFRESH}`), { code: 'ECONNRESET' }),
+    );
+    const mark = w.trail.length;
+    expect(await w.rename()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.trail.slice(mark)).toEqual(ONE_RENAME.slice(0, STOPS_AFTER['save-config-token']));
+    expect(updates(w)).toEqual([]);
+    expect(w.vault.get(ref)).toBe(REFRESH);
+    expect(onlyRow(w).botName).toBe('Canopy Bot');
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' } },
+    ]);
+
+    // Within the old token's few minutes, trying again rotates it again and keeps what that mints.
+    w.vaultFailures.delete('credentials:set config-refresh-token');
+    w.slack.rotatedStillWork = true;
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(w.vault.get(ref)).toBe(mintedRefresh(2));
   });
 
   it('refuses a bad name with { error: "invalid-bot-name", reason } before reading the vault or calling Slack', async () => {
@@ -1692,6 +1839,9 @@ describe('POST /admin/slack/rename', () => {
     expect(await w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
     expect(w.memory.calls.at(-1)).toEqual({ method: 'setBotName', args: [installId, 'Ada Helper'] });
     expect(w.memory.rows.size).toBe(0);
+    // The token it had just stored goes too: no live configuration token outlives a reset.
+    expect(w.vault.has(secretRef(installId, 'config-refresh-token'))).toBe(false);
+    expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token');
     expect(w.lines).toEqual([]);
   });
 
@@ -1711,11 +1861,17 @@ describe('POST /admin/slack/rename', () => {
     expect(await disconnecting).toMatchObject({ status: 200, body: { appDeleted: true } });
     const tail = w.trail.slice(mark);
     expect(tail.slice(0, ONE_RENAME.length)).toEqual(ONE_RENAME);
-    expect(tail.slice(ONE_RENAME.length, ONE_RENAME.length + 4)).toEqual([
+    expect(tail.slice(ONE_RENAME.length, ONE_RENAME.length + 5)).toEqual([
       'store:current',
       'vault:get config-refresh-token',
       'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
       'slack:deleteApp',
+    ]);
+    // The disconnect rotates the token the rename stored, not the one Slack retired.
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0])).toEqual([
+      REFRESH,
+      mintedRefresh(1),
     ]);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
@@ -1776,22 +1932,26 @@ describe('POST /admin/slack/rename', () => {
     expect(onlyRow(w).botName).toBe('Canopy Bot');
   });
 
-  it('never calls credentials:set, and the minted access token goes nowhere but updateApp', async () => {
+  it('writes the vault once, with the refresh token Slack minted; the minted access token goes nowhere but updateApp, the minted refresh token nowhere but the vault', async () => {
     const { w, installId } = await connectedWorld();
+    const ref = secretRef(installId, 'config-refresh-token');
     const before = w.vaultCalls.length;
     await w.rename();
-    // One vault call: reading the refresh token.
+    // Two vault calls: reading the refresh token, then replacing it with the one Slack minted.
     expect(w.vaultCalls.slice(before)).toEqual([
-      { hook: 'credentials:get', ref: secretRef(installId, 'config-refresh-token') },
+      { hook: 'credentials:get', ref },
+      { hook: 'credentials:set', ref },
     ]);
+    expect(w.vault.get(ref)).toBe(mintedRefresh(1));
     expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS)).map((c) => c.method)).toEqual([
       'updateApp',
     ]);
+    expect(w.slack.calls.filter((c) => JSON.stringify(c.args).includes('MINTEDREFRESH'))).toEqual([]);
   });
 });
 
 describe('secrets never leave', () => {
-  it('no response body or log line contains any of the four secrets or either pasted token', async () => {
+  it('no response body or log line contains any of the four secrets, either pasted token or a token a rotate minted', async () => {
     const leak = (where: string): Error => new Error(`${where} failed: ${SECRETS.join(' ')}`);
     const worlds: World[] = [];
     const track = (w: World): World => {
@@ -1873,6 +2033,14 @@ describe('secrets never leave', () => {
     renameVault.vaultFailures.set('credentials:get config-refresh-token', leak('vault'));
     await renameVault.rename();
 
+    // Storing the refresh token a rotate minted failing: Rename stops, Disconnect deletes the app anyway.
+    const renameSave = track((await connectedWorld()).w);
+    renameSave.vaultFailures.set('credentials:set config-refresh-token', leak('vault'));
+    await renameSave.rename();
+    const disconnectSave = track((await connectedWorld()).w);
+    disconnectSave.vaultFailures.set('credentials:set config-refresh-token', leak('vault'));
+    await disconnectSave.disconnect();
+
     // Auth and branding faults.
     await track(world({ authFault: leak('auth') })).status();
     await track(world({ branding: leak('branding') })).status();
@@ -1888,5 +2056,7 @@ describe('secrets never leave', () => {
         expect(['installId', 'reason', 'stage', 'code'], JSON.stringify(line)).toContain(key);
       }
     }
+    // Every refresh token the fake Slack minted, whichever rotate minted it.
+    expect(seen).not.toContain('MINTEDREFRESH');
   });
 });
