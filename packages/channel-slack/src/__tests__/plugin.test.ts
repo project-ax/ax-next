@@ -1242,15 +1242,22 @@ describe('@ax/channel-slack plugin', () => {
 
     // A reset fired on THIS bus forgets it too. (`ax admin reset-bootstrap`
     // fires it on the CLI's own bus, so the host relies on the TTL; plugin.ts.)
-    await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
-    // The reset deletes a removed install's secrets with its row (TASK-1129),
-    // so the same id is connected again, secret and all.
-    expect(s.vault.has(secretRef(INSTALL_ID, 'signing-secret'))).toBe(false);
-    await insertActiveInstall();
-    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), replaced);
-    const afterReset = signingReads();
+    // The delete is made to skip the row (as in the next test group), so the
+    // install and its secret both stay: only the reset's own `clear()` can make
+    // the next request read the vault again, and the cache can't be emptied by
+    // the sweep that reads and removes a removed install's secrets.
+    const beforeReset = signingReads();
+    await withDeleteTrigger(
+      `IF OLD.install_id = '${INSTALL_ID}' THEN RETURN NULL; END IF; RETURN OLD;`,
+      async () => {
+        const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+        expect(fired.rejected).toBe(false);
+      },
+    );
+    expect(await installCount()).toBe(1);
+    expect(s.vault.has(secretRef(INSTALL_ID, 'signing-secret'))).toBe(true);
     expect((await post({ 'content-type': 'application/json' })).status).toBe(401);
-    expect(signingReads()).toBe(afterReset + 1);
+    expect(signingReads()).toBe(beforeReset + 1);
   });
 
   it('stopAdmission makes the events route answer 503 before any lookup', async () => {
@@ -1500,6 +1507,25 @@ describe('@ax/channel-slack plugin', () => {
     expect(logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed')).toEqual([]);
     const all = JSON.stringify(logs);
     for (const secret of [leftover, BOT_TOKEN, 'vault down']) expect(all).not.toContain(secret);
+  });
+
+  it('a log line that throws during a reset still leaves no secret behind (TASK-1129)', async () => {
+    const { harness, s } = await boot();
+    await insertActiveInstall();
+    const configRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    s.vault.set(configRef, fakeConfigRefreshToken('RESETLOGTHROWSSECRET'));
+    // The logger writes JSON lines to stdout: make the "removed" line throw.
+    const write = process.stdout.write.bind(process.stdout);
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+      if (String(chunk).includes('slack_install_removed_by_reset')) throw new Error('log sink is down');
+      return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stdout.write);
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    expect(s.vault.has(configRef)).toBe(false);
+    expect(s.credentialDeletes).toEqual([configRef]);
   });
 
   it('the settings routes are mounted behind the person and the agent: 401 signed out, 404 to an outsider, the section to a team admin', async () => {
