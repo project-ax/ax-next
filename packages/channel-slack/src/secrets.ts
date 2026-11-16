@@ -102,11 +102,13 @@ export function createSecretStore(bus: HookBus, opts: { logger?: Logger } = {}):
       });
     } catch (err) {
       try {
-        ctx.logger.warn('slack_secret_remove_failed', {
-          installId: install.installId,
-          stage: name,
-          code: logCode(err),
-        });
+        const fields = { installId: install.installId, stage: name, code: logCode(err) };
+        // The configuration refresh token is the one secret that outlives the
+        // Slack app: left behind, it can still create apps in the workspace,
+        // even after Disconnect deleted this one, until someone revokes it on
+        // Slack's page.
+        if (name === 'config-refresh-token') ctx.logger.error('slack_secret_remove_failed', fields);
+        else ctx.logger.warn('slack_secret_remove_failed', fields);
       } catch {
         // Nothing left to report it with; any remaining deletes still run.
       }

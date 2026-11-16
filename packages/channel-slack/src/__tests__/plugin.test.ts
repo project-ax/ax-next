@@ -1491,7 +1491,7 @@ describe('@ax/channel-slack plugin', () => {
     const failed = logs.filter((l) => l['msg'] === 'slack_secret_remove_failed');
     expect(failed).toHaveLength(1);
     expect(failed[0]).toMatchObject({
-      level: 'warn',
+      level: 'error',
       installId: INSTALL_ID,
       stage: 'config-refresh-token',
       code: 'ECONNRESET',
