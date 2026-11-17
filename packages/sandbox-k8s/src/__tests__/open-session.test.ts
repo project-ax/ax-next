@@ -612,6 +612,12 @@ describe('sandbox:open-session (k8s)', () => {
       expect(resolverInput.readOnly).toBe(true);
     });
 
+    // Fails closed: `owner.source` is a zod enum, but the ctx is not parsed here.
+    it("a source this build doesn't know on the turn's ctx gets a read-only home too", async () => {
+      const { resolverInput } = await openWithOwner({}, { source: 'visitor' as never });
+      expect(resolverInput.readOnly).toBe(true);
+    });
+
     it("realizes an outsider's /files read-only, with no chown step, and tells the runner", async () => {
       const { body } = await openWithOwner({ source: 'external', audience: 'shared' });
       const files = filesOf(body);
