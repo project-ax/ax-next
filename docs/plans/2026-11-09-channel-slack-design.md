@@ -377,7 +377,12 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
    - Send the reply as Markdown (`markdown_text` chunks); Slack renders it. No
      mrkdwn conversion.
    - Collapse tool calls into one status line, matching the web's #1156 (one
-     `task_update` card that changes in place).
+     `task_update` card that changes in place). Its title is the latest thing
+     the turn reported: a step summary, or a call's activity phrase ("Working"
+     without one). The Claude Agent SDK's `ToolSearch` (it loads a deferred
+     tool's schema) is plumbing, not a step: as in the web's step panel
+     (#1140), neither that call nor its step summary touches the line
+     (TASK-1130).
    - While the agent works, the owner's message wears 👀 (`reactions.add`, from
      the turn's start), taken off once the reply first shows: its stream has
      started (text, its status card, or the failure line) or its first post

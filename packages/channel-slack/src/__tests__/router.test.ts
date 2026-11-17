@@ -829,6 +829,127 @@ describe('createEventRouter: a DM from the owner', () => {
     ]);
   });
 
+  /*
+    The Claude Agent SDK's ToolSearch loads a deferred tool's schema: the
+    runner's own plumbing, which the web's step panel hides too (TASK-1130).
+    Each script here arrives before the first flush, so the one card holds
+    whatever the LATEST title was. In every test the plumbing summary is the
+    last status: one followed by any other status would pass without the fix.
+  */
+  const toolSearch = (id: string) => ({
+    kind: 'tool-use',
+    toolCallId: id,
+    toolName: 'ToolSearch',
+    input: { query: 'select:mcp__ax-host-tools__routine_create' },
+  });
+  const LOADING = 'Loading the routine creation tool schema.';
+  const cards = (calls: readonly SlackCall[]) =>
+    calls.flatMap(chunksOf).flatMap((c) => (c.type === 'task_update' ? [[c.title, c.status]] : []));
+
+  it("the SDK's ToolSearch is plumbing: neither the call nor its step summary shows, and the text after it still starts a new paragraph", async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        { kind: 'text', text: 'On it.' },
+        toolSearch('ts1'),
+        { kind: 'step-summary', toolCallId: 'ts1', text: LOADING },
+        { kind: 'tool-result', toolCallId: 'ts1', output: 'loaded' },
+        { kind: 'text', text: 'Done.' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(cards(w.slack.calls)).toEqual([]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('On it.\n\nDone.');
+  });
+
+  it("a ToolSearch summary that lands after the next call began doesn't retitle the card", async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        toolSearch('ts1'),
+        { kind: 'tool-result', toolCallId: 'ts1', output: 'loaded' },
+        { kind: 'tool-use', toolCallId: 'c1', toolName: 'mcp__ax-host-tools__routine_create', input: {}, activityPhrase: 'Creating a routine' },
+        { kind: 'step-summary', toolCallId: 'c1', text: 'Creating a daily noon reminder.' },
+        // @ax/step-summaries answers off the stream's path: the plumbing call's line can come last.
+        { kind: 'step-summary', toolCallId: 'ts1', text: LOADING },
+        { kind: 'tool-result', toolCallId: 'c1', output: '{"routineId":"rt_1"}' },
+        { kind: 'text', text: 'Set for noon every day.' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(cards(w.slack.calls)).toEqual([
+      ['Creating a daily noon reminder.', 'in_progress'],
+      ['Creating a daily noon reminder.', 'complete'],
+    ]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('Set for noon every day.');
+  });
+
+  it.each(['mcp__notion__ToolSearch', 'toolsearch'])(
+    'a tool only named like it (%s) is a real step: its status and its summary show',
+    async (name) => {
+      const w = world();
+      // Two turns, since one card shows only its latest title: the call's own status, then its summary.
+      w.scripts.push({
+        chunks: [
+          { kind: 'tool-use', toolCallId: 'c1', toolName: name, input: {} },
+          { kind: 'text', text: 'Looking.' },
+        ],
+        end: 'turn-end',
+      });
+      w.scripts.push({
+        chunks: [
+          { kind: 'tool-use', toolCallId: 'c2', toolName: name, input: {} },
+          { kind: 'step-summary', toolCallId: 'c2', text: 'Searching the team wiki for the roadmap.' },
+          { kind: 'text', text: 'Found it.' },
+        ],
+        end: 'turn-end',
+      });
+      await w.dispatch(INSTALL, dm());
+      await w.idle();
+      await w.dispatch(INSTALL, dm({ ts: '1763035300.000300' }));
+      await w.idle();
+      expect(cards(w.slack.calls).map(([title]) => title)).toEqual([
+        COPY.statusDefault,
+        COPY.statusDefault,
+        'Searching the team wiki for the roadmap.',
+        'Searching the team wiki for the roadmap.',
+      ]);
+    },
+  );
+
+  it('a turn whose only call was ToolSearch, and that said nothing: the empty-reply line, and no card', async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [
+        toolSearch('ts1'),
+        { kind: 'step-summary', toolCallId: 'ts1', text: LOADING },
+        { kind: 'tool-result', toolCallId: 'ts1', output: 'loaded' },
+      ],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(cards(w.slack.calls)).toEqual([]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.emptyReply);
+  });
+
+  it('a ToolSearch call held for approval still ends the reply with the held line: a hold is never hidden', async () => {
+    const w = world();
+    w.scripts.push({
+      chunks: [toolSearch('ts1'), { kind: 'tool-result', toolCallId: 'ts1', output: 'Held for approval', held: true }],
+      end: 'turn-end',
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    // No decisions service in this world, so no prompt: the line that sends them to Today.
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.heldForSender(TODAY));
+    expect(cards(w.slack.calls)).toEqual([]);
+  });
+
   it.each([
     ['failed', { isError: true }, () => ''],
     // A held call never ran: no link, and the reply ends saying who must approve it.
