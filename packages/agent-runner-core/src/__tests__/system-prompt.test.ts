@@ -172,9 +172,22 @@ describe('readOnlyFilesNote / operationalNotes with a read-only home (TASK-1122)
     expect(notes).toContain(memoryExportNote('/memory'));
   });
 
-  it('is byte-identical to today when the flag is false or omitted', () => {
-    expect(operationalNotes(HOME, SCRATCH, false, undefined, false)).toBe(operationalNotes(HOME, SCRATCH));
-    expect(operationalNotes(HOME, SCRATCH)).toContain(userFilesNote(HOME));
+  it('a writable home (flag false or omitted) keeps every save-into-home note and never gets the read-only note', () => {
+    for (const notes of [
+      operationalNotes(HOME, SCRATCH, false, undefined, false),
+      operationalNotes(HOME, SCRATCH),
+    ]) {
+      for (const note of [
+        filesNote(HOME, SCRATCH),
+        userFilesNote(HOME),
+        fileOutputNote(HOME),
+        skillAuthoringNote(HOME),
+      ]) {
+        expect(notes).toContain(note);
+      }
+      expect(notes).not.toContain(readOnlyFilesNote(HOME, SCRATCH));
+      expect(notes).not.toContain('can read them but not change them');
+    }
   });
 });
 
