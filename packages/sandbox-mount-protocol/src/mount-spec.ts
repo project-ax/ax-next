@@ -80,7 +80,7 @@ export interface NfsMountSpec {
   exportPath: string;
   /** Per-tenant subtree within the export, e.g. the `agentId`. */
   subPath: string;
-  /** Mount the export read-only. The runner uses `false`; a future host-read realization uses `true`. */
+  /** Mount the export read-only. The runner uses `false`, except in an outsider's session (TASK-1122); a host-read realization uses `true`. */
   readOnly: boolean;
   /** When set, the provider exports this mount's path as `AX_USERFILES_ROOT` (`user-files`) or `AX_MEMORY_ROOT` (`memory`). */
   role?: 'user-files' | 'memory';
@@ -116,7 +116,7 @@ export type MountSpec = NfsMountSpec | LocalDirMountSpec;
 // ---------------------------------------------------------------------------
 // `sandbox:resolve-mounts` (host-internal service hook)
 //
-//   sandbox:resolve-mounts (ctx, { owner }) → { mounts: MountSpec[] }
+//   sandbox:resolve-mounts (ctx, { owner, readOnly? }) → { mounts: MountSpec[] }
 //
 // A mount-resolver plugin registers this; a sandbox provider lists it in
 // `optionalCalls` and calls it during session open to learn which durable
@@ -136,21 +136,25 @@ export type MountSpec = NfsMountSpec | LocalDirMountSpec;
  * source of truth). The resolver keys the per-agent subtree off
  * `owner.agentId`.
  *
- * `readOnly` lets a NON-runner caller request a read-only realization of the
- * same owner-keyed mount (design §11 host-read: the host serves an agent's
- * user files to the web UI without granting write). The runner's
- * session-open call omits it (defaults to a writable mount). A resolver MUST
- * carry this value through onto `MountSpec.readOnly` so a downstream consumer
- * (a host-read realization) can mount the export read-only. Defaulting to a
- * writable mount keeps the session-open path byte-for-byte unchanged.
+ * `readOnly` requests a read-only realization of the same owner-keyed mount.
+ * Two callers pass it: host-read (design §11: the host serves an agent's user
+ * files to the web UI without granting write), and the k8s provider's session
+ * open when an outsider's turn opens the session (TASK-1122: a person with no
+ * access to the agent can read its files but not change them). Every other
+ * session-open call omits it (defaults to a writable mount), byte-for-byte
+ * unchanged. A resolver MUST carry this value through onto
+ * `MountSpec.readOnly` so the consumer mounts the export read-only; the k8s
+ * provider refuses an outsider's session whose resolver answers with a
+ * writable mount anyway.
  */
 export interface ResolveMountsInput {
   owner: NonNullable<OpenSessionInput['owner']>;
   /**
    * When `true`, the resolver emits each mount with `readOnly: true` so the
-   * caller realizes a read-only view (host-read, design §11). Absent/false →
-   * the writable realization the runner uses. The resolver applies this to
-   * EVERY mount it emits; it never widens write access, only narrows it.
+   * caller realizes a read-only view (host-read, design §11; an outsider's
+   * session, TASK-1122). Absent/false → the writable realization a member's
+   * or a routine's session uses. The resolver applies this to EVERY mount it
+   * emits; it never widens write access, only narrows it.
    */
   readOnly?: boolean;
 }

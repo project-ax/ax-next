@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   PluginError,
+  isOutsiderTurn,
   type AgentContext,
   type AgentContextAudience,
   type AgentContextSource,
@@ -66,6 +67,10 @@ const HOME_RESOLVER_MISSING =
   'Configure sandbox.filestore (the k8s preset then loads @ax/workspace-filestore).';
 const HOME_NOT_RESOLVED =
   'no durable home for this session: the sandbox:resolve-mounts resolver returned no /files mount for this agent.';
+// TASK-1122 — the refusal when a read-only home was asked for and the resolver
+// answered with a writable mount anyway. Fixed text, like the two above.
+const HOME_NOT_READ_ONLY =
+  'sandbox:resolve-mounts must return only read-only mounts when asked for a read-only home';
 
 /**
  * True iff the resolver's output carries a `role: 'user-files'` mount: the
@@ -80,6 +85,17 @@ function hasUserFilesMount(mounts: unknown): boolean {
     mounts.some(
       (m: unknown) =>
         typeof m === 'object' && m !== null && (m as { role?: unknown }).role === 'user-files',
+    )
+  );
+}
+
+/** True iff every resolved mount is read-only. `unknown` for the same reason. */
+function allReadOnly(mounts: unknown): boolean {
+  return (
+    Array.isArray(mounts) &&
+    mounts.every(
+      (m: unknown) =>
+        typeof m === 'object' && m !== null && (m as { readOnly?: unknown }).readOnly === true,
     )
   );
 }
@@ -243,6 +259,26 @@ export function createOpenSession(deps: OpenSessionDeps) {
     //     owned session that ends up without its `/files` home. The session was
     //     minted at step 2; on a resolve failure roll it back so we don't orphan
     //     a live token, mirroring the buildPodSpec failure handler below.
+    //
+    //     TASK-1122 — an outsider's session (someone with no access to the agent
+    //     is present: `source: 'external'`) can read the agent's files but not
+    //     change them. /files is the HOME and cwd of every later session and
+    //     `/files/bin` is on its PATH, so a write here would outlive the turn as
+    //     the agent's own and run in members' private sessions. This provider
+    //     grants the session's capabilities (invariant 5), so it asks the
+    //     resolver for a read-only realization of the same home; step 2d checks
+    //     it got one, and the shared pool never serves it from a standby (its
+    //     storage helper would bind /files writable). Keyed on `source`, never
+    //     `audience`: a member's channel turn keeps a writable home. Either the
+    //     owner the session record is written from or the turn's own ctx (the
+    //     orchestrator copies one from the other) naming an outsider is enough;
+    //     `isOutsiderTurn` also refuses a source this build doesn't know.
+    const readOnlyHome =
+      input.owner !== undefined &&
+      (isOutsiderTurn(
+        input.owner.source !== undefined ? { source: input.owner.source } : {},
+      ) ||
+        isOutsiderTurn(ctx));
     const resolverLoaded = deps.bus.hasService('sandbox:resolve-mounts');
     let mounts: MountSpec[] = [];
     if (input.owner !== undefined && resolverLoaded) {
@@ -250,7 +286,8 @@ export function createOpenSession(deps: OpenSessionDeps) {
         const resolved = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
           'sandbox:resolve-mounts',
           ctx,
-          { owner: input.owner },
+          // Everyone else's input stays `{ owner }`, byte for byte.
+          { owner: input.owner, ...(readOnlyHome ? { readOnly: true } : {}) },
         );
         mounts = resolved.mounts;
       } catch (err) {
@@ -296,6 +333,30 @@ export function createOpenSession(deps: OpenSessionDeps) {
         plugin: PLUGIN_NAME,
         hookName: HOOK_NAME,
         message: resolverLoaded ? HOME_NOT_RESOLVED : HOME_RESOLVER_MISSING,
+      });
+    }
+
+    // 2d. TASK-1122 — asked for a read-only home, the session gets one or none.
+    //     The resolver contract says it carries `readOnly` onto every mount it
+    //     emits, but this provider grants the capability, so it doesn't take
+    //     that on trust: a resolver that answers with a writable mount anyway
+    //     would hand an outsider's turn write access to the agent's files.
+    //     Refused like every other bad resolver answer here: roll the session
+    //     back, fixed text only.
+    if (input.owner !== undefined && readOnlyHome && !allReadOnly(mounts)) {
+      podLog.error('home_not_read_only', { agentId: input.owner.agentId });
+      await deps.bus
+        .call<SessionTerminateInput, Record<string, never>>(
+          'session:terminate',
+          ctx,
+          { sessionId: created.sessionId },
+        )
+        .catch(() => undefined);
+      throw new PluginError({
+        code: 'invalid-return',
+        plugin: PLUGIN_NAME,
+        hookName: HOOK_NAME,
+        message: HOME_NOT_READ_ONLY,
       });
     }
 
@@ -470,9 +531,12 @@ export function createOpenSession(deps: OpenSessionDeps) {
     });
 
     try {
+      // TASK-1122 — a read-only home never takes a standby (the shared pool
+      // routes it to the direct path, see shared-pool.ts), so it isn't pooled.
       const pooled = deps.config.sharedPool &&
         Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
-        (input.services?.length ?? 0) === 0;
+        (input.services?.length ?? 0) === 0 &&
+        !readOnlyHome;
       if (deps.config.backend === 'agent-sandbox' && !pooled) {
         podSpec = await prepareAgentSandboxMounts(deps.preparationApi ?? deps.api, podSpec, deps.config, podLog);
       }
