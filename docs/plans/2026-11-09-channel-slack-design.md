@@ -91,8 +91,9 @@ The agent is told what the label means once per session, in its system prompt
 (TASK-1131, `turn-note.ts`). The words after the label are that person's own
 request, and anything they paste or quote stays data. It also says who can
 approve: in a DM, the owner; in a member's thread, that member; in an
-outsider's thread, nobody writing, so the agent says it needs its owner's OK
-and never sends them looking for a card or a button. The note is fixed text
+outsider's thread, nobody writing: a call the host holds waits for the owner,
+so the agent says it needs its owner's OK and never sends them looking for a
+card or a button, and it still checks with them before it acts. The note is fixed text
 chosen by the turn's mode. Nothing from the message, the name or the channel
 goes into it.
 

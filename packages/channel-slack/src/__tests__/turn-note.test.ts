@@ -126,6 +126,13 @@ describe('the note a Slack session reads (TASK-1131)', () => {
     expect(SLACK_NOTE_OUTSIDER).toContain('Never ask them to approve a held call');
     expect(SLACK_NOTE_OUTSIDER).toContain('Checking with them that they want something done before you do it is still right.');
     expect(SLACK_NOTE_OUTSIDER).not.toMatch(/anything that needs approval waits/i);
+    // Structural, so a rewording can't bring the unscoped wait back: every sentence that sends
+    // something to "your owner", other than the redirect and the refusal, is about a HELD call.
+    const toOwner = SLACK_NOTE_OUTSIDER.split(/(?<=\.)\s+/).filter(
+      (s) => /your owner/i.test(s) && !/here that means your owner|not their answer/i.test(s),
+    );
+    expect(toOwner.length).toBeGreaterThan(0);
+    for (const s of toOwner) expect(s).toMatch(/\bheld\b/);
   });
 
   it("the lead doesn't claim the label is the system's only text, and keeps label look-alikes as data", () => {
