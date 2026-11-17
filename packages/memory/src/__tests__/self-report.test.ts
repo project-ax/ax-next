@@ -135,6 +135,13 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'was_unable_to', 'save the note'],
     ['assistant', 'was_not_able_to_open', 'the attachment'],
     ['assistant', 'could_not', 'connect to the calendar'],
+    ['assistant', 'was_unable_to', 'log in to the bank portal'],
+    ['assistant', "couldn_t_save_memory", 'x'],
+    ['assistant', "can_t_save", 'the note'],
+    ['assistant', 'could_not_write_to_memory', 'the standup time'],
+    ['assistant', 'could_not_keep_it_in_memory', 'the standup time'],
+    ['assistant', 'could_not_recall', 'the standup time'],
+    ['assistant', 'could_not_find', 'anything in long-term memory about Vinay'],
     ['assistant', 'saved_to_memory', 'team standup time is 10:15 on Tuesdays'],
     ['assistant', 'stored_in_memory', 'the standup time'],
     ['assistant', 'added_to_long_term_memory', 'the standup time'],
@@ -196,6 +203,18 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['the agent', 'was unable to', 'get an extension on the closing date'],
     ['agent', 'cannot_attend', 'the inspection on Tuesday'],
     ['the_agent', 'failed_to_connect', 'the buyer with a lender'],
+    // Review round 2: memory in the health or study sense isn't its own.
+    ['assistant', 'could_not_find', 'studies linking statins to long-term memory loss'],
+    ['assistant', 'could_not_find', 'studies showing that ginkgo biloba improves long-term memory in adults'],
+    ['assistant', 'could_not_determine', 'whether her long-term memory loss is reversible'],
+    ['assistant', 'could_not_confirm', 'whether the medication causes long-term memory problems'],
+    ['assistant', 'could_not_find', 'anything stored in memory cards older than 2015 at that shop'],
+    ['assistant', 'suggested', 'a peg-word mnemonic for the 12 cranial nerves to keep them in long-term memory'],
+    // Failures whose verb has an outcome sense are answers too.
+    ['assistant', 'could_not_keep', 'the 5-day Italy trip under $2,000 with flights; cheapest found was $2,340'],
+    ['assistant', 'was_unable_to', 'keep the weekly grocery plan under $80'],
+    ['assistant', 'could_not_reach', 'a definitive conclusion on whether the non-compete is enforceable'],
+    ['assistant', 'could_not_write', 'a single regex that validates every RFC 5322 email address'],
     // A failure or memory word mid-predicate is a topic: both predicate
     // tests are anchored at the start.
     ['assistant', 'explained_why_the_printer_cannot_connect', 'to 5 GHz Wi-Fi; it only supports 2.4 GHz'],
@@ -216,6 +235,16 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
 
   // A guard for later edits, not for this change: it passes on main too. An
   // unbounded pattern added later over the uncut predicate is what it catches.
+  it('reads a failure predicate inside the scanned window, and nothing past it', () => {
+    // Cut before it's normalized: the verb after 1,000 spaces isn't read.
+    expect(
+      isAgentContextSelfReport({ subject: 'assistant', predicate: `could not${' '.repeat(1_000)}save`, object: 'the note' }),
+    ).toBe(false);
+    expect(
+      isAgentContextSelfReport({ subject: 'assistant', predicate: `could not${' '.repeat(10)}save`, object: 'the note' }),
+    ).toBe(true);
+  });
+
   it('stays fast on a huge, repetitive, untrusted predicate and object', () => {
     const start = performance.now();
     for (const word of ['save that to ', 'memory note ', 'could not ', 'saved it into the ', 'noted ']) {
