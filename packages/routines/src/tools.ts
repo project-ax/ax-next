@@ -1,5 +1,5 @@
 import {
-  faultLogFields, makeAgentContext, reject, SafeToolError, safeToolMessage,
+  faultLogFields, isOutsiderTurn, makeAgentContext, reject, SafeToolError, safeToolMessage,
   type AgentContext, type HookBus, type ToolCall, type ToolDescriptor,
 } from '@ax/core';
 import { z } from 'zod';
@@ -103,6 +103,11 @@ async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'c
 async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared> {
   if (C.routineToolKind(call?.name) === null) throw new SafeToolError('validation', 'input');
   const name = call.name as C.RoutineToolName;
+  // TASK-1122: an outsider's turn never changes the agent's routines. The turn runs as the person
+  // who connected the channel, and routine consent is theirs, so it would otherwise let an
+  // outsider's text run later, unattended, as them. Checked before validation, so a malformed
+  // call gets this answer rather than a field error that invites a retry. Reads stay.
+  if (C.routineToolKind(name) === 'write' && isOutsiderTurn(ctx)) throw new SafeToolError('forbidden', 'input');
   // Validate before touching policy/decisions or loading any private state.
   parseRoutineInput(C.RoutineToolInputSchemas[name], call.input);
   // A report is the run's own output, not routine management: it answers to the
@@ -294,7 +299,9 @@ function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
 
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {
   async function recordRefusal(ctx: AgentContext, call: ToolCall, failure: SafeToolError): Promise<void> {
-    if (C.routineToolKind(call.name) !== 'write') return;
+    // TASK-1122: an outsider's refusal records nothing in the connector's own decisions. Recording
+    // it would fail any approved, not-yet-started call of theirs with the same input.
+    if (C.routineToolKind(call.name) !== 'write' || isOutsiderTurn(ctx)) return;
     try {
       await bus.callJoined('decisions:reject-unstarted-routine-call', ctx, { call, failureCode: failure.toolCode });
     } catch {
