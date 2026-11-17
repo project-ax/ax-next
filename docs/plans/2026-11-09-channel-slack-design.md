@@ -501,8 +501,10 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
        conversation is theirs and its frozen agent is the prompt's), then
        `agent:apply-capability-grant` with the prompt's own conversation,
        user, agent and skill. It attaches the skill for that person and
-       retires the conversation's warm session, so nothing reruns the
-       message: the reply asks them to send it again. **Deny** calls nothing.
+       retires the conversation's warm session: at once when it's idle, or
+       when a reply is still running there, once the next message arrives
+       (TASK-1127). Nothing reruns the message: the reply asks them to send
+       it again. **Deny** calls nothing.
        A skill that needs a key (Slack never collects one), or a bus without
        either hook, gets its subject and a link to the web app, with nothing
        to click.
@@ -694,14 +696,21 @@ connectors. The protections are:
   draft with the catalog skill's id, the web route would activate the draft
   where Slack attaches the catalog skill the prompt described.
 - **A skill Allow retires the conversation's warm session**, as the web
-  app's Connect does; the next message starts a fresh one.
-- **A skill Allow can end a reply that is running.** The grant
-  (`agent:apply-capability-grant`) ends whatever session is ALIVE for the
-  conversation (chat-orchestrator `activeAliveSession`), not only an idle
-  one. Click Allow while the person's next reply is still running and that
-  reply is cut off (the Fault-A class: a turn killed under its sender).
-  `skills:proposed` avoids this by marking the session and restarting it
-  once its turn ends; the grant should do the same. Follow-up card TASK-1127.
+  app's Connect does. Since TASK-1127 it ends the session at once only when
+  it's idle. While a turn is running there (a reply, one still starting up
+  its sandbox, or a continuation the web app bound), it marks the session
+  instead, as `skills:proposed` does: the running reply finishes, and the
+  next message restarts the session with the skill.
+- **A skill Allow can still end a woken continuation.** Slack never binds a
+  continuation's request to the conversation (the web app does, at approve
+  time), and a continuation has no `agent:invoke` waiter, so the host can't
+  tell it's running. Allow during one ends it, and its follower waits out
+  the cap. Fix: bind it, as channel-web's `bindContinuationTurn` does
+  (follow-up).
+- **A message routed into a marked session that's still busy restarts it
+  under the running turn.** Slack's lanes make that rare: it takes a reply
+  that the cap or the grace period already ended while the agent kept
+  going, or a message sent while a woken continuation runs.
 - **One tenant can push another's prompts out.** PROMPT_MAX (1,000 open
   prompts) is shared by every install on the host, and PR B raises the
   prompts one reply can post to 4 (a held call plus up to
