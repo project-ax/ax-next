@@ -150,7 +150,7 @@ Append the walk as one row to the decisions shard, and paste it into the PR's `#
   - **B fails:** the card is titled with that line.
   - **E fails:** a `startStream`/`stopStream` pair is posted.
   - **C and F pass already.** They guard against filtering too much.
-    *Corrected by the build (decisions shard, last rows): F fails before the fix too, because a `ToolSearch` tool-use showed a "Working" card. Only F's held-line assertion passes before the fix.*
+    *Corrected by the build (decisions shard, the Task 1 build row, before the review rows): F fails before the fix too, because a `ToolSearch` tool-use showed a "Working" card. Only F's held-line assertion passes before the fix.*
 
 - [ ] **Step 3: Implement it in `turn.ts`.**
 

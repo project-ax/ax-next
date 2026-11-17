@@ -131,6 +131,14 @@ function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean 
   return { api, calls };
 }
 
+/** The status card's titles Slack received, in order. */
+function cardTitlesOf(calls: readonly SlackCall[]): string[] {
+  return calls.flatMap((c) => {
+    const chunks = Array.isArray(c.args['chunks']) ? (c.args['chunks'] as StreamChunkOut[]) : [];
+    return chunks.flatMap((x) => (x.type === 'task_update' ? [x.title] : []));
+  });
+}
+
 /** Every word of the reply Slack received, streamed or posted, in order. */
 function replyOf(calls: readonly SlackCall[]): string {
   return calls
@@ -542,6 +550,30 @@ describe("runTurn: another turn's dark turn-end is not this one's (TASK-1095)", 
       await h.own.end();
       await done;
       expect(h.reply()).toBe('One. Two. Three. Four.');
+      expect(h.sinks()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("the SDK loading a tool (ToolSearch) keeps its own turn alive too: plumbing shows nothing, but the grace runs from it (TASK-1130)", async () => {
+      vi.useFakeTimers();
+      const h = harness({ darkEndFirst: true, answeredByDarkEnd: true });
+      const done = h.run('dm');
+      await vi.advanceTimersByTimeAsync(0);
+      const parts = [
+        { kind: 'text', text: 'One. ' },
+        { kind: 'tool-use', toolCallId: 'toolu_ts', toolName: 'ToolSearch', input: { query: 'select:mcp__ax-host-tools__routine_create' } },
+        { kind: 'text', text: 'Three. ' },
+        { kind: 'text', text: 'Four.' },
+      ] as const;
+      for (const part of parts) {
+        await vi.advanceTimersByTimeAsync(TURN_END_GRACE_MS / 2);
+        await h.own.chunk(part);
+      }
+      expect(h.sinks()).toBe(1);
+      await h.own.end();
+      await done;
+      expect(h.reply()).toBe('One. \n\nThree. Four.');
+      expect(cardTitlesOf(h.calls())).toEqual([]);
       expect(h.sinks()).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
     });
@@ -1464,6 +1496,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await h.end();
     await done;
     expect(h.reply()).toBe('Done.');
+    expect(cardTitlesOf(h.all())).toEqual([]);
     expect(h.lines).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
