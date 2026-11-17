@@ -21,7 +21,9 @@ import {
   filesNote,
   memoryExportNote,
   pythonVenvNote,
+  readOnlyFilesNote,
   skillAuthoringNote,
+  userFilesNote,
 } from '../system-prompt.js';
 
 // TASK-989: the engine composes from the frozen session config and reads nothing
@@ -43,6 +45,7 @@ interface BuildOpts {
   scratch?: string;
   routineToolsAvailable?: boolean;
   identityToolAvailable?: boolean;
+  filesReadOnly?: boolean;
 }
 
 /** `buildSystemPrompt` for an agent named Pip, spelling out every positional
@@ -59,6 +62,7 @@ function build(identity: PromptIdentity, opts: BuildOpts = {}): Promise<string> 
     opts.routineToolsAvailable ?? false,
     identity,
     opts.identityToolAvailable ?? false,
+    opts.filesReadOnly ?? false,
   );
 }
 
@@ -343,6 +347,23 @@ describe('buildSystemPrompt — normal mode (identity from the session config)',
     expect(flat).toContain('`/var/scratch-9/uploads/`');
     expect(flat).toContain('go away after this conversation');
     expectNoRetiredTier(out);
+  });
+});
+
+describe('buildSystemPrompt — read-only home (TASK-1122)', () => {
+  it('normal mode tells the agent its files are read-only instead of to keep files there', async () => {
+    const out = await build(idn(), { filesReadOnly: true });
+    expect(out).toContain(readOnlyFilesNote(HOME, SCRATCH));
+    expect(out).toContain(ephemeralScratchNote(SCRATCH));
+    expect(out).not.toContain(userFilesNote(HOME));
+    expect(out).not.toContain(filesNote(HOME, SCRATCH));
+    expect(out).not.toContain(skillAuthoringNote(HOME));
+  });
+
+  it('a writable home (the default) is unchanged', async () => {
+    const out = await build(idn());
+    expect(out).toContain(userFilesNote(HOME));
+    expect(out).not.toContain(readOnlyFilesNote(HOME, SCRATCH));
   });
 });
 

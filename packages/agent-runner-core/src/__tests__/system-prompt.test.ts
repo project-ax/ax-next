@@ -9,6 +9,7 @@ import {
   memoryExportNote,
   operationalNotes,
   pythonVenvNote,
+  readOnlyFilesNote,
   skillAuthoringNote,
   userFilesNote,
   workPolicyNote,
@@ -136,6 +137,44 @@ describe('user-files note (filestore-user-files Phase 1)', () => {
     expect(note).toContain('/files/…');
     expect(note).toMatch(/persist/i);
     expectNoRetiredTier(note);
+  });
+});
+
+describe('readOnlyFilesNote / operationalNotes with a read-only home (TASK-1122)', () => {
+  it('says the home is read-only, points at scratch and never claims to have saved', () => {
+    const note = flat(readOnlyFilesNote(HOME, SCRATCH));
+    expect(note).toContain(`\`${HOME}\` is your working directory and holds your files`);
+    expect(note).toContain('you can read them but not change them');
+    expect(note).toContain(`scratch space, \`${SCRATCH}\``);
+    expect(note).toContain('never say you saved something');
+    expect(note.toLowerCase()).not.toContain('workspace');
+  });
+
+  it('swaps the writable-home notes for the read-only one', () => {
+    const notes = operationalNotes(HOME, SCRATCH, false, undefined, true);
+    expect(notes).toContain(readOnlyFilesNote(HOME, SCRATCH));
+    expect(notes).toContain(ephemeralScratchNote(SCRATCH));
+    expect(notes).toContain(capabilityHandoffNote());
+    expect(notes).toContain(clarifyingQuestionsNote());
+    for (const note of [
+      filesNote(HOME, SCRATCH),
+      userFilesNote(HOME),
+      fileOutputNote(HOME),
+      skillAuthoringNote(HOME),
+    ]) {
+      expect(notes).not.toContain(note);
+    }
+  });
+
+  it('keeps the optional notes with a read-only home', () => {
+    const notes = operationalNotes(HOME, SCRATCH, true, '/memory', true);
+    expect(notes).toContain(pythonVenvNote());
+    expect(notes).toContain(memoryExportNote('/memory'));
+  });
+
+  it('is byte-identical to today when the flag is false or omitted', () => {
+    expect(operationalNotes(HOME, SCRATCH, false, undefined, false)).toBe(operationalNotes(HOME, SCRATCH));
+    expect(operationalNotes(HOME, SCRATCH)).toContain(userFilesNote(HOME));
   });
 });
 

@@ -45,6 +45,13 @@ export interface RunnerEnv {
    */
   userFilesRoot: string;
   /**
+   * `AX_USERFILES_READONLY=1` (TASK-1122): the sandbox mounted the agent's home
+   * read-only for this session (an outsider's turn). Set only for `'1'`; absent
+   * otherwise. The runner only uses it to tell the model so: the mount is the
+   * enforcement, not this flag.
+   */
+  userFilesReadOnly?: true;
+  /**
    * The runner-private directory the SDK loads as its own trusted configuration
    * (`CLAUDE_CONFIG_DIR`): installed skills, connector `.mcp.json`, settings,
    * `.claude.json`, and its session state. k8s pins `/home/runner/.ax/session`;
@@ -220,6 +227,13 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   const transcriptsRoot = opt('AX_TRANSCRIPTS_ROOT');
   if (transcriptsRoot !== undefined) {
     result.transcriptsRoot = absolute('AX_TRANSCRIPTS_ROOT', transcriptsRoot, 'expected an absolute path');
+  }
+  const userFilesReadOnly = opt('AX_USERFILES_READONLY');
+  if (userFilesReadOnly !== undefined) {
+    if (userFilesReadOnly !== '1') {
+      throw new InvalidEnvError('AX_USERFILES_READONLY', "expected '1' when set");
+    }
+    result.userFilesReadOnly = true;
   }
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
