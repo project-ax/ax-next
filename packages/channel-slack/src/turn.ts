@@ -718,6 +718,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   const unregister = d.registry.register({
     reqId: s.reqId,
     conversationId: s.conversationId,
+    mode: s.mode,
     chunk: onChunk,
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),

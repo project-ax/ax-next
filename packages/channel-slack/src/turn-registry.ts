@@ -1,5 +1,6 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { logCode } from './log-code.js';
+import type { TurnMode } from './turn.js';
 
 /**
  * The Slack turns running now (DMs and channel mentions), and the one
@@ -86,6 +87,8 @@ export interface StreamChunkIn {
 export interface TurnSink {
   reqId: string;
   conversationId: string;
+  /** The turn's mode: which note its spawn gets (turn-note.ts). */
+  mode: TurnMode;
   chunk(c: StreamChunkIn): void;
   end(): void;
   error(): void;
@@ -100,6 +103,8 @@ export interface TurnRegistry {
   onTurnEnd(ctx: Pick<AgentContext, 'conversationId'>, payload: unknown): void;
   onTurnError(payload: unknown): void;
   onPermissionRequest(ctx: Pick<AgentContext, 'conversationId'>, payload: unknown): void;
+  /** The mode of the turn registered under `reqId`, only when it is `conversationId`'s; else null. */
+  modeOf(reqId: string, conversationId: string | undefined): TurnMode | null;
   /** Sinks registered now. 0 once every turn has ended: each one unregisters however it ends. */
   size(): number;
 }
@@ -197,6 +202,12 @@ export function createTurnRegistry(d: TurnRegistryDeps): TurnRegistry {
       return () => {
         if (byReqId.get(sink.reqId) === entry) byReqId.delete(sink.reqId);
       };
+    },
+
+    modeOf(reqId, conversationId) {
+      const sink = byReqId.get(reqId)?.sink;
+      if (sink === undefined || conversationId === undefined) return null;
+      return sink.conversationId === conversationId ? sink.mode : null;
     },
 
     onStreamChunk(payload) {
