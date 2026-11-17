@@ -2,10 +2,13 @@ import { randomBytes } from 'node:crypto';
 import {
   MEMORY_PRE_CAPTURE_HOOK,
   PluginError,
+  SystemPromptAugmentOutputSchema,
   makeAgentContext,
   type HookBus,
   type Logger,
   type Plugin,
+  type SystemPromptAugmentInput,
+  type SystemPromptAugmentOutput,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createAdminRoutes } from './admin-routes.js';
@@ -45,6 +48,7 @@ import { cacheSigningSecrets, type SigningSecretCache } from './secret-cache.js'
 import { SECRET_NAMES, createSecretStore, type SecretOwner, type SecretStore } from './secrets.js';
 import { createSlackApi } from './slack-api.js';
 import { createInstallStore, type InstallStore, type RemovedInstall } from './store.js';
+import { SLACK_AUGMENT_HOOK, createSlackTurnNote } from './turn-note.js';
 import { createKeyedQueue } from './turn-queue.js';
 import { TURN_EVENT_HOOKS, createTurnRegistry, subscribeTurnEvents } from './turn-registry.js';
 import { followContinuation, type TurnDeps } from './turn.js';
@@ -56,7 +60,12 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // that answers @mentions there (TASK-1094). Design:
 // docs/plans/2026-11-09-channel-slack-design.md.
 //
-// It registers no hooks. It mounts, through `http:register-route`:
+// It registers one service, `system-prompt:augment:optional:slack`
+// (turn-note.ts, TASK-1131): a Slack turn's system prompt says what the
+// sender label is and who can approve. It stays registered after shutdown
+// (the bus can't remove a service) and answers `{}` once no turn is.
+//
+// It mounts, through `http:register-route`:
 //
 //   GET  /admin/slack, POST /admin/slack/{connect,install-url,rename,disconnect},
 //   GET  /admin/slack/oauth/callback  — admin only, CSRF-checked (admin-routes.ts)
@@ -197,7 +206,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      registers: [SLACK_AUGMENT_HOOK],
       calls: [
         'http:register-route',
         'auth:require-user',
@@ -429,6 +438,14 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             }
           }
         });
+        // Last: the bus can't take a service back, so a failed init registers nothing (TASK-1131).
+        const turnNote = createSlackTurnNote(registry);
+        bus.registerService<SystemPromptAugmentInput, SystemPromptAugmentOutput>(
+          SLACK_AUGMENT_HOOK,
+          PLUGIN_NAME,
+          async (ctx) => turnNote(ctx),
+          { returns: SystemPromptAugmentOutputSchema },
+        );
       } catch (err) {
         // A failed init fails the boot (the kernel shuts the other plugins
         // down, memory with them), so it leaves nothing on the bus, its veto

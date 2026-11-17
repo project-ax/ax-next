@@ -1284,11 +1284,11 @@ describe('@ax/preset-k8s wiring', () => {
     ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
   });
 
-  it('loads @ax/channel-slack: no hooks of its own, every hard call satisfied, every optional one produced too (TASK-1093, TASK-1095)', () => {
+  it('loads @ax/channel-slack: one system-prompt contribution of its own, every hard call satisfied, every optional one produced too (TASK-1093, TASK-1095, TASK-1131)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const slack = plugins.find((p) => p.manifest.name === '@ax/channel-slack');
     expect(slack).toBeDefined();
-    expect(slack!.manifest.registers).toEqual([]);
+    expect(slack!.manifest.registers).toEqual(['system-prompt:augment:optional:slack']);
     expect(slack!.manifest.calls).toEqual([
       'http:register-route',
       'auth:require-user',
