@@ -7,6 +7,7 @@
  * reaches the screen.
  */
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -678,7 +679,8 @@ describe('liveStreamHolds + witnessHolds — the live panel (TASK-532)', () => {
 
 /** channel-slack's PLUMBING_TOOL_NAMES as its source spells it: read from the file, never imported (no cross-plugin import). */
 function slackPlumbingToolNames(): string[] {
-  const file = fileURLToPath(new URL('../../../../channel-slack/src/turn.ts', import.meta.url));
+  // A path, not `new URL(…, import.meta.url)`: under jsdom that `URL` is jsdom's, which `fileURLToPath` refuses.
+  const file = join(dirname(fileURLToPath(import.meta.url)), '../../../../channel-slack/src/turn.ts');
   const found = /^[ \t]*(?:export[ \t]+)?const[ \t]+PLUMBING_TOOL_NAMES\b[^=\n]*=[ \t]*new Set\(\[([^\]]*)\]\)/m.exec(
     readFileSync(file, 'utf8'),
   );
