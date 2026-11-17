@@ -18,10 +18,13 @@ import { PROMPT_SUBJECT_MAX, SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.
 const ZERO_WIDTH_SPACE = '\u200B';
 
 /**
- * Slack's broadcast words. Typed bare, `@here`, `@channel` and `@everyone`
- * may notify a whole channel (whether Slack's Markdown does is unmeasured:
- * TASK-1097's walk checks), so they get the same treatment as `<!channel>`.
- * SLACK_CONTROL spells the same three.
+ * Slack's broadcast words, `@here`, `@channel` and `@everyone`. Measured in
+ * TASK-1134's walk (a bot-token `chat.postMessage` with `markdown_text`):
+ * typed bare, `@channel` and `@here` stayed plain text, and so did
+ * `@channel` with a soft hyphen or word joiner in it; only `<!channel>` and
+ * `<!here>` became broadcasts. We mark the bare words anyway, the same as
+ * `<!channel>`: it costs one invisible character, and Slack's parser is
+ * theirs to change. SLACK_CONTROL spells the same three.
  */
 const BROADCAST_WORDS = ['here', 'channel', 'everyone'] as const;
 const LONGEST_BROADCAST_WORD = Math.max(...BROADCAST_WORDS.map((word) => word.length));
