@@ -325,9 +325,10 @@ export type ApplyAuthoredCapabilityGrantOutput =
   | {
       applied: true;
       /**
-       * True when the conversation's session was ended now or marked to
-       * restart at its next turn (TASK-1127); false when there was none, or
-       * ending it failed.
+       * True when the conversation's session was ended now or will restart at
+       * its next turn (marked now, or by a turn still cold-spawning when it
+       * completes; TASK-1127); false when there was no session and no turn in
+       * flight, or ending it failed.
        */
       respawned: boolean;
     }
@@ -1841,6 +1842,14 @@ export function createOrchestrator(
     }
     return false;
   }
+  // TASK-1127 — reqIds of the agent:invokes that were in flight when a skill
+  // grant landed for their conversation (retireOrMarkForSkillGrant flags each
+  // one). Read by the fresh-spawn path when its turn completes: a turn still
+  // cold-spawning can't be found through the conversation row until its open
+  // and bind, so the grant may have had no session to mark, and the turn
+  // marks its new session itself. Only ever holds reqIds of the registry
+  // above, and cleared by the same finally, so it is bounded the same way.
+  const skillGrantDuringReqIds = new Set<string>();
   // Reactive egress wall (TASK-37) — dedup raised host-grant cards per
   // (sessionId, host) so repeated 403s to the same blocked host don't spam the
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
@@ -2276,9 +2285,10 @@ export function createOrchestrator(
   // skill this turn (see onSkillsProposed; TASK-74 replaced the old trigger on
   // committed draft-skill files), and a skill grant that lands while a turn
   // is in flight (retireOrMarkForSkillGrant, TASK-1127; a grant ends an idle
-  // session at once instead). Consumed (terminate + fresh spawn) at the next
-  // turn's routing decision. In-memory + single-replica — same posture as the
-  // warm-session map.
+  // session at once instead, and a turn still cold-spawning marks its own
+  // session when it completes: skillGrantDuringReqIds). Consumed (terminate +
+  // fresh spawn) at the next turn's routing decision. In-memory +
+  // single-replica — same posture as the warm-session map.
   const respawnSessions = new Set<string>();
 
   // TASK-612 — the second reason a warm session is retired at its next turn:
@@ -2707,8 +2717,9 @@ export function createOrchestrator(
   // reqId is "pending" from the very first instruction (before chat:start,
   // before any await) until its user message is queued
   // (`afterUserMessageQueued`), and "in flight" for its conversation over the
-  // same span until the invoke ends. All three are cleared on every exit —
-  // early return, throw, or a normal end — so they stay bounded.
+  // same span until the invoke ends. All of it, a skill grant's flag on the
+  // reqId included, is cleared on every exit — early return, throw, or a
+  // normal end — so it stays bounded.
   async function runAgentInvoke(
     ctx: AgentContext,
     input: AgentInvokeInput,
@@ -2746,6 +2757,7 @@ export function createOrchestrator(
       pendingMessageReqIds.delete(ctx.reqId);
       stopRequestedReqIds.delete(ctx.reqId);
       invokeConversationByReqId.delete(ctx.reqId);
+      skillGrantDuringReqIds.delete(ctx.reqId);
     }
   }
 
@@ -4792,6 +4804,18 @@ export function createOrchestrator(
     //    session:terminate is fired by the sandbox provider's own exit
     //    handler, so we don't call it here — that would double-fire.
     const keepWarm = keepAlive && outcome.kind === 'complete';
+    // TASK-1127 — a skill grant landed while this turn was in flight (flagged
+    // by retireOrMarkForSkillGrant). Until the open and the bind above, the
+    // conversation row led to no live session, so the grant may have found
+    // nothing to mark, and the skills this session read may predate the
+    // attach. Mark it: its next turn restarts it with the skill. Only a
+    // session kept warm: a killed one restarts anyway, and its
+    // session:terminate (which prunes marks) may already have run, so a mark
+    // on it would never be cleared.
+    if (keepWarm && skillGrantDuringReqIds.has(ctx.reqId)) {
+      respawnSessions.add(sessionId);
+      ctx.logger.info('skill_grant_restart_deferred', { sessionId });
+    }
     if (!keepWarm) {
       try {
         await handle.kill();
@@ -5123,16 +5147,37 @@ export function createOrchestrator(
   // it is still busy. channel-web's re-POST after a skill Connect relies on
   // that: it supersedes the running turn and gets the skill.
   //
-  // 'retired': ended now. 'marked': restarts at its next turn. 'none': no live
-  // session, or ending it failed (logged as `retireFailedLog`).
+  // 'retired': ended now. 'marked': restarts at its next turn (marked now, or
+  // by a turn still cold-spawning when it completes). 'none': no live session
+  // and no turn in flight, or ending it failed (logged as `retireFailedLog`).
   async function retireOrMarkForSkillGrant(
     ctx: AgentContext,
     conversationId: string,
     userId: string,
     retireFailedLog: 'apply_capability_grant_retire_failed' | 'authored_grant_retire_failed',
   ): Promise<'retired' | 'marked' | 'none'> {
+    // First, synchronously, before the lookup's first await: flag every turn
+    // of this conversation in flight now (`skillGrantDuringReqIds`). The row
+    // can't lead the lookup to a cold-spawning turn's session until that
+    // turn's open and bind, and the skills it read may predate the attach, so
+    // a flagged fresh spawn marks its own session when it completes (at
+    // `keepWarm`). Flagged before the await, a turn that ends while the lookup
+    // runs is still flagged. Both callers attach first, so a turn that starts
+    // after this reads the skill. A turn flagged before its own skill read
+    // already has the skill: its mark costs one spare restart, not a turn.
+    // The ownership check comes after this (the lookup), so for the flag this
+    // relies on the callers, which both read `conversations:get` as the user
+    // first; a flag can only restart a session, never widen one.
+    let flagged = false;
+    for (const [reqId, inFlight] of invokeConversationByReqId) {
+      if (inFlight !== conversationId) continue;
+      skillGrantDuringReqIds.add(reqId);
+      flagged = true;
+    }
     const live = await activeAliveSession(ctx, conversationId, userId);
-    if (live === null) return 'none';
+    // Nothing to end or mark now; a flagged turn marks the session it is
+    // opening when it completes.
+    if (live === null) return flagged ? 'marked' : 'none';
     // Asked AFTER the lookup's awaits, so a turn that started meanwhile counts.
     const bound = typeof live.activeReqId === 'string' && live.activeReqId.length > 0;
     if (invokeInFlightFor(conversationId) || bound) {
