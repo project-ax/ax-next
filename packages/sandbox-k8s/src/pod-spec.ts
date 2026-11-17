@@ -401,6 +401,11 @@ interface RealizedMounts {
   }>;
   /** The realized in-pod path of the `role:'user-files'` mount, if any. */
   userFilesRoot?: string;
+  /**
+   * True when that `role:'user-files'` mount is read-only: the session opened
+   * for an outsider's turn (TASK-1122). Stamped as AX_USERFILES_READONLY.
+   */
+  userFilesReadOnly?: boolean;
   memoryRoot?: string;
   /**
    * Root chown init containers — one per WRITABLE `role:'user-files'` mount —
@@ -529,10 +534,14 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
         });
         if (mount.role === 'user-files') {
           out.userFilesRoot = mount.mountPath;
+          out.userFilesReadOnly = mount.readOnly === true;
           // The kubelet creates the per-agent subPath dir root-owned; chown it
           // to the runner uid/gid in an init step so the non-root runner can
-          // write it (§14 open risk). A read-only host-read realization has
-          // nothing to write, so it needs no chown.
+          // write it (§14 open risk). A read-only realization (an outsider's
+          // session, TASK-1122) has nothing to write, so it needs no chown.
+          // Only the volumeMount is read-only, never the `nfs:` volume source
+          // above: an agent whose very first session is an outsider's has no
+          // subPath dir yet, and the kubelet creates it through that source.
           if (!mount.readOnly) {
             out.chownInits.push(
               buildUserFilesChownInit(name, mount.mountPath, mount.subPath, image),
@@ -862,6 +871,13 @@ export function buildPodSpec(
   // without one. The mount alone is inert until the runner reads this.
   if (realizedMounts.userFilesRoot !== undefined) {
     env.push({ name: 'AX_USERFILES_ROOT', value: realizedMounts.userFilesRoot });
+    // TASK-1122 — tell the runner its home is read-only (an outsider's session),
+    // so it doesn't tell the agent to save there. Absent for a writable home.
+    // Pushed after every placeholder, so a credential slot of the same name
+    // can't override it (the kubelet keeps the last entry for a name).
+    if (realizedMounts.userFilesReadOnly === true) {
+      env.push({ name: 'AX_USERFILES_READONLY', value: '1' });
+    }
   }
   if (realizedMounts.memoryRoot !== undefined) {
     env.push({ name: 'AX_MEMORY_ROOT', value: realizedMounts.memoryRoot });
@@ -956,7 +972,8 @@ export function buildPodSpec(
             : []),
           // filestore-user-files (design §4) — the durable per-agent mount(s).
           // Each pins its per-agent `subPath` subtree at the mount path: the
-          // agent's home at `/files` (RW) and the read-only `/memory` export,
+          // agent's home at `/files` (RW; read-only in an outsider's session,
+          // TASK-1122) and the read-only `/memory` export,
           // a sibling, never nested (see realizeMounts). Empty when no
           // resolver contributed a mount.
           ...realizedMounts.volumeMounts,

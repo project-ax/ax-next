@@ -282,6 +282,10 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  *   `undefined` (a session without one) means `NO_PROMPT_IDENTITY`.
  * @param identityToolAvailable true when this session's filtered tool catalog
  *   offers `update_identity` — gates the identity-evolution guidance.
+ * @param filesReadOnly true when the home is mounted read-only
+ *   (`AX_USERFILES_READONLY`, TASK-1122): the notes say so instead of telling
+ *   the agent to keep files there. Normal mode only; an outsider's turn never
+ *   bootstraps.
  */
 export async function buildSystemPrompt(
   displayName: string,
@@ -294,6 +298,7 @@ export async function buildSystemPrompt(
   routineToolsAvailable = false,
   identity: Readonly<PromptIdentity> = NO_PROMPT_IDENTITY,
   identityToolAvailable = false,
+  filesReadOnly = false,
 ): Promise<SdkSystemPrompt> {
   // Bootstrap mode is exclusive: the canonical script IS the prompt, behind the
   // runner-authored name preamble (the script doesn't encode the agent's
@@ -315,7 +320,7 @@ export async function buildSystemPrompt(
 
   // Normal mode — the ONLY other mode. An agent with no identity text yet falls
   // back to the displayName line, so it still gets a coherent "who am I".
-  const notes = operationalNotes(home, scratch, pythonVenvActive, memoryRoot);
+  const notes = operationalNotes(home, scratch, pythonVenvActive, memoryRoot, filesReadOnly);
   return composeNormalModePrompt({
     prepend: augment,
     instructions: identity.instructions,

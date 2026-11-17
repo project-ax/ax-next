@@ -1392,6 +1392,8 @@ async function runRunnerInner(
     // FILTERED catalog: a session that isn't offered the tool (an unattended
     // run, a restrictive allow-list) is never told about it.
     tools.some((tool) => tool.name === UPDATE_IDENTITY_TOOL_NAME),
+    // TASK-1122: the sandbox mounted the home read-only (an outsider's turn).
+    env.userFilesReadOnly === true,
   );
 
   /**

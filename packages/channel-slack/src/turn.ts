@@ -252,6 +252,25 @@ const ARTIFACT_TOOLS = new Set([
 ]);
 
 /**
+ * Calls that are the runner's own plumbing, not something the agent did, so
+ * they get no status and no step summary. `ToolSearch` is the Claude Agent
+ * SDK loading a deferred tool's schema before the agent can call it. Exact
+ * name only: a connector's own `mcp__x__ToolSearch` is a real step.
+ *
+ * A twin of channel-web's PLUMBING_TOOL_NAMES
+ * (packages/channel-web/src/lib/workspace-steps.ts), which hides the same
+ * calls from the web's step panel. It's kept here rather than imported (no
+ * cross-plugin import). Change them together: turn.test.ts here and the web's
+ * workspace-steps.test.ts each read the other's set from its source and fail
+ * when the two differ. Keep it a `new Set([...])` of quoted names.
+ */
+export const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
+
+function isPlumbing(name: string | undefined): boolean {
+  return name !== undefined && PLUMBING_TOOL_NAMES.has(name);
+}
+
+/**
  * A host code (`conversation:busy`, `chat-run-timeout`,
  * `agent-resolve:forbidden`). A terminated reason can be the runner's own
  * error text, so anything else is logged as `runner-error`.
@@ -542,6 +561,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     settle(next);
   };
 
+  /** Every call's tool name by id: a result finds its artifact tool here, and a step summary its plumbing call. */
   const toolNames = new Map<string, string>();
   /**
    * The first call the turn held, when its writer can answer it here
@@ -552,7 +572,9 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   let firstHeld = null as { callId: string | undefined } | null;
   /**
    * The reply has been given something to show: text, a status, an artifact
-   * or a held call. A woken turn that ends without any is given up quietly.
+   * or a held call. A plumbing call's use (PLUMBING_TOOL_NAMES) and its
+   * summary are none of these; its hold still is. A woken turn that ends
+   * without any is given up quietly.
    */
   let said = false;
   /** The turn has begun: the reply invoked it, or (woken) its first chunk came. */
@@ -596,10 +618,12 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
         return;
       case 'tool-use':
         if (c.toolCallId !== undefined && c.toolName !== undefined) toolNames.set(c.toolCallId, c.toolName);
+        if (isPlumbing(c.toolName)) return;
         said = true;
         stream.status(c.activityPhrase ?? COPY.statusDefault);
         return;
       case 'step-summary':
+        if (c.toolCallId !== undefined && isPlumbing(toolNames.get(c.toolCallId))) return;
         if (c.text !== undefined) {
           said = true;
           stream.status(c.text);

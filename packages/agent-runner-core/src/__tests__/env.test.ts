@@ -326,3 +326,29 @@ describe('readRunnerEnv -- AX_PROXY_TOKEN (TASK-704)', () => {
     });
   }
 });
+
+// TASK-1122: the sandbox sets AX_USERFILES_READONLY=1 when the agent's home is
+// mounted read-only (an outsider's turn). Exactly '1' or absent; anything else
+// is a garbled env and fails loud rather than guessing which way to fail.
+describe('readRunnerEnv — AX_USERFILES_READONLY', () => {
+  it("sets userFilesReadOnly: true for '1'", () => {
+    expect(readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_READONLY: '1' }).userFilesReadOnly).toBe(true);
+  });
+
+  it('leaves the key absent when unset', () => {
+    expect('userFilesReadOnly' in readRunnerEnv(PROXY_TCP)).toBe(false);
+  });
+
+  for (const bad of ['true', '0', 'yes', '1 ']) {
+    it(`rejects ${JSON.stringify(bad)} naming AX_USERFILES_READONLY`, () => {
+      let caught: unknown;
+      try {
+        readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_READONLY: bad });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(InvalidEnvError);
+      expect((caught as InvalidEnvError).varName).toBe('AX_USERFILES_READONLY');
+    });
+  }
+});

@@ -1,4 +1,4 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import { isOutsiderTurn, type AgentContext, type HookBus } from '@ax/core';
 
 /**
  * Cold-start admit-queue trigger (JIT design §13 — the self-healing loop).
@@ -14,6 +14,9 @@ import type { AgentContext, HookBus } from '@ax/core';
  * request is non-promotable (TASK-41's admit path rejects `cold-start`), so this
  * filed text can't forge an admitted catalog skill. `requestedByUserId` is taken
  * from the authenticated `ctx.userId`, never from model input.
+ *
+ * An outsider's turn (`isOutsiderTurn`) files nothing; its miss still reaches
+ * the model (TASK-1122).
  */
 
 /** Max length of the free-text need stored on a cold-start request. */
@@ -72,6 +75,14 @@ export async function fireColdStartSubmit(
   ctx: AgentContext,
   need: { skillId: string; description: string },
 ): Promise<void> {
+  // TASK-1122: an outsider's turn files nothing. The request would land in
+  // the admins' queue in the connector's name, worded by someone with no
+  // access to the agent: the harm TASK-1091 refused for connector_propose.
+  // `source` is host-stamped from the session record, never from tool input,
+  // and `isOutsiderTurn` also refuses a source this build doesn't know. A
+  // routine (and @ax/decisions' replay of a call the owner approved, which
+  // runs as one) still files. The miss itself still reaches the model.
+  if (isOutsiderTurn(ctx)) return;
   if (!bus.hasService('catalog:submit')) return;
   try {
     await bus.call<ColdStartSubmitInput, unknown>('catalog:submit', ctx, {

@@ -168,7 +168,11 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       const pod = req.body as PodSpec; const runner = (pod.spec.containers as RunnerContainer[])[0]!;
       const className = classes.get(runner.args[1]!);
       // Service classes remain the existing cold backend. The caller prepares their NFS mount first.
-      if (!className || (pod.spec.initContainers as { restartPolicy?: string }[]).some(c => c.restartPolicy === 'Always')) {
+      // TASK-1122 — so does a read-only /files (an outsider's session): the storage helper binds
+      // user-files read-write whatever the pod's readOnly says, so a standby would hand it a
+      // writable home. (Its AX_USERFILES_READONLY env would also fail the bootstrap allowlist.)
+      if (!className || (pod.spec.initContainers as { restartPolicy?: string }[]).some(c => c.restartPolicy === 'Always') ||
+          runner.volumeMounts.some(m => m.mountPath === '/files' && m.readOnly === true)) {
         return direct.createNamespacedPod(req);
       }
       const env = Object.fromEntries(runner.env.filter(e => e.name !== 'AX_RUNNER_BINARY').map(e => [e.name, e.value!]));

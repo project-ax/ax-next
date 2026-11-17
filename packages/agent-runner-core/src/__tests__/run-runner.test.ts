@@ -2339,7 +2339,11 @@ describe('identity prompt inputs (TASK-989)', () => {
 
   /** Boot the shell with these agentConfig overrides and this host catalog; return
    *  the arguments it handed the prompt engine. */
-  async function promptArgs(agentConfig: Record<string, unknown>, catalog: string[]): Promise<unknown[]> {
+  async function promptArgs(
+    agentConfig: Record<string, unknown>,
+    catalog: string[],
+    envOver: Partial<RunnerEnv> = {},
+  ): Promise<unknown[]> {
     fakeClient.call.mockImplementation(async (action: string, input: unknown) => {
       if (action === 'tool.list') {
         return { tools: catalog.map((name) => ({ name, executesIn: 'host', inputSchema: {} })) };
@@ -2353,7 +2357,7 @@ describe('identity prompt inputs (TASK-989)', () => {
     const { buildSystemPrompt } = await import('../prompt-engine.js');
     const mock = vi.mocked(buildSystemPrompt);
     mock.mockClear();
-    expect(await runRunner(() => ({ run: async () => 0 }), seams(fakeEnv))).toBe(0);
+    expect(await runRunner(() => ({ run: async () => 0 }), seams(() => ({ ...fakeEnv(), ...envOver })))).toBe(0);
     expect(mock).toHaveBeenCalledOnce();
     return mock.mock.calls[0]!;
   }
@@ -2365,7 +2369,7 @@ describe('identity prompt inputs (TASK-989)', () => {
 
   it('passes no identity when the session config has none, so the engine default applies', async () => {
     const args = await promptArgs({}, []);
-    expect(args).toHaveLength(10);
+    expect(args).toHaveLength(11);
     expect(args[8]).toBeUndefined();
   });
 
@@ -2375,5 +2379,11 @@ describe('identity prompt inputs (TASK-989)', () => {
     expect((await promptArgs({ allowedTools: ['web_search'] }, catalog))[9]).toBe(false);
     expect((await promptArgs({ disallowedTools: ['update_identity'] }, catalog))[9]).toBe(false);
     expect((await promptArgs({}, ['web_search']))[9]).toBe(false);
+  });
+
+  // TASK-1122: AX_USERFILES_READONLY reaches the prompt engine as `filesReadOnly`.
+  it('tells the prompt engine the home is read-only only when the env says so', async () => {
+    expect((await promptArgs({}, []))[10]).toBe(false);
+    expect((await promptArgs({}, [], { userFilesReadOnly: true }))[10]).toBe(true);
   });
 });

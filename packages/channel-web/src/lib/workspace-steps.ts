@@ -681,8 +681,16 @@ function summary(steps: readonly WorkspaceStep[]): string {
  * The reader asked for a chart, not for the SDK to look one up, so the row is
  * noise — and it names wire identifiers we otherwise never show. Exact name
  * only: a connector's own `mcp__x__ToolSearch` is a real step and keeps its row.
+ *
+ * channel-slack keeps a twin (`PLUMBING_TOOL_NAMES` in
+ * packages/channel-slack/src/turn.ts): there, neither the call nor its step
+ * summary changes a reply's status line. Each package's tests read the other's
+ * set from its source (channel-slack's turn.test.ts, this package's
+ * workspace-steps.test.ts) and fail when the two differ, so a PR that touches
+ * either side runs the comparison. Change them together, and keep each a
+ * `new Set([...])` of quoted names (that's what the tests read).
  */
-const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
+export const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
 
 export function shapeSteps(
   calls: readonly WorkspaceToolCall[],

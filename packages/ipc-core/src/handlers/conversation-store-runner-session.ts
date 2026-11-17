@@ -10,6 +10,7 @@ import { zodSummary,
   mapPluginError,
   validationError,
 } from '../errors.js';
+import { refuseUnboundConversation } from './bound-conversation.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,8 @@ import type { ActionHandler } from './types.js';
 // host will use this id later to ask the SDK to resume the in-runner
 // session instead of replaying turns from the host DB.
 //
-// Authz pattern (gate lives strictly on the bus impl side):
+// Authz pattern (the conversation gate is here, the user gate on the bus
+// impl side):
 //
 //   1. The IPC server's auth gate already resolved the runner's bearer
 //      token to ctx.userId (Week 9.5; ipc-server/listener.ts).
@@ -29,16 +31,26 @@ import type { ActionHandler } from './types.js';
 //      (request schema is .strict — extra fields fail 400 here, before
 //      the bus is touched, so a malicious runner can't smuggle a foreign
 //      userId).
-//   3. We pass `parsed.data` straight through to the service hook.
+//   3. `conversationId` must be the conversation the session is bound to
+//      (`refuseUnboundConversation`: ctx.conversationId, stamped by the
+//      listener from the token's session, never from the body), else 403
+//      before the bus is touched (TASK-1122). Step 5's UPDATE scopes by
+//      user only, so without this a runner could bind an id onto another of
+//      its user's conversations (a channel connector's private chats
+//      included), and that conversation's next pod joins the id into a
+//      filename. Every session, whatever its source: an honest runner only
+//      ever names the conversation it was handed at boot.
+//   4. We pass `parsed.data` straight through to the service hook.
 //      conversations:store-runner-session reads `ctx.userId` directly
 //      inside `storeRunnerSession()` — so we deliberately do NOT add
 //      userId to the input. Adding it would be noise the bus ignores.
-//   4. The bus impl runs a userId-scoped UPDATE: a runner whose ctx.userId
+//   5. The bus impl runs a userId-scoped UPDATE: a runner whose ctx.userId
 //      doesn't own `conversationId` will see `not-found`, never the row.
 //      No `agents:resolve` round-trip — the orchestrator already gated the
 //      user at agent:invoke entry (Phase B posture).
 //
 // PluginError mapping (via mapPluginError):
+//   - `forbidden`       → 403 HOOK_REJECTED  (step 3's refusal)
 //   - `invalid-payload` → 400 VALIDATION
 //   - `not-found`       → 404 NOT_FOUND  (cross-tenant or unknown row)
 //   - `conflict`        → 409 HOOK_REJECTED  (different runnerSessionId
@@ -61,6 +73,15 @@ export const conversationStoreRunnerSessionHandler: ActionHandler = async (
       `conversation.store-runner-session: ${zodSummary(parsed.error)}`,
     );
   }
+
+  // Step 3 above: only the conversation this session is bound to.
+  const refused = refuseUnboundConversation(
+    ctx,
+    parsed.data.conversationId,
+    'conversation.store-runner-session',
+    'store_runner_session_foreign_conversation_refused',
+  );
+  if (refused !== null) return refused;
 
   try {
     // The bus impl reads ctx.userId itself; we must NOT smuggle userId
