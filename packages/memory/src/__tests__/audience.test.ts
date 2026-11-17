@@ -696,7 +696,7 @@ describe('breaksSpeakerRule — the one speaker rule (TASK-1136)', () => {
   });
 });
 
-describe('one speaker rule governs every write path: the observer, memory_note and recordFacts agree (TASK-1136)', () => {
+describe('drift guard: the observer, memory_note and recordFacts refuse exactly what breaksSpeakerRule names (TASK-1136)', () => {
   // Walk TASK-1134: memory_note refused `user` while the observer kept `vinay`:
   // the same rule, different subjects. `vinay` is here so both paths stay
   // pinned to treat a name alike.

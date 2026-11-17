@@ -36,9 +36,10 @@ export const SPEAKER_SUBJECT = 'user';
  * prefix. It doesn't rewrite a key, it drops a fact, so matching too much
  * costs one fact while missing one pins a passer-by's words on a person. The
  * observer and `memory_note` apply it before this rewrite, and `recordFacts`
- * refuses whatever gets past them, so a shared turn stores nothing under a speaker subject. A speaker the
- * extractor names from a channel's sender label (`vinay | …`, seen in the
- * TASK-1134 walk) isn't one: design §2a's accepted gap.
+ * refuses whatever gets past them, so a shared turn stores nothing under a
+ * speaker subject. A speaker the extractor names from a channel's sender
+ * label (`vinay | …`, seen in the TASK-1134 walk) isn't one: design §2a's
+ * accepted gap.
  *
  * Note this is NOT an access-control boundary. A caller can still write any
  * `about` it likes, including `user:someone-else`. What limits where that

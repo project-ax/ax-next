@@ -56,24 +56,33 @@
  * the one for what the tool did. A transcript report of a save or a failure is
  * a second, staler copy, stale on arrival (invariant 4).
  *
- * Narrow on purpose. The AGENT must be the subject, and the fact must carry a
- * failure predicate (`could_not_*`, `unable_to_*`, `failed_to_*`, …), a
- * memory-operation predicate (`saved_to_memory`), or text that anchors the
- * operation to memory ("save that to memory", "memory_note"). A person's
- * failure (`user | could_not_attend`) is theirs to keep, and `did_not_*` is
- * content: "did not recommend the Hilton" is an answer.
+ * Narrow on purpose, in three ways:
  *
- * So is a failure to find, locate, confirm or recommend something:
- * `could_not_find | any flights under $300 on the 14th` is the answer to what
- * the person asked, the assistant content the extraction prompt asks for. It's
- * kept unless the text mentions memory, because then the agent is reporting
- * what it looked up in its own memory, which the store already answers.
+ * - The subject must be the ASSISTANT (`assistant`, `the_assistant`,
+ *   `ai_assistant`: what the pinned prompt tells the extractor to write), not
+ *   TASK-612's wider list. `agent` and `the_agent` are everyday nouns here
+ *   ("the agent couldn't get the seller to accept 450k" is a person's fact),
+ *   and TASK-612 could afford them only because it also needs text about
+ *   rules, instructions or memory.
+ * - A failure predicate (`could_not_*`, `unable_to_*`, `failed_to_*`, …)
+ *   counts only when what failed is one of its own operations, a TOOLING
+ *   verb (save, fetch, access, connect, open, …), or when the text points at
+ *   its own memory ("anything in memory", "saved facts"). Any other failure
+ *   is an outcome the person asked about: `could_not_find | any flights
+ *   under $300`, `could_not_book | a table for 8`, `could_not_reproduce | the
+ *   crash on Node 20`. Nothing else records those, so they're the assistant
+ *   content the extraction prompt asks for, and they're kept.
+ * - The memory words follow TASK-612's {@link MEMORY}, so "memory card",
+ *   "memory leaks" and the rest of its exclusions aren't the agent's memory.
  *
- * The accepted losses: a content outcome phrased with any other failure verb
- * (`could_not_book | a table for 8 on Friday`), and programming advice that
- * reads like a save ("how to save it to memory on an Arduino", "instead of
- * keeping it in memory"). Both are dropped. The other way round, a tool
- * failure phrased as a search (`could_not_find | the weather page`) is kept.
+ * A person's failure (`user | could_not_attend`) is theirs to keep, and
+ * `did_not_*` is content: "did not recommend the Hilton" is an answer.
+ *
+ * The accepted losses: programming advice that reads like a save with a
+ * pronoun ("how to save it to memory on an Arduino"), and a content outcome
+ * phrased with a tooling verb (`could_not_open | the museum on Mondays`).
+ * The other way round, a tool failure phrased as a search (`could_not_find |
+ * the weather page`) is kept.
  */
 
 /**
@@ -121,9 +130,8 @@ const NEGATION = String.raw`(?:don't|do not|doesn't|does not|cannot|can't|haven'
 const MAX_SCANNED_CHARS = 1_000;
 
 /**
- * Phrases that tie rules/instructions/memory to the agent's own context, or
- * narrate one of its memory operations (TASK-1136). Run over `predicate`
- * (underscores as spaces) + `object`, lowercased.
+ * Phrases that tie rules/instructions/memory to the agent's own context. Run
+ * over `predicate` (underscores as spaces) + `object`, lowercased.
  */
 const CONTEXT_PATTERNS: readonly RegExp[] = [
   // "no rules", "no standing instructions", "no saved memories"
@@ -152,67 +160,103 @@ const CONTEXT_PATTERNS: readonly RegExp[] = [
   /\b(?:system |bootstrap ){1,2}prompt (?:is|was) (?:all (?:i|it)|the only)\b/,
   // "its instructions", "my memory"
   /\b(?:my|its|the assistant's|the agent's) (?:rules|instructions|memory|memories)\b/,
-  // TASK-1136. Its own note tool by name: "used memory_note to save it",
-  // "the memory note tool refused it".
-  /\bmemory[_ ]notes?\b/,
-  // "couldn't save that to memory", "saved it to memory", "noted this in
-  // memory": a save verb, a pronoun for what was said, then memory. A noun
-  // in the pronoun's place ("save data to memory on an Arduino") is a topic.
-  /\b(?:save|saved|saving|store|stored|storing|note|noted|noting|record|recorded|recording|add|added|adding|keep|kept|keeping|write|wrote|written|writing) (?:it|that|this|these|those|them) (?:to|in|into) (?:(?:my|its|the|long-term|long term) )?memor(?:y|ies)\b/,
 ];
 
 /** A predicate that is itself about the agent's rules/memory: `has_no_rules`, `has_rules`. */
 const CONTEXT_PREDICATE = /^(has|have|had|received|remembers|knows|sees)_(no_)?(rules|instructions|memory|memories)(_|$)/;
 
 /**
- * A predicate saying the agent failed at something (TASK-1136):
+ * The subjects TASK-1136's narration checks accept: the assistant as the
+ * pinned prompt names it, after {@link normalizeSubject}. Narrower than
+ * {@link AGENT_SUBJECTS} on purpose (see the header).
+ */
+const ASSISTANT_SUBJECTS = new Set(['assistant', 'the_assistant', 'ai_assistant']);
+
+/**
+ * Phrases that narrate one of the assistant's own memory operations
+ * (TASK-1136), over the same `text` as {@link CONTEXT_PATTERNS}.
+ */
+const NARRATION_PATTERNS: readonly RegExp[] = [
+  // Its own note tool by name: "used memory_note to save it", "the memory
+  // note tool refused it".
+  /\bmemory[_ ]notes?\b/,
+  // "couldn't save that to memory", "saved it to memory", "noted this in
+  // memory": a save verb, a pronoun for what was said, then memory. A noun
+  // in the pronoun's place ("save data to memory on an Arduino") is a topic,
+  // and so is a memory card.
+  new RegExp(
+    String.raw`\b(?:save|saved|saving|store|stored|storing|note|noted|noting|record|recorded|recording|add|added|adding|keep|kept|keeping|write|wrote|written|writing) (?:it|that|this|these|those|them) (?:to|in|into) (?:(?:my|its|the|long-term|long term) )?${MEMORY}`,
+  ),
+];
+
+/**
+ * A predicate saying the assistant failed at something (TASK-1136):
  * `could_not_save_memory`, `failed_to_connect`, `was_unable_to`. Tested on
  * {@link normalizePredicate}'s output, so `Could Not Save` and `couldn't_save`
  * read alike. The closing `(?:_|$)` keeps it a whole word: `cantilevered`
  * isn't `cant`. Not `did_not_*`: "did not recommend the Hilton" is an answer.
+ * A failure counts only with a {@link TOOL_VERB} or {@link OWN_MEMORY}.
  */
 const FAILURE_PREDICATE =
   /^(?:could_?not|couldnt|can_?not|cant|(?:was_|were_|is_)?unable_to|failed_to|(?:was_|were_|is_)?not_able_to|wasnt_able_to)(?:_|$)/;
 
 /**
- * What follows a failure when the failure IS the answer: "couldn't find any
- * flights under $300" is what the person asked about, not the agent's
- * tooling. Read from the rest of the predicate, or from the object's start
- * when the predicate is the failure alone (`was_unable_to | find …`). Only
- * while the text doesn't mention memory ({@link AGENT_MEMORY}).
+ * What failed, when the failure is the assistant's own tooling rather than an
+ * outcome the person asked about. Read from the rest of the predicate, or
+ * from the object's start when the predicate is the failure alone
+ * (`was_unable_to | save the note`). `find`, `confirm`, `book`, `recommend`
+ * and the like are deliberately absent: their failures are answers.
  */
-const ANSWER_VERB = /^(?:find|locate|confirm|recommend)(?![a-z])/;
+const TOOL_VERB =
+  /^(?:save|store|record|note|remember|write|keep|add|fetch|retrieve|access|connect|open|load|read|reach|run|execute|send|download|upload|call|attach|browse|search|query|log_?in|sign_?in|authenticate)(?![a-z])/;
 
-/** Memory in the agent's sense, TASK-612's {@link MEMORY}: "memory foam" and "a memory card" aren't. */
-const AGENT_MEMORY = new RegExp(String.raw`\b${MEMORY}`);
+/**
+ * The assistant's OWN memory, as narration names it: "anything in memory",
+ * "nothing saved in memory", "my memory", "saved facts", "long-term memory".
+ * Not bare "memory": "the memory spike in the worker pod" and "the pod's
+ * memory limit" are what the person asked about.
+ */
+const OWN_MEMORY =
+  /\b(?:(?:anything|nothing|something) (?:saved |stored )?(?:in|from) memory|(?:my|its|long-term|long term) memor(?:y|ies)|saved facts)\b/;
 
 /** A predicate that IS a memory operation (TASK-1136): `saved_to_memory`, `added_to_long_term_memory`. */
 const MEMORY_OP_PREDICATE =
-  /^(?:save|saved|store|stored|note|noted|add|added|record|recorded|write|wrote|written|keep|kept)_(?:(?:it|that|this)_)?(?:to|in|into)_(?:(?:my|its|the|long_term)_)?memor(?:y|ies)(?:_|$)/;
+  /^(?:save|saved|store|stored|note|noted|add|added|record|recorded|write|wrote|written|keep|kept)_(?:(?:it|that|this)_)?(?:to|in|into)_(?:(?:my|its|the|long_term)_)?memor(?:y|ies)(?!_(?:foam|cards?|sticks?)(?:_|$))(?:_|$)/;
 
 function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
 /**
- * For the two TASK-1136 predicate tests only: trimmed, lowercased, apostrophes
- * dropped (`couldn't` → `couldnt`), and each run of spaces or hyphens made one
- * `_`. Bounded like every quantifier here: a run past 32 leaves a doubled `_`
- * that no test matches, so the row is kept, and no model writes one.
+ * For the TASK-1136 predicate tests only: cut to the scanned window first,
+ * like the text, then trimmed, lowercased, apostrophes dropped (`couldn't` →
+ * `couldnt`), and each run of spaces or hyphens made one `_`.
  */
 function normalizePredicate(predicate: string): string {
-  return predicate.trim().toLowerCase().replace(/['‘’]/g, '').replace(/[\s-]{1,32}/g, '_');
+  return predicate
+    .slice(0, MAX_SCANNED_CHARS)
+    .trim()
+    .toLowerCase()
+    .replace(/['‘’]/g, '')
+    .replace(/[\s-]+/g, '_');
 }
 
 /**
- * A failure that answers the person's question, not one of the agent's
- * tooling (see {@link ANSWER_VERB}). The object's start is read inside the
- * scanned window, like everything else here: an object padded past it has no
- * verb in view, so it stays narration.
+ * Whether a failure predicate narrates the assistant's own operation: what
+ * failed is a {@link TOOL_VERB}, or the text points at its own memory. The
+ * object's start is read inside the scanned window, like everything else.
  */
-function isAnswerOutcome(rest: string, object: string, text: string): boolean {
-  const verb = rest !== '' ? rest : object.slice(0, MAX_SCANNED_CHARS).trimStart().slice(0, 16).toLowerCase();
-  return ANSWER_VERB.test(verb) && !AGENT_MEMORY.test(text);
+function isOwnFailure(rest: string, object: string, text: string): boolean {
+  const verb = rest !== '' ? rest : object.slice(0, MAX_SCANNED_CHARS).trimStart().toLowerCase();
+  return TOOL_VERB.test(verb) || OWN_MEMORY.test(text);
+}
+
+/** TASK-1136: the assistant narrating its own memory operations and tool failures. */
+function isOwnNarration(normalized: string, object: string, text: string): boolean {
+  const failure = FAILURE_PREDICATE.exec(normalized);
+  if (failure !== null && isOwnFailure(normalized.slice(failure[0].length), object, text)) return true;
+  if (MEMORY_OP_PREDICATE.test(normalized)) return true;
+  return NARRATION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 export function isAgentContextSelfReport(fact: {
@@ -221,18 +265,14 @@ export function isAgentContextSelfReport(fact: {
   object: string;
 }): boolean {
   // The agent as subject, FIRST: everything below is only its own narration.
-  if (!AGENT_SUBJECTS.has(normalizeSubject(fact.subject))) return false;
+  const subject = normalizeSubject(fact.subject);
+  if (!AGENT_SUBJECTS.has(subject)) return false;
   const predicate = fact.predicate.trim().toLowerCase();
   if (CONTEXT_PREDICATE.test(predicate)) return true;
   const text = `${predicate.replace(/_/g, ' ')} ${fact.object}`
     .slice(0, MAX_SCANNED_CHARS)
     .toLowerCase()
     .replace(/[‘’]/g, "'");
-  const normalized = normalizePredicate(fact.predicate);
-  const failure = FAILURE_PREDICATE.exec(normalized);
-  if (failure !== null && !isAnswerOutcome(normalized.slice(failure[0].length), fact.object, text)) {
-    return true;
-  }
-  if (MEMORY_OP_PREDICATE.test(normalized)) return true;
-  return CONTEXT_PATTERNS.some((pattern) => pattern.test(text));
+  if (CONTEXT_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  return ASSISTANT_SUBJECTS.has(subject) && isOwnNarration(normalizePredicate(fact.predicate), fact.object, text);
 }

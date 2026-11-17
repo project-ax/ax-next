@@ -87,9 +87,9 @@ const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
 export const PERSON_IN_SHARED_MESSAGE =
-  "Notes about a person (`user` or `user:<id>`) aren't saved in a shared conversation. " +
-  "Don't save it under their name instead. If it's about the work (a project, a decision, a process, " +
-  'or who owns what), save it again with the work as `about`, for example `team_standup`.';
+  "Notes about a person aren't saved in a shared conversation. Don't save it under their name " +
+  "instead, and don't put a detail about a person in the value. If it's about the work (a project, a " +
+  'decision, a process, or who owns what), save it again with the work as `about`, for example `team_standup`.';
 // The same words whoever refused and why: that goes to the log, not the
 // model. True for every refusal (TASK-1094 PR B review F4): a switch turned
 // off, a conversation memory never learns from, a check that failed or timed

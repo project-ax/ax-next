@@ -315,7 +315,7 @@ describe("the agent's narration of its own operations is not a fact (TASK-1136)"
     - What the walk stored.
     - Why it's never a durable fact: memory's store and each tool's own state are the source of truth, so a transcript report of a save or a failure is stale on arrival (invariant 4, TASK-612's argument).
     - Why it's narrow on purpose: it needs the agent as subject plus a failure predicate or a memory anchor. A person's failure is theirs to keep, and `did_not_*` is content.
-    - The accepted losses: a content outcome phrased as a failure (`could_not_find | flights…`), and "how to save it to memory on an Arduino".
+    - The accepted losses: a content outcome phrased as a failure (`could_not_find | flights…`), and "how to save it to memory on an Arduino". (Superseded in review: a failure counts only with a tooling verb or the agent's own memory, so content outcomes are kept; the checks take only `assistant` subjects. See the decisions shard.)
   - Comments: the `only-self-reports` and `selfReports` docs in `observer.ts`, and the log comment at `plugin.ts:2321`, now name "its own context, its memory operations and its tool failures (TASK-612, TASK-1136)".
 - [ ] **Step 4: Run it and expect PASS.** Run the whole `@ax/memory` suite, then `pnpm --filter @ax/memory build`.
 - [ ] **Step 5: Mutation check.**

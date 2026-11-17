@@ -123,7 +123,8 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
   });
 
   it.each([
-    ['agent', 'could_not_save_memory', 'x'],
+    ['the_assistant', 'could_not_save_memory', 'x'],
+    ['AI assistant', 'failed_to_save', 'the note'],
     ['Assistant', 'Could Not Save', 'the note'],
     ['assistant', "couldn't_save", 'the note'],
     ['assistant', 'couldnt_save_note', 'about Vinay'],
@@ -133,6 +134,7 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'unable_to_access', 'the shared drive'],
     ['assistant', 'was_unable_to', 'save the note'],
     ['assistant', 'was_not_able_to_open', 'the attachment'],
+    ['assistant', 'could_not', 'connect to the calendar'],
     ['assistant', 'saved_to_memory', 'team standup time is 10:15 on Tuesdays'],
     ['assistant', 'stored_in_memory', 'the standup time'],
     ['assistant', 'added_to_long_term_memory', 'the standup time'],
@@ -173,6 +175,27 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'cannot_recommend', 'the Hilton, because of the noise complaints'],
     ['assistant', 'was_unable_to', 'find a direct flight from Boston to Lisbon in March'],
     ['assistant', 'could_not_find', 'a memory card reader in stock at the Back Bay store'],
+    // Review of TASK-1136: any other failure is an outcome too. Nothing else
+    // records it, so it's the assistant content the extraction prompt keeps.
+    ['assistant', 'could_not_book', 'a table for 8 on Friday at Giulia'],
+    ['assistant', 'could_not_suggest', 'a vegan option on that menu'],
+    ['assistant', 'could_not_verify', 'the contractor\'s license number'],
+    ['assistant', 'unable_to_identify', 'the plant from the photo'],
+    ['assistant', 'could_not_reproduce', 'the crash on Node 20'],
+    // Memory in the RAM sense isn't its own memory.
+    ['assistant', 'could_not_find', 'the cause of the memory spike in the worker pod'],
+    ['assistant', 'could_not_confirm', "the pod's memory limit"],
+    ['assistant', 'could_not_find', 'a more memory-efficient library'],
+    ['assistant', 'explained', 'how to save them to the memory card before formatting the camera'],
+    ['assistant', 'saved_to_memory_card', 'the photos from the shoot'],
+    // `agent` is an everyday noun: a person's agent, whose failures are the
+    // person's facts. TASK-1136's checks take only the assistant.
+    ['agent', 'could_not_save_memory', 'x'],
+    ['the_agent', 'failed_to_file', 'the closing paperwork by Friday'],
+    ['agent', 'could_not_get', 'the seller to accept 450k'],
+    ['the agent', 'was unable to', 'get an extension on the closing date'],
+    ['agent', 'cannot_attend', 'the inspection on Tuesday'],
+    ['the_agent', 'failed_to_connect', 'the buyer with a lender'],
     // A failure or memory word mid-predicate is a topic: both predicate
     // tests are anchored at the start.
     ['assistant', 'explained_why_the_printer_cannot_connect', 'to 5 GHz Wi-Fi; it only supports 2.4 GHz'],
@@ -181,18 +204,18 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
 
-  it('reads a bare failure\'s verb inside the scanned window: an object padded past it stays narration', () => {
-    // Otherwise the verb would be read past the padding while the memory
-    // check, which scans the window, never sees "memory".
+  it("reads a bare failure's verb inside the scanned window, and nothing past it", () => {
+    const padding = ' '.repeat(2_000);
+    for (const object of [`${padding}save the note`, `${padding}find anything in memory about the standup time`]) {
+      expect(isAgentContextSelfReport({ subject: 'assistant', predicate: 'was_unable_to', object })).toBe(false);
+    }
     expect(
-      isAgentContextSelfReport({
-        subject: 'assistant',
-        predicate: 'was_unable_to',
-        object: `${' '.repeat(2_000)}find anything in memory about the standup time`,
-      }),
+      isAgentContextSelfReport({ subject: 'assistant', predicate: 'was_unable_to', object: '  save the note' }),
     ).toBe(true);
   });
 
+  // A guard for later edits, not for this change: it passes on main too. An
+  // unbounded pattern added later over the uncut predicate is what it catches.
   it('stays fast on a huge, repetitive, untrusted predicate and object', () => {
     const start = performance.now();
     for (const word of ['save that to ', 'memory note ', 'could not ', 'saved it into the ', 'noted ']) {

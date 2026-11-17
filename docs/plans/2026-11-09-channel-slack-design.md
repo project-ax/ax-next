@@ -139,13 +139,15 @@ recalled in a channel.
 - A shared session gets no `/memory` file view. The export holds every fact the
   agent has, so it would walk around the recall filter.
 - The speaker rule is a filter, not a prompt change. In a shared turn, any
-  statement whose subject is `user` or starts with `user:` is dropped. The observer, `memory_note` and the write door ask one function
+  statement whose subject is `user` or starts with `user:` is dropped. The
+  observer, `memory_note` and the write door ask one function
   (`breaksSpeakerRule`, TASK-1136), and a refused note tells the agent to save a
   work fact with the work as `about`.
 - Known gaps, accepted: the extractor may name the speaker from the sender
   label (the TASK-1134 walk saw it: `vinay | stated_standup_time | Team standup
-  moved to 10:15 on Tuesdays`, stored shared; TASK-1136 kept it as a work fact); closing a slot is tenant-wide, so a private statement can close a
-  shared one; a Fix on a shared memory saves as private.
+  moved to 10:15 on Tuesdays`, stored shared, and the rule doesn't see it);
+  closing a slot is tenant-wide, so a private statement can close a shared one;
+  a Fix on a shared memory saves as private.
 - **What outsiders say is never remembered.** An external turn's conversation
   (the connector's, key suffix `:external`) is refused by channel-slack's
   capture veto whatever the switch says, and so is the agent's own

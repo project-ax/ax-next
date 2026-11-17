@@ -132,8 +132,8 @@ export function isPersonSubject(about: string): boolean {
  * fails closed.
  *
  * It takes an audience, not a ctx, because `toStatements` is pure and has
- * none. The parameter is a resolved `AgentContextAudience`, not `ctx.audience`
- * (which may be absent), so a caller goes through `audienceOf` first.
+ * none. Pass `audienceOf(ctx)`, as every caller does: the type alone doesn't
+ * force it, but a value this build doesn't know fails closed anyway.
  *
  * A person named any other way (`vinay`) doesn't break it: only `user` and
  * `user:<id>` do ({@link isPersonSubject}). A fact naming who owns what is
