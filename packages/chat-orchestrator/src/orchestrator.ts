@@ -3126,8 +3126,9 @@ export function createOrchestrator(
               // cap already ended its reply. The running turn ends
               // `sandbox-terminated`, and a continuation just stops. For the
               // re-POST that's the point: it supersedes the running turn and
-              // gets the skill. (A routine turn and a mode change retire only
-              // an idle session; see above.)
+              // gets the skill. (The routine-turn and mode-change reasons fire
+              // only on an idle session, see above. A routine turn routed into
+              // a busy session that's marked still retires it, for the mark.)
               //
               // TASK-612: same treatment when the session's system prompt
               // predates a change to something it carries (TASK-989: the

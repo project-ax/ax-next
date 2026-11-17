@@ -873,8 +873,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
      * POST /api/chat/permission-decision — apply a user-approved JIT
      * capability grant (TASK-36, design §7). The card (TASK-35) already wrote
      * the user's key to the host credential store; this endpoint attaches the
-     * catalog skill for the user + retires the conversation's warm session so
-     * the next turn re-spawns and resumes with the skill present.
+     * catalog skill for the user, then ends the conversation's session (or,
+     * while a turn is in flight there, marks it to restart at its next turn:
+     * TASK-1127), so the next turn re-spawns and resumes with the skill present.
      *
      * Auth-gated, scoped to the actor's OWN conversation (agentId resolved
      * from the row, never the body), agent-ACL'd, and CSRF-guarded by the
@@ -975,8 +976,10 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         return;
       }
 
-      // 5) Apply the grant (attach the skill + retire the warm session). On
-      // failure, surface a coarse 500 (the raw error stays on the host log).
+      // 5) Apply the grant: attach the skill, then end the conversation's
+      // session if it's idle, or mark it to restart at its next turn if a turn
+      // is in flight there (TASK-1127). On failure, surface a coarse 500 (the
+      // raw error stays on the host log).
       const grantCtx = makeAgentContext({
         sessionId: makeReqId(),
         agentId,
