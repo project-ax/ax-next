@@ -66,9 +66,10 @@
  *   rules, instructions or memory.
  * - A failure predicate (`could_not_*`, `unable_to_*`, `failed_to_*`, …)
  *   counts only when what failed is one of its own operations, a TOOLING
- *   verb (save, fetch, access, connect, open, …), when the predicate itself
- *   names memory (`could_not_write_to_memory`), or when the text points at
- *   its own memory ("anything in memory", "my memory", "saved facts"). Most
+ *   verb (save, fetch, access, connect, open, …), when the predicate ends
+ *   by saying where in memory (`could_not_write_to_memory`), or when the
+ *   text points at its own memory ("anything in memory", "my memory",
+ *   "saved facts"). Most
  *   other failures are outcomes the person asked about: `could_not_find |
  *   any flights under $300`, `could_not_book | a table for 8`,
  *   `could_not_reproduce | the crash on Node 20`. Nothing else records
@@ -78,18 +79,18 @@
  *   are kept too: a missed junk row is the cheap direction.
  * - Every memory word ends in TASK-612's {@link MEMORY}, so "memory card",
  *   "memory loss", "memory leaks" and the rest of its exclusions aren't the
- *   agent's memory. "Long-term memory" counts only as "in/from long-term
- *   memory" or after "anything in": "studies on long-term memory" is a
- *   topic.
+ *   agent's memory. "Long-term memory" counts only as "in/from my/its
+ *   long-term memory" or after "anything in": "encoded in long-term memory"
+ *   is a topic.
  *
  * A person's failure (`user | could_not_attend`) is theirs to keep, and
  * `did_not_*` is content: "did not recommend the Hilton" is an answer.
  *
  * The accepted losses: advice that reads like a save with a pronoun ("how to
  * save it to memory on an Arduino", "a mnemonic to keep them in memory"),
- * topical phrases that
- * look like its own memory ("anything in memory dumps"), and a content outcome
- * phrased with a tooling verb (`could_not_open | the museum on Mondays`).
+ * topical phrases that look like its own memory ("anything in memory dumps",
+ * `could_not_fit_in_memory`), and a content outcome phrased with a tooling
+ * verb (`could_not_open | the museum on Mondays`).
  * The other way round, a tool failure phrased as a search (`could_not_find |
  * the weather page`) is kept.
  */
@@ -204,7 +205,8 @@ const NARRATION_PATTERNS: readonly RegExp[] = [
  * {@link normalizePredicate}'s output, so `Could Not Save` and `couldn't_save`
  * read alike. The closing `(?:_|$)` keeps it a whole word: `cantilevered`
  * isn't `cant`. Not `did_not_*`: "did not recommend the Hilton" is an answer.
- * A failure counts only with a {@link TOOL_VERB} or {@link OWN_MEMORY}.
+ * A failure counts only with a {@link TOOL_VERB}, a {@link MEMORY_PLACE} or
+ * {@link OWN_MEMORY}.
  */
 const FAILURE_PREDICATE =
   /^(?:could_?not|couldn_?t|can_?not|can_?t|(?:was_|were_|is_)?unable_to|failed_to|(?:was_|were_|is_)?not_able_to|(?:wasn|weren|isn)_?t_able_to)(?:_|$)/;
@@ -236,14 +238,14 @@ const OWN_MEMORY = new RegExp(
 );
 
 /**
- * A failure predicate's rest that says WHERE: to, in, into or from memory
- * (`could_not_write_to_memory`, `could_not_keep_it_in_memory`). Not any
- * memory word: `could_not_reduce_memory_usage` and
- * `could_not_reproduce_the_memory_spike` are about RAM.
+ * A failure predicate's rest (underscores as spaces) that ENDS by saying
+ * where in memory: to, in, into or from (my/its/the) memory
+ * (`could_not_write_to_memory`, `could_not_find_it_in_memory`). Not any
+ * memory word, and not one followed by more: `could_not_reduce_memory_usage`
+ * and `could_not_find_a_regression_in_memory_usage` are about RAM, and
+ * `…_encoded_in_long_term_memory` is a topic.
  */
-const MEMORY_WORD = new RegExp(
-  String.raw`\b(?:to|in|into|from) (?:(?:my|its|the|long term|long-term) )?${MEMORY}`,
-);
+const MEMORY_PLACE = /\b(?:to|in|into|from) (?:(?:my|its|the) )?memor(?:y|ies)$/;
 
 /** A predicate that IS a memory operation (TASK-1136): `saved_to_memory`, `added_to_long_term_memory`. */
 const MEMORY_OP_PREDICATE =
@@ -270,12 +272,13 @@ function normalizePredicate(predicate: string): string {
 
 /**
  * Whether a failure predicate narrates the assistant's own operation: what
- * failed is a {@link TOOL_VERB}, the rest of the predicate names memory, or
+ * failed is a {@link TOOL_VERB}, the rest of the predicate ends in a
+ * {@link MEMORY_PLACE}, or
  * the text points at its own memory. A bare failure's verb is read from the
  * object's start, normalized like a predicate, inside the scanned window.
  */
 function isOwnFailure(rest: string, object: string, text: string): boolean {
-  if (rest !== '' && MEMORY_WORD.test(rest.replace(/_/g, ' '))) return true;
+  if (rest !== '' && MEMORY_PLACE.test(rest.replace(/_/g, ' '))) return true;
   // `normalizePredicate` cuts to the window BEFORE it trims, so an object
   // padded past the window has no verb in view.
   const verb = rest !== '' ? rest : normalizePredicate(object);
