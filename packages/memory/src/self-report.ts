@@ -79,11 +79,13 @@
  *   are kept too: a missed junk row is the cheap direction.
  * - Memory words in the object and the text end in TASK-612's
  *   {@link MEMORY}, so "memory card", "memory loss", "memory leaks" and the
- *   rest of its exclusions aren't the agent's memory. In a failure
- *   predicate, memory counts only as its LAST word, after where
- *   ({@link MEMORY_PLACE}), so nothing can follow it; MEMORY's other phrases
- *   (`…_in_previous_conversations`) don't count there and are kept. In the
- *   text, "long-term memory" counts only as "in/from my/its long-term
+ *   rest of its exclusions aren't the agent's memory. {@link MEMORY_PLACE}
+ *   counts memory only as a failure predicate's LAST word, after where, and
+ *   takes none of MEMORY's other phrases (`…_it_in_previous_conversations`
+ *   is kept). The text checks still read the predicate, so
+ *   `…_anything_in_memory_about_x` and `…_in_saved_facts` are dropped by
+ *   {@link OWN_MEMORY}. In the text, "long-term memory" counts only as
+ *   "in/from my/its long-term
  *   memory" or after "anything in": "encoded in long-term memory" is a
  *   topic. A predicate that IS a memory operation
  *   (`added_to_long_term_memory`) is its own check.
@@ -248,9 +250,11 @@ const OWN_MEMORY = new RegExp(
  * (`could_not_write_to_memory`, `could_not_find_it_in_memory`). Not any
  * memory word, and not one followed by more: `could_not_reduce_memory_usage`
  * and `could_not_find_a_regression_in_memory_usage` are about RAM. Not after
- * any modifier either: `…_encoded_in_long_term_memory` is a topic. `\b` so
- * `could_not_stay_within_memory` isn't "in memory". (`my`/`its` are listed
- * for completeness; TASK-612's "my memory" pattern drops those first.)
+ * any other modifier either: `…_encoded_in_long_term_memory` is a topic.
+ * `\b` so `could_not_stay_within_memory` isn't "in memory". (TASK-612's "my
+ * memory" pattern drops the usual `my`/`its` spelling first; only a hyphen
+ * or a run of spaces, `in_my-memory`, reaches them here, and no row pins
+ * that.)
  */
 const MEMORY_PLACE = /\b(?:to|in|into|from) (?:(?:my|its|the) )?memor(?:y|ies)$/;
 

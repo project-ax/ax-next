@@ -218,9 +218,9 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'could_not_confirm', 'whether the medication causes long-term memory problems'],
     ['assistant', 'could_not_find', 'anything stored in memory cards older than 2015 at that shop'],
     ['assistant', 'suggested', 'a peg-word mnemonic for the 12 cranial nerves to keep them in long-term memory'],
-    // Review rounds 3-4: memory in a failure predicate counts only when the
-    // predicate ENDS with where (to/in/into/from memory); otherwise it's RAM,
-    // or a topic.
+    // Review rounds 3-4: `MEMORY_PLACE` counts memory in a failure predicate
+    // only when the predicate ENDS with where (to/in/into/from memory);
+    // otherwise it's RAM, or a topic.
     ['assistant', 'could_not_reduce_memory_usage', 'of the worker pod below 512MB'],
     ['assistant', 'could_not_reproduce_the_memory_spike', 'on Node 20'],
     ['assistant', 'failed_to_allocate_memory', 'for the 70B model on one GPU'],
