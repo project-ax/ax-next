@@ -263,13 +263,14 @@ export function createChatOrchestratorPlugin(
       );
 
       // JIT (design §7/§11.5) — apply a user-approved capability grant: attach
-      // the catalog skill for the user (TASK-33) + retire the conversation's
-      // warm session so the next turn re-spawns and resumes. Host-side only
-      // (channel-web → orchestrator); NOT an IPC action (the agent/runner can't
-      // reach it). Its `skills:resolve` / `skills:attach-for-user` peers are
-      // bus.hasService-gated (present only where @ax/skills is wired — the k8s
-      // preset), same convention as the conversations:* peers above, so they
-      // stay OUT of `calls`.
+      // the catalog skill for the user (TASK-33) + end the conversation's
+      // session when idle, or mark it to restart at its next turn while a turn
+      // is in flight (TASK-1127), so the next turn re-spawns and resumes.
+      // Host-side only (channel-web → orchestrator); NOT an IPC action (the
+      // agent/runner can't reach it). Its `skills:resolve` /
+      // `skills:attach-for-user` peers are bus.hasService-gated (present only
+      // where @ax/skills is wired — the k8s preset), same convention as the
+      // conversations:* peers above, so they stay OUT of `calls`.
       bus.registerService<ApplyCapabilityGrantInput, ApplyCapabilityGrantOutput>(
         'agent:apply-capability-grant',
         PLUGIN_NAME,
