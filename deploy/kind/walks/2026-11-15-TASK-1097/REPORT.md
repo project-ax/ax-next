@@ -59,7 +59,7 @@ TASK-1093 stores the pasted configuration refresh token and never replaces it. T
 
 ## Other findings
 
-- **TASK-1130:** runner narration ("Loading the routine creation tool schema.", "Generating a unique request identifier for retry.") shows up in Slack replies.
+- **TASK-1130:** runner narration ("Loading the routine creation tool schema.", "Generating a unique request identifier for retry.") shows up in Slack replies. *Measured later (TASK-1130): it wasn't runner narration or model text. Both are `@ax/step-summaries` lines, shown as the reply's status card title. The first summarizes the SDK's `ToolSearch` call (loading a tool's schema), which the web already hid and Slack now hides too. The second is a real `routine_create` call's summary, which the web shows as well.*
 - **TASK-1131:** the agent isn't told who is asking in a channel turn. It told an outsider to approve a card, and it called a member's plain request a "prompt injection".
 - **TASK-1132:** a refused install callback (`unauthenticated`: the admin's cookie wasn't on the public address), followed by a second Connect, leaves an orphan Slack app.
 - **TASK-1133:** `apps.icon.set` refuses our avatar on every Connect (`error_bad_format`).
