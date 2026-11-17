@@ -77,11 +77,16 @@
  *   and they're kept. Failures of a tool whose verb isn't on the list
  *   (`could_not_get | the weather data`, `could_not_create | the event`)
  *   are kept too: a missed junk row is the cheap direction.
- * - Every memory word ends in TASK-612's {@link MEMORY}, so "memory card",
- *   "memory loss", "memory leaks" and the rest of its exclusions aren't the
- *   agent's memory. "Long-term memory" counts only as "in/from my/its
- *   long-term memory" or after "anything in": "encoded in long-term memory"
- *   is a topic.
+ * - Memory words in the object and the text end in TASK-612's
+ *   {@link MEMORY}, so "memory card", "memory loss", "memory leaks" and the
+ *   rest of its exclusions aren't the agent's memory. In a failure
+ *   predicate, memory counts only as its LAST word, after where
+ *   ({@link MEMORY_PLACE}), so nothing can follow it; MEMORY's other phrases
+ *   (`…_in_previous_conversations`) don't count there and are kept. In the
+ *   text, "long-term memory" counts only as "in/from my/its long-term
+ *   memory" or after "anything in": "encoded in long-term memory" is a
+ *   topic. A predicate that IS a memory operation
+ *   (`added_to_long_term_memory`) is its own check.
  *
  * A person's failure (`user | could_not_attend`) is theirs to keep, and
  * `did_not_*` is content: "did not recommend the Hilton" is an answer.
@@ -239,11 +244,13 @@ const OWN_MEMORY = new RegExp(
 
 /**
  * A failure predicate's rest (underscores as spaces) that ENDS by saying
- * where in memory: to, in, into or from (my/its/the) memory
+ * where in memory: to, in, into or from (the) memory
  * (`could_not_write_to_memory`, `could_not_find_it_in_memory`). Not any
  * memory word, and not one followed by more: `could_not_reduce_memory_usage`
- * and `could_not_find_a_regression_in_memory_usage` are about RAM, and
- * `…_encoded_in_long_term_memory` is a topic.
+ * and `could_not_find_a_regression_in_memory_usage` are about RAM. Not after
+ * any modifier either: `…_encoded_in_long_term_memory` is a topic. `\b` so
+ * `could_not_stay_within_memory` isn't "in memory". (`my`/`its` are listed
+ * for completeness; TASK-612's "my memory" pattern drops those first.)
  */
 const MEMORY_PLACE = /\b(?:to|in|into|from) (?:(?:my|its|the) )?memor(?:y|ies)$/;
 
