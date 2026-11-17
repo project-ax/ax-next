@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { AgentContextAudience } from '@ax/core';
 
 import { attributeFacts, attributeSpeakers } from './attribution.js';
-import { isPersonSubject } from './audience.js';
+import { breaksSpeakerRule } from './audience.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
@@ -87,13 +87,14 @@ export type ObserverResult =
   | { kind: 'skipped'; reason: 'only-context'; contextOnly: number }
   /**
    * Every fact the extractor produced was the agent describing its own
-   * context (TASK-612, `self-report.ts`). Ordinary, but counted and named
-   * apart from `no-facts`, so a filter that over-drops a whole batch leaves a
-   * trace instead of reading as "nothing durable was said".
+   * context, its memory operations and its tool failures (TASK-612,
+   * TASK-1136, `self-report.ts`). Ordinary, but counted and named apart from
+   * `no-facts`, so a filter that over-drops a whole batch leaves a trace
+   * instead of reading as "nothing durable was said".
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
-   * Every fact was about a person, in a shared turn (TASK-1091,
+   * Every fact had a person subject (`user`, `user:<id>`), in a shared turn (TASK-1091,
    * `toStatements`): the speaker could be anyone in the room, so none is
    * stored. Counted and named apart, like the self-reports, so a shared
    * conversation that keeps nothing leaves a trace of why.
@@ -156,13 +157,15 @@ export type ObserverResult =
       /** Facts the extractor produced that could not be stored. */
       unusable: number;
       /**
-       * Facts dropped because they were the agent describing its own runtime
-       * context ("I have no rules") — see `self-report.ts`. Not `unusable`:
-       * nothing is wrong with the extractor when this is non-zero.
+       * Facts dropped because they were the agent describing its own context
+       * ("I have no rules"), its memory operations ("I couldn't save that to
+       * memory") and its tool failures (TASK-612, TASK-1136) — see
+       * `self-report.ts`. Not `unusable`: nothing is wrong with the extractor
+       * when this is non-zero.
        */
       selfReports: number;
       /**
-       * Facts dropped because they were about a person in a shared turn
+       * Facts dropped because they had a person subject, in a shared turn
        * (TASK-1091, `toStatements`). Always 0 in a private turn. Not
        * `unusable`: this is the rule working, not the extractor failing.
        */
@@ -253,7 +256,7 @@ export interface RunObserverInput {
   ownerUserId: string;
   /**
    * Who can read the turn's reply: `audienceOf(ctx)`, never a payload
-   * (TASK-1091). In a shared turn every fact about a person is dropped before
+   * (TASK-1091). In a shared turn every fact with a person subject is dropped before
    * the speaker rewrite (`toStatements`). Required, so a caller can't forget
    * it and quietly get the private behaviour.
    */
@@ -728,8 +731,8 @@ export function buildBatchKey(input: {
  *
  * ## A shared turn keeps no speaker facts (TASK-1091)
  *
- * In a turn people without access to the agent can read, every fact about a
- * person (`isPersonSubject`: `user`, `User`, ` user `, `user:<anyone>`) is
+ * In a turn people without access to the agent can read, every fact with a
+ * person subject (`breaksSpeakerRule`: `user`, `User`, ` user `, `user:<anyone>`) is
  * dropped and counted as `speakerFacts`, FIRST, before the speaker rewrite
  * could file it under the owner's key. A deterministic filter on the
  * extractor's output, not a prompt change: the extraction prompt is
@@ -746,15 +749,17 @@ export function toStatements(
   for (const fact of facts) {
     // Anything but a private turn drops, which fails closed. Before every
     // other check, so the count doesn't depend on them.
-    if (opts.audience !== 'private' && isPersonSubject(fact.subject)) {
+    if (breaksSpeakerRule(opts.audience, fact.subject)) {
       speakerFacts += 1;
       continue;
     }
-    // TASK-612: the agent describing what rules/instructions/memory it can
-    // see is a snapshot of one session's system prompt, not a fact about the
-    // world, and it goes stale the moment a person saves a Rule. Dropped
-    // before anything else, and counted apart from `unusable` because it is
-    // not an extractor failure.
+    // TASK-612, TASK-1136: the agent describing its own context (what
+    // rules/instructions/memory it can see), its memory operations and its
+    // tool failures is a snapshot of one session, not a fact about the world.
+    // The Rules file, memory's store and each tool's own state are the
+    // sources of truth, and the report goes stale the moment one of them
+    // moves. Dropped before the date check, and counted apart from `unusable`
+    // because it is not an extractor failure.
     if (isAgentContextSelfReport(fact)) {
       selfReports += 1;
       continue;

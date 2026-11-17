@@ -1,16 +1,25 @@
 import Database from 'better-sqlite3';
 import {
+  audienceOf,
   HookBus,
   makeAgentContext,
+  PluginError,
   type AgentContext,
   type AgentContextAudience,
   type LlmCallOutput,
 } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isPersonSubject, recallAudienceScope, recallFacts, recordFacts } from '../audience.js';
+import {
+  breaksSpeakerRule,
+  isPersonSubject,
+  recallAudienceScope,
+  recallFacts,
+  recordFacts,
+} from '../audience.js';
 import { OBSERVER_RUN_EVENT } from '../failure.js';
-import { MEMORY_NOTE_TOOL_HOOK } from '../note-tool.js';
+import { MEMORY_NOTE_TOOL_HOOK, PERSON_IN_SHARED_MESSAGE, type MemoryNoteResult } from '../note-tool.js';
+import { toStatements } from '../observer.js';
 import { FACTS_RECALL_HOOK, FACTS_RECORD_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
@@ -485,7 +494,7 @@ describe('recallFacts — the one door every engine read goes through', () => {
 
 // ---------------------------------------------------------------------------
 // The write side: every statement is stamped with its turn's audience, and a
-// shared turn stores nothing about a person.
+// shared turn stores nothing under a person subject.
 // ---------------------------------------------------------------------------
 
 /**
@@ -671,6 +680,66 @@ describe('isPersonSubject — what a shared turn stores nothing about', () => {
 
   it.each(NOT_PERSON_SUBJECTS)('%j is not', (about) => {
     expect(isPersonSubject(about)).toBe(false);
+  });
+});
+
+describe('breaksSpeakerRule — the one speaker rule (TASK-1136)', () => {
+  it.each(PERSON_SUBJECTS)('%j breaks it in a shared or unknown audience, never in a private one', (about) => {
+    expect(breaksSpeakerRule('shared', about)).toBe(true);
+    expect(breaksSpeakerRule('public' as AgentContextAudience, about)).toBe(true);
+    expect(breaksSpeakerRule('private', about)).toBe(false);
+  });
+  it.each([...NOT_PERSON_SUBJECTS, 'vinay'])('%j never breaks it', (about) => {
+    for (const audience of ['private', 'shared', 'public'] as AgentContextAudience[]) {
+      expect(breaksSpeakerRule(audience, about)).toBe(false);
+    }
+  });
+});
+
+describe('drift guard: the observer, memory_note and recordFacts refuse exactly what breaksSpeakerRule names (TASK-1136)', () => {
+  // Walk TASK-1134: memory_note refused `user` while the observer kept `vinay`:
+  // the same rule, different subjects. `vinay` is here so both paths stay
+  // pinned to treat a name alike.
+  const SUBJECTS = [...PERSON_SUBJECTS, ...NOT_PERSON_SUBJECTS, 'vinay'];
+  it.each([
+    ['an absent', undefined],
+    ['a private', 'private'],
+    ['a shared', 'shared'],
+    ['an unknown', 'public'],
+  ] as const)('%s audience', async (_label, audience) => {
+    const h = await makeHarness();
+    const ctx = h.ctx({
+      conversationId: CHANNEL,
+      ...(audience !== undefined ? { audience: audience as AgentContextAudience } : {}),
+    });
+    const engine = new HookBus();
+    engine.registerService(FACTS_RECORD_HOOK, 'stub-engine', async () => ({ records: [{ id: 'row-1' }] }));
+    const disagreements: string[] = [];
+    for (const about of SUBJECTS) {
+      const rule = breaksSpeakerRule(audienceOf(ctx), about);
+      const observer =
+        toStatements([{ subject: about, predicate: 'r', object: 'v', validStart: JAN }], {
+          ownerUserId: ALICE,
+          audience: audienceOf(ctx),
+        }).speakerFacts === 1;
+      const result = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
+        input: { about, relation: 'r', value: 'v' },
+      });
+      // Refused FOR THIS RULE: the backstop's generic `forbidden` doesn't count.
+      const note = !result.ok && result.error === 'forbidden' && result.message.endsWith(PERSON_IN_SHARED_MESSAGE);
+      const record = await recordFacts(engine, ctx, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
+        () => false,
+        (err: unknown) => err instanceof PluginError && err.code === 'forbidden',
+      );
+      if (observer !== rule || note !== rule || record !== rule) {
+        disagreements.push(`${JSON.stringify(about)}: rule ${rule}, observer ${observer}, note ${note}, record ${record}`);
+      }
+    }
+    expect(disagreements).toEqual([]);
+    // Not vacuous: a shared or unknown audience refuses every person subject, and nothing else.
+    expect(SUBJECTS.filter((about) => breaksSpeakerRule(audienceOf(ctx), about))).toHaveLength(
+      audienceOf(ctx) === 'shared' ? PERSON_SUBJECTS.length : 0,
+    );
   });
 });
 

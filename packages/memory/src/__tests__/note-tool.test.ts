@@ -525,7 +525,10 @@ describe('a note in a shared turn (TASK-1091)', () => {
         ok: false,
         error: 'forbidden',
         message:
-          "NOT SAVED: nothing was written to memory — do not tell the person it was saved. Notes about a person aren't saved in a shared conversation.",
+          'NOT SAVED: nothing was written to memory — do not tell the person it was saved. ' +
+          "In a shared conversation, don't save notes about a person: not as `user`, not under their name, and " +
+          "not as a personal detail in the value. If it's about the work (a project, a decision, a process, or who owns " +
+          'what), save it again with the work as `about`, for example `team_standup`.',
       });
       expectRefused(result, 'forbidden');
       // No engine call of any kind: no twin read, no write.
@@ -553,6 +556,30 @@ describe('a note in a shared turn (TASK-1091)', () => {
     try {
       expect(db.prepare(`SELECT about, audience, conversation_id FROM ${FACTS_TABLE}`).all()).toEqual([
         { about: 'billing_service', audience: 'shared', conversation_id: 'conv-channel' },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Walk TASK-1134: the agent noted the standup time `about: user`, was
+  // refused, and told the channel it couldn't save it. The refusal now says
+  // what to do instead, and doing it lands the work fact.
+  it('a refused person-note points at the work, and the work note it suggests is saved, stamped shared', async () => {
+    const h = await withHarness();
+    // An attended channel turn: a member is speaking, so memory may learn from it.
+    const ctx = h.ctx({ conversationId: 'conv-channel', source: 'user', audience: 'shared' });
+
+    const personNote = await note(h, { about: 'user', relation: 'standup_time', value: '10:15 on Tuesdays' }, ctx);
+    expect(expectRefused(personNote, 'forbidden')).toMatch(/with the work as `about`/);
+    expect(await note(h, { about: 'team_standup', relation: 'time', value: '10:15 on Tuesdays' }, ctx)).toEqual({
+      ok: true,
+    });
+
+    const db = new Database(h.databasePath, { readonly: true });
+    try {
+      expect(db.prepare(`SELECT about, audience FROM ${FACTS_TABLE}`).all()).toEqual([
+        { about: 'team_standup', audience: 'shared' },
       ]);
     } finally {
       db.close();
@@ -777,7 +804,7 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
       { about: 'user', relation: 'lives in', value: 'Paris' },
       h.ctx({ conversationId: 'conv-1', source: 'external', audience: 'shared' }),
     );
-    expect(expectRefused(personInShared, 'forbidden')).toMatch(/about a person/);
+    expect(expectRefused(personInShared, 'forbidden')).toMatch(/with the work as `about`/);
     expect(asked).toEqual([]);
 
     // Paired with a valid note in the same conversation, which is asked.
@@ -787,6 +814,27 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
       message: REFUSED_MESSAGE,
     });
     expect(asked).toEqual([{ conversationId: 'conv-1' }]);
+  });
+
+  // TASK-1136: the person refusal tells the agent to save a work fact
+  // instead. In a conversation memory may not learn from (an outsider's
+  // thread, the remember switch off), that retry must still be refused.
+  it('the retried work note still honours memory:pre-capture', async () => {
+    const h = await withHarness();
+    const asked = refuseEverything(h);
+    const ctx = h.ctx({ conversationId: 'conv-channel', source: 'user', audience: 'shared' });
+
+    const personNote = await note(h, { about: 'user', relation: 'standup_time', value: '10:15 on Tuesdays' }, ctx);
+    expect(expectRefused(personNote, 'forbidden')).toMatch(/with the work as `about`/);
+    expect(asked).toEqual([]);
+
+    expect(await note(h, { about: 'team_standup', relation: 'time', value: '10:15 on Tuesdays' }, ctx)).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: REFUSED_MESSAGE,
+    });
+    expect(asked).toHaveLength(1);
+    expect(readRows(h.databasePath)).toEqual([]);
   });
 });
 

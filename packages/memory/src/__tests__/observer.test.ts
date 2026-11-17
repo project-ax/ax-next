@@ -835,6 +835,32 @@ describe("the agent's reports about its own context are not facts (TASK-612)", (
 
 // ---------------------------------------------------------------------------
 
+describe("the agent's narration of its own operations is not a fact (TASK-1136)", () => {
+  it("walk TASK-1134's channel batch: the narration is dropped and counted, the work fact kept, stamped shared", async () => {
+    const h = await withLlm(() =>
+      reply(
+        extraction([
+          fact({ subject: 'vinay', predicate: 'stated_standup_time', object: 'Team standup moved to 10:15 on Tuesdays' }),
+          fact({ network: 'experience', subject: 'assistant', predicate: 'could_not_save_memory', object: 'the standup time' }),
+        ]),
+      ),
+    );
+    await chatEnd(h, {
+      ctx: h.ctx({ conversationId: 'conv-channel', source: 'user', audience: 'shared' }),
+      messages: [
+        { role: 'user', content: 'Vinay: remember that team standup moved to 10:15 on Tuesdays' },
+        { role: 'assistant', content: "I couldn't save that to memory." },
+      ],
+    });
+    // `vinay` stays on purpose: a work fact under the sender's name is design §2a's accepted gap.
+    expect(readRows(h.databasePath).map((r) => [r.about, r.audience])).toEqual([['vinay', 'shared']]);
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).find((l) => l.bindings.outcome === 'recorded');
+    expect(run?.bindings).toMatchObject({ recorded: 1, selfReports: 1, speakerFacts: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('a routine run is not a conversation the person had (TASK-616)', () => {
   // The skill-reflection gate counts DISTINCT conversations in one recall
   // answer. Every routine fire (skill-reflection's own included) runs in a
@@ -1223,6 +1249,7 @@ function readRows(databasePath: string): Array<{
   provenance: string;
   conversation_id: string | null;
   owner_user_id: string | null;
+  audience: string | null;
   valid_end: string | null;
   closed_by: string | null;
 }> {
