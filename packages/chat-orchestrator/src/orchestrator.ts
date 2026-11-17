@@ -305,8 +305,9 @@ export interface AgentInterruptOutput {
 // keep their wire shape.
 export interface ApplyAuthoredCapabilityGrantInput {
   /**
-   * The conversation whose warm session this grant retires (so the next turn
-   * re-spawns with the now-approved caps). OPTIONAL (TASK-83): the in-chat card
+   * The conversation whose session this grant ends (idle) or marks to restart
+   * at its next turn (a turn in flight, TASK-1127), so the next turn
+   * re-spawns with the now-approved caps. OPTIONAL (TASK-83): the in-chat card
    * always supplies it, but the My Skills "approve early" path has no
    * conversation — it approves a pending cap-skill BEFORE first use. When absent,
    * the grant still writes the approval rows + flips the skill active; it simply
@@ -321,7 +322,15 @@ export interface ApplyAuthoredCapabilityGrantInput {
   shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
 }
 export type ApplyAuthoredCapabilityGrantOutput =
-  | { applied: true; respawned: boolean }
+  | {
+      applied: true;
+      /**
+       * True when the conversation's session was ended now or marked to
+       * restart at its next turn (TASK-1127); false when there was none, or
+       * ending it failed.
+       */
+      respawned: boolean;
+    }
   | { applied: false; reason: 'not-authored' };
 
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
@@ -1816,6 +1825,22 @@ export function createOrchestrator(
   // another replica (the k8s chart refuses replicas > 1 for the same reason).
   const pendingMessageReqIds = new Set<string>();
   const stopRequestedReqIds = new Set<string>();
+  // TASK-1127 — the conversation of every agent:invoke in flight: reqId →
+  // ctx.conversationId, from the runAgentInvoke wrapper's first instruction
+  // to its finally. A skill grant asks `invokeInFlightFor` before it ends the
+  // conversation's session (retireOrMarkForSkillGrant). It must see a turn
+  // that the session-level signals can't see yet: one still being assembled
+  // or cold-spawning (no waiter before registerWaiter), and one routed into
+  // the session but not yet bound to the conversation (no active_req_id
+  // before its bind). Bounded by the wrapper's finally, like the two sets
+  // above, and in-memory + single-replica like them.
+  const invokeConversationByReqId = new Map<string, string>();
+  function invokeInFlightFor(conversationId: string): boolean {
+    for (const inFlight of invokeConversationByReqId.values()) {
+      if (inFlight === conversationId) return true;
+    }
+    return false;
+  }
   // Reactive egress wall (TASK-37) — dedup raised host-grant cards per
   // (sessionId, host) so repeated 403s to the same blocked host don't spam the
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
@@ -2084,9 +2109,9 @@ export function createOrchestrator(
   // runner's bearer-resolved session onto ctx before the skill.propose handler
   // ran, and skills:propose fires this notify on that same ctx. We mark on ANY
   // status: an `active` free-path skill must re-spawn to load; a `pending` skill
-  // re-spawns after the approval grant ALSO terminates the warm session
-  // (belt-and-suspenders — applyAuthoredCapabilityGrant already terminates on
-  // approve, and marking here covers the case where the human approves on the
+  // re-spawns after the approval grant, which ALSO restarts the session
+  // (belt-and-suspenders — the approval grant ends an idle session or marks a
+  // busy one, and marking here covers the case where the human approves on the
   // SAME turn boundary). A `quarantined` skill won't project, but a harmless
   // re-spawn is cheaper than special-casing.
   async function onSkillsProposed(
@@ -2245,12 +2270,15 @@ export function createOrchestrator(
   // routes to the old session; the one after that re-spawns.
   const rotationFailedSessions = new Set<string>();
 
-  // Sessions that proposed a skill this turn must re-spawn next turn (the runner
-  // reads skills only at spawn, "frozen at spawn", design §D6). Populated by the
-  // skills:proposed subscriber (MARK-ONLY — see onSkillsProposed; TASK-74
-  // replaced the old trigger on committed draft-skill files), consumed
-  // (terminate + fresh spawn) at the next turn's routing decision. In-memory +
-  // single-replica — same posture as the warm-session map.
+  // Sessions whose skills changed must re-spawn next turn (the runner reads
+  // skills only at spawn, "frozen at spawn", design §D6). Two producers, both
+  // MARK-ONLY: the skills:proposed subscriber, for a session that proposed a
+  // skill this turn (see onSkillsProposed; TASK-74 replaced the old trigger on
+  // committed draft-skill files), and a skill grant that lands while a turn
+  // is in flight (retireOrMarkForSkillGrant, TASK-1127; a grant ends an idle
+  // session at once instead). Consumed (terminate + fresh spawn) at the next
+  // turn's routing decision. In-memory + single-replica — same posture as the
+  // warm-session map.
   const respawnSessions = new Set<string>();
 
   // TASK-612 — the second reason a warm session is retired at its next turn:
@@ -2674,16 +2702,21 @@ export function createOrchestrator(
     if (killed > 0) ctx.logger.info('agent_deleted_warm_sessions_killed', { agentId, count: killed });
   }
 
-  // The agent:invoke entrypoint. Thin wrapper whose only job is the TASK-688
-  // pending-message bookkeeping: the reqId is "pending" from the very first
-  // instruction (before chat:start, before any await) until its user message is
-  // queued (`afterUserMessageQueued`), and BOTH sets are cleared on every exit
-  // — early return, throw, or a normal end — so they stay bounded.
+  // The agent:invoke entrypoint. Thin wrapper whose jobs are the TASK-688
+  // pending-message bookkeeping and the TASK-1127 in-flight registry: the
+  // reqId is "pending" from the very first instruction (before chat:start,
+  // before any await) until its user message is queued
+  // (`afterUserMessageQueued`), and "in flight" for its conversation over the
+  // same span until the invoke ends. All three are cleared on every exit —
+  // early return, throw, or a normal end — so they stay bounded.
   async function runAgentInvoke(
     ctx: AgentContext,
     input: AgentInvokeInput,
   ): Promise<AgentOutcome> {
     pendingMessageReqIds.add(ctx.reqId);
+    if (ctx.conversationId !== undefined) {
+      invokeConversationByReqId.set(ctx.reqId, ctx.conversationId);
+    }
     try {
       // TASK-1059: U+0000 and lone surrogates become U+FFFD before anything
       // stores the message. Postgres refuses both (the display log AND the
@@ -2712,6 +2745,7 @@ export function createOrchestrator(
     } finally {
       pendingMessageReqIds.delete(ctx.reqId);
       stopRequestedReqIds.delete(ctx.reqId);
+      invokeConversationByReqId.delete(ctx.reqId);
     }
   }
 
@@ -3047,11 +3081,21 @@ export function createOrchestrator(
               connectorsChanged ||
               connectorSignedIn
             ) {
-              // B3: this session's agent's draft-skills changed since it
-              // spawned (the runner freezes the projection at spawn). Retire it
+              // B3: this session's skills changed since it spawned (the runner
+              // freezes the projection at spawn): a skill was proposed there,
+              // or (TASK-1127) granted while a turn was in flight. Retire it
               // and fall through to a fresh spawn that re-derives the
-              // projection. Safe HERE (between turns), unlike a mid-turn
-              // terminate, which would hang the SSE (the Fault-A class bug).
+              // projection.
+              //
+              // This usually runs between turns, but not always. A turn routed
+              // here while the session still runs another one retires it under
+              // that turn: a second tab, channel-web's re-POST right after a
+              // skill Connect, or a Slack message after the grace period or the
+              // cap already ended its reply. The running turn ends
+              // `sandbox-terminated`, and a continuation just stops. For the
+              // re-POST that's the point: it supersedes the running turn and
+              // gets the skill. (A routine turn and a mode change retire only
+              // an idle session; see above.)
               //
               // TASK-612: same treatment when the session's system prompt
               // predates a change to something it carries (TASK-989: the
@@ -3089,7 +3133,7 @@ export function createOrchestrator(
                     : hostSessionMissing
                       ? 'host-session-lost'
                       : skillsDirty
-                        ? 'skills-proposed'
+                        ? 'skills-changed'
                         : augmentStale
                           ? 'system-prompt-augment-changed'
                           : rotationFailed
@@ -3128,8 +3172,8 @@ export function createOrchestrator(
               // keeps substituting the OLD key until the idle reaper. Closing
               // first means a hung terminate cannot delay it either. The close
               // is idempotent, so the later `handle.exited` close is a no-op.
-              // Nothing of the old session is in flight: these reasons fire
-              // between turns (a routine turn retires only an IDLE session).
+              // Usually nothing of the old session is in flight here; a turn
+              // it is still running (see the B3 note above) is retired with it.
               // TASK-878 — the wait is bounded: a close that hangs is logged
               // and we terminate + respawn anyway (the close keeps running).
               if (bus.hasService('proxy:close-session')) {
@@ -4922,11 +4966,15 @@ export function createOrchestrator(
       });
   }
 
-  // JIT (design §7/§11.5): apply a user-approved capability grant, then retire
-  // the conversation's warm session so the NEXT turn re-spawns and resumes
-  // (the runner reads skills only at session init — main.ts "frozen at spawn").
-  // Host-side only; never an IPC action. The channel re-issues the turn (web:
-  // chat.regenerate) — this hook is the control-plane prep, not the answer turn.
+  // JIT (design §7/§11.5): apply a user-approved capability grant, then make
+  // the conversation's session restart so the NEXT turn re-spawns with the
+  // skill and resumes (the runner reads skills only at session init — main.ts
+  // "frozen at spawn"). The session is ended now when it's idle, and marked to
+  // restart at its next turn when a turn is in flight there (TASK-1127,
+  // retireOrMarkForSkillGrant). Host-side only; never an IPC action. This hook
+  // is the control-plane prep, not the answer turn: after a successful
+  // Connect, channel-web's workspace re-POSTs the person's last message
+  // (`resumeAfterGrant`); Slack asks them to send it again.
   async function applyCapabilityGrant(
     ctx: AgentContext,
     input: ApplyCapabilityGrantInput,
@@ -4959,22 +5007,17 @@ export function createOrchestrator(
       attached = r.created;
     }
 
-    // 4. Retire the conversation's warm session (if any is alive) so the next
-    //    turn takes the fresh path → fresh sandbox + options.resume (it reads
-    //    the now-attached skill). session:terminate clears active_session_id
-    //    (not runner_session_id), so resume survives. No live waiter exists for
-    //    a finished keepAlive turn, so onSessionTerminate fires no turn-error.
-    const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
-    if (warm !== null) {
-      try {
-        await bus.call('session:terminate', ctx, { sessionId: warm });
-      } catch (err) {
-        ctx.logger.warn('apply_capability_grant_retire_failed', {
-          conversationId: input.conversationId,
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
-      }
-    }
+    // 4. End the conversation's live session if it's idle, or mark it to
+    //    restart at its next turn if a turn is in flight, so the next turn
+    //    takes the fresh path → fresh sandbox + options.resume (it reads the
+    //    now-attached skill). session:terminate clears active_session_id (not
+    //    runner_session_id), so resume survives.
+    await retireOrMarkForSkillGrant(
+      ctx,
+      input.conversationId,
+      input.userId,
+      'apply_capability_grant_retire_failed',
+    );
 
     return { attached };
   }
@@ -5052,14 +5095,72 @@ export function createOrchestrator(
     return { interrupted: true };
   }
 
-  // Resolve the conversation's ACTIVE + ALIVE session id (or null). Shared by
-  // the catalog + authored grant paths (retire / live-widen). Best-effort: any
-  // lookup failure → null (the next turn's route-vs-fresh self-corrects).
+  // TASK-1127 — what a skill grant does to the conversation's session. Both
+  // grant hooks call this after the skill is attached (or activated).
+  //
+  // Why: a session reads its skills only at spawn, so it must restart to pick
+  // the skill up — but ending it under a running turn loses that turn. The
+  // runner's posts get 401 and it exits at its next inbox pull, an
+  // agent:invoke waiter gets `sandbox-terminated` (which @ax/conversations
+  // saves into the thread), and a decision continuation's follower just waits.
+  //
+  // So the session is ended now only when it's idle. While a turn is in
+  // flight it is MARKED instead (`respawnSessions`, as skills:proposed does),
+  // and the routing retires it at its next turn. In flight means either:
+  //   - an agent:invoke for this conversation is still in runAgentInvoke
+  //     (`invokeInFlightFor`): a routed turn that's running, one still being
+  //     assembled or cold-spawning, or one routed but not yet bound;
+  //   - the row's `activeReqId` is bound: the host's durable "a turn may be
+  //     running", read the same way by agent:interrupt. It is the only signal
+  //     for a decision continuation channel-web bound, which has no
+  //     agent:invoke. A stale binding (a refused turn, TASK-1063) reads as
+  //     busy too: that session restarts at its next turn instead of now,
+  //     which loses nothing.
+  // Neither sees a continuation channel-slack woke (no agent:invoke, reqId
+  // never bound), so a grant during one still ends it (follow-up F1).
+  //
+  // The routing retires a marked session at its next routed turn even while
+  // it is still busy. channel-web's re-POST after a skill Connect relies on
+  // that: it supersedes the running turn and gets the skill.
+  //
+  // 'retired': ended now. 'marked': restarts at its next turn. 'none': no live
+  // session, or ending it failed (logged as `retireFailedLog`).
+  async function retireOrMarkForSkillGrant(
+    ctx: AgentContext,
+    conversationId: string,
+    userId: string,
+    retireFailedLog: 'apply_capability_grant_retire_failed' | 'authored_grant_retire_failed',
+  ): Promise<'retired' | 'marked' | 'none'> {
+    const live = await activeAliveSession(ctx, conversationId, userId);
+    if (live === null) return 'none';
+    // Asked AFTER the lookup's awaits, so a turn that started meanwhile counts.
+    const bound = typeof live.activeReqId === 'string' && live.activeReqId.length > 0;
+    if (invokeInFlightFor(conversationId) || bound) {
+      respawnSessions.add(live.sessionId);
+      ctx.logger.info('skill_grant_restart_deferred', { sessionId: live.sessionId });
+      return 'marked';
+    }
+    try {
+      await bus.call('session:terminate', ctx, { sessionId: live.sessionId });
+      return 'retired';
+    } catch (err) {
+      ctx.logger.warn(retireFailedLog, {
+        conversationId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return 'none';
+    }
+  }
+
+  // Resolve the conversation's ACTIVE + ALIVE session id (or null), with the
+  // row's bound request (`activeReqId`) from the same read. Shared by the
+  // catalog + authored grant paths (end or mark). Best-effort: any lookup
+  // failure → null (the next turn's route-vs-fresh self-corrects).
   async function activeAliveSession(
     ctx: AgentContext,
     conversationId: string,
     userId: string,
-  ): Promise<string | null> {
+  ): Promise<{ sessionId: string; activeReqId: string | null } | null> {
     if (!bus.hasService('conversations:get') || !bus.hasService('session:is-alive')) return null;
     try {
       const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
@@ -5071,7 +5172,9 @@ export function createOrchestrator(
       const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
         'session:is-alive', ctx, { sessionId: candidate },
       );
-      return alive.alive ? candidate : null;
+      return alive.alive
+        ? { sessionId: candidate, activeReqId: conv.conversation.activeReqId }
+        : null;
     } catch (err) {
       ctx.logger.warn('active_session_lookup_failed', {
         conversationId,
@@ -5144,30 +5247,27 @@ export function createOrchestrator(
       });
     }
 
-    // The My Skills "approve early" path has no conversation, so the retire
-    // below is skipped when absent.
+    // The My Skills "approve early" path has no conversation, so the session
+    // step below is skipped when absent.
     const convId = input.conversationId;
 
-    // A freshly-active instruction-only skill has no credential/host reach of its
-    // own, so there is nothing to live-widen or re-spawn for here: the skill's
-    // body materializes on the next turn's spawn. (Its referenced connectors'
-    // reach is wired by the skill→connector bridge.)
-    // Retire the warm session so the next turn cold-spawns with the now-active
-    // skill's body in the union.
+    // A freshly-active instruction-only skill has no credential/host reach of
+    // its own, so there is nothing to live-widen here: the skill's body
+    // materializes on the next turn's spawn. (Its referenced connectors' reach
+    // is wired by the skill→connector bridge.) So the conversation's session
+    // is ended now when it's idle, or marked to restart at its next turn when
+    // a turn is in flight there (TASK-1127, retireOrMarkForSkillGrant). Either
+    // way the next turn cold-spawns with the now-active skill's body in the
+    // union, which is what `respawned` reports.
     let respawned = false;
     if (convId !== undefined) {
-      const warm = await activeAliveSession(ctx, convId, input.userId);
-      if (warm !== null) {
-        try {
-          await bus.call('session:terminate', ctx, { sessionId: warm });
-          respawned = true;
-        } catch (err) {
-          ctx.logger.warn('authored_grant_retire_failed', {
-            conversationId: input.conversationId,
-            err: err instanceof Error ? err : new Error(String(err)),
-          });
-        }
-      }
+      respawned =
+        (await retireOrMarkForSkillGrant(
+          ctx,
+          convId,
+          input.userId,
+          'authored_grant_retire_failed',
+        )) !== 'none';
     }
     return { applied: true, respawned };
   }
