@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
@@ -19,6 +21,7 @@ import type { InstallRow } from '../store.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import {
   followContinuation,
+  PLUMBING_TOOL_NAMES,
   runTurn,
   turnContextFields,
   type ContinuationRequest,
@@ -126,6 +129,14 @@ function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean 
     },
   };
   return { api, calls };
+}
+
+/** The status card's titles Slack received, in order. */
+function cardTitlesOf(calls: readonly SlackCall[]): string[] {
+  return calls.flatMap((c) => {
+    const chunks = Array.isArray(c.args['chunks']) ? (c.args['chunks'] as StreamChunkOut[]) : [];
+    return chunks.flatMap((x) => (x.type === 'task_update' ? [x.title] : []));
+  });
 }
 
 /** Every word of the reply Slack received, streamed or posted, in order. */
@@ -539,6 +550,30 @@ describe("runTurn: another turn's dark turn-end is not this one's (TASK-1095)", 
       await h.own.end();
       await done;
       expect(h.reply()).toBe('One. Two. Three. Four.');
+      expect(h.sinks()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("the SDK loading a tool (ToolSearch) keeps its own turn alive too: plumbing shows nothing, but the grace runs from it (TASK-1130)", async () => {
+      vi.useFakeTimers();
+      const h = harness({ darkEndFirst: true, answeredByDarkEnd: true });
+      const done = h.run('dm');
+      await vi.advanceTimersByTimeAsync(0);
+      const parts = [
+        { kind: 'text', text: 'One. ' },
+        { kind: 'tool-use', toolCallId: 'toolu_ts', toolName: 'ToolSearch', input: { query: 'select:mcp__ax-host-tools__routine_create' } },
+        { kind: 'text', text: 'Three. ' },
+        { kind: 'text', text: 'Four.' },
+      ] as const;
+      for (const part of parts) {
+        await vi.advanceTimersByTimeAsync(TURN_END_GRACE_MS / 2);
+        await h.own.chunk(part);
+      }
+      expect(h.sinks()).toBe(1);
+      await h.own.end();
+      await done;
+      expect(h.reply()).toBe('One. \n\nThree. Four.');
+      expect(cardTitlesOf(h.calls())).toEqual([]);
       expect(h.sinks()).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
     });
@@ -1449,10 +1484,36 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('a turn whose first chunk is the SDK loading a tool (ToolSearch) has started: plumbing shows nothing, but it still counts (TASK-1130)', async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(5_000);
+    await h.chunk({ kind: 'tool-use', toolCallId: 'toolu_ts', toolName: 'ToolSearch', input: { query: 'select:mcp__ax-host-tools__routine_create' } });
+    await vi.advanceTimersByTimeAsync(10_000 + CONTINUATION_START_GRACE_MS);
+    expect(h.registry.size()).toBe(1);
+    await h.chunk({ kind: 'text', text: 'Done.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('Done.');
+    expect(cardTitlesOf(h.all())).toEqual([]);
+    expect(h.lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([
     ['nothing at all', []],
     ['only thinking', [{ kind: 'thinking', text: 'They said yes.' }]],
     ['an empty text', [{ kind: 'text', text: '' }]],
+    // The SDK's ToolSearch is plumbing (TASK-1130): loading a tool's schema says nothing, and nor does its summary.
+    [
+      'only a ToolSearch schema load and its step summary',
+      [
+        { kind: 'tool-use', toolCallId: 'toolu_ts', toolName: 'ToolSearch', input: { query: 'select:mcp__ax-host-tools__routine_create' } },
+        { kind: 'step-summary', toolCallId: 'toolu_ts', text: 'Loading the routine creation tool schema.' },
+        { kind: 'tool-result', toolCallId: 'toolu_ts', output: 'loaded' },
+      ],
+    ],
   ] as const)('a turn-end after %s: no message, and the quiet end is logged by code', async (_name, chunks) => {
     const h = follower();
     const done = h.follow(inTenSeconds());
@@ -1819,5 +1880,30 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     ]);
     expect(h.prompts.size()).toBe(0);
     expect(h.reply()).toBe('');
+  });
+});
+
+/** channel-web's PLUMBING_TOOL_NAMES as its source spells it: read from the file, never imported (invariant 2). */
+function webPlumbingToolNames(): string[] {
+  const file = fileURLToPath(new URL('../../../channel-web/src/lib/workspace-steps.ts', import.meta.url));
+  const found = /^[ \t]*(?:export[ \t]+)?const[ \t]+PLUMBING_TOOL_NAMES\b[^=\n]*=[ \t]*new Set\(\[([^\]]*)\]\)/m.exec(
+    readFileSync(file, 'utf8'),
+  );
+  if (found === null) {
+    throw new Error('channel-web/src/lib/workspace-steps.ts no longer spells PLUMBING_TOOL_NAMES the way this test reads it');
+  }
+  // Only quoted names, commas and whitespace: a spread or a constant (`...BASE`) would be skipped silently.
+  // Strip the names, then look at what's left (one nested-quantifier regex here backtracks exponentially).
+  if (!/^[\s,]*$/.test(found[1]!.replace(/'[^']*'|"[^"]*"/g, ''))) {
+    throw new Error("channel-web's PLUMBING_TOOL_NAMES holds something besides quoted names; this test can't read it");
+  }
+  const names = [...found[1]!.matchAll(/'([^']*)'|"([^"]*)"/g)].map((m) => m[1] ?? m[2]!);
+  if (names.length === 0) throw new Error("read no names from channel-web's PLUMBING_TOOL_NAMES");
+  return names;
+}
+
+describe("PLUMBING_TOOL_NAMES: channel-web's twin (TASK-1130)", () => {
+  it("names exactly the calls the web's step panel hides", () => {
+    expect([...PLUMBING_TOOL_NAMES].sort()).toEqual(webPlumbingToolNames().sort());
   });
 });

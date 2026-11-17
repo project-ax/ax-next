@@ -31,7 +31,7 @@
 ## Findings
 
 1. **Double approval for a skill that reaches a connector.** One request gave three prompts: the held `request_capability`, a held `web_extract` (the agent's workaround), and then the skill card. One "use this skill" decision should be one prompt.
-2. **The agent's narration ran ahead of reality.** It said "now connected!" before Allow and claimed a "queued" web request that didn't exist. After Allow, the reply was "Connected. Send your message again and I'll use it." (`copy.ts:162`) and the sandbox pod exited (TASK-1127). The agent then kept choosing `web_extract`, and only used the connector after being told to use curl in the sandbox. That worked, with no further prompt. This ties to TASK-1130.
+2. **The agent's narration ran ahead of reality.** It said "now connected!" before Allow and claimed a "queued" web request that didn't exist. After Allow, the reply was "Connected. Send your message again and I'll use it." (`copy.ts:162`) and the sandbox pod exited (TASK-1127). The agent then kept choosing `web_extract`, and only used the connector after being told to use curl in the sandbox. That worked, with no further prompt. This ties to TASK-1130. *Measured later (TASK-1130): these were the model's own words, not runner narration or a step summary, so they need a follow-up of their own (filed from TASK-1130's handoff).*
 3. **`memory_note` refused in a shared channel, but the fact was saved anyway.** The agent's note about a person was refused (person subject with the shared audience), so it told the channel it couldn't save it. The idle observer then stored the same fact. The two paths disagree about what may be remembered.
 4. **A junk fact was saved:** "assistant: could_not_save_memory". The extractor stores the agent's own failure narration.
 5. **A skill with no reach is never attached.** `request_capability` for `walk-haiku` produced no skill card and no attachment, so the skill isn't there on the next turn.
@@ -54,4 +54,4 @@
 - TASK-1137: finding 5
 - TASK-1138: finding 6
 - TASK-1139: findings 8 and 9
-- Finding 2 belongs to TASK-1130, and finding 10 to TASK-1133.
+- Finding 2 belongs to TASK-1130, and finding 10 to TASK-1133. *Measured later (TASK-1130): finding 2 is the model's own words, so it gets its own follow-up, filed from TASK-1130's handoff.*
