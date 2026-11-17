@@ -43,7 +43,10 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * conversation, and the mode's `source` and `audience` (`turnContextFields`,
  * the only place they come from; constant for a conversation, as memory
  * requires). The sender label is part of the message CONTENT, built by the
- * caller: untrusted text the model reads, nothing more.
+ * caller: untrusted text the model reads, nothing more. What the label is,
+ * and who in the turn can approve, the agent reads once per session in its
+ * system prompt (turn-note.ts, TASK-1131), chosen by the turn's mode, never
+ * by the message.
  *
  * A call the turn holds for approval never runs, and the runner ends the turn
  * right after it, so the reply ends with one line saying whose approval it
@@ -718,6 +721,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   const unregister = d.registry.register({
     reqId: s.reqId,
     conversationId: s.conversationId,
+    mode: s.mode,
     chunk: onChunk,
     end: () => decide({ outcome: 'complete' }),
     error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),

@@ -39,6 +39,7 @@ import {
 } from '../plugin.js';
 import { secretRef } from '../secrets.js';
 import { createInstallStore } from '../store.js';
+import { slackTurnNote } from '../turn-note.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
 import { fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 
@@ -543,13 +544,13 @@ async function keptOutThread(conversationId: string): Promise<void> {
 }
 
 describe('@ax/channel-slack plugin', () => {
-  it('manifest pins: registers nothing, calls exactly what it uses, branding and the cap interrupt are optional', () => {
+  it('manifest pins: registers one system-prompt contribution, calls exactly what it uses, branding and the cap interrupt are optional', () => {
     const plugin = createChannelSlackPlugin({ publicOrigin: HTTPS_ORIGIN });
     expect(PLUGIN_NAME).toBe('@ax/channel-slack');
     expect(plugin.manifest).toEqual({
       name: '@ax/channel-slack',
       version: '0.0.0',
-      registers: [],
+      registers: ['system-prompt:augment:optional:slack'],
       calls: [
         'http:register-route',
         'auth:require-user',
@@ -604,6 +605,37 @@ describe('@ax/channel-slack plugin', () => {
         'chat:permission-request',
       ],
     });
+  });
+
+  it('registers its system-prompt contribution, which answers {} for anything that is not a Slack turn (TASK-1131)', async () => {
+    const { harness } = await boot();
+    expect(harness.bus.listServices()).toContain('system-prompt:augment:optional:slack');
+    // A web chat's spawn, say: no Slack turn is registered under its reqId.
+    expect(await harness.bus.call('system-prompt:augment:optional:slack', harness.ctx(), {})).toEqual({});
+  });
+
+  it("a DM turn's spawn gets the DM note: the provider reads the registry the turn registered in (TASK-1131)", async () => {
+    const slack = fakeSlackFetch();
+    const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const notes: unknown[] = [];
+    s.turnScript = async (b, ctx) => {
+      // What the orchestrator does at a fresh spawn: every provider, with the invoke's own ctx.
+      notes.push(await b.call('system-prompt:augment:optional:slack', ctx, {}));
+      await b.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Hi Alice.' });
+      await b.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+    const body = eventBody('message', 'Hello there');
+    const answer = await call(
+      'POST',
+      '/slack/events/:installId',
+      request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+    );
+    expect(answer.status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect(notes).toEqual([{ context: slackTurnNote('dm') }]);
   });
 
   it('an unparseable publicOrigin, or one that is not http(s), fails construction', () => {
@@ -1668,6 +1700,9 @@ describe('@ax/channel-slack plugin', () => {
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
+    // The bus can't take a service back: the system-prompt contribution stays, and with no turn it adds nothing.
+    expect(harness.bus.hasService('system-prompt:augment:optional:slack')).toBe(true);
+    expect(await harness.bus.call('system-prompt:augment:optional:slack', harness.ctx(), {})).toEqual({});
 
     await insertActiveInstall();
     await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
@@ -1701,6 +1736,8 @@ describe('@ax/channel-slack plugin', () => {
       for (const hook of TURN_EVENT_HOOKS) expect(bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
       expect(bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
       expect(bus.unsubscribe('memory:pre-capture', CAPTURE_VETO_KEY)).toBe(0);
+      // Nor its system-prompt contribution, which the bus could never take back (TASK-1131).
+      expect(bus.hasService('system-prompt:augment:optional:slack')).toBe(false);
       await insertActiveInstall();
       await bus.fire('bootstrap:reset-cleanup', makeAgentContext({ sessionId: 't', agentId: 't', userId: 't' }), {});
       expect(await installCount()).toBe(1);

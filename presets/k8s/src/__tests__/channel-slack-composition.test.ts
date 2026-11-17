@@ -17,6 +17,7 @@ import {
   makeAgentContext,
   type AgentContext,
   type Plugin,
+  SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
 } from '@ax/core';
 import type { CreateOutput as AgentCreateOutput } from '@ax/agents';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
@@ -152,7 +153,9 @@ interface CapturedRoute {
 
 const routes: CapturedRoute[] = [];
 let actor: { id: string; isAdmin: boolean } | null = null;
-const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
+/** channel-slack's system-prompt contribution (TASK-1131): what a Slack spawn's agent is told about who is writing. */
+const SLACK_NOTE = 'system-prompt:augment:optional:slack';
+const invokes: Array<{ ctx: AgentContext; input: unknown; note: unknown }> = [];
 /** When set, a turn runs this in place of the stub's one line of text; it ends the turn itself. */
 let invokeScript: ((ctx: AgentContext) => Promise<void>) | null = null;
 let theBus: HookBus | null = null;
@@ -221,7 +224,10 @@ function createStubsPlugin(): Plugin {
         'agent:invoke',
         name,
         async (ctx, input) => {
-          invokes.push({ ctx, input });
+          // What the orchestrator does at a fresh spawn: ask the provider with the turn's own ctx
+          // (the turn's sink is registered before agent:invoke).
+          const note = bus.listServices().includes(SLACK_NOTE) ? await bus.call(SLACK_NOTE, ctx, {}) : null;
+          invokes.push({ ctx, input, note });
           if (invokeScript !== null) {
             await invokeScript(ctx);
             return { kind: 'complete', messages: [] };
@@ -888,6 +894,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
         content: `[Slack · DM · Alice (${ALICE.slackId})]: What is on today?`,
       },
     });
+    // TASK-1131: the spawn's system prompt says whose DM this is, and that they can approve.
+    expect(SLACK_NOTE.startsWith(SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX)).toBe(true);
+    expect(aliceTurn.note).toEqual({ context: expect.stringContaining('This is a private Slack DM with your owner.') });
     const aliceConversation = aliceTurn.ctx.conversationId!;
     const metadata = await theBus!.call<unknown, { origin: string; agentId: string; userId: string }>(
       'conversations:get-metadata',
@@ -1098,9 +1107,23 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     slackCallsUntil(from, 'chat.startStream', 'chat.stopStream', 'reactions.remove');
 
   /** Wait for `n` turns to have reached agent:invoke; the latest one. */
-  async function invokedTurn(n: number): Promise<{ ctx: AgentContext; input: unknown }> {
+  async function invokedTurn(n: number): Promise<{ ctx: AgentContext; input: unknown; note: unknown }> {
     await vi.waitFor(() => expect(invokes).toHaveLength(n), { timeout: 10_000 });
     return invokes[n - 1]!;
+  }
+
+  /** TASK-1131: a member's spawn is told the writer can approve. The copy is channel-slack's; matched by substring. */
+  function expectMemberNote(note: unknown): void {
+    expect(note).toEqual({ context: expect.stringContaining('the person writing is one of your people') });
+    expect((note as { context: string }).context).not.toContain("can't approve");
+  }
+
+  /** TASK-1131: an outsider's spawn is told nobody writing can approve, and never sees their name. */
+  function expectOutsiderNote(note: unknown, name: string): void {
+    expect(note).toEqual({ context: expect.stringContaining("They can't approve anything.") });
+    const context = (note as { context: string }).context;
+    expect(context).toContain('waits for your owner, the person who connected this channel');
+    expect(context).not.toContain(name);
   }
 
   /** Every word the thread was sent: the stream's chunks and any plain post. */
@@ -1148,6 +1171,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(JSON.stringify(melTurn.input)).toContain(`[Slack · #support-desk · Mel (${MEL.slackId})]`);
     expect(JSON.stringify(melTurn.input)).toContain('what is the status?');
     expect(await conversationRow(melTurn.ctx.conversationId!)).toEqual({ owner: 'usr_mel', key: keyOf(melTs) });
+    expectMemberNote(melTurn.note);
     let calls = await channelTurnCalls(mark);
     expect(callOf(calls, 'chat.startStream').body).toMatchObject({
       channel: SUPPORT_CHANNEL,
@@ -1163,6 +1187,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(bobTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
     expect(JSON.stringify(bobTurn.input)).toContain(`[Slack · #support-desk · Bob (${BOB.slackId})]`);
     expect(await conversationRow(bobTurn.ctx.conversationId!)).toEqual({ owner: 'usr_ada', key: keyOf(bobTs, ':external') });
+    expectOutsiderNote(bobTurn.note, 'Bob');
     await channelTurnCalls(mark);
 
     // C: Carol has no AX account, on an approved domain. External too, and in Mel's own thread
@@ -1173,6 +1198,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(carolTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
     expect(carolTurn.ctx.conversationId).not.toBe(melTurn.ctx.conversationId);
     expect(await conversationRow(carolTurn.ctx.conversationId!)).toEqual({ owner: 'usr_ada', key: keyOf(melTs, ':external') });
+    expectOutsiderNote(carolTurn.note, 'Carol');
     expect(JSON.stringify(melTurn.input)).not.toContain('me too');
     await channelTurnCalls(mark);
 
@@ -1212,6 +1238,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect((await deliver(installId, mention(MEL, nextTs(), 'still me'))).status).toBe(200);
     const melAgain = await invokedTurn(4);
     expect(melAgain.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
+    expectMemberNote(melAgain.note);
     await channelTurnCalls(mark);
 
     // Eve's mention went nowhere: nothing said to her or in her thread, no turn for her.
@@ -1221,6 +1248,15 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(c.body['recipient_user_id']).not.toBe(EVE.slackId);
     }
     expect(invokes.map((i) => JSON.stringify(i.input)).join('')).not.toContain('let me in');
+
+    // A spawn channel-slack didn't start (a web chat) gets nothing, even on Mel's own conversation.
+    expect(
+      await theBus!.call(
+        SLACK_NOTE,
+        makeAgentContext({ sessionId: 'web', agentId, userId: 'usr_mel', conversationId: melTurn.ctx.conversationId! }),
+        {},
+      ),
+    ).toEqual({});
 
     // Ada is gone from the team: Zoe, its admin now, deletes the agent.
     await dropAgent(agentId, 'usr_zoe');
