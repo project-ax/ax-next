@@ -684,11 +684,13 @@ function summary(steps: readonly WorkspaceStep[]): string {
  *
  * channel-slack keeps a twin (`PLUMBING_TOOL_NAMES` in
  * packages/channel-slack/src/turn.ts): there, neither the call nor its step
- * summary changes a reply's status line. Its turn.test.ts reads this set from
- * this file and fails when the two differ, so change them together, and keep
- * it a `new Set([...])` of quoted names (that's what it reads).
+ * summary changes a reply's status line. Each package's tests read the other's
+ * set from its source (channel-slack's turn.test.ts, this package's
+ * workspace-steps.test.ts) and fail when the two differ, so a PR that touches
+ * either side runs the comparison. Change them together, and keep each a
+ * `new Set([...])` of quoted names (that's what the tests read).
  */
-const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
+export const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
 
 export function shapeSteps(
   calls: readonly WorkspaceToolCall[],

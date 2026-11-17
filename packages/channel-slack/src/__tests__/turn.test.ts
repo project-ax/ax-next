@@ -1452,6 +1452,22 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('a turn whose first chunk is the SDK loading a tool (ToolSearch) has started: plumbing shows nothing, but it still counts (TASK-1130)', async () => {
+    vi.useFakeTimers();
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    await vi.advanceTimersByTimeAsync(5_000);
+    await h.chunk({ kind: 'tool-use', toolCallId: 'toolu_ts', toolName: 'ToolSearch', input: { query: 'select:mcp__ax-host-tools__routine_create' } });
+    await vi.advanceTimersByTimeAsync(10_000 + CONTINUATION_START_GRACE_MS);
+    expect(h.registry.size()).toBe(1);
+    await h.chunk({ kind: 'text', text: 'Done.' });
+    await h.end();
+    await done;
+    expect(h.reply()).toBe('Done.');
+    expect(h.lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([
     ['nothing at all', []],
     ['only thinking', [{ kind: 'thinking', text: 'They said yes.' }]],
@@ -1842,6 +1858,10 @@ function webPlumbingToolNames(): string[] {
   );
   if (found === null) {
     throw new Error('channel-web/src/lib/workspace-steps.ts no longer spells PLUMBING_TOOL_NAMES the way this test reads it');
+  }
+  // Only quoted names, commas and whitespace: a spread or a constant (`...BASE`) would be skipped silently.
+  if (!/^(?:\s*(?:'[^']*'|"[^"]*")\s*,?)*\s*$/.test(found[1]!)) {
+    throw new Error("channel-web's PLUMBING_TOOL_NAMES holds something besides quoted names; this test can't read it");
   }
   const names = [...found[1]!.matchAll(/'([^']*)'|"([^"]*)"/g)].map((m) => m[1] ?? m[2]!);
   if (names.length === 0) throw new Error("read no names from channel-web's PLUMBING_TOOL_NAMES");

@@ -260,8 +260,9 @@ const ARTIFACT_TOOLS = new Set([
  * A twin of channel-web's PLUMBING_TOOL_NAMES
  * (packages/channel-web/src/lib/workspace-steps.ts), which hides the same
  * calls from the web's step panel. It's kept here rather than imported (no
- * cross-plugin import). Change them together: turn.test.ts reads the web's
- * from its source and fails when the two differ.
+ * cross-plugin import). Change them together: turn.test.ts here and the web's
+ * workspace-steps.test.ts each read the other's set from its source and fail
+ * when the two differ. Keep it a `new Set([...])` of quoted names.
  */
 export const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
 
@@ -571,8 +572,9 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   let firstHeld = null as { callId: string | undefined } | null;
   /**
    * The reply has been given something to show: text, a status, an artifact
-   * or a held call. A plumbing call (PLUMBING_TOOL_NAMES) and its summary are
-   * none of these. A woken turn that ends without any is given up quietly.
+   * or a held call. A plumbing call's use (PLUMBING_TOOL_NAMES) and its
+   * summary are none of these; its hold still is. A woken turn that ends
+   * without any is given up quietly.
    */
   let said = false;
   /** The turn has begun: the reply invoked it, or (woken) its first chunk came. */

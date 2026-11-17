@@ -6,8 +6,11 @@
  * number is the number of rows underneath it, and that no MCP wire name ever
  * reaches the screen.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  PLUMBING_TOOL_NAMES,
   STEP_DETAIL_MAX_CHARS,
   STEP_NAME_MAX_CHARS,
   UNNAMED_STEP,
@@ -670,5 +673,31 @@ describe('liveStreamHolds + witnessHolds — the live panel (TASK-532)', () => {
     expect(seen).toEqual(new Set(['tu1']));
     expect(witnessHolds(calls, 1, seen)).toBe(seen);
     expect(witnessHolds(calls, 0, seen)).toBe(seen);
+  });
+});
+
+/** channel-slack's PLUMBING_TOOL_NAMES as its source spells it: read from the file, never imported (no cross-plugin import). */
+function slackPlumbingToolNames(): string[] {
+  const file = fileURLToPath(new URL('../../../../channel-slack/src/turn.ts', import.meta.url));
+  const found = /^[ \t]*(?:export[ \t]+)?const[ \t]+PLUMBING_TOOL_NAMES\b[^=\n]*=[ \t]*new Set\(\[([^\]]*)\]\)/m.exec(
+    readFileSync(file, 'utf8'),
+  );
+  if (found === null) {
+    throw new Error('channel-slack/src/turn.ts no longer spells PLUMBING_TOOL_NAMES the way this test reads it');
+  }
+  // Only quoted names, commas and whitespace: a spread or a constant (`...BASE`) would be skipped silently.
+  if (!/^(?:\s*(?:'[^']*'|"[^"]*")\s*,?)*\s*$/.test(found[1]!)) {
+    throw new Error("channel-slack's PLUMBING_TOOL_NAMES holds something besides quoted names; this test can't read it");
+  }
+  const names = [...found[1]!.matchAll(/'([^']*)'|"([^"]*)"/g)].map((m) => m[1] ?? m[2]!);
+  if (names.length === 0) throw new Error("read no names from channel-slack's PLUMBING_TOOL_NAMES");
+  return names;
+}
+
+// TASK-1130: CI runs a package's tests only when it (or a dependency) changes, and
+// channel-web doesn't depend on channel-slack, so each side carries the comparison.
+describe("PLUMBING_TOOL_NAMES: channel-slack's twin (TASK-1130)", () => {
+  it('names exactly the calls a Slack reply keeps off its status line', () => {
+    expect([...PLUMBING_TOOL_NAMES].sort()).toEqual(slackPlumbingToolNames().sort());
   });
 });
