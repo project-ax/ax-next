@@ -24,6 +24,11 @@ import { createChatOrchestratorPlugin } from '../index.js';
 //     the row names the ended session (its `clearBySessionId`). Any other
 //     conversation id reads as another of the same person's conversations,
 //     with no session;
+//   - a `session:terminate` service that, its work done, fires the
+//     `session:terminate` event, as @ax/session-postgres and
+//     @ax/session-inmemory do. The orchestrator subscribes to it
+//     (`onSessionTerminate`): a turn still waiting on the session gets
+//     `sandbox-terminated`, so a test sees a turn cut off under it;
 //   - user skill attachments a grant writes and the next spawn reads, and one
 //     authored draft that starts `pending`;
 //   - an optional hold on one reqId's bind, so a turn can be parked between
@@ -107,6 +112,9 @@ async function makeHarness(
   const queuedReqIds = new Set<string>();
   const queuedWaiters = new Map<string, Array<() => void>>();
 
+  // The harness's bus, bound right after it is created, before any test step.
+  const bound: { bus?: TestHarness['bus'] } = {};
+
   // Every ctx this harness makes logs into the one shared `logs`.
   function ctxFor(sessionId: string, reqId: string, conversationId = 'conv-1'): AgentContext {
     return makeAgentContext({
@@ -144,7 +152,7 @@ async function makeHarness(
       }
       return { cursor: 0 };
     },
-    'session:terminate': async (_c, input: unknown) => {
+    'session:terminate': async (c, input: unknown) => {
       const sid = (input as { sessionId: string }).sessionId;
       counters.terminates.push(sid);
       live.delete(sid);
@@ -154,6 +162,9 @@ async function makeHarness(
         conv.activeSessionId = null;
         conv.activeReqId = null;
       }
+      // Then the store broadcasts the teardown on the same caller ctx.
+      if (bound.bus === undefined) throw new Error('harness bus is not bound yet');
+      await bound.bus.fire('session:terminate', c, { sessionId: sid });
       return {};
     },
     'session:is-alive': async (_c, input: unknown) => ({
@@ -259,6 +270,7 @@ async function makeHarness(
     ],
   });
   harnesses.push(h);
+  bound.bus = h.bus;
   h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
     turnErrors.push(p as { reqId: string; reason: string });
     return undefined;
@@ -357,6 +369,7 @@ describe('TASK-1127: a skill grant never ends a turn that is running', () => {
     const t2 = x.invoke('s-2', 'req-2'); // routed into s-1
     await x.queued('req-2'); // in s-1's inbox: running
     expect(await x.grant('notes')).toEqual({ attached: true });
+    expect(turnErrors).toEqual([]); // the running turn wasn't told its sandbox ended
     expect(counters.terminates).toEqual([]);
     await x.endTurn('s-1', 'req-2');
     expect(await t2).toEqual({ kind: 'complete', messages: [] });
@@ -562,5 +575,33 @@ describe('TASK-1127: a skill grant never ends a turn that is running', () => {
     await x.invoke('s-2', 'req-2'); // conv-1's next turn: routed into s-1
     expect(counters.opens).toBe(1);
     expect(counters.terminates).toEqual([]);
+  });
+
+  it("a session's restart mark goes with the session, even when no turn is waiting on it", async () => {
+    const x = await makeHarness();
+    const { counters, logs } = x;
+    await prelude(x);
+
+    const t2 = x.invoke('s-2', 'req-2'); // routed into s-1
+    await x.queued('req-2'); // running: the grant marks s-1
+    await x.grant('notes');
+    expect(logs.find((l) => l.msg === 'skill_grant_restart_deferred')).toMatchObject({
+      sessionId: 's-1',
+    });
+    await x.endTurn('s-1', 'req-2');
+    expect(await t2).toEqual({ kind: 'complete', messages: [] });
+
+    // Idle now, s-1 goes before another turn arrives, as when the idle reaper
+    // ends it: its sandbox terminates the session and the store broadcasts
+    // it. No waiter is registered on s-1 any more. Only the broadcast is fired
+    // here, so the harness still reports s-1 alive and the next turn's
+    // routing reads its mark: a mark that outlived the broadcast retires s-1
+    // as `skills-changed`.
+    await x.h.bus.fire('session:terminate', x.h.ctx({ sessionId: 's-1' }), { sessionId: 's-1' });
+
+    x.endTurnSoon('s-1', 'req-3');
+    await x.invoke('s-3', 'req-3');
+    expect(logs.find((l) => l.msg === 'stale_session_respawn')).toBeUndefined();
+    expect(counters.opens).toBe(1);
   });
 });

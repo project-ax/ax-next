@@ -2032,6 +2032,15 @@ export function createOrchestrator(
   ): Promise<void> {
     const sessionId = payload?.sessionId;
     if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+    // If this session was marked to restart at its next turn (a skill proposed
+    // there, or a skill granted while a turn was in flight: TASK-1127), prune
+    // it now — the session is gone, so the entry would never be consumed and
+    // would leak indefinitely. BEFORE the waiter check below: a marked session
+    // usually goes idle, with no waiter left (the idle reaper; a grant ending
+    // it once its turn is over), and that early return would skip this. Both
+    // session stores refuse a second `session:create` for an id, so the mark
+    // of a live session is never pruned by an old session's teardown.
+    respawnSessions.delete(sessionId);
     const reqIds = reqIdsBySession.get(sessionId);
     if (reqIds === undefined) return;
     // Snapshot — fireTurnError must not be confused by concurrent mutation
@@ -2044,10 +2053,6 @@ export function createOrchestrator(
     // The session's egress is gone — drop its host-grant dedup set so a reused
     // sessionId starts fresh (TASK-37).
     wallCardsByHost.delete(sessionId);
-    // If this session was marked dirty (draft-skills changed, awaiting re-spawn
-    // next turn), prune it now — the session is gone so the entry would never
-    // be consumed and would leak indefinitely.
-    respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
     spawnModeBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
@@ -4579,6 +4584,10 @@ export function createOrchestrator(
             skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
+            // And its restart mark (TASK-1127). The session:terminate
+            // subscriber prunes it too, but only when that event arrives: a
+            // backend whose terminate on exit fails never sends it.
+            respawnSessions.delete(sessionId);
             if (proxyOpened) {
               void closeProxySession(warmCtx, warmCtx.sessionId, 'runner-exit');
             }
@@ -4809,9 +4818,9 @@ export function createOrchestrator(
     // conversation row led to no live session, so the grant may have found
     // nothing to mark, and the skills this session read may predate the
     // attach. Mark it: its next turn restarts it with the skill. Only a
-    // session kept warm: a killed one restarts anyway, and its
-    // session:terminate (which prunes marks) may already have run, so a mark
-    // on it would never be cleared.
+    // session kept warm: a killed one restarts anyway, and the session may
+    // already be gone (session:terminate and the warm exit cleanup both prune
+    // marks), so a mark on it would never be cleared.
     if (keepWarm && skillGrantDuringReqIds.has(ctx.reqId)) {
       respawnSessions.add(sessionId);
       ctx.logger.info('skill_grant_restart_deferred', { sessionId });
