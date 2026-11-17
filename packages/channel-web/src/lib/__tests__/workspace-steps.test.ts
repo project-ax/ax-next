@@ -688,7 +688,8 @@ function slackPlumbingToolNames(): string[] {
     throw new Error('channel-slack/src/turn.ts no longer spells PLUMBING_TOOL_NAMES the way this test reads it');
   }
   // Only quoted names, commas and whitespace: a spread or a constant (`...BASE`) would be skipped silently.
-  if (!/^(?:\s*(?:'[^']*'|"[^"]*")\s*,?)*\s*$/.test(found[1]!)) {
+  // Strip the names, then look at what's left (one nested-quantifier regex here backtracks exponentially).
+  if (!/^[\s,]*$/.test(found[1]!.replace(/'[^']*'|"[^"]*"/g, ''))) {
     throw new Error("channel-slack's PLUMBING_TOOL_NAMES holds something besides quoted names; this test can't read it");
   }
   const names = [...found[1]!.matchAll(/'([^']*)'|"([^"]*)"/g)].map((m) => m[1] ?? m[2]!);
