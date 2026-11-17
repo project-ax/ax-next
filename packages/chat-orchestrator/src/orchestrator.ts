@@ -326,9 +326,9 @@ export type ApplyAuthoredCapabilityGrantOutput =
       applied: true;
       /**
        * True when the conversation's session was ended now or will restart at
-       * its next turn (marked now, or by a turn still cold-spawning when it
-       * completes; TASK-1127); false when there was no session and no turn in
-       * flight, or ending it failed.
+       * its next turn (marked now, also when ending it failed, or by a turn
+       * still cold-spawning when it completes; TASK-1127); false when there
+       * was no session and no turn in flight.
        */
       respawned: boolean;
     }
@@ -5156,9 +5156,13 @@ export function createOrchestrator(
   // it is still busy. channel-web's re-POST after a skill Connect relies on
   // that: it supersedes the running turn and gets the skill.
   //
+  // An idle session whose terminate fails is marked too (the failure is
+  // logged as `retireFailedLog`): it may have survived, still named by the
+  // row, and its next turn must not be served with the old skills.
+  //
   // 'retired': ended now. 'marked': restarts at its next turn (marked now, or
   // by a turn still cold-spawning when it completes). 'none': no live session
-  // and no turn in flight, or ending it failed (logged as `retireFailedLog`).
+  // and no turn in flight.
   async function retireOrMarkForSkillGrant(
     ctx: AgentContext,
     conversationId: string,
@@ -5202,7 +5206,12 @@ export function createOrchestrator(
         conversationId,
         err: err instanceof Error ? err : new Error(String(err)),
       });
-      return 'none';
+      // The session may have survived, still named by the row, with the old
+      // skills: the next turn would route into it. Mark it, so that turn
+      // retires it instead (and spawns fresh even if that terminate fails too).
+      respawnSessions.add(live.sessionId);
+      ctx.logger.info('skill_grant_restart_deferred', { sessionId: live.sessionId });
+      return 'marked';
     }
   }
 

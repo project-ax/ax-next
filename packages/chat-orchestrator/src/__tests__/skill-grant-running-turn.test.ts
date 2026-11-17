@@ -29,6 +29,9 @@ import { createChatOrchestratorPlugin } from '../index.js';
 //     @ax/session-inmemory do. The orchestrator subscribes to it
 //     (`onSessionTerminate`): a turn still waiting on the session gets
 //     `sandbox-terminated`, so a test sees a turn cut off under it;
+//   - an optional failure of the first `session:terminate`, thrown before it
+//     changes anything (the store's write failed): the session stays alive
+//     and the row still names it;
 //   - user skill attachments a grant writes and the next spawn reads, and one
 //     authored draft that starts `pending`;
 //   - an optional hold on one reqId's bind, so a turn can be parked between
@@ -75,6 +78,7 @@ async function makeHarness(
     holdBind?: { reqId: string; release: Promise<void> };
     holdFirstOpen?: Promise<void>;
     holdGrantLookup?: Promise<void>;
+    failFirstTerminate?: boolean;
   } = {},
 ) {
   const conv: { activeSessionId: string | null; activeReqId: string | null } = {
@@ -107,6 +111,7 @@ async function makeHarness(
     }),
   };
   let grantLookupHeld = false;
+  let terminateFailed = false;
 
   // reqIds whose user message reached `session:queue-work`, and who waits on one.
   const queuedReqIds = new Set<string>();
@@ -154,6 +159,10 @@ async function makeHarness(
     },
     'session:terminate': async (c, input: unknown) => {
       const sid = (input as { sessionId: string }).sessionId;
+      if (opts.failFirstTerminate === true && !terminateFailed) {
+        terminateFailed = true;
+        throw new Error('session store unavailable');
+      }
       counters.terminates.push(sid);
       live.delete(sid);
       // @ax/conversations' clearBySessionId: a row bound to the ended session
@@ -409,6 +418,30 @@ describe('TASK-1127: a skill grant never ends a turn that is running', () => {
     expect(counters.opens).toBe(2);
     expect(installedIds(counters.openInputs[1]!)).toContain('notes');
   });
+
+  it.each([
+    ['catalog', 'notes', 'apply_capability_grant_retire_failed', { attached: true }],
+    ['authored', 'my-draft', 'authored_grant_retire_failed', { applied: true, respawned: true }],
+  ] as const)(
+    'the %s grant: when ending the idle session fails, it marks it instead, and the next turn restarts with the skill',
+    async (kind, skillId, failedLog, expected) => {
+      const x = await makeHarness({ failFirstTerminate: true });
+      const { counters, logs } = x;
+      await prelude(x);
+
+      expect(await (kind === 'catalog' ? x.grant(skillId) : x.grantAuthored(skillId))).toEqual(
+        expected,
+      );
+      expect(logs.find((l) => l.msg === failedLog)).toBeDefined();
+      expect(counters.terminates).toEqual([]); // s-1 is still alive, and the row names it
+
+      x.endTurnSoon('s-2', 'req-2');
+      await x.invoke('s-2', 'req-2');
+      expect(counters.terminates).toEqual(['s-1']);
+      expect(counters.opens).toBe(2);
+      expect(installedIds(counters.openInputs[1]!)).toContain(skillId);
+    },
+  );
 
   it('a turn routed to the session but not yet bound to the conversation counts as running', async () => {
     let releaseBind!: () => void;
