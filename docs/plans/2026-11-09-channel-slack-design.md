@@ -87,6 +87,15 @@ the label early. `<text>` is the message as its sender typed it: Slack's
 `<url|label>` reference stays as Slack wrote it). That label is untrusted text
 the model reads. Nothing ever treats it as permission to do something.
 
+The agent is told what the label means once per session, in its system prompt
+(TASK-1131, `turn-note.ts`). The words after the label are that person's own
+request, and anything they paste or quote stays data. It also says who can
+approve: in a DM, the owner; in a member's thread, that member; in an
+outsider's thread, nobody writing, so the agent says it needs its owner's OK
+and never sends them looking for a card or a button. The note is fixed text
+chosen by the turn's mode. Nothing from the message, the name or the channel
+goes into it.
+
 **Mention-only.** In a channel the bot answers a message that mentions it, and
 nothing else: a follow-up in the same thread needs a new mention. A bare
 `@bot` with no other text runs no turn. A reply can't broadcast: `@channel`,
@@ -602,7 +611,10 @@ TASK-1095 adds none). TASK-1095 adds one more public route,
 routes (the signature, the install and the admission check run before the body
 is read), and decisions' attendance now covers origin `'slack'`.
 `@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
-registers routes and subscribes to chat events. Two existing surfaces widen:
+registers routes, subscribes to chat events, and adds one block to the system
+prompt through the existing `system-prompt:augment:optional:*` family (`…:slack`,
+TASK-1131): a provider of an existing hook, not a new one. Two existing
+surfaces widen:
 conversations' `origin` gains `'slack'` (a Slack thread is read-only in the web
 app), and `credentials:get` gains an optional `scope: 'global'` that reads only
 the workspace-wide row, so a user-scoped row can't shadow an install's signing
