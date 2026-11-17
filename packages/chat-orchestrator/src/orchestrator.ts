@@ -2302,7 +2302,8 @@ export function createOrchestrator(
   // the session it runs on, because the grant may not have been able to.
   // Asked when a cold spawn's session comes up, before any turn can be routed
   // into it, and when any turn ends. A session already marked is left alone,
-  // so one grant leaves one trace. Only a warm session: its handle.exited
+  // so a flagged turn never re-marks it (the grant's own mark logs on its own
+  // path, so one grant can still log twice). Only a warm session: its handle.exited
   // cleanup prunes the mark when it goes, so a mark can't outlive it.
   function markIfSkillGrantFlagged(ctx: AgentContext, sessionId: string): void {
     if (!skillGrantDuringReqIds.has(ctx.reqId)) return;
@@ -5200,8 +5201,10 @@ export function createOrchestrator(
     // as soon as its session is up, any turn as it ends. Flagged before the
     // await, a turn that ends while the lookup runs is still flagged. Both
     // callers attach first, so a turn that starts after this reads the skill.
-    // A turn flagged before its own skill read already has the skill: its
-    // mark costs one spare restart, not a turn.
+    // A turn flagged before its own skill read already has the skill, and its
+    // mark still restarts the session at the next routed turn. A turn routed in
+    // while it is still running retires it under that turn (the supersede the
+    // web's re-POST relies on), so a spare mark can cost a running turn.
     // The ownership check comes after this (the lookup), so for the flag this
     // relies on the callers, which both read `conversations:get` as the user
     // first; a flag can only restart a session, never widen one.
@@ -5242,7 +5245,11 @@ export function createOrchestrator(
   // Resolve the conversation's ACTIVE + ALIVE session id (or null), with the
   // row's bound request (`activeReqId`) from the same read. Shared by the
   // catalog + authored grant paths (end or mark). Best-effort: any lookup
-  // failure → null (the next turn's route-vs-fresh self-corrects).
+  // failure → null. That does NOT self-correct for a grant: with no turn in
+  // flight nothing is flagged, so the session is neither ended nor marked and
+  // the next turn routes into it without the skill (TASK-1127 residual; a
+  // follow-up tracks marking the conversation's warm sessions on a failed
+  // lookup).
   async function activeAliveSession(
     ctx: AgentContext,
     conversationId: string,
