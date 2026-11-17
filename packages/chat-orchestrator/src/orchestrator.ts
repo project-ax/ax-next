@@ -327,7 +327,7 @@ export type ApplyAuthoredCapabilityGrantOutput =
       /**
        * True when the conversation's session was ended now or will restart at
        * its next turn (marked now, also when ending it failed, or by a turn
-       * still cold-spawning when it completes; TASK-1127); false when there
+       * in flight, on the session it runs on; TASK-1127); false when there
        * was no session and no turn in flight.
        */
       respawned: boolean;
@@ -1844,11 +1844,13 @@ export function createOrchestrator(
   }
   // TASK-1127 — reqIds of the agent:invokes that were in flight when a skill
   // grant landed for their conversation (retireOrMarkForSkillGrant flags each
-  // one). Read by the fresh-spawn path when its turn completes: a turn still
-  // cold-spawning can't be found through the conversation row until its open
-  // and bind, so the grant may have had no session to mark, and the turn
-  // marks its new session itself. Only ever holds reqIds of the registry
-  // above, and cleared by the same finally, so it is bounded the same way.
+  // one). The grant may have had no session to mark: it can't find a turn's
+  // session until that session is up (warm) and the row names it, and a
+  // failed row lookup finds none at all. So a flagged turn marks the session
+  // it runs on itself (markIfSkillGrantFlagged): a cold spawn as soon as its
+  // session is up, any turn as it ends. Only ever holds reqIds of the
+  // registry above, and cleared by the same finally, so it is bounded the
+  // same way.
   const skillGrantDuringReqIds = new Set<string>();
   // Reactive egress wall (TASK-37) — dedup raised host-grant cards per
   // (sessionId, host) so repeated 403s to the same blocked host don't spam the
@@ -2290,11 +2292,24 @@ export function createOrchestrator(
   // skill this turn (see onSkillsProposed; TASK-74 replaced the old trigger on
   // committed draft-skill files), and a skill grant that lands while a turn
   // is in flight (retireOrMarkForSkillGrant, TASK-1127; a grant ends an idle
-  // session at once instead, and a turn still cold-spawning marks its own
-  // session when it completes: skillGrantDuringReqIds). Consumed (terminate +
-  // fresh spawn) at the next turn's routing decision. In-memory +
-  // single-replica — same posture as the warm-session map.
+  // session at once instead, and a turn it flagged marks the session it runs
+  // on itself: markIfSkillGrantFlagged). Consumed (terminate + fresh spawn) at
+  // the next turn's routing decision. In-memory + single-replica — same
+  // posture as the warm-session map.
   const respawnSessions = new Set<string>();
+
+  // TASK-1127 — a turn a skill grant flagged (skillGrantDuringReqIds) marks
+  // the session it runs on, because the grant may not have been able to.
+  // Asked when a cold spawn's session comes up, before any turn can be routed
+  // into it, and when any turn ends. A session already marked is left alone,
+  // so one grant leaves one trace. Only a warm session: its handle.exited
+  // cleanup prunes the mark when it goes, so a mark can't outlive it.
+  function markIfSkillGrantFlagged(ctx: AgentContext, sessionId: string): void {
+    if (!skillGrantDuringReqIds.has(ctx.reqId)) return;
+    if (!warmSessions.has(sessionId) || respawnSessions.has(sessionId)) return;
+    respawnSessions.add(sessionId);
+    ctx.logger.info('skill_grant_restart_deferred', { sessionId });
+  }
 
   // TASK-612 — the second reason a warm session is retired at its next turn:
   // its system prompt is older than something it carries. @ax/agents fires
@@ -3433,6 +3448,10 @@ export function createOrchestrator(
         }
         await fireChatEvent('chat:end', ctx, { outcome });
       }
+      // TASK-1127 — a skill grant flagged this turn but couldn't mark the
+      // session it runs on (the grant's row lookup failed; it marks it
+      // directly otherwise). Mark it now: its next turn restarts it.
+      markIfSkillGrantFlagged(ctx, sessionId);
       // No handle.kill() — we did not open this sandbox.
       return outcome;
     }
@@ -4593,6 +4612,13 @@ export function createOrchestrator(
             }
           })
           .catch(() => undefined);
+        // TASK-1127 — the session is up: a turn can be routed into it from
+        // here whenever the row already names it (channel-web binds the row
+        // at POST; a routing retire rebinds it before the open), ahead of this
+        // turn's own bind below. A skill grant that flagged this turn while it
+        // was cold-spawning found no session to mark, so mark it now, in the
+        // same step that made it warm.
+        markIfSkillGrantFlagged(ctx, sessionId);
       }
     } catch (err) {
       unregisterWaiter(sessionId, ctx.reqId);
@@ -4813,18 +4839,13 @@ export function createOrchestrator(
     //    session:terminate is fired by the sandbox provider's own exit
     //    handler, so we don't call it here — that would double-fire.
     const keepWarm = keepAlive && outcome.kind === 'complete';
-    // TASK-1127 — a skill grant landed while this turn was in flight (flagged
-    // by retireOrMarkForSkillGrant). Until the open and the bind above, the
-    // conversation row led to no live session, so the grant may have found
-    // nothing to mark, and the skills this session read may predate the
-    // attach. Mark it: its next turn restarts it with the skill. Only a
-    // session kept warm: a killed one restarts anyway, and the session may
-    // already be gone (session:terminate and the warm exit cleanup both prune
-    // marks), so a mark on it would never be cleared.
-    if (keepWarm && skillGrantDuringReqIds.has(ctx.reqId)) {
-      respawnSessions.add(sessionId);
-      ctx.logger.info('skill_grant_restart_deferred', { sessionId });
-    }
+    // TASK-1127 — a skill grant flagged this turn after its session came up
+    // and still couldn't mark it: the row didn't name the session yet (the
+    // grant landed before this turn's bind, on a channel that doesn't bind at
+    // POST), or the grant's row lookup failed. Mark it now: its next turn
+    // restarts it with the skill. Only a session kept warm: a killed one
+    // restarts anyway.
+    if (keepWarm) markIfSkillGrantFlagged(ctx, sessionId);
     if (!keepWarm) {
       try {
         await handle.kill();
@@ -5161,8 +5182,8 @@ export function createOrchestrator(
   // row, and its next turn must not be served with the old skills.
   //
   // 'retired': ended now. 'marked': restarts at its next turn (marked now, or
-  // by a turn still cold-spawning when it completes). 'none': no live session
-  // and no turn in flight.
+  // by a flagged turn in flight, on the session it runs on). 'none': no live
+  // session and no turn in flight.
   async function retireOrMarkForSkillGrant(
     ctx: AgentContext,
     conversationId: string,
@@ -5170,14 +5191,16 @@ export function createOrchestrator(
     retireFailedLog: 'apply_capability_grant_retire_failed' | 'authored_grant_retire_failed',
   ): Promise<'retired' | 'marked' | 'none'> {
     // First, synchronously, before the lookup's first await: flag every turn
-    // of this conversation in flight now (`skillGrantDuringReqIds`). The row
-    // can't lead the lookup to a cold-spawning turn's session until that
-    // turn's open and bind, and the skills it read may predate the attach, so
-    // a flagged fresh spawn marks its own session when it completes (at
-    // `keepWarm`). Flagged before the await, a turn that ends while the lookup
-    // runs is still flagged. Both callers attach first, so a turn that starts
-    // after this reads the skill. A turn flagged before its own skill read
-    // already has the skill: its mark costs one spare restart, not a turn.
+    // of this conversation in flight now (`skillGrantDuringReqIds`). The
+    // lookup can't find a cold-spawning turn's session until it is up (warm)
+    // and the row names it, a failed lookup finds no session at all, and the
+    // skills a cold spawn read may predate the attach. So a flagged turn marks
+    // the session it runs on itself (markIfSkillGrantFlagged): a cold spawn
+    // as soon as its session is up, any turn as it ends. Flagged before the
+    // await, a turn that ends while the lookup runs is still flagged. Both
+    // callers attach first, so a turn that starts after this reads the skill.
+    // A turn flagged before its own skill read already has the skill: its
+    // mark costs one spare restart, not a turn.
     // The ownership check comes after this (the lookup), so for the flag this
     // relies on the callers, which both read `conversations:get` as the user
     // first; a flag can only restart a session, never widen one.
@@ -5188,8 +5211,8 @@ export function createOrchestrator(
       flagged = true;
     }
     const live = await activeAliveSession(ctx, conversationId, userId);
-    // Nothing to end or mark now; a flagged turn marks the session it is
-    // opening when it completes.
+    // Nothing to end or mark now; each flagged turn marks the session it runs
+    // on (markIfSkillGrantFlagged).
     if (live === null) return flagged ? 'marked' : 'none';
     // Asked AFTER the lookup's awaits, so a turn that started meanwhile counts.
     const bound = typeof live.activeReqId === 'string' && live.activeReqId.length > 0;

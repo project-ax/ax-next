@@ -32,16 +32,19 @@ import { createChatOrchestratorPlugin } from '../index.js';
 //   - an optional failure of the first `session:terminate`, thrown before it
 //     changes anything (the store's write failed): the session stays alive
 //     and the row still names it;
+//   - a session that is alive from its `sandbox:open-session` on (the
+//     providers call `session:create` inside the open), with a runner a test
+//     can make exit (`exitRunner`), as one does once its session is ended;
 //   - user skill attachments a grant writes and the next spawn reads, and one
 //     authored draft that starts `pending`;
 //   - an optional hold on one reqId's bind, so a turn can be parked between
-//     its routing decision and its bind;
+//     its routing decision (or its sandbox open) and its bind;
 //   - an optional hold on the first sandbox open, so a cold-spawning turn can
-//     be parked after it read its skills and before the row names its
-//     session;
+//     be parked after it read its skills and before its session is up;
 //   - an optional hold on a grant's first row read, AFTER the read: it answers
 //     with the row as it was when read, so a turn can end while the grant is
-//     still looking.
+//     still looking;
+//   - an optional failure of every grant's row read, as a store hiccup would.
 // Turn ends are fired by hand (`endTurn`), so a test decides when a turn is
 // still running.
 // ---------------------------------------------------------------------------
@@ -61,6 +64,7 @@ const TEST_AGENT = {
 
 /** The part of a `sandbox:open-session` input these tests read. */
 interface OpenInput {
+  sessionId: string;
   installedSkills?: Array<{ id: string }>;
 }
 
@@ -79,6 +83,7 @@ async function makeHarness(
     holdFirstOpen?: Promise<void>;
     holdGrantLookup?: Promise<void>;
     failFirstTerminate?: boolean;
+    failGrantLookup?: boolean;
   } = {},
 ) {
   const conv: { activeSessionId: string | null; activeReqId: string | null } = {
@@ -137,13 +142,21 @@ async function makeHarness(
     });
   }
 
-  // Each spawn gets its own trivial handle (kill resolves exited).
-  function makeHandle() {
+  // Each spawn gets its own trivial handle (kill resolves exited), kept by
+  // session id so a test can make that runner exit.
+  const runnerExits = new Map<string, () => void>();
+  function makeHandle(sessionId: string) {
     let resolveExit!: () => void;
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
       resolveExit = () => res({ code: 0, signal: null });
     });
+    runnerExits.set(sessionId, resolveExit);
     return { kill: async () => { resolveExit(); }, exited };
+  }
+  function exitRunner(sessionId: string): void {
+    const exit = runnerExits.get(sessionId);
+    if (exit === undefined) throw new Error(`no runner was opened for ${sessionId}`);
+    exit();
   }
 
   const services: Record<string, ServiceHandler> = {
@@ -180,6 +193,9 @@ async function makeHarness(
       alive: live.has((input as { sessionId: string }).sessionId),
     }),
     'conversations:get': async (c, input: unknown) => {
+      if (opts.failGrantLookup === true && c.reqId.startsWith('grant-')) {
+        throw new Error('conversation store unavailable');
+      }
       const i = input as { conversationId: string; userId: string };
       const own = i.conversationId === 'conv-1';
       const conversation = {
@@ -206,19 +222,22 @@ async function makeHarness(
       }
       conv.activeSessionId = i.sessionId; // the row write
       conv.activeReqId = i.reqId;
-      live.add(i.sessionId); // and the session is alive
       return undefined;
     },
     'sandbox:open-session': async (_c, input: unknown) => {
+      const i = input as OpenInput;
       counters.opens += 1;
-      counters.openInputs.push(input as OpenInput);
+      counters.openInputs.push(i);
+      live.add(i.sessionId); // session:create, inside the open
+      const handle = makeHandle(i.sessionId);
       // The first open can be held. By now the turn has read its skills and
-      // registered its waiter; its bind (the row write) comes after the open.
+      // registered its waiter. Its session isn't up (warm) until the open
+      // returns, and its bind (the row write) comes after that.
       if (opts.holdFirstOpen !== undefined && counters.opens === 1) {
         resolveEnteredOpen();
         await opts.holdFirstOpen;
       }
-      return { runnerEndpoint: 'unix:///tmp/m.sock', handle: makeHandle() };
+      return { runnerEndpoint: 'unix:///tmp/m.sock', handle };
     },
     'proxy:open-session': async () => ({
       proxyEndpoint: 'tcp://127.0.0.1:1',
@@ -353,6 +372,7 @@ async function makeHarness(
     queued,
     endTurn,
     endTurnSoon,
+    exitRunner,
     grant,
     grantAuthored,
   };
@@ -390,9 +410,10 @@ describe('TASK-1127: a skill grant never ends a turn that is running', () => {
     expect(counters.opens).toBe(2);
     expect(installedIds(counters.openInputs[0]!)).not.toContain('notes');
     expect(installedIds(counters.openInputs[1]!)).toContain('notes');
-    expect(logs.find((l) => l.msg === 'skill_grant_restart_deferred')).toMatchObject({
-      sessionId: 's-1',
-    });
+    // One grant, one trace: the turn it marked under doesn't mark again as it ends.
+    expect(logs.filter((l) => l.msg === 'skill_grant_restart_deferred')).toEqual([
+      expect.objectContaining({ sessionId: 's-1' }),
+    ]);
     expect(logs.find((l) => l.msg === 'stale_session_respawn')).toMatchObject({
       sessionId: 's-1',
       reason: 'skills-changed',
@@ -608,6 +629,87 @@ describe('TASK-1127: a skill grant never ends a turn that is running', () => {
     await x.invoke('s-2', 'req-2'); // conv-1's next turn: routed into s-1
     expect(counters.opens).toBe(1);
     expect(counters.terminates).toEqual([]);
+  });
+
+  it("a grant during a cold spawn, then the web's re-POST routed in as soon as the sandbox is up: it restarts the session with the skill", async () => {
+    let releaseOpen!: () => void;
+    const holdFirstOpen = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let releaseBind!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseBind = resolve;
+    });
+    const x = await makeHarness({ holdFirstOpen, holdBind: { reqId: 'req-1', release } });
+    const { counters, logs, turnErrors } = x;
+
+    // channel-web binds the row at POST, to the session the turn will open.
+    x.conv.activeSessionId = 's-1';
+    x.conv.activeReqId = 'req-1';
+    const t1 = x.invoke('s-1', 'req-1');
+    await x.entered.open; // skills read, sandbox opening
+    expect(await x.grant('notes')).toEqual({ attached: true });
+    expect(counters.terminates).toEqual([]);
+    releaseOpen();
+    await x.entered.bind; // s-1 is up; the turn's own bind hasn't landed
+
+    // Connect's re-POST, routed while s-1 still runs the first turn.
+    x.endTurnSoon('s-2', 'req-2');
+    expect(await x.invoke('s-2', 'req-2')).toEqual({ kind: 'complete', messages: [] });
+    expect(counters.opens).toBe(2);
+    expect(installedIds(counters.openInputs[0]!)).not.toContain('notes');
+    expect(installedIds(counters.openInputs[1]!)).toContain('notes');
+    expect(counters.terminates).toEqual(['s-1']);
+    expect(logs.find((l) => l.msg === 'stale_session_respawn')).toMatchObject({
+      sessionId: 's-1',
+      reason: 'skills-changed',
+    });
+    // Superseded, as a busy routed session is.
+    expect(turnErrors).toEqual([{ reqId: 'req-1', reason: 'sandbox-terminated' }]);
+
+    // s-1's runner exits once its session is ended, and the first turn with it.
+    releaseBind();
+    await x.queued('req-1');
+    x.exitRunner('s-1');
+    expect(await t1).toMatchObject({ kind: 'terminated' });
+  });
+
+  it("a grant that can't read the conversation while a routed turn runs: that turn marks its session as it ends", async () => {
+    const x = await makeHarness({ failGrantLookup: true });
+    const { counters, logs } = x;
+    await prelude(x);
+
+    const t2 = x.invoke('s-2', 'req-2'); // routed into s-1
+    await x.queued('req-2'); // running
+    expect(await x.grantAuthored('my-draft')).toEqual({ applied: true, respawned: true });
+    expect(logs.find((l) => l.msg === 'active_session_lookup_failed')).toBeDefined();
+    expect(counters.terminates).toEqual([]);
+    await x.endTurn('s-1', 'req-2');
+    expect(await t2).toEqual({ kind: 'complete', messages: [] });
+
+    x.endTurnSoon('s-3', 'req-3');
+    await x.invoke('s-3', 'req-3');
+    expect(counters.opens).toBe(2);
+    expect(counters.terminates).toEqual(['s-1']);
+    expect(installedIds(counters.openInputs[1]!)).toContain('my-draft');
+  });
+
+  it("a grant that can't read the conversation while a cold-spawned turn runs: that turn marks its session as it ends", async () => {
+    const x = await makeHarness({ failGrantLookup: true });
+    const { counters } = x;
+
+    const t1 = x.invoke('s-1', 'req-1'); // opens s-1
+    await x.queued('req-1'); // s-1 up and bound: running
+    expect(await x.grant('notes')).toEqual({ attached: true });
+    expect(counters.terminates).toEqual([]);
+    await x.endTurn('s-1', 'req-1');
+    expect(await t1).toEqual({ kind: 'complete', messages: [] });
+
+    x.endTurnSoon('s-2', 'req-2');
+    await x.invoke('s-2', 'req-2');
+    expect(counters.opens).toBe(2);
+    expect(counters.terminates).toEqual(['s-1']);
+    expect(installedIds(counters.openInputs[1]!)).toContain('notes');
   });
 
   it("a session's restart mark goes with the session, even when no turn is waiting on it", async () => {
