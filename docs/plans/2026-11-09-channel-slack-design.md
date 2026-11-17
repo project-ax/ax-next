@@ -71,8 +71,12 @@ a real person who answers for it, the way a routine runs as its owner
 who connected the channel**. A team has no user id, and memory refuses made-up
 owners (`packages/memory/src/owner.ts`). Connector calls that need approval wait
 for that person in Today. The bot says in the thread that it's waiting for its
-owner. No identity edits, skill authoring or connector requests are allowed,
-and both proposal tools are hidden from external turns.
+owner. An external turn can change nothing the agent later reads as its own:
+no identity edits, skill authoring, connector requests, routine or task
+changes, published artifacts or charts, or catalog requests, and the agent's
+files are read-only in it (TASK-1122). The tools it can't use are hidden from
+it. The write-path audit is in
+`docs/plans/2026-11-17-task-1122-outsider-persist-audit-plan.md`.
 
 The Slack sender's name and ID go into the message *content*, for example
 `[Slack · #support · Alice (U123)]: …`. In a 1:1 DM (TASK-1093) it reads
@@ -165,6 +169,8 @@ recalled in a channel.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
+  An outsider's turn can read them but not change them: its session mounts
+  the agent's files read-only (TASK-1122).
 
 **Rejected:**
 - *No memory in channels at all:* the safest, but the bot forgets every thread,
@@ -389,7 +395,8 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      removes a reaction by itself, so a deploy or crash mid-turn leaves that
      message's 👀 on for good.
    - Artifacts and charts become a link to the agent's page in the web app (no
-     per-artifact or per-conversation page exists yet).
+     per-artifact or per-conversation page exists yet). A member's turn only:
+     an outsider's turn can't publish (TASK-1122).
    - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its
      conversation (matched the way channel-web matches it, except that a
      turn-end naming no turn ends only a turn that has begun: TASK-1095),
@@ -510,6 +517,9 @@ decisions and conversations only mention `source` in comments (decisions has
 used conversation origin since 2026-08-21). The full audit table lives in
 `docs/plans/2026-11-12-task-1091-ctx-external-audience-plan.md`. Each consumer
 needs an explicit answer for `'external'`, plus a test.
+What an external turn can write outside memory is audited separately, in
+`docs/plans/2026-11-17-task-1122-outsider-persist-audit-plan.md`: TASK-1091
+looked only at code that branches on `source`, and five write paths never did.
 
 - **Alternate implementation:** any channel where the person present isn't the
   agent's owner, such as email-in or a public web widget.
