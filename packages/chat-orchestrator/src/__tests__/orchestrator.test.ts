@@ -19,7 +19,7 @@ import { createChatOrchestratorPlugin } from '../index.js';
 import {
   withBrokerDefaults,
   identityToolScope,
-  proposalToolScope,
+  outsiderToolScope,
   sessionNeedsCredentialRotation,
   CHAT_START_SUBSCRIBER_TIMEOUT_MS,
   CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
@@ -1832,8 +1832,9 @@ describe('chat-orchestrator', () => {
   // -------------------------------------------------------------------------
 
   // silentCtx plus a host-set source.
-  function sourcedCtx(sessionId: string, source: AgentContextSource) {
+  function sourcedCtx(sessionId: string, source: AgentContextSource, audience?: 'shared') {
     return makeAgentContext({
+      ...(audience !== undefined ? { audience } : {}),
       sessionId,
       agentId: 'test-agent',
       userId: 'test-user',
@@ -1945,7 +1946,25 @@ describe('chat-orchestrator', () => {
       sourcedCtx('s6', 'external'),
     );
     expect(scope.allowedTools).toEqual([]); // still the wildcard
-    expect(scope.disallowedTools).toEqual(['skill_propose', 'connector_propose']);
+    expect(scope.disallowedTools).toEqual(OUTSIDER_HIDDEN);
+  });
+
+  // TASK-1122 — a member's channel turn (`source: 'user'`, `audience: 'shared'`)
+  // is attended: it keeps routine writes, publishing and show_visual.
+  it('TASK-1122: a member\'s channel turn of a wildcard agent hides none of them', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s6m', 'user', 'shared'),
+    );
+    expect('disallowedTools' in scope).toBe(false);
+  });
+
+  it('TASK-1122: a routine run of a wildcard agent keeps the routine and publish tools', async () => {
+    const scope = await invokeAndReadToolScope(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s6r', 'routine'),
+    );
+    expect('disallowedTools' in scope).toBe(false);
   });
 
   it('TASK-1091: an external turn of an agent that lists a proposal tool itself has it hidden', async () => {
@@ -1973,7 +1992,7 @@ describe('chat-orchestrator', () => {
       sourcedCtx('s11', 'bogus' as never),
     );
     expect(wildcard.allowedTools).toEqual([]);
-    expect(wildcard.disallowedTools).toEqual(['skill_propose', 'connector_propose']);
+    expect(wildcard.disallowedTools).toEqual(OUTSIDER_HIDDEN);
   });
 
   it.each(['routine', 'user'] as const)(
@@ -7493,7 +7512,7 @@ describe('withBrokerDefaults', () => {
     ]);
   });
 
-  it('an external turn of a wildcard agent is unchanged (proposalToolScope hides them there)', () => {
+  it('an external turn of a wildcard agent is unchanged (outsiderToolScope hides them there)', () => {
     expect(withBrokerDefaults([], [], { external: true })).toEqual([]);
   });
 
@@ -7517,66 +7536,81 @@ describe('withBrokerDefaults', () => {
 });
 
 // ---------------------------------------------------------------------------
-// proposalToolScope — TASK-1091. An external turn is not offered skill_propose
+const OUTSIDER_HIDDEN = [
+  'skill_propose',
+  'connector_propose',
+  'routine_create',
+  'routine_update',
+  'routine_delete',
+  'routine_fire_now',
+  'artifact_publish',
+  'show_visual',
+];
+
+// outsiderToolScope — TASK-1091. An external turn is not offered skill_propose
 // or connector_propose. withBrokerDefaults leaves them out of a listed scope;
 // this hides them where they would otherwise still show — a wildcard agent's
 // whole catalog, or an agent that lists one itself — through disallowedTools,
 // never by shrinking allowedTools. Any other turn is untouched. The
 // integration tests next to 'TASK-908' prove it is wired into session-open.
 // ---------------------------------------------------------------------------
-describe('proposalToolScope (TASK-1091)', () => {
+describe('outsiderToolScope (TASK-1091, TASK-1122)', () => {
   const WILDCARD = { allowedTools: [] as string[], mcpConfigIds: [] as string[] };
   const BASH_ONLY = { allowedTools: ['Bash'], mcpConfigIds: [] as string[] };
   const EXTERNAL = { external: true };
   const NOT_EXTERNAL = { external: false };
 
-  it('an external turn of a wildcard agent hides both', () => {
-    expect(proposalToolScope(WILDCARD, [], undefined, EXTERNAL)).toEqual([
-      'skill_propose',
-      'connector_propose',
-    ]);
+  it('an external turn of a wildcard agent hides all eight', () => {
+    expect(outsiderToolScope(WILDCARD, [], undefined, EXTERNAL)).toEqual(OUTSIDER_HIDDEN);
+  });
+
+  it('an external turn hides only the refused tools a listed agent names', () => {
+    const agent = { allowedTools: ['Bash', 'routine_create', 'artifact_publish'], mcpConfigIds: [] as string[] };
+    expect(
+      outsiderToolScope(agent, ['Bash', 'routine_create', 'artifact_publish'], undefined, EXTERNAL),
+    ).toEqual(['routine_create', 'artifact_publish']);
   });
 
   it('any other turn of a wildcard agent hides nothing', () => {
-    expect(proposalToolScope(WILDCARD, [], undefined, NOT_EXTERNAL)).toBeUndefined();
+    expect(outsiderToolScope(WILDCARD, [], undefined, NOT_EXTERNAL)).toBeUndefined();
   });
 
   it('an external turn of a listed agent that names neither needs nothing hidden', () => {
     expect(
-      proposalToolScope(BASH_ONLY, ['Bash', 'search_catalog', 'request_capability'], undefined, EXTERNAL),
+      outsiderToolScope(BASH_ONLY, ['Bash', 'search_catalog', 'request_capability'], undefined, EXTERNAL),
     ).toBeUndefined();
   });
 
   it('an external turn hides a proposal tool the agent lists itself', () => {
     const agent = { allowedTools: ['Bash', 'connector_propose'], mcpConfigIds: [] as string[] };
-    expect(proposalToolScope(agent, ['Bash', 'connector_propose'], undefined, EXTERNAL)).toEqual([
+    expect(outsiderToolScope(agent, ['Bash', 'connector_propose'], undefined, EXTERNAL)).toEqual([
       'connector_propose',
     ]);
   });
 
   it('keeps an existing disallowedTools first and adds no duplicate', () => {
-    expect(proposalToolScope(WILDCARD, [], ['Bash', 'skill_propose'], EXTERNAL)).toEqual([
+    expect(outsiderToolScope(WILDCARD, [], ['Bash', 'skill_propose'], EXTERNAL)).toEqual([
       'Bash',
       'skill_propose',
-      'connector_propose',
+      ...OUTSIDER_HIDDEN.filter((t) => t !== 'skill_propose'),
     ]);
   });
 
   it('returns disallowedTools unchanged when it hides nothing', () => {
-    expect(proposalToolScope(WILDCARD, [], ['x'], NOT_EXTERNAL)).toEqual(['x']);
-    expect(proposalToolScope(BASH_ONLY, ['Bash'], ['x'], EXTERNAL)).toEqual(['x']);
+    expect(outsiderToolScope(WILDCARD, [], ['x'], NOT_EXTERNAL)).toEqual(['x']);
+    expect(outsiderToolScope(BASH_ONLY, ['Bash'], ['x'], EXTERNAL)).toEqual(['x']);
   });
 
   it('treats an mcpConfigIds-only agent as non-wildcard', () => {
     const agent = { allowedTools: [] as string[], mcpConfigIds: ['mcp-1'] };
-    expect(proposalToolScope(agent, ['search_catalog'], undefined, EXTERNAL)).toBeUndefined();
+    expect(outsiderToolScope(agent, ['search_catalog'], undefined, EXTERNAL)).toBeUndefined();
   });
 
   it('does not mutate its inputs', () => {
     const allowed = ['Bash', 'skill_propose'];
     const denied = ['x'];
-    proposalToolScope(BASH_ONLY, allowed, denied, EXTERNAL);
-    proposalToolScope(WILDCARD, [], denied, EXTERNAL);
+    outsiderToolScope(BASH_ONLY, allowed, denied, EXTERNAL);
+    outsiderToolScope(WILDCARD, [], denied, EXTERNAL);
     expect(allowed).toEqual(['Bash', 'skill_propose']);
     expect(denied).toEqual(['x']);
   });
@@ -8876,14 +8910,13 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 
       const cfg = counters.openInputs[0]!.owner.agentConfig;
       expect(cfg.allowedTools).toEqual([]); // still the wildcard
-      // The identity tools, then the two proposal tools an external turn is
-      // not offered either (proposalToolScope). A routine's wildcard catalog,
+      // The identity tools, then the proposal, routine-write and publishing
+      // tools an external turn is not offered either (outsiderToolScope). A routine's wildcard catalog,
       // above, hides only the identity tools.
       expect(cfg.disallowedTools).toEqual([
         'update_identity',
         'complete_bootstrap',
-        'skill_propose',
-        'connector_propose',
+        ...OUTSIDER_HIDDEN,
       ]);
     });
 

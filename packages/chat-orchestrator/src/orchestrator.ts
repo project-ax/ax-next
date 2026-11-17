@@ -1490,11 +1490,29 @@ const ALWAYS_ON_BROKER_TOOLS = [
 // authored skill goes live with no human, and a connector request lands in the
 // admins' queue in the owner's name. An EXTERNAL turn (a person with no access
 // to the agent is present) is offered neither: withBrokerDefaults leaves them
-// out of a listed scope and proposalToolScope hides them from the rest. The
+// out of a listed scope and outsiderToolScope hides them from the rest. The
 // host refuses both from such a turn anyway (the `skill.propose` IPC handler
 // and the `connector_propose` executor); this is catalog hygiene. A routine
 // keeps both: the skill-reflection routine's whole job is proposing skills.
 const PROPOSAL_TOOLS: readonly string[] = ['skill_propose', 'connector_propose'];
+
+// TASK-1122 — everything an outsider's turn is offered no use for: the two
+// proposal tools plus the writes that persist for the agent's people, a routine
+// create/update/delete/fire and a published artifact or visual. Each is refused
+// host-side from an outsider's turn (the `@ax/routines` pre-call/execute gate,
+// the `artifact.publish` handler); hiding them here is catalog hygiene, never
+// the gate. A routine run and an attended turn (including a member's channel
+// turn) keep all of them. The routine names are a local mirror (I2: no import
+// from @ax/routines-contract), like ROUTINE_RUN_TOOLS.
+const OUTSIDER_REFUSED_TOOLS: readonly string[] = [
+  ...PROPOSAL_TOOLS,
+  'routine_create',
+  'routine_update',
+  'routine_delete',
+  'routine_fire_now',
+  'artifact_publish',
+  'show_visual',
+];
 
 // TASK-908/983: a ROUTINE run of a non-wildcard agent also sees
 // `routine_report` and `routine_read_update`.
@@ -1561,7 +1579,7 @@ const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
  * site passes `isOutsiderTurn(ctx)` (external, or a source this build doesn't
  * know). It leaves PROPOSAL_TOOLS out of the union. A proposal tool the agent
  * lists itself stays listed (removing it could empty the list into the
- * wildcard); proposalToolScope hides it.
+ * wildcard); outsiderToolScope hides it.
  */
 export function withBrokerDefaults(
   allowedTools: readonly string[],
@@ -1665,13 +1683,14 @@ export function identityToolScope(
 }
 
 /**
- * The `disallowedTools` an EXTERNAL turn's session needs so it is offered
- * neither proposal tool (TASK-1091; see PROPOSAL_TOOLS), computed at
- * session-open after identityToolScope.
+ * The `disallowedTools` an outsider's turn's session needs so it is offered
+ * none of OUTSIDER_REFUSED_TOOLS (TASK-1091 proposal tools, TASK-1122 routine
+ * writes and publishing), computed at session-open after identityToolScope.
  *
- * withBrokerDefaults already left both out of a listed scope. They are hidden
- * here where they would otherwise still show — a wildcard agent (it sees the
- * whole catalog), or one whose `allowedTools` names one itself — the
+ * withBrokerDefaults already left the proposal tools out of a listed scope.
+ * Every refused tool is hidden here where it would otherwise still show — a
+ * wildcard agent (it sees the whole catalog), or one whose `allowedTools`
+ * names one itself — the
  * identityToolScope rule: never by shrinking `allowedTools`. Only
  * `opts.external` hides anything; the call site passes
  * `isOutsiderTurn(ctx)`, so a routine keeps both.
@@ -1680,7 +1699,7 @@ export function identityToolScope(
  * unchanged (possibly `undefined`) when nothing is hidden, so a frozen
  * snapshot that needed nothing is byte-identical to before.
  */
-export function proposalToolScope(
+export function outsiderToolScope(
   agent: { allowedTools: readonly string[]; mcpConfigIds: readonly string[] },
   allowedTools: readonly string[],
   disallowedTools: readonly string[] | undefined,
@@ -1691,7 +1710,7 @@ export function proposalToolScope(
   const listed = new Set(allowedTools);
   const denied = new Set(disallowedTools ?? []);
   const hidden = opts.external
-    ? PROPOSAL_TOOLS.filter((tool) => (wildcard || listed.has(tool)) && !denied.has(tool))
+    ? OUTSIDER_REFUSED_TOOLS.filter((tool) => (wildcard || listed.has(tool)) && !denied.has(tool))
     : [];
   if (hidden.length > 0) return [...(disallowedTools ?? []), ...hidden];
   return disallowedTools === undefined ? undefined : [...disallowedTools];
@@ -2817,7 +2836,7 @@ export function createOrchestrator(
       // `!isAttendedTurn` (an external turn gets nothing extra).
       // TASK-1091: an outsider's turn (`isOutsiderTurn`: external, or a
       // source this build doesn't know) gets neither proposal tool (see
-      // PROPOSAL_TOOLS); proposalToolScope, below, hides them from the rest.
+      // PROPOSAL_TOOLS); outsiderToolScope, below, hides them from the rest.
       allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds, {
         routineRun: ctx.source === 'routine',
         external: isOutsiderTurn(ctx),
@@ -3556,19 +3575,19 @@ export function createOrchestrator(
       }
     }
 
-    // TASK-1091 — an outsider's turn (`isOutsiderTurn`) is offered neither
-    // proposal tool (see proposalToolScope). Last, so the tool-policy denies
+    // TASK-1091/TASK-1122 — an outsider's turn (`isOutsiderTurn`) is offered
+    // none of OUTSIDER_REFUSED_TOOLS (see outsiderToolScope). Last, so the tool-policy denies
     // and the identity tools keep their places in `disallowedTools`. Not
     // gated on the identity read: these tools exist whatever the identity
     // store.
-    const proposalDenies = proposalToolScope(
+    const outsiderDenies = outsiderToolScope(
       agent,
       agentConfig.allowedTools,
       agentConfig.disallowedTools,
       { external: isOutsiderTurn(ctx) },
     );
-    if (proposalDenies !== undefined) {
-      agentConfig.disallowedTools = proposalDenies;
+    if (outsiderDenies !== undefined) {
+      agentConfig.disallowedTools = outsiderDenies;
     }
 
     // 4.5 — proxy:open-session. Fresh-spawn path only: a routed
