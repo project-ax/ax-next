@@ -1453,6 +1453,15 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     ['nothing at all', []],
     ['only thinking', [{ kind: 'thinking', text: 'They said yes.' }]],
     ['an empty text', [{ kind: 'text', text: '' }]],
+    // The SDK's ToolSearch is plumbing (TASK-1130): loading a tool's schema says nothing, and nor does its summary.
+    [
+      'only a ToolSearch schema load and its step summary',
+      [
+        { kind: 'tool-use', toolCallId: 'toolu_ts', toolName: 'ToolSearch', input: { query: 'select:mcp__ax-host-tools__routine_create' } },
+        { kind: 'step-summary', toolCallId: 'toolu_ts', text: 'Loading the routine creation tool schema.' },
+        { kind: 'tool-result', toolCallId: 'toolu_ts', output: 'loaded' },
+      ],
+    ],
   ] as const)('a turn-end after %s: no message, and the quiet end is logged by code', async (_name, chunks) => {
     const h = follower();
     const done = h.follow(inTenSeconds());
