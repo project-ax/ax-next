@@ -49,12 +49,12 @@ function fixture() {
   return { pods, direct, custom, storage, changePod: () => { podUid = randomUUID(); },
     changeSandbox: () => { sandboxUid = randomUUID(); }, deleteClaim: () => { deleting = true; } };
 }
-function sessionPod(agent = 'agent-a', memory = false) {
+function sessionPod(agent = 'agent-a', memory = false, filesReadOnly = false) {
   const pod = buildPodSpec('session', { sessionId: 'session-a', runnerBinary: '/runner.js',
     authToken: 'secret-session-token', runnerEndpoint: config.hostIpcUrl,
     proxyConfig: { endpoint: 'http://proxy:8888', caCertPem: 'public-ca', envMap: { API_KEY: 'ax-cred:test' }, proxyAuthToken: 'e'.repeat(32) },
     mounts: [{ kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: agent,
-      mountPath: '/files', readOnly: false }, ...(memory ? [{ kind: 'nfs' as const, role: 'memory' as const,
+      mountPath: '/files', readOnly: filesReadOnly }, ...(memory ? [{ kind: 'nfs' as const, role: 'memory' as const,
       server: '10.0.0.10', exportPath: '/memory', subPath: memoryPath(agent), mountPath: '/memory', readOnly: true }] : [])],
   }, config);
   pod.metadata.labels['ax.io/agent-id'] = agent;
@@ -109,6 +109,19 @@ describe('shared Agent Sandbox pool', () => {
       roles: string[]; bootstrap: BootstrapAssignment };
     expect(roles).toEqual(['user-files']);
     expect(bootstrap.env).not.toHaveProperty('AX_MEMORY_ROOT');
+  });
+  // TASK-1122 — an outsider's session mounts /files read-only, but the storage
+  // helper binds user-files read-write whatever the pod says (it remounts only
+  // memory read-only). So that pod never takes a standby: it goes to the direct
+  // (cold) path whole, readOnly intact, with no claim and no storage assignment.
+  it('never pools a pod whose /files mount is read-only', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const body = sessionPod('agent-a', true, true);
+    await api.createNamespacedPod({ namespace: config.namespace, body });
+    expect(f.direct.creates).toEqual([{ namespace: config.namespace, body }]);
+    expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls.map(([c]) => c.plural))
+      .toEqual(['sandboxtemplates', 'sandboxwarmpools']);
+    expect(f.storage.assign).not.toHaveBeenCalled();
   });
   // TASK-994 — the standby template replaces the runner env, so a pooled runner
   // learns its transcripts root only from the bootstrap; the standby must still
@@ -336,6 +349,49 @@ describe('shared Agent Sandbox pool', () => {
         expect(await h.bus.call('session:is-alive', h.ctx(), { sessionId: 's' })).toEqual({ alive: false });
       });
       await result.handle.kill(); expect(f.storage.release).toHaveBeenCalledTimes(1);
+    } finally { await h.close(); }
+  });
+  // TASK-1122 — production's whole chain for an outsider's turn: open-session asks
+  // the resolver for a read-only home, the pod mounts it read-only, and the pool
+  // sends the pod to the direct Agent Sandbox path, never to a standby whose
+  // storage helper would bind /files writable.
+  it("opens an outsider's session as a direct Sandbox with /files read-only, never a standby", async () => {
+    const f = fixture();
+    const resolver: Plugin = { manifest: { name: 'fixture-resolver', version: '0', registers: ['sandbox:resolve-mounts'], calls: [], subscribes: [] },
+      init({ bus }) { bus.registerService('sandbox:resolve-mounts', 'fixture-resolver', async (_ctx, input) => ({ mounts: [{
+        kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: 'agent-a', mountPath: '/files',
+        readOnly: (input as { readOnly?: boolean }).readOnly === true,
+      }] })); } };
+    // The Agent Sandbox controller's side of the direct path: the Sandbox answers
+    // by name until it is deleted, and its Pod is Ready and owned by it.
+    let gone = false;
+    vi.mocked(f.custom.getNamespacedCustomObject).mockImplementation(async req => {
+      if (gone) throw { code: 404 };
+      return { metadata: { name: req.name, uid: uid.claim, labels: { 'ax.io/sandbox-backend': 'agent-sandbox' } } };
+    });
+    vi.mocked(f.custom.deleteNamespacedCustomObject).mockImplementation(async () => { gone = true; return {}; });
+    vi.mocked(f.pods.readNamespacedPod).mockImplementation(async req => ({ metadata: { name: req.name, uid: uid.pod,
+      ownerReferences: [{ apiVersion: 'agents.x-k8s.io/v1beta1', kind: 'Sandbox', name: req.name, uid: uid.claim, controller: true }] },
+      status: { phase: 'Running', podIP: '10.0.0.2', conditions: [{ type: 'Ready', status: 'True' }] } }));
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin(), resolver,
+      createSandboxK8sPlugin({ ...config, api: f.pods, sandboxApi: f.custom, storageClient: f.storage })] });
+    try {
+      const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 's', workspaceRoot: '/tmp/ws', runnerBinary: '/runner.js',
+        proxyConfig: { endpoint: config.proxyEndpoint, caCertPem: 'public-ca', envMap: {}, proxyAuthToken: 'e'.repeat(32) }, owner: {
+          userId: 'user-a', agentId: 'agent-a', source: 'external', audience: 'shared',
+          agentConfig: { displayName: 'A', systemPromptAugment: '', allowedTools: [], mcpConfigIds: [], model: 'model', runner: 'claude-sdk' },
+        },
+      });
+      const created = vi.mocked(f.custom.createNamespacedCustomObject).mock.calls.map(([c]) => c);
+      expect(created.map(c => c.plural)).toEqual(['sandboxtemplates', 'sandboxwarmpools', 'sandboxes']);
+      expect(f.storage.assign).not.toHaveBeenCalled();
+      const sandbox = created[2]!.body as { spec: { podTemplate: { spec: {
+        containers: { env: { name: string; value?: string }[]; volumeMounts: { mountPath: string; readOnly?: boolean }[] }[] } } } };
+      const runner = sandbox.spec.podTemplate.spec.containers[0]!;
+      expect(runner.volumeMounts.find(m => m.mountPath === '/files')).toMatchObject({ readOnly: true });
+      expect(runner.env).toContainEqual({ name: 'AX_USERFILES_READONLY', value: '1' });
+      await result.handle.kill(); await result.handle.exited;
     } finally { await h.close(); }
   });
 });

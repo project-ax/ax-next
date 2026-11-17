@@ -4,13 +4,14 @@ import {
 } from '@ax/ipc-protocol';
 import {
   zodSummary,
+  hookRejected,
   internalError,
   logInternalError,
   mapPluginError,
   notFound,
   validationError,
 } from '../errors.js';
-import { PluginError } from '@ax/core';
+import { isOutsiderTurn, PluginError } from '@ax/core';
 import { REWRITES_THE_SURFACE } from '@ax/core/surface-text';
 import { refuseUnboundConversation } from './bound-conversation.js';
 import { sessionPutBlob } from './session-blob-puts.js';
@@ -26,15 +27,17 @@ import type { ActionHandler } from './types.js';
 // at this point; this call records which artifact they are a version of.
 //
 // Gates, in order, each before the hook runs:
-//   1. zod: the strict request shape (a warm runner from the old image that
+//   1. Not an outsider's turn (`isOutsiderTurn`, TASK-1122), decided before
+//      the payload is read; why is at the check.
+//   2. zod: the strict request shape (a warm runner from the old image that
 //      still sends `displayName`/`mediaType`/`size` gets a 400).
-//   2. `path` holds no control, format or bidi character. It is untrusted
+//   3. `path` holds no control, format or bidi character. It is untrusted
 //      model text the host stores and shows back to the agent and the person;
 //      the class is the one `@ax/core/surface-text` owns.
-//   3. `conversationId` is the conversation the session is bound to
+//   4. `conversationId` is the conversation the session is bound to
 //      (`refuseUnboundConversation`; `ctx.conversationId` comes from the bearer
 //      token's session, never the body).
-//   4. Only a sha THIS session's own `blob.put` returned (TASK-1010,
+//   5. Only a sha THIS session's own `blob.put` returned (TASK-1010,
 //      `session-blob-puts.ts`, tracked host-side). The store is shared and
 //      content-addressed and a hash can leak into model-visible text, so a sha
 //      is not proof the runner holds the bytes. Any other sha gets the SAME 404
@@ -64,7 +67,25 @@ interface ArtifactsPublishInput {
 // body `mapPluginError` gives the hook's own not-found.
 const PUBLISH_NOT_FOUND = 'not found';
 
+/** A fixed sentence the runner relays, so the model knows nothing was published. */
+export const OUTSIDER_PUBLISH_REFUSAL =
+  "artifact.publish: files and charts can't be published from a conversation with people who don't have access to this agent. Nothing was published.";
+
 export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus) => {
+  // TASK-1122: an external turn can't publish. Someone with no access to this
+  // agent is present, and a publish outlives the turn: the artifact list goes
+  // into every later session's prompt, agent-wide, private ones included, and
+  // a publish can add a version to an artifact made in a private chat (by
+  // path or `artifactId`). A chat visual is refused too, because the wire lets
+  // it carry an `artifactId`. Checked before the payload is parsed, so an
+  // outsider's malformed call gets this same sentence, never a field error
+  // that invites a retry. `source` is host-stamped by the IPC listener from
+  // the session record, never read off this payload, and `isOutsiderTurn`
+  // refuses a source this build doesn't know (fail closed). A routine and a
+  // member's channel turn (`source: 'user'`) still publish. The orchestrator
+  // also leaves both publishing tools out of an outsider's catalog; this is
+  // the gate.
+  if (isOutsiderTurn(ctx)) return hookRejected(OUTSIDER_PUBLISH_REFUSAL);
   const parsed = ArtifactPublishRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(`artifact.publish: ${zodSummary(parsed.error)}`);

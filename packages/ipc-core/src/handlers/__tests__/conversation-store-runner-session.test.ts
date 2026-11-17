@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   HookBus,
   PluginError,
   makeAgentContext,
   type AgentContext,
+  type AgentContextSource,
+  type Logger,
 } from '@ax/core';
 import { conversationStoreRunnerSessionHandler } from '../conversation-store-runner-session.js';
 
@@ -17,6 +19,9 @@ import { conversationStoreRunnerSessionHandler } from '../conversation-store-run
 //
 //   - Schema validation on the request (.strict, conversationId +
 //     runnerSessionId required).
+//   - The bound-conversation guard (TASK-1122): only the conversation the
+//     session is bound to (ctx.conversationId, stamped by the listener from
+//     the token's session) may be bound, whatever the session's source.
 //   - Pass-through to bus.call('conversations:store-runner-session', ...)
 //     with NO userId smuggled in the body — the bus reads ctx.userId
 //     directly.
@@ -60,12 +65,33 @@ function makeBus(opts: BusOpts = {}): {
   return { bus, calls };
 }
 
-const ctxWith = (userId: string): AgentContext =>
+/**
+ * The per-request ctx the listener stamps from the bearer token's session:
+ * bound to `conversationId` (null = a session bound to no conversation).
+ */
+const ctxWith = (
+  userId: string,
+  conversationId: string | null = 'cnv_abc',
+  extra: { source?: AgentContextSource; logger?: Logger } = {},
+): AgentContext =>
   makeAgentContext({
     sessionId: 'sess-1',
     agentId: 'agent-1',
     userId,
+    ...(conversationId !== null ? { conversationId } : {}),
+    ...extra,
   });
+
+function fakeLogger(): Logger & { warn: ReturnType<typeof vi.fn> } {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: (): Logger => logger,
+  };
+  return logger;
+}
 
 describe('conversation.store-runner-session handler', () => {
   it('200 with { ok: true } on bus success; passes the runner-resolved ctx and does NOT smuggle userId into the input', async () => {
@@ -86,6 +112,58 @@ describe('conversation.store-runner-session handler', () => {
       runnerSessionId: 'rs_xyz',
     });
     expect(calls[0]?.ctx.userId).toBe('u-1');
+  });
+
+  // TASK-1122: the store scopes the bind by user only. Without the guard, a
+  // runner could bind an id onto another of its user's conversations (a
+  // channel connector's private chats included), and that conversation's next
+  // pod would join the id into a filename.
+  it("403 for a conversation other than the session's bound one, without calling the hook", async () => {
+    const { bus, calls } = makeBus();
+    const logger = fakeLogger();
+    const result = await conversationStoreRunnerSessionHandler(
+      { conversationId: 'cnv_other', runnerSessionId: 'rs_xyz' },
+      ctxWith('u-1', 'cnv_mine', { logger }),
+      bus,
+    );
+    expect(result).toEqual({
+      status: 403,
+      body: { error: { code: 'HOOK_REJECTED', message: 'forbidden' } },
+    });
+    expect(calls).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'store_runner_session_foreign_conversation_refused',
+      { action: 'conversation.store-runner-session', sessionBoundToConversation: true },
+    );
+  });
+
+  it('403 for a session bound to no conversation, without calling the hook', async () => {
+    const { bus, calls } = makeBus();
+    const logger = fakeLogger();
+    const result = await conversationStoreRunnerSessionHandler(
+      { conversationId: 'cnv_abc', runnerSessionId: 'rs_xyz' },
+      ctxWith('u-1', null, { logger }),
+      bus,
+    );
+    expect(result.status).toBe(403);
+    expect(calls).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'store_runner_session_foreign_conversation_refused',
+      { action: 'conversation.store-runner-session', sessionBoundToConversation: false },
+    );
+  });
+
+  it("binds the session's own conversation whatever its source (an outsider's thread still resumes)", async () => {
+    for (const source of [undefined, 'user', 'routine', 'external'] as const) {
+      const { bus, calls } = makeBus();
+      const result = await conversationStoreRunnerSessionHandler(
+        { conversationId: 'cnv_abc', runnerSessionId: 'rs_xyz' },
+        ctxWith('u-1', 'cnv_abc', source !== undefined ? { source } : {}),
+        bus,
+      );
+      expect(result.status).toBe(200);
+      expect(calls).toHaveLength(1);
+    }
   });
 
   it('400 VALIDATION on a missing conversationId', async () => {
@@ -169,9 +247,11 @@ describe('conversation.store-runner-session handler', () => {
         });
       },
     });
+    // The session is bound to cnv_foreign, so the guard passes and this
+    // exercises the store's own not-found (a row the user doesn't own).
     const result = await conversationStoreRunnerSessionHandler(
       { conversationId: 'cnv_foreign', runnerSessionId: 'rs_xyz' },
-      ctxWith('u-1'),
+      ctxWith('u-1', 'cnv_foreign'),
       bus,
     );
     expect(result.status).toBe(404);

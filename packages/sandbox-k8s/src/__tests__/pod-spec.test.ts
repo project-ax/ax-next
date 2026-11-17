@@ -1260,6 +1260,46 @@ describe('buildPodSpec', () => {
       ).toBe('/workspace');
     });
 
+    // TASK-1122 — an outsider's session realizes the home read-only; the runner
+    // learns it from this env so it doesn't tell the agent to save there.
+    it('stamps AX_USERFILES_READONLY=1 for a read-only user-files mount, and nothing for a writable one', () => {
+      const readOnly = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [{ ...nfsMount, readOnly: true }] },
+        baseResolved(),
+      );
+      expect(runnerEnv(readOnly).filter((e) => e.name === 'AX_USERFILES_READONLY')).toEqual([
+        { name: 'AX_USERFILES_READONLY', value: '1' },
+      ]);
+      const writable = buildPodSpec('m', { ...baseInput, mounts: [nfsMount] }, baseResolved());
+      expect(runnerEnv(writable).find((e) => e.name === 'AX_USERFILES_READONLY')).toBeUndefined();
+    });
+
+    it('does NOT stamp AX_USERFILES_READONLY for a read-only mount that is not the home', () => {
+      // /memory is always read-only; only the user-files mount's mode counts.
+      const spec = buildPodSpec(
+        'm',
+        {
+          ...baseInput,
+          mounts: [
+            nfsMount,
+            {
+              kind: 'nfs',
+              role: 'memory',
+              mountPath: '/memory',
+              server: '10.0.0.3',
+              exportPath: '/vol2',
+              subPath: 'facts/agent-abc',
+              readOnly: true,
+            },
+          ],
+        },
+        baseResolved(),
+      );
+      expect(runnerEnv(spec).find((e) => e.name === 'AX_MEMORY_ROOT')?.value).toBe('/memory');
+      expect(runnerEnv(spec).find((e) => e.name === 'AX_USERFILES_READONLY')).toBeUndefined();
+    });
+
     it('does NOT stamp AX_USERFILES_ROOT for a non-user-files mount', () => {
       const spec = buildPodSpec(
         'm',

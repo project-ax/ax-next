@@ -277,7 +277,9 @@ export interface AgentContext {
    * `'external'`: a person is present who has no access to the agent. The
    * turn runs as a real user who answers for it (for a channel agent,
    * whoever connected the channel). It is unattended (see
-   * `isAttendedTurn`), and may make no identity or skill edits. The gates
+   * `isAttendedTurn`), and may change nothing the agent later reads as its
+   * own: identity, skill, connector-request, routine, artifact and catalog
+   * writes are refused, and its files are read-only (TASK-1122). The gates
    * that refuse it ask `isOutsiderTurn`, which refuses an unknown source too.
    *
    * Origin label only — no transport/storage vocabulary, so it stays
@@ -290,7 +292,7 @@ export interface AgentContext {
    * part of (e.g. a channel): it recalls only shared statements and stores
    * no speaker facts. Host-stamped only: never taken from an IPC payload.
    * It decides memory, not approvals; instructions and files are not
-   * governed by it. Must stay constant for a conversation, because memory
+   * governed by it (an outsider's `source` is what makes files read-only). Must stay constant for a conversation, because memory
    * extracts a conversation in batches under the latest turn's audience.
    * An unknown value is treated as `'shared'` (see `audienceOf`).
    */

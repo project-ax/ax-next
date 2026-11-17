@@ -176,6 +176,18 @@ export function filesNote(home: string, scratch: string): string {
 }
 
 /**
+ * The `filesNote` replacement for a session whose home is mounted read-only
+ * (`AX_USERFILES_ROOT` with `AX_USERFILES_READONLY=1`, TASK-1122: an outsider's
+ * turn). The writable-home notes tell the agent to keep everything in the home;
+ * on a read-only one that would have it write, fail, or worse, claim it saved
+ * something. Fixed runner prose, with the same two-term vocabulary as
+ * `filesNote`: "your files" (`home`) and "scratch space" (`scratch`).
+ */
+export function readOnlyFilesNote(home: string, scratch: string): string {
+  return `Your files: \`${home}\` is your working directory and holds your files. In this conversation you can read them but not change them: writing, editing or deleting anything under \`${home}\` fails. Anything you make here goes in scratch space, \`${scratch}\`, and is gone when this session ends, so never say you saved something.`;
+}
+
+/**
  * Operational note telling the agent that `ephemeralRoot` is throwaway
  * scratch — written for the LLM, kept short and direct.
  */
@@ -332,6 +344,9 @@ export function memoryExportNote(root: string): string {
  *   files → keeping-files → output → scratch → (python-venv?) → (memory?) →
  *   capability-handoff → skill-authoring → clarifying-questions.
  *
+ * With `filesReadOnly` (AX_USERFILES_READONLY) the files, keeping-files and
+ * output notes become one `readOnlyFilesNote` and skill-authoring is dropped.
+ *
  * `home` (AX_USERFILES_ROOT) and `scratch` (AX_EPHEMERAL_ROOT) are both
  * required, so the notes about them are always present. The keeping-files and
  * output notes follow the files note IMMEDIATELY: all three describe the home,
@@ -350,13 +365,18 @@ export function operationalNotes(
   scratch: string,
   pythonVenvActive = false,
   memoryRoot: string | undefined = undefined,
+  filesReadOnly = false,
 ): string {
-  const notes: string[] = [
-    filesNote(home, scratch),
-    userFilesNote(home),
-    fileOutputNote(home),
-    ephemeralScratchNote(scratch),
-  ];
+  // A read-only home (TASK-1122) swaps the three writable-home notes for one:
+  // none of "keep files there" can be true.
+  const notes: string[] = filesReadOnly
+    ? [readOnlyFilesNote(home, scratch), ephemeralScratchNote(scratch)]
+    : [
+        filesNote(home, scratch),
+        userFilesNote(home),
+        fileOutputNote(home),
+        ephemeralScratchNote(scratch),
+      ];
   if (pythonVenvActive) notes.push(pythonVenvNote());
   if (memoryRoot !== undefined) notes.push(memoryExportNote(memoryRoot));
   // Always-present tail: the JIT capability-handoff note (design §7) so the
@@ -368,7 +388,8 @@ export function operationalNotes(
   notes.push(capabilityHandoffNote());
   // TASK-165: drafts stage under the home, the same root the skill_propose
   // executor reads, so the model is told the exact path the tool accepts.
-  notes.push(skillAuthoringNote(home));
+  // A read-only home has nowhere to stage a draft, so the note is dropped.
+  if (!filesReadOnly) notes.push(skillAuthoringNote(home));
   notes.push(clarifyingQuestionsNote());
   return notes.join('\n\n');
 }

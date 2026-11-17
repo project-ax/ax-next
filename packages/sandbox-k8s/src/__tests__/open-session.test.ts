@@ -40,7 +40,9 @@ const PINNED_SVC_IMAGE = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
 // mount, so every harness below that opens one registers this stub. The server
 // is a reserved `.invalid` name on purpose: pod-spec refuses a memory mount that
 // aliases a writable NFS source on the SAME server, so borrowing the memory
-// fixtures' server would fire that refusal and mask the case under test.
+// fixtures' server would fire that refusal and mask the case under test. It
+// honours a read-only request the way @ax/workspace-filestore does (TASK-1122:
+// an outsider's session asks for one).
 const USER_FILES_RESOLVER: Record<string, ServiceHandler> = {
   'sandbox:resolve-mounts': async (_ctx, input) => ({
     mounts: [
@@ -51,7 +53,7 @@ const USER_FILES_RESOLVER: Record<string, ServiceHandler> = {
         server: 'files.example.invalid',
         exportPath: '/vol1',
         subPath: (input as ResolveMountsInput).owner.agentId,
-        readOnly: false,
+        readOnly: (input as ResolveMountsInput).readOnly === true,
       },
     ],
   }),
@@ -481,49 +483,63 @@ describe('sandbox:open-session (k8s)', () => {
     expect(cfg.conversationId).toBeNull();
   });
 
+  const MODE_OWNER = {
+    userId: 'u-1',
+    agentId: 'agt-1',
+    agentConfig: {
+      displayName: 'Test Agent',
+      systemPromptAugment: '',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'anthropic/claude-sonnet-4-7',
+      runner: 'claude-sdk',
+    },
+  };
+
+  /**
+   * Opens an owned session against the readOnly-honouring USER_FILES_RESOLVER.
+   * Returns the owner each hook received, the resolver's whole input, and the
+   * created pod body.
+   */
+  async function openWithOwner(
+    owner: Record<string, unknown>,
+    ctxOverrides: Pick<AgentContext, 'source'> = {},
+  ): Promise<{
+    createdOwner: Record<string, unknown>;
+    resolverOwner: Record<string, unknown>;
+    resolverInput: Record<string, unknown>;
+    body: unknown;
+  }> {
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api, USER_FILES_RESOLVER);
+    const spy = vi.spyOn(h.bus, 'call');
+    await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(ctxOverrides), {
+      sessionId: 'sess-mode',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: TEST_PROXY_CONFIG,
+      owner: { ...MODE_OWNER, ...owner },
+    });
+    const inputSentTo = (hook: string): Record<string, unknown> => {
+      const calls = spy.mock.calls.filter(([name]) => name === hook);
+      expect(calls).toHaveLength(1);
+      return calls[0]![2] as Record<string, unknown>;
+    };
+    const resolverInput = inputSentTo('sandbox:resolve-mounts');
+    expect(api.creates).toHaveLength(1);
+    return {
+      createdOwner: inputSentTo('session:create').owner as Record<string, unknown>,
+      resolverOwner: resolverInput.owner as Record<string, unknown>,
+      resolverInput,
+      body: api.creates[0]!.body,
+    };
+  }
+
   // TASK-1091 — owner.source / owner.audience are host-stamped by the
   // orchestrator and must reach session:create unchanged: the session record is
   // where the IPC listener reads them back for the runner's calls.
   describe('forwards owner.source and owner.audience into session:create (TASK-1091)', () => {
-    const OWNER = {
-      userId: 'u-1',
-      agentId: 'agt-1',
-      agentConfig: {
-        displayName: 'Test Agent',
-        systemPromptAugment: '',
-        allowedTools: [],
-        mcpConfigIds: [],
-        model: 'anthropic/claude-sonnet-4-7',
-        runner: 'claude-sdk',
-      },
-    };
-
-    /** Opens an owned session; returns the owner each hook received. */
-    async function openWithOwner(
-      owner: Record<string, unknown>,
-    ): Promise<{ createdOwner: Record<string, unknown>; resolverOwner: Record<string, unknown> }> {
-      const api = makeMockK8sApi();
-      api.setReadResponses(readyPod());
-      const h = await makeHarness(api, USER_FILES_RESOLVER);
-      const spy = vi.spyOn(h.bus, 'call');
-      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
-        sessionId: 'sess-mode',
-        workspaceRoot: '/tmp/ws',
-        runnerBinary: '/opt/ax/runner.js',
-        proxyConfig: TEST_PROXY_CONFIG,
-        owner: { ...OWNER, ...owner },
-      });
-      const ownerSentTo = (hook: string): Record<string, unknown> => {
-        const calls = spy.mock.calls.filter(([name]) => name === hook);
-        expect(calls).toHaveLength(1);
-        return (calls[0]![2] as { owner: Record<string, unknown> }).owner;
-      };
-      return {
-        createdOwner: ownerSentTo('session:create'),
-        resolverOwner: ownerSentTo('sandbox:resolve-mounts'),
-      };
-    }
-
     it('an external, shared owner reaches session:create (and the mount resolver) with both keys', async () => {
       const { createdOwner, resolverOwner } = await openWithOwner({
         source: 'external',
@@ -539,6 +555,140 @@ describe('sandbox:open-session (k8s)', () => {
       const { createdOwner } = await openWithOwner({});
       expect('source' in createdOwner).toBe(false);
       expect('audience' in createdOwner).toBe(false);
+    });
+  });
+
+  // TASK-1122 — a person with no access to the agent (`source: 'external'`) can
+  // read the agent's files but not change them: /files is the HOME, cwd and PATH
+  // (`/files/bin`) of every later session, members' private ones included. The
+  // provider asks the resolver for a read-only realization of the same home.
+  // Keyed on `source`, never `audience`: a member's channel turn stays writable.
+  describe("an outsider's session mounts the agent's files read-only (TASK-1122)", () => {
+    const WIDENED_MESSAGE =
+      'sandbox:resolve-mounts must return only read-only mounts when asked for a read-only home';
+
+    interface PodBody {
+      spec: {
+        containers: Array<{
+          env: Array<{ name: string; value?: string }>;
+          volumeMounts: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>;
+        }>;
+        initContainers: Array<{ name: string }>;
+        volumes: Array<{ name: string; nfs?: Record<string, unknown> }>;
+      };
+    }
+
+    /** The runner's /files mount, its pod volume, the init names and the env. */
+    function filesOf(body: unknown) {
+      const spec = (body as PodBody).spec;
+      const mount = spec.containers[0]!.volumeMounts.find((m) => m.mountPath === '/files');
+      return {
+        mount,
+        volume: spec.volumes.find((v) => v.name === mount?.name),
+        inits: spec.initContainers.map((c) => c.name),
+        env: spec.containers[0]!.env,
+      };
+    }
+
+    it('asks the resolver for a read-only home', async () => {
+      const { resolverInput } = await openWithOwner({ source: 'external', audience: 'shared' });
+      expect(resolverInput.readOnly).toBe(true);
+    });
+
+    it.each([
+      ["a member's channel session", { source: 'user', audience: 'shared' }],
+      ['a routine', { source: 'routine' }],
+      ['an unsourced session', {}],
+    ])('%s keeps a writable home: the resolver input is the owner alone', async (_label, owner) => {
+      const { resolverInput } = await openWithOwner(owner);
+      expect(Object.keys(resolverInput)).toEqual(['owner']);
+    });
+
+    // Defense in depth: the session record is written from `owner.source`, and
+    // the orchestrator copies it from the turn's ctx. If a caller ever dropped
+    // it, the turn's own ctx still decides.
+    it("an outsider's turn whose owner names no source still gets a read-only home", async () => {
+      const { resolverInput } = await openWithOwner({}, { source: 'external' });
+      expect(resolverInput.readOnly).toBe(true);
+    });
+
+    // Fails closed: `owner.source` is a zod enum, but the ctx is not parsed here.
+    it("a source this build doesn't know on the turn's ctx gets a read-only home too", async () => {
+      const { resolverInput } = await openWithOwner({}, { source: 'visitor' as never });
+      expect(resolverInput.readOnly).toBe(true);
+    });
+
+    it("realizes an outsider's /files read-only, with no chown step, and tells the runner", async () => {
+      const { body } = await openWithOwner({ source: 'external', audience: 'shared' });
+      const files = filesOf(body);
+      expect(files.mount).toMatchObject({ subPath: 'agt-1', readOnly: true });
+      // Only the volumeMount is read-only. An agent whose very first session is
+      // an outsider's has no subPath dir yet; the kubelet creates it through the
+      // volume source, which a read-only `nfs:` source would refuse.
+      expect(files.volume?.nfs).toEqual({ server: 'files.example.invalid', path: '/vol1' });
+      expect(files.inits).not.toContain(`${files.mount!.name}-chown`);
+      expect(files.env).toContainEqual({ name: 'AX_USERFILES_READONLY', value: '1' });
+    });
+
+    it("realizes a member's channel /files writable and chowned, with no read-only env", async () => {
+      const { body } = await openWithOwner({ source: 'user', audience: 'shared' });
+      const files = filesOf(body);
+      expect(files.mount).toMatchObject({ subPath: 'agt-1', readOnly: false });
+      expect(files.inits).toContain(`${files.mount!.name}-chown`);
+      expect(files.env.map((e) => e.name)).not.toContain('AX_USERFILES_READONLY');
+    });
+
+    // The provider grants the session's capabilities (invariant 5), so it does
+    // not take the resolver's word that it narrowed: a resolver that ignores
+    // `readOnly` must not hand an outsider a writable home.
+    it("refuses an outsider's session when the resolver answers with a writable mount anyway", async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api, {
+        'sandbox:resolve-mounts': async (_ctx, input) => ({
+          mounts: [
+            {
+              kind: 'nfs',
+              role: 'user-files',
+              mountPath: '/files',
+              server: 'files.example.invalid',
+              exportPath: '/vol1',
+              subPath: (input as ResolveMountsInput).owner.agentId,
+              readOnly: false,
+            },
+          ],
+        }),
+      });
+      const spy = vi.spyOn(h.bus, 'call');
+      const err = await h.bus
+        .call('sandbox:open-session', h.ctx(), {
+          sessionId: 'sess-widened',
+          workspaceRoot: '/tmp/ws',
+          runnerBinary: '/opt/ax/runner.js',
+          proxyConfig: TEST_PROXY_CONFIG,
+          owner: { ...MODE_OWNER, source: 'external', audience: 'shared' },
+        })
+        .then(
+          () => {
+            throw new Error('expected open-session to refuse');
+          },
+          (e: unknown) => e,
+        );
+      expect(err).toBeInstanceOf(PluginError);
+      expect(err).toMatchObject({
+        code: 'invalid-return',
+        plugin: '@ax/sandbox-k8s',
+        hookName: 'sandbox:open-session',
+        message: WIDENED_MESSAGE,
+      });
+      expect(api.creates).toHaveLength(0);
+      // The session minted before the resolve is rolled back: no live token.
+      const createIndex = spy.mock.calls.findIndex(([hook]) => hook === 'session:create');
+      const minted = await (spy.mock.results[createIndex]!.value as Promise<{ sessionId: string }>);
+      expect(
+        await h.bus.call('session:is-alive', h.ctx(), { sessionId: minted.sessionId }),
+      ).toEqual({ alive: false });
+      await h.close();
     });
   });
 

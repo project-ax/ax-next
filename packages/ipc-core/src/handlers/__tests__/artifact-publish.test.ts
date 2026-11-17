@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { PluginError } from '@ax/core';
-import { artifactPublishHandler } from '../artifact-publish.js';
+import { visualPathFor } from '@ax/ipc-protocol';
+import { artifactPublishHandler, OUTSIDER_PUBLISH_REFUSAL } from '../artifact-publish.js';
 import { blobPutHandler } from '../blob.js';
 import {
   MAX_SESSIONS,
@@ -36,13 +37,22 @@ function fakeBus(impl: (hook: string, payload: unknown) => Promise<unknown>) {
   };
 }
 
-/** The per-request ctx the IPC listener stamps from the bearer token's session. */
-function fakeCtx(conversationId: string | null = 'conv-1', sessionId = 's1', userId = 'u1') {
+/**
+ * The per-request ctx the IPC listener stamps from the bearer token's session.
+ * `origin` carries the session's host-stamped `source` / `audience`.
+ */
+function fakeCtx(
+  conversationId: string | null = 'conv-1',
+  sessionId = 's1',
+  userId = 'u1',
+  origin: { source?: string; audience?: string } = {},
+) {
   return {
     sessionId,
     agentId: 'a1',
     userId,
     ...(conversationId !== null ? { conversationId } : {}),
+    ...origin,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   } as never;
 }
@@ -207,6 +217,89 @@ describe('artifact.publish handler', () => {
     )) as HandlerErr;
     expect(result.status).not.toBe(200);
     expect(bus.call).not.toHaveBeenCalled();
+  });
+});
+
+// TASK-1122: someone with no access to the agent is in an external turn. The
+// artifact list goes into every later session's prompt, agent-wide, and a
+// publish can add a version to an artifact made in a private chat. Each ctx
+// here is bound to the payload's conversation and the sha is this session's
+// own, so only the session's host-stamped `source` decides.
+describe("artifact.publish: an outsider's turn", () => {
+  const OUTSIDER = { source: 'external', audience: 'shared' };
+  const outsiderCtx = () => fakeCtx('conv-1', 's1', 'u1', OUTSIDER);
+  const REFUSED = {
+    status: 409,
+    body: { error: { code: 'HOOK_REJECTED', message: OUTSIDER_PUBLISH_REFUSAL } },
+  };
+  const visualReq = { ...validReq, path: visualPathFor(VALID_SHA), visual: true };
+
+  it("refuses an outsider's publish before reading the payload or calling any hook", async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    const touched: string[] = [];
+    const payload = new Proxy({ ...validReq }, {
+      get: (t, k, r) => { touched.push(`get ${String(k)}`); return Reflect.get(t, k, r); },
+      has: (t, k) => { touched.push(`has ${String(k)}`); return Reflect.has(t, k); },
+      ownKeys: (t) => { touched.push('ownKeys'); return Reflect.ownKeys(t); },
+    });
+    const result = await artifactPublishHandler(payload, outsiderCtx(), bus as never);
+    expect(result).toEqual(REFUSED);
+    expect(touched).toEqual([]);
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses an outsider's chat visual", async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    expect(await artifactPublishHandler(visualReq, outsiderCtx(), bus as never)).toEqual(REFUSED);
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses an outsider's new version of an existing artifact (artifactId)", async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    for (const req of [{ ...validReq, artifactId: 'abc123' }, { ...visualReq, artifactId: 'abc123' }]) {
+      expect(await artifactPublishHandler(req, outsiderCtx(), bus as never)).toEqual(REFUSED);
+    }
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it("an outsider's malformed payload gets the same refusal, not a validation or field error", async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    for (const bad of [
+      { ...validReq, sha256: 'short' },
+      { ...validReq, visual: true }, // a visual off visuals/<sha>.html
+      { ...validReq, path: 'evil‮fdp.exe' },
+      { ...validReq, displayName: 'report.pdf' },
+      { ...validReq, conversationId: 'conv-2' }, // not the bound conversation
+      { ...validReq, sha256: 'b'.repeat(64) }, // a sha this session never put
+      null,
+      'not an object',
+    ]) {
+      expect(await artifactPublishHandler(bad, outsiderCtx(), bus as never)).toEqual(REFUSED);
+    }
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it("a source this build doesn't know is refused", async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    const ctx = fakeCtx('conv-1', 's1', 'u1', { source: 'webhook' });
+    expect(await artifactPublishHandler(validReq, ctx, bus as never)).toEqual(REFUSED);
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it("a routine session and a member's channel session still publish", async () => {
+    for (const origin of [{ source: 'routine' }, { source: 'user', audience: 'shared' }]) {
+      for (const req of [validReq, visualReq]) {
+        const bus = fakeBus(async () => HOOK_OUT);
+        const result = (await artifactPublishHandler(
+          req,
+          fakeCtx('conv-1', 's1', 'u1', origin),
+          bus as never,
+        )) as HandlerOk;
+        expect(result.status).toBe(200);
+        expect(bus.call).toHaveBeenCalledTimes(1);
+        expect(bus.call.mock.calls[0]![0]).toBe('artifacts:publish');
+      }
+    }
   });
 });
 
