@@ -90,4 +90,59 @@ describe('fireColdStartSubmit', () => {
       fireColdStartSubmit(bus, ctx, { skillId: 'jira', description: 'need' }),
     ).resolves.toBeUndefined();
   });
+
+  // TASK-1122: an outsider's turn (someone with no access to the agent is
+  // present) files nothing. The request would land in the admins' queue in
+  // the connector's name, worded by an outsider: the harm TASK-1091 refused
+  // for connector_propose. `source` is host-stamped from the session record,
+  // never from tool input. The miss itself still reaches the model, so the
+  // call returns normally rather than throwing.
+  describe('TASK-1122: outsider turns', () => {
+    const need = { skillId: 'jira', description: 'I need Jira' };
+
+    it("an outsider's turn files nothing and returns normally", async () => {
+      const { bus, calls } = busWithSubmit();
+      const outsider = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'user-7',
+        source: 'external',
+        audience: 'shared',
+      });
+      await expect(fireColdStartSubmit(bus, outsider, need)).resolves.toBeUndefined();
+      expect(calls).toEqual([]);
+    });
+
+    it("a source this build doesn't know files nothing (fails closed)", async () => {
+      const { bus, calls } = busWithSubmit();
+      const unknown = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'user-7',
+        source: 'bogus' as never,
+      });
+      await expect(fireColdStartSubmit(bus, unknown, need)).resolves.toBeUndefined();
+      expect(calls).toEqual([]);
+    });
+
+    // A routine is unattended but has no outsider in it, and @ax/decisions'
+    // replay of a call the owner approved runs as one. A member's channel
+    // turn is shared but keyed on `source`, not `audience`, so it files too.
+    it.each([
+      ["a routine's turn", { source: 'routine' }],
+      ["a member's channel turn (shared audience)", { source: 'user', audience: 'shared' }],
+    ] as const)('%s still files', async (_label, origin) => {
+      const { bus, calls } = busWithSubmit();
+      const sourced = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'user-7', ...origin });
+      await fireColdStartSubmit(bus, sourced, need);
+      expect(calls).toEqual([
+        {
+          kind: 'cold-start',
+          skillId: 'jira',
+          requestedByUserId: 'user-7',
+          description: 'I need Jira',
+        },
+      ]);
+    });
+  });
 });

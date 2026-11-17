@@ -353,6 +353,43 @@ describe('request_capability — cold-start admit-queue trigger (TASK-53)', () =
   });
 });
 
+// TASK-1122 — an outsider's turn (a Slack channel turn by someone with no access
+// to the agent) files no cold-start request: it would reach the admins' queue in
+// the connector's name, worded by an outsider. The tools still work for them: the
+// miss reaches the model unchanged. The rule itself is pinned in coldstart.test.ts;
+// these pin it at each tool's boundary.
+describe('TASK-1122: an outsider turn files no cold-start request', () => {
+  const outsiderCtx = makeAgentContext({
+    sessionId: 's',
+    agentId: 'a',
+    userId: 'u',
+    source: 'external',
+    audience: 'shared',
+  });
+
+  it('search_catalog returns the empty result and files nothing', async () => {
+    const { bus, coldStarts } = busWithStubs({ searchAlwaysEmpty: true });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const out = await bus.call('tool:execute:search_catalog', outsiderCtx, {
+      name: 'search_catalog',
+      input: { intent: 'Read my Notion pages' },
+    });
+    expect(out).toEqual({ skills: [] });
+    expect(coldStarts).toEqual([]);
+  });
+
+  it('request_capability returns not-found and files nothing', async () => {
+    const { bus, coldStarts } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const out = await bus.call('tool:execute:request_capability', outsiderCtx, {
+      name: 'request_capability',
+      input: { skillId: 'ghost' },
+    });
+    expect(out).toEqual({ status: 'not-found', skillId: 'ghost' });
+    expect(coldStarts).toEqual([]);
+  });
+});
+
 describe('request_capability — bundled approval card (chat:permission-request)', () => {
   it('TASK-100: fires NO card for a skill that references no connectors (instruction-only)', async () => {
     // A skill declares no caps of its own; with no resolvable connector reach,
