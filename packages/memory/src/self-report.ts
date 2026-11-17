@@ -1,5 +1,7 @@
 /**
- * The agent's reports about its OWN runtime context are not facts (TASK-612).
+ * The agent's reports about its OWN runtime context are not facts (TASK-612),
+ * and neither is its narration of its own memory operations and tool failures
+ * (TASK-1136).
  *
  * ## What went wrong
  *
@@ -37,6 +39,41 @@
  * instructions or memory to the agent's own context. "assistant | listed | the
  * rules of chess" is real content and survives; so does anything a PERSON
  * said about rules, because a person's statement is theirs to keep.
+ *
+ * ## Its narration of its own operations (TASK-1136)
+ *
+ * Walk TASK-1134 caught this on kind. In a Slack channel the agent's
+ * `memory_note` was refused, the agent told the channel "I couldn't save that
+ * to memory", and the observer stored
+ *
+ *     assistant | could_not_save_memory | …
+ *
+ * next to the very work fact the note had tried to save. "Saved it to memory"
+ * and "couldn't fetch the page" are the same kind of row.
+ *
+ * None of it is ever a durable fact, for the reason above: memory's store is
+ * the one source of truth for what memory holds, and each tool's own state is
+ * the one for what the tool did. A transcript report of a save or a failure is
+ * a second, staler copy, stale on arrival (invariant 4).
+ *
+ * Narrow on purpose. The AGENT must be the subject, and the fact must carry a
+ * failure predicate (`could_not_*`, `unable_to_*`, `failed_to_*`, …), a
+ * memory-operation predicate (`saved_to_memory`), or text that anchors the
+ * operation to memory ("save that to memory", "memory_note"). A person's
+ * failure (`user | could_not_attend`) is theirs to keep, and `did_not_*` is
+ * content: "did not recommend the Hilton" is an answer.
+ *
+ * So is a failure to find, locate, confirm or recommend something:
+ * `could_not_find | any flights under $300 on the 14th` is the answer to what
+ * the person asked, the assistant content the extraction prompt asks for. It's
+ * kept unless the text mentions memory, because then the agent is reporting
+ * what it looked up in its own memory, which the store already answers.
+ *
+ * The accepted losses: a content outcome phrased with any other failure verb
+ * (`could_not_book | a table for 8 on Friday`), and programming advice that
+ * reads like a save ("how to save it to memory on an Arduino", "instead of
+ * keeping it in memory"). Both are dropped. The other way round, a tool
+ * failure phrased as a search (`could_not_find | the weather page`) is kept.
  */
 
 /**
@@ -84,8 +121,9 @@ const NEGATION = String.raw`(?:don't|do not|doesn't|does not|cannot|can't|haven'
 const MAX_SCANNED_CHARS = 1_000;
 
 /**
- * Phrases that tie rules/instructions/memory to the agent's own context. Run
- * over `predicate` (underscores as spaces) + `object`, lowercased.
+ * Phrases that tie rules/instructions/memory to the agent's own context, or
+ * narrate one of its memory operations (TASK-1136). Run over `predicate`
+ * (underscores as spaces) + `object`, lowercased.
  */
 const CONTEXT_PATTERNS: readonly RegExp[] = [
   // "no rules", "no standing instructions", "no saved memories"
@@ -114,13 +152,67 @@ const CONTEXT_PATTERNS: readonly RegExp[] = [
   /\b(?:system |bootstrap ){1,2}prompt (?:is|was) (?:all (?:i|it)|the only)\b/,
   // "its instructions", "my memory"
   /\b(?:my|its|the assistant's|the agent's) (?:rules|instructions|memory|memories)\b/,
+  // TASK-1136. Its own note tool by name: "used memory_note to save it",
+  // "the memory note tool refused it".
+  /\bmemory[_ ]notes?\b/,
+  // "couldn't save that to memory", "saved it to memory", "noted this in
+  // memory": a save verb, a pronoun for what was said, then memory. A noun
+  // in the pronoun's place ("save data to memory on an Arduino") is a topic.
+  /\b(?:save|saved|saving|store|stored|storing|note|noted|noting|record|recorded|recording|add|added|adding|keep|kept|keeping|write|wrote|written|writing) (?:it|that|this|these|those|them) (?:to|in|into) (?:(?:my|its|the|long-term|long term) )?memor(?:y|ies)\b/,
 ];
 
 /** A predicate that is itself about the agent's rules/memory: `has_no_rules`, `has_rules`. */
 const CONTEXT_PREDICATE = /^(has|have|had|received|remembers|knows|sees)_(no_)?(rules|instructions|memory|memories)(_|$)/;
 
+/**
+ * A predicate saying the agent failed at something (TASK-1136):
+ * `could_not_save_memory`, `failed_to_connect`, `was_unable_to`. Tested on
+ * {@link normalizePredicate}'s output, so `Could Not Save` and `couldn't_save`
+ * read alike. The closing `(?:_|$)` keeps it a whole word: `cantilevered`
+ * isn't `cant`. Not `did_not_*`: "did not recommend the Hilton" is an answer.
+ */
+const FAILURE_PREDICATE =
+  /^(?:could_?not|couldnt|can_?not|cant|(?:was_|were_|is_)?unable_to|failed_to|(?:was_|were_|is_)?not_able_to|wasnt_able_to)(?:_|$)/;
+
+/**
+ * What follows a failure when the failure IS the answer: "couldn't find any
+ * flights under $300" is what the person asked about, not the agent's
+ * tooling. Read from the rest of the predicate, or from the object's start
+ * when the predicate is the failure alone (`was_unable_to | find …`). Only
+ * while the text doesn't mention memory ({@link AGENT_MEMORY}).
+ */
+const ANSWER_VERB = /^(?:find|locate|confirm|recommend)(?![a-z])/;
+
+/** Memory in the agent's sense, TASK-612's {@link MEMORY}: "memory foam" and "a memory card" aren't. */
+const AGENT_MEMORY = new RegExp(String.raw`\b${MEMORY}`);
+
+/** A predicate that IS a memory operation (TASK-1136): `saved_to_memory`, `added_to_long_term_memory`. */
+const MEMORY_OP_PREDICATE =
+  /^(?:save|saved|store|stored|note|noted|add|added|record|recorded|write|wrote|written|keep|kept)_(?:(?:it|that|this)_)?(?:to|in|into)_(?:(?:my|its|the|long_term)_)?memor(?:y|ies)(?:_|$)/;
+
 function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+/**
+ * For the two TASK-1136 predicate tests only: trimmed, lowercased, apostrophes
+ * dropped (`couldn't` → `couldnt`), and each run of spaces or hyphens made one
+ * `_`. Bounded like every quantifier here: a run past 32 leaves a doubled `_`
+ * that no test matches, so the row is kept, and no model writes one.
+ */
+function normalizePredicate(predicate: string): string {
+  return predicate.trim().toLowerCase().replace(/['‘’]/g, '').replace(/[\s-]{1,32}/g, '_');
+}
+
+/**
+ * A failure that answers the person's question, not one of the agent's
+ * tooling (see {@link ANSWER_VERB}). The object's start is read inside the
+ * scanned window, like everything else here: an object padded past it has no
+ * verb in view, so it stays narration.
+ */
+function isAnswerOutcome(rest: string, object: string, text: string): boolean {
+  const verb = rest !== '' ? rest : object.slice(0, MAX_SCANNED_CHARS).trimStart().slice(0, 16).toLowerCase();
+  return ANSWER_VERB.test(verb) && !AGENT_MEMORY.test(text);
 }
 
 export function isAgentContextSelfReport(fact: {
@@ -128,6 +220,7 @@ export function isAgentContextSelfReport(fact: {
   predicate: string;
   object: string;
 }): boolean {
+  // The agent as subject, FIRST: everything below is only its own narration.
   if (!AGENT_SUBJECTS.has(normalizeSubject(fact.subject))) return false;
   const predicate = fact.predicate.trim().toLowerCase();
   if (CONTEXT_PREDICATE.test(predicate)) return true;
@@ -135,5 +228,11 @@ export function isAgentContextSelfReport(fact: {
     .slice(0, MAX_SCANNED_CHARS)
     .toLowerCase()
     .replace(/[‘’]/g, "'");
+  const normalized = normalizePredicate(fact.predicate);
+  const failure = FAILURE_PREDICATE.exec(normalized);
+  if (failure !== null && !isAnswerOutcome(normalized.slice(failure[0].length), fact.object, text)) {
+    return true;
+  }
+  if (MEMORY_OP_PREDICATE.test(normalized)) return true;
   return CONTEXT_PATTERNS.some((pattern) => pattern.test(text));
 }

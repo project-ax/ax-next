@@ -2317,8 +2317,10 @@ function logObserverResult(
         // A persistent non-zero here means the extractor is emitting dates
         // nothing can read — never silent, because the facts are lost.
         unusable: result.unusable,
-        // The agent's own "I have no rules" style statements, dropped
-        // (TASK-612). Informational; not a failure.
+        // The agent's statements about its own context, its memory
+        // operations and its tool failures ("I have no rules", "I couldn't
+        // save that"), dropped (TASK-612, TASK-1136). Informational; not a
+        // failure.
         selfReports: result.selfReports,
         // Facts about a person a shared turn kept out (TASK-1091). 0 in a
         // private turn. Informational: the rule working, not a failure.

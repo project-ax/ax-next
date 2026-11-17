@@ -87,9 +87,10 @@ export type ObserverResult =
   | { kind: 'skipped'; reason: 'only-context'; contextOnly: number }
   /**
    * Every fact the extractor produced was the agent describing its own
-   * context (TASK-612, `self-report.ts`). Ordinary, but counted and named
-   * apart from `no-facts`, so a filter that over-drops a whole batch leaves a
-   * trace instead of reading as "nothing durable was said".
+   * context, its memory operations and its tool failures (TASK-612,
+   * TASK-1136, `self-report.ts`). Ordinary, but counted and named apart from
+   * `no-facts`, so a filter that over-drops a whole batch leaves a trace
+   * instead of reading as "nothing durable was said".
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
@@ -156,9 +157,11 @@ export type ObserverResult =
       /** Facts the extractor produced that could not be stored. */
       unusable: number;
       /**
-       * Facts dropped because they were the agent describing its own runtime
-       * context ("I have no rules") — see `self-report.ts`. Not `unusable`:
-       * nothing is wrong with the extractor when this is non-zero.
+       * Facts dropped because they were the agent describing its own context
+       * ("I have no rules"), its memory operations ("I couldn't save that to
+       * memory") and its tool failures (TASK-612, TASK-1136) — see
+       * `self-report.ts`. Not `unusable`: nothing is wrong with the extractor
+       * when this is non-zero.
        */
       selfReports: number;
       /**
@@ -750,11 +753,13 @@ export function toStatements(
       speakerFacts += 1;
       continue;
     }
-    // TASK-612: the agent describing what rules/instructions/memory it can
-    // see is a snapshot of one session's system prompt, not a fact about the
-    // world, and it goes stale the moment a person saves a Rule. Dropped
-    // before anything else, and counted apart from `unusable` because it is
-    // not an extractor failure.
+    // TASK-612, TASK-1136: the agent describing its own context (what
+    // rules/instructions/memory it can see), its memory operations and its
+    // tool failures is a snapshot of one session, not a fact about the world.
+    // The Rules file, memory's store and each tool's own state are the
+    // sources of truth, and the report goes stale the moment one of them
+    // moves. Dropped before the date check, and counted apart from `unusable`
+    // because it is not an extractor failure.
     if (isAgentContextSelfReport(fact)) {
       selfReports += 1;
       continue;
