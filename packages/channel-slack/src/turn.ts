@@ -260,7 +260,8 @@ const ARTIFACT_TOOLS = new Set([
  * A twin of channel-web's PLUMBING_TOOL_NAMES
  * (packages/channel-web/src/lib/workspace-steps.ts), which hides the same
  * calls from the web's step panel. It's kept here rather than imported (no
- * cross-plugin import). Change them together.
+ * cross-plugin import). Change them together: turn.test.ts reads the web's
+ * from its source and fails when the two differ.
  */
 export const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
 

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
@@ -19,6 +21,7 @@ import type { InstallRow } from '../store.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import {
   followContinuation,
+  PLUMBING_TOOL_NAMES,
   runTurn,
   turnContextFields,
   type ContinuationRequest,
@@ -1828,5 +1831,25 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     ]);
     expect(h.prompts.size()).toBe(0);
     expect(h.reply()).toBe('');
+  });
+});
+
+/** channel-web's PLUMBING_TOOL_NAMES as its source spells it: read from the file, never imported (invariant 2). */
+function webPlumbingToolNames(): string[] {
+  const file = fileURLToPath(new URL('../../../channel-web/src/lib/workspace-steps.ts', import.meta.url));
+  const found = /^[ \t]*(?:export[ \t]+)?const[ \t]+PLUMBING_TOOL_NAMES\b[^=\n]*=[ \t]*new Set\(\[([^\]]*)\]\)/m.exec(
+    readFileSync(file, 'utf8'),
+  );
+  if (found === null) {
+    throw new Error('channel-web/src/lib/workspace-steps.ts no longer spells PLUMBING_TOOL_NAMES the way this test reads it');
+  }
+  const names = [...found[1]!.matchAll(/'([^']*)'|"([^"]*)"/g)].map((m) => m[1] ?? m[2]!);
+  if (names.length === 0) throw new Error("read no names from channel-web's PLUMBING_TOOL_NAMES");
+  return names;
+}
+
+describe("PLUMBING_TOOL_NAMES: channel-web's twin (TASK-1130)", () => {
+  it("names exactly the calls the web's step panel hides", () => {
+    expect([...PLUMBING_TOOL_NAMES].sort()).toEqual(webPlumbingToolNames().sort());
   });
 });

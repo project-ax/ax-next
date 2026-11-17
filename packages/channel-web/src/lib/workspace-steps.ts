@@ -681,6 +681,12 @@ function summary(steps: readonly WorkspaceStep[]): string {
  * The reader asked for a chart, not for the SDK to look one up, so the row is
  * noise — and it names wire identifiers we otherwise never show. Exact name
  * only: a connector's own `mcp__x__ToolSearch` is a real step and keeps its row.
+ *
+ * channel-slack keeps a twin (`PLUMBING_TOOL_NAMES` in
+ * packages/channel-slack/src/turn.ts): there, neither the call nor its step
+ * summary changes a reply's status line. Its turn.test.ts reads this set from
+ * this file and fails when the two differ, so change them together, and keep
+ * it a `new Set([...])` of quoted names (that's what it reads).
  */
 const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
 
