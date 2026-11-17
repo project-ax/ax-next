@@ -8,7 +8,7 @@ import { SPEAKER_SUBJECT } from './subject.js';
  * without access to the agent can read recalls only what was learned where
  * they could see it. And of a memory WRITE: every statement is stamped with
  * the audience of the turn it was learned in, and a shared turn stores
- * nothing about a person ({@link recordFacts}).
+ * nothing under a person subject (`user`, `user:<id>`; {@link breaksSpeakerRule}).
  *
  * `ctx.audience` is stamped by the host and never read off a payload (see
  * `FORBIDDEN_PAYLOAD_FIELDS` in `plugin.ts`), so this scope comes from `ctx`
@@ -162,7 +162,7 @@ export function breaksSpeakerRule(audience: AgentContextAudience, about: string)
  *
  * ## The backstop
  *
- * In a shared turn, a batch holding any statement about a person
+ * In a shared turn, a batch holding any statement with a person subject
  * ({@link isPersonSubject}) is refused `forbidden` before anything is sent:
  * the whole batch, as the engine refuses a batch. The observer and
  * `memory_note` drop or refuse those statements themselves, before the

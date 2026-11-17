@@ -94,7 +94,7 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
-   * Every fact was about a person, in a shared turn (TASK-1091,
+   * Every fact had a person subject (`user`, `user:<id>`), in a shared turn (TASK-1091,
    * `toStatements`): the speaker could be anyone in the room, so none is
    * stored. Counted and named apart, like the self-reports, so a shared
    * conversation that keeps nothing leaves a trace of why.
@@ -165,7 +165,7 @@ export type ObserverResult =
        */
       selfReports: number;
       /**
-       * Facts dropped because they were about a person in a shared turn
+       * Facts dropped because they had a person subject, in a shared turn
        * (TASK-1091, `toStatements`). Always 0 in a private turn. Not
        * `unusable`: this is the rule working, not the extractor failing.
        */
@@ -256,7 +256,7 @@ export interface RunObserverInput {
   ownerUserId: string;
   /**
    * Who can read the turn's reply: `audienceOf(ctx)`, never a payload
-   * (TASK-1091). In a shared turn every fact about a person is dropped before
+   * (TASK-1091). In a shared turn every fact with a person subject is dropped before
    * the speaker rewrite (`toStatements`). Required, so a caller can't forget
    * it and quietly get the private behaviour.
    */
@@ -731,8 +731,8 @@ export function buildBatchKey(input: {
  *
  * ## A shared turn keeps no speaker facts (TASK-1091)
  *
- * In a turn people without access to the agent can read, every fact about a
- * person (`isPersonSubject`: `user`, `User`, ` user `, `user:<anyone>`) is
+ * In a turn people without access to the agent can read, every fact with a
+ * person subject (`breaksSpeakerRule`: `user`, `User`, ` user `, `user:<anyone>`) is
  * dropped and counted as `speakerFacts`, FIRST, before the speaker rewrite
  * could file it under the owner's key. A deterministic filter on the
  * extractor's output, not a prompt change: the extraction prompt is

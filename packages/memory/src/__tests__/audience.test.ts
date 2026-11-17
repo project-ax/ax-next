@@ -494,7 +494,7 @@ describe('recallFacts — the one door every engine read goes through', () => {
 
 // ---------------------------------------------------------------------------
 // The write side: every statement is stamped with its turn's audience, and a
-// shared turn stores nothing about a person.
+// shared turn stores nothing under a person subject.
 // ---------------------------------------------------------------------------
 
 /**

@@ -1528,7 +1528,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // answers for it, in a real thread, so it is captured and attributed
         // like any other. What governs its capture is `ctx.audience`, not
         // `source`: a shared turn's statements are stamped shared, and it
-        // stores nothing about a person (`toStatements`, `recordFacts`).
+        // stores nothing under a person subject (`breaksSpeakerRule`).
         // (From Slack none is captured: channel-slack's `memory:pre-capture`
         // veto refuses every thread an outsider talks in, TASK-1094.)
         //
@@ -2322,7 +2322,7 @@ function logObserverResult(
         // save that"), dropped (TASK-612, TASK-1136). Informational; not a
         // failure.
         selfReports: result.selfReports,
-        // Facts about a person a shared turn kept out (TASK-1091). 0 in a
+        // Facts with a person subject a shared turn kept out (TASK-1091). 0 in a
         // private turn. Informational: the rule working, not a failure.
         speakerFacts: result.speakerFacts,
         // Positive readings of a negated statement, dropped (TASK-652).
