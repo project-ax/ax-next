@@ -8,7 +8,7 @@ import {
 } from '@ax/core';
 
 import { resolveMemoryAccess } from './access.js';
-import { isPersonSubject, recordFacts } from './audience.js';
+import { breaksSpeakerRule, recordFacts } from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
@@ -86,7 +86,7 @@ const KEYS_MESSAGE = 'unexpected field(s) — only about, relation, value, when 
 const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
-const PERSON_IN_SHARED_MESSAGE = "Notes about a person aren't saved in a shared conversation.";
+export const PERSON_IN_SHARED_MESSAGE = "Notes about a person aren't saved in a shared conversation.";
 // The same words whoever refused and why: that goes to the log, not the
 // model. True for every refusal (TASK-1094 PR B review F4): a switch turned
 // off, a conversation memory never learns from, a check that failed or timed
@@ -224,8 +224,9 @@ export async function registerMemoryNote(
         // on the subject AS WRITTEN, before the speaker rewrite and before
         // any bus call, so nothing is read or written. `recordFacts` would
         // refuse it anyway; refusing here says why, in words the model can
-        // pass on.
-        if (audienceOf(ctx) === 'shared' && isPersonSubject(input.about as string)) {
+        // pass on. The same function as the observer and `recordFacts`, so
+        // the three can't drift (TASK-1136).
+        if (breaksSpeakerRule(audienceOf(ctx), input.about as string)) {
           throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
         }
         // TASK-1094: ask `memory:pre-capture` first, as every extraction

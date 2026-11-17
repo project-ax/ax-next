@@ -1,4 +1,4 @@
-import { audienceOf, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import { audienceOf, PluginError, type AgentContext, type AgentContextAudience, type HookBus } from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { SPEAKER_SUBJECT } from './subject.js';
@@ -122,6 +122,29 @@ export function isPersonSubject(about: string): boolean {
 }
 
 /**
+ * The speaker rule (TASK-1091, design §2a): a turn with this audience may not
+ * store a statement whose subject is `about`. It is the ONE test every memory
+ * write asks. The observer drops a fact on it (`toStatements`), `memory_note`
+ * refuses a note on it, and {@link recordFacts} refuses a batch on it, so the
+ * three can't drift apart (TASK-1136).
+ *
+ * `!== 'private'`, not `=== 'shared'`, so an audience this build doesn't know
+ * fails closed.
+ *
+ * It takes an audience, not a ctx, because `toStatements` is pure and has
+ * none. The parameter is a resolved `AgentContextAudience`, not `ctx.audience`
+ * (which may be absent), so a caller goes through `audienceOf` first.
+ *
+ * A person named any other way (`vinay`) doesn't break it: only `user` and
+ * `user:<id>` do ({@link isPersonSubject}). A fact naming who owns what is
+ * about the work, which the design keeps. A speaker the extractor names from
+ * a channel's sender label is §2a's accepted gap.
+ */
+export function breaksSpeakerRule(audience: AgentContextAudience, about: string): boolean {
+  return audience !== 'private' && isPersonSubject(about);
+}
+
+/**
  * Call the engine's record hook with every statement stamped with the turn's
  * audience. The one door every engine WRITE in this package goes through, as
  * {@link recallFacts} is for reads: the human write behind `memory:remember`
@@ -158,7 +181,7 @@ export async function recordFacts<TOut>(
   input: { batchKey?: string; statements: ReadonlyArray<object> },
 ): Promise<TOut | null> {
   const audience = audienceOf(ctx);
-  if (audience === 'shared') refuseSpeakerFacts(input.statements, hookName);
+  refuseSpeakerFacts(audience, input.statements, hookName);
   return bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {
     ...input,
     // `Array.from`, not `map`: `map` keeps a hole, and the engines' own `map`
@@ -168,11 +191,15 @@ export async function recordFacts<TOut>(
   });
 }
 
-function refuseSpeakerFacts(statements: ReadonlyArray<object>, hookName: string): void {
+function refuseSpeakerFacts(
+  audience: AgentContextAudience,
+  statements: ReadonlyArray<object>,
+  hookName: string,
+): void {
   // `?.`: `for...of` reads a hole as `undefined`, which names nobody.
   for (const statement of statements as ReadonlyArray<{ about?: unknown } | undefined>) {
     const about = statement?.about;
-    if (typeof about === 'string' && isPersonSubject(about)) {
+    if (typeof about === 'string' && breaksSpeakerRule(audience, about)) {
       throw new PluginError({
         code: 'forbidden',
         plugin: PLUGIN_NAME,

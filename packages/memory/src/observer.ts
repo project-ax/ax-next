@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { AgentContextAudience } from '@ax/core';
 
 import { attributeFacts, attributeSpeakers } from './attribution.js';
-import { isPersonSubject } from './audience.js';
+import { breaksSpeakerRule } from './audience.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
@@ -746,7 +746,7 @@ export function toStatements(
   for (const fact of facts) {
     // Anything but a private turn drops, which fails closed. Before every
     // other check, so the count doesn't depend on them.
-    if (opts.audience !== 'private' && isPersonSubject(fact.subject)) {
+    if (breaksSpeakerRule(opts.audience, fact.subject)) {
       speakerFacts += 1;
       continue;
     }
