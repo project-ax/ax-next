@@ -28,6 +28,7 @@ function recordingSink(over: Partial<TurnSink> = {}) {
   const sink: TurnSink = {
     reqId: REQ,
     conversationId: CONVERSATION,
+    mode: 'dm',
     chunk: (c) => {
       chunks.push(c);
       seen.push(`chunk ${c.kind ?? '?'}`);
@@ -52,6 +53,27 @@ const ctxFor = (conversationId?: string) =>
     reqId: 'req-ipc-restamped',
     ...(conversationId !== undefined ? { conversationId } : {}),
   });
+
+describe('modeOf: which kind of Slack turn a spawn is for (TASK-1131)', () => {
+  it("names a registered turn's mode, for its own conversation only, until it unregisters", () => {
+    const r = createTurnRegistry({ logger: QUIET });
+    const undo = r.register(recordingSink({ mode: 'external' }).sink);
+    expect(r.modeOf(REQ, CONVERSATION)).toBe('external');
+    expect(r.modeOf(REQ, 'conv_someone_else')).toBeNull();
+    expect(r.modeOf(REQ, undefined)).toBeNull();
+    expect(r.modeOf('req-never-registered', CONVERSATION)).toBeNull();
+    undo();
+    expect(r.modeOf(REQ, CONVERSATION)).toBeNull();
+  });
+
+  it('a later sink under the same reqId answers with its own mode, and the first undo leaves it', () => {
+    const r = createTurnRegistry({ logger: QUIET });
+    const undoFirst = r.register(recordingSink({ mode: 'dm' }).sink);
+    r.register(recordingSink({ mode: 'attended' }).sink);
+    undoFirst();
+    expect(r.modeOf(REQ, CONVERSATION)).toBe('attended');
+  });
+});
 
 describe('createTurnRegistry', () => {
   it("another reqId's chunk is ignored", () => {

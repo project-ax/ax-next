@@ -252,6 +252,8 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   const registry = createTurnRegistry({ logger });
   subscribeTurnEvents(bus, registry, '@ax/channel-slack/turn-test');
   const invokes: Array<{ ctx: AgentContext; input: unknown }> = [];
+  /** What the registry says the turn's mode is at the moment agent:invoke runs (TASK-1131). */
+  const modesAtInvoke: Array<TurnMode | null> = [];
   const lookups: Array<{ ctx: AgentContext; input: unknown }> = [];
   /** proxy:add-host's calls. Only an Allow makes one (permission-prompts.ts): a turn never does. */
   const addHosts: Array<{ ctx: AgentContext; input: unknown }> = [];
@@ -299,6 +301,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     'agent:invoke',
     'fake-orchestrator',
     async (ctx, input) => {
+      modesAtInvoke.push(registry.modeOf(ctx.reqId, ctx.conversationId));
       invokes.push({ ctx, input });
       // The IPC listener restamps ctx.reqId; only the payload names the turn.
       const ipcCtx = ipcCtxFor(ctx);
@@ -357,6 +360,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
 
   return {
     invokes,
+    modesAtInvoke,
     lookups,
     addHosts,
     skillCalls,
@@ -495,6 +499,7 @@ describe("runTurn: the agent runs as the request says, under its mode's context"
     const h = harness();
     await h.run(mode);
     expect(h.invokes).toHaveLength(1);
+    expect(h.modesAtInvoke).toEqual([mode]);
     const { ctx, input } = h.invokes[0]!;
     expect([ctx.userId, ctx.agentId, ctx.conversationId, ctx.source, ctx.audience]).toEqual([
       'usr_alice',
