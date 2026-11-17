@@ -85,8 +85,9 @@
  * A person's failure (`user | could_not_attend`) is theirs to keep, and
  * `did_not_*` is content: "did not recommend the Hilton" is an answer.
  *
- * The accepted losses: programming advice that reads like a save with a
- * pronoun ("how to save it to memory on an Arduino"), topical phrases that
+ * The accepted losses: advice that reads like a save with a pronoun ("how to
+ * save it to memory on an Arduino", "a mnemonic to keep them in memory"),
+ * topical phrases that
  * look like its own memory ("anything in memory dumps"), and a content outcome
  * phrased with a tooling verb (`could_not_open | the museum on Mondays`).
  * The other way round, a tool failure phrased as a search (`could_not_find |
@@ -206,7 +207,7 @@ const NARRATION_PATTERNS: readonly RegExp[] = [
  * A failure counts only with a {@link TOOL_VERB} or {@link OWN_MEMORY}.
  */
 const FAILURE_PREDICATE =
-  /^(?:could_?not|couldn_?t|can_?not|can_?t|(?:was_|were_|is_)?unable_to|failed_to|(?:was_|were_|is_)?not_able_to|wasn_?t_able_to)(?:_|$)/;
+  /^(?:could_?not|couldn_?t|can_?not|can_?t|(?:was_|were_|is_)?unable_to|failed_to|(?:was_|were_|is_)?not_able_to|(?:wasn|weren|isn)_?t_able_to)(?:_|$)/;
 
 /**
  * What failed, when the failure is the assistant's own tooling rather than an
@@ -216,25 +217,33 @@ const FAILURE_PREDICATE =
  * `confirm`, `book`, `recommend` and the like are deliberately absent: their
  * failures are answers. So are `keep`, `reach` and `write` ("couldn't keep
  * the trip under $2,000", "couldn't reach a conclusion", "couldn't write one
- * regex for every email address"); their memory sense is caught by the
- * predicate naming memory.
+ * regex for every email address"); their memory sense is caught only when
+ * the predicate says where (`could_not_write_to_memory`), not when memory is
+ * in the object (`could_not_write | the note to memory` is kept).
  */
 const TOOL_VERB =
   /^(?:save|store|record|note|remember|recall|add|fetch|retrieve|access|connect|open|load|read|run|execute|send|download|upload|call|attach|browse|search|query|log_?in|sign_?in|authenticate)(?![a-z])/;
 
 /**
  * The assistant's OWN memory, as narration names it: "anything in memory",
- * "nothing saved in long-term memory", "my memory", "in long-term memory",
+ * "nothing saved in long-term memory", "my memory", "in my long-term memory",
  * "saved facts". Not bare "memory": "the memory spike in the worker pod" and
  * "the pod's memory limit" are what the person asked about, and every form
  * ends in {@link MEMORY}, so "long-term memory loss" isn't either.
  */
 const OWN_MEMORY = new RegExp(
-  String.raw`\b(?:(?:anything|nothing|something) (?:saved |stored )?(?:in|from) (?:(?:my|its|long-term|long term) )?|(?:my|its) |(?:in|from) (?:my |its )?long[- ]term )${MEMORY}|\bsaved facts\b`,
+  String.raw`\b(?:(?:anything|nothing|something) (?:saved |stored )?(?:in|from) (?:(?:my|its|long-term|long term) )?|(?:my|its) |(?:in|from) (?:my|its) long[- ]term )${MEMORY}|\bsaved facts\b`,
 );
 
-/** {@link MEMORY} anywhere in a failure predicate's rest: `could_not_write_to_memory`. */
-const MEMORY_WORD = new RegExp(String.raw`\b${MEMORY}`);
+/**
+ * A failure predicate's rest that says WHERE: to, in, into or from memory
+ * (`could_not_write_to_memory`, `could_not_keep_it_in_memory`). Not any
+ * memory word: `could_not_reduce_memory_usage` and
+ * `could_not_reproduce_the_memory_spike` are about RAM.
+ */
+const MEMORY_WORD = new RegExp(
+  String.raw`\b(?:to|in|into|from) (?:(?:my|its|the|long term|long-term) )?${MEMORY}`,
+);
 
 /** A predicate that IS a memory operation (TASK-1136): `saved_to_memory`, `added_to_long_term_memory`. */
 const MEMORY_OP_PREDICATE =
@@ -245,7 +254,8 @@ function normalizeSubject(subject: string): string {
 }
 
 /**
- * For the TASK-1136 predicate tests only: cut to the scanned window first,
+ * For the TASK-1136 checks only (a predicate, or a bare failure's object
+ * head): cut to the scanned window first,
  * like the text, then trimmed, lowercased, apostrophes dropped (`couldn't` →
  * `couldnt`), and each run of spaces or hyphens made one `_`.
  */

@@ -88,7 +88,7 @@ const WHEN_MESSAGE =
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
 export const PERSON_IN_SHARED_MESSAGE =
   "In a shared conversation, don't save notes about a person: not as `user`, not under their name, and " +
-  "not as a detail in the value. If it's about the work (a project, a decision, a process, or who owns " +
+  "not as a personal detail in the value. If it's about the work (a project, a decision, a process, or who owns " +
   'what), save it again with the work as `about`, for example `team_standup`.';
 // The same words whoever refused and why: that goes to the log, not the
 // model. True for every refusal (TASK-1094 PR B review F4): a switch turned

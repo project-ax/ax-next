@@ -527,7 +527,7 @@ describe('a note in a shared turn (TASK-1091)', () => {
         message:
           'NOT SAVED: nothing was written to memory — do not tell the person it was saved. ' +
           "In a shared conversation, don't save notes about a person: not as `user`, not under their name, and " +
-          "not as a detail in the value. If it's about the work (a project, a decision, a process, or who owns " +
+          "not as a personal detail in the value. If it's about the work (a project, a decision, a process, or who owns " +
           'what), save it again with the work as `about`, for example `team_standup`.',
       });
       expectRefused(result, 'forbidden');

@@ -168,7 +168,7 @@ The text is fixed below. Task 1's security walk covers it, because it's the same
 
 **Files:** Modify `packages/memory/src/note-tool.ts:89`. Test: `packages/memory/src/__tests__/note-tool.test.ts` (`:524-529`, `:780`, two new tests).
 
-**Interfaces (consumes):** `PERSON_IN_SHARED_MESSAGE`, exported in Task 1. Its new value, exactly:
+**Interfaces (consumes):** `PERSON_IN_SHARED_MESSAGE`, exported in Task 1. Its new value, exactly (superseded in review: the shipped text is an instruction, "In a shared conversation, don't save notes about a person: …", and names no `user:<id>`; see `note-tool.ts` and the decisions shard):
 
 ```ts
 export const PERSON_IN_SHARED_MESSAGE =

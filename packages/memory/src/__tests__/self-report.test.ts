@@ -137,6 +137,9 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'could_not', 'connect to the calendar'],
     ['assistant', 'was_unable_to', 'log in to the bank portal'],
     ['assistant', "couldn_t_save_memory", 'x'],
+    ['assistant', "wasn_t_able_to_save", 'the note'],
+    ['assistant', "weren_t_able_to_fetch", 'the page'],
+    ['assistant', 'could_not_find', 'the standup time in my long-term memory'],
     ['assistant', "can_t_save", 'the note'],
     ['assistant', 'could_not_write_to_memory', 'the standup time'],
     ['assistant', 'could_not_keep_it_in_memory', 'the standup time'],
@@ -210,6 +213,14 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'could_not_confirm', 'whether the medication causes long-term memory problems'],
     ['assistant', 'could_not_find', 'anything stored in memory cards older than 2015 at that shop'],
     ['assistant', 'suggested', 'a peg-word mnemonic for the 12 cranial nerves to keep them in long-term memory'],
+    // Review round 3: memory in a failure predicate counts only with where
+    // (to/in/from memory); otherwise it's RAM, or a topic.
+    ['assistant', 'could_not_reduce_memory_usage', 'of the worker pod below 512MB'],
+    ['assistant', 'could_not_reproduce_the_memory_spike', 'on Node 20'],
+    ['assistant', 'failed_to_allocate_memory', 'for the 70B model on one GPU'],
+    ['assistant', 'could_not_find_research_on_memory_consolidation', 'during sleep'],
+    ['assistant', 'could_not_find', 'research on how emotions are encoded in long-term memory'],
+    ['assistant', 'could_not_explain', 'why some memories fade from long-term memory'],
     // Failures whose verb has an outcome sense are answers too.
     ['assistant', 'could_not_keep', 'the 5-day Italy trip under $2,000 with flights; cheapest found was $2,340'],
     ['assistant', 'was_unable_to', 'keep the weekly grocery plan under $80'],
@@ -233,8 +244,6 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ).toBe(true);
   });
 
-  // A guard for later edits, not for this change: it passes on main too. An
-  // unbounded pattern added later over the uncut predicate is what it catches.
   it('reads a failure predicate inside the scanned window, and nothing past it', () => {
     // Cut before it's normalized: the verb after 1,000 spaces isn't read.
     expect(
@@ -245,6 +254,8 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ).toBe(true);
   });
 
+  // A guard for later edits, not for this change: it passes on main too. An
+  // unbounded pattern added later over the uncut predicate is what it catches.
   it('stays fast on a huge, repetitive, untrusted predicate and object', () => {
     const start = performance.now();
     for (const word of ['save that to ', 'memory note ', 'could not ', 'saved it into the ', 'noted ']) {
