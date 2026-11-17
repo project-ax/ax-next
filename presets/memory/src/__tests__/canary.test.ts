@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -823,6 +823,14 @@ describe('@ax/preset-memory canary', () => {
       status: 404,
       json: { error: 'not-found' },
     });
+
+    // TASK-1131: the provider that tells a Slack turn's agent who is writing is on the
+    // bus, and a web chat (a spawn channel-slack never started) gets nothing from it. The
+    // real orchestrator is loaded here and calls every provider at each spawn.
+    expect(bus.listServices()).toContain('system-prompt:augment:optional:slack');
+    expect(
+      await bus.call('system-prompt:augment:optional:slack', makeAgentContext({ sessionId: 'canary', agentId: '', userId: ALICE }), {}),
+    ).toEqual({});
   });
 
   it('Undo after Forget over the real routes brings an agent note back as the same agent row (TASK-630)', async () => {
