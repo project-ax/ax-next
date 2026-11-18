@@ -124,7 +124,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // they are first; its answer for a decision (decision-answer.ts) calls
 // `decisions:approve` or `decisions:dismiss` as the asker, and after an Allow
 // the agent's next turn is followed into the thread (turn.ts
-// `followContinuation`). External turns never get buttons. A host the
+// `followContinuation`) and bound to the conversation (TASK-1150:
+// `conversations:bind-session`). External turns never get buttons. A host the
 // sandbox was refused mid-turn (the egress wall's `chat:permission-request`
 // card) gets a prompt after the reply too, and its Allow lets that host
 // through for the conversation's live session only, as the asker
@@ -253,6 +254,12 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // skill card gets a link to the web app instead (skillPromptFor).
         { hook: 'agent:apply-capability-grant', degradation: SKILL_DEGRADATION },
         { hook: 'conversations:get', degradation: SKILL_DEGRADATION },
+        // An Allow binds the continuation it woke to the conversation, as the web app does (decision-answer.ts).
+        {
+          hook: 'conversations:bind-session',
+          degradation:
+            "an Allow's continuation isn't bound to its conversation, so a skill Allow or the idle reaper can end it, and the 15-minute cap can't stop it",
+        },
       ],
       subscribes: [RESET_CLEANUP, AGENTS_DELETED, MEMORY_PRE_CAPTURE_HOOK, ...TURN_EVENT_HOOKS],
     },

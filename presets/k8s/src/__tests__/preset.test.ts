@@ -1339,6 +1339,11 @@ describe('@ax/preset-k8s wiring', () => {
         hook,
         degradation: 'a skill request in a Slack turn links to the web app instead of showing buttons',
       })),
+      // A continuation an Allow woke is bound to its conversation, as the web app binds it (TASK-1150).
+      {
+        hook: 'conversations:bind-session',
+        degradation: "an Allow's continuation isn't bound to its conversation, so a skill Allow or the idle reaper can end it, and the 15-minute cap can't stop it",
+      },
     ]);
     expect(slack!.manifest.subscribes).toEqual([
       'bootstrap:reset-cleanup',
