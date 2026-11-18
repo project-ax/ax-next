@@ -289,7 +289,9 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'published_artifact', 'the Q3 revenue dashboard'], // card: x5
     ['assistant', 'ran_tests', 'all 42 passed'], // card
     ['assistant', 'fixed_bug', 'in the date parser'], // card
+    // `built` and `implemented` need an artifact noun: `built | a 12-week training plan` is content.
     ['assistant', 'built_dashboard', 'for weekly sign-ups'],
+    ['assistant', 'implemented_component', 'the date picker on the settings page'],
     ['assistant', 'deployed', 'the staging build'],
     ['assistant', 'committed_changes', 'to the main branch'],
     ['assistant', 'opened_pr', '#43 to fix the login redirect'],
@@ -298,6 +300,8 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'executed_command', 'npm ci'],
     ['assistant', 'tested_endpoint', '/api/health returned 200'],
     ['assistant', 'configured_connector', 'Gmail'],
+    // `skill` isn't an artifact noun (`added_skills | Python, SQL` is a résumé), but an install is narration.
+    ['assistant', 'installed_skill', 'pdf-tools'],
     ['assistant', 'uploaded_file', 'report.pdf'],
     ['assistant', 'deleted_file', 'old.csv'],
     ['assistant', 'sent_email', 'to Bob about the launch'],
@@ -312,8 +316,13 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'wrote_file', 'src/index.ts'],
     ['assistant', 'updated_routine', 'the daily digest now runs at 9am'],
     ['assistant', 'added_connector', 'Slack'],
+    // `connector` names AX's own connectors, so it counts anywhere after the verb.
+    ['assistant', 'added_slack_connector', 'for the team workspace'],
     ['assistant', 'scheduled_routine', 'a weekly report on Mondays'],
     ['assistant', 'set_up_routine', 'a weekly digest'],
+    // `routine` is also an everyday word, so it counts only as the verb's own
+    // object, past at most two determiners.
+    ['assistant', 'created_a_new_routine', 'a daily digest at 9am'],
     ['assistant', 'edited_document', 'the onboarding doc'],
     ['assistant', 'created_artifact_for_q3_sales_review', 'x'], // a noun anywhere after the verb
     ['Assistant', 'Published Artifact', 'the dashboard'],
@@ -336,6 +345,19 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', "doesn't_have_access", 'to the internet'],
     ['assistant', 'lacks_access', 'to the shared drive'],
     ['the assistant', 'Stated Limitation', 'cannot open PDFs'],
+    // `has_…` or a bare `limitation` makes the assistant the holder: no object
+    // check, so "for …" is still its own limit, not a topic.
+    ['assistant', 'has_limitation', 'knowledge cutoff of early 2024'],
+    ['assistant', 'has_limitations', 'for image input: it reads text only'],
+    // A reporting verb can report anyone's limits, so it needs the assistant
+    // marked: in the predicate (`its`, `own`), or at the object's start.
+    ['assistant', 'described_its_capabilities', 'web search, code execution and charts'],
+    ['assistant', 'acknowledged_own_limitations', 'text only, no image input'],
+    ['assistant', 'noted_limitation', 'it is unable to send email'],
+    ['assistant', 'clarified_limitation', 'I don’t have access to your calendar'],
+    ['assistant', 'admitted_limitation', 'the assistant could not open attachments'],
+    ['assistant', 'stated_limitation', 'no internet access'],
+    ['assistant', 'disclosed_limitation', 'lacks real-time data'],
   ])('drops %s | %s | %s: what it says it can or cannot do', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBe('capability');
@@ -385,7 +407,24 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'added', 'a vegetarian option: lentil curry'],
     ['assistant', 'compiled', 'a list of 10 trails'],
     ['assistant', 'drafted_email', 'Subject: Q3 update'],
-    ['assistant', 'explained_limitations', 'of the Roth IRA: an income cap of $161k'], // a topic
+    // Everyday nouns: a routine, skills or a workflow it wrote for the person.
+    ['assistant', 'created_workout_routine', 'Mon push, Tue pull, Wed legs'],
+    ['assistant', 'updated_workout_routine', 'Mon push, Tue pull, Wed legs, Thu rest'],
+    ['assistant', 'added_skills', 'Python, SQL'],
+    ['assistant', 'added_skills_to_resume', 'Python, SQL and Tableau'],
+    ['assistant', 'created_workflow', '1. intake 2. triage 3. assign 4. close'],
+    ['assistant', 'created_home_automation_plan', 'porch lights on at sunset, thermostat to 62 at 11pm'],
+    // Content phrased like a build.
+    ['assistant', 'built', 'a 12-week training plan'],
+    ['assistant', 'rebuilt', 'the training plan around 3 runs a week'],
+    ['assistant', 'implemented_solution', 'memoized fib'],
+    // A reporting verb reports anyone's limits. A topic's stay.
+    ['assistant', 'explained_limitations', 'of the Roth IRA: an income cap of $161k'],
+    ['assistant', 'listed_limitations', 'the Roth IRA caps income at $161k'],
+    ['assistant', 'described_capabilities', 'Kubernetes HPA can scale on custom metrics'],
+    ['assistant', 'listed_limitations', 'no control group and a small sample (n=40)'],
+    ['assistant', 'described_limitations', 'lacks a control group, so it shows correlation only'],
+    ['assistant', 'outlined_limitations', 'only covers in-network providers'],
     ['assistant', 'explained_limitations_of_the_study', 'small sample size'],
     // A limitation or no-access word mid-predicate is a topic: both
     // capability tests are anchored at the start.
@@ -405,6 +444,8 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'searched_web', 'for flights to Lisbon'],
     ['assistant', 'checked', 'the deploy status: green'],
     ['assistant', 'renamed_file', 'a.txt to b.txt'], // `renamed` is an identity word
+    ['assistant', 'added_skill', 'pdf-tools'], // `skill` isn't an artifact noun: `added_skills | Python, SQL` is a résumé
+    ['assistant', 'set_up_weekly_routine', 'a digest every Monday at 9am'], // `routine` counts only right after the verb
   ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
@@ -453,6 +494,13 @@ describe("the assistant's narration of its own actions, and what it says it can'
       predicate: 'explained_limitations',
       object: `${' '.repeat(1_000_000)}of the study`,
     });
+    // The object's start is read for a reporting verb: a megabyte of "it "
+    // and "no " before a self-limit. And a long run of determiners before a
+    // routine (its size is the loop's: more only times TASK-612's uncut work).
+    for (const object of [`${'it '.repeat(400_000)}cannot`, `${'no '.repeat(400_000)}access`]) {
+      classifyAgentFact({ subject: 'assistant', predicate: 'listed_limitations', object });
+    }
+    classifyAgentFact({ subject: 'assistant', predicate: `created_${'a_new_'.repeat(20_000)}routine`, object: 'x' });
     expect(performance.now() - start).toBeLessThan(250);
   });
 });
