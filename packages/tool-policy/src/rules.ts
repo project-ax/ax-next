@@ -152,9 +152,9 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // doesn't have) files a cold-start request for an admin, which
     // `search_catalog`, an `allow`, already does with freer text. Allow on the
     // card is what grants, so when someone is there to answer it, the card is
-    // the question. This hold is for a turn nobody
-    // is there to answer (a routine's own run, an outsider's turn), where the
-    // durable Decision row is how the owner gets asked.
+    // the question. This hold is for a turn nobody is there to answer (a
+    // routine's own run, an outsider's turn), where the durable Decision row
+    // is how the owner gets asked.
     //
     // @ax/skill-broker is pushed UNCONDITIONALLY into the k8s preset, so
     // `request_capability` is always in the catalog, and it is host-executed

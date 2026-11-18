@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, PluginError } from '@ax/core';
+import { createLogger, HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin } from '../plugin.js';
 import { REQUEST_CAPABILITY_DESCRIPTOR, REQUESTED_MESSAGE } from '../tools/request-capability.js';
 import { SEARCH_CATALOG_DESCRIPTOR } from '../tools/search-catalog.js';
@@ -973,18 +973,54 @@ describe('TASK-1135: request_capability says the skill is not connected yet', ()
     expect(ack).toStrictEqual({ status: 'requested', skillId: 'linear' });
   });
 
-  it('the descriptor says to end the turn after requesting, only when the result says someone was asked', () => {
+  it('the descriptor says someone was asked, and to end the turn, only inside the card condition', () => {
     const desc = REQUEST_CAPABILITY_DESCRIPTOR.description;
-    expect(desc).toContain('end your turn after requesting it');
-    // A skill with nothing to gate fires no card and returns no message: the
-    // model must not be told someone was asked (review finding, TASK-1135).
-    expect(desc).toContain('When the result carries a message, follow it');
+    // The no-card branch (nothing to gate, or every connector failed to
+    // resolve) asks nobody and returns no message: the model must not be told,
+    // unconditionally, that the user is asked (review findings, TASK-1135).
+    const sentences = desc.split(/(?<=\.)\s+/);
+    const turnEnders = sentences.filter((x) => x.includes('end your turn'));
+    expect(turnEnders).toHaveLength(1);
+    expect(turnEnders[0]).toMatch(/^If the skill reaches a service or needs a key, the user is shown an approval card/);
+    expect(turnEnders[0]).toContain('the result carries a message');
+    expect(turnEnders[0]).toContain('end your turn after requesting it');
+    expect(desc).not.toContain('The user will be asked');
+    // ...and what a missing message means is said outright.
+    expect(desc).toContain('A { status: "requested" } result with no message means nobody was asked');
     // "Tell them you've asked" (the message) must not contradict a blanket
     // "do not narrate this step" (the descriptor).
     expect(desc.toLowerCase()).not.toContain('narrate this step');
   });
 
   it('the message names no tool, so it cannot prime the model toward one', () => {
-    expect(REQUESTED_MESSAGE).not.toMatch(/web_extract|web_search|curl/);
+    // Any snake_case word would be a tool name (web_extract, request_capability…).
+    expect(REQUESTED_MESSAGE).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+  });
+
+  it('a connector that fails to resolve is logged, not swallowed (no card can follow)', async () => {
+    const { bus } = busWithStubs({
+      linearConnectors: ['boom'],
+      connectorsResolve: () => {
+        throw new Error('resolve failed');
+      },
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const lines: string[] = [];
+    const loggedCtx = makeAgentContext({
+      sessionId: 's',
+      agentId: 'a',
+      userId: 'u',
+      conversationId: 'cnv_1',
+      logger: createLogger({ reqId: 'r', writer: (l) => lines.push(l) }),
+    });
+    const ack = await bus.call('tool:execute:request_capability', loggedCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(ack).toStrictEqual({ status: 'requested', skillId: 'linear' });
+    const warned = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((e) => e['msg'] === 'request_capability_connector_resolve_failed');
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatchObject({ level: 'warn', skillId: 'linear', connectorId: 'boom' });
   });
 });

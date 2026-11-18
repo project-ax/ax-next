@@ -16,13 +16,14 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
   name: 'request_capability',
   description:
     'Request that a catalog skill be connected for the user. Pass a skill id from ' +
-    'search_catalog results. The user will be asked to approve the hosts it reaches and ' +
-    'enter any required keys. Do not narrate the hosts or restate any keys — the approval ' +
-    'surface shows them. When the result carries a message, follow it: until the user ' +
-    'approves, the skill is not connected, so end your turn after requesting it and ' +
-    "don't try to do the same thing with another tool in the meantime. " +
-    'Once the user approves, the conversation will continue ' +
-    'automatically; do not ask the user to repeat their request. ' +
+    'search_catalog results. If the skill reaches a service or needs a key, the user is ' +
+    'shown an approval card for it and the result carries a message; in that case the ' +
+    'skill is not connected until the user approves, so follow the message: end your turn ' +
+    "after requesting it, and don't try to do the same thing with another tool in the " +
+    'meantime. Do not narrate the hosts or restate any keys — the card shows them. Once ' +
+    'the user approves, the conversation will continue automatically; do not ask the user ' +
+    'to repeat their request. A { status: "requested" } result with no message means ' +
+    'nobody was asked: do not tell the user you asked for approval. ' +
     'If the result is { status: "not-found" }, the capability is not in the catalog yet ' +
     'and a request to add it is filed for the administrator automatically — tell the user ' +
     'you have asked your admin to add it and that you will be able to help once it is approved. ' +
@@ -52,8 +53,10 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
 // web_extract, but naming a tool in a "don't" can prime the model to use it,
 // and not every agent has it. Same pattern as @ax/tool-connector-propose's
 // REPLY_MESSAGES. The descriptor's "end your turn" is conditioned on this
-// message, because a skill with nothing to gate fires no card and asks nobody
-// (TASK-1137 owns that branch): the model must not say it asked.
+// message, because the no-card branch asks nobody: a skill with nothing to
+// gate (TASK-1137 owns that branch), or one whose connectors all failed to
+// resolve (not live, not approved, deleted, or an error). The model must not
+// say it asked.
 export const REQUESTED_MESSAGE: string =
   "Not connected yet. The user has been asked to approve this skill, and it can't be used until they do. " +
   "Tell them in one short sentence that you've asked, then end your turn. " +
@@ -255,8 +258,16 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
             }
             for (const p of resolved.capabilities.packages?.npm ?? []) connectorNpm.push(p);
             for (const p of resolved.capabilities.packages?.pypi ?? []) connectorPypi.push(p);
-          } catch {
-            // A failed resolve just omits this connector's reach. Never block the card.
+          } catch (err) {
+            // A failed resolve just omits this connector's reach. Never block the
+            // card. But say so: when every connector fails, no card fires and an
+            // attended turn (TASK-1135: no longer held) leaves no other trace.
+            toolCtx.logger.warn('request_capability_connector_resolve_failed', {
+              plugin: '@ax/skill-broker',
+              skillId,
+              connectorId,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
           }
         }
       }

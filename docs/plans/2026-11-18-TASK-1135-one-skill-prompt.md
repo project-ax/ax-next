@@ -165,7 +165,7 @@
   - `'the descriptor says to end the turn after requesting'`. The description contains `'end your turn after requesting it'`.
   - Update the existing `toEqual` acks: a card path gains `message`; a no-reach path doesn't. Check each against whether its test fires a card.
 - [ ] **Step 2: Run `pnpm --filter @ax/skill-broker test`.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Use this exact text.
+- [ ] **Step 3: Implement.** Use this exact text. *(Superseded after review: the shipped descriptor and message differ. See `request-capability.ts` and the review rows in the decisions shard; don't restore the wording below.)*
   - Descriptor: insert after "…the approval surface handles it.":
     `Until the user approves, the skill is not connected: end your turn after requesting it, and don't try to do the same thing another way in the meantime.`
   - Constant:

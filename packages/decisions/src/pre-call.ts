@@ -284,9 +284,10 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // request for an admin, as the `allow`ed `search_catalog` does). A skip
     // also bypasses TASK-254's one-question-per-call reuse below: an open row
     // for the same call (an outsider's earlier request, say) stays open, and
-    // approving it later raises the card again, which attaches nothing new. When someone is there to answer that card, the card is the
-    // question. Holding here too would ask them twice, the first time with
-    // less to go on.
+    // approving it later raises the card again, which attaches nothing new.
+    // When someone is there to answer that card, the card is the question.
+    // Holding here too would ask them twice, the first time with less to go
+    // on.
     //
     // Every way of not knowing holds. The flag absent or anything but `true`.
     // An attendance read that is anything but `attended`: a routine's own run,
