@@ -231,14 +231,18 @@ export const GRANT_NOT_RESUMED_ELSEWHERE =
   'with this connection in place.';
 
 /**
- * TASK-1150 — the grant landed while the agent was still writing a reply in
- * that conversation, and it was still going when we stopped waiting
- * (`RESUME_WAIT_MS`). Sending the message again then would have replaced that
- * reply, so we didn’t. Same action as `GRANT_NOT_RESUMED`, once the reply is
- * done.
+ * TASK-1150 — the grant landed, and the agent may still be writing a reply in
+ * that conversation, so we sent nothing. Several things lead here, and the
+ * sentence has to be true of all of them: the reply was still going when we
+ * stopped waiting (`RESUME_WAIT_MS`); the stream failed and a re-read shows a
+ * live reply; the re-read itself failed, so we could not rule one out; or the
+ * reply we followed ended and a different one (a continuation) is now live.
+ * Sending the message again then would have replaced that reply, so we didn’t.
+ * Hence “may still be”, not “is”. Same action as `GRANT_NOT_RESUMED`, once any
+ * reply is done.
  */
 export const GRANT_NOT_RESUMED_BUSY =
-  'Connected. The agent was still working on a reply, so we didn’t interrupt it. ' +
+  'Connected. The agent may still be working on a reply, so we didn’t interrupt it. ' +
   'Once it’s done, send it a message and it will carry on with this connection in place.';
 
 /** Clears the stopped-agent row. It is an acknowledgement, not an action. */

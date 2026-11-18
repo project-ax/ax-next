@@ -68,9 +68,12 @@ export type ResumeFailure =
    */
   | 'read-only'
   /**
-   * TASK-1150 — a reply was still being written in that conversation when we
-   * stopped waiting (`RESUME_WAIT_MS`); re-sending then would have replaced it,
-   * so nothing was sent.
+   * TASK-1150 — a reply was, or may still be, being written in that
+   * conversation, so nothing was sent: it was still going when we stopped
+   * waiting (`RESUME_WAIT_MS`); or the wait ended without proof and a re-read
+   * showed a live reply; or the re-read itself failed; or the followed reply
+   * ended but a different one (a continuation) is now live. Re-sending would
+   * have replaced it.
    */
   | 'still-running';
 
@@ -181,14 +184,25 @@ function waitForTurnEnd(reqId: string, timeoutMs: number): Promise<TurnEnd> {
 }
 
 /**
- * After a wait that proved nothing, is a reply still live in the conversation?
- * Any live reply counts, not only the one we followed: a re-send would retire
- * its session just the same. A failed read cannot rule one out, so it counts.
+ * After a wait, is a reply still live in the conversation? Any live reply
+ * counts, not only the one we followed: a re-send would retire its session just
+ * the same. A failed read cannot rule one out, so it counts.
+ *
+ * `followed` is the reply we waited on and saw end. Its binding may not be
+ * cleared yet when we re-read, so it alone does not count; a continuation
+ * approved during the wait binds a DIFFERENT request and does. (After an
+ * `unproven` wait nothing proved the followed reply over, so `followed` is
+ * left out and any live reqId counts, the followed one included.)
  */
-async function replyStillLive(agentId: string, conversationId: string): Promise<boolean> {
+async function replyStillLive(
+  agentId: string,
+  conversationId: string,
+  followed?: string,
+): Promise<boolean> {
   try {
     const detail = await workspaceApi.agent(agentId, conversationId);
-    return typeof detail.liveReqId === 'string' && detail.liveReqId.length > 0;
+    const live = detail.liveReqId;
+    return typeof live === 'string' && live.length > 0 && live !== followed;
   } catch (e) {
     console.warn('[workspace] could not re-check for a running reply', e);
     return true;
@@ -236,8 +250,13 @@ export async function resumeParkedTurn(target: {
   if (typeof liveReqId === 'string' && liveReqId.length > 0) {
     const end = await waitForTurnEnd(liveReqId, RESUME_WAIT_MS);
     if (end === 'timeout') return { resumed: false, reason: 'still-running' };
-    // Not seeing the end is not the end: ask the host once before re-sending.
-    if (end === 'unproven' && (await replyStillLive(agentId, conversationId))) {
+    // Ask the host once before re-sending, in both cases. Not seeing the end is
+    // not the end. And seeing it end says nothing of a continuation approved
+    // during the wait, which binds its own request and runs after this one's
+    // `done`: only a reqId other than the one we followed counts there. A failed
+    // read withholds on both, for the same reason: stopping never loses a reply.
+    const followed = end === 'ended' ? liveReqId : undefined;
+    if (await replyStillLive(agentId, conversationId, followed)) {
       return { resumed: false, reason: 'still-running' };
     }
   }

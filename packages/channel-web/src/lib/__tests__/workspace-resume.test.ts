@@ -386,14 +386,81 @@ describe('a reply still being written in that conversation', () => {
   });
 
   it('a bare resolve with the reply gone from the re-read re-sends', async () => {
-    vi.spyOn(workspaceApi, 'agent')
+    const read = vi
+      .spyOn(workspaceApi, 'agent')
       .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
       .mockResolvedValueOnce(detail(askedThread, null));
     const send = sendOk();
     vi.spyOn(workspaceApi, 'streamReply').mockResolvedValue(undefined);
 
     await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    // Proves the re-read happened: without it the send would still go out.
+    expect(read).toHaveBeenCalledTimes(2);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a reply that provably ended is re-read too', () => {
+    // A continuation approved during the wait binds its own request and runs
+    // after the followed reply's `done`; a re-send would retire its session.
+    async function endAfterWait() {
+      const { stream, seen } = holdStream();
+      const pending = resumeParkedTurn(target);
+      await flush();
+      expect(stream).toHaveBeenCalledWith('req-ask', expect.anything());
+      seen[0]!.handlers.onDone();
+      return pending;
+    }
+
+    it('a different reply now live sends nothing', async () => {
+      const read = vi
+        .spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockResolvedValueOnce(detail(askedThread, 'req-continuation'));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toEqual({
+        resumed: false,
+        reason: 'still-running',
+      });
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('the followed reply still bound (not yet cleared) does not block the re-send', async () => {
+      const read = vi
+        .spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toMatchObject({ resumed: true });
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('nothing live re-sends', async () => {
+      vi.spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockResolvedValueOnce(detail(askedThread, null));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toMatchObject({ resumed: true });
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed re-read withholds, like the unproven path', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockRejectedValueOnce(new Error('503'));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toEqual({
+        resumed: false,
+        reason: 'still-running',
+      });
+      expect(send).not.toHaveBeenCalled();
+    });
   });
 
   it('a stream that rejects takes the re-read path too: still live sends nothing', async () => {

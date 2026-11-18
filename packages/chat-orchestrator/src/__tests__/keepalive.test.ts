@@ -1096,6 +1096,8 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     expect(t.opens).toBe(1); // the second turn ran on s-1
     // When its message reached the runner, nothing injected the deleted key.
     expect(t.injectedAtQueue[1]).toEqual({ sessionId: 's-1', injected: [] });
+    // Turn 1's armed reap was dropped by the join, not fired: no cancel yet.
+    expect(t.queued.filter((q) => q.sessionId === 's-1' && q.type === 'cancel')).toHaveLength(0);
     await t.settle();
     // Its own turn end reaps the session, still marked.
     expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
