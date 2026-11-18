@@ -326,7 +326,7 @@ describe("the assistant's narration of its own actions, and what it says it can'
     // `routine` is also an everyday word, so it counts only bare, with
     // nothing but determiners before it.
     ['assistant', 'created_a_new_routine', 'a daily digest at 9am'],
-    // So do `chart`, `graph` and `page`.
+    // So do `chart`, `graph`, `page` and `diagram`.
     ['assistant', 'created_chart', 'Q3 revenue by region'],
     ['assistant', 'generated_a_graph', 'weekly sign-ups'],
     ['assistant', 'updated_page', 'the pricing page'],
@@ -492,6 +492,11 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'wrote_cover_page', 'Q3 Report, prepared for the board'],
     ['assistant', 'created_dependency_graph', 'A -> B -> C'],
     ['assistant', 'created_sequence_diagram', 'client -> api -> db'],
+    // An opener word must end where it ends: "no accessories", "no webhooks"
+    // and "cantilevered" aren't the assistant's own limits.
+    ['assistant', 'listed_limitations', 'no accessories in the box'],
+    ['assistant', 'listed_limitations', 'no webhooks on the free plan'],
+    ['assistant', 'known_limitations', 'cantilevered decks need an engineer'],
     // A limitation or no-access word mid-predicate is a topic: both
     // capability tests are anchored at the start.
     ['assistant', 'explained_study_limitations', 'small sample size, no control group'],
@@ -518,6 +523,11 @@ describe("the assistant's narration of its own actions, and what it says it can'
     // Its own limits, opened by words a product's can start with too.
     ['assistant', 'noted_limitation', 'it is unable to send email'],
     ['assistant', 'described_capabilities', 'can browse, run code and make charts'],
+    ['assistant', 'described_capabilities', "I don't browse the web"],
+    // A chart named by its kind, a word after the head, and an "and" list.
+    ['assistant', 'created_bar_chart', 'Q3 revenue by region'],
+    ['assistant', 'created_artifact_successfully', 'the Q3 dashboard'],
+    ['assistant', 'created_dashboard_and_report', 'for Q3'],
   ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
