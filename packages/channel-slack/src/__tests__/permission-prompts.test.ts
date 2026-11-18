@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Answer } from '../answers.js';
 import type { PromptAction } from '../blocks.js';
 import { COPY } from '../copy.js';
-import { PROMPT_MAX, PROMPT_TTL_MS } from '../limits.js';
+import { cleanPromptSubject } from '../format.js';
+import { AGENT_ID_MAX, PROMPT_MAX, PROMPT_SUBJECT_MAX, PROMPT_TTL_MS } from '../limits.js';
 import {
   HOST_RE,
   createHostAnswer,
@@ -563,9 +564,13 @@ describe('skillPromptFor: how a skill card is asked about in Slack', () => {
     skillId: SKILL_ID,
     description: DESCRIPTION,
     needsKey: false,
+    // Nothing to name unless a test says so: the subject then reads as it did before TASK-1135.
+    reach: { hosts: [], downloads: false },
     ...over,
   });
   const both = () => busWith(CONVERSATION_GET, GRANT);
+  /** A reach of these hosts, downloading nothing. */
+  const reaching = (...hosts: string[]) => ({ hosts, downloads: false });
 
   it('a card that needs nothing but a yes, with the grant and the ownership read on the bus: Allow and Deny, asking with its id and description', () => {
     expect(skillPromptFor(card(), both())).toEqual({ kind: 'buttons', subjectText: COPY.skillSubject(SKILL_ID, DESCRIPTION) });
@@ -601,6 +606,83 @@ describe('skillPromptFor: how a skill card is asked about in Slack', () => {
       expect(other).toContain('outlook');
       expect(one).not.toBe(other);
     }
+  });
+
+  // ── What the skill reaches (TASK-1135) ──
+
+  it('names every host before the description, with Allow and Deny', () => {
+    expect(skillPromptFor(card({ reach: reaching('api.open-meteo.com') }), both())).toEqual({
+      kind: 'buttons',
+      subjectText:
+        'Wants to start using the gmail-sender skill, which needs to reach api.open-meteo.com. Reads and sends email from your Gmail account.',
+    });
+    expect(
+      skillPromptFor(card({ reach: { hosts: ['api.open-meteo.com', 'geocoding-api.open-meteo.com'], downloads: true } }), both()),
+    ).toEqual({
+      kind: 'buttons',
+      subjectText:
+        'Wants to start using the gmail-sender skill, which needs to reach api.open-meteo.com and geocoding-api.open-meteo.com, ' +
+        'and it will download some extra software from the internet. Reads and sends email from your Gmail account.',
+    });
+  });
+
+  it("a reach it can't read, a host the egress proxy would refuse, or a reach the subject can't hold whole: the web link, never buttons", () => {
+    /** 30 hosts HOST_RE takes, but far more than the subject's cap can hold. */
+    const many = Array.from({ length: 30 }, (_, i) => `${'a'.repeat(50)}-${i}.example`);
+    expect(many.every((h) => HOST_RE.test(h))).toBe(true);
+    const cases: Array<[string, SkillCard]> = [
+      ["a reach the card didn't carry in the broker's shape", card({ reach: null })],
+      ['an uppercase host', card({ reach: reaching('API.example.com') })],
+      ['a wildcard', card({ reach: reaching('*.example.com') })],
+      ['a host that tries to broadcast', card({ reach: reaching('a.example <!here>') })],
+      ['a refused host after a good one', card({ reach: reaching('api.open-meteo.com', 'API.example.com') })],
+      ['30 long hosts', card({ reach: reaching(...many) })],
+      ['an id the cleaner would change, with one good host', card({ skillId: 'x<!here>', reach: reaching('api.open-meteo.com') })],
+      ['an id the cleaner would change, downloading', card({ skillId: 'x<!here>', reach: { hosts: [], downloads: true } })],
+      // Every host the proxy refuses (an empty one, a port, a scheme, an underscore, ...): none is ever shown.
+      ...REFUSED.map((host): [string, SkillCard] => [`refused ${JSON.stringify(host)}`, card({ reach: reaching(host) })]),
+    ];
+    for (const [name, c] of cases) {
+      const shown = skillPromptFor(c, both());
+      expect(shown.kind, name).toBe('web');
+      // Never a cut or altered list: the subject leaves the reach out, and the web app shows it whole.
+      expect(shown.subjectText, name).toBe(COPY.skillSubject(c.skillId, c.description));
+    }
+  });
+
+  it('with the longest id a prompt takes, every host survives the draw', () => {
+    // The prompt registry keeps a skill id of at most AGENT_ID_MAX (prompts.ts).
+    const skillId = 'a'.repeat(AGENT_ID_MAX);
+    // Three 70-character hosts bring the subject, up to its description, to exactly PROMPT_SUBJECT_MAX.
+    const hosts = [1, 2, 3].map((i) => `${'h'.repeat(60)}-${i}.example`);
+    const description = 'd'.repeat(240);
+    const head = COPY.skillSubject(skillId, '', reaching(...hosts));
+    expect(head).toHaveLength(PROMPT_SUBJECT_MAX);
+
+    const shown = skillPromptFor(card({ skillId, description, reach: reaching(...hosts) }), both());
+    expect(shown.kind).toBe('buttons');
+    expect(shown.subjectText).toBe(COPY.skillSubject(skillId, description, reaching(...hosts)));
+    // As drawn: the cap cut the description away; the id and every host are there, unchanged.
+    const drawn = cleanPromptSubject(shown.subjectText);
+    expect(drawn).toBe(head);
+    for (const host of hosts) expect(drawn).toContain(host);
+
+    // One character more and the subject can't hold them whole: the web link, naming none.
+    const longer = [...hosts.slice(0, 2), `${'h'.repeat(61)}-3.example`];
+    expect(HOST_RE.test(longer[2]!)).toBe(true);
+    expect(skillPromptFor(card({ skillId, description, reach: reaching(...longer) }), both())).toEqual({
+      kind: 'web',
+      subjectText: COPY.skillSubject(skillId, description),
+    });
+  });
+
+  it('a card that needs a key still names its reach on the web link', () => {
+    const shown = skillPromptFor(card({ needsKey: true, reach: reaching('api.open-meteo.com') }), both());
+    expect(shown).toEqual({
+      kind: 'web',
+      subjectText: COPY.skillSubject(SKILL_ID, DESCRIPTION, reaching('api.open-meteo.com')),
+    });
+    expect(shown.subjectText).toContain('api.open-meteo.com');
   });
 });
 

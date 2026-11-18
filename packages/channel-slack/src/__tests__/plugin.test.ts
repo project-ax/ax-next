@@ -594,6 +594,11 @@ describe('@ax/channel-slack plugin', () => {
           hook,
           degradation: 'a skill request in a Slack turn links to the web app instead of showing buttons',
         })),
+        // A continuation an Allow woke is bound to its conversation, as the web app binds it (TASK-1150).
+        {
+          hook: 'conversations:bind-session',
+          degradation: "an Allow's continuation isn't bound to its conversation, so a skill Allow or the idle reaper can end it, and the 15-minute cap can't stop it",
+        },
       ],
       subscribes: [
         'bootstrap:reset-cleanup',
@@ -1049,9 +1054,14 @@ describe('@ax/channel-slack plugin', () => {
     await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.postMessage'));
     const posted = slack.calls.find((c) => c.method === 'chat.postMessage')!;
     const blocks = posted.body['blocks'] as Array<Record<string, unknown>>;
+    // It names the host the card says the skill reaches, before the description (TASK-1135).
     expect(blocks[0]).toEqual({
       type: 'section',
-      text: { type: 'plain_text', text: 'Wants to start using the gmail-sender skill: Reads and sends email.', emoji: false },
+      text: {
+        type: 'plain_text',
+        text: 'Wants to start using the gmail-sender skill, which needs to reach gmail.googleapis.com. Reads and sends email.',
+        emoji: false,
+      },
     });
     const actions = blocks.find((b) => b['type'] === 'actions')!;
     const promptId = (actions['elements'] as Array<{ value: string }>)[0]!.value;

@@ -88,10 +88,12 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
     async init({ bus }) {
       await registerSearchCatalog(bus);
       await registerRequestCapability(bus);
-      // AW-7 — `request_capability` is held by the AW-3 rule table, replayed
-      // host-side on approval, and therefore approvable hours after the human
-      // was asked. This is the half that re-reads the catalog entry — and
-      // (TASK-262) what its connectors reach — before the replay happens.
+      // AW-7 — `request_capability` is held by the AW-3 rule table when nobody
+      // is there to answer its card (a routine's own run, an outsider's turn:
+      // TASK-1135), replayed host-side on approval, and therefore approvable
+      // hours after the human was asked. This is the half that re-reads the
+      // catalog entry — and (TASK-262) what its connectors reach — before the
+      // replay happens.
       registerCapabilityFreshness(bus);
     },
   };

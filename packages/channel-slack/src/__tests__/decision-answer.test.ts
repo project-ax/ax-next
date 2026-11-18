@@ -22,7 +22,8 @@ import { fakeBotToken } from './fake-slack-tokens.js';
   decision's prompt do once the click gate (answers.ts) has let the click
   through. Allow approves once, for the prompt's own user, with a
   continuation id it mints, and follows the woken agent's turn only under
-  that id, as soon as the approve returns. Deny dismisses for the prompt's
+  that id, as soon as the approve returns; then it binds that id to the
+  conversation's live session (TASK-1150). Deny dismisses for the prompt's
   own user. What the prompt then shows comes from a closed table over what
   decisions handed back: a COPY line, and every one settles the prompt. A
   hook past the bus's deadline holds the answer until it has settled, and
@@ -147,6 +148,19 @@ interface FakeOptions {
   follow?: (c: ContinuationRequest) => void;
   /** The message the gate redraws, as it hands it over: the prompt's own unless set. */
   messageTs?: string | null;
+  /**
+   * A fake @ax/conversations beside it (TASK-1150), only when set:
+   * `conversations:get` answers the prompt's conversation with
+   * `activeSessionId` as its live session ('sess_warm' unless the key is
+   * given; an explicit null stays null), and `conversations:bind-session`
+   * answers nothing. `get` and `bind` replace those answers; a throw is the
+   * hook's throw. `without` still takes either away.
+   */
+  conversations?: {
+    activeSessionId?: string | null;
+    get?: () => unknown;
+    bind?: (input: Record<string, unknown>) => unknown;
+  };
 }
 
 /** A bus with a fake @ax/decisions on it, the decision answer built on it, and what each hook was asked. */
@@ -198,6 +212,33 @@ function fake(o: FakeOptions = {}) {
       return o.get ? o.get() : { decision: row('pending') };
     });
   }
+  const convGets: Call[] = [];
+  const binds: Call[] = [];
+  const conv = o.conversations;
+  if (conv !== undefined) {
+    const activeSessionId = conv.activeSessionId === undefined ? 'sess_warm' : conv.activeSessionId;
+    if (has('conversations:get')) {
+      bus.registerService('conversations:get', 'fake-conversations', async (ctx, input) => {
+        convGets.push({ ctx, input: { ...(input as Record<string, unknown>) } });
+        if (conv.get) return conv.get();
+        return {
+          conversation: {
+            conversationId: PROMPT.conversationId,
+            userId: PROMPT.userId,
+            agentId: PROMPT.agentId,
+            activeSessionId,
+            activeReqId: null,
+          },
+        };
+      });
+    }
+    if (has('conversations:bind-session')) {
+      bus.registerService('conversations:bind-session', 'fake-conversations', async (ctx, input) => {
+        binds.push({ ctx, input: { ...(input as Record<string, unknown>) } });
+        return conv.bind ? conv.bind(input as Record<string, unknown>) : undefined;
+      });
+    }
+  }
 
   const follows: ContinuationRequest[] = [];
   const answer = createDecisionAnswer({
@@ -221,6 +262,9 @@ function fake(o: FakeOptions = {}) {
     approves,
     dismisses,
     gets,
+    /** conversations:get, and conversations:bind-session: empty unless `conversations` was set. */
+    convGets,
+    binds,
     follows,
     lines,
     /** The answer to a click on `action`, as the gate hands it over. */
@@ -618,6 +662,116 @@ describe('Allow: decisions:approve, once, for the prompt\'s own user', () => {
     expect(f.gets).toEqual([]);
     expect(f.follows).toEqual([]);
   });
+});
+
+// ── Binding the continuation (TASK-1150) ────────────────────────────────────
+
+/** One macrotask: long enough for a binding that was started to have read and bound. */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe("Allow binds the continuation it follows to the conversation, as the web app's approve does (TASK-1150)", () => {
+  it("S1: binds the minted id to the conversation's live session, as the prompt's user, after the follower has started", async () => {
+    let readsWhenFollowStarted: number | undefined;
+    const f: ReturnType<typeof fake> = fake({
+      conversations: {},
+      follow: () => {
+        readsWhenFollowStarted = f.convGets.length;
+      },
+    });
+
+    const answer = await f.click('allow');
+
+    expect(answer).toEqual({ line: COPY.decisionAllowed, settle: true });
+    await vi.waitFor(() => expect(f.binds).toHaveLength(1));
+    const minted = f.approves[0]!.input['continuationReqId'];
+    expect(f.convGets.map((c) => c.input)).toEqual([{ conversationId: 'conv_mel_support', userId: 'usr_mel' }]);
+    expect(f.convGets[0]!.ctx.userId).toBe('usr_mel');
+    expect(f.binds[0]!.input).toEqual({ conversationId: 'conv_mel_support', sessionId: 'sess_warm', reqId: minted });
+    // bind-session scopes on ctx.userId: the prompt's user binds their own row, nobody else's.
+    expect(f.binds[0]!.ctx.userId).toBe('usr_mel');
+    // The thread was already following when the binding read the row.
+    expect(readsWhenFollowStarted).toBe(0);
+    expect(f.lines).toEqual([]);
+  });
+
+  it.each<[string, PromptAction, FakeOptions]>([
+    ['the host made the call', 'allow', { approve: () => ({ ...inert('executed'), executed: true, path: 'host-replays' }) }],
+    ['a stream under another id', 'allow', { approve: () => handedToAgent('req-someoneelse1') }],
+    ['a Deny', 'deny', {}],
+  ])('S2: binds nothing when nothing is followed: %s', async (_name, action, o) => {
+    const f = fake({ conversations: {}, ...o });
+
+    await f.click(action);
+    await settle();
+
+    expect(f.follows).toEqual([]);
+    expect(f.convGets).toEqual([]);
+    expect(f.binds).toEqual([]);
+  });
+
+  it.each<[string, NonNullable<FakeOptions['conversations']>]>([
+    ['no live session (the agent went away)', { activeSessionId: null }],
+    ['an empty session id', { activeSessionId: '' }],
+    ['a session id that is not a string', { get: () => ({ conversation: { activeSessionId: 42 } }) }],
+    ['no conversation in the answer', { get: () => ({}) }],
+  ])('S3: a conversation with no live session it can read: it is read, nothing is bound (%s)', async (_name, conversations) => {
+    const f = fake({ conversations });
+
+    const answer = await f.click('allow');
+    await vi.waitFor(() => expect(f.convGets).toHaveLength(1));
+    await settle();
+
+    expect(answer).toEqual({ line: COPY.decisionAllowed, settle: true });
+    expect(f.follows).toHaveLength(1);
+    expect(f.binds).toEqual([]);
+  });
+
+  it.each<[string, NonNullable<FakeOptions['conversations']>]>([
+    [
+      'the read',
+      {
+        get: () => {
+          throw fault();
+        },
+      },
+    ],
+    [
+      'the bind',
+      {
+        bind: () => {
+          throw fault();
+        },
+      },
+    ],
+  ])('S4: a read or a bind that fails: logged by code, and the answer and the follower stand (%s)', async (_name, conversations) => {
+    const f = fake({ conversations });
+
+    const answer = await f.click('allow');
+
+    expect(answer).toEqual({ line: COPY.decisionAllowed, settle: true });
+    expect(f.follows).toHaveLength(1);
+    await vi.waitFor(() =>
+      expect(f.logged('slack_prompt_failed')).toEqual([
+        { installId: INSTALL_ID, kind: 'decision', stage: 'bind', code: 'store-unavailable' },
+      ]),
+    );
+  });
+
+  it.each(['conversations:get', 'conversations:bind-session'])(
+    'S5: a kernel without %s: nothing is read or bound, nothing is logged, and the answer stands',
+    async (hook) => {
+      const f = fake({ conversations: {}, without: [hook] });
+
+      const answer = await f.click('allow');
+      await settle();
+
+      expect(answer).toEqual({ line: COPY.decisionAllowed, settle: true });
+      expect(f.follows).toHaveLength(1);
+      expect(f.convGets).toEqual([]);
+      expect(f.binds).toEqual([]);
+      expect(f.lines).toEqual([]);
+    },
+  );
 });
 
 // ── Deny ────────────────────────────────────────────────────────────────────

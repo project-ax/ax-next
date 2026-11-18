@@ -305,7 +305,13 @@ describe('createTurnRegistry', () => {
       r.onPermissionRequest(ctxFor(undefined), { ...skillCard, reqId: REQ });
       expect(a.permissions).toEqual([]);
       r.onPermissionRequest(ctxFor(CONVERSATION), skillCard);
-      const expected = { kind: 'skill', skillId: 'github', description: 'Work with GitHub', needsKey: false };
+      const expected = {
+        kind: 'skill',
+        skillId: 'github',
+        description: 'Work with GitHub',
+        needsKey: false,
+        reach: { hosts: ['api.github.com'], downloads: false },
+      };
       expect(a.permissions).toEqual([expected]);
       expect(b.permissions).toEqual([expected]);
       expect(elsewhere.permissions).toEqual([]);
@@ -339,7 +345,62 @@ describe('createTurnRegistry', () => {
       r.register(sink);
       const { description: _omit, ...noDescription } = skillCard;
       r.onPermissionRequest(ctxFor(CONVERSATION), noDescription);
-      expect(permissions).toEqual([{ kind: 'skill', skillId: 'github', description: '', needsKey: false }]);
+      expect(permissions).toEqual([
+        { kind: 'skill', skillId: 'github', description: '', needsKey: false, reach: { hosts: ['api.github.com'], downloads: false } },
+      ]);
+    });
+
+    it("a skill card's reach: its hosts and whether it downloads; null (card kept) when hosts or packages isn't the broker's shape", () => {
+      /** Every card the sink heard for `card`: one, whatever its reach (a reach is never a reason to drop it). */
+      const heard = (card: Record<string, unknown>): PermissionIn[] => {
+        const r = createTurnRegistry({ logger: QUIET });
+        const { sink, permissions } = recordingSink();
+        r.register(sink);
+        r.onPermissionRequest(ctxFor(CONVERSATION), card);
+        return permissions;
+      };
+      const reachOf = (card: Record<string, unknown>): unknown => {
+        const got = heard(card);
+        expect(got).toHaveLength(1);
+        return got[0]?.kind === 'skill' ? got[0].reach : 'not a skill card';
+      };
+      const without = (field: 'hosts' | 'packages'): Record<string, unknown> => {
+        const card: Record<string, unknown> = { ...skillCard };
+        delete card[field];
+        return card;
+      };
+
+      expect(reachOf({ ...skillCard, hosts: ['api.open-meteo.com'], packages: { npm: [], pypi: [] } })).toEqual({
+        hosts: ['api.open-meteo.com'],
+        downloads: false,
+      });
+      // Whether anything is downloaded, never what: the package names stay behind.
+      expect(reachOf({ ...skillCard, packages: { npm: ['left-pad'], pypi: [] } })).toEqual({
+        hosts: ['api.github.com'],
+        downloads: true,
+      });
+      expect(reachOf({ ...skillCard, packages: { npm: [], pypi: ['requests'] } })).toEqual({
+        hosts: ['api.github.com'],
+        downloads: true,
+      });
+      expect(reachOf({ ...skillCard, hosts: [] })).toEqual({ hosts: [], downloads: false });
+
+      const unreadable: Array<[string, Record<string, unknown>]> = [
+        ['hosts absent', without('hosts')],
+        ['hosts a string', { ...skillCard, hosts: 'x' }],
+        ['hosts holding a number', { ...skillCard, hosts: [1] }],
+        ['hosts holding a string and a number', { ...skillCard, hosts: ['api.github.com', 1] }],
+        ['packages absent', without('packages')],
+        ['packages without pypi', { ...skillCard, packages: { npm: [] } }],
+        ['packages a string', { ...skillCard, packages: 'x' }],
+        ['packages an array', { ...skillCard, packages: [] }],
+        ['npm a string', { ...skillCard, packages: { npm: 'left-pad', pypi: [] } }],
+      ];
+      for (const [name, card] of unreadable) {
+        expect(reachOf(card), name).toBeNull();
+        // The card itself is kept, as before: only its reach is unknown.
+        expect(heard(card)[0], name).toMatchObject({ kind: 'skill', skillId: 'github', needsKey: false });
+      }
     });
 
     it('malformed cards are dropped, never thrown on: other kinds, wrong types, empty ids', () => {

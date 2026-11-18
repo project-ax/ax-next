@@ -18,6 +18,7 @@ import {
 import {
   BUILTIN_RULES,
   createToolPolicyPlugin,
+  type PolicyRule,
   type ToolPolicyPluginOptions,
 } from '@ax/tool-policy';
 import {
@@ -176,14 +177,23 @@ function liveChannels(): Record<string, Channel> {
 }
 
 /**
+ * The rule `HOLD_RULE` and `IRREVERSIBLE_RULES` are built from: the first hold
+ * in the table that holds WHOEVER is there. `skills.request-capability` comes
+ * first, but since TASK-1135 it holds only when nobody is there to answer its
+ * own card (`holdsOnlyUnattended`), and most tests here hold on the attended
+ * path. Its own block, over the real table, is
+ * `request_capability over the real rule table (TASK-1135)` below.
+ */
+const holdsWhoeverIsThere = (r: PolicyRule): boolean =>
+  r.verdict === 'hold' && r.holdsOnlyUnattended !== true;
+
+/**
  * No rule in `BUILTIN_RULES` is marked `irreversible` — deliberately, and the
  * rule table says so. So the deferred-replay path needs an injected table. It
  * is the same shape a real irreversible rule would have; only the flag differs
  * from `HOLD_RULE`.
  */
-const IRREVERSIBLE_RULES = [
-  { ...BUILTIN_RULES.find((r) => r.verdict === 'hold')!, irreversible: true },
-];
+const IRREVERSIBLE_RULES = [{ ...BUILTIN_RULES.find(holdsWhoeverIsThere)!, irreversible: true }];
 
 beforeAll(async () => {
   container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
@@ -205,7 +215,7 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
-const HOLD_RULE = BUILTIN_RULES.find((r) => r.verdict === 'hold')!;
+const HOLD_RULE = BUILTIN_RULES.find(holdsWhoeverIsThere)!;
 const DENY_RULE = BUILTIN_RULES.find((r) => r.verdict === 'deny')!;
 const ALLOW_RULE = BUILTIN_RULES.find((r) => r.verdict === 'allow')!;
 /**
@@ -389,6 +399,10 @@ function sweepNow(h: TestHarness, ctx: AgentContext = userCtx(h)): Promise<Decis
 
 describe('decisions canary', () => {
   it('a held call becomes a durable row, and approving it authorises exactly one retry', async () => {
+    // TASK-1135: the rule every attended test in this file holds on must hold
+    // whoever is there. One that holds only unattended calls lets them run.
+    expect(HOLD_RULE.holdsOnlyUnattended).not.toBe(true);
+    expect(IRREVERSIBLE_RULES[0]!.holdsOnlyUnattended).not.toBe(true);
     const h = await boot();
     const ctx = userCtx(h);
 
@@ -2222,6 +2236,83 @@ describe('decisions canary — whose yes it is (TASK-1095)', () => {
     // The routine's own next call still has it, once.
     expect((await h.bus.fire('tool:pre-call', routineCtx(h), SANDBOX_CALL)).rejected).toBe(false);
     expect(isHold(await h.bus.fire('tool:pre-call', routineCtx(h), SANDBOX_CALL))).toBe(true);
+  });
+});
+
+/**
+ * TASK-1135, over the real rule table and the real attendance read rather than
+ * an injected answer. `request_capability` does nothing but fire its own skill
+ * card, and Allow on that card is what grants, so `skills.request-capability`
+ * holds only when nobody is there to answer the card. A member's own turn, on
+ * the web or in Slack, runs it, and the card is the one question. A turn
+ * nobody is there for is held as before: an outsider's waits for its user in
+ * Today, and a routine's own run is made by the host once its owner says yes.
+ */
+describe('decisions canary — request_capability over the real rule table (TASK-1135)', () => {
+  const CAP_CALL = { id: 'c-cap', name: 'request_capability', input: { skillId: 'walk-weather-report' } };
+
+  /** Every `decisions:raised` heard on `h` from now on, as the SSE subscriber hears it. */
+  function raisedOn(h: TestHarness): DecisionRaisedPayload[] {
+    const seen: DecisionRaisedPayload[] = [];
+    h.bus.subscribe<DecisionRaisedPayload>('decisions:raised', '@ax/decisions/test/raised', async (_c, payload) => {
+      seen.push(payload);
+      return undefined;
+    });
+    return seen;
+  }
+
+  /** u1's open questions: what Today shows. */
+  async function openFor(h: TestHarness): Promise<Decision[]> {
+    const { decisions } = await h.bus.call<unknown, DecisionsListOutput>('decisions:list', userCtx(h), {
+      userId: 'u1',
+    });
+    return decisions;
+  }
+
+  it("a member's own turn, on the web or in Slack, runs it: nothing is held, recorded or raised", async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const raised = raisedOn(h);
+
+    for (const ctx of [userCtx(h), slackCtx(h, 'user')]) {
+      const fired = await h.bus.fire('tool:pre-call', ctx, CAP_CALL);
+      expect(fired.rejected, ctx.conversationId).toBe(false);
+      expect(isHold(fired), ctx.conversationId).toBe(false);
+    }
+    // `decisions:raised` is fired without awaiting, so let anything it queued run.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await openFor(h)).toEqual([]);
+    expect(raised).toEqual([]);
+
+    // The control: this listener hears a hold raised on the same boot, so its
+    // silence above is the gate's and not the listener's.
+    const id = await holdAndId(h, slackCtx(h, 'external'), CAP_CALL);
+    await vi.waitFor(() => expect(raised.map((r) => r.decisionId)).toEqual([id]));
+  });
+
+  it("an outsider's turn is still held, for its user's Today, on the unattended path", async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const id = await holdAndId(h, slackCtx(h, 'external'), CAP_CALL);
+    expect(await readDecision(h, userCtx(h), id)).toMatchObject({
+      attendance: 'unattended',
+      ruleId: 'skills.request-capability',
+      status: 'pending',
+      call: CAP_CALL,
+    });
+    expect((await openFor(h)).map((d) => d.id)).toEqual([id]);
+  });
+
+  it("a routine's own run is still held, and its owner's yes has the host make it exactly once", async () => {
+    const h = await boot({}, undefined, slackChannels());
+    const executor = recordExecutor(h, 'request_capability');
+    const id = await holdAndId(h, routineCtx(h), CAP_CALL);
+    const stored = await readDecision(h, userCtx(h), id);
+    expect(stored).toMatchObject({ attendance: 'unattended', ruleId: 'skills.request-capability' });
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.path).toBe('host-replays');
+    expect(out.executed).toBe(true);
+    expect(executor.calls).toEqual([stored.call]);
+    expect(executor.calls).toEqual([CAP_CALL]);
   });
 });
 

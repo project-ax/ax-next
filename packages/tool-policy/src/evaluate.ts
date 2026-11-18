@@ -1,4 +1,10 @@
-import type { EvaluateResult, PolicyRule, PredicateSpec, ToolEffect } from './types.js';
+import type {
+  EvaluateResult,
+  PolicyRule,
+  PolicyVerdict,
+  PredicateSpec,
+  ToolEffect,
+} from './types.js';
 
 /**
  * The target host of an egress-gated call, or `null` when there isn't one we
@@ -173,21 +179,23 @@ export function evaluate(
   for (const rule of rules) {
     if (rule.match.tool !== call.name) continue;
     if (!matches(rule.match.when, call.input)) continue;
-    return {
-      // THE EGRESS RELAXATION (TASK-330), and it is a relaxation of the VERDICT
-      // alone: `ruleId`, `capability` and `irreversible` still come from the
-      // rule that matched, because the rule is still the thing speaking. A
-      // silent allow that reported `ruleId: null` would look to the rail like a
-      // tool nothing describes.
-      //
-      // Each relaxation requires its own reviewed opt-in. Routine consent
-      // is restricted further to exact create/update tools and a matched hold;
-      // deny and unrelated holds keep their original verdict.
-      verdict: (rule.verdict === 'hold' && rule.routineConsent === 'create-update' &&
+    // THE EGRESS RELAXATION (TASK-330), and it is a relaxation of the VERDICT
+    // alone: `ruleId`, `capability` and `irreversible` still come from the
+    // rule that matched, because the rule is still the thing speaking. A
+    // silent allow that reported `ruleId: null` would look to the rail like a
+    // tool nothing describes.
+    //
+    // Each relaxation requires its own reviewed opt-in. Routine consent
+    // is restricted further to exact create/update tools and a matched hold;
+    // deny and unrelated holds keep their original verdict.
+    const verdict: PolicyVerdict =
+      (rule.verdict === 'hold' && rule.routineConsent === 'create-update' &&
         (call.name === 'routine_create' || call.name === 'routine_update') &&
         opts.routineConsentAllowed === true) || egressAllows(rule, call.input, opts.allowedHosts)
         ? 'allow'
-        : rule.verdict,
+        : rule.verdict;
+    return {
+      verdict,
       ruleId: rule.id,
       capability: rule.capability,
       irreversible: rule.irreversible === true,
@@ -203,6 +211,13 @@ export function evaluate(
       // security claim for everybody after it — and `evaluate` would have
       // stopped being pure in the one way nothing here would notice.
       effect: rule.effect === undefined ? [] : [...rule.effect],
+      // TASK-1135: on the answer only while it is still the rule's HOLD. A
+      // relaxed answer (`allow` above) drops it with the hold. Key left out,
+      // never `undefined`, so absent is the one spelling of "hold whoever is
+      // there".
+      ...(rule.holdsOnlyUnattended === true && verdict === 'hold'
+        ? { holdsOnlyUnattended: true as const }
+        : {}),
     };
   }
   // NO RULE SPOKE TO THE VERDICT — `ruleId: null` says so and we do not pretend

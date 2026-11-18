@@ -142,7 +142,7 @@ const stoppedThread = (): ThreadMessage[] => [
 /** Per-conversation transcript, as the server would hold it. Mutated as turns land. */
 let threads: Record<string, ThreadMessage[]>;
 /** `reqId` → what that stream does. An unscripted reqId is a bug, so it throws. */
-let scripts: Map<string, (h: StreamHandlers) => void>;
+let scripts: Map<string, (h: StreamHandlers) => void | Promise<void>>;
 /** Did the shell announce the resume? See `beforeEach` for why this is a spy. */
 let toastSpy: MockInstance<typeof toastActions.show>;
 
@@ -196,7 +196,7 @@ beforeEach(() => {
   streamMock.mockImplementation(async (reqId: string, h: StreamHandlers) => {
     const script = scripts.get(reqId);
     if (script === undefined) throw new Error(`unscripted stream: ${reqId}`);
-    script(h);
+    await script(h);
   });
 
   // Every POST this surface makes in these tests — the decision, and any
@@ -339,6 +339,121 @@ describe('a grant answered in the thread', () => {
     );
     // One send in this test: the message that started the turn. No resume.
     expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * TASK-1150 — Connect is live while the asking reply is still streaming. The
+ * resume waits for that reply to finish, then re-sends; it never re-sends into
+ * the busy session (which would cut the reply off).
+ */
+describe('a grant answered while the asking reply is still running', () => {
+  /** What the `cnv-1` detail reports as the reply still being written. */
+  let liveReq: string | null = null;
+
+  /**
+   * The asking turn raises its card, then stays open until `release()`. Every
+   * handler set it was given is ended on release, the panel's own stream and
+   * the resume's wait alike.
+   */
+  async function startAskingTurn() {
+    liveReq = null;
+    threads['cnv-1'] = [{ kind: 'user', id: 't1', text: ASK }];
+    agentMock.mockImplementation(async (id: string, conversationId?: string) => {
+      const agent = id === 'a-scout' ? SCOUT : QUILL;
+      const target = conversationId ?? (id === 'a-scout' ? 'cnv-2' : 'cnv-1');
+      return {
+        ...detailFor(agent, target, threads[target] ?? []),
+        ...(target === 'cnv-1' ? { liveReqId: liveReq } : {}),
+      };
+    });
+
+    let releaseHeld!: () => void;
+    const held = new Promise<void>((r) => {
+      releaseHeld = r;
+    });
+    const handlers: StreamHandlers[] = [];
+    sendMock.mockResolvedValueOnce({ conversationId: 'cnv-1', reqId: 'req-ask' });
+    scripts.set('req-ask', async (h) => {
+      handlers.push(h);
+      // Only the panel's own stream (the first) raises the card.
+      if (handlers.length === 1) {
+        // From here the server reports this reply as still being written.
+        liveReq = 'req-ask';
+        h.onPermissionRequest?.(linearSkill());
+      }
+      await held;
+    });
+
+    renderAt('/workspace/agents/a-quill/chat');
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: ASK } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByTestId('thread-grants');
+
+    sendMock.mockResolvedValueOnce({ conversationId: 'cnv-1', reqId: 'req-resume' });
+    scripts.set('req-resume', (h) => {
+      threads['cnv-1'] = [
+        ...stoppedThread(),
+        { kind: 'user', id: 't3', text: ASK },
+        { kind: 'agent', id: 't4', text: ANSWER, at: '2026-09-17T10:06:00.000Z' },
+      ];
+      h.onText(ANSWER);
+      h.onDone();
+    });
+
+    return {
+      release: () => {
+        threads['cnv-1'] = stoppedThread();
+        liveReq = null;
+        releaseHeld();
+        for (const h of handlers) h.onDone();
+      },
+    };
+  }
+
+  const waitingOnAsk = () =>
+    expect(streamMock).toHaveBeenCalledWith(
+      'req-ask',
+      expect.objectContaining({ resume: true }),
+    );
+
+  it('finishes first, then the message is re-sent and its answer lands', async () => {
+    const { release } = await startAskingTurn();
+
+    connect();
+    await waitFor(waitingOnAsk);
+    // Nothing re-sent while the reply is still running.
+    expect(sendMock).toHaveBeenCalledTimes(1);
+
+    release();
+
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock).toHaveBeenLastCalledWith({
+      agentId: 'a-quill',
+      conversationId: 'cnv-1',
+      text: ASK,
+    });
+    expect(await screen.findByText(ANSWER)).toBeInTheDocument();
+    expect(toastSpy).not.toHaveBeenCalled();
+  });
+
+  it('the person moves to Today while it finishes: the resumed turn is announced, not staged for the panel they left', async () => {
+    const { release } = await startAskingTurn();
+
+    connect();
+    await waitFor(waitingOnAsk);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+
+    release();
+
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith({ title: grantResumedTitle('Quill') }),
+    );
+    expect(streamMock).not.toHaveBeenCalledWith('req-resume', expect.anything());
   });
 });
 

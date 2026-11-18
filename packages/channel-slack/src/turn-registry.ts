@@ -54,16 +54,31 @@ export const TURN_EVENT_HOOKS = [
 ] as const;
 
 /**
+ * What a skill card says the skill will reach, the same two fields the web
+ * app's grant row draws: the hosts it needs, and whether it downloads any
+ * packages (never which: the web app doesn't name them either).
+ */
+export interface SkillReach {
+  readonly hosts: readonly string[];
+  readonly downloads: boolean;
+}
+
+/**
  * A `chat:permission-request` card as channel-slack reads it: only the fields
  * it needs, each checked with typeof. Strings pass through untouched
- * (a `host` is whatever the sandbox tried to reach: validating it is the
- * prompt's job, not the registry's). `needsKey` is true unless the card has a
- * `slots` array whose every slot is an object with `haveExisting === true`:
- * Slack never collects a key, so anything not provably key-free needs the web.
+ * (a `host` is whatever the sandbox tried to reach, and a skill's hosts are
+ * outside text too: validating them is the prompt's job, not the
+ * registry's). `needsKey` is true unless the card has a `slots` array whose
+ * every slot is an object with `haveExisting === true`: Slack never collects
+ * a key, so anything not provably key-free needs the web. `reach` is null
+ * when the card's `hosts` or `packages` isn't the broker's shape (an array of
+ * strings; a record whose `npm` and `pypi` are arrays): the card is still
+ * kept, and its prompt sends the person to the web app, since Slack offers
+ * Allow only on a reach it can show (permission-prompts.ts).
  */
 export type PermissionIn =
   | { kind: 'host'; host: string; sessionId: string }
-  | { kind: 'skill'; skillId: string; description: string; needsKey: boolean };
+  | { kind: 'skill'; skillId: string; description: string; needsKey: boolean; reach: SkillReach | null };
 
 /**
  * A `chat:stream-chunk` payload as channel-slack reads it: a structural
@@ -137,6 +152,25 @@ function keyFree(slots: unknown): boolean {
   return Array.isArray(slots) && slots.every((s) => isRecord(s) && s['haveExisting'] === true);
 }
 
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+/**
+ * A skill card's reach (SkillReach), or null unless `hosts` is an array of
+ * strings and `packages` a record whose `npm` and `pypi` are arrays. The
+ * hosts are copied before they are checked, so what is checked is what is
+ * kept; only the packages' count is read, never their names.
+ */
+function reachOf(hosts: unknown, packages: unknown): SkillReach | null {
+  if (!Array.isArray(hosts) || !isRecord(packages)) return null;
+  const kept: unknown[] = [...hosts];
+  if (!kept.every(isString)) return null;
+  const { npm, pypi } = packages;
+  if (!Array.isArray(npm) || !Array.isArray(pypi)) return null;
+  return { hosts: kept, downloads: npm.length + pypi.length > 0 };
+}
+
 /** The card's own fields, or null for any other kind or a field of the wrong type. */
 function narrowPermission(payload: Record<string, unknown>): PermissionIn | null {
   if (payload['kind'] === 'host') {
@@ -147,7 +181,14 @@ function narrowPermission(payload: Record<string, unknown>): PermissionIn | null
     const { skillId, description } = payload;
     if (!nonEmptyString(skillId)) return null;
     if (description !== undefined && typeof description !== 'string') return null;
-    return { kind: 'skill', skillId, description: description ?? '', needsKey: !keyFree(payload['slots']) };
+    return {
+      kind: 'skill',
+      skillId,
+      description: description ?? '',
+      needsKey: !keyFree(payload['slots']),
+      // A reach it can't read keeps the card: its prompt goes to the web app instead (PermissionIn).
+      reach: reachOf(payload['hosts'], payload['packages']),
+    };
   }
   return null;
 }
