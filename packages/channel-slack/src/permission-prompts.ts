@@ -1,7 +1,8 @@
 import { PluginError, type HookBus } from '@ax/core';
 import type { Answer, SubjectAnswer } from './answers.js';
 import { COPY } from './copy.js';
-import type { PermissionIn } from './turn-registry.js';
+import { cleanPromptSubject } from './format.js';
+import type { PermissionIn, SkillReach } from './turn-registry.js';
 
 /**
  * The two `chat:permission-request` cards, asked about in Slack (TASK-1095):
@@ -51,17 +52,24 @@ import type { PermissionIn } from './turn-registry.js';
  *
  * A SKILL: a catalog skill the agent asked to use (`request_capability`'s
  * card, kind `skill`), asked about in a DM or an attended turn after its
- * reply. In Slack the card comes in a continuation: tool-policy holds
- * `request_capability` itself, and the card fires once that hold is allowed
- * and the woken agent asks again. Its subject names the skill's id and the
- * catalog skill's description (`COPY.skillSubject`): the description is text
- * its author wrote, so outside text, and both are shown only as the prompt's
- * plain_text subject (cleaned there), never in mrkdwn, a notification or a
- * log. The card waits in Today too
- * (channel-web keeps it there), so its prompt links Today. Slack never
- * collects a key: a card that needs one, or a bus without the two hooks
- * Allow needs, gets a link to the web app instead of buttons
- * (`skillPromptFor`), and nothing is opened for it.
+ * reply. The card comes in the turn itself: tool-policy holds
+ * `request_capability` only when nobody is there to answer its card
+ * (TASK-1135). Its subject names the skill's id, what it reaches (the card's
+ * hosts, and one sentence when it downloads packages, never which), then the
+ * catalog skill's description (`COPY.skillSubject`). The description is text
+ * its author wrote; the hosts come from the skill's admin-approved
+ * connectors, but they are outside text all the same. All of it is shown
+ * only as the prompt's plain_text subject (cleaned there), never in mrkdwn,
+ * a notification or a log. The card waits in Today too
+ * (channel-web keeps it there), so its prompt links Today. Allow is offered
+ * only on a reach the subject names whole: every host one the egress proxy
+ * would take (HOST_RE), and the id and reach unchanged by the subject's
+ * cleaning and cap. Anything else (a card without the broker's `hosts` and
+ * `packages`, a host the proxy would refuse, more than the subject can hold)
+ * gets a link to the web app, whose subject leaves the reach out rather than
+ * show part of it. Slack never collects a key: a card that needs one, or a
+ * bus without the two hooks Allow needs, gets that link too, instead of
+ * buttons (`skillPromptFor`), and nothing is opened for it.
  *
  *   - Allow does what the web app's `/api/chat/permission-decision` does
  *     (channel-web routes-chat.ts `postPermissionDecision`), as the
@@ -180,21 +188,52 @@ export const CONVERSATION_GET = 'conversations:get';
 export type SkillCard = Extract<PermissionIn, { kind: 'skill' }>;
 
 /**
+ * The card's reach when a prompt can name it whole, else null:
+ *
+ *   - null when the card didn't carry it in the broker's shape;
+ *   - the reach itself when there is nothing in it to name;
+ *   - null when any host is one the egress proxy would refuse (HOST_RE);
+ *   - null unless the subject up to its description (the id and the reach)
+ *     reads exactly the same once cleaned (`cleanPromptSubject`): nothing in
+ *     it cut by the cap, marked or changed.
+ *
+ * The description comes after the reach (`COPY.skillSubject`), the head
+ * ends in a full stop, and nothing after a full stop changes how the text
+ * before it is cleaned (format.ts `cleanLine`: no rule that marks or merges
+ * reads past one). So a subject whose head passes keeps every host,
+ * unchanged, wherever it is drawn: the prompt (after prompt-post.ts cuts it
+ * to the same cap), its answered redraw, and the web link.
+ */
+function nameableReach(p: SkillCard): SkillReach | null {
+  const reach = p.reach;
+  if (reach === null) return null;
+  if (reach.hosts.length === 0 && !reach.downloads) return reach;
+  if (!reach.hosts.every((host) => HOST_RE.test(host))) return null;
+  const head = COPY.skillSubject(p.skillId, '', reach);
+  return cleanPromptSubject(head) === head ? reach : null;
+}
+
+/**
  * How a skill card is asked about in Slack, and with what subject
- * (`COPY.skillSubject`: its id and description, raw: the draw cleans it):
+ * (`COPY.skillSubject`: its id, what it reaches and its description, raw:
+ * the draw cleans it):
  *
  *   - `buttons`: Allow and Deny. Only a card that needs nothing but a yes,
- *     on a bus with both hooks Allow calls.
+ *     whose reach the subject names whole (`nameableReach`), on a bus with
+ *     both hooks Allow calls.
  *   - `web`: its subject and a link to the web app, nothing to click. A card
- *     that needs a key (Slack never collects one), or a bus without the
- *     grant or the ownership read that must come before it.
+ *     that needs a key (Slack never collects one), a reach the subject can't
+ *     name whole (the subject then leaves the reach out: a host is never
+ *     shown cut or altered; the web app shows it whole), or a bus without
+ *     the grant or the ownership read that must come before it.
  */
 export function skillPromptFor(
   p: SkillCard,
   bus: Pick<HookBus, 'hasService'>,
 ): { kind: 'buttons'; subjectText: string } | { kind: 'web'; subjectText: string } {
-  const subjectText = COPY.skillSubject(p.skillId, p.description);
-  if (p.needsKey || !bus.hasService(APPLY_GRANT) || !bus.hasService(CONVERSATION_GET)) {
+  const reach = nameableReach(p);
+  const subjectText = COPY.skillSubject(p.skillId, p.description, reach ?? undefined);
+  if (reach === null || p.needsKey || !bus.hasService(APPLY_GRANT) || !bus.hasService(CONVERSATION_GET)) {
     return { kind: 'web', subjectText };
   }
   return { kind: 'buttons', subjectText };

@@ -33,9 +33,15 @@ const ARGS: Record<string, unknown[][]> = {
   // A host prompt's subject (plain_text, cleaned at draw). Only a host past HOST_RE ever reaches it
   // (permission-prompts.ts `hostSubject`): lowercase letters, digits, dots and dashes.
   hostSubject: [['api.example.com']],
-  // A skill prompt's subject (plain_text): a catalog skill's id and description, kept raw and cleaned where
-  // they are drawn (blocks.ts), so a hostile one is pinned there (blocks.test.ts, turn.test.ts), not here.
-  skillSubject: [['gmail', 'Reads and sends email from your Gmail account.'], ['gmail', '']],
+  // A skill prompt's subject (plain_text): a catalog skill's id, what it reaches and its description, kept raw
+  // and cleaned where they are drawn (blocks.ts), so a hostile one is pinned there (blocks.test.ts,
+  // turn.test.ts), not here. The reach's own words (the host list's joins, the download sentence) are COPY's.
+  skillSubject: [
+    ['gmail', 'Reads and sends email from your Gmail account.'],
+    ['gmail', ''],
+    ['gmail', 'Reads and sends email from your Gmail account.', { hosts: ['gmail.googleapis.com'], downloads: true }],
+    ['gmail', '', { hosts: ['gmail.googleapis.com', 'oauth2.googleapis.com', 'people.googleapis.com'], downloads: false }],
+  ],
   skillNeedsWeb: [[TODAY], [HOSTILE]],
   skillFailed: [[TODAY], [HOSTILE]],
   slashNotMapped: [[ORIGIN]],
@@ -246,6 +252,37 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     const invisible = [0x200b, 0x202e, 0xfeff, 0x2060].map((c) => String.fromCharCode(c)).join('');
     for (const blank of ['', '   ', '\n\t', invisible, ` ${invisible} `]) {
       expect(COPY.skillSubject('gmail', blank), JSON.stringify(blank)).toBe('Wants to start using the gmail skill.');
+    }
+  });
+
+  it('a skill prompt names what it reaches right after the skill, before the description (TASK-1135)', () => {
+    expect(
+      COPY.skillSubject('walk-weather-report', 'Gets the current weather for a city.', {
+        hosts: ['api.open-meteo.com'],
+        downloads: false,
+      }),
+    ).toBe(
+      'Wants to start using the walk-weather-report skill, which needs to reach api.open-meteo.com. Gets the current weather for a city.',
+    );
+    expect(COPY.skillSubject('gmail', '', { hosts: ['gmail.googleapis.com', 'oauth2.googleapis.com'], downloads: false })).toBe(
+      'Wants to start using the gmail skill, which needs to reach gmail.googleapis.com and oauth2.googleapis.com.',
+    );
+    expect(COPY.skillSubject('x', 'Does x.', { hosts: ['a.example', 'b.example', 'c.example'], downloads: true })).toBe(
+      'Wants to start using the x skill, which needs to reach a.example, b.example and c.example, ' +
+        'and it will download some extra software from the internet. Does x.',
+    );
+    // Packages are never named: one sentence says something gets downloaded, as the web app's grant row does.
+    expect(COPY.skillSubject('pdf-tools', 'Works with PDFs.', { hosts: [], downloads: true })).toBe(
+      'Wants to start using the pdf-tools skill, which will download some extra software from the internet. Works with PDFs.',
+    );
+    // Nothing to name: the subject reads as it did before.
+    expect(COPY.skillSubject('gmail', 'X', { hosts: [], downloads: false })).toBe(COPY.skillSubject('gmail', 'X'));
+    // A description with nothing printable in it still ends the sentence, after the reach.
+    const invisible = [0x200b, 0x202e].map((c) => String.fromCharCode(c)).join('');
+    for (const blank of ['   ', invisible]) {
+      expect(COPY.skillSubject('gmail', blank, { hosts: ['gmail.googleapis.com'], downloads: false }), JSON.stringify(blank)).toBe(
+        'Wants to start using the gmail skill, which needs to reach gmail.googleapis.com.',
+      );
     }
   });
 

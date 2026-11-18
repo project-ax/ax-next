@@ -230,13 +230,19 @@ const DESCRIPTION = 'Reads and sends email from your Gmail account.';
 /** A slot the person has no key for yet: Slack never collects one, so the card goes to the web app. */
 const KEYLESS_SLOT = { slot: 'api_key', kind: 'api-key', service: 'gmail', haveExisting: false };
 
+/** What `skillCard` reaches unless told otherwise: its prompt names it (TASK-1135). */
+const GMAIL_REACH = { hosts: ['gmail.googleapis.com'], downloads: false };
+
 /** request_capability's card for `skillId`, as @ax/skill-broker fires it: a skill that needs nothing but a yes, unless `slots` says otherwise. */
-function skillCard(skillId: string, o: { description?: string; slots?: unknown[] } = {}): Record<string, unknown> {
+function skillCard(
+  skillId: string,
+  o: { description?: string; slots?: unknown[]; hosts?: string[] } = {},
+): Record<string, unknown> {
   return {
     kind: 'skill',
     skillId,
     description: o.description ?? DESCRIPTION,
-    hosts: ['gmail.googleapis.com'],
+    hosts: o.hosts ?? GMAIL_REACH.hosts,
     slots: o.slots ?? [],
     packages: { npm: [], pypi: [] },
   };
@@ -995,7 +1001,7 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
   const SAID = { kind: 'text', text: 'I need one more thing for that.' };
   const CHANNEL = 'C07SUPPORT1';
   const THREAD = '1763035200.000100';
-  const SUBJECT = COPY.skillSubject('gmail-sender', DESCRIPTION);
+  const SUBJECT = COPY.skillSubject('gmail-sender', DESCRIPTION, GMAIL_REACH);
   type Block = { type: string; text?: { text?: string } };
   const posts = (calls: readonly SlackCall[]): SlackCall[] => calls.filter((c) => c.method === 'postBlocks');
   const subjects = (calls: readonly SlackCall[]): string[] =>
@@ -1072,6 +1078,37 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
     expect(h.skillCalls).toEqual([]);
   });
 
+  it('the prompt names the host the skill reaches (TASK-1135)', async () => {
+    const h = harness({ chunks: [SAID], cards: [skillCard('gmail-sender', { hosts: ['api.open-meteo.com'] })] });
+    await h.run('dm');
+    expect(subjects(h.calls())[0]).toBe(
+      cleanPromptSubject(COPY.skillSubject('gmail-sender', DESCRIPTION, { hosts: ['api.open-meteo.com'], downloads: false })),
+    );
+    expect(subjects(h.calls())[0]).toContain('which needs to reach api.open-meteo.com.');
+    // Named whole, so it is asked with Allow and Deny: a prompt is open for it.
+    expect(h.prompts.size()).toBe(1);
+  });
+
+  /** The card without `hosts` and `packages`, as an older (or broken) producer might fire it. */
+  const withoutReach = (card: Record<string, unknown>): Record<string, unknown> => {
+    const { hosts: _hosts, packages: _packages, ...rest } = card;
+    return rest;
+  };
+
+  it.each([
+    ['no hosts or packages on it', withoutReach(skillCard('gmail-sender'))],
+    ['a host the egress proxy would refuse', skillCard('gmail-sender', { hosts: ['API.example.com'] })],
+  ])(
+    "a card whose reach can't be named whole (%s): the link to the web app, naming no host, with nothing opened (TASK-1135)",
+    async (_name, card) => {
+      const h = harness({ chunks: [SAID], cards: [card] });
+      await h.run('dm');
+      expect(posts(h.calls()).map((c) => c.args)).toEqual([toTheWebApp(COPY.skillSubject('gmail-sender', DESCRIPTION))]);
+      expect(h.prompts.size()).toBe(0);
+      expect(h.skillCalls).toEqual([]);
+    },
+  );
+
   it.each([
     ['the grant', { noSkillGrant: true }],
     ['the ownership read the grant needs first', { noConversationGet: true }],
@@ -1116,7 +1153,7 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
     const h = harness({ chunks: [SAID], cards });
     await h.run('attended');
     expect(subjects(h.calls())).toEqual([
-      COPY.skillSubject('drive-reader', 'Reads your Drive.'),
+      COPY.skillSubject('drive-reader', 'Reads your Drive.', GMAIL_REACH),
       COPY.hostSubject('api.example.com'),
       SUBJECT,
     ]);
@@ -1150,7 +1187,11 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
     for (const [i, post] of sent.entries()) {
       const skillId = ['gmail-sender', 'drive-reader'][i]!;
       const blocks = post.args['blocks'] as Array<{ type: string; text?: { type: string; text: string } }>;
-      expect(blocks[0]!.text).toEqual({ type: 'plain_text', text: cleanPromptSubject(COPY.skillSubject(skillId, hostile)), emoji: false });
+      expect(blocks[0]!.text).toEqual({
+        type: 'plain_text',
+        text: cleanPromptSubject(COPY.skillSubject(skillId, hostile, GMAIL_REACH)),
+        emoji: false,
+      });
       expect(spellsMention(blocks[0]!.text!.text)).toBe(false);
       expect(post.args['text']).toBe(COPY.heldAsked);
       // Nowhere but the plain_text section.
@@ -1792,9 +1833,9 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
   );
 
   // ── A skill card in a continuation ──
-  // In Slack, request_capability is itself held (tool-policy), so its card
-  // fires in the continuation that follows its Allow: the woken agent
-  // re-issues the call, and the broker fires the card under the runner's ctx.
+  // The agent a held call's Allow woke can ask for a skill too: the broker
+  // fires request_capability's card under the runner's ctx, in the
+  // conversation the continuation streams into.
 
   /** The skill prompt the continuation posted: its subject, its Today line, and the open prompt its buttons name. */
   const skillPromptIn = (h: ReturnType<typeof follower>, mode: 'dm' | 'attended' = 'attended') => {
@@ -1802,14 +1843,14 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(posts).toHaveLength(1);
     expect(posts[0]!.args).toMatchObject({ channel: CHANNEL, threadTs: THREAD, text: COPY.heldAsked });
     const blocks = posts[0]!.args['blocks'] as Array<{ type: string; text?: { text?: string }; elements?: unknown[] }>;
-    expect(blocks[0]!.text!.text).toBe(COPY.skillSubject('gmail-sender', DESCRIPTION));
+    expect(blocks[0]!.text!.text).toBe(COPY.skillSubject('gmail-sender', DESCRIPTION, GMAIL_REACH));
     expect(blocks.at(-1)!.elements).toContainEqual({ type: 'mrkdwn', text: COPY.promptToday(TODAY) });
     const claim = h.prompts.claim(promptIdOf(posts[0]!), SENDER);
     expect(claim.ok && claim.prompt).toMatchObject({
       ...CONTEXT,
       mode,
       subject: { kind: 'skill', skillId: 'gmail-sender' },
-      subjectText: COPY.skillSubject('gmail-sender', DESCRIPTION),
+      subjectText: COPY.skillSubject('gmail-sender', DESCRIPTION, GMAIL_REACH),
       messageTs: PROMPT_TS,
     });
     expect(h.prompts.size()).toBe(1);
@@ -1879,7 +1920,10 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
         JSON.stringify({
           channel: CHANNEL,
           threadTs: THREAD,
-          ...linkOnlyBlocks({ subject: COPY.skillSubject('gmail-sender', DESCRIPTION), line: COPY.skillNeedsWeb(TODAY) }),
+          ...linkOnlyBlocks({
+            subject: COPY.skillSubject('gmail-sender', DESCRIPTION, GMAIL_REACH),
+            line: COPY.skillNeedsWeb(TODAY),
+          }),
         }),
       ),
     ]);
