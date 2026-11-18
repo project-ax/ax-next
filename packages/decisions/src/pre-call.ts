@@ -19,6 +19,8 @@ import { checkedRoutineCall, routineConsentNeverCovers } from './routine-authori
  *   2. Then evaluate policy.
  *   3. Only then raise a hold — REUSING the question already standing for this
  *      call, if there is one, rather than writing a second row (TASK-254).
+ *      A hold whose rule applies only when nobody is there is not raised in
+ *      an attended turn (TASK-1135): the tool's own card is the question.
  *
  * Step 1 before step 2 is also what makes the attended path honest without
  * trusting the model. The authorisation is keyed on the call FINGERPRINT, so
@@ -70,6 +72,17 @@ export interface PolicyAnswer {
    * defer.
    */
   irreversible?: boolean | undefined;
+  /**
+   * Whether the matched rule's hold applies only when nobody is there to
+   * answer the tool's OWN card (TASK-1135): the gate then lets the call run in
+   * an attended turn (step 3). Optional on both sides, and typed wider here
+   * than tool-policy's `true`, because this is a structural mirror of a
+   * payload that crosses a bus: only `=== true` relaxes. Absent (an older
+   * producer, or a `returns` schema that stripped it), `false` or anything
+   * else holds, as every hold did before. Holding is the safe direction: the
+   * person is asked twice, never not at all.
+   */
+  holdsOnlyUnattended?: boolean | undefined;
 }
 
 export interface PreCallDeps {
@@ -258,7 +271,34 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       });
     }
 
-    // 3. Hold: record the call, then stop.
+    // 3. Hold: record the call, then stop. Unless nobody needs asking.
+    //
+    // Attendance is read ONCE, here. The row records it, and a hold that
+    // applies only when nobody is there reads it to decide whether to hold.
+    const attendance = await deps.attendanceFor(ctx);
+
+    // A HOLD THAT APPLIES ONLY WHEN NOBODY IS THERE (TASK-1135). The rule says
+    // the tool does nothing but put its OWN card in front of the person, and
+    // that Allow on that card is what grants (`request_capability` and its
+    // skill card). When someone is there to answer that card, the card is the
+    // question. Holding here too would ask them twice, the first time with
+    // less to go on.
+    //
+    // Every way of not knowing holds. The flag absent or anything but `true`.
+    // An attendance read that is anything but `attended`: a routine's own run,
+    // an outsider's turn, and a lookup that failed are all `unattended`
+    // (attendance.ts). And never a routine write, whatever its answer says: it
+    // acts by itself, and this row is the only consent it gets. Nothing is
+    // recorded or raised, so the log line is the trace.
+    if (!routine && answer.holdsOnlyUnattended === true && attendance === 'attended') {
+      ctx.logger.info('decision_hold_skipped_attended', {
+        plugin: PLUGIN_NAME,
+        tool: call.name,
+        ruleId: answer.ruleId,
+      });
+      return undefined;
+    }
+
     const now = deps.now();
     const decisionId = deps.idGen();
     const naming = await connectorNamingForHold(ctx, call, answer.capability);
@@ -283,7 +323,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       // "grant" from a rule id inside THIS package would duplicate rule
       // identity across a boundary nothing can lint. See templates.ts.
       kind: 'action',
-      attendance: await deps.attendanceFor(ctx),
+      attendance,
       status: 'pending',
       // The call, verbatim. `input` is model-authored and stays exactly as the
       // model wrote it — that is what makes the replay byte-faithful — and it

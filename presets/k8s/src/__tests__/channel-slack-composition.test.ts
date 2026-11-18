@@ -1274,9 +1274,10 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       return holds[n - 1];
     };
     invokeScript = async (ctx) => {
-      // The runner's pre-call, on the real policy: request_capability is held. Then the held
+      // The runner's pre-call, on the real policy: connector_propose is held for whoever is there
+      // (an attended request_capability no longer is: its own card asks, TASK-1135). Then the held
       // result and the turn's end, the way the runners send them.
-      const call = { id: `toolu_held_${invokes.length}`, name: 'request_capability', input: { capability: 'calendar' } };
+      const call = { id: `toolu_held_${invokes.length}`, name: 'connector_propose', input: { connectorId: 'calendar' } };
       holds.push(await theBus!.fire('tool:pre-call', ctx, call));
       await theBus!.fire('chat:stream-chunk', ctx, {
         reqId: ctx.reqId,
@@ -1352,7 +1353,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const { installId, agentId } = await supportChannel();
     invokes.length = 0;
     invokeScript = async (ctx) => {
-      const call = { id: `toolu_held_${invokes.length}`, name: 'request_capability', input: { capability: invokes.length > 1 ? 'drive' : 'calendar' } };
+      // connector_propose and not request_capability: an attended request_capability is no
+      // longer held, since its own card asks (TASK-1135).
+      const call = { id: `toolu_held_${invokes.length}`, name: 'connector_propose', input: { connectorId: invokes.length > 1 ? 'drive' : 'calendar' } };
       await theBus!.fire('tool:pre-call', ctx, call);
       await theBus!.fire('chat:stream-chunk', ctx, {
         reqId: ctx.reqId,
@@ -1527,9 +1530,17 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     invokes.length = 0;
     addHostCalls.length = 0;
     grantCalls.length = 0;
-    // `request_capability`'s card, fired from inside the turn with the turn's own ctx.
+    // `request_capability`'s card, fired from inside the turn with the turn's own ctx, in the broker's
+    // shape: without `hosts` and `packages` Slack can't name its reach, and sends Mel to the web app (TASK-1135).
     invokeScript = turnFiring(() => [
-      { kind: 'skill', skillId: 'calendar-booking', description: 'Books meetings for you.', slots: [] },
+      {
+        kind: 'skill',
+        skillId: 'calendar-booking',
+        description: 'Books meetings for you.',
+        hosts: [],
+        slots: [],
+        packages: { npm: [], pypi: [] },
+      },
     ]);
     try {
       const melTs = nextTs();
