@@ -73,7 +73,13 @@
 //   1  Error. Nothing changed: the transaction rolls back. stderr gets one
 //      line, `narration-cleanup: failed: <reason>`. The reason is SQLite's
 //      generic error string or a code, never the error's message, because a
-//      message can quote a row.
+//      message can quote a row. One code to know:
+//        fts-integrity-check-failed  an apply ran SQLite's own check on the
+//                                    full-text index before committing, and
+//                                    it failed. The index was damaged before
+//                                    this ran, or by it. Either way nothing
+//                                    changed. Stop, and look at the store
+//                                    before you run anything else on it.
 //
 // WHO RUNS IT
 //   Not the builder. The builder runs it only through its test
@@ -248,6 +254,15 @@ function cleanAssistantNarration() {
     }
     if (report.deleted !== doomed.size) {
       throw Object.assign(new Error('deleted count mismatch'), { code: 'deleted-count-mismatch' });
+    }
+    // FTS5's own check, after the deletes and before they commit. The table
+    // keeps its own text (no `content=` option), so this checks the index
+    // against every row's text. A failure is a damaged index, from before this
+    // ran or from it: roll back and say so, with a fixed reason.
+    try {
+      db.exec("INSERT INTO memory_facts_v1_fts(memory_facts_v1_fts) VALUES('integrity-check')");
+    } catch {
+      throw Object.assign(new Error('full-text index check failed'), { code: 'fts-integrity-check-failed' });
     }
     db.exec('COMMIT');
     print(report);

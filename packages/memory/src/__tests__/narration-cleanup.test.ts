@@ -434,6 +434,29 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it('rolls back, with a fixed reason, when the full-text index fails its integrity check', () => {
+    // Damage the index on purpose: rewrite a kept row's stored text under its
+    // index entries. SQLite's defensive mode refuses that, so only this test
+    // connection turns it off; the engine and the script never do.
+    const writer = new Database(databasePath);
+    try {
+      writer.unsafeMode(true);
+      writer.prepare("UPDATE memory_facts_v1_fts_content SET c3 = 'tampered' WHERE c0 = ?").run(ids.K3);
+    } finally {
+      writer.close();
+    }
+    const before = snapshot();
+
+    const result = run(['--apply', VEC_ARG]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('narration-cleanup: failed: fts-integrity-check-failed\n');
+    expectCountsOnly(result);
+    // The deletes ran, then rolled back with the failed check.
+    expect(snapshot()).toEqual(before);
+  });
+
   it('its runbook pipes it after self-report.ts and names a context on every kubectl line', () => {
     const kubectlLines = SCRIPT.split('\n').filter((text) => text.includes('kubectl'));
     expect(kubectlLines.length).toBeGreaterThanOrEqual(3);
