@@ -739,7 +739,7 @@ describe('@ax/preset-memory canary', () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
-      json: { state: 'not-connected', defaultBotName: 'ax', canConnect: false },
+      json: { state: 'not-connected', defaultBotName: 'ax', canConnect: false, leftoverApps: [] },
     });
     expect((await apiJson('GET', '/admin/slack', ALICE)).status).toBe(403);
     expect((await apiJson('GET', '/admin/slack', null)).status).toBe(401);

@@ -689,7 +689,7 @@ describe('@ax/channel-slack plugin', () => {
     const answer = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
     expect(answer).toEqual({
       status: 200,
-      body: { state: 'not-connected', defaultBotName: 'ax', canConnect: false },
+      body: { state: 'not-connected', defaultBotName: 'ax', canConnect: false, leftoverApps: [] },
       done: true,
     });
   });

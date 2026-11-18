@@ -70,6 +70,11 @@ const GRANT: OAuthInstall = {
 };
 const CODE = '7512345678901.7598765432109.0123456789abcdef';
 const CONNECT_BODY = { accessToken: ACCESS, refreshToken: REFRESH, botName: 'Canopy Bot' };
+/** The app a second Connect makes, when a test needs it told apart from the first. */
+const SECOND_APP_ID = 'A07SECONDAPP';
+/** Slack apps an earlier Disconnect couldn't delete, by the removed install's id (TASK-1132). */
+const LEFT_1 = { installId: 'inst_left_1', appId: 'A07LEFTAPP01' } as const;
+const LEFT_2 = { installId: 'inst_left_2', appId: 'A07LEFTAPP02' } as const;
 
 interface TestUser {
   id: string;
@@ -331,6 +336,8 @@ function fakeSlack(trail: string[]) {
   /** Every refresh token a rotate was sent, and how many refresh tokens the rotates minted. */
   const rotated = new Set<string>();
   let mints = 0;
+  /** The apps that exist on this Slack: each create that succeeded, less each delete that did. */
+  const live = new Set<string>();
   /** What each call does; a test swaps one out. */
   const on: SlackBehaviour = {
     /**
@@ -367,7 +374,9 @@ function fakeSlack(trail: string[]) {
     },
     createApp: async (token, manifest) => {
       record('createApp', [token, manifest]);
-      return on.createApp(token, manifest);
+      const app = await on.createApp(token, manifest);
+      live.add(app.appId);
+      return app;
     },
     updateApp: async (token, appId, manifest) => {
       record('updateApp', [token, appId, manifest]);
@@ -375,7 +384,8 @@ function fakeSlack(trail: string[]) {
     },
     deleteApp: async (token, appId) => {
       record('deleteApp', [token, appId]);
-      return on.deleteApp(token, appId);
+      await on.deleteApp(token, appId);
+      live.delete(appId);
     },
     setAppIcon: async (token, appId, url) => {
       record('setAppIcon', [token, appId, url]);
@@ -398,6 +408,7 @@ function fakeSlack(trail: string[]) {
     api,
     calls,
     on,
+    live,
     /** A rotated refresh token still works, as it does on Slack for a while after its rotate. */
     rotatedStillWork: false,
   };
@@ -584,6 +595,17 @@ function mintedInstallId(w: World): string {
 function slackMethods(w: World): string[] {
   return w.slack.calls.map((c) => c.method);
 }
+/** An app an earlier Disconnect couldn't delete, remembered as the store would have. */
+function leaveApp(
+  w: World,
+  l: { installId: string; appId: string },
+  botName = 'Canopy Bot',
+  leftAtMs = NOW_MS - 60_000,
+): void {
+  w.memory.leftovers.set(l.installId, { installId: l.installId, appId: l.appId, botName, leftAt: new Date(leftAtMs) });
+}
+/** A database fault, as pg throws one: an errno code (logged) and a message (never logged). */
+const connectionReset = (): Error => Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
 async function connectedWorld(o: Parameters<typeof world>[0] = {}) {
   const w = world(o);
   const state = stateOf(await w.connect());
@@ -683,16 +705,19 @@ describe('GET /admin/slack', () => {
       state: 'not-connected',
       defaultBotName: 'canopy-works',
       canConnect: true,
+      leftoverApps: [],
     });
     expect((await world({ branding: { name: null } }).status()).body).toEqual({
       state: 'not-connected',
       defaultBotName: 'ax',
       canConnect: true,
+      leftoverApps: [],
     });
     expect((await world({ branding: 'absent' }).status()).body).toEqual({
       state: 'not-connected',
       defaultBotName: 'ax',
       canConnect: true,
+      leftoverApps: [],
     });
 
     const throwing = world({ branding: new Error(`branding store down ${REFRESH}`) });
@@ -706,7 +731,32 @@ describe('GET /admin/slack', () => {
       state: 'not-connected',
       defaultBotName: 'canopy-works',
       canConnect: false,
+      leftoverApps: [],
     });
+  });
+
+  it("not-connected lists the apps Disconnect couldn't delete, oldest first, by name and app id only", async () => {
+    const w = world();
+    leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 60_000);
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
+    // Exact: no install id and no date reach the admin's browser.
+    expect((await w.status()).body).toEqual({
+      state: 'not-connected',
+      defaultBotName: 'canopy-works',
+      canConnect: true,
+      leftoverApps: [
+        { botName: 'First Bot', appId: LEFT_1.appId },
+        { botName: 'Second Bot', appId: LEFT_2.appId },
+      ],
+    });
+
+    // Pending (and connected) never carry the list, even while an app is still left over.
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'no_permission');
+    };
+    expect((await w.connect()).status).toBe(200);
+    expect(w.memory.leftovers.size).toBe(2);
+    expect((await w.status()).body).not.toHaveProperty('leftoverApps');
   });
 
   it('pending and connected carry botName, connectedBy and connectedAt (and workspaceName when connected)', async () => {
@@ -1052,6 +1102,7 @@ describe('POST /admin/slack/connect', () => {
 
   it('two concurrent connects → one 200, one 409', async () => {
     const w = world();
+    leaveApp(w, LEFT_1);
     const gate = deferred();
     w.slack.on.createApp = async () => {
       await gate.promise;
@@ -1065,6 +1116,11 @@ describe('POST /admin/slack/connect', () => {
     expect(answers.map((a) => a.status).sort()).toEqual([200, 409]);
     expect(slackMethods(w).filter((m) => m === 'createApp')).toHaveLength(1);
     expect(w.memory.rows.size).toBe(1);
+    // The leftover is deleted once, by the Connect that went ahead (TASK-1132).
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
+      [ACCESS, LEFT_1.appId],
+    ]);
+    expect(w.memory.leftovers.size).toBe(0);
   });
 });
 
@@ -1381,10 +1437,12 @@ describe('POST /admin/slack/disconnect', () => {
     expect(w.vaultCalls.filter((c) => c.hook === 'credentials:delete').map((c) => c.ref)).toEqual(
       SECRET_NAMES.map((name) => secretRef(installId, name)),
     );
+    // Slack deleted it: nothing to remember.
+    expect(w.memory.leftovers.size).toBe(0);
     expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
   });
 
-  it('rotate fails, deleteApp fails or the token is gone → { appDeleted: false }, row and secrets still removed', async () => {
+  it('rotate fails, deleteApp fails or the token is gone → { appDeleted: false }, row and secrets still removed, and the app remembered', async () => {
     const breakers: Array<[string, string, (w: World, installId: string) => void]> = [
       [
         'rotate',
@@ -1423,6 +1481,14 @@ describe('POST /admin/slack/disconnect', () => {
         msg: 'slack_admin_failed',
         fields: { installId, stage, code },
       });
+      // The app may still be on Slack: its id and name outlive the row (TASK-1132).
+      expect([...w.memory.leftovers.values()], stage).toEqual([
+        { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+      ]);
+      expect((await w.status()).body, stage).toMatchObject({
+        state: 'not-connected',
+        leftoverApps: [{ botName: 'Canopy Bot', appId: APP.appId }],
+      });
     }
   });
 
@@ -1437,6 +1503,8 @@ describe('POST /admin/slack/disconnect', () => {
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
     expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+    // Gone already: nothing to remember.
+    expect(w.memory.leftovers.size).toBe(0);
     expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
   });
 
@@ -1446,6 +1514,7 @@ describe('POST /admin/slack/disconnect', () => {
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
+    expect(w.memory.leftovers.size).toBe(0);
   });
 
   it('with nothing connected → 409 not-connected', async () => {
@@ -1493,6 +1562,7 @@ describe('POST /admin/slack/disconnect', () => {
         fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' },
       },
     ]);
+    expect(w.memory.leftovers.size).toBe(0);
   });
 
   it('a row that will not delete → 500, and the secrets stay for a retry', async () => {
@@ -1502,12 +1572,217 @@ describe('POST /admin/slack/disconnect', () => {
     expect(w.vault.has(secretRef(installId, 'bot-token'))).toBe(true);
     // The token the retry needs: the one Slack minted, not the one it retired.
     expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(1));
+    expect(w.memory.leftovers.size).toBe(0);
     w.memory.failures.delete('remove');
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
     expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').at(-1)!.args).toEqual([
       mintedRefresh(1),
     ]);
     expect(w.vault.size).toBe(0);
+  });
+
+  it('Slack refusing the delete and the row refusing to go → 500 and nothing remembered; the retry remembers the app once', async () => {
+    const { w, installId } = await connectedWorld();
+    w.slack.on.rotateConfigToken = async () => {
+      throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
+    };
+    w.memory.failures.set('remove', connectionReset());
+    expect(await w.disconnect()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    // One statement: the row stayed, so the app was not remembered, and the secrets stay too.
+    expect(w.memory.rows.has(installId)).toBe(true);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.vault.has(secretRef(installId, 'config-refresh-token'))).toBe(true);
+
+    w.memory.failures.delete('remove');
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+    ]);
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+  });
+});
+
+describe("a Slack app Disconnect couldn't delete: remembered, and the next Connect deletes it (TASK-1132)", () => {
+  it('a refused install, Cancel with a configuration token Slack no longer takes, then Connect again: the first app is deleted with the new access token, so exactly one Slack app is left (TASK-1132)', async () => {
+    const w = world();
+    const state = stateOf(await w.connect());
+    const firstInstallId = mintedInstallId(w);
+    // Signed out on the public address: the admin gate refuses the callback
+    // (the walk's `unauthenticated`), and the install stays pending.
+    expect(await w.callback({ code: CODE, state }, null)).toStrictEqual(FAILED);
+    expect((await w.status()).body).toMatchObject({ state: 'pending' });
+
+    // Cancel, with a stored configuration token Slack no longer takes.
+    w.slack.on.rotateConfigToken = async () => {
+      throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
+    };
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect(w.lines).toContainEqual({
+      level: 'warn',
+      msg: 'slack_admin_failed',
+      fields: { installId: firstInstallId, stage: 'rotate', code: 'invalid_refresh_token' },
+    });
+    expect((await w.status()).body).toEqual({
+      state: 'not-connected',
+      defaultBotName: 'canopy-works',
+      canConnect: true,
+      leftoverApps: [{ botName: 'Canopy Bot', appId: APP.appId }],
+    });
+
+    // Connect again, with a new pair: the first app goes before the second is made.
+    w.slack.on.createApp = async () => ({ ...APP, appId: SECOND_APP_ID });
+    const mark = w.trail.length;
+    expect((await w.connect()).status).toBe(200);
+    expect(w.trail.slice(mark, mark + 5)).toEqual([
+      'store:current',
+      'store:leftoverApps',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'slack:createApp',
+    ]);
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([[ACCESS, APP.appId]]);
+    expect([...w.slack.live]).toEqual([SECOND_APP_ID]);
+    expect(w.memory.leftovers.size).toBe(0);
+  });
+
+  it('Connect deletes every leftover app with the pasted access token before it creates the new one, and forgets each one Slack deleted or no longer has', async () => {
+    const w = world();
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
+    leaveApp(w, LEFT_2, 'Second Bot');
+    // The admin already deleted the second one on api.slack.com/apps.
+    w.slack.on.deleteApp = async (_token, appId) => {
+      if (appId === LEFT_2.appId) throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+    };
+    expect((await w.connect()).status).toBe(200);
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
+      [ACCESS, LEFT_1.appId],
+      [ACCESS, LEFT_2.appId],
+    ]);
+    expect(w.trail.slice(0, 7)).toEqual([
+      'store:current',
+      'store:leftoverApps',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'slack:createApp',
+    ]);
+    expect(w.memory.leftovers.size).toBe(0);
+    // Gone already is what Connect wanted: not a failure.
+    expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+    // Everything the pasted access token did, in order.
+    expect(w.slack.calls.filter((c) => c.args.includes(ACCESS)).map((c) => c.method)).toEqual([
+      'deleteApp',
+      'deleteApp',
+      'createApp',
+      'setAppIcon',
+    ]);
+  });
+
+  it("a leftover app Slack won't delete stays listed, logged code-only under its own install id; Connect still goes ahead", async () => {
+    const w = world();
+    leaveApp(w, LEFT_1);
+    // Say the new token's owner can't manage it.
+    w.slack.on.deleteApp = async (_token, appId) => {
+      if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'no_permission');
+    };
+    expect((await w.connect()).status).toBe(200);
+    expect(slackMethods(w).filter((m) => m === 'createApp')).toHaveLength(1);
+    expect(w.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code: 'no_permission' },
+      },
+    ]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+
+    // Cancel deletes the new app; the one Slack wouldn't delete is still named.
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(((await w.status()).body as { leftoverApps: unknown }).leftoverApps).toEqual([
+      { botName: 'Canopy Bot', appId: LEFT_1.appId },
+    ]);
+  });
+
+  it('a Connect refused before Slack never touches a leftover', async () => {
+    // A body it can't use: refused before the store is read.
+    const badBody = world();
+    leaveApp(badBody, LEFT_1);
+    expect(await badBody.connect({})).toMatchObject({ status: 400 });
+    expect(badBody.trail).toEqual([]);
+
+    // No https address: refused after the one read that decides it.
+    const http = world({ publicOrigin: HTTP_ORIGIN });
+    leaveApp(http, LEFT_1);
+    expect(await http.connect()).toMatchObject({ status: 409, body: { error: 'public-origin-not-https' } });
+    expect(http.slack.calls).toEqual([]);
+    expect(http.trail).toEqual(['store:current']);
+
+    // Something is connected already (a leftover can't exist then; this one is planted).
+    const { w: connected } = await connectedWorld();
+    leaveApp(connected, LEFT_1);
+    const mark = connected.trail.length;
+    expect(await connected.connect(CONNECT_BODY, GRACE)).toMatchObject({
+      status: 409,
+      body: { error: 'already-connected' },
+    });
+    expect(connected.trail.slice(mark)).toEqual(['store:current']);
+
+    for (const w of [badBody, http, connected]) {
+      expect(slackMethods(w)).not.toContain('deleteApp');
+      expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    }
+  });
+
+  it('reading the leftover list failing → 500 before Slack is asked anything, logged code-only', async () => {
+    const w = world();
+    w.memory.failures.set('leftoverApps', connectionReset());
+    expect(await w.connect()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'connect', code: 'ECONNRESET' } },
+    ]);
+
+    // The status reads it too, while nothing is connected.
+    expect(await w.status()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.lines.slice(1)).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'status', code: 'ECONNRESET' } },
+    ]);
+  });
+
+  it('forgetting a deleted leftover failing is logged; Connect goes on, and the next Connect forgets it', async () => {
+    const w = world();
+    leaveApp(w, LEFT_1);
+    w.memory.failures.set('forgetLeftoverApp', connectionReset());
+    expect((await w.connect()).status).toBe(200);
+    expect(w.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'forget-leftover-app', code: 'ECONNRESET' },
+      },
+    ]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+
+    w.memory.failures.delete('forgetLeftoverApp');
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    // Slack deleted it at the first Connect, so now it says the app is gone.
+    w.slack.on.deleteApp = async (_token, appId) => {
+      if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+    };
+    expect((await w.connect()).status).toBe(200);
+    expect(
+      w.slack.calls.filter((c) => c.method === 'deleteApp' && c.args[1] === LEFT_1.appId).map((c) => c.args),
+    ).toEqual([
+      [ACCESS, LEFT_1.appId],
+      [ACCESS, LEFT_1.appId],
+    ]);
+    expect(w.memory.leftovers.size).toBe(0);
+    // Only the first forget's failure was logged.
+    expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toHaveLength(1);
   });
 });
 
@@ -2036,6 +2311,23 @@ describe('secrets never leave', () => {
     };
     del.vaultFailures.set('credentials:delete bot-token', leak('vault'));
     await del.disconnect();
+
+    // Connect's pass over the apps an earlier Disconnect couldn't delete (TASK-1132):
+    // the delete failing, then the forget, then reading the list (for the status too).
+    const leftoverDelete = track(world());
+    leaveApp(leftoverDelete, LEFT_1);
+    leftoverDelete.slack.on.deleteApp = async () => {
+      throw leak('deleteApp');
+    };
+    await leftoverDelete.connect();
+    const leftoverForget = track(world());
+    leaveApp(leftoverForget, LEFT_1);
+    leftoverForget.memory.failures.set('forgetLeftoverApp', leak('forget'));
+    await leftoverForget.connect();
+    const leftoverList = track(world());
+    leftoverList.memory.failures.set('leftoverApps', leak('list'));
+    await leftoverList.connect();
+    await leftoverList.status();
 
     // Rename: rotate failing, the update failing, the row write failing, the vault failing.
     const renameRotate = track((await connectedWorld()).w);

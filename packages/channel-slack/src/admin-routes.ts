@@ -23,7 +23,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * pick an unfinished install back up, rename the bot, and disconnect. Plus the
  * OAuth callback Slack sends the admin's browser to after they click Allow.
  *
- *   GET  /admin/slack                 → SlackStatus
+ *   GET  /admin/slack                 → SlackStatus (not connected: with the apps Disconnect couldn't delete)
  *   POST /admin/slack/connect         { accessToken, refreshToken, botName? } → { installUrl, iconSet }
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
@@ -38,9 +38,10 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * bypasses it.
  *
  * Secrets:
- *   - The pasted ACCESS token creates the app and sets its icon (and, if
- *     Connect fails halfway, deletes the app again). Then it is dropped. It
- *     is never stored.
+ *   - The pasted ACCESS token first deletes the Slack apps an earlier
+ *     Disconnect couldn't (below), then creates the app and sets its icon
+ *     (and, if Connect fails halfway, deletes the app again). Then it is
+ *     dropped. It is never stored.
  *   - The pasted REFRESH token is stored, and no route ever returns it. Only
  *     Disconnect and Rename read it, each to mint one access token that is
  *     used once: Disconnect to delete the app, Rename to update its
@@ -53,6 +54,15 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
  *     an install, a stage or reason, and a code.
+ *
+ * Disconnect (and Cancel, the same route) deletes the Slack app with an
+ * access token minted from the stored refresh token. When Slack won't (the
+ * token is dead or revoked, or Slack doesn't answer), the install still
+ * goes, and in the same statement its app's id and name move to the
+ * leftover list (store.ts) instead of being forgotten. The status names
+ * them while nothing is connected, and the next Connect deletes them with
+ * the newly pasted access token. Only Slack's `app_not_found` counts as
+ * already gone.
  *
  * The OAuth `state` is 32 random bytes, hex. Only its sha256 is stored, on
  * the install's row, with the admin it was minted for and a 10-minute expiry.
@@ -69,7 +79,13 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  */
 
 export type SlackStatus =
-  | { state: 'not-connected'; defaultBotName: string; canConnect: boolean }
+  | {
+      state: 'not-connected';
+      defaultBotName: string;
+      canConnect: boolean;
+      /** The apps Disconnect couldn't delete, oldest first: a name and an app id each, nothing else. */
+      leftoverApps: Array<{ botName: string; appId: string }>;
+    }
   | { state: 'pending'; botName: string; connectedBy: string; connectedAt: string }
   | {
       state: 'connected';
@@ -356,6 +372,33 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     await d.secrets.removeAll({ installId });
   }
 
+  /**
+   * Before a new app: delete the ones an earlier Disconnect couldn't, with
+   * the access token the admin just pasted (its owner is usually the person
+   * whose earlier token made them; that a new token can delete them is
+   * UNMEASURED, decisions shard). Deleted, or already gone on Slack's side
+   * (`app_not_found`): forgotten. Anything else: kept, logged code-only, and
+   * still listed. Never stops the Connect; a store fault reading the list
+   * throws, before Slack is asked anything.
+   */
+  async function deleteLeftoverApps(accessToken: string): Promise<void> {
+    for (const app of await d.store.leftoverApps()) {
+      try {
+        await d.api.deleteApp(accessToken, app.appId);
+      } catch (err) {
+        if (!(err instanceof SlackApiError && err.code === 'app_not_found')) {
+          failed('delete-leftover-app', err, app.installId);
+          continue;
+        }
+      }
+      try {
+        await d.store.forgetLeftoverApp(app.installId);
+      } catch (err) {
+        failed('forget-leftover-app', err, app.installId);
+      }
+    }
+  }
+
   async function createInstall(
     actor: AdminActor,
     accessToken: string,
@@ -556,7 +599,14 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   async function status(): Promise<Reply> {
     const install = await d.store.current();
     if (install === null) {
-      const out: SlackStatus = { state: 'not-connected', defaultBotName: await brandedBotName(), canConnect };
+      // The name and the app id only: the install id and the date stay here.
+      const leftoverApps = (await d.store.leftoverApps()).map(({ botName, appId }) => ({ botName, appId }));
+      const out: SlackStatus = {
+        state: 'not-connected',
+        defaultBotName: await brandedBotName(),
+        canConnect,
+        leftoverApps,
+      };
       return json(200, out);
     }
     // connectedAt is when the configuration token was added, not when Allow was clicked.
@@ -590,6 +640,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     return d.lock.run(async () => {
       if ((await d.store.current()) !== null) return json(409, { error: 'already-connected' });
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      await deleteLeftoverApps(accessToken);
       return createInstall(actor, accessToken, refreshToken, name.name);
     });
   }
@@ -700,9 +751,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       if (install === null) return json(409, { error: 'not-connected' });
       const appDeleted = await deleteSlackApp(install);
       // Local state goes whatever Slack said: a dead token or an app someone
-      // already deleted must never strand a "connected" row. If the row
-      // won't go, the secrets stay too, so a retry can still delete the app.
-      await d.store.remove(install.installId);
+      // already deleted must never strand a "connected" row. An app Slack
+      // didn't delete is remembered in the same statement, so the next
+      // Connect can delete it and the tab names it until then. If the row
+      // won't go, nothing is remembered and the secrets stay too, so a retry
+      // can still delete the app.
+      await d.store.remove(install.installId, { appLeft: !appDeleted });
       await d.secrets.removeAll(install);
       return json(200, { appDeleted });
     });
