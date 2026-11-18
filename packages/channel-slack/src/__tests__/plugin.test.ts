@@ -1218,6 +1218,90 @@ describe('@ax/channel-slack plugin', () => {
     ]);
   });
 
+  it("a Disconnect that can't delete the Slack app keeps its id on Postgres, and the next Connect deletes it with the pasted access token: one app left (TASK-1132)", async () => {
+    const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
+    const live = new Set<string>();
+    let created = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = String(input).replace('https://slack.com/api/', '');
+      const headers = new Headers(init?.headers);
+      const raw = typeof init?.body === 'string' ? init.body : '';
+      const body: Record<string, unknown> = (headers.get('content-type') ?? '').startsWith('application/json')
+        ? (JSON.parse(raw) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(raw));
+      calls.push({ method, auth: headers.get('authorization'), body });
+      let answer: Record<string, unknown> = { ok: true };
+      if (method === 'apps.manifest.create') {
+        created += 1;
+        const appId = created === 1 ? 'A07FIRSTAPP1' : 'A07SECONDAP2';
+        live.add(appId);
+        answer = {
+          ok: true,
+          app_id: appId,
+          credentials: {
+            client_id: '7000000001.7000000002',
+            client_secret: 'plugin-client-secret-not-real',
+            signing_secret: SIGNING_SECRET,
+          },
+        };
+      } else if (method === 'apps.manifest.delete') {
+        live.delete(String(body['app_id']));
+      } else if (method === 'tooling.tokens.rotate') {
+        answer = { ok: false, error: 'invalid_refresh_token' };
+      }
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { call } = await boot({ fetchImpl });
+    const connect = () =>
+      call(
+        'POST',
+        '/admin/slack/connect',
+        request('POST', '/admin/slack/connect', {
+          as: ADMIN.id,
+          body: Buffer.from(
+            JSON.stringify({
+              accessToken: fakeConfigAccessToken(),
+              refreshToken: fakeConfigRefreshToken(),
+              botName: 'canopy-works',
+            }),
+          ),
+        }),
+      );
+
+    expect((await connect()).status).toBe(200);
+    expect(await installCount()).toBe(1);
+
+    // The stored refresh token is dead: Disconnect can't delete the app.
+    const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
+    expect(off).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect(await installCount()).toBe(0);
+    const left = await sql<{ install_id: string; app_id: string; bot_name: string }>`
+      SELECT install_id, app_id, bot_name FROM channel_slack_v1_leftover_apps`.execute(probe);
+    expect(left.rows).toHaveLength(1);
+    expect(left.rows[0]).toMatchObject({ app_id: 'A07FIRSTAPP1', bot_name: 'canopy-works' });
+    const status = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
+    expect(status.body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'canopy-works', appId: 'A07FIRSTAPP1' }],
+    });
+
+    // The next Connect deletes it first, with the access token just pasted.
+    expect((await connect()).status).toBe(200);
+    const methods = calls.map((c) => c.method);
+    const deleteAt = calls.findIndex(
+      (c) =>
+        c.method === 'apps.manifest.delete' &&
+        c.auth === `Bearer ${fakeConfigAccessToken()}` &&
+        c.body['app_id'] === 'A07FIRSTAPP1',
+    );
+    expect(deleteAt).toBeGreaterThan(-1);
+    expect(deleteAt).toBeLessThan(methods.lastIndexOf('apps.manifest.create'));
+    const after = await sql`SELECT 1 FROM channel_slack_v1_leftover_apps`.execute(probe);
+    expect(after.rows).toEqual([]);
+    expect(await installCount()).toBe(1);
+    expect([...live]).toEqual(['A07SECONDAP2']);
+  });
+
   it('a bad signature is refused with 401 and nothing is dispatched', async () => {
     const { s, call, harness } = await boot();
     await insertActiveInstall();
