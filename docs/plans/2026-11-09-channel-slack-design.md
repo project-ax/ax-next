@@ -247,10 +247,12 @@ recalled in a channel.
    (`xoxe.xoxp-…`, valid for 12 hours) and the refresh token (`xoxe-…`).
 2. The admin confirms the bot's name. The name defaults to the branding name,
    checked against Slack's name rules (§7 Q3), otherwise `ax`.
-3. AX creates the shared app with `apps.manifest.create`, then sets the avatar
-   (the branding logo) with `apps.icon.set`. The manifest sets the name, scopes,
-   and the event and interactivity URLs. Slack sends no challenge and needs no
-   manual Verify click (§7 Q1).
+3. AX first deletes any app an earlier Disconnect couldn't (below), with the
+   access token just pasted. Then it creates the shared app with
+   `apps.manifest.create` and sets the avatar (the branding logo) with
+   `apps.icon.set`. The manifest sets the name, scopes, and the event and
+   interactivity URLs. Slack sends no challenge and needs no manual Verify
+   click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
    the bot token. This click is the only one a person must make, and only
    someone with install rights can make it.
@@ -289,6 +291,13 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
   can't do that last step itself. Whether that Revoke also ends the refresh
   tokens rotates have minted since (the one AX holds after a rename) is
   unmeasured (TASK-1134).
+  Deleting the app needs the stored token, so a dead or revoked one (or
+  Slack not answering) leaves the app on Slack. Disconnect still removes the
+  install, but keeps the app's id and name (TASK-1132): the Slack tab names
+  it, linked to its own settings page, and the next Connect deletes it with
+  the newly pasted access token. Cancelling an unfinished install is the
+  same Disconnect. Whether a new token can delete an app an earlier token of
+  the same person made is unmeasured.
 
 ### Scopes (smallest set)
 
