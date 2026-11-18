@@ -8,6 +8,7 @@ import {
   INSTALL_ID_BYTES,
   OAUTH_STATE_BYTES,
   OAUTH_STATE_TTL_MS,
+  SLACK_ID_RE,
   SLACK_TOKEN_MAX,
 } from './limits.js';
 import { logCode } from './log-code.js';
@@ -23,11 +24,12 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * pick an unfinished install back up, rename the bot, and disconnect. Plus the
  * OAuth callback Slack sends the admin's browser to after they click Allow.
  *
- *   GET  /admin/slack                 → SlackStatus (not connected or pending: with the apps Disconnect couldn't delete)
+ *   GET  /admin/slack                 → SlackStatus (every state: with the apps Disconnect couldn't delete)
  *   POST /admin/slack/connect         { accessToken, refreshToken, botName? } → { installUrl, iconSet }
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
  *   POST /admin/slack/disconnect      → { appDeleted }
+ *   POST /admin/slack/forget-leftover-app  { appId } → {}, once the admin has deleted that app by hand
  *   GET  /admin/slack/oauth/callback  ?code&state or ?error&state → 302 to `<publicOrigin>/?slack=<outcome>`
  *
  * Every route is admin-only: 401 signed out, 403 not an admin, except that
@@ -60,9 +62,11 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * token is dead or revoked, or Slack doesn't answer), the install still
  * goes, and in the same statement its app's id and name move to the
  * leftover list (store.ts) instead of being forgotten. The status names
- * them while nothing is connected, and the next Connect deletes them with
- * the newly pasted access token. Only Slack's `app_not_found` counts as
- * already gone.
+ * them in every state, and the next Connect deletes them with the newly
+ * pasted access token; to Connect, only Slack's `app_not_found` means
+ * already gone. An admin who deleted one on Slack's page says so with
+ * forget-leftover-app, which takes their word for it and asks Slack nothing
+ * (no token here could ask): it only stops the note naming that app.
  *
  * The OAuth `state` is 32 random bytes, hex. Only its sha256 is stored, on
  * the install's row, with the admin it was minted for and a 10-minute expiry.
@@ -78,21 +82,27 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * as an open redirect.
  */
 
+/**
+ * The apps Disconnect couldn't delete, oldest first: a name and an app id
+ * each, nothing else. Every state carries it. After a Connect whose delete
+ * failed, the admin goes straight to Slack and comes back connected, so a
+ * state without it would read as "deleted".
+ */
+type LeftoverAppsField = Array<{ botName: string; appId: string }>;
+
 export type SlackStatus =
   | {
       state: 'not-connected';
       defaultBotName: string;
       canConnect: boolean;
-      /** The apps Disconnect couldn't delete, oldest first: a name and an app id each, nothing else. */
-      leftoverApps: Array<{ botName: string; appId: string }>;
+      leftoverApps: LeftoverAppsField;
     }
   | {
       state: 'pending';
       botName: string;
       connectedBy: string;
       connectedAt: string;
-      /** Same list as not-connected: a failed delete in Connect's leftover pass would otherwise vanish here. */
-      leftoverApps: Array<{ botName: string; appId: string }>;
+      leftoverApps: LeftoverAppsField;
     }
   | {
       state: 'connected';
@@ -100,6 +110,7 @@ export type SlackStatus =
       workspaceName: string;
       connectedBy: string;
       connectedAt: string;
+      leftoverApps: LeftoverAppsField;
     };
 
 export interface AdminRoutesDeps {
@@ -123,6 +134,7 @@ export const ADMIN_CONNECT_PATH = '/admin/slack/connect';
 export const ADMIN_INSTALL_URL_PATH = '/admin/slack/install-url';
 export const ADMIN_RENAME_PATH = '/admin/slack/rename';
 export const ADMIN_DISCONNECT_PATH = '/admin/slack/disconnect';
+export const ADMIN_FORGET_LEFTOVER_APP_PATH = '/admin/slack/forget-leftover-app';
 /** Must match the `redirect_uri` slackUrls registers in the manifest. */
 export const OAUTH_CALLBACK_PATH = '/admin/slack/oauth/callback';
 
@@ -624,9 +636,8 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   async function status(): Promise<Reply> {
     const install = await d.store.current();
     // The name and the app id only: the install id and the date stay here.
-    const leftovers = async () => (await d.store.leftoverApps()).map(({ botName, appId }) => ({ botName, appId }));
+    const leftoverApps = (await d.store.leftoverApps()).map(({ botName, appId }) => ({ botName, appId }));
     if (install === null) {
-      const leftoverApps = await leftovers();
       const out: SlackStatus = {
         state: 'not-connected',
         defaultBotName: await brandedBotName(),
@@ -640,11 +651,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       botName: install.botName,
       connectedBy: await connectedByName(install),
       connectedAt: install.createdAt.toISOString(),
+      leftoverApps,
     };
     const out: SlackStatus =
       install.status === 'active'
         ? { state: 'connected', ...shared, workspaceName: install.teamName ?? '' }
-        : { state: 'pending', ...shared, leftoverApps: await leftovers() };
+        : { state: 'pending', ...shared };
     return json(200, out);
   }
 
@@ -789,6 +801,30 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
+   * "I deleted it": the admin deleted a leftover app on Slack's page, so stop
+   * naming it. Asks Slack nothing and touches no install: it only forgets
+   * every leftover entry with that app id. One it no longer lists is not an
+   * error, so a double click is harmless. The id is checked like any Slack
+   * id before the store is read; a store fault is the route's 500.
+   */
+  async function forgetLeftoverApp(req: RouteRequest): Promise<Reply> {
+    // http-server's maxBodyBytes refused anything larger already; this is the backstop.
+    if (req.body.length > ADMIN_BODY_MAX_BYTES) return json(413, { error: 'body-too-large' });
+    const body = bodyObject(req.body);
+    if (body === null) return json(400, { error: 'invalid-body' });
+    const appId = body['appId'];
+    if (typeof appId !== 'string' || !SLACK_ID_RE.test(appId)) return json(400, { error: 'invalid-app-id' });
+
+    // Under the lock, so it never interleaves with Connect's own pass over the list.
+    return d.lock.run(async () => {
+      for (const app of await d.store.leftoverApps()) {
+        if (app.appId === appId) await d.store.forgetLeftoverApp(app.installId);
+      }
+      return json(200, {});
+    });
+  }
+
+  /**
    * One route: the admin gate, then `run`, then exactly one answer. A throw
    * `run` didn't handle is logged code-only. A JSON route answers the gate's
    * refusal with its status and a fault with 500. A browser route (the OAuth
@@ -835,6 +871,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     route('POST', ADMIN_INSTALL_URL_PATH, 'install-url', installUrl),
     route('POST', ADMIN_RENAME_PATH, 'rename', rename),
     route('POST', ADMIN_DISCONNECT_PATH, 'disconnect', disconnect),
+    route('POST', ADMIN_FORGET_LEFTOVER_APP_PATH, 'forget-leftover-app', forgetLeftoverApp),
     // A browser lands here from Slack: a refusal or a fault still sends it home, with `failed`.
     route('GET', OAUTH_CALLBACK_PATH, 'callback', callback, { browser: true }),
   ];

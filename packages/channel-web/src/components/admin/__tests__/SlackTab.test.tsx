@@ -11,6 +11,7 @@ import {
   connectSlack,
   disconnectSlack,
   fetchSlackStatus,
+  forgetLeftoverSlackApp,
   goToSlack,
   renameSlackBot,
   resumeSlackInstall,
@@ -26,6 +27,7 @@ vi.mock('@/lib/slack-admin', async (original) => ({
   resumeSlackInstall: vi.fn(),
   disconnectSlack: vi.fn(),
   renameSlackBot: vi.fn(),
+  forgetLeftoverSlackApp: vi.fn(),
   goToSlack: vi.fn(),
 }));
 
@@ -58,14 +60,29 @@ const CONNECTED: SlackStatusRead = {
   workspaceName: 'Canopy Works',
   connectedBy: 'Ada Admin',
   connectedAt: CONNECTED_AT,
+  leftoverApps: [],
 };
+/** The note's last sentence where no Connect will try again (pending, connected). */
+const BY_HAND_ONE = 'To delete it, open it and click Delete App at the bottom of the page.';
+const BY_HAND_SEVERAL = 'To delete one, open it and click Delete App at the bottom of the page.';
 
 const status = vi.mocked(fetchSlackStatus);
 const connect = vi.mocked(connectSlack);
 const resume = vi.mocked(resumeSlackInstall);
 const disconnect = vi.mocked(disconnectSlack);
 const rename = vi.mocked(renameSlackBot);
+const forget = vi.mocked(forgetLeftoverSlackApp);
 const navigate = vi.mocked(goToSlack);
+
+/** The leftover note: the alert holding its first sentence. */
+async function leftoverNote(several = false): Promise<HTMLElement> {
+  const first = await screen.findByText(
+    several
+      ? "We couldn't delete these Slack apps, so they may still be on Slack:"
+      : "We couldn't delete this Slack app, so it may still be on Slack:",
+  );
+  return first.closest('[role="alert"]') as HTMLElement;
+}
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -164,11 +181,37 @@ describe('SlackTab states', () => {
 
   it("pending, with a Slack app Connect couldn't delete: still names it, linked to its own page, and still offers Continue in Slack", async () => {
     renderTab({ ...PENDING, leftoverApps: [LEFT] });
-    const first = await screen.findByText("We couldn't delete this Slack app, so it may still be on Slack:");
-    const alert = first.closest('[role="alert"]') as HTMLElement;
+    const alert = await leftoverNote();
     const link = within(alert).getByRole('link', { name: 'canopy' });
     expect(link).toHaveAttribute('href', 'https://api.slack.com/apps/A0CHZPVDJHX');
+    // Continue in Slack doesn't try again, so the note promises nothing.
+    expect(alert).toHaveTextContent(BY_HAND_ONE);
+    expect(alert).not.toHaveTextContent(/try again/);
     expect(screen.getByRole('button', { name: 'Continue in Slack' })).toBeInTheDocument();
+  });
+
+  it("connected, with a Slack app Connect couldn't delete: names it above the card, and says only the admin can delete it now", async () => {
+    // Allow lands the admin here straight after a Connect whose delete failed.
+    renderTab({ ...CONNECTED, leftoverApps: [LEFT] });
+    const alert = await leftoverNote();
+    expect(within(alert).getByRole('link', { name: 'canopy' })).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps/A0CHZPVDJHX',
+    );
+    expect(alert).toHaveTextContent(BY_HAND_ONE);
+    expect(alert).not.toHaveTextContent(/try again/);
+    const card = screen.getByRole('heading', { level: 2, name: 'Connected to Canopy Works' });
+    // The note comes first on the page.
+    expect(alert.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+
+  it('connected, with several: the plural, still without a promise to try again', async () => {
+    renderTab({ ...CONNECTED, leftoverApps: [LEFT, LEFT_2] });
+    const alert = await leftoverNote(true);
+    expect(alert).toHaveTextContent(BY_HAND_SEVERAL);
+    expect(alert).not.toHaveTextContent(/try again/);
+    expect(within(alert).getAllByRole('link', { name: 'canopy' })).toHaveLength(2);
   });
 
   it('nothing left over: no note', async () => {
@@ -245,6 +288,87 @@ describe('SlackTab states', () => {
     expect(await screen.findByText("We couldn't load your Slack settings.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Connected to Canopy Works')).toBeInTheDocument();
+  });
+});
+
+describe('I deleted it', () => {
+  const button = (alert: HTMLElement, app: { botName: string; appId: string }) =>
+    within(alert).getByRole('button', { name: `I deleted it: ${app.botName} (${app.appId})` });
+
+  it('each app has its own button, named for that app even when two share a name', async () => {
+    renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] });
+    const alert = await leftoverNote(true);
+    for (const app of [LEFT, LEFT_2]) {
+      expect(button(alert, app)).toHaveTextContent('I deleted it');
+      expect(button(alert, app)).toBeEnabled();
+    }
+    expect(forget).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, SlackStatusRead, SlackStatusRead]>([
+    ['not connected', { ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] }, { ...NOT_CONNECTED, leftoverApps: [LEFT] }],
+    ['pending', { ...PENDING, leftoverApps: [LEFT, LEFT_2] }, { ...PENDING, leftoverApps: [LEFT] }],
+    ['connected', { ...CONNECTED, leftoverApps: [LEFT, LEFT_2] }, { ...CONNECTED, leftoverApps: [LEFT] }],
+  ])('%s: sends that app id, then reads the tab again, and the app is gone from the note', async (_label, before, after) => {
+    forget.mockResolvedValueOnce(undefined);
+    renderTab(before, after);
+    fireEvent.click(button(await leftoverNote(true), LEFT_2));
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(forget).toHaveBeenCalledTimes(1);
+    expect(forget).toHaveBeenCalledWith('A0CHHCT1Z8X');
+    const alert = await leftoverNote();
+    expect(within(alert).getAllByRole('link')).toHaveLength(1);
+    expect(within(alert).getByRole('link', { name: 'canopy' })).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps/A0CHZPVDJHX',
+    );
+    // The one left can still be cleared.
+    expect(button(alert, LEFT)).toBeEnabled();
+  });
+
+  it('the last one cleared: the note goes', async () => {
+    forget.mockResolvedValueOnce(undefined);
+    renderTab({ ...CONNECTED, leftoverApps: [LEFT] }, CONNECTED);
+    fireEvent.click(button(await leftoverNote(), LEFT));
+    expect(await screen.findByRole('heading', { level: 2, name: 'Connected to Canopy Works' })).toBeInTheDocument();
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/couldn't delete/)).toBeNull();
+  });
+
+  it('is one request at a time: every button in the note waits while the server answers', async () => {
+    let finish!: () => void;
+    forget.mockReturnValueOnce(new Promise<void>((r) => (finish = r)));
+    renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] }, NOT_CONNECTED);
+    const alert = await leftoverNote(true);
+    fireEvent.click(button(alert, LEFT));
+    await waitFor(() => expect(button(alert, LEFT)).toBeDisabled());
+    expect(button(alert, LEFT_2)).toBeDisabled();
+    fireEvent.click(button(alert, LEFT));
+    fireEvent.click(button(alert, LEFT_2));
+    expect(forget).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: 'Connect' })).toBeInTheDocument();
+  });
+
+  it('a failure says so under the note, never the raw code; nothing is read again, and it can be tried again', async () => {
+    forget.mockRejectedValueOnce(new SlackAdminError(500, 'internal'));
+    renderTab({ ...CONNECTED, leftoverApps: [LEFT] });
+    const alert = await leftoverNote();
+    fireEvent.click(button(alert, LEFT));
+    const error = await screen.findByText(SLACK_ERROR_COPY.generic);
+    expect(error.closest('[role="alert"]')).not.toBe(alert);
+    expect(document.body.textContent).not.toContain('internal');
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(button(alert, LEFT)).toBeEnabled();
+
+    // A second try that works clears the message and reads again.
+    forget.mockResolvedValueOnce(undefined);
+    status.mockResolvedValueOnce(CONNECTED);
+    fireEvent.click(button(alert, LEFT));
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(SLACK_ERROR_COPY.generic)).toBeNull());
+    expect(forget).toHaveBeenCalledTimes(2);
   });
 });
 

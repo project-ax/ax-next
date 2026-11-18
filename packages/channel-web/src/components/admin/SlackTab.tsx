@@ -9,14 +9,14 @@
  * What `GET /admin/slack` says decides what shows:
  *   unavailable    this server doesn't run Slack: one line, nothing to press
  *   not-connected  the three steps and the form, or, without a public https
- *                  address, why Slack can't reach us yet (and no form); and
- *                  above either, any Slack app an earlier Disconnect couldn't
- *                  delete, each linked to its own page on Slack
- *   pending        the app exists but nobody clicked Allow: continue or cancel;
- *                  above it, any leftover app Connect couldn't delete (same
- *                  note as not-connected)
+ *                  address, why Slack can't reach us yet (and no form)
+ *   pending        the app exists but nobody clicked Allow: continue or cancel
  *   connected      the workspace, the bot (with Rename), who added the token
  *                  and when
+ * Above each of the last three, one note names any Slack app an earlier
+ * Disconnect couldn't delete, each linked to its own page on Slack and with
+ * an "I deleted it" button. Only the not-connected note says a Connect will
+ * try again: from the other two, nothing will.
  *
  * THE TWO PASTED TOKENS NEVER LIVE IN REACT STATE. They are uncontrolled
  * password inputs (so React never writes them into a `value` attribute),
@@ -28,8 +28,10 @@
  * After a disconnect one step is the admin's alone: revoking the
  * configuration token on Slack's own page (Slack has no API for it). The
  * alert that says so stays until they leave the tab. An app a disconnect
- * couldn't delete is named in the not-connected view instead. It comes from
- * the status, so it outlasts a reload, until a Connect deletes it (TASK-1132).
+ * couldn't delete is named by that note instead. It comes from the status,
+ * so it outlasts a reload, until the app is gone: a Connect deletes it when
+ * Slack lets it, or the admin deletes it on Slack's page and clicks
+ * "I deleted it" (TASK-1132).
  *
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
@@ -64,6 +66,7 @@ import {
   connectSlack,
   disconnectSlack,
   fetchSlackStatus,
+  forgetLeftoverSlackApp,
   goToSlack,
   renameSlackBot,
   resumeSlackInstall,
@@ -164,39 +167,99 @@ function DisconnectedNotice() {
   );
 }
 
-/** Apps an earlier Disconnect couldn't delete: each links to its own page, since the live app may share its name. */
-function LeftoverAppsNote({ apps }: { apps: LeftoverSlackApp[] }) {
+/** The leftover note's last sentence. Only a Connect tries again, so only the not-connected view promises it. */
+const LEFTOVER_LAST_SENTENCE = {
+  retry: {
+    one: "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page.",
+    several:
+      "We'll try again the next time you connect. To delete one yourself, open it and click Delete App at the bottom of the page.",
+  },
+  byHand: {
+    one: 'To delete it, open it and click Delete App at the bottom of the page.',
+    several: 'To delete one, open it and click Delete App at the bottom of the page.',
+  },
+} as const;
+
+/**
+ * Apps an earlier Disconnect couldn't delete: each links to its own page,
+ * since the live app may share its name. "I deleted it" tells the server the
+ * admin deleted one there, and the tab reads again without it.
+ */
+function LeftoverAppsNote({
+  apps,
+  willRetry,
+  onForgotten,
+}: {
+  apps: LeftoverSlackApp[];
+  /** Nothing is connected, so the next Connect tries to delete them again. */
+  willRetry: boolean;
+  onForgotten: () => void;
+}) {
+  const [busyAppId, setBusyAppId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   if (apps.length === 0) return null;
   const one = apps.length === 1;
+
+  async function forget(appId: string) {
+    if (busyAppId !== null) return;
+    setBusyAppId(appId);
+    setError(null);
+    try {
+      await forgetLeftoverSlackApp(appId);
+      // Don't count on the re-read remounting this note: one that lands
+      // before React paints "loading" would leave every button waiting.
+      setBusyAppId(null);
+      onForgotten();
+    } catch (err) {
+      setBusyAppId(null);
+      setError(slackErrorCopy(err).message);
+    }
+  }
+
   return (
-    <Alert>
-      <AlertDescription className="flex flex-col gap-2">
-        <p>
-          {one
-            ? "We couldn't delete this Slack app, so it may still be on Slack:"
-            : "We couldn't delete these Slack apps, so they may still be on Slack:"}
-        </p>
-        <ul className="flex list-disc flex-col gap-1 pl-5">
-          {apps.map((app) => (
-            <li key={app.appId}>
-              <a
-                href={slackAppSettingsUrl(app.appId)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-primary underline underline-offset-4"
-              >
-                {app.botName}
-              </a>
-            </li>
-          ))}
-        </ul>
-        <p>
-          {one
-            ? "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page."
-            : "We'll try again the next time you connect. To delete one yourself, open it and click Delete App at the bottom of the page."}
-        </p>
-      </AlertDescription>
-    </Alert>
+    <div className="flex flex-col gap-3">
+      <Alert>
+        <AlertDescription className="flex flex-col gap-2">
+          <p>
+            {one
+              ? "We couldn't delete this Slack app, so it may still be on Slack:"
+              : "We couldn't delete these Slack apps, so they may still be on Slack:"}
+          </p>
+          <ul className="flex list-disc flex-col gap-1 pl-5">
+            {apps.map((app) => (
+              <li key={app.appId}>
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <a
+                    href={slackAppSettingsUrl(app.appId)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-primary underline underline-offset-4"
+                  >
+                    {app.botName}
+                  </a>
+                  {/* Named for its app: two leftovers often share a name. */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`I deleted it: ${app.botName} (${app.appId})`}
+                    disabled={busyAppId !== null}
+                    onClick={() => void forget(app.appId)}
+                  >
+                    {busyAppId === app.appId ? <Busy>I deleted it</Busy> : 'I deleted it'}
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p>{LEFTOVER_LAST_SENTENCE[willRetry ? 'retry' : 'byHand'][one ? 'one' : 'several']}</p>
+        </AlertDescription>
+      </Alert>
+      {error !== null && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+    </div>
   );
 }
 
@@ -709,14 +772,18 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
   );
 }
 
-function StatusView({ status, ...actions }: { status: SlackStatusRead } & Actions) {
+function StatusView({
+  status,
+  onForgotten,
+  ...actions
+}: { status: SlackStatusRead; onForgotten: () => void } & Actions) {
   switch (status.state) {
     case 'unavailable':
       return <Unavailable />;
     case 'not-connected':
       return (
         <>
-          <LeftoverAppsNote apps={status.leftoverApps} />
+          <LeftoverAppsNote apps={status.leftoverApps} willRetry onForgotten={onForgotten} />
           {status.canConnect ? (
             <ConnectForm defaultBotName={status.defaultBotName} onChanged={actions.onChanged} />
           ) : (
@@ -727,12 +794,17 @@ function StatusView({ status, ...actions }: { status: SlackStatusRead } & Action
     case 'pending':
       return (
         <>
-          <LeftoverAppsNote apps={status.leftoverApps} />
+          <LeftoverAppsNote apps={status.leftoverApps} willRetry={false} onForgotten={onForgotten} />
           <PendingCard status={status} {...actions} />
         </>
       );
     case 'connected':
-      return <ConnectedCard status={status} {...actions} />;
+      return (
+        <>
+          <LeftoverAppsNote apps={status.leftoverApps} willRetry={false} onForgotten={onForgotten} />
+          <ConnectedCard status={status} {...actions} />
+        </>
+      );
   }
 }
 
@@ -775,6 +847,10 @@ export function SlackTab() {
     setNotice({ kind: 'changed' });
     void read();
   }, [read]);
+  // The note itself was the feedback: read again, and the app is gone from it.
+  const onForgotten = useCallback(() => {
+    void read();
+  }, [read]);
 
   return (
     <div className="flex flex-col gap-6 font-sans">
@@ -792,7 +868,13 @@ export function SlackTab() {
       {load.kind === 'loading' && <Loading />}
       {load.kind === 'error' && <ReadError onRetry={() => void read()} />}
       {load.kind === 'ready' && (
-        <StatusView status={load.status} onDisconnected={onDisconnected} onRenamed={onRenamed} onChanged={onChanged} />
+        <StatusView
+          status={load.status}
+          onDisconnected={onDisconnected}
+          onRenamed={onRenamed}
+          onChanged={onChanged}
+          onForgotten={onForgotten}
+        />
       )}
     </div>
   );

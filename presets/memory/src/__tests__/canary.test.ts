@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -764,6 +764,18 @@ describe('@ax/preset-memory canary', () => {
       status: 409,
       json: { error: 'not-connected' },
     });
+    // "I deleted it" (TASK-1132) too: no CSRF header, no entry. With it, the
+    // route's own answer (nothing is left over here, so nothing to forget),
+    // which an unmounted POST (the router's 405) could not give.
+    const noCsrfForget = await fetch(url('/admin/slack/forget-leftover-app'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+      body: JSON.stringify({ appId: 'A0CANARYAPP' }),
+    });
+    expect(noCsrfForget.status).toBe(403);
+    expect(
+      await apiJson('POST', '/admin/slack/forget-leftover-app', CANARY_ADMIN, { appId: 'A0CANARYAPP' }),
+    ).toEqual({ status: 200, json: {} });
 
     // ...and Slack's deliveries skip it: no CSRF header, and an install that
     // doesn't exist gets a "not found", compared with one fetched here rather

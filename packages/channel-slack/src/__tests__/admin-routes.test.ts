@@ -30,6 +30,8 @@ const ORIGIN = 'https://ax.example';
 const HTTP_ORIGIN = 'http://ax.internal:8080';
 const ICON_URL = `${ORIGIN}/api/branding/logo/light`;
 const CALLBACK = '/admin/slack/oauth/callback';
+/** "I deleted it": the admin deleted a leftover app on Slack's page themselves (TASK-1132). */
+const FORGET = '/admin/slack/forget-leftover-app';
 const REDIRECT_URI = `${ORIGIN}${CALLBACK}`;
 const NOW_MS = Date.parse('2026-11-13T12:00:00.000Z');
 
@@ -568,6 +570,8 @@ function world(
     callback: (query: Record<string, string>, as: TestUser | null = ADA) =>
       call('GET', CALLBACK, { as, query }),
     disconnect: (as: TestUser | null = ADA) => call('POST', '/admin/slack/disconnect', { as }),
+    forget: (body: unknown = { appId: LEFT_1.appId }, as: TestUser | null = ADA) =>
+      call('POST', FORGET, { as, body }),
   };
 }
 
@@ -625,13 +629,14 @@ const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
 // ── The routes ──────────────────────────────────────────────────────────────
 
 describe('the route table', () => {
-  it('is exactly the six admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
+  it('is exactly the seven admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
     const { routes } = world();
     expect(routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
       'GET /admin/slack',
       'GET /admin/slack/oauth/callback',
       'POST /admin/slack/connect',
       'POST /admin/slack/disconnect',
+      'POST /admin/slack/forget-leftover-app',
       'POST /admin/slack/install-url',
       'POST /admin/slack/rename',
     ]);
@@ -735,7 +740,7 @@ describe('GET /admin/slack', () => {
     });
   });
 
-  it("not-connected lists the apps Disconnect couldn't delete, oldest first, by name and app id only", async () => {
+  it("every state lists the apps Disconnect couldn't delete, oldest first, by name and app id only", async () => {
     const w = world();
     leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 60_000);
     leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
@@ -769,11 +774,21 @@ describe('GET /admin/slack', () => {
       ],
     });
 
-    // Connected never carries it: no Connect will retry, so the list would only linger.
+    // Connected lists them too. Allow lands the admin here straight after a
+    // Connect whose delete failed, so a list missing here would read as "deleted".
     w.advance(90_000);
     expect((await w.callback({ code: CODE, state: stateOf(connected) })).location).toBe(back('connected'));
-    expect((await w.status()).body).toMatchObject({ state: 'connected' });
-    expect((await w.status()).body).not.toHaveProperty('leftoverApps');
+    expect((await w.status()).body).toEqual({
+      state: 'connected',
+      botName: 'Canopy Bot',
+      workspaceName: 'Canopy Works',
+      connectedBy: 'Ada Admin',
+      connectedAt: new Date(NOW_MS).toISOString(),
+      leftoverApps: [
+        { botName: 'First Bot', appId: LEFT_1.appId },
+        { botName: 'Second Bot', appId: LEFT_2.appId },
+      ],
+    });
   });
 
   it('pending and connected carry botName, connectedBy and connectedAt (and workspaceName when connected)', async () => {
@@ -797,6 +812,7 @@ describe('GET /admin/slack', () => {
       workspaceName: 'Canopy Works',
       connectedBy: 'Ada Admin',
       connectedAt: new Date(NOW_MS).toISOString(),
+      leftoverApps: [],
     });
   });
 
@@ -1698,14 +1714,15 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     ]);
   });
 
-  it("a leftover app Slack won't delete stays listed, logged code-only under its own install id; Connect still goes ahead", async () => {
+  it("a leftover app Slack won't delete stays listed in every state after, logged code-only under its own install id; Connect still goes ahead", async () => {
     const w = world();
     leaveApp(w, LEFT_1);
     // Say the new token's owner can't manage it.
     w.slack.on.deleteApp = async (_token, appId) => {
       if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'no_permission');
     };
-    expect((await w.connect()).status).toBe(200);
+    const connected = await w.connect();
+    expect(connected.status).toBe(200);
     expect(slackMethods(w).filter((m) => m === 'createApp')).toHaveLength(1);
     expect(w.lines).toEqual([
       {
@@ -1721,11 +1738,20 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       leftoverApps: [{ botName: 'Canopy Bot', appId: LEFT_1.appId }],
     });
 
-    // Cancel deletes the new app; the one Slack wouldn't delete is still named.
+    // The normal flow never stops on that page: Connect goes straight to Slack,
+    // and Allow lands the admin on the connected card. It still names the app.
+    expect((await w.callback({ code: CODE, state: stateOf(connected) })).location).toBe(back('connected'));
+    expect((await w.status()).body).toMatchObject({
+      state: 'connected',
+      leftoverApps: [{ botName: 'Canopy Bot', appId: LEFT_1.appId }],
+    });
+
+    // Disconnect deletes the new app; the one Slack wouldn't delete is still named.
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
-    expect(((await w.status()).body as { leftoverApps: unknown }).leftoverApps).toEqual([
-      { botName: 'Canopy Bot', appId: LEFT_1.appId },
-    ]);
+    expect((await w.status()).body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'Canopy Bot', appId: LEFT_1.appId }],
+    });
   });
 
   it.each(['no_permission', 'app_not_owned_by_manager_app'])(
@@ -1855,6 +1881,141 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     expect(w.memory.leftovers.size).toBe(0);
     // Only the first forget's failure was logged.
     expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toHaveLength(1);
+  });
+});
+
+describe('POST /admin/slack/forget-leftover-app: "I deleted it" (TASK-1132)', () => {
+  it('on a connected install, forgets the app the admin deleted by hand and answers {}; Slack and the vault are never asked', async () => {
+    // A note on a connected card can't wait for a Connect to clear it.
+    const { w } = await connectedWorld();
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
+    leaveApp(w, LEFT_2, 'Second Bot');
+    const slackMark = w.slack.calls.length;
+    const vaultMark = w.vaultCalls.length;
+    const mark = w.trail.length;
+    const res = await w.forget({ appId: LEFT_1.appId });
+    expect(res).toStrictEqual({ status: 200, how: 'json', body: {}, location: null, headers: {} });
+    expect(w.trail.slice(mark)).toEqual(['store:leftoverApps', 'store:forgetLeftoverApp']);
+    expect(w.memory.calls.filter((c) => c.method === 'forgetLeftoverApp').map((c) => c.args)).toEqual([
+      [LEFT_1.installId],
+    ]);
+    expect(w.slack.calls.slice(slackMark)).toEqual([]);
+    expect(w.vaultCalls.slice(vaultMark)).toEqual([]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_2.installId]);
+    expect((await w.status()).body).toMatchObject({
+      state: 'connected',
+      leftoverApps: [{ botName: 'Second Bot', appId: LEFT_2.appId }],
+    });
+    // The install itself is untouched.
+    expect(onlyRow(w)).toMatchObject({ status: 'active', appId: APP.appId });
+    expect(w.lines).toEqual([]);
+  });
+
+  it('forgets every entry with that app id (two removed installs can name one app), and nothing else', async () => {
+    const w = world();
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 180_000);
+    leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 120_000);
+    leaveApp(w, { installId: 'inst_left_again', appId: LEFT_1.appId }, 'First Bot');
+    expect(await w.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 200, body: {} });
+    expect(w.memory.calls.filter((c) => c.method === 'forgetLeftoverApp').map((c) => c.args)).toEqual([
+      [LEFT_1.installId],
+      ['inst_left_again'],
+    ]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_2.installId]);
+    expect((await w.status()).body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'Second Bot', appId: LEFT_2.appId }],
+    });
+  });
+
+  it('an app id it no longer lists, or never did → 200 and nothing changes, so a double click is harmless', async () => {
+    const w = world();
+    leaveApp(w, LEFT_1);
+    expect(await w.forget({ appId: 'A07NEVERLEFT' })).toMatchObject({ status: 200, body: {} });
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    expect(await w.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 200, body: {} });
+    expect(await w.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 200, body: {} });
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.memory.calls.filter((c) => c.method === 'forgetLeftoverApp')).toHaveLength(1);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('an appId that is not a Slack id → 400 invalid-app-id, before the store is read', async () => {
+    const w = world();
+    leaveApp(w, LEFT_1);
+    for (const body of [
+      {},
+      { appId: null },
+      { appId: 5 },
+      { appId: [LEFT_1.appId] },
+      { appId: '' },
+      { appId: 'A'.repeat(65) },
+      { appId: 'A0/../x' },
+      { appId: 'javascript:alert(1)' },
+      { appId: `${LEFT_1.appId} ` },
+      { app_id: LEFT_1.appId },
+    ]) {
+      expect(await w.forget(body), JSON.stringify(body)).toMatchObject({
+        status: 400,
+        body: { error: 'invalid-app-id' },
+      });
+    }
+    expect(w.trail).toEqual([]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+  });
+
+  it('a body that is not a JSON object → 400 invalid-body; one over the cap → 413', async () => {
+    const w = world();
+    leaveApp(w, LEFT_1);
+    for (const body of ['', 'not json', '[1,2]', '"text"', 'null', Buffer.from([0xff, 0xfe, 0x7b, 0x7d])]) {
+      expect(await w.forget(body), String(body)).toMatchObject({ status: 400, body: { error: 'invalid-body' } });
+    }
+    const huge = JSON.stringify({ appId: LEFT_1.appId, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) });
+    expect(await w.forget(huge)).toMatchObject({ status: 413, body: { error: 'body-too-large' } });
+    expect(w.trail).toEqual([]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+  });
+
+  it('a store fault reading or forgetting → 500, logged with a code only', async () => {
+    for (const method of ['leftoverApps', 'forgetLeftoverApp'] as const) {
+      const w = world();
+      leaveApp(w, LEFT_1);
+      w.memory.failures.set(method, Object.assign(new Error(`relation gone ${CLIENT_SECRET}`), { code: '42P01' }));
+      expect(await w.forget({ appId: LEFT_1.appId }), method).toMatchObject({
+        status: 500,
+        body: { error: 'internal' },
+      });
+      expect(w.lines, method).toEqual([
+        { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'forget-leftover-app', code: '42P01' } },
+      ]);
+      expect([...w.memory.leftovers.keys()], method).toEqual([LEFT_1.installId]);
+    }
+  });
+
+  it("takes the admin lock: during a Connect's leftover pass it waits, then forgets the app", async () => {
+    const w = world();
+    leaveApp(w, LEFT_1);
+    const gate = deferred();
+    w.slack.on.deleteApp = async (_token, appId) => {
+      if (appId !== LEFT_1.appId) return;
+      await gate.promise;
+      throw new SlackApiError('apps.manifest.delete', 'no_permission');
+    };
+    const connecting = w.connect();
+    await settle();
+    const held = ['store:current', 'store:leftoverApps', 'slack:deleteApp'];
+    expect(w.trail).toEqual(held);
+    const forgetting = w.forget({ appId: LEFT_1.appId });
+    await settle();
+    // The Connect holds the lock while Slack answers: the forget hasn't read anything.
+    expect(w.trail).toEqual(held);
+    gate.resolve();
+    expect((await connecting).status).toBe(200);
+    expect(await forgetting).toMatchObject({ status: 200, body: {} });
+    expect(w.trail.slice(-2)).toEqual(['store:leftoverApps', 'store:forgetLeftoverApp']);
+    expect(w.trail.indexOf('slack:createApp')).toBeLessThan(w.trail.lastIndexOf('store:leftoverApps'));
+    expect(w.memory.leftovers.size).toBe(0);
   });
 });
 
@@ -2330,9 +2491,11 @@ describe('secrets never leave', () => {
 
     // The whole happy path, and every read of it.
     const happy = track((await connectedWorld()).w);
+    leaveApp(happy, LEFT_1);
     await happy.status();
     await happy.installUrl();
     await happy.rename();
+    await happy.forget();
     await happy.disconnect();
     await happy.status();
 
@@ -2400,6 +2563,12 @@ describe('secrets never leave', () => {
     leftoverList.memory.failures.set('leftoverApps', leak('list'));
     await leftoverList.connect();
     await leftoverList.status();
+    await leftoverList.forget();
+    // "I deleted it" (TASK-1132): the forget failing.
+    const forgetRoute = track(world());
+    leaveApp(forgetRoute, LEFT_1);
+    forgetRoute.memory.failures.set('forgetLeftoverApp', leak('forget'));
+    await forgetRoute.forget();
 
     // Rename: rotate failing, the update failing, the row write failing, the vault failing.
     const renameRotate = track((await connectedWorld()).w);

@@ -646,7 +646,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the fourteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the fifteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -660,6 +660,12 @@ describe('@ax/channel-slack plugin', () => {
       { method: 'POST', path: '/admin/slack/install-url', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/rename', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/disconnect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      {
+        method: 'POST',
+        path: '/admin/slack/forget-leftover-app',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
       { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
@@ -706,6 +712,7 @@ describe('@ax/channel-slack plugin', () => {
         workspaceName: 'Canopy Works',
         connectedBy: 'Ada Admin',
         connectedAt: expect.any(String),
+        leftoverApps: [],
       },
       done: true,
     });
@@ -1302,6 +1309,32 @@ describe('@ax/channel-slack plugin', () => {
     expect([...live]).toEqual(['A07SECONDAP2']);
   });
 
+  it('"I deleted it" forgets that app on Postgres and nothing else, even while connected; the status stops naming it (TASK-1132)', async () => {
+    const { call } = await boot();
+    await insertActiveInstall();
+    await sql`
+      INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
+      VALUES ('inst_left_1', 'A07LEFTAPP01', 'canopy'), ('inst_left_2', 'A07LEFTAPP02', 'canopy')`.execute(probe);
+    const forget = await call(
+      'POST',
+      '/admin/slack/forget-leftover-app',
+      request('POST', '/admin/slack/forget-leftover-app', {
+        as: ADMIN.id,
+        body: Buffer.from(JSON.stringify({ appId: 'A07LEFTAPP01' })),
+      }),
+    );
+    expect(forget).toEqual({ status: 200, body: {}, done: true });
+    const left = await sql<{ install_id: string }>`
+      SELECT install_id FROM channel_slack_v1_leftover_apps`.execute(probe);
+    expect(left.rows).toEqual([{ install_id: 'inst_left_2' }]);
+    const status = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
+    expect(status.body).toMatchObject({
+      state: 'connected',
+      leftoverApps: [{ botName: 'canopy', appId: 'A07LEFTAPP02' }],
+    });
+    expect(await installCount()).toBe(1);
+  });
+
   it('a bad signature is refused with 401 and nothing is dispatched', async () => {
     const { s, call, harness } = await boot();
     await insertActiveInstall();
@@ -1787,7 +1820,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(14);
+    expect(s.routes).toHaveLength(15);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
