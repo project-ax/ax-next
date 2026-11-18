@@ -9,7 +9,9 @@
  * What `GET /admin/slack` says decides what shows:
  *   unavailable    this server doesn't run Slack: one line, nothing to press
  *   not-connected  the three steps and the form, or, without a public https
- *                  address, why Slack can't reach us yet (and no form)
+ *                  address, why Slack can't reach us yet (and no form); and
+ *                  above either, any Slack app an earlier Disconnect couldn't
+ *                  delete, each linked to its own page on Slack
  *   pending        the app exists but nobody clicked Allow: continue or cancel
  *   connected      the workspace, the bot (with Rename), who added the token
  *                  and when
@@ -23,7 +25,9 @@
  *
  * After a disconnect one step is the admin's alone: revoking the
  * configuration token on Slack's own page (Slack has no API for it). The
- * alert that says so stays until they leave the tab.
+ * alert that says so stays until they leave the tab. An app a disconnect
+ * couldn't delete is named in the not-connected view instead. It comes from
+ * the status, so it outlasts a reload, until a Connect deletes it (TASK-1132).
  *
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
@@ -62,8 +66,10 @@ import {
   renameSlackBot,
   resumeSlackInstall,
   SlackAdminError,
+  slackAppSettingsUrl,
   slackErrorCopy,
   slackStateChanged,
+  type LeftoverSlackApp,
   type SlackErrorField,
   type SlackStatus,
   type SlackStatusRead,
@@ -75,13 +81,13 @@ type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; status: S
 
 /** A note above the tab that outlives the re-read after it. */
 type Notice =
-  | { kind: 'disconnected'; appDeleted: boolean }
+  | { kind: 'disconnected' }
   | { kind: 'renamed'; botName: string }
   | { kind: 'changed' };
 
 interface Actions {
   /** A disconnect went through: say what's left to do, then read again. */
-  onDisconnected: (appDeleted: boolean) => void;
+  onDisconnected: () => void;
   /** A rename went through: say what Slack shows now, then read again. */
   onRenamed: (botName: string) => void;
   /** Someone else changed things first: read again, and say why it moved. */
@@ -142,7 +148,7 @@ function ReadError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function DisconnectedNotice({ appDeleted }: { appDeleted: boolean }) {
+function DisconnectedNotice() {
   return (
     <Alert>
       <AlertDescription className="flex flex-col gap-2">
@@ -151,7 +157,42 @@ function DisconnectedNotice({ appDeleted }: { appDeleted: boolean }) {
           <strong>Your App Configuration Tokens</strong>, click <strong>Revoke</strong>. Slack doesn&apos;t let
           us do that part.
         </p>
-        {!appDeleted && <p>We couldn&apos;t remove the Slack app itself. Delete it on the same page.</p>}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/** Apps an earlier Disconnect couldn't delete: each links to its own page, since the live app may share its name. */
+function LeftoverAppsNote({ apps }: { apps: LeftoverSlackApp[] }) {
+  if (apps.length === 0) return null;
+  const one = apps.length === 1;
+  return (
+    <Alert>
+      <AlertDescription className="flex flex-col gap-2">
+        <p>
+          {one
+            ? "We couldn't delete this Slack app, so it may still be on Slack:"
+            : "We couldn't delete these Slack apps, so they may still be on Slack:"}
+        </p>
+        <ul className="flex list-disc flex-col gap-1 pl-5">
+          {apps.map((app) => (
+            <li key={app.appId}>
+              <a
+                href={slackAppSettingsUrl(app.appId)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-primary underline underline-offset-4"
+              >
+                {app.botName}
+              </a>
+            </li>
+          ))}
+        </ul>
+        <p>
+          {one
+            ? "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page."
+            : "We'll try again the next time you connect. To delete one yourself, open it and click Delete App at the bottom of the page."}
+        </p>
       </AlertDescription>
     </Alert>
   );
@@ -385,8 +426,8 @@ function DisconnectDialog({
     setBusy(true);
     setError(null);
     try {
-      const { appDeleted } = await disconnectSlack();
-      onDisconnected(appDeleted);
+      await disconnectSlack();
+      onDisconnected();
     } catch (err) {
       setBusy(false);
       if (slackStateChanged(err)) {
@@ -671,10 +712,15 @@ function StatusView({ status, ...actions }: { status: SlackStatusRead } & Action
     case 'unavailable':
       return <Unavailable />;
     case 'not-connected':
-      return status.canConnect ? (
-        <ConnectForm defaultBotName={status.defaultBotName} onChanged={actions.onChanged} />
-      ) : (
-        <NeedsHttps />
+      return (
+        <>
+          <LeftoverAppsNote apps={status.leftoverApps} />
+          {status.canConnect ? (
+            <ConnectForm defaultBotName={status.defaultBotName} onChanged={actions.onChanged} />
+          ) : (
+            <NeedsHttps />
+          )}
+        </>
       );
     case 'pending':
       return <PendingCard status={status} {...actions} />;
@@ -707,13 +753,10 @@ export function SlackTab() {
     };
   }, [read]);
 
-  const onDisconnected = useCallback(
-    (appDeleted: boolean) => {
-      setNotice({ kind: 'disconnected', appDeleted });
-      void read();
-    },
-    [read],
-  );
+  const onDisconnected = useCallback(() => {
+    setNotice({ kind: 'disconnected' });
+    void read();
+  }, [read]);
   const onRenamed = useCallback(
     (botName: string) => {
       setNotice({ kind: 'renamed', botName });
@@ -728,7 +771,7 @@ export function SlackTab() {
 
   return (
     <div className="flex flex-col gap-6 font-sans">
-      {notice?.kind === 'disconnected' && <DisconnectedNotice appDeleted={notice.appDeleted} />}
+      {notice?.kind === 'disconnected' && <DisconnectedNotice />}
       {notice?.kind === 'renamed' && (
         <Alert>
           <AlertDescription>Renamed. People in Slack now see the bot as {notice.botName}.</AlertDescription>

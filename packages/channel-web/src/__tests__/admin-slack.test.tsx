@@ -13,6 +13,7 @@ import {
   goToSlack,
   renameSlackBot,
   resumeSlackInstall,
+  slackAppSettingsUrl,
   slackErrorCopy,
   slackStateChanged,
 } from '../lib/slack-admin';
@@ -70,7 +71,12 @@ afterEach(() => {
 describe('fetchSlackStatus', () => {
   it('GETs /admin/slack with the session cookie and returns each state, extra fields dropped', async () => {
     const states = [
-      { state: 'not-connected', defaultBotName: 'canopy', canConnect: true },
+      {
+        state: 'not-connected',
+        defaultBotName: 'canopy',
+        canConnect: true,
+        leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX' }],
+      },
       { state: 'pending', botName: 'canopy', connectedBy: 'Ada Admin', connectedAt: '2026-11-13T12:00:00.000Z' },
       {
         state: 'connected',
@@ -81,13 +87,52 @@ describe('fetchSlackStatus', () => {
       },
     ];
     for (const s of states) {
-      answer = () => json(200, { ...s, installId: 'should-not-pass-through' });
+      const sent =
+        s.state === 'not-connected'
+          ? {
+              ...s,
+              leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX', installId: 'should-not-pass-through' }],
+            }
+          : s;
+      answer = () => json(200, { ...sent, installId: 'should-not-pass-through' });
       expect(await fetchSlackStatus()).toEqual(s);
     }
     expect(calls).toHaveLength(3);
     for (const c of calls) {
       expect(c).toMatchObject({ url: '/admin/slack', method: 'GET', credentials: 'include' });
     }
+  });
+
+  it('leftoverApps: a missing or broken list reads as none, and only well-formed apps are kept', async () => {
+    const base = { state: 'not-connected', defaultBotName: 'canopy', canConnect: true };
+    for (const broken of [undefined, 'x', null]) {
+      answer = () => json(200, { ...base, leftoverApps: broken });
+      expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [] });
+    }
+    answer = () => json(200, base);
+    expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [] });
+
+    const good = { botName: 'ax', appId: 'A0CHZPVDJHX' };
+    answer = () =>
+      json(200, {
+        ...base,
+        leftoverApps: [
+          null,
+          'A0X',
+          { botName: '', appId: 'A01' },
+          { botName: 5, appId: 'A01' },
+          { botName: 'x'.repeat(81), appId: 'A01' },
+          { botName: 'ax', appId: 'A0/../x' },
+          { botName: 'ax', appId: 'javascript:alert(1)' },
+          { botName: 'ax', appId: 'A'.repeat(65) },
+          good,
+        ],
+      });
+    expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [good] });
+  });
+
+  it('slackAppSettingsUrl points at that one app on api.slack.com', () => {
+    expect(slackAppSettingsUrl('A0CHZPVDJHX')).toBe('https://api.slack.com/apps/A0CHZPVDJHX');
   });
 
   it('a 404, or a page that is not JSON (the app shell), means Slack is unavailable here', async () => {

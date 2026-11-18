@@ -36,8 +36,15 @@ const REFRESH = fakeConfigRefreshToken();
 const CONNECTED_AT = '2026-11-13T12:00:00.000Z';
 const CONNECTED_DATE = new Date(CONNECTED_AT).toLocaleDateString(undefined, { dateStyle: 'medium' });
 
-const NOT_CONNECTED: SlackStatusRead = { state: 'not-connected', defaultBotName: 'canopy', canConnect: true };
-const NO_HTTPS: SlackStatusRead = { state: 'not-connected', defaultBotName: 'canopy', canConnect: false };
+const NOT_CONNECTED: SlackStatusRead = { state: 'not-connected', defaultBotName: 'canopy', canConnect: true, leftoverApps: [] };
+const NO_HTTPS: SlackStatusRead = {
+  state: 'not-connected',
+  defaultBotName: 'canopy',
+  canConnect: false,
+  leftoverApps: [],
+};
+const LEFT = { botName: 'canopy', appId: 'A0CHZPVDJHX' };
+const LEFT_2 = { botName: 'canopy', appId: 'A0CHHCT1Z8X' };
 const PENDING: SlackStatusRead = {
   state: 'pending',
   botName: 'canopy',
@@ -116,6 +123,48 @@ describe('SlackTab states', () => {
     expect(alert).toHaveTextContent('onboarding.publicBaseUrl');
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
     expect(screen.queryByLabelText(/access token/i)).toBeNull();
+  });
+
+  it("not connected, with a Slack app we couldn't delete: names it, links to its own settings page, and still offers Connect", async () => {
+    renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT] });
+    const first = await screen.findByText("We couldn't delete this Slack app, so it may still be on Slack:");
+    const alert = first.closest('[role="alert"]') as HTMLElement;
+    expect(alert).toHaveTextContent(
+      "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page.",
+    );
+    const link = within(alert).getByRole('link', { name: 'canopy' });
+    expect(link).toHaveAttribute('href', 'https://api.slack.com/apps/A0CHZPVDJHX');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
+  });
+
+  it('several apps: each listed and linked to its own page, even with the same name', async () => {
+    renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] });
+    const first = await screen.findByText("We couldn't delete these Slack apps, so they may still be on Slack:");
+    const alert = first.closest('[role="alert"]') as HTMLElement;
+    expect(alert).toHaveTextContent(
+      "We'll try again the next time you connect. To delete one yourself, open it and click Delete App at the bottom of the page.",
+    );
+    const links = within(alert).getAllByRole('link', { name: 'canopy' });
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute('href', expect.stringMatching(/A0CHZPVDJHX$/));
+    expect(links[1]).toHaveAttribute('href', expect.stringMatching(/A0CHHCT1Z8X$/));
+  });
+
+  it('no public https address: the note shows above the https explainer', async () => {
+    renderTab({ ...NO_HTTPS, leftoverApps: [LEFT] });
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toHaveTextContent("We couldn't delete this Slack app");
+    expect(alerts[1]).toHaveTextContent('Slack needs a public https address to reach this server');
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+  });
+
+  it('nothing left over: no note', async () => {
+    renderTab(NOT_CONNECTED);
+    await screen.findByRole('button', { name: 'Connect' });
+    expect(screen.queryByText(/couldn't delete/)).toBeNull();
   });
 
   it('not connected: the three steps, the privacy note, write-only token fields and a prefilled name', async () => {
@@ -348,14 +397,18 @@ describe('Disconnect', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('if the Slack app could not be deleted, says to delete it on the same page', async () => {
+  it('if the Slack app could not be deleted, the re-read names it with its own link, and the Revoke note says nothing more', async () => {
     disconnect.mockResolvedValueOnce({ appDeleted: false });
-    renderTab(CONNECTED, NOT_CONNECTED);
+    renderTab(CONNECTED, { ...NOT_CONNECTED, leftoverApps: [LEFT] });
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
     const note = await screen.findByText(/One more step only you can do/);
-    expect(note.closest('[role="alert"]')).toHaveTextContent(
-      "We couldn't remove the Slack app itself. Delete it on the same page.",
+    expect(note.closest('[role="alert"]')).not.toHaveTextContent("We couldn't remove the Slack app itself.");
+    const left = await screen.findByText(/We couldn't delete this Slack app/);
+    expect(left.closest('[role="alert"]')).toHaveTextContent('canopy');
+    expect(screen.getByRole('link', { name: 'canopy' })).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps/A0CHZPVDJHX',
     );
   });
 
