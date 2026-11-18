@@ -7,3 +7,5 @@ Memory stops saving the agent's play-by-play of its own work. "Created an artifa
 What the agent told you stays: recommendations, lists, numbers, forecasts, explanations. So does who it is: its name, its emoji, its default style and the standing rules you gave it.
 
 The filter is a list of action words, tuned to err toward keeping. Narration with a verb we didn't list still gets through, and a few real answers phrased like an action ("built a training plan") get dropped.
+
+For whoever runs the deployment: `packages/memory/scripts/clean-assistant-narration.mjs` removes the rows saved before this change. It runs dry by default, prints only counts, and its header is the runbook.
