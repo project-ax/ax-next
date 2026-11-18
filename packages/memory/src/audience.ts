@@ -158,7 +158,10 @@ function nameWords(text: string): string[] {
  * - every word of it is a word of some speaker's name: first name, surname or
  *   both, in either order, or a member id (`vinay`, `pulim_vinay`,
  *   `uhte83xe1` for `Vinay Pulim` + `UHTE83XE1`). The words may come from
- *   different names: they are all the same conversation's speakers. Or
+ *   different names: they are all the same conversation's speakers. The
+ *   extractor's own word for the speaker (`user`) counts beside a name word
+ *   (`user_vinay`, `vinay_user`), but a subject of `user` alone is
+ *   {@link isPersonSubject}'s. Or
  * - its words run together spell one name's words run together
  *   (`vinaypulim` for `Vinay Pulim`, `vinay_pulim` for `VinayPulim`).
  *
@@ -171,8 +174,9 @@ function nameWords(text: string): string[] {
  * compares words with them, so the most a hostile name can do is make memory
  * drop facts, and only in the conversation that answered with it. Accepted
  * residuals: misses nicknames and initials the label doesn't show (`vp`),
- * titles (`mr_pulim`), role words (`user_vinay`), transliterations, digits
- * added to a name (`vinay2`), and anyone named only in what's said; drops a
+ * titles (`mr_pulim`), role words other than `user` (`speaker_vinay`,
+ * `member_vinay`), transliterations, digits added to a name (`vinay2`), and
+ * anyone named only in what's said; drops a
  * thing whose name is all the speaker's name words, and a work subject made
  * of a display name's words ("Standup Team" drops `team_standup`).
  *
@@ -187,7 +191,10 @@ export function namesASpeaker(about: string, speakerNames: readonly string[]): b
   const words = nameWords(about);
   if (words.length === 0) return false;
   const { words: known, runTogether } = speakerIndex(speakerNames);
-  return words.every((word) => known.has(word)) || runTogether.has(words.join(''));
+  // The extractor's own speaker word counts as known beside a real name word
+  // (`user_vinay`), but never alone: that is `isPersonSubject`'s one job.
+  const speakerWordsOnly = words.every((word) => known.has(word) || word === SPEAKER_SUBJECT);
+  return (speakerWordsOnly && words.some((word) => known.has(word))) || runTogether.has(words.join(''));
 }
 
 /** A name list's words, and each name's words run together. */

@@ -578,6 +578,11 @@ const NAMES_A_SPEAKER = [
   'vinaypulim',
   'uhte83xe1',
   'vinay_uhte83xe1',
+  // The extractor's own speaker word next to a real name: still the speaker.
+  'user_vinay',
+  'vinay_user',
+  'user_uhte83xe1',
+  'User Vinay',
   FULLWIDTH_VINAY,
   ZWSP_VINAY,
 ];
@@ -590,7 +595,10 @@ const NOT_A_SPEAKER = [
   'vinays_team',
   'vinay_s_team',
   'vinay_laptop',
-  'user_vinay',
+  // A role word beside a non-name is about something else. (The speaker word
+  // alone is isPersonSubject's job: see the test below.)
+  'user_settings',
+  'team_user',
   'billing_service',
   'assistant',
   'v',
@@ -860,6 +868,14 @@ describe("namesASpeaker — a subject made of a speaker's names (TASK-1146)", ()
 
   it.each(NOT_A_SPEAKER)('%j does not', (about) => {
     expect(namesASpeaker(about, NAMES)).toBe(false);
+  });
+
+  // `user` alone is not a NAME: the speaker word only counts beside a real
+  // name word, so `isPersonSubject` stays the one rule for `user`.
+  it('the speaker word alone does not name a speaker, with names or without', () => {
+    expect(namesASpeaker('user', NAMES)).toBe(false);
+    expect(namesASpeaker('user_user', NAMES)).toBe(false);
+    expect(isPersonSubject('user')).toBe(true);
   });
 
   // Escapes, so the composed and decomposed spellings are both on the page:
