@@ -561,8 +561,8 @@ const NOT_PERSON_SUBJECTS = [
 const NAMES = ['Vinay Pulim', 'UHTE83XE1'];
 // Spelled as escapes in this file, never as the characters: one is a
 // lookalike, one is invisible.
-const FULLWIDTH_VINAY = 'ｖｉｎａｙ'; // fullwidth "vinay"
-const ZWSP_VINAY = 'vi​nay'; // zero-width space inside
+const FULLWIDTH_VINAY = '\uff56\uff49\uff4e\uff41\uff59'; // fullwidth "vinay"
+const ZWSP_VINAY = 'vi\u200bnay'; // zero-width space inside
 /** Subjects made of NAMES' words: a shared turn stores nothing under them (TASK-1146). */
 const NAMES_A_SPEAKER = [
   'vinay',
@@ -878,18 +878,17 @@ describe("namesASpeaker — a subject made of a speaker's names (TASK-1146)", ()
     expect(isPersonSubject('user')).toBe(true);
   });
 
-  // Escapes, so the composed and decomposed spellings are both on the page:
-  // `é` is one character, `é` an `e` and a combining accent.
-  const JOSE_GARCIA = 'José García';
-  it.each(['jose', 'José', 'JOSÉ', 'José', 'garcia', 'jose_garcia'])(
-    '%j names José García: accents fold both ways',
+  // Escapes, so both spellings are on the page: `\u00e9` is one character, `e\u0301` an `e` and a combining accent.
+  const JOSE_GARCIA = 'Jos\u00e9 Garc\u00eda';
+  it.each(['jose', 'Jos\u00e9', 'JOS\u00c9', 'Jose\u0301', 'garcia', 'jose_garcia'])(
+    '%j names Jos\u00e9 Garc\u00eda: accents fold both ways',
     (about) => {
       expect(namesASpeaker(about, [JOSE_GARCIA])).toBe(true);
     },
   );
 
   it('an accented subject names an unaccented speaker too', () => {
-    expect(namesASpeaker('José', ['Jose Garcia'])).toBe(true);
+    expect(namesASpeaker('Jos\u00e9', ['Jose Garcia'])).toBe(true);
   });
 
   it('a run-together name matches its split spelling, both ways', () => {
@@ -973,7 +972,7 @@ describe('breaksSpeakerRule — the one speaker rule (TASK-1136, TASK-1146)', ()
 
   it('checks a batch against its names in about the time of one subject: each name list is read once', () => {
     // 32 names at the core caps, each of U+FDFA, which NFKC grows eighteenfold.
-    const HOSTILE = Array.from({ length: 32 }, () => 'ﷺ'.repeat(256));
+    const HOSTILE = Array.from({ length: 32 }, () => '\ufdfa'.repeat(256));
     // CPU time, fastest of three (TASK-660: wall-clock budgets flaked on the
     // full parallel suite). A fresh copy of the list per run, so each run
     // pays for reading it once.
