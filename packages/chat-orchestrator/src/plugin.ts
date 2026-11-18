@@ -150,6 +150,11 @@ export function createChatOrchestratorPlugin(
       // orchestrator without a conversation context, so they don't need
       // the peers loaded.
       //
+      // TASK-1150 — the keepalive idle reaper reads `conversations:get` too,
+      // for a warm session opened for a conversation: it holds off while the
+      // row binds a request to that session (a decision continuation), for
+      // `reapHoldMaxMs` (15 min) at most. Without the hook it reaps as before.
+      //
       // The system-prompt contribution family (W1) —
       // `system-prompt:augment:required:<name>` / `…:optional:<name>` — is
       // discovered at spawn time with `bus.listServices()`, the same way
@@ -393,9 +398,11 @@ export function createChatOrchestratorPlugin(
       // TASK-833 — `connectors:deleted` (fired by @ax/connectors after the row
       // is gone and its stored key purged). A warm session still holds that
       // key in its credential-proxy session, so the sessions that folded the
-      // connector are reaped as soon as they are idle (the reap closes the
-      // proxy session directly — TASK-877 — not only on runner exit) and
-      // retired at routing if a message arrives first.
+      // connector lose their proxy sessions directly (TASK-877, not only on
+      // runner exit): at once when no routed turn runs there (TASK-1150: a
+      // running decision continuation included), else when that turn ends.
+      // They are reaped as soon as they are idle, and retired at routing if a
+      // message arrives first.
       // Observation-only: never vetoes, never throws.
       bus.subscribe<unknown>(
         'connectors:deleted',

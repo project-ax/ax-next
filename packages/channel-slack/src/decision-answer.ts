@@ -24,6 +24,14 @@ import type { ContinuationRequest } from './turn.js';
  *     (`pendingUntil`), and a redraw can take that long. Only that id is
  *     followed: a sink registered under any other would take a running
  *     turn's events away from it (turn-registry.ts keeps one sink per id).
+ *     Then it binds that id to the conversation's live session
+ *     (`conversations:bind-session`, the session read off
+ *     `conversations:get`), as channel-web's approve route does (TASK-1150).
+ *     That binding is how the host sees the turn running: a skill Allow
+ *     during it marks the session instead of ending it, the idle reaper
+ *     holds off, and the cap's stop reaches it. @ax/conversations clears it
+ *     when the turn ends. Best-effort and never awaited: a failure is logged
+ *     (stage `bind`), and the turn runs unbound, as before.
  *   - Deny: `decisions:dismiss` for the prompt's user. decisions checks no
  *     ctx on it, so the gate is all that stands between a click and this
  *     call: the user id is the prompt's, never anything a click says.
@@ -81,6 +89,10 @@ export interface DecisionOutcome {
 const APPROVE = 'decisions:approve';
 const DISMISS = 'decisions:dismiss';
 const GET = 'decisions:get';
+/** The conversation's live session, read back for the binding (@ax/conversations). Optional. */
+const CONVERSATION = 'conversations:get';
+/** The binding itself (@ax/conversations, TASK-1150). Optional. */
+const BIND = 'conversations:bind-session';
 
 /**
  * The statuses a decision can have, as decisions spells them
@@ -356,6 +368,7 @@ export function createDecisionAnswer(d: DecisionAnswerDeps): SubjectAnswer {
             pendingUntil: typeof out['pendingUntil'] === 'string' ? out['pendingUntil'] : null,
             messageTs: extra.messageTs,
           });
+          startBinding(d.bus, ctx, prompt, continuationReqId, failed);
         } else {
           // Some other turn's id: following it would take its events away from it.
           failed('follow', 'other-stream');
@@ -391,4 +404,40 @@ function startFollowing(
   } catch (err) {
     failed('follow', logCode(err));
   }
+}
+
+/**
+ * Bind the continuation's id to the conversation's live session, as
+ * channel-web's approve route does (`bindContinuationTurn`): read the
+ * prompt's own conversation back for its user (`conversations:get`), then
+ * `conversations:bind-session` with the session it names. No live session
+ * (the agent went away inside the undo window), or none this can read:
+ * nothing is bound. Without either hook nothing is read or bound. Both calls
+ * run on `ctx`, the prompt's user, and bind-session writes only the row of
+ * `ctx.userId`. Never awaited: a failure is logged (stage `bind`), and the
+ * answer stands.
+ */
+function startBinding(
+  bus: HookBus,
+  ctx: AgentContext,
+  prompt: Prompt,
+  reqId: string,
+  failed: (stage: string, code: string) => void,
+): void {
+  void (async () => {
+    if (!bus.hasService(CONVERSATION) || !bus.hasService(BIND)) return;
+    const read = await bus.call<{ conversationId: string; userId: string }, unknown>(CONVERSATION, ctx, {
+      conversationId: prompt.conversationId,
+      userId: prompt.userId,
+    });
+    // Another plugin's answer: read field by field.
+    const conversation = isRecord(read) ? read['conversation'] : undefined;
+    const sessionId = isRecord(conversation) ? conversation['activeSessionId'] : undefined;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+    await bus.call<{ conversationId: string; sessionId: string; reqId: string }, unknown>(BIND, ctx, {
+      conversationId: prompt.conversationId,
+      sessionId,
+      reqId,
+    });
+  })().catch((err: unknown) => failed('bind', logCode(err)));
 }

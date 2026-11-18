@@ -126,11 +126,16 @@ async function makeHarness(
   const bound: { bus?: TestHarness['bus'] } = {};
 
   // Every ctx this harness makes logs into the one shared `logs`.
-  function ctxFor(sessionId: string, reqId: string, conversationId = 'conv-1'): AgentContext {
+  function ctxFor(
+    sessionId: string,
+    reqId: string,
+    conversationId = 'conv-1',
+    userId = 'test-user',
+  ): AgentContext {
     return makeAgentContext({
       sessionId,
       agentId: 'test-agent',
-      userId: 'test-user',
+      userId,
       conversationId,
       reqId,
       logger: createLogger({
@@ -336,20 +341,21 @@ async function makeHarness(
   }
 
   // A grant comes from a channel's route, on a ctx of its own (channel-web
-  // mints a fresh sessionId and reqId for it).
+  // mints a fresh sessionId and reqId for it), as the person granting: both
+  // channels pass that person's id in the ctx and the input alike.
   let grants = 0;
-  const grantInput = (skillId: string, conversationId = 'conv-1') => ({
+  const grantInput = (skillId: string, conversationId = 'conv-1', userId = 'test-user') => ({
     conversationId,
-    userId: 'test-user',
+    userId,
     agentId: 'test-agent',
     skillId,
   });
-  function grant(skillId: string, conversationId = 'conv-1'): Promise<unknown> {
+  function grant(skillId: string, conversationId = 'conv-1', userId = 'test-user'): Promise<unknown> {
     grants += 1;
     return h.bus.call(
       'agent:apply-capability-grant',
-      ctxFor(`grant-route-${grants}`, `grant-${grants}`, conversationId),
-      grantInput(skillId, conversationId),
+      ctxFor(`grant-route-${grants}`, `grant-${grants}`, conversationId, userId),
+      grantInput(skillId, conversationId, userId),
     );
   }
   function grantAuthored(skillId: string): Promise<unknown> {
@@ -738,5 +744,147 @@ describe('TASK-1127: a skill grant never ends a turn that is running', () => {
     await x.invoke('s-3', 'req-3');
     expect(logs.find((l) => l.msg === 'stale_session_respawn')).toBeUndefined();
     expect(counters.opens).toBe(1);
+  });
+
+  // TASK-1150 — the grant's row read is the one that tells an idle session
+  // from a busy one. When it fails, the grant marks the warm sessions this
+  // host opened for that conversation and that person: a mark never cuts a
+  // turn, and the next turn restarts the session with the skill. Before, with
+  // no turn in flight, it did nothing, and the next turn ran without the skill.
+  it.each([
+    ['catalog', 'notes', { attached: true }],
+    ['authored', 'my-draft', { applied: true, respawned: true }],
+  ] as const)(
+    "G1: the %s grant can't read the conversation while its session is idle: it marks it, and the next turn restarts with the skill",
+    async (kind, skillId, expected) => {
+      const x = await makeHarness({ failGrantLookup: true });
+      const { counters, logs } = x;
+      await prelude(x);
+
+      expect(await (kind === 'catalog' ? x.grant(skillId) : x.grantAuthored(skillId))).toEqual(
+        expected,
+      );
+      expect(logs.find((l) => l.msg === 'active_session_lookup_failed')).toBeDefined();
+      expect(counters.terminates).toEqual([]);
+      expect(logs.filter((l) => l.msg === 'skill_grant_restart_deferred')).toEqual([
+        expect.objectContaining({ sessionId: 's-1' }),
+      ]);
+
+      x.endTurnSoon('s-2', 'req-2');
+      await x.invoke('s-2', 'req-2');
+      expect(counters.terminates).toEqual(['s-1']);
+      expect(counters.opens).toBe(2);
+      expect(installedIds(counters.openInputs[1]!)).toContain(skillId);
+      expect(logs.find((l) => l.msg === 'stale_session_respawn')).toMatchObject({
+        sessionId: 's-1',
+        reason: 'skills-changed',
+      });
+    },
+  );
+
+  it.each([
+    ['another conversation', 'conv-2', 'test-user'],
+    ['another person', 'conv-1', 'someone-else'],
+  ] as const)(
+    "G2: a grant that can't read the row marks only its own person's sessions of its own conversation: %s",
+    async (_name, conversationId, userId) => {
+      const x = await makeHarness({ failGrantLookup: true });
+      const { counters, logs } = x;
+      await prelude(x);
+
+      expect(await x.grant('notes', conversationId, userId)).toEqual({ attached: true });
+      expect(logs.find((l) => l.msg === 'active_session_lookup_failed')).toBeDefined();
+      expect(logs.find((l) => l.msg === 'skill_grant_restart_deferred')).toBeUndefined();
+
+      x.endTurnSoon('s-1', 'req-2');
+      await x.invoke('s-2', 'req-2'); // conv-1's next turn: routed into s-1
+      expect(counters.opens).toBe(1);
+      expect(counters.terminates).toEqual([]);
+    },
+  );
+
+  it('G3: a grant while a cold-spawned session is up but its turn is not bound yet (a Slack turn): the turn marks it as it ends', async () => {
+    let releaseBind!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseBind = resolve;
+    });
+    const x = await makeHarness({ holdBind: { reqId: 'req-1', release } });
+    const { counters, logs, turnErrors } = x;
+
+    // Slack binds nothing at POST: the row starts empty.
+    const t1 = x.invoke('s-1', 'req-1');
+    await x.entered.bind; // s-1 is up (warm); the row doesn't name it yet
+    expect(x.conv).toEqual({ activeSessionId: null, activeReqId: null });
+    expect(await x.grant('notes')).toEqual({ attached: true });
+    expect(counters.terminates).toEqual([]);
+    expect(logs.find((l) => l.msg === 'skill_grant_restart_deferred')).toBeUndefined();
+    releaseBind();
+    await x.queued('req-1');
+    await x.endTurn('s-1', 'req-1');
+    expect(await t1).toEqual({ kind: 'complete', messages: [] });
+    expect(turnErrors).toEqual([]);
+
+    x.endTurnSoon('s-2', 'req-2');
+    await x.invoke('s-2', 'req-2');
+    expect(counters.terminates).toEqual(['s-1']);
+    expect(installedIds(counters.openInputs[1]!)).toContain('notes');
+  });
+
+  it("G4: a grant that can't read the row, on a session already marked: it still reports the restart, and marks it only once", async () => {
+    const x = await makeHarness({ failGrantLookup: true });
+    const { counters, logs } = x;
+    await prelude(x);
+
+    expect(await x.grant('notes')).toEqual({ attached: true }); // marks s-1
+    expect(await x.grantAuthored('my-draft')).toEqual({ applied: true, respawned: true });
+    expect(logs.filter((l) => l.msg === 'skill_grant_restart_deferred')).toEqual([
+      expect.objectContaining({ sessionId: 's-1' }),
+    ]);
+
+    x.endTurnSoon('s-2', 'req-2');
+    await x.invoke('s-2', 'req-2');
+    expect(counters.terminates).toEqual(['s-1']);
+    expect(counters.opens).toBe(2);
+    expect(installedIds(counters.openInputs[1]!)).toEqual(
+      expect.arrayContaining(['notes', 'my-draft']),
+    );
+  });
+
+  it("G5: a grant that can't read the row while a turn is still on its way in: that turn finds the session marked and restarts it with the skill", async () => {
+    const x = await makeHarness({ failGrantLookup: true });
+    const { counters, logs } = x;
+    await prelude(x);
+
+    // Turn 2 is held at chat:start: in flight for the conversation (so the
+    // grant flags it), not routed yet.
+    let releaseStart!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    let enteredStart!: () => void;
+    const atStart = new Promise<void>((resolve) => {
+      enteredStart = resolve;
+    });
+    x.h.bus.subscribe('chat:start', 'test-hold', async (ctx: AgentContext) => {
+      if (ctx.reqId === 'req-2') {
+        enteredStart();
+        await held;
+      }
+      return undefined;
+    });
+
+    const t2 = x.invoke('s-2', 'req-2');
+    await atStart;
+    expect(await x.grant('notes')).toEqual({ attached: true });
+    expect(logs.filter((l) => l.msg === 'skill_grant_restart_deferred')).toEqual([
+      expect.objectContaining({ sessionId: 's-1' }),
+    ]);
+    releaseStart();
+    await x.queued('req-2');
+    await x.endTurn('s-2', 'req-2');
+    expect(await t2).toEqual({ kind: 'complete', messages: [] });
+    expect(counters.terminates).toEqual(['s-1']);
+    expect(counters.opens).toBe(2);
+    expect(installedIds(counters.openInputs[1]!)).toContain('notes');
   });
 });

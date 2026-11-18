@@ -41,7 +41,7 @@ import { tasksForToday, useTasks } from '@/lib/workspace-tasks';
 import { useSelfChanges } from '@/lib/workspace-self-changes';
 import { waitingOnYou } from '@/lib/today-queue';
 import { continuationActions } from '@/lib/continuation-actions';
-import { resumeParkedTurn, type GrantResume } from '@/lib/workspace-resume';
+import { grantResumeFor, resumeParkedTurn, type GrantResume } from '@/lib/workspace-resume';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import {
   useWorkspaceGrants,
@@ -703,6 +703,11 @@ function Inner({
    * later, and `GET /api/chat/stream/:reqId` answers a long-dead turn with a
    * 404 — which `AgentView` would render as a failed reply over a conversation
    * that completed perfectly well.
+   *
+   * A reply still running when the grant is answered is followed to its end
+   * first (`resumeParkedTurn`), so the answer can land after the person has
+   * moved on. That is why this reads where they are NOW (`routeNow`) and not
+   * the route this callback closed over.
    */
   const resumeAfterGrant = useCallback(
     async (grant: WorkspaceGrant): Promise<GrantResume> => {
@@ -716,7 +721,7 @@ function Inner({
         agentId: grant.agentId,
         conversationId: grant.conversationId,
       });
-      if (!result.resumed) return result.reason === 'read-only' ? 'reply-elsewhere' : false;
+      if (!result.resumed) return grantResumeFor(result.reason);
       /*
         IS THAT AGENT'S PANEL MOUNTED? That is the whole question, and it is a
         different one from `grantBelongsInThread` — which asks whether the
@@ -727,7 +732,7 @@ function Inner({
         come back to `chat`; and a hidden browser tab is still a mounted panel.
         Both are cases where we WANT the stream and the presence rule says no.
       */
-      if (routeAgentId(route) === grant.agentId) {
+      if (routeAgentId(routeNow.current) === grant.agentId) {
         setPendingReply({
           agentId: grant.agentId,
           reqId: result.reqId,
@@ -754,7 +759,7 @@ function Inner({
       void refresh();
       return true;
     },
-    [route, refresh, board],
+    [refresh, board],
   );
 
   /**

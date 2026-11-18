@@ -197,8 +197,10 @@ export const GRANT_REJECT_HINT = 'We’ll only ask if it’s needed again.';
  * agent stopped BEFORE they answered (so this reads as timing rather than as
  * the grant failing), and messaging the agent is what gets it going.
  *
- * ONE SENTENCE FOR EVERY `ResumeFailure`, and the wording is what makes that
- * honest. The reasons differ in what WE could not do — read the conversation,
+ * ONE SENTENCE FOR EVERY `ResumeFailure` BUT TWO, and the wording is what makes
+ * that honest. The two with their own sentence are `read-only` (the Slack one
+ * below) and `still-running` (`GRANT_NOT_RESUMED_BUSY`), because there the
+ * advice really does differ. The reasons differ in what WE could not do — read the conversation,
  * find a turn in it, post it — and not at all in what the person should do
  * next, so spelling the difference out would ask them to care about our
  * plumbing at the moment they are least able to.
@@ -227,6 +229,21 @@ export const GRANT_NOT_RESUMED_ELSEWHERE =
   'Connected. The agent had already stopped by the time you answered, though, ' +
   'and this conversation is in Slack. Reply to it there and it will carry on ' +
   'with this connection in place.';
+
+/**
+ * TASK-1150 — the grant landed, and the agent may still be writing a reply in
+ * that conversation, so we sent nothing. Several things lead here, and the
+ * sentence has to be true of all of them: the reply was still going when we
+ * stopped waiting (`RESUME_WAIT_MS`); the stream failed and a re-read shows a
+ * live reply; the re-read itself failed, so we could not rule one out; or the
+ * reply we followed ended and a different one (a continuation) is now live.
+ * Sending the message again then would have replaced that reply, so we didn’t.
+ * Hence “may still be”, not “is”. Same action as `GRANT_NOT_RESUMED`, once any
+ * reply is done.
+ */
+export const GRANT_NOT_RESUMED_BUSY =
+  'Connected. The agent may still be working on a reply, so we didn’t interrupt it. ' +
+  'Once it’s done, send it a message and it will carry on with this connection in place.';
 
 /** Clears the stopped-agent row. It is an acknowledgement, not an action. */
 export const GRANT_NOT_RESUMED_DISMISS = 'Got it';

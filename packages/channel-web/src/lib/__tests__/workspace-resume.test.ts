@@ -7,9 +7,14 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { workspaceApi, type ThreadMessage } from '@/lib/workspace-api';
+import { workspaceApi, type StreamHandlers, type ThreadMessage } from '@/lib/workspace-api';
 import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
-import { lastUserText, resumeParkedTurn } from '@/lib/workspace-resume';
+import {
+  grantResumeFor,
+  lastUserText,
+  RESUME_WAIT_MS,
+  resumeParkedTurn,
+} from '@/lib/workspace-resume';
 
 const userMsg = (id: string, text: string): ThreadMessage => ({
   kind: 'user',
@@ -34,7 +39,7 @@ const askedThread: ThreadMessage[] = [
   agentMsg('t2', 'I have asked for access to Linear.'),
 ];
 
-const detail = (thread: ThreadMessage[]) => ({
+const detail = (thread: ThreadMessage[], liveReqId?: string | null) => ({
   agent: {
     id: 'a-quill',
     name: 'Quill',
@@ -45,6 +50,7 @@ const detail = (thread: ThreadMessage[]) => ({
     stoppedReason: null,
   },
   conversationId: 'cnv-1',
+  ...(liveReqId === undefined ? {} : { liveReqId }),
   thread,
   decisions: { status: 'ok' as const },
   past: [],
@@ -55,6 +61,7 @@ const detail = (thread: ThreadMessage[]) => ({
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -226,4 +233,306 @@ describe('every way it can fail to resume', () => {
       ).resolves.toEqual({ resumed: false, reason: 'send-failed' });
     },
   );
+});
+
+/**
+ * TASK-1150 — Connect is live while the asking reply is still being written, so
+ * the resume can land under a running turn. Re-sending then would restart the
+ * session under that reply (TASK-1127 marks it; routing retires a marked
+ * session even mid-turn), so the resume follows the reply to its end first.
+ */
+describe('a reply still being written in that conversation', () => {
+  const ASK = 'file my open Linear issues';
+  const target = { agentId: 'a-quill', conversationId: 'cnv-1' };
+
+  /** A `streamReply` that stays open until the test ends it. */
+  function holdStream() {
+    const seen: { reqId: string; handlers: StreamHandlers }[] = [];
+    const stream = vi
+      .spyOn(workspaceApi, 'streamReply')
+      .mockImplementation((reqId, handlers) => {
+        seen.push({ reqId, handlers });
+        return new Promise<void>(() => undefined);
+      });
+    return { stream, seen };
+  }
+
+  const flush = async () => {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  };
+
+  function sendOk() {
+    return vi
+      .spyOn(workspaceApi, 'sendMessage')
+      .mockResolvedValue({ conversationId: 'cnv-1', reqId: 'req-resume' });
+  }
+
+  it('waits for it, then re-sends', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const { stream, seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalledWith(
+      'req-ask',
+      expect.objectContaining({ resume: true, signal: expect.any(AbortSignal) }),
+    );
+    const signal = seen[0]?.handlers.signal;
+
+    seen[0]?.handlers.onDone();
+
+    await expect(pending).resolves.toEqual({
+      resumed: true,
+      reqId: 'req-resume',
+      conversationId: 'cnv-1',
+      text: ASK,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('a stream that cannot be proven ended is re-read: no live reply left, so it re-sends', async () => {
+    const read = vi
+      .spyOn(workspaceApi, 'agent')
+      .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+      .mockResolvedValueOnce(detail(askedThread, null));
+    const send = sendOk();
+    const { stream, seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+    // The stream was opened on the live reply; without this the optional
+    // chain below would no-op on unfixed code and the test would pass anyway.
+    expect(stream).toHaveBeenCalledWith('req-ask', expect.anything());
+    seen[0]!.handlers.onError('x');
+
+    await expect(pending).resolves.toMatchObject({ resumed: true });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('a transport failure while the reply is still live sends nothing', async () => {
+    // `onError` also fires for a failed first open, a 401/403/429/5xx, or spent
+    // reconnects: none proves the reply ended, and a re-send would cut it off.
+    const read = vi
+      .spyOn(workspaceApi, 'agent')
+      .mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const { stream, seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+    expect(stream).toHaveBeenCalledWith('req-ask', expect.anything());
+    seen[0]!.handlers.onError('The connection dropped.');
+
+    await expect(pending).resolves.toEqual({ resumed: false, reason: 'still-running' });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(send).not.toHaveBeenCalled();
+    // And the row says the busy sentence, not the generic failure one.
+    expect(grantResumeFor('still-running')).toBe('reply-when-done');
+  });
+
+  it('a transport failure whose re-read also fails sends nothing', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(workspaceApi, 'agent')
+      .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+      .mockRejectedValueOnce(new Error('503'));
+    const send = sendOk();
+    const { stream, seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+    expect(stream).toHaveBeenCalledWith('req-ask', expect.anything());
+    seen[0]!.handlers.onError('x');
+
+    await expect(pending).resolves.toEqual({ resumed: false, reason: 'still-running' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('a different reply now live is still a running reply: sends nothing', async () => {
+    vi.spyOn(workspaceApi, 'agent')
+      .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+      .mockResolvedValueOnce(detail(askedThread, 'req-other'));
+    const send = sendOk();
+    const { stream, seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+    expect(stream).toHaveBeenCalledWith('req-ask', expect.anything());
+    seen[0]!.handlers.onError('x');
+
+    await expect(pending).resolves.toEqual({ resumed: false, reason: 'still-running' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('a stream that returns with no terminal frame takes the same re-read path', async () => {
+    const read = vi
+      .spyOn(workspaceApi, 'agent')
+      .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+      .mockResolvedValueOnce(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const stream = vi.spyOn(workspaceApi, 'streamReply').mockResolvedValue(undefined);
+
+    await expect(resumeParkedTurn(target)).resolves.toEqual({
+      resumed: false,
+      reason: 'still-running',
+    });
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('a bare resolve with the reply gone from the re-read re-sends', async () => {
+    const read = vi
+      .spyOn(workspaceApi, 'agent')
+      .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+      .mockResolvedValueOnce(detail(askedThread, null));
+    const send = sendOk();
+    vi.spyOn(workspaceApi, 'streamReply').mockResolvedValue(undefined);
+
+    await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    // Proves the re-read happened: without it the send would still go out.
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a reply that provably ended is re-read too', () => {
+    // A continuation approved during the wait binds its own request and runs
+    // after the followed reply's `done`; a re-send would retire its session.
+    async function endAfterWait() {
+      const { stream, seen } = holdStream();
+      const pending = resumeParkedTurn(target);
+      await flush();
+      expect(stream).toHaveBeenCalledWith('req-ask', expect.anything());
+      seen[0]!.handlers.onDone();
+      return pending;
+    }
+
+    it('a different reply now live sends nothing', async () => {
+      const read = vi
+        .spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockResolvedValueOnce(detail(askedThread, 'req-continuation'));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toEqual({
+        resumed: false,
+        reason: 'still-running',
+      });
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('the followed reply still bound (not yet cleared) does not block the re-send', async () => {
+      const read = vi
+        .spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toMatchObject({ resumed: true });
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('nothing live re-sends', async () => {
+      const read = vi
+        .spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockResolvedValueOnce(detail(askedThread, null));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toMatchObject({ resumed: true });
+      // The re-read happened, and it read the grant's own conversation, not
+      // whichever one the agent is on now.
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(read).toHaveBeenNthCalledWith(2, 'a-quill', 'cnv-1');
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed re-read withholds, like the unproven path', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(workspaceApi, 'agent')
+        .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
+        .mockRejectedValueOnce(new Error('503'));
+      const send = sendOk();
+
+      await expect(endAfterWait()).resolves.toEqual({
+        resumed: false,
+        reason: 'still-running',
+      });
+      expect(send).not.toHaveBeenCalled();
+    });
+  });
+
+  it('a stream that rejects takes the re-read path too: still live sends nothing', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const stream = vi
+      .spyOn(workspaceApi, 'streamReply')
+      .mockRejectedValue(new Error('reader bug'));
+
+    await expect(resumeParkedTurn(target)).resolves.toEqual({
+      resumed: false,
+      reason: 'still-running',
+    });
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('still going when we stop waiting: sends nothing and lets the stream go', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const { seen } = holdStream();
+
+    let result: unknown;
+    void resumeParkedTurn(target).then((r) => {
+      result = r;
+    });
+    await vi.advanceTimersByTimeAsync(RESUME_WAIT_MS - 1);
+    expect(result).toBeUndefined();
+    expect(seen[0]?.handlers.signal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result).toEqual({ resumed: false, reason: 'still-running' });
+    expect(send).not.toHaveBeenCalled();
+    expect(seen[0]?.handlers.signal?.aborted).toBe(true);
+  });
+
+  it('with nothing in flight, re-sends at once and follows nothing', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, null));
+    const send = sendOk();
+    const stream = vi.spyOn(workspaceApi, 'streamReply');
+
+    await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('an empty liveReqId is nothing in flight', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, ''));
+    sendOk();
+    const stream = vi.spyOn(workspaceApi, 'streamReply');
+
+    await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    expect(stream).not.toHaveBeenCalled();
+  });
+});
+
+describe('what the row is told', () => {
+  it.each<[Parameters<typeof grantResumeFor>[0], ReturnType<typeof grantResumeFor>]>([
+    ['read-only', 'reply-elsewhere'],
+    ['still-running', 'reply-when-done'],
+    ['thread-unreadable', false],
+    ['nothing-to-resume', false],
+    ['send-failed', false],
+  ])('%s reads as %s', (reason, expected) => {
+    expect(grantResumeFor(reason)).toBe(expected);
+  });
 });
