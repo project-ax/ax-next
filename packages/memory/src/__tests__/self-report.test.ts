@@ -330,6 +330,7 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'created_chart', 'Q3 revenue by region'],
     ['assistant', 'generated_a_graph', 'weekly sign-ups'],
     ['assistant', 'updated_page', 'the pricing page'],
+    ['assistant', 'created_diagram', 'the Q3 funnel'],
     ['assistant', 'edited_document', 'the onboarding doc'],
     // The verb's object ends at its first preposition; its head is the word before.
     ['assistant', 'created_artifact_for_q3_sales_review', 'x'],
@@ -373,6 +374,7 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'disclosed_limitation', 'lacks real-time data'],
     ['assistant', 'noted_limitation', 'does not have access to your files'],
     ['assistant', 'stated_limitation', 'unable to browse the web'],
+    ['assistant', 'stated_limitation', 'unable to begin a phone call'], // "be" only as a whole word
   ])('drops %s | %s | %s: what it says it can or cannot do', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBe('capability');
@@ -478,6 +480,10 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'listed_limitations', 'does not cover dental or vision'],
     ['assistant', 'explained_limitations', "doesn't apply to rollovers"],
     ['assistant', 'explained_limitations', 'do not include taxes'],
+    ['assistant', 'explained_limitations', 'cannot  be combined with other offers'], // any whitespace
+    // "does not have" counts only before access, the internet or an ability.
+    ['assistant', 'listed_limitations', 'does not have a free tier'],
+    ['assistant', 'known_limitations', "doesn't have offline mode"],
     // A chart, graph or page it wrote: these count only bare, like `routine`.
     ['assistant', 'created_org_chart', 'CEO -> VP Eng -> 3 managers'],
     ['assistant', 'created_chore_chart', 'Mon dishes, Tue laundry'],
@@ -485,6 +491,7 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'wrote_landing_page', 'Ship faster with fewer meetings'],
     ['assistant', 'wrote_cover_page', 'Q3 Report, prepared for the board'],
     ['assistant', 'created_dependency_graph', 'A -> B -> C'],
+    ['assistant', 'created_sequence_diagram', 'client -> api -> db'],
     // A limitation or no-access word mid-predicate is a topic: both
     // capability tests are anchored at the start.
     ['assistant', 'explained_study_limitations', 'small sample size, no control group'],

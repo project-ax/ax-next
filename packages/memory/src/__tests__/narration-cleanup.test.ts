@@ -457,6 +457,31 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it("reports a failure during the index check as SQLite's own reason, not as a damaged index", () => {
+    // A full disk during the check is not corruption: only SQLITE_CORRUPT may
+    // say "damaged index". The patch goes in front of the program, where the
+    // script's hoisted `DatabaseSync` import is already in scope.
+    const patch = [
+      'const realExec = DatabaseSync.prototype.exec;',
+      'DatabaseSync.prototype.exec = function (sql) {',
+      "  if (String(sql).includes('integrity-check')) {",
+      "    throw Object.assign(new Error('V-K3 secret detail'), { errcode: 13, errstr: 'database or disk is full' });",
+      '  }',
+      '  return realExec.call(this, sql);',
+      '};',
+      '',
+    ].join('\n');
+    const before = snapshot();
+
+    const result = run(['--apply', VEC_ARG], { classifier: patch + SELF_REPORT });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('narration-cleanup: failed: database or disk is full\n');
+    expectCountsOnly(result);
+    expect(snapshot()).toEqual(before);
+  });
+
   it('its runbook pipes it after self-report.ts and names a context on every kubectl line', () => {
     const kubectlLines = SCRIPT.split('\n').filter((text) => text.includes('kubectl'));
     expect(kubectlLines.length).toBeGreaterThanOrEqual(3);

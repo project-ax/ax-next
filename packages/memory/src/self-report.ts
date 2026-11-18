@@ -198,12 +198,16 @@
  * - Kept, though it's narration: a verb nobody listed (`searched_web | for
  *   flights to Lisbon`, `checked | the deploy status`); `renamed_file`,
  *   because `renamed` is an identity word; a skill it created or added
- *   (`added_skill | pdf-tools`); a routine named by its kind
- *   (`set_up_weekly_routine`); an artifact word that isn't its object's head
- *   (`wrote_to_file`, `created_artifact_showing_q3_sales`); and its own
- *   limits when "it" or a plain "can" opens them (`noted_limitation | it is
- *   unable to send email`, `described_capabilities | can browse, run code and
- *   make charts`).
+ *   (`added_skill | pdf-tools`); a routine, chart, graph, page or diagram
+ *   named by its kind (`set_up_weekly_routine`, `created_bar_chart`); an
+ *   artifact word that isn't its object's head (`wrote_to_file`,
+ *   `created_artifact_showing_q3_sales`), or that a word follows
+ *   (`created_artifact_successfully`), or that ends an "and" list's first
+ *   half (`created_dashboard_and_report`); and its own limits when "it", a
+ *   plain "can", a passive or a "doesn't" without "have" + access opens
+ *   them (`noted_limitation | it is unable to send email`,
+ *   `described_capabilities | can browse, run code and make charts`, `I
+ *   don't browse the web`).
  * - Dropped, though it's content: `sent | a summary of the call`,
  *   `saved | the user $120 a year on the annual plan`, `fixed_typo | their ->
  *   there`, `edited_document | the essay intro`, a bare `created_routine |
@@ -394,14 +398,15 @@ const ARTIFACT_NOUNS = new Set(['artifact', 'artifacts', 'file', 'files', 'folde
   'directories', 'document', 'documents', 'doc', 'docs', 'webpage', 'webpages', 'site', 'sites',
   'website', 'websites', 'app', 'apps', 'dashboard', 'dashboards', 'visual', 'visuals', 'visualization',
   'visualizations', 'spreadsheet', 'spreadsheets', 'deck', 'decks',
-  'presentation', 'presentations', 'image', 'images', 'diagram', 'diagrams', 'repo', 'repos', 'repository',
+  'presentation', 'presentations', 'image', 'images', 'repo', 'repos', 'repository',
   'repositories', 'branch', 'branches', 'commit', 'commits', 'pr', 'prs', 'connector', 'connectors', 'component',
   'components', 'endpoint', 'endpoints', 'pdf', 'pdfs', 'csv', 'csvs']);
 // Artifact nouns that are everyday words too: as the head only bare, with nothing but determiners
 // before them. `updated_routine` is narration; `created_workout_routine` is a plan it wrote. So
 // with charts, graphs and pages: `created_chart` is narration; `created_org_chart`,
 // `created_dependency_graph` and `wrote_cover_page` are what it wrote.
-const EVERYDAY_NOUNS = new Set(['routine', 'routines', 'chart', 'charts', 'graph', 'graphs', 'page', 'pages']);
+const EVERYDAY_NOUNS = new Set(['routine', 'routines', 'chart', 'charts', 'graph', 'graphs', 'page', 'pages',
+  'diagram', 'diagrams']);
 const DETERMINERS = new Set(['a', 'an', 'the', 'new', 'my', 'your', 'its']);
 // The verb's object ends at its first preposition, so its head is the word before one.
 const PREPOSITIONS = new Set(['for', 'of', 'to', 'in', 'on', 'about', 'with', 'from', 'at', 'into', 'via', 'by']);
@@ -442,13 +447,15 @@ const NO_ACCESS_PREDICATE =
  * before access, the internet, the web, browsing, real-time data or the
  * ability to do something ("no control group" is a study's limit), and
  * "only" and "without" don't count ("only covers in-network providers").
- * Passive voice never counts: the assistant's own limits are active ("cannot
- * browse"), and "cannot be combined with other offers" is an offer's. A bare
- * "does not"/"don't" counts only before "have" ("doesn't have access"):
- * "does not cover dental" is a plan's.
+ * Passive voice never counts, with or without a subject: the assistant's
+ * own limits are active ("cannot browse"), and "cannot be combined with
+ * other offers" is an offer's. "does not"/"don't" counts only as "doesn't
+ * have" + the same access words as "has no" ("doesn't have access"): "does
+ * not cover dental" and "does not have a free tier" are a plan's, and "I
+ * don't browse the web" is kept too.
  */
 const SELF_LIMIT_OBJECT =
-  /^(?:(?:i|the assistant) )?(?:(?:can(?:not|'?t| not)|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to)(?! be(?![a-z]))|(?:does|do)(?:n'?t| not)(?= have(?![a-z]))|(?:(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
+  /^(?:(?:i|the assistant) )?(?:(?:can(?:not|'?t| not)|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to)(?!\s+be(?![a-z]))|(?:(?:does|do)(?:n'?t| not) have|(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
 
 function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase().replace(/[\s-]+/g, '_');
