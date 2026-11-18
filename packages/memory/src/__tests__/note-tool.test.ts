@@ -25,12 +25,14 @@ import { NO_CREDENTIAL_EVENT, NOTE_FAILED_EVENT } from '../failure.js';
 import {
   MEMORY_NOTE_DESCRIPTOR,
   MEMORY_NOTE_TOOL_HOOK,
+  PERSON_IN_SHARED_MESSAGE,
   type MemoryNoteResult,
 } from '../note-tool.js';
 import {
   ALICE,
   BOB,
   DEFAULT_AGENT,
+  answerSpeakerNames,
   capturingLogger,
   engineRecall,
   engineRecord,
@@ -104,6 +106,7 @@ function readRows(databasePath: string): Array<{
   kind: string | null;
   conversation_id: string | null;
   owner_user_id: string | null;
+  audience: string | null;
   valid_end: string | null;
   closed_by: string | null;
 }> {
@@ -835,6 +838,117 @@ describe('a note in a conversation memory may not learn from (TASK-1094)', () =>
     });
     expect(asked).toHaveLength(1);
     expect(readRows(h.databasePath)).toEqual([]);
+  });
+});
+
+describe('a note under a speaker name in a shared turn (TASK-1146)', () => {
+  // A channel that labels its speakers answers memory:pre-capture with their
+  // names (channel-slack: the label's display name and member id). A note
+  // filed under one of them is a person-note by another name.
+  const NAMES = ['Vinay Pulim', 'UHTE83XE1'];
+  const PERSON_REFUSAL =
+    `NOT SAVED: nothing was written to memory — do not tell the person it was saved. ${PERSON_IN_SHARED_MESSAGE}`;
+  const STANDUP = { relation: 'standup_time', value: '10:15 on Tuesdays' };
+
+  /** A member talking in a channel: memory may learn from it, and people without access read the reply. */
+  function memberCtx(h: MemoryHarness): AgentContext {
+    return h.ctx({ conversationId: 'conv-channel', source: 'user', audience: 'shared' });
+  }
+
+  it.each(['vinay', 'Vinay', 'vinay_pulim', 'UHTE83XE1'])(
+    'memory_note about %j is refused like `user`, after memory asks once',
+    async (about) => {
+      const h = await withHarness();
+      const asked = answerSpeakerNames(h.bus, NAMES);
+      const spy = vi.spyOn(h.bus, 'call');
+
+      const result = await note(h, { about, ...STANDUP }, memberCtx(h));
+
+      expect(result).toEqual({ ok: false, error: 'forbidden', message: PERSON_REFUSAL });
+      expect(asked).toEqual([{ conversationId: 'conv-channel' }]);
+      // After the ask, before access and the engine: nothing read, nothing written.
+      const called = spy.mock.calls.map(([hook]) => String(hook));
+      spy.mockRestore();
+      expect(called.filter((hook) => hook === 'agents:resolve' || hook.startsWith('memory:facts:'))).toEqual([]);
+      expect(readRows(h.databasePath)).toHaveLength(0);
+      // A decision, at info, and no name in any line.
+      expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
+        ['info', 'forbidden'],
+      ]);
+      expect(JSON.stringify(h.logs)).not.toMatch(/Pulim|UHTE83XE1/);
+
+      // The control: the same note in the owner's private turn is saved.
+      expect(await note(h, { about, ...STANDUP }, h.ctx({ conversationId: 'conv-9' }))).toEqual({ ok: true });
+    },
+  );
+
+  it('a work note in the same turn is saved, stamped shared, with one ask', async () => {
+    const h = await withHarness();
+    const asked = answerSpeakerNames(h.bus, NAMES);
+
+    // A person in the VALUE is the work's: who owns what is kept.
+    expect(await note(h, { about: 'team_standup', relation: 'owner', value: 'vinay' }, memberCtx(h))).toEqual({
+      ok: true,
+    });
+    // One ask: the write is handed the note's names and doesn't ask again.
+    expect(asked).toHaveLength(1);
+    expect(readRows(h.databasePath).map((row) => ({ about: row.about, audience: row.audience }))).toEqual([
+      { about: 'team_standup', audience: 'shared' },
+    ]);
+
+    // The control: the names are live in this turn, so a note under one is refused.
+    expect(await note(h, { about: 'vinay', ...STANDUP }, memberCtx(h))).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: PERSON_REFUSAL,
+    });
+    expect(readRows(h.databasePath)).toHaveLength(1);
+  });
+
+  it('with no names answered, a note under a name is saved: names come only from memory:pre-capture', async () => {
+    const h = await withHarness();
+    // Lets memory learn and names nobody, as a channel that labels no one does.
+    const asked: unknown[] = [];
+    h.bus.subscribe('memory:pre-capture', 'test-no-names', async (_ctx, payload) => {
+      asked.push(payload);
+      return undefined;
+    });
+
+    expect(await note(h, { about: 'vinay', ...STANDUP }, memberCtx(h))).toEqual({ ok: true });
+    expect(asked).toEqual([{ conversationId: 'conv-channel' }]);
+
+    // The control: once the answer names the speaker, the same note is refused.
+    answerSpeakerNames(h.bus, NAMES);
+    expect(await note(h, { about: 'vinay', ...STANDUP }, memberCtx(h))).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: PERSON_REFUSAL,
+    });
+    expect(readRows(h.databasePath)).toHaveLength(1);
+  });
+
+  it('an answer memory cannot read saves nothing', async () => {
+    const h = await withHarness();
+    h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-garbled', async (_ctx, payload) => ({
+      ...payload,
+      speakerNames: 'vinay' as unknown as string[],
+    }));
+
+    const result = await note(h, { about: 'team_standup', relation: 'time', value: '10:15 on Tuesdays' }, memberCtx(h));
+
+    // Not `invalid-input`: that text would have the model retry a fine note.
+    expect(result).toEqual({
+      ok: false,
+      error: 'memory-unavailable',
+      message:
+        'NOT SAVED: nothing was written to memory — do not tell the person it was saved. ' +
+        "memory couldn't be reached right now; you may retry later.",
+    });
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    // A fault, not a decision: warn.
+    expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
+      ['warn', 'memory-unavailable'],
+    ]);
   });
 });
 

@@ -3,16 +3,20 @@ import {
   audienceOf,
   HookBus,
   makeAgentContext,
+  MEMORY_PRE_CAPTURE_HOOK,
   PluginError,
+  reject,
   type AgentContext,
   type AgentContextAudience,
   type LlmCallOutput,
+  type MemoryPreCapturePayload,
 } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   breaksSpeakerRule,
   isPersonSubject,
+  namesASpeaker,
   recallAudienceScope,
   recallFacts,
   recordFacts,
@@ -25,6 +29,7 @@ import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
 import {
   ALICE,
+  answerSpeakerNames,
   engineRecord,
   eventsNamed,
   makeMemoryHarness,
@@ -550,6 +555,57 @@ const NOT_PERSON_SUBJECTS = [
 ];
 
 /**
+ * The speakers' names in the TASK-1146 tests: what a channel's sender label
+ * shows for its sender, a display name and a member id.
+ */
+const NAMES = ['Vinay Pulim', 'UHTE83XE1'];
+// Spelled as escapes in this file, never as the characters: one is a
+// lookalike, one is invisible.
+const FULLWIDTH_VINAY = 'ｖｉｎａｙ'; // fullwidth "vinay"
+const ZWSP_VINAY = 'vi​nay'; // zero-width space inside
+/** Subjects made of NAMES' words: a shared turn stores nothing under them (TASK-1146). */
+const NAMES_A_SPEAKER = [
+  'vinay',
+  'Vinay',
+  'VINAY',
+  ' vinay ',
+  'pulim',
+  'vinay_pulim',
+  'Vinay Pulim',
+  'vinay-pulim',
+  'vinay.pulim',
+  'pulim_vinay',
+  'vinaypulim',
+  'uhte83xe1',
+  'vinay_uhte83xe1',
+  FULLWIDTH_VINAY,
+  ZWSP_VINAY,
+];
+/**
+ * Subjects that aren't made of NAMES' words alone: the work, the speaker's
+ * things, a role word, and subjects with no words at all. These stay.
+ */
+const NOT_A_SPEAKER = [
+  'team_standup',
+  'vinays_team',
+  'vinay_s_team',
+  'vinay_laptop',
+  'user_vinay',
+  'billing_service',
+  'assistant',
+  'v',
+  'vin',
+  '',
+  '___',
+];
+
+/**
+ * Longer than the speaker rule reads: in a turn others read it breaks the
+ * rule unread, on every path.
+ */
+const TOO_LONG_TO_READ = 'x'.repeat(1025);
+
+/**
  * The extractor's answer in the speaker tests: four ways a model writes the
  * speaker, and one fact about something else.
  */
@@ -671,6 +727,120 @@ describe("@ax/memory — every write carries its turn's audience; a shared turn 
       expect(storedRows(h)).toEqual([]);
     },
   );
+
+  it('a shared turn stores nothing under a speaker name either (TASK-1146)', async () => {
+    const h = await makeHarness({
+      llm: () =>
+        extractionReply([
+          ...SPEAKER_FACTS,
+          { subject: 'vinay', predicate: 'stated_standup_time', object: 'Team standup moved to 10:15 on Tuesdays' },
+          { subject: 'Vinay_Pulim', predicate: 'prefers', object: 'tea' },
+        ]),
+    });
+    const asked = answerSpeakerNames(h.bus, NAMES);
+    await observeTurn(h, sharedCtx(h));
+
+    // The billing row alone: nothing under `user`, and nothing under the
+    // names the conversation's speaker was labelled with.
+    expect(storedRows(h)).toEqual([
+      { about: 'billing_service', value: 'Dana', audience: 'shared', conversation_id: CHANNEL },
+    ]);
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 6 });
+    // One ask for the pass, about the conversation alone: memory never fills
+    // in names itself, and its write doesn't ask again.
+    expect(asked).toEqual([{ conversationId: CHANNEL }]);
+  });
+
+  it('a private turn files a speaker name as written: names only matter where others read', async () => {
+    const h = await makeHarness({
+      llm: () =>
+        extractionReply([
+          { subject: 'vinay', predicate: 'stated_standup_time', object: 'Team standup moved to 10:15 on Tuesdays' },
+        ]),
+    });
+    const asked = answerSpeakerNames(h.bus, NAMES);
+    await observeTurn(h, h.ctx({ conversationId: PRIVATE_CONV }));
+
+    expect(storedRows(h)).toEqual([
+      {
+        about: 'vinay',
+        value: 'Team standup moved to 10:15 on Tuesdays',
+        audience: 'private',
+        conversation_id: PRIVATE_CONV,
+      },
+    ]);
+    // Asked, and answered with the names, as a shared turn is.
+    expect(asked).toEqual([{ conversationId: PRIVATE_CONV }]);
+
+    // The control: the same names keep it out of a shared turn.
+    await observeTurn(h, sharedCtx(h));
+    expect(storedRows(h).map((r) => [r.about, r.audience])).toEqual([['vinay', 'private']]);
+  });
+
+  // Walk TASK-1134, end to end, with the names channel-slack now answers
+  // (the label's display name and member id). The walk's note was `about:
+  // user`, the observer filed the standup under `vinay`, and the agent told
+  // the channel it couldn't save it.
+  it('the walk, end to end: the work note is the one row, and nothing is filed under the speaker (TASK-1134, TASK-1146)', async () => {
+    const WALK_FACTS = [
+      { subject: 'vinay', predicate: 'stated_standup_time', object: 'Team standup moved to 10:15 on Tuesdays' },
+      { network: 'experience', subject: 'assistant', predicate: 'could_not_save_memory', object: 'the standup time' },
+    ];
+    const WALK_TURN = [
+      {
+        role: 'user',
+        content: '[Slack · #ax-test-internal · vinay (UHTE83XE1)]: Our team standup moved to 10:15 on Tuesdays.',
+      },
+      { role: 'assistant', content: 'Got it: team standup is at 10:15 on Tuesdays.' },
+    ];
+    const note = (h: MemoryHarness, ctx: AgentContext, about: string, relation: string): Promise<MemoryNoteResult> =>
+      h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
+        input: { about, relation, value: '10:15 on Tuesdays' },
+      });
+
+    const h = await makeHarness({ llm: () => extractionReply(WALK_FACTS) });
+    const asked = answerSpeakerNames(h.bus, ['vinay', 'UHTE83XE1']);
+    const ctx = h.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
+
+    // The walk's note, then the name a model might try instead: both refused,
+    // with the text that points at the work.
+    expect(await note(h, ctx, 'user', 'team standup time')).toMatchObject({ ok: false, error: 'forbidden' });
+    expect(await note(h, ctx, 'vinay', 'team standup time')).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: `NOT SAVED: nothing was written to memory — do not tell the person it was saved. ${PERSON_IN_SHARED_MESSAGE}`,
+    });
+    // The work note the refusal points at is saved.
+    expect(await note(h, ctx, 'team_standup', 'time')).toEqual({ ok: true });
+    await observeTurn(h, ctx, WALK_TURN);
+
+    expect(storedRows(h).map((r) => [r.about, r.audience])).toEqual([['team_standup', 'shared']]);
+    expect(eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
+      outcome: 'skipped',
+      reason: 'only-speaker-facts',
+      speakerFacts: 1,
+    });
+    // One ask for each note that got past the `user` check (TASK-1094's
+    // order), and one for the pass.
+    expect(asked).toHaveLength(3);
+
+    // The control: the same turn, with nothing naming the speaker. The
+    // observer files the standup under `vinay` beside the work note: the bug
+    // this card fixes, and the proof the stub really extracts it.
+    const control = await makeMemoryHarness({}, { llm: () => extractionReply(WALK_FACTS) });
+    try {
+      const controlCtx = control.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
+      expect(await note(control, controlCtx, 'team_standup', 'time')).toEqual({ ok: true });
+      await observeTurn(control, controlCtx, WALK_TURN);
+      expect(storedRows(control).map((r) => [r.about, r.audience])).toEqual([
+        ['team_standup', 'shared'],
+        ['vinay', 'shared'],
+      ]);
+    } finally {
+      await control.teardown();
+    }
+  });
 });
 
 describe('isPersonSubject — what a shared turn stores nothing about', () => {
@@ -683,24 +853,119 @@ describe('isPersonSubject — what a shared turn stores nothing about', () => {
   });
 });
 
-describe('breaksSpeakerRule — the one speaker rule (TASK-1136)', () => {
-  it.each(PERSON_SUBJECTS)('%j breaks it in a shared or unknown audience, never in a private one', (about) => {
-    expect(breaksSpeakerRule('shared', about)).toBe(true);
-    expect(breaksSpeakerRule('public' as AgentContextAudience, about)).toBe(true);
-    expect(breaksSpeakerRule('private', about)).toBe(false);
+describe("namesASpeaker — a subject made of a speaker's names (TASK-1146)", () => {
+  it.each(NAMES_A_SPEAKER)('%j names a speaker', (about) => {
+    expect(namesASpeaker(about, NAMES)).toBe(true);
   });
-  it.each([...NOT_PERSON_SUBJECTS, 'vinay'])('%j never breaks it', (about) => {
-    for (const audience of ['private', 'shared', 'public'] as AgentContextAudience[]) {
-      expect(breaksSpeakerRule(audience, about)).toBe(false);
-    }
+
+  it.each(NOT_A_SPEAKER)('%j does not', (about) => {
+    expect(namesASpeaker(about, NAMES)).toBe(false);
+  });
+
+  // Escapes, so the composed and decomposed spellings are both on the page:
+  // `é` is one character, `é` an `e` and a combining accent.
+  const JOSE_GARCIA = 'José García';
+  it.each(['jose', 'José', 'JOSÉ', 'José', 'garcia', 'jose_garcia'])(
+    '%j names José García: accents fold both ways',
+    (about) => {
+      expect(namesASpeaker(about, [JOSE_GARCIA])).toBe(true);
+    },
+  );
+
+  it('an accented subject names an unaccented speaker too', () => {
+    expect(namesASpeaker('José', ['Jose Garcia'])).toBe(true);
+  });
+
+  it('a run-together name matches its split spelling, both ways', () => {
+    expect(namesASpeaker('vinay_pulim', ['VinayPulim'])).toBe(true);
+    expect(namesASpeaker('vinaypulim', ['Vinay Pulim'])).toBe(true);
+  });
+
+  it('no names, or names with no letters or digits, match nothing', () => {
+    expect(namesASpeaker('vinay', [])).toBe(false);
+    expect(namesASpeaker('x', ['\u{1F334}', '()'])).toBe(false); // a palm-tree emoji
   });
 });
 
-describe('drift guard: the observer, memory_note and recordFacts refuse exactly what breaksSpeakerRule names (TASK-1136)', () => {
-  // Walk TASK-1134: memory_note refused `user` while the observer kept `vinay`:
-  // the same rule, different subjects. `vinay` is here so both paths stay
-  // pinned to treat a name alike.
-  const SUBJECTS = [...PERSON_SUBJECTS, ...NOT_PERSON_SUBJECTS, 'vinay'];
+describe('breaksSpeakerRule — the one speaker rule (TASK-1136, TASK-1146)', () => {
+  it.each(PERSON_SUBJECTS)('%j breaks it in a shared or unknown audience, never in a private one', (about) => {
+    expect(breaksSpeakerRule('shared', about, [])).toBe(true);
+    expect(breaksSpeakerRule('public' as AgentContextAudience, about, [])).toBe(true);
+    expect(breaksSpeakerRule('private', about, [])).toBe(false);
+  });
+  it.each([...NOT_PERSON_SUBJECTS, 'vinay'])('with no speaker names, %j never breaks it', (about) => {
+    for (const audience of ['private', 'shared', 'public'] as AgentContextAudience[]) {
+      expect(breaksSpeakerRule(audience, about, [])).toBe(false);
+    }
+    // It would if a speaker had that name: the rule reads only the names it
+    // is given, and nothing else here changed.
+    expect(breaksSpeakerRule('shared', about, [about])).toBe(true);
+  });
+  it.each(NAMES_A_SPEAKER)(
+    '%j breaks it in a shared or unknown audience when a speaker has that name, never in a private one',
+    (about) => {
+      expect(breaksSpeakerRule('shared', about, NAMES)).toBe(true);
+      expect(breaksSpeakerRule('public' as AgentContextAudience, about, NAMES)).toBe(true);
+      expect(breaksSpeakerRule('private', about, NAMES)).toBe(false);
+    },
+  );
+  it.each(NOT_A_SPEAKER)('%j never breaks it, names or not', (about) => {
+    for (const audience of ['private', 'shared', 'public'] as AgentContextAudience[]) {
+      expect(breaksSpeakerRule(audience, about, NAMES)).toBe(false);
+      expect(breaksSpeakerRule(audience, about, [])).toBe(false);
+    }
+    // The control: the same names do break it for a subject made of them.
+    expect(breaksSpeakerRule('shared', 'vinay', NAMES)).toBe(true);
+  });
+
+  // A `memory_note` subject can be megabytes, and reading one costs the host
+  // time its writer chooses (NFKC alone grows some characters eighteenfold).
+  // No real subject is that long: both in-repo engines refuse an `about`
+  // over 1024 code units.
+  it('a subject over 1024 code units breaks it unread in a shared or unknown audience, never in a private one', () => {
+    expect(breaksSpeakerRule('shared', TOO_LONG_TO_READ, [])).toBe(true);
+    expect(breaksSpeakerRule('public' as AgentContextAudience, TOO_LONG_TO_READ, NAMES)).toBe(true);
+    expect(breaksSpeakerRule('private', TOO_LONG_TO_READ, NAMES)).toBe(false);
+    // 1024 is still read: neither a person nor a name.
+    expect(breaksSpeakerRule('shared', 'x'.repeat(1024), NAMES)).toBe(false);
+  });
+
+  it('checks a batch against its names in about the time of one subject: each name list is read once', () => {
+    // 32 names at the core caps, each of U+FDFA, which NFKC grows eighteenfold.
+    const HOSTILE = Array.from({ length: 32 }, () => 'ﷺ'.repeat(256));
+    // CPU time, fastest of three (TASK-660: wall-clock budgets flaked on the
+    // full parallel suite). A fresh copy of the list per run, so each run
+    // pays for reading it once.
+    const cpu = (subjects: number): number => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run += 1) {
+        const names = [...HOSTILE];
+        const before = process.cpuUsage();
+        for (let i = 0; i < subjects; i += 1) {
+          expect(breaksSpeakerRule('shared', `subject_${i}`, names)).toBe(false);
+        }
+        const used = process.cpuUsage(before);
+        best = Math.min(best, used.user + used.system);
+      }
+      return best;
+    };
+    cpu(1); // warm the JIT so the first size is not charged for it
+    // Read once per list, 200 subjects cost about what one does (measured
+    // ~1x); read again per subject, ~200x (measured 167x before the fix).
+    expect(cpu(200) / cpu(1)).toBeLessThan(20);
+  });
+});
+
+describe('drift guard: the observer, memory_note and recordFacts refuse exactly what breaksSpeakerRule names (TASK-1136, TASK-1146)', () => {
+  // Walk TASK-1134: memory_note refused `user` while the observer kept
+  // `vinay`. Since TASK-1146 a speaker's name breaks the rule too, so the
+  // walk's `vinay` (in NAMES_A_SPEAKER) is refused on every path once
+  // memory:pre-capture names the speaker. Each path gets the names its own
+  // way: `toStatements` from its caller, `memory_note` from its own ask, and
+  // `recordFacts`, called without names, by asking `engine` itself.
+  const SUBJECTS = [
+    ...new Set([...PERSON_SUBJECTS, ...NOT_PERSON_SUBJECTS, ...NAMES_A_SPEAKER, ...NOT_A_SPEAKER, TOO_LONG_TO_READ]),
+  ];
   it.each([
     ['an absent', undefined],
     ['a private', 'private'],
@@ -708,19 +973,22 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
     ['an unknown', 'public'],
   ] as const)('%s audience', async (_label, audience) => {
     const h = await makeHarness();
+    answerSpeakerNames(h.bus, NAMES);
     const ctx = h.ctx({
       conversationId: CHANNEL,
       ...(audience !== undefined ? { audience: audience as AgentContextAudience } : {}),
     });
     const engine = new HookBus();
     engine.registerService(FACTS_RECORD_HOOK, 'stub-engine', async () => ({ records: [{ id: 'row-1' }] }));
+    answerSpeakerNames(engine, NAMES);
     const disagreements: string[] = [];
     for (const about of SUBJECTS) {
-      const rule = breaksSpeakerRule(audienceOf(ctx), about);
+      const rule = breaksSpeakerRule(audienceOf(ctx), about, NAMES);
       const observer =
         toStatements([{ subject: about, predicate: 'r', object: 'v', validStart: JAN }], {
           ownerUserId: ALICE,
           audience: audienceOf(ctx),
+          speakerNames: NAMES,
         }).speakerFacts === 1;
       const result = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
         input: { about, relation: 'r', value: 'v' },
@@ -736,21 +1004,24 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
       }
     }
     expect(disagreements).toEqual([]);
-    // Not vacuous: a shared or unknown audience refuses every person subject, and nothing else.
-    expect(SUBJECTS.filter((about) => breaksSpeakerRule(audienceOf(ctx), about))).toHaveLength(
-      audienceOf(ctx) === 'shared' ? PERSON_SUBJECTS.length : 0,
+    // Not vacuous: a shared or unknown audience refuses every person subject,
+    // every subject made of the speakers' names and the one too long to
+    // read, and nothing else.
+    expect(SUBJECTS.filter((about) => breaksSpeakerRule(audienceOf(ctx), about, NAMES))).toHaveLength(
+      audienceOf(ctx) === 'shared' ? PERSON_SUBJECTS.length + NAMES_A_SPEAKER.length + 1 : 0,
     );
   });
 });
 
 describe('recordFacts — the one door every engine write goes through', () => {
   const ANSWER = { records: [{ id: 'row-1' }] };
-  const turn = (audience?: AgentContextAudience): AgentContext =>
+  const turn = (audience?: AgentContextAudience, conversationId?: string): AgentContext =>
     makeAgentContext({
       sessionId: 's',
       agentId: 'agent-1',
       userId: ALICE,
       ...(audience !== undefined ? { audience } : {}),
+      ...(conversationId !== undefined ? { conversationId } : {}),
     });
 
   /** A bus whose engine records every write it is sent, and answers {@link ANSWER}. */
@@ -855,5 +1126,91 @@ describe('recordFacts — the one door every engine write goes through', () => {
     await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements });
     expect(written).toEqual([{ statements: [{ about: 'a', audience: 'shared' }, { audience: 'shared' }] }]);
     expect(1 in (written[0] as { statements: unknown[] }).statements).toBe(true);
+  });
+
+  // TASK-1146: the backstop knows the speakers' names too. A caller that has
+  // them (the observer, `memory_note`) passes them; one that doesn't makes
+  // `recordFacts` ask, so a writer added later can't forget the names.
+  it('with no names given, a shared write asks memory:pre-capture once and refuses a speaker name, sending nothing', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, ['vinay']);
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+      statements: [
+        { about: 'billing_service', value: 'Dana' },
+        { about: 'vinay', value: 'Paris-secret' },
+      ],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    expect((failure as Error).message).not.toContain('vinay');
+    expect((failure as Error).message).not.toContain('Paris-secret');
+    expect(written).toEqual([]);
+    expect(asked).toEqual([{ conversationId: CHANNEL }]);
+  });
+
+  it('names given, it asks nothing: an empty list is an answer too', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, ['vinay']);
+    const ctx = turn('shared', CHANNEL);
+    await expect(
+      recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, ['vinay']),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    // `[]` means "asked, and nobody was named", so it is sent, though the
+    // subscriber would have named `vinay` had it been asked.
+    await recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, []);
+    expect(asked).toEqual([]);
+    expect(written).toEqual([{ statements: [{ about: 'vinay', audience: 'shared' }] }]);
+  });
+
+  it('a refused ask refuses the batch', async () => {
+    const { bus, written } = engineRecording();
+    bus.subscribe(MEMORY_PRE_CAPTURE_HOOK, 'test-refuser', async () => reject({ reason: 'channel-not-remembered' }));
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+      statements: [{ about: 'billing_service', value: 'Dana-secret' }],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    expect((failure as Error).message).not.toContain('Dana-secret');
+    expect(written).toEqual([]);
+  });
+
+  it('a private write never asks, and files a name as written', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, ['vinay']);
+    for (const ctx of [turn(undefined, CHANNEL), turn('private', CHANNEL)]) {
+      await recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] });
+    }
+    expect(asked).toEqual([]);
+    expect(written).toEqual([
+      { statements: [{ about: 'vinay', audience: 'private' }] },
+      { statements: [{ about: 'vinay', audience: 'private' }] },
+    ]);
+
+    // The control: the same write in a shared turn asks, and is refused.
+    await expect(
+      recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(asked).toEqual([{ conversationId: CHANNEL }]);
+  });
+
+  it('an answer memory cannot read throws invalid-return, and nothing is written', async () => {
+    const { bus, written } = engineRecording();
+    bus.subscribe<MemoryPreCapturePayload>(MEMORY_PRE_CAPTURE_HOOK, 'test-garbled', async (_ctx, payload) => ({
+      ...payload,
+      speakerNames: 'vinay' as unknown as string[],
+    }));
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+      statements: [{ about: 'billing_service', value: 'Dana' }],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'invalid-return', plugin: '@ax/memory', hookName: MEMORY_PRE_CAPTURE_HOOK });
+    expect((failure as Error).message).not.toContain('vinay');
+    expect(written).toEqual([]);
   });
 });

@@ -9,7 +9,7 @@ import {
 
 import { resolveMemoryAccess } from './access.js';
 import { breaksSpeakerRule, recordFacts } from './audience.js';
-import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
+import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -228,26 +228,36 @@ export async function registerMemoryNote(
         // any bus call, so nothing is read or written. `recordFacts` would
         // refuse it anyway; refusing here says why, in words the model can
         // pass on. The same function as the observer and `recordFacts`, so
-        // the three can't drift (TASK-1136).
-        if (breaksSpeakerRule(audienceOf(ctx), input.about as string)) {
+        // the three can't drift (TASK-1136). This is the rule's `user` half,
+        // with no names: it comes before the ask (TASK-1094's order), and the
+        // names half comes right after it.
+        if (breaksSpeakerRule(audienceOf(ctx), input.about as string, [])) {
           throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
         }
         // TASK-1094: ask `memory:pre-capture` first, as every extraction
-        // pass does (`captureRefusal`). A plugin that keeps a conversation
+        // pass does (`captureCheck`). A plugin that keeps a conversation
         // out of memory keeps the agent's own notes in it out too; otherwise
         // the agent could write down what memory was told not to learn.
         // After the input and person checks, so those refusals still say
         // what's wrong; before access and the engine, so a refused note
-        // reads nothing and writes nothing.
-        const refusal = await captureRefusal(bus, ctx);
-        if (refusal !== undefined) {
+        // reads nothing and writes nothing. An answer memory can't read
+        // throws `invalid-return`, and the note is not saved.
+        const check = await captureCheck(bus, ctx);
+        if (check.refusal !== undefined) {
           ctx.logger.info(CAPTURE_REFUSED_EVENT, {
             agentId: ctx.agentId,
-            refusedBy: refusal.source,
-            reason: refusal.reason,
+            refusedBy: check.refusal.source,
+            reason: check.refusal.reason,
             tool: MEMORY_NOTE_DESCRIPTOR.name,
           });
           throw new NoteInputError(NOT_SAVED_HERE_MESSAGE, 'forbidden');
+        }
+        // TASK-1146: the answer names the people speaking in the
+        // conversation, and a note filed under one of their names (`vinay`)
+        // is a note about a person, refused like `user`, with the same words.
+        // Still before access and the engine.
+        if (breaksSpeakerRule(audienceOf(ctx), input.about as string, check.speakerNames)) {
+          throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
         }
 
         const access = await resolveMemoryAccess(bus, ctx);
@@ -261,7 +271,8 @@ export async function registerMemoryNote(
         }
         const slot = deriveSlot(input.relation as string);
         // `recordFacts`, like every engine write: it stamps the turn's
-        // audience on the note (TASK-1091).
+        // audience on the note (TASK-1091). Handed the names this note was
+        // answered with, so a note asks once (TASK-1146).
         const result = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
@@ -281,6 +292,7 @@ export async function registerMemoryNote(
               },
             ],
           },
+          check.speakerNames,
         );
         const records = result === null || typeof result !== 'object' ? undefined : result.records;
         if (

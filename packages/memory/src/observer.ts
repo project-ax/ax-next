@@ -94,7 +94,8 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
-   * Every fact had a person subject (`user`, `user:<id>`), in a shared turn (TASK-1091,
+   * Every fact had a person subject (`user`, `user:<id>`, or a speaker's
+   * name from `memory:pre-capture`), in a shared turn (TASK-1091, TASK-1146,
    * `toStatements`): the speaker could be anyone in the room, so none is
    * stored. Counted and named apart, like the self-reports, so a shared
    * conversation that keeps nothing leaves a trace of why.
@@ -165,9 +166,10 @@ export type ObserverResult =
        */
       selfReports: number;
       /**
-       * Facts dropped because they had a person subject, in a shared turn
-       * (TASK-1091, `toStatements`). Always 0 in a private turn. Not
-       * `unusable`: this is the rule working, not the extractor failing.
+       * Facts dropped because they had a person subject (`user`, `user:<id>`,
+       * or a speaker's name), in a shared turn (TASK-1091, TASK-1146,
+       * `toStatements`). Always 0 in a private turn. Not `unusable`: this is
+       * the rule working, not the extractor failing.
        */
       speakerFacts: number;
       /**
@@ -256,11 +258,21 @@ export interface RunObserverInput {
   ownerUserId: string;
   /**
    * Who can read the turn's reply: `audienceOf(ctx)`, never a payload
-   * (TASK-1091). In a shared turn every fact with a person subject is dropped before
-   * the speaker rewrite (`toStatements`). Required, so a caller can't forget
-   * it and quietly get the private behaviour.
+   * (TASK-1091). In a shared turn every fact with a person subject (`user`,
+   * `user:<id>`, or one of {@link speakerNames}) is dropped before the speaker
+   * rewrite (`toStatements`). Required, so a caller can't forget it and
+   * quietly get the private behaviour.
    */
   audience: AgentContextAudience;
+  /**
+   * The names of the people speaking in the conversation, as this pass's
+   * `memory:pre-capture` answer gave them (TASK-1146, `captureCheck`), never
+   * a payload of the extraction. In a shared turn a fact whose subject is
+   * made of them is dropped like `user` (`breaksSpeakerRule`). `[]` when
+   * nobody named anyone. Required, like `audience`, so a caller can't forget
+   * them and quietly get the `user`-only rule.
+   */
+  speakerNames: readonly string[];
   /**
    * The turn's conversation, as the batch IDENTITY: hashed into `batchKey`.
    * Absent on a turn with no conversation.
@@ -401,6 +413,7 @@ async function extractAndRecord(
     ownerUserId: input.ownerUserId,
     conversationId: input.statementConversationId,
     audience: input.audience,
+    speakerNames: input.speakerNames,
   });
   if (mapped.statements.length === 0) {
     // "The extractor found nothing durable" and "the extractor found things
@@ -729,18 +742,25 @@ export function buildBatchKey(input: {
  * about. What this does is produce a CANONICAL `Z` form from whatever the
  * model wrote, and reject what cannot be read at all.
  *
- * ## A shared turn keeps no speaker facts (TASK-1091)
+ * ## A shared turn keeps no speaker facts (TASK-1091, TASK-1146)
  *
  * In a turn people without access to the agent can read, every fact with a
- * person subject (`breaksSpeakerRule`: `user`, `User`, ` user `, `user:<anyone>`) is
- * dropped and counted as `speakerFacts`, FIRST, before the speaker rewrite
- * could file it under the owner's key. A deterministic filter on the
- * extractor's output, not a prompt change: the extraction prompt is
- * fingerprint-pinned. `recordFacts` refuses any that get past it.
+ * person subject (`breaksSpeakerRule`: `user`, `User`, ` user `,
+ * `user:<anyone>`, or a subject made of `opts.speakerNames`, such as `vinay`
+ * for a speaker a channel labels "vinay") is dropped and counted as
+ * `speakerFacts`, FIRST, before the speaker rewrite could file it under the
+ * owner's key. A deterministic filter on the extractor's output, not a prompt
+ * change: the extraction prompt is fingerprint-pinned. `recordFacts` refuses
+ * any that get past it.
  */
 export function toStatements(
   facts: ReadonlyArray<ExtractedFact & SourceTurn>,
-  opts: { ownerUserId: string; conversationId?: string | undefined; audience: AgentContextAudience },
+  opts: {
+    ownerUserId: string;
+    conversationId?: string | undefined;
+    audience: AgentContextAudience;
+    speakerNames: readonly string[];
+  },
 ): { statements: ObserverStatement[]; unusable: number; selfReports: number; speakerFacts: number } {
   const statements: ObserverStatement[] = [];
   let unusable = 0;
@@ -749,7 +769,7 @@ export function toStatements(
   for (const fact of facts) {
     // Anything but a private turn drops, which fails closed. Before every
     // other check, so the count doesn't depend on them.
-    if (breaksSpeakerRule(opts.audience, fact.subject)) {
+    if (breaksSpeakerRule(opts.audience, fact.subject, opts.speakerNames)) {
       speakerFacts += 1;
       continue;
     }

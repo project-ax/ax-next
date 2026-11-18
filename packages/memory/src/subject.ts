@@ -31,15 +31,16 @@ export const SPEAKER_SUBJECT = 'user';
  * a missed rewrite can collapse two team members into one subject, while an
  * over-eager one corrupts a subject key permanently.
  *
- * The shared-turn speaker rule (`isPersonSubject` in `audience.ts`, TASK-1091)
- * is deliberately the opposite, BROAD: case-folded, trimmed, any `user:`
- * prefix. It doesn't rewrite a key, it drops a fact, so matching too much
- * costs one fact while missing one pins a passer-by's words on a person. The
- * observer and `memory_note` apply it before this rewrite, and `recordFacts`
- * refuses whatever gets past them, so a shared turn stores nothing under a
- * speaker subject. A speaker the extractor names from a channel's sender
- * label (`vinay | …`, seen in the TASK-1134 walk) isn't one: design §2a's
- * accepted gap.
+ * The shared-turn speaker rule (`breaksSpeakerRule` in `audience.ts`,
+ * TASK-1091) is deliberately the opposite, BROAD: case-folded, trimmed, any
+ * `user:` prefix, and since TASK-1146 any subject made of the speakers' names
+ * that a channel hands memory with its `memory:pre-capture` answer (the
+ * extractor names the speaker from a channel's sender label, `vinay | …` in
+ * the TASK-1134 walk). It doesn't rewrite a key, it drops a fact, so matching
+ * too much costs one fact while missing one pins a passer-by's words on a
+ * person. The observer and `memory_note` apply it before this rewrite, and
+ * `recordFacts` refuses whatever gets past them, so a shared turn stores
+ * nothing under a speaker subject.
  *
  * Note this is NOT an access-control boundary. A caller can still write any
  * `about` it likes, including `user:someone-else`. What limits where that

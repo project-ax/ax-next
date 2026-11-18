@@ -18,6 +18,7 @@ import {
 } from '../plugin.js';
 import {
   ALICE,
+  answerSpeakerNames,
   DEFAULT_AGENT,
   eventsNamed,
   makeMemoryHarness,
@@ -641,6 +642,40 @@ describe("a shared conversation's passes (TASK-1091)", () => {
       db.close();
     }
   });
+
+  it('an incremental pass in a shared conversation drops the speaker name too (TASK-1146)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const facts = [
+      { subject: 'vinay', predicate: 'stated_standup_time', object: 'Team standup moved to 10:15 on Tuesdays' },
+      { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+    ].map((f) => ({ network: 'world', validStart: '2026-09-01T00:00:00Z', invalidatesPrevious: false, ...f }));
+    const env = await setup({}, () => ({
+      text: JSON.stringify({ facts }),
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+    const asked = answerSpeakerNames(env.h.bus, ['Vinay Pulim', 'UHTE83XE1']);
+    // A member talking in a channel: memory may learn from it, and people
+    // without access read the reply.
+    const member = env.h.ctx({ conversationId: CONV, source: 'user', audience: 'shared' });
+
+    await env.exchange(
+      '[Slack · #team · Vinay Pulim (UHTE83XE1)]: Our team standup moved to 10:15 on Tuesdays. Dana owns the billing service.',
+      'Noted: standup at 10:15 on Tuesdays, and Dana owns billing.',
+      'req-1',
+      member,
+    );
+    await idle(env);
+
+    expect(env.rows().map((r) => r.value)).toEqual(['Dana']);
+    expect(eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
+      outcome: 'recorded',
+      trigger: 'idle',
+      recorded: 1,
+      speakerFacts: 1,
+    });
+    expect(asked).toEqual([{ conversationId: CONV }]);
+  });
 });
 
 describe('a conversation another plugin refuses is not captured (TASK-908)', () => {
@@ -746,6 +781,33 @@ describe('a conversation another plugin refuses is not captured (TASK-908)', () 
     expect(env.storage.has(cursorKey(CONV))).toBe(false);
     expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).map((e) => e.bindings.reason)).toEqual(['observer-threw']);
     expect(eventsNamed(env.h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
+  });
+
+  // TASK-1146: an answer memory can't read is one it can't trust, so the pass
+  // fails like a fire that rejects, and the turns wait for a pass whose answer
+  // reads. Read as "no names", it would capture them unfiltered for good.
+  it('an answer memory cannot read records nothing and keeps the cursor, so a later pass tries the turns again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    let garbled = true;
+    env.h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-garbled', async (_ctx, payload) =>
+      garbled ? { ...payload, speakerNames: [7] as unknown as string[] } : undefined,
+    );
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+
+    expect(env.rows()).toEqual([]);
+    expect(env.h.llmCalls).toHaveLength(0);
+    expect(env.storage.has(cursorKey(CONV))).toBe(false);
+    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
+      ['warn', 'observer-threw'],
+    ]);
+
+    // Once the answer reads, the final pass covers the same turns.
+    garbled = false;
+    await env.chatEnd();
+    expect(env.rows().map((r) => r.value)).toEqual(['I moved to Boston.', 'Welcome to Boston!']);
   });
 
   it('a subscriber that never answers is skipped at the 10 s bound, and the pass goes on', async () => {
