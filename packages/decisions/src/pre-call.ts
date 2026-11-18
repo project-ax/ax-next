@@ -278,9 +278,13 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     const attendance = await deps.attendanceFor(ctx);
 
     // A HOLD THAT APPLIES ONLY WHEN NOBODY IS THERE (TASK-1135). The rule says
-    // the tool does nothing but put its OWN card in front of the person, and
-    // that Allow on that card is what grants (`request_capability` and its
-    // skill card). When someone is there to answer that card, the card is the
+    // the tool grants nothing itself and asks with its OWN card, and that
+    // Allow on that card is what grants (`request_capability` and its skill
+    // card; on an id the catalog lacks it also files a zero-reach cold-start
+    // request for an admin, as the `allow`ed `search_catalog` does). A skip
+    // also bypasses TASK-254's one-question-per-call reuse below: an open row
+    // for the same call (an outsider's earlier request, say) stays open, and
+    // approving it later raises the card again, which attaches nothing new. When someone is there to answer that card, the card is the
     // question. Holding here too would ask them twice, the first time with
     // less to go on.
     //

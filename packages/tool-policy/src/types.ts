@@ -152,8 +152,11 @@ export interface PolicyRule {
    * routine's own run, an outsider's turn, and any turn whose attendance
    * cannot be read.
    *
-   * ONLY for a tool that does nothing but put its OWN card in front of the
-   * person, where Allow on that card is what grants. Holding that call in an
+   * ONLY for a tool that grants nothing itself, and whose way of asking is
+   * its OWN card in front of the person, where Allow on that card is what
+   * grants. (`request_capability` also files a cold-start request for an
+   * admin on an id the catalog doesn't have: zero reach, and the same thing
+   * `search_catalog`, an `allow`, does.) Holding that call in an
    * attended turn asks the same person the same question twice, and the first
    * time with less to go on. NEVER on a tool that acts by itself: there the
    * hold is the only question anybody is asked, and an attended turn is

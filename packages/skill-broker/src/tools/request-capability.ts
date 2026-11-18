@@ -17,10 +17,11 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
   description:
     'Request that a catalog skill be connected for the user. Pass a skill id from ' +
     'search_catalog results. The user will be asked to approve the hosts it reaches and ' +
-    'enter any required keys. Do not narrate this step or restate any keys — the approval ' +
-    'surface handles it. Until the user approves, the skill is not connected: end your ' +
-    "turn after requesting it, and don't try to do the same thing another way in the " +
-    'meantime. Once the user approves, the conversation will continue ' +
+    'enter any required keys. Do not narrate the hosts or restate any keys — the approval ' +
+    'surface shows them. When the result carries a message, follow it: until the user ' +
+    'approves, the skill is not connected, so end your turn after requesting it and ' +
+    "don't try to do the same thing with another tool in the meantime. " +
+    'Once the user approves, the conversation will continue ' +
     'automatically; do not ask the user to repeat their request. ' +
     'If the result is { status: "not-found" }, the capability is not in the catalog yet ' +
     'and a request to add it is filed for the administrator automatically — tell the user ' +
@@ -47,14 +48,16 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
 // before the skill card. This adds no new trust: it says what `requested`
 // already means (the person is being asked, and nothing is connected until
 // they answer) and what to do next. It names no host, slot, package or key
-// (SECURITY.md). `web_extract` is only an example of "another way": it is the
-// tool the walk saw, and the sentence still reads on a deployment or agent
-// that doesn't offer it. Same pattern as @ax/tool-connector-propose's
-// REPLY_MESSAGES.
+// (SECURITY.md). It names no tool either: the walk's model reached for
+// web_extract, but naming a tool in a "don't" can prime the model to use it,
+// and not every agent has it. Same pattern as @ax/tool-connector-propose's
+// REPLY_MESSAGES. The descriptor's "end your turn" is conditioned on this
+// message, because a skill with nothing to gate fires no card and asks nobody
+// (TASK-1137 owns that branch): the model must not say it asked.
 export const REQUESTED_MESSAGE: string =
   "Not connected yet. The user has been asked to approve this skill, and it can't be used until they do. " +
   "Tell them in one short sentence that you've asked, then end your turn. " +
-  "Don't try to do the same thing another way in the meantime (for example with web_extract): wait for their answer.";
+  "Don't try to do the same thing another way in the meantime, with another tool or otherwise: wait for their answer.";
 
 interface RequestCapabilityResult {
   status: 'requested' | 'not-found';

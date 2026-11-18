@@ -973,7 +973,18 @@ describe('TASK-1135: request_capability says the skill is not connected yet', ()
     expect(ack).toStrictEqual({ status: 'requested', skillId: 'linear' });
   });
 
-  it('the descriptor says to end the turn after requesting', () => {
-    expect(REQUEST_CAPABILITY_DESCRIPTOR.description).toContain('end your turn after requesting it');
+  it('the descriptor says to end the turn after requesting, only when the result says someone was asked', () => {
+    const desc = REQUEST_CAPABILITY_DESCRIPTOR.description;
+    expect(desc).toContain('end your turn after requesting it');
+    // A skill with nothing to gate fires no card and returns no message: the
+    // model must not be told someone was asked (review finding, TASK-1135).
+    expect(desc).toContain('When the result carries a message, follow it');
+    // "Tell them you've asked" (the message) must not contradict a blanket
+    // "do not narrate this step" (the descriptor).
+    expect(desc.toLowerCase()).not.toContain('narrate this step');
+  });
+
+  it('the message names no tool, so it cannot prime the model toward one', () => {
+    expect(REQUESTED_MESSAGE).not.toMatch(/web_extract|web_search|curl/);
   });
 });

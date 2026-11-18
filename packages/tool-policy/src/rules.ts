@@ -147,9 +147,12 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // (This line used to say the flag stops AW-5 offering undo, which is
   // backwards. See TASK-384 and TASK-409.)
   {
-    // ATTENDED CALLS RUN (TASK-1135). The call's only effect is the skill
-    // card, and Allow on that card is what grants, so when someone is there
-    // to answer it, the card is the question. This hold is for a turn nobody
+    // ATTENDED CALLS RUN (TASK-1135). The call grants nothing itself: it
+    // reads the catalog, raises the skill card, and (for an id the catalog
+    // doesn't have) files a cold-start request for an admin, which
+    // `search_catalog`, an `allow`, already does with freer text. Allow on the
+    // card is what grants, so when someone is there to answer it, the card is
+    // the question. This hold is for a turn nobody
     // is there to answer (a routine's own run, an outsider's turn), where the
     // durable Decision row is how the owner gets asked.
     //
