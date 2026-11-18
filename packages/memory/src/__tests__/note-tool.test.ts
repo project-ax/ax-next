@@ -950,6 +950,26 @@ describe('a note under a speaker name in a shared turn (TASK-1146)', () => {
       ['warn', 'memory-unavailable'],
     ]);
   });
+
+  it('the log says which hook gave the garbled answer, by code and hook name, never by message', async () => {
+    const h = await withHarness();
+    h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-garbled', async (_ctx, payload) => ({
+      ...payload,
+      speakerNames: 'vinay' as unknown as string[],
+    }));
+
+    await note(h, { about: 'team_standup', relation: 'time', value: '10:15 on Tuesdays' }, memberCtx(h));
+
+    const failures = eventsNamed(h.logs, NOTE_FAILED_EVENT);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.bindings).toMatchObject({
+      reason: 'memory-unavailable',
+      code: 'invalid-return',
+      hookName: 'memory:pre-capture',
+    });
+    // The PluginError's message can carry what the subscriber answered.
+    expect(JSON.stringify(failures[0])).not.toContain('vinay');
+  });
 });
 
 describe('a note whose about is too long to file says so, in every audience (TASK-1146 review)', () => {

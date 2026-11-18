@@ -334,7 +334,17 @@ export async function registerMemoryNote(
         try {
           ctx.logger[isMissingCredential(err) ? 'error' : deliberate ? 'info' : 'warn'](
             memoryFailureEvent(err, NOTE_FAILED_EVENT),
-            { agentId: ctx.agentId, path: 'note', reason: error },
+            {
+              agentId: ctx.agentId,
+              path: 'note',
+              reason: error,
+              // Which hook faulted and how, never the message. Only for this
+              // plugin's own errors: their code and hook are fixed strings,
+              // while another plugin's code is text we don't control.
+              ...(err instanceof PluginError && err.plugin === PLUGIN_NAME
+                ? { code: err.code, hookName: err.hookName }
+                : {}),
+            },
           );
         } catch {
         }
