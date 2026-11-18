@@ -27,8 +27,14 @@ describe('memory:pre-capture contract (TASK-908)', () => {
   it('keeps the speaker names a subscriber added (TASK-1146)', () =>
     expect(MemoryPreCapturePayloadSchema.parse({ conversationId: 'c', speakerNames: ['Vinay Pulim', 'UHTE83XE1'] }))
       .toEqual({ conversationId: 'c', speakerNames: ['Vinay Pulim', 'UHTE83XE1'] }));
-  it('accepts 32 names of 256', () =>
-    expect(MemoryPreCapturePayloadSchema.safeParse({ conversationId: 'c', speakerNames: Array(32).fill('x'.repeat(256)) }).success).toBe(true));
+  it('accepts 32 names of 256, and keeps all of them', () => {
+    // `success` alone is not enough: a schema that stripped the key would pass too.
+    const speakerNames = Array(32).fill('x'.repeat(256));
+    const parsed = MemoryPreCapturePayloadSchema.safeParse({ conversationId: 'c', speakerNames });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.speakerNames).toHaveLength(32);
+    expect(parsed.data?.speakerNames).toEqual(speakerNames);
+  });
   it('accepts an empty list: a subscriber that adds no names is not an error', () =>
     expect(MemoryPreCapturePayloadSchema.parse({ conversationId: 'c', speakerNames: [] }))
       .toEqual({ conversationId: 'c', speakerNames: [] }));
