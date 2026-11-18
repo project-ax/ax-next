@@ -194,12 +194,20 @@ function cleanAssistantNarration() {
       if (doomed.has(row.closed_by) && !doomed.has(row.id)) report.keptClosedByDeleted += 1;
     }
 
-    const countFts = db.prepare('SELECT COUNT(*) AS n FROM memory_facts_v1_fts WHERE id = ?');
+    // ONE pass over the full-text table. Its `id` is UNINDEXED, so a lookup by
+    // id scans the whole table, and one per deleted fact, under an apply's
+    // write lock, took 5.1 s at 20,000 rows and 1,000 deletions. The live
+    // host waits 5 s for that lock before a memory write fails.
+    const ftsRowids = [];
+    for (const row of db.prepare('SELECT rowid, id FROM memory_facts_v1_fts').iterate()) {
+      if (doomed.has(row.id)) ftsRowids.push(row.rowid);
+    }
+    report.ftsRows = ftsRowids.length;
+    // vec0 answers a lookup by its `id` primary key directly.
     const countVec =
       hasVec && vecLoaded ? db.prepare('SELECT COUNT(*) AS n FROM memory_facts_v1_vec WHERE id = ?') : undefined;
-    for (const id of doomed) {
-      report.ftsRows += countFts.get(id).n;
-      if (countVec !== undefined) report.vecRows += countVec.get(id).n;
+    if (countVec !== undefined) {
+      for (const id of doomed) report.vecRows += countVec.get(id).n;
     }
 
     if (!apply) {
@@ -217,12 +225,13 @@ function cleanAssistantNarration() {
     }
 
     if (doomed.size > 0) {
-      const dropFts = db.prepare('DELETE FROM memory_facts_v1_fts WHERE id = ?');
+      // The search rows first, as purge.ts does. The rowids were read under
+      // this same write lock, so they still name the same rows.
+      const dropFts = db.prepare('DELETE FROM memory_facts_v1_fts WHERE rowid = ?');
+      for (const rowid of ftsRowids) dropFts.run(rowid);
       const dropVec = hasVec ? db.prepare('DELETE FROM memory_facts_v1_vec WHERE id = ?') : undefined;
       const dropFact = db.prepare('DELETE FROM memory_facts_v1 WHERE id = ?');
       for (const id of doomed) {
-        // The search rows first, as purge.ts does.
-        dropFts.run(id);
         dropVec?.run(id);
         report.deleted += Number(dropFact.run(id).changes);
       }

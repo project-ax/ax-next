@@ -439,4 +439,54 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     expect(basename(dirname(VEC_EXTENSION))).toMatch(/^sqlite-vec-[a-z]+-[a-z0-9]+$/);
     expect(basename(VEC_EXTENSION)).toMatch(/^vec0\.(?:so|dylib|dll)$/);
   });
+
+  // An apply holds the store's write lock from its first read to its commit,
+  // and the live host's driver waits only 5 s for a lock before a memory write
+  // fails. FTS5's `id` is UNINDEXED, so finding a fact's search row by id
+  // scans the whole table. Once per deleted fact (to count, then to delete),
+  // that took 5.1 s at 20,000 rows and 1,000 deletions (measured); one pass
+  // took 0.13 s. The store here is twice that size, so a scan per deletion in
+  // EITHER step costs about four times as much and can't hide under the bound.
+  it('keeps the write lock short on a big store: one pass over the search table, not one per deletion', () => {
+    const writer = new Database(databasePath);
+    try {
+      const fact = writer.prepare(
+        `INSERT INTO memory_facts_v1 (id, agent_key, about, relation, value, provenance, valid_start, transaction_time)
+         VALUES (?, 'bulk', ?, ?, ?, 'extracted', ?, ?)`,
+      );
+      const search = writer.prepare(
+        'INSERT INTO memory_facts_v1_fts (id, about, relation, value) VALUES (?, ?, ?, ?)',
+      );
+      writer.transaction(() => {
+        for (let i = 0; i < 40_000; i += 1) {
+          const [about, relation, value] =
+            i < 2_000
+              ? ['assistant', 'created_artifact', `the dashboard for week ${i}`]
+              : ['user', 'lives_in', `a town numbered ${i}`];
+          fact.run(`bulk-${i}`, about, relation, value, WHEN, WHEN);
+          search.run(`bulk-${i}`, about, relation, value);
+        }
+      })();
+    } finally {
+      writer.close();
+    }
+
+    const started = performance.now();
+    const result = run(['--apply', VEC_ARG]);
+    const elapsed = performance.now() - started;
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ftsRows: 2_007, vecRows: 7, deleted: 2_007 });
+    const reader = new Database(databasePath, { readonly: true });
+    try {
+      const count = (table: string): number =>
+        (reader.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+      expect(count('memory_facts_v1')).toBe(15 - 7 + 38_000);
+      expect(count('memory_facts_v1_fts')).toBe(15 - 7 + 38_000);
+    } finally {
+      reader.close();
+    }
+    // The whole process, Node's start-up included.
+    expect(elapsed).toBeLessThan(2_000);
+  });
 });
