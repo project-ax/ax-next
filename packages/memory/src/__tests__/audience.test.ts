@@ -583,6 +583,8 @@ const NAMES_A_SPEAKER = [
   'vinay_user',
   'user_uhte83xe1',
   'User Vinay',
+  'user_vinaypulim',
+  'vinaypulim_user',
   FULLWIDTH_VINAY,
   ZWSP_VINAY,
 ];
@@ -599,6 +601,7 @@ const NOT_A_SPEAKER = [
   // alone is isPersonSubject's job: see the test below.)
   'user_settings',
   'team_user',
+  'user_vinaypulim_laptop',
   'billing_service',
   'assistant',
   'v',
@@ -905,9 +908,19 @@ describe("namesASpeaker — a subject made of a speaker's names (TASK-1146)", ()
     expect(namesASpeaker('user_settings', ['Vinay Pulim'])).toBe(false);
   });
 
-  it('a name that has the speaker word as a word keeps it', () => {
+  it('a name with the speaker word in it never stops a drop (TASK-1146 review round 3)', () => {
+    expect(namesASpeaker('user_vinaypulim', ['Vinay Pulim', 'Test User'])).toBe(true);
+    expect(namesASpeaker('vinaypulim_user', ['Vinay Pulim', 'Test User'])).toBe(true);
+    expect(namesASpeaker('usersmith_user', ['User Smith'])).toBe(true);
     expect(namesASpeaker('user_smith', ['User Smith'])).toBe(true);
-    expect(namesASpeaker('usersmith', ['User Smith'])).toBe(true);
+    // Adding such a name to the list never turns a drop into a keep.
+    for (const about of NAMES_A_SPEAKER) {
+      expect(namesASpeaker(about, [...NAMES, 'Test User'])).toBe(true);
+    }
+  });
+
+  it('a one-word name that ends in the speaker word still matches whole', () => {
+    expect(namesASpeaker('power_user', ['Poweruser'])).toBe(true);
   });
 
   it('no names, or names with no letters or digits, match nothing', () => {

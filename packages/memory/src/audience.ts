@@ -193,9 +193,12 @@ export function namesASpeaker(about: string, speakerNames: readonly string[]): b
   if (words.length === 0) return false;
   const { words: known, runTogether } = speakerIndex(speakerNames);
   // The extractor's own speaker word is set aside beside a name (`user_vinay`,
-  // `user_vinaypulim`), unless a name has it as a word, but never matches
-  // alone: a subject of `user` is `isPersonSubject`'s one job.
-  const rest = words.filter((word) => word !== SPEAKER_SUBJECT || known.has(word));
+  // `user_vinaypulim`), always: a co-speaker named "Test User" must not turn
+  // that off, since a hostile name may only make memory drop MORE. With
+  // nothing else left it never matches: a subject of `user` is
+  // `isPersonSubject`'s one job. The last test still reads the whole subject,
+  // for a one-word name that ends in it (`power_user` for "Poweruser").
+  const rest = words.filter((word) => word !== SPEAKER_SUBJECT);
   if (rest.length === 0) return false;
   return rest.every((word) => known.has(word)) || runTogether.has(rest.join('')) || runTogether.has(words.join(''));
 }

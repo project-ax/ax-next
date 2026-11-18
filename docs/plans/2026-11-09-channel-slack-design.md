@@ -165,20 +165,20 @@ recalled in a channel.
   with its `memory:pre-capture` answer. Outsiders' threads record none, since
   memory never learns from them.
 - What counts as a name: a subject whose words are all words of those names
-  (`vinay`, `vinay_pulim`, `uhte83xe1`). The extractor's own word for the
-  speaker counts beside a name, so `user_vinay` drops too. So `vinays_team`,
-  `team_standup` and
+  (`vinay`, `vinay_pulim`, `uhte83xe1`). So `vinays_team`, `team_standup` and
   `team_standup | owner | vinay` are kept: the rule reads the subject, never
-  the value. A subject over 1024 code units is dropped unread, since the
-  engines refuse one that long anyway and reading it costs host time its
-  writer picks.
+  the value. The extractor's own word for the speaker is set aside beside a
+  name, so `user_vinay` and `user_vinaypulim` drop too. A subject over 1024
+  code units is dropped unread, since the engines refuse one that long anyway
+  and reading it costs host time its writer picks.
 - Known gaps, accepted:
   - Someone named only in what's said ("Ada is out next week") is still
     stored. Telling a person from a thing would need the pinned extraction
     prompt.
   - Names the label doesn't show are missed: nicknames and initials (`vp`,
     `vinay_p`), titles (`mr_pulim`), role words other than `user`
-    (`speaker_vinay`, `member_vinay`), transliterations, digits added to a name
+    (`speaker_vinay`, `member_vinay`), the speaker word run into a name
+    (`uservinay`), transliterations, digits added to a name
     (`vinay2`). The run-together rule works inside one name only, so
     `pulimvinay` (the other order) is missed, and so is `vinaypulim` when the
     label gives "Vinay" and "Pulim" as separate entries.
