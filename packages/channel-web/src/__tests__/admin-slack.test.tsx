@@ -125,6 +125,13 @@ describe('fetchSlackStatus', () => {
           { botName: 'ax', appId: 'A0/../x' },
           { botName: 'ax', appId: 'javascript:alert(1)' },
           { botName: 'ax', appId: 'A'.repeat(65) },
+          // The server's id check lets these through; as a link, `..` and `.`
+          // would leave that one app's page, so the SPA's own check must not.
+          { botName: 'ax', appId: '..' },
+          { botName: 'ax', appId: '.' },
+          { botName: 'ax', appId: 'A0.B' },
+          { botName: 'ax', appId: 'A0_B' },
+          { botName: 'ax', appId: 'A0-B' },
           good,
         ],
       });

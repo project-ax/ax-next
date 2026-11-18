@@ -1705,6 +1705,27 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     ]);
   });
 
+  it.each(['no_permission', 'app_not_owned_by_manager_app'])(
+    "a %s refusal is about that one app: the pass moves on, so an app the token can't manage never blocks the ones after it",
+    async (code) => {
+      const w = world();
+      leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
+      leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 60_000);
+      w.slack.on.deleteApp = async (_token, appId) => {
+        if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', code);
+      };
+      expect((await w.connect()).status).toBe(200);
+      expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
+        [ACCESS, LEFT_1.appId],
+        [ACCESS, LEFT_2.appId],
+      ]);
+      expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+      expect(w.lines).toEqual([
+        { level: 'warn', msg: 'slack_admin_failed', fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code } },
+      ]);
+    },
+  );
+
   it.each([
     ['timeout', 'warn'],
     ['network', 'warn'],
