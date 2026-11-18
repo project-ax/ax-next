@@ -995,6 +995,8 @@ describe('TASK-1135: request_capability says the skill is not connected yet', ()
   it('the message names no tool, so it cannot prime the model toward one', () => {
     // Any snake_case word would be a tool name (web_extract, request_capability…).
     expect(REQUESTED_MESSAGE).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+    // ...and the one-word tools a model might reach for instead.
+    expect(REQUESTED_MESSAGE).not.toMatch(/\b(curl|bash|wget|fetch)\b/i);
   });
 
   it('a connector that fails to resolve is logged, not swallowed (no card can follow)', async () => {
@@ -1021,6 +1023,13 @@ describe('TASK-1135: request_capability says the skill is not connected yet', ()
     const warned = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
       .filter((e) => e['msg'] === 'request_capability_connector_resolve_failed');
     expect(warned).toHaveLength(1);
-    expect(warned[0]).toMatchObject({ level: 'warn', skillId: 'linear', connectorId: 'boom' });
+    expect(warned[0]).toMatchObject({
+      level: 'warn',
+      plugin: '@ax/skill-broker',
+      skillId: 'linear',
+      connectorId: 'boom',
+      // The bus wraps a throwing service; the cause is what an operator needs.
+      err: expect.objectContaining({ name: 'PluginError', code: 'unknown' }),
+    });
   });
 });

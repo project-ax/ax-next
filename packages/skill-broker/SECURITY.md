@@ -28,8 +28,8 @@ is rejected before it touches anything.
 ## Minimal by design
 
 `request_capability` returns the bare minimum: a status, the skill id and, when it put
-an approval card in front of the person, one fixed sentence we wrote on the host ("not
-connected yet, end your turn"). That sentence is a constant. Nothing from the catalog,
+an approval card in front of the person, one fixed message we wrote on the host ("not
+connected yet, end your turn"). That message is a constant. Nothing from the catalog,
 a connector or the model's own input goes into it. The tool deliberately does **not**
 echo back hosts, credential slot names, packages or keys to the model. The human
 approval card is the surface that shows those; the model has nothing sensitive to be
