@@ -159,8 +159,9 @@ function nameWords(text: string): string[] {
  *   both, in either order, or a member id (`vinay`, `pulim_vinay`,
  *   `uhte83xe1` for `Vinay Pulim` + `UHTE83XE1`). The words may come from
  *   different names: they are all the same conversation's speakers. The
- *   extractor's own word for the speaker (`user`) counts beside a name word
- *   (`user_vinay`, `vinay_user`), but a subject of `user` alone is
+ *   extractor's own word for the speaker (`user`) is set aside beside a name
+ *   (`user_vinay`, `vinay_user`, and with the run-together test below
+ *   `user_vinaypulim`), but a subject of `user` alone is
  *   {@link isPersonSubject}'s. Or
  * - its words run together spell one name's words run together
  *   (`vinaypulim` for `Vinay Pulim`, `vinay_pulim` for `VinayPulim`).
@@ -191,10 +192,12 @@ export function namesASpeaker(about: string, speakerNames: readonly string[]): b
   const words = nameWords(about);
   if (words.length === 0) return false;
   const { words: known, runTogether } = speakerIndex(speakerNames);
-  // The extractor's own speaker word counts as known beside a real name word
-  // (`user_vinay`), but never alone: that is `isPersonSubject`'s one job.
-  const speakerWordsOnly = words.every((word) => known.has(word) || word === SPEAKER_SUBJECT);
-  return (speakerWordsOnly && words.some((word) => known.has(word))) || runTogether.has(words.join(''));
+  // The extractor's own speaker word is set aside beside a name (`user_vinay`,
+  // `user_vinaypulim`), unless a name has it as a word, but never matches
+  // alone: a subject of `user` is `isPersonSubject`'s one job.
+  const rest = words.filter((word) => word !== SPEAKER_SUBJECT || known.has(word));
+  if (rest.length === 0) return false;
+  return rest.every((word) => known.has(word)) || runTogether.has(rest.join('')) || runTogether.has(words.join(''));
 }
 
 /** A name list's words, and each name's words run together. */

@@ -872,7 +872,7 @@ describe("namesASpeaker — a subject made of a speaker's names (TASK-1146)", ()
 
   // `user` alone is not a NAME: the speaker word only counts beside a real
   // name word, so `isPersonSubject` stays the one rule for `user`.
-  it('the speaker word alone does not name a speaker, with names or without', () => {
+  it('the speaker word alone does not name a speaker, even with names', () => {
     expect(namesASpeaker('user', NAMES)).toBe(false);
     expect(namesASpeaker('user_user', NAMES)).toBe(false);
     expect(isPersonSubject('user')).toBe(true);
@@ -894,6 +894,20 @@ describe("namesASpeaker — a subject made of a speaker's names (TASK-1146)", ()
   it('a run-together name matches its split spelling, both ways', () => {
     expect(namesASpeaker('vinay_pulim', ['VinayPulim'])).toBe(true);
     expect(namesASpeaker('vinaypulim', ['Vinay Pulim'])).toBe(true);
+  });
+
+  it('the speaker word beside a run-together name is set aside too (TASK-1146 review)', () => {
+    expect(namesASpeaker('user_vinaypulim', ['Vinay Pulim'])).toBe(true);
+    expect(namesASpeaker('vinaypulim_user', ['Vinay Pulim'])).toBe(true);
+    expect(namesASpeaker('user_vinay_pulim', ['VinayPulim'])).toBe(true);
+    // Controls: the speaker word sets nothing else aside.
+    expect(namesASpeaker('user_vinaypulim_laptop', ['Vinay Pulim'])).toBe(false);
+    expect(namesASpeaker('user_settings', ['Vinay Pulim'])).toBe(false);
+  });
+
+  it('a name that has the speaker word as a word keeps it', () => {
+    expect(namesASpeaker('user_smith', ['User Smith'])).toBe(true);
+    expect(namesASpeaker('usersmith', ['User Smith'])).toBe(true);
   });
 
   it('no names, or names with no letters or digits, match nothing', () => {

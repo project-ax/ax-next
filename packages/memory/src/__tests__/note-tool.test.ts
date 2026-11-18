@@ -967,7 +967,9 @@ describe('a note under a speaker name in a shared turn (TASK-1146)', () => {
       code: 'invalid-return',
       hookName: 'memory:pre-capture',
     });
-    // The PluginError's message can carry what the subscriber answered.
+    // Ids and codes only: the error's message and the error itself stay out
+    // of the line, whatever they hold.
+    expect(Object.keys(failures[0]!.bindings).sort()).toEqual(['agentId', 'code', 'hookName', 'path', 'reason']);
     expect(JSON.stringify(failures[0])).not.toContain('vinay');
   });
 });
