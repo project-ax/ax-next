@@ -930,6 +930,31 @@ describe('breaksSpeakerRule — the one speaker rule (TASK-1136, TASK-1146)', ()
     expect(breaksSpeakerRule('shared', 'x'.repeat(1024), NAMES)).toBe(false);
   });
 
+  it('a list nobody froze is read afresh each time, so a changed list is seen', () => {
+    const names = ['Vinay'];
+    expect(namesASpeaker('pulim', names)).toBe(false);
+    names.push('Pulim');
+    expect(namesASpeaker('pulim', names)).toBe(true);
+    names.length = 0;
+    expect(namesASpeaker('pulim', names)).toBe(false);
+  });
+
+  it('a frozen list is read once: a second call does not read the names again', () => {
+    const names = Object.freeze(['Vinay Pulim']);
+    const normalize = vi.spyOn(String.prototype, 'normalize');
+    try {
+      namesASpeaker('vinay', names);
+      const first = normalize.mock.calls.length;
+      namesASpeaker('vinay', names);
+      const second = normalize.mock.calls.length - first;
+      // The second call reads the subject only; the first read the names too.
+      expect(second).toBeGreaterThan(0);
+      expect(second).toBeLessThan(first);
+    } finally {
+      normalize.mockRestore();
+    }
+  });
+
   it('checks a batch against its names in about the time of one subject: each name list is read once', () => {
     // 32 names at the core caps, each of U+FDFA, which NFKC grows eighteenfold.
     const HOSTILE = Array.from({ length: 32 }, () => 'ﷺ'.repeat(256));
@@ -939,7 +964,8 @@ describe('breaksSpeakerRule — the one speaker rule (TASK-1136, TASK-1146)', ()
     const cpu = (subjects: number): number => {
       let best = Infinity;
       for (let run = 0; run < 3; run += 1) {
-        const names = [...HOSTILE];
+        // Frozen: a list is read once only if nobody can change it.
+        const names = Object.freeze([...HOSTILE]);
         const before = process.cpuUsage();
         for (let i = 0; i < subjects; i += 1) {
           expect(breaksSpeakerRule('shared', `subject_${i}`, names)).toBe(false);
@@ -999,7 +1025,11 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
         () => false,
         (err: unknown) => err instanceof PluginError && err.code === 'forbidden',
       );
-      if (observer !== rule || note !== rule || record !== rule) {
+      // The note tool refuses a subject over 1024 code units as bad input in
+      // EVERY audience, before the rule (the engines refuse it too), with its
+      // own message: pinned in note-tool.test.ts, so it isn't compared here.
+      const noteAgrees = about === TOO_LONG_TO_READ || note === rule;
+      if (observer !== rule || !noteAgrees || record !== rule) {
         disagreements.push(`${JSON.stringify(about)}: rule ${rule}, observer ${observer}, note ${note}, record ${record}`);
       }
     }
@@ -1148,6 +1178,30 @@ describe('recordFacts — the one door every engine write goes through', () => {
     expect((failure as Error).message).not.toContain('Paris-secret');
     expect(written).toEqual([]);
     expect(asked).toEqual([{ conversationId: CHANNEL }]);
+  });
+
+  it('a person subject is refused without asking: the cheap refusal comes first', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, ['vinay']);
+    for (const about of ['user', 'user:abc', TOO_LONG_TO_READ]) {
+      await expect(
+        recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about }] }),
+      ).rejects.toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    }
+    expect(asked).toEqual([]);
+    expect(written).toEqual([]);
+  });
+
+  it('a garbled answer cannot mask the cheap refusal', async () => {
+    const { bus } = engineRecording();
+    bus.subscribe<MemoryPreCapturePayload>(MEMORY_PRE_CAPTURE_HOOK, 'test-garbled', async (_ctx, payload) => ({
+      ...payload,
+      speakerNames: 'vinay' as unknown as string[],
+    }));
+    // `forbidden`, not the `invalid-return` the ask would have thrown.
+    await expect(
+      recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about: 'user' }] }),
+    ).rejects.toMatchObject({ code: 'forbidden', hookName: FACTS_RECORD_HOOK });
   });
 
   it('names given, it asks nothing: an empty list is an answer too', async () => {

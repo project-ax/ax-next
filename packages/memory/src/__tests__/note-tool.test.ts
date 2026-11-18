@@ -952,6 +952,41 @@ describe('a note under a speaker name in a shared turn (TASK-1146)', () => {
   });
 });
 
+describe('a note whose about is too long to file says so, in every audience (TASK-1146 review)', () => {
+  const TOO_LONG = 'x'.repeat(1025);
+  const JUST_LONG_ENOUGH = 'x'.repeat(1024);
+  const BODY = { relation: 'standup_time', value: '10:15 on Tuesdays' };
+  const TOO_LONG_MESSAGE =
+    'NOT SAVED: nothing was written to memory — do not tell the person it was saved. ' +
+    'about must be at most 1024 characters.';
+
+  it.each([
+    ['a shared', 'shared'],
+    ['a private', 'private'],
+    ['an absent-audience', undefined],
+  ] as const)('%s turn: 1025 code units is invalid-input with its own message, never the person one', async (_label, audience) => {
+    const h = await withHarness();
+    const ctx = h.ctx({ conversationId: 'conv-channel', ...(audience !== undefined ? { audience } : {}) });
+
+    const result = await note(h, { about: TOO_LONG, ...BODY }, ctx);
+
+    expect(result).toEqual({ ok: false, error: 'invalid-input', message: TOO_LONG_MESSAGE });
+    expect(JSON.stringify(result)).not.toContain('xxxx');
+    expect(readRows(h.databasePath)).toHaveLength(0);
+  });
+
+  it.each([
+    ['a shared', 'shared'],
+    ['a private', 'private'],
+  ] as const)('%s turn: 1024 code units passes the check', async (_label, audience) => {
+    const h = await withHarness();
+    const ctx = h.ctx({ conversationId: 'conv-channel', audience });
+
+    expect(await note(h, { about: JUST_LONG_ENOUGH, ...BODY }, ctx)).toEqual({ ok: true });
+    expect(readRows(h.databasePath)).toHaveLength(1);
+  });
+});
+
 describe('the note tool degrades, loudly and without leaking', () => {
   const NOTE = { about: 'user', relation: 'visited', value: 'Rome-secret-99' };
 

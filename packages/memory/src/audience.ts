@@ -175,6 +175,11 @@ function nameWords(text: string): string[] {
  * added to a name (`vinay2`), and anyone named only in what's said; drops a
  * thing whose name is all the speaker's name words, and a work subject made
  * of a display name's words ("Standup Team" drops `team_standup`).
+ *
+ * The run-together test works within ONE name, so these are missed too:
+ * `pulimvinay` (the words run together in the other order), `vinay_p` (an
+ * initial), and `vinaypulim` when the label gives "Vinay" and "Pulim" as
+ * separate entries (each entry's words are run together on their own).
  */
 export function namesASpeaker(about: string, speakerNames: readonly string[]): boolean {
   // No names, nothing to compare: don't read the subject at all.
@@ -192,22 +197,25 @@ interface SpeakerIndex {
 }
 
 /**
- * Each name list read once, not once per subject: a pass checks every fact
- * against the same list, and NFKC grows some characters eighteenfold, so 32
- * names at the core caps cost ~9 ms to read (measured), and a 200-fact batch
- * that read them per fact blocked the host ~1.5 s. Keyed by the list itself,
- * which is sound because a list is never changed once checked: the lists
- * memory checks are `captureCheck`'s frozen answer or literals, and every
- * parameter that carries one is `readonly`.
+ * Each FROZEN name list read once, not once per subject: a pass checks every
+ * fact against the same list, and NFKC grows some characters eighteenfold, so
+ * 32 names at the core caps cost ~9 ms to read (measured), and a 200-fact
+ * batch that read them per fact blocked the host ~1.5 s. Keyed by the list
+ * itself, which is sound only if the list never changes once checked, and
+ * `namesASpeaker` is exported with a merely `readonly` parameter. So only a
+ * frozen list is remembered (`captureCheck` freezes its answer); any other is
+ * read afresh, so a caller who edits a list in place is never answered from
+ * what it used to say.
  */
 const speakerIndexes = new WeakMap<readonly string[], SpeakerIndex>();
 
 function speakerIndex(speakerNames: readonly string[]): SpeakerIndex {
-  let index = speakerIndexes.get(speakerNames);
+  const frozen = Object.isFrozen(speakerNames);
+  let index = frozen ? speakerIndexes.get(speakerNames) : undefined;
   if (index === undefined) {
     const names = speakerNames.map(nameWords);
     index = { words: new Set(names.flat()), runTogether: new Set(names.map((name) => name.join(''))) };
-    speakerIndexes.set(speakerNames, index);
+    if (frozen) speakerIndexes.set(speakerNames, index);
   }
   return index;
 }
@@ -222,7 +230,7 @@ function speakerIndex(speakerNames: readonly string[]): SpeakerIndex {
  * (measured: 4 MiB of U+FDFA took ~4 s to compare with names). Refusing it
  * is the cheap direction, as everywhere in this rule.
  */
-const SPEAKER_RULE_READS_AT_MOST = 1024;
+export const SPEAKER_RULE_READS_AT_MOST = 1024;
 
 /**
  * The speaker rule (TASK-1091, design §2a): a turn with this audience may not
@@ -308,6 +316,9 @@ export async function recordFacts<TOut>(
   speakerNames?: readonly string[],
 ): Promise<TOut | null> {
   const audience = audienceOf(ctx);
+  // The cheap refusal first: a `user` subject or one too long to read needs no
+  // names, so refuse it before any ask, and a garbled answer can't mask it.
+  refuseSpeakerFacts(audience, input.statements, [], hookName);
   const names = speakerNames ?? (audience === 'private' ? [] : await askSpeakerNames(bus, ctx, hookName));
   refuseSpeakerFacts(audience, input.statements, names, hookName);
   return bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {

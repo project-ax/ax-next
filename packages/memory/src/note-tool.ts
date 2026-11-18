@@ -8,7 +8,7 @@ import {
 } from '@ax/core';
 
 import { resolveMemoryAccess } from './access.js';
-import { breaksSpeakerRule, recordFacts } from './audience.js';
+import { breaksSpeakerRule, recordFacts, SPEAKER_RULE_READS_AT_MOST } from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
@@ -82,6 +82,7 @@ const NOT_SAVED =
   'NOT SAVED: nothing was written to memory — do not tell the person it was saved.';
 
 const FIELDS_MESSAGE = 'about, relation and value must be non-empty strings.';
+const ABOUT_TOO_LONG_MESSAGE = `about must be at most ${SPEAKER_RULE_READS_AT_MOST} characters.`;
 const KEYS_MESSAGE = 'unexpected field(s) — only about, relation, value, when are accepted.';
 const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
@@ -220,6 +221,14 @@ export async function registerMemoryNote(
           if (typeof value !== 'string' || value.trim() === '') {
             throw new NoteInputError(FIELDS_MESSAGE);
           }
+        }
+        // Both engines refuse an `about` this long in every audience, so
+        // nothing is lost by saying so here, once, for every turn. Without
+        // it a shared turn's long subject would break the speaker rule unread
+        // and answer `PERSON_IN_SHARED_MESSAGE`, which says the note is about
+        // a person.
+        if ((input.about as string).length > SPEAKER_RULE_READS_AT_MOST) {
+          throw new NoteInputError(ABOUT_TOO_LONG_MESSAGE);
         }
         const when = input.when === undefined ? undefined : normalizeWhen(input.when);
         // TASK-1091: in a turn people without access to the agent can read,
