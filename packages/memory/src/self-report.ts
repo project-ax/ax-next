@@ -118,21 +118,25 @@
  * drive holds the draft.
  *
  * The third is a capability statement: what the agent says it can or can't do.
- * That's true of one session's tools, not something to remember. But a
- * reporting verb reports anyone's limits: `listed_limitations | the Roth IRA
- * caps income at $161k` and `described_capabilities | Kubernetes HPA can
- * scale on custom metrics` are answers. So a limitation predicate counts only
- * when the assistant is the one with the limit:
+ * That's true of one session's tools, not something to remember. But limits
+ * can be anyone's: `listed_limitations | the Roth IRA caps income at $161k`,
+ * `described_capabilities | Kubernetes HPA can scale on custom metrics` and
+ * `technical_limitations | Postgres max row size is 1.6 TB` are answers. So
+ * a limitation predicate counts only when the assistant is the one with the
+ * limit:
  *
- * - The predicate makes it the holder: `has_limitation`, a bare `limitation`,
+ * - The predicate makes it the holder: `has_limitation`, `had_limitations`,
  *   and the no-access family (`has_no_access_to`, `lacks_access`). These need
  *   no object check: "the assistant has a limitation" is about the assistant.
- * - A reporting verb (`stated_`, `listed_`, `described_`, …) needs the
- *   assistant marked: `its` or `own` in the predicate
+ * - Anything else needs the assistant marked, whether a reporting verb leads
+ *   it (`stated_`, `listed_`, `described_`, …) or nothing does
+ *   (`limitations`, `known_limitations`): `its` or `own` in the predicate
  *   (`stated_its_limitations`), or a {@link SELF_LIMIT_OBJECT} at the
- *   object's start ("cannot browse the internet", "it is unable to send
- *   email", "no internet access"). An object that starts with a topic, "of"
- *   or "for" included, stays.
+ *   object's start ("cannot browse the internet", "unable to send email",
+ *   "no internet access"). "It" doesn't mark the assistant ("it doesn't work
+ *   offline" is a product's), and neither does a plain "can" ("can export to
+ *   PDF and Excel"). An object that starts with a topic, "of" or "for"
+ *   included, stays.
  *
  * What the agent SUPPLIED stays: recommendations, lists, values, forecasts,
  * explanations, the plans and drafts it wrote. It is the pinned prompt's
@@ -195,7 +199,10 @@
  *   because `renamed` is an identity word; a skill it created or added
  *   (`added_skill | pdf-tools`); a routine named by its kind
  *   (`set_up_weekly_routine`); an artifact word that isn't its object's head
- *   (`wrote_to_file`, `created_artifact_showing_q3_sales`).
+ *   (`wrote_to_file`, `created_artifact_showing_q3_sales`); and its own
+ *   limits when "it" or a plain "can" opens them (`noted_limitation | it is
+ *   unable to send email`, `described_capabilities | can browse, run code and
+ *   make charts`).
  * - Dropped, though it's content: `sent | a summary of the call`,
  *   `saved | the user $120 a year on the annual plan`, `fixed_typo | their ->
  *   there`, `edited_document | the essay intro`, a bare `created_routine |
@@ -405,11 +412,12 @@ const CREATED_BY = /(?:^|_)(?:created|made|built|designed)_by(?:_|$)/;
  * What it says it can or can't do: `stated_limitation`, `has_limitation`,
  * `described_capabilities`, `stated_its_limitations`. Ends at the
  * limitation word, so `explained_limitations_of_the_study` is a topic.
- * Group 1 is a reporting verb, which can report anyone's limits. Without
- * one (`has_limitation`, a bare `limitation`) the assistant holds the limit.
+ * Group 1 is a holder (`has_`, `had_`, `have_`): the assistant has the limit.
+ * Anything else can be anyone's limits, with a reporting verb
+ * (`listed_limitations`) or none (`limitations`, `known_limitations`).
  */
 const LIMITATION_PREDICATE =
-  /^(?:(stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(?:has|had|have)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
+  /^(?:(?:stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(has|had|have)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
 /**
  * What it says it can't reach: `has_no_access_to`, `doesnt_have_access`,
  * `lacks_access`. Like `has_limitation`, it makes the assistant the holder,
@@ -418,18 +426,22 @@ const LIMITATION_PREDICATE =
 const NO_ACCESS_PREDICATE =
   /^(?:has_no|have_no|had_no|lacks?|lacked|does_not_have|doesnt_have|did_not_have|didnt_have)_(?:(?:direct|real_?time|live|internet|web|external)_)?access(?:_|$)/;
 /**
- * An object that starts with the assistant's own limit, for a reporting verb:
- * "cannot browse the internet", "it is unable to send email", "no internet
- * access". Read on the windowed, trimmed, lowercased object, and anchored at
- * its start: "Kubernetes HPA can scale on custom metrics" is a topic. With no
- * subject of its own, a modal reads as the assistant's. "no", "has no" and
- * "lacks" count only before access, the internet, the web, browsing,
- * real-time data or the ability to do something ("no control group" is a
- * study's limit), and "only" and "without" don't count ("only covers
- * in-network providers").
+ * An object that starts with the assistant's own limit, for a limitation
+ * predicate that isn't a holder: "cannot browse the internet", "unable to
+ * send email", "I don't have access to your calendar", "no internet access".
+ * Read on the windowed, trimmed, lowercased object, and anchored at its
+ * start: "Kubernetes HPA can't scale to zero" is a topic. With no subject of
+ * its own, a negative modal reads as the assistant's: that's the card's
+ * `stated_limitation | cannot browse the internet`. A subject counts only
+ * when it's "I" or "the assistant": "it doesn't work offline" is a
+ * product's. A plain "can" doesn't count at all: "can export to PDF and
+ * Excel" could be any product's too. "no", "has no" and "lacks" count only
+ * before access, the internet, the web, browsing, real-time data or the
+ * ability to do something ("no control group" is a study's limit), and
+ * "only" and "without" don't count ("only covers in-network providers").
  */
 const SELF_LIMIT_OBJECT =
-  /^(?:(?:i|it|the assistant) )?(?:can(?:not|'?t| not)?|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to|(?:does|do)(?:n'?t| not)|(?:(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
+  /^(?:(?:i|the assistant) )?(?:can(?:not|'?t| not)|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to|(?:does|do)(?:n'?t| not)|(?:(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
 
 function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -492,12 +504,13 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
   const words = normalized.split('_').filter((word) => word !== '');
   // Who it is, first: `saved_standing_preference` starts with an action verb.
   if (words.some((word) => IDENTITY_WORDS.has(word)) || CREATED_BY.test(normalized)) return 'identity';
-  // A holder (`has_limitation`) is the assistant. A reporting verb needs it
-  // marked: `its`/`own` in the predicate, or a self-limit at the object's start.
+  // A holder (`has_limitation`) is the assistant. Anything else, a reporting
+  // verb or none, needs it marked: `its`/`own` in the predicate, or a
+  // self-limit at the object's start.
   const limitation = LIMITATION_PREDICATE.exec(normalized);
   if (
     limitation !== null &&
-    (limitation[1] === undefined ||
+    (limitation[1] !== undefined ||
       words.includes('its') ||
       words.includes('own') ||
       SELF_LIMIT_OBJECT.test(object.slice(0, MAX_SCANNED_CHARS).trimStart().toLowerCase().replace(/[‘’]/g, "'")))

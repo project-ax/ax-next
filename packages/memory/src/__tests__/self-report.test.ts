@@ -345,22 +345,24 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'stated_limitation', 'cannot browse the internet'], // card: x3
     ['assistant', 'has_limitation', 'no real-time data'],
     ['assistant', 'acknowledged_limitations', "can't see images in this chat"],
-    ['assistant', 'described_capabilities', 'can browse, run code and make charts'],
+    // No verb at all is no holder either: these read the object's start.
     ['assistant', 'limitation', 'no access to the calendar'],
+    ['assistant', 'known_limitations', 'cannot read images or PDFs'],
     ['assistant', 'stated_its_limitations', 'no web access'],
     ['assistant', 'has_no_access_to', 'real-time stock prices'],
     ['assistant', "doesn't_have_access", 'to the internet'],
     ['assistant', 'lacks_access', 'to the shared drive'],
     ['the assistant', 'Stated Limitation', 'cannot open PDFs'],
-    // `has_…` or a bare `limitation` makes the assistant the holder: no object
+    // `has_…`, `had_…` or `have_…` makes the assistant the holder: no object
     // check, so "for …" is still its own limit, not a topic.
     ['assistant', 'has_limitation', 'knowledge cutoff of early 2024'],
     ['assistant', 'has_limitations', 'for image input: it reads text only'],
-    // A reporting verb can report anyone's limits, so it needs the assistant
-    // marked: in the predicate (`its`, `own`), or at the object's start.
+    // A reporting verb can report anyone's limits, and so can a predicate with
+    // no verb, so they need the assistant marked: in the predicate (`its`,
+    // `own`), or at the object's start.
     ['assistant', 'described_its_capabilities', 'web search, code execution and charts'],
     ['assistant', 'acknowledged_own_limitations', 'text only, no image input'],
-    ['assistant', 'noted_limitation', 'it is unable to send email'],
+    ['assistant', 'noted_limitation', 'unable to send email'],
     ['assistant', 'clarified_limitation', 'I don’t have access to your calendar'],
     ['assistant', 'admitted_limitation', 'the assistant could not open attachments'],
     ['assistant', 'stated_limitation', 'no internet access'],
@@ -451,6 +453,15 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'described_limitations', 'lacks a control group, so it shows correlation only'],
     ['assistant', 'outlined_limitations', 'only covers in-network providers'],
     ['assistant', 'explained_limitations_of_the_study', 'small sample size'],
+    // With no verb, a limitation predicate is no holder: anyone's limits.
+    ['assistant', 'known_limitations', 'of the study: n=40, no control group'],
+    ['assistant', 'technical_limitations', 'Postgres max row size is 1.6 TB'],
+    ['assistant', 'limitations', 'Roth IRA: income cap $161k'],
+    ['assistant', 'capabilities', 'Kubernetes HPA: scale on custom metrics'],
+    // "it" and a plain "can" don't mark the assistant: a product has them too.
+    ['assistant', 'noted_limitation', "it doesn't work offline"],
+    ['assistant', 'noted_limitation', "it can't be refunded after 30 days"],
+    ['assistant', 'described_capabilities', 'can export to PDF and Excel'],
     // A limitation or no-access word mid-predicate is a topic: both
     // capability tests are anchored at the start.
     ['assistant', 'explained_study_limitations', 'small sample size, no control group'],
@@ -474,6 +485,9 @@ describe("the assistant's narration of its own actions, and what it says it can'
     // The artifact noun isn't the head of the verb's object.
     ['assistant', 'wrote_to_file', 'results.csv'], // no object before the preposition
     ['assistant', 'created_artifact_showing_q3_sales', 'a bar chart'], // the head is `sales`
+    // Its own limits, opened by words a product's can start with too.
+    ['assistant', 'noted_limitation', 'it is unable to send email'],
+    ['assistant', 'described_capabilities', 'can browse, run code and make charts'],
   ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
