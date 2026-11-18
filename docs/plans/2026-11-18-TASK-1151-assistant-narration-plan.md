@@ -10,6 +10,23 @@
 
 **Spec:** the TASK-1151 card, plus `.claude/memory/decisions/2026-11-18-TASK-1151.md`. Read every row of that file, especially "Trap for the re-plan", "Scope answered: option B" and the seven re-plan rows after it. Scope (Vinay, option B): keep identity and standing rules, AND the content the agent supplied (`recommended`, `listed_*`, `provided_*`, `stated`, …). Drop only action narration and capability statements.
 
+## Changed after review
+
+Two whole-branch reviews changed the rule and the cleanup after this plan was written. The interface and the program contract below are updated in place. Where a task step disagrees with the code, the code and the shard's review rows win.
+
+- **First review** (the shard's "Review fix" rows):
+  - `routine` counts only as the verb's bare object.
+  - `skill(s)`, `workflow(s)` and `automation(s)` aren't artifact nouns.
+  - `built`, `rebuilt` and `implemented` need an artifact noun.
+  - The capability check needs the assistant marked unless the predicate holds the limit, and the "of"/"for" topic exception is gone.
+- **Second review** (the shard's "Review 2" rows):
+  - `agent`/`the_agent` context is `agent-context`. The observer still drops it; the cleanup keeps it and counts it as `keep.agent-context`. Task 2's seed gained K9 and K10.
+  - An artifact verb drops only when the HEAD of its object is an artifact noun: the last word before the first preposition, or the predicate's end. The routine rule is the same check, bare only.
+  - `debugged`, `tested`, `retested` and `merged` moved to the artifact verbs, and `endpoint(s)` joined the nouns.
+  - Only `has_`/`had_`/`have_` skip the capability object check. "It" and a plain "can" no longer mark the assistant.
+  - An apply runs FTS5's integrity check before COMMIT.
+  - The big-store timing bound is 6 s.
+
 ## Global Constraints
 
 - **Pinned files.** Do not edit `packages/memory/src/observer.ts`, `packages/memory/src/plugin.ts`, `packages/memory/src/capture.ts` or `packages/channel-slack/src/router.ts`, not even a comment. TASK-1146's shard quotes them by blob sha, and `scripts/__tests__/memory-quoted-blob-shas.test.js` fails on any change. Nobody on a card may fix that row.
@@ -67,6 +84,7 @@
 ```ts
 export type AgentFactClass =
   | 'context'          // TASK-612: its own rules/instructions/memory   (dropped)
+  | 'agent-context'    // TASK-612, filed under `agent`/`the_agent`     (dropped; the cleanup keeps it; added after review)
   | 'own-narration'    // TASK-1136: its memory operations, tool failures (dropped)
   | 'action-narration' // TASK-1151: what it did with its tools         (dropped)
   | 'capability'       // TASK-1151: what it says it can't do           (dropped)
@@ -76,7 +94,7 @@ export function classifyAgentFact(fact: { subject: string; predicate: string; ob
 export function isAgentContextSelfReport(fact: { subject: string; predicate: string; object: string }): boolean; // unchanged signature
 ```
 
-It returns `null` for a subject outside `AGENT_SUBJECTS`. For `agent`/`the_agent` it returns only `'context'` or `null`. `isAgentContextSelfReport` is true exactly when the class is one of the four dropped classes.
+It returns `null` for a subject outside `AGENT_SUBJECTS`. For `agent`/`the_agent` it returns only `'agent-context'` or `null` (after review: it was `'context'`, which the cleanup deletes). `isAgentContextSelfReport` is true exactly when the class is one of the five dropped classes.
 
 - [ ] **Step 1: Write the failing tests.** In `self-report.test.ts`, import `classifyAgentFact` next to `isAgentContextSelfReport`. Add a describe block, "the assistant's narration of its own actions, and what it says it can't do (TASK-1151)". Each table below is an `it.each`. Unless noted, each row asserts both `classifyAgentFact(row)` (the class shown) and `isAgentContextSelfReport(row)` (true for a dropped class, false otherwise).
 
@@ -318,13 +336,13 @@ git commit -m "[TASK-1151] Memory: drop the assistant's narration of its own act
   - **Run:** `cat packages/memory/src/self-report.ts packages/memory/scripts/clean-assistant-narration.mjs | node --input-type=module-typescript - [--apply] [--vec-extension=<path>]`
   - **Env:** `AX_MEMORY_FACTS_DB_PATH`, required. It is already set in the host container.
   - **stdout:** exactly one JSON line.
-    - Normal: `{"mode":"dry-run"|"apply","examined":n,"delete":{"context":n,"own-narration":n,"action-narration":n,"capability":n},"keep":{"identity":n,"other":n},"ftsRows":n,"vecRows":n|null,"keptClosedByDeleted":n,"deleted":n,"refused":null}`
+    - Normal: `{"mode":"dry-run"|"apply","examined":n,"delete":{"context":n,"own-narration":n,"action-narration":n,"capability":n},"keep":{"identity":n,"other":n,"agent-context":n},"ftsRows":n,"vecRows":n|null,"keptClosedByDeleted":n,"deleted":n,"refused":null}` (`agent-context` added after review)
     - On a refusal after reading: the same shape with `"refused":"vectors-need-extension"` or `"kept-rows-closed-by-deleted"`, and `"deleted":0`.
     - On a refusal before reading: just `{"refused":"unknown-argument"|"classifier-missing"|"no-database-path"}`.
   - **Exit codes:**
     - `0`: done.
     - `2`: refused, nothing changed.
-    - `1`: error, nothing changed. stderr gets one line: `narration-cleanup: failed: <err.errstr ?? err.code ?? 'unknown error'>`. Never `err.message`.
+    - `1`: error, nothing changed. stderr gets one line: `narration-cleanup: failed: <err.errstr ?? err.code ?? 'unknown error'>`. Never `err.message`. After review, an apply also runs FTS5's `integrity-check` before COMMIT, and a failure is the fixed reason `fts-integrity-check-failed`.
 
 - [ ] **Step 1: Write the failing test `narration-cleanup.test.ts`.**
 
