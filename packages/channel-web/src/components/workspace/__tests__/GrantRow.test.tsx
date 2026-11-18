@@ -21,6 +21,8 @@ import {
 } from '@/lib/workspace-grant-drafts';
 import { HTTP_SERVER_ERROR, HTTP_UNAVAILABLE } from '@/lib/http';
 import {
+  GRANT_NOT_RESUMED,
+  GRANT_NOT_RESUMED_BUSY,
   GRANT_NO_CONVERSATION,
   GRANT_REASSURANCE,
   GRANT_REJECT_HINT,
@@ -30,6 +32,8 @@ import {
 } from '@/lib/grant-copy';
 import { connectorAccessCopy } from '@/lib/connector-access-copy';
 import type { PermissionRequest } from '@/server/types';
+import type { GrantResume } from '@/lib/workspace-resume';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 
 function row(
   request: PermissionRequest,
@@ -39,7 +43,7 @@ function row(
    * path every pre-existing case here was written against: the row resolves and
    * disappears. The `false` case gets its own describe block.
    */
-  onGranted = vi.fn(async () => true),
+  onGranted: (grant: WorkspaceGrant) => Promise<GrantResume> = vi.fn(async () => true),
 ) {
   const onResolved = vi.fn();
   const { unmount } = render(
@@ -796,5 +800,24 @@ describe('a grant that needs a connector key', () => {
     await waitFor(() => expect(onResolved).toHaveBeenCalled());
     const creds = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/destinations/'));
     expect(creds.map((c) => c[0])).toEqual(['/settings/destinations/skill-slot/credential']);
+  });
+});
+
+describe('a grant that landed while the agent was still working on a reply (TASK-1150)', () => {
+  test('says so, keeps the row, and Got it clears it', async () => {
+    okFetch();
+    const { onResolved } = row(
+      { ...skillReq, slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true }] },
+      'cnv-1',
+      vi.fn(async (): Promise<GrantResume> => 'reply-when-done'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    expect(await screen.findByText(GRANT_NOT_RESUMED_BUSY)).toBeInTheDocument();
+    expect(screen.queryByText(GRANT_NOT_RESUMED)).toBeNull();
+    expect(onResolved).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
+    expect(onResolved).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,9 +7,14 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { workspaceApi, type ThreadMessage } from '@/lib/workspace-api';
+import { workspaceApi, type StreamHandlers, type ThreadMessage } from '@/lib/workspace-api';
 import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
-import { lastUserText, resumeParkedTurn } from '@/lib/workspace-resume';
+import {
+  grantResumeFor,
+  lastUserText,
+  RESUME_WAIT_MS,
+  resumeParkedTurn,
+} from '@/lib/workspace-resume';
 
 const userMsg = (id: string, text: string): ThreadMessage => ({
   kind: 'user',
@@ -34,7 +39,7 @@ const askedThread: ThreadMessage[] = [
   agentMsg('t2', 'I have asked for access to Linear.'),
 ];
 
-const detail = (thread: ThreadMessage[]) => ({
+const detail = (thread: ThreadMessage[], liveReqId?: string | null) => ({
   agent: {
     id: 'a-quill',
     name: 'Quill',
@@ -45,6 +50,7 @@ const detail = (thread: ThreadMessage[]) => ({
     stoppedReason: null,
   },
   conversationId: 'cnv-1',
+  ...(liveReqId === undefined ? {} : { liveReqId }),
   thread,
   decisions: { status: 'ok' as const },
   past: [],
@@ -55,6 +61,7 @@ const detail = (thread: ThreadMessage[]) => ({
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -226,4 +233,138 @@ describe('every way it can fail to resume', () => {
       ).resolves.toEqual({ resumed: false, reason: 'send-failed' });
     },
   );
+});
+
+/**
+ * TASK-1150 — Connect is live while the asking reply is still being written, so
+ * the resume can land under a running turn. Re-sending then would restart the
+ * session under that reply (TASK-1127 marks it; routing retires a marked
+ * session even mid-turn), so the resume follows the reply to its end first.
+ */
+describe('a reply still being written in that conversation', () => {
+  const ASK = 'file my open Linear issues';
+  const target = { agentId: 'a-quill', conversationId: 'cnv-1' };
+
+  /** A `streamReply` that stays open until the test ends it. */
+  function holdStream() {
+    const seen: { reqId: string; handlers: StreamHandlers }[] = [];
+    const stream = vi
+      .spyOn(workspaceApi, 'streamReply')
+      .mockImplementation((reqId, handlers) => {
+        seen.push({ reqId, handlers });
+        return new Promise<void>(() => undefined);
+      });
+    return { stream, seen };
+  }
+
+  const flush = async () => {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  };
+
+  function sendOk() {
+    return vi
+      .spyOn(workspaceApi, 'sendMessage')
+      .mockResolvedValue({ conversationId: 'cnv-1', reqId: 'req-resume' });
+  }
+
+  it('waits for it, then re-sends', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const { stream, seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalledWith(
+      'req-ask',
+      expect.objectContaining({ resume: true, signal: expect.any(AbortSignal) }),
+    );
+    const signal = seen[0]?.handlers.signal;
+
+    seen[0]?.handlers.onDone();
+
+    await expect(pending).resolves.toEqual({
+      resumed: true,
+      reqId: 'req-resume',
+      conversationId: 'cnv-1',
+      text: ASK,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('counts a reply that ends in an error as ended: it re-sends', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const { seen } = holdStream();
+
+    const pending = resumeParkedTurn(target);
+    await flush();
+    seen[0]?.handlers.onError('x');
+
+    await expect(pending).resolves.toMatchObject({ resumed: true });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a stream that cannot be read hold the re-send', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    vi.spyOn(workspaceApi, 'streamReply').mockRejectedValue(new Error('404'));
+
+    await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('still going when we stop waiting: sends nothing and lets the stream go', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, 'req-ask'));
+    const send = sendOk();
+    const { seen } = holdStream();
+
+    let result: unknown;
+    void resumeParkedTurn(target).then((r) => {
+      result = r;
+    });
+    await vi.advanceTimersByTimeAsync(RESUME_WAIT_MS - 1);
+    expect(result).toBeUndefined();
+    expect(seen[0]?.handlers.signal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result).toEqual({ resumed: false, reason: 'still-running' });
+    expect(send).not.toHaveBeenCalled();
+    expect(seen[0]?.handlers.signal?.aborted).toBe(true);
+  });
+
+  it('with nothing in flight, re-sends at once and follows nothing', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, null));
+    const send = sendOk();
+    const stream = vi.spyOn(workspaceApi, 'streamReply');
+
+    await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('an empty liveReqId is nothing in flight', async () => {
+    vi.spyOn(workspaceApi, 'agent').mockResolvedValue(detail(askedThread, ''));
+    sendOk();
+    const stream = vi.spyOn(workspaceApi, 'streamReply');
+
+    await expect(resumeParkedTurn(target)).resolves.toMatchObject({ resumed: true });
+    expect(stream).not.toHaveBeenCalled();
+  });
+});
+
+describe('what the row is told', () => {
+  it.each<[Parameters<typeof grantResumeFor>[0], ReturnType<typeof grantResumeFor>]>([
+    ['read-only', 'reply-elsewhere'],
+    ['still-running', 'reply-when-done'],
+    ['thread-unreadable', false],
+    ['nothing-to-resume', false],
+    ['send-failed', false],
+  ])('%s reads as %s', (reason, expected) => {
+    expect(grantResumeFor(reason)).toBe(expected);
+  });
 });

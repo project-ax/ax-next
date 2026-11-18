@@ -8,8 +8,15 @@
  * `chat:permission-request` and returns to the model, the model says it has
  * asked, and the TURN ENDS — a `done` frame, `chat:turn-end`, the lot. Nothing
  * is suspended server-side and nothing is waiting to be attached to. Answering
- * the grant attaches the skill and RETIRES the warm session, so the capability
+ * the grant attaches the skill and restarts the warm session, so the capability
  * is there for the next turn and there is no current turn to give it to.
+ *
+ * "A moment after the card" is not "before Connect is live": the turn normally
+ * ends a moment after the card, but Connect is enabled while it is still
+ * running. So the resume first follows that reply to its end (up to
+ * `RESUME_WAIT_MS`) and only then re-sends. A re-send into the busy session
+ * would restart the session under the reply and cut it off: TASK-1127 marks
+ * the session, and routing retires a marked session even mid-turn (TASK-1150).
  *
  * That is why this re-POSTs rather than re-attaching. The evidence was in the
  * deleted chat UI, which had both mechanisms and picked deliberately between
@@ -59,15 +66,36 @@ export type ResumeFailure =
    * reply to a routine run, so that refusal stays `send-failed` and keeps its
    * sentence.
    */
-  | 'read-only';
+  | 'read-only'
+  /**
+   * TASK-1150 — a reply was still being written in that conversation when we
+   * stopped waiting (`RESUME_WAIT_MS`); re-sending then would have replaced it,
+   * so nothing was sent.
+   */
+  | 'still-running';
 
 /**
  * What a grant's `onGranted` reports back to its row: `true` the agent picked
  * up again; `false` it did not, and a message to it here will; `'reply-elsewhere'`
  * it did not, and its conversation is a Slack thread that takes messages only
- * in Slack.
+ * in Slack; `'reply-when-done'` it was still working on a reply, so we left it
+ * alone, and a message once that reply is done will pick the connection up.
  */
-export type GrantResume = boolean | 'reply-elsewhere';
+export type GrantResume = boolean | 'reply-elsewhere' | 'reply-when-done';
+
+/**
+ * How long the resume follows a reply that is still running before it gives up
+ * (TASK-1150). Bounded for a stale binding, whose stream would sit on
+ * keepalives; stopping at the bound is the side that never loses a reply.
+ */
+export const RESUME_WAIT_MS = 60_000;
+
+/** What the row is told for a resume that did not happen. */
+export function grantResumeFor(reason: ResumeFailure): GrantResume {
+  if (reason === 'read-only') return 'reply-elsewhere';
+  if (reason === 'still-running') return 'reply-when-done';
+  return false;
+}
 
 export type ResumeResult =
   | {
@@ -87,10 +115,11 @@ export type ResumeResult =
  * the whole reason this is a function on a thread and not a field on a view.
  * `AgentView` does hold what it last sent — in `sent` — but it clears it on
  * `onDone`, and `onDone` is precisely what fires when the asking turn ends. By
- * the time anyone can answer the grant, that state is `null`. (The card body
- * for this task says the view "already holds the last sent text"; it does not,
- * and building on that would have produced a resume that worked only for a
- * grant answered before the turn finished — which is never.)
+ * the time anyone can answer the grant, that state is usually `null`. (The card
+ * body for this task says the view "already holds the last sent text"; it does
+ * not, and building on that would have produced a resume that worked only for a
+ * grant answered before the turn finished, which does happen: Connect is live
+ * mid-turn (TASK-1150).)
  *
  * Trailing `agent` messages are skipped, not treated as a stop: the asking turn
  * always ends with the agent saying it has asked, so the message we want is
@@ -108,6 +137,38 @@ export function lastUserText(thread: readonly ThreadMessage[]): string | null {
     return text.length > 0 ? text : null;
   }
   return null;
+}
+
+/**
+ * Follow a reply that is still being written until it ends. `true` when it
+ * ended (`onDone`, `onError`, or a stream that can't be read at all: none of
+ * those leaves a running reply to protect), `false` when it was still going at
+ * `timeoutMs`. Aborts its stream either way and never rejects.
+ */
+function waitForTurnEnd(reqId: string, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const controller = new AbortController();
+    const finish = (ended: boolean): void => {
+      clearTimeout(timer);
+      controller.abort();
+      resolve(ended);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    workspaceApi
+      .streamReply(reqId, {
+        resume: true,
+        signal: controller.signal,
+        onText: () => undefined,
+        onDone: () => finish(true),
+        onError: () => finish(true),
+      })
+      .then(
+        // The stream returned without a terminal frame (aborted by us, or
+        // closed): nothing left to wait on, and `finish` is idempotent.
+        () => finish(true),
+        () => finish(true),
+      );
+  });
 }
 
 /**
@@ -134,16 +195,24 @@ export async function resumeParkedTurn(target: {
   const { agentId, conversationId } = target;
   let text: string | null;
   let origin: string | null | undefined;
+  let liveReqId: string | null | undefined;
   try {
     const detail = await workspaceApi.agent(agentId, conversationId);
     text = lastUserText(detail.thread);
     origin = detail.origin;
+    liveReqId = detail.liveReqId;
   } catch (e) {
     // The operator's half. The reader's half is the row's sentence.
     console.warn('[workspace] could not read the turn to resume', e);
     return { resumed: false, reason: 'thread-unreadable' };
   }
   if (text === null) return { resumed: false, reason: 'nothing-to-resume' };
+  // A reply is still being written here. Let it finish; re-sending now would
+  // restart the session under it. Still going at the bound: send nothing.
+  if (typeof liveReqId === 'string' && liveReqId.length > 0) {
+    const ended = await waitForTurnEnd(liveReqId, RESUME_WAIT_MS);
+    if (!ended) return { resumed: false, reason: 'still-running' };
+  }
   try {
     const { reqId, conversationId: landed } = await workspaceApi.sendMessage({
       agentId,

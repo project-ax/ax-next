@@ -52,6 +52,7 @@ import {
   GRANT_REASSURANCE,
   GRANT_NO_CONVERSATION,
   GRANT_NOT_RESUMED,
+  GRANT_NOT_RESUMED_BUSY,
   GRANT_NOT_RESUMED_DISMISS,
   GRANT_NOT_RESUMED_ELSEWHERE,
   GRANT_REJECT_HINT,
@@ -166,7 +167,7 @@ export function GrantRow({
    */
   // Set when the grant landed and the agent did not pick up again; which
   // sentence the row says depends on where the conversation takes messages.
-  const [stalled, setStalled] = useState<false | 'here' | 'elsewhere'>(false);
+  const [stalled, setStalled] = useState<false | 'here' | 'elsewhere' | 'busy'>(false);
   /*
     The row's own node, read while it is still mounted so `closest` can find
     the consent region above it. Every branch below hangs it on its root.
@@ -305,7 +306,8 @@ export function GrantRow({
       clearGrantDraft(grant.key);
       /*
         THE GRANT IS APPLIED FROM HERE DOWN, and nothing below may report
-        otherwise. The skill is attached and the warm session retired; the only
+        otherwise. The skill is attached, and the session restarts with it (now if
+        idle, at its next turn if a reply is running); the only
         open question is whether the agent picked up again.
 
         `onGranted` must not reject (its own doc says so) and this catches
@@ -324,7 +326,13 @@ export function GrantRow({
         resolveAndReturnFocus();
         return;
       }
-      setStalled(resumed === 'reply-elsewhere' ? 'elsewhere' : 'here');
+      setStalled(
+        resumed === 'reply-elsewhere'
+          ? 'elsewhere'
+          : resumed === 'reply-when-done'
+            ? 'busy'
+            : 'here',
+      );
     } catch (err) {
       // Never the status, never the path — those go to the console.
       setError(userFacingMessage(err, 'grant-row'));
@@ -489,7 +497,11 @@ export function GrantRow({
           className={`mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground ${RESOLUTION_FOCUS_RING}`}
           data-testid="grant-not-resumed"
         >
-          {stalled === 'elsewhere' ? GRANT_NOT_RESUMED_ELSEWHERE : GRANT_NOT_RESUMED}
+          {stalled === 'elsewhere'
+            ? GRANT_NOT_RESUMED_ELSEWHERE
+            : stalled === 'busy'
+              ? GRANT_NOT_RESUMED_BUSY
+              : GRANT_NOT_RESUMED}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button size="sm" variant="secondary" onClick={resolveAndReturnFocus}>
