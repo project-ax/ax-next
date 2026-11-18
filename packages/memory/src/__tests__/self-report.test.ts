@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isAgentContextSelfReport } from '../self-report.js';
+import { classifyAgentFact, isAgentContextSelfReport } from '../self-report.js';
 
 /**
  * TASK-612. The fact below is the one walk TASK-607 measured the observer
@@ -177,7 +177,6 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'did_not_recommend', 'the Hilton, because of the noise complaints'],
     ['assistant', 'explained', "the user couldn't save the file because the drive was full"],
     ['assistant', 'listed', 'steps to save notes in Apple Notes'],
-    ['assistant', 'saved', 'the Q3 report draft to the shared drive'],
     ['assistant', 'cantilevered', 'the shelf design'],
     // The save verb has to govern the pronoun: this "it" is what was loaded.
     ['assistant', 'explained', 'the program saved the file, then loaded it into memory'],
@@ -202,7 +201,6 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
     ['assistant', 'could_not_confirm', "the pod's memory limit"],
     ['assistant', 'could_not_find', 'a more memory-efficient library'],
     ['assistant', 'explained', 'how to save them to the memory card before formatting the camera'],
-    ['assistant', 'saved_to_memory_card', 'the photos from the shoot'],
     // `agent` is an everyday noun: a person's agent, whose failures are the
     // person's facts. TASK-1136's checks take only the assistant.
     ['agent', 'could_not_save_memory', 'x'],
@@ -281,6 +279,335 @@ describe('the agent narrating its own memory operations and tool failures (TASK-
       predicate: 'was_unable_to',
       object: `${' '.repeat(40_000)}find ${'in memory '.repeat(40_000)}x`,
     });
+    expect(performance.now() - start).toBeLessThan(250);
+  });
+});
+
+describe("the assistant's narration of its own actions, and what it says it can't do (TASK-1151)", () => {
+  it.each([
+    ['assistant', 'created_artifact', 'the Q3 revenue dashboard'], // card: x5 on prod
+    ['assistant', 'published_artifact', 'the Q3 revenue dashboard'], // card: x5
+    ['assistant', 'ran_tests', 'all 42 passed'], // card
+    ['assistant', 'fixed_bug', 'in the date parser'], // card
+    // `built` and `implemented` need an artifact noun: `built | a 12-week training plan` is content.
+    ['assistant', 'built_dashboard', 'for weekly sign-ups'],
+    ['assistant', 'implemented_component', 'the date picker on the settings page'],
+    ['assistant', 'deployed', 'the staging build'],
+    ['assistant', 'committed_changes', 'to the main branch'],
+    ['assistant', 'opened_pr', '#43 to fix the login redirect'],
+    // `merged`, `tested` and `debugged` need an artifact noun too:
+    // `merged_lists | the two guest lists` is content.
+    ['assistant', 'merged_pr', '#42'],
+    ['assistant', 'installed_package', 'pandas 2.2'],
+    ['assistant', 'executed_command', 'npm ci'],
+    ['assistant', 'tested_endpoint', '/api/health returned 200'],
+    ['assistant', 'debugged_app', 'the login crash on Android'],
+    ['assistant', 'configured_connector', 'Gmail'],
+    // `skill` isn't an artifact noun (`added_skills | Python, SQL` is a résumé), but an install is narration.
+    ['assistant', 'installed_skill', 'pdf-tools'],
+    ['assistant', 'uploaded_file', 'report.pdf'],
+    ['assistant', 'deleted_file', 'old.csv'],
+    ['assistant', 'sent_email', 'to Bob about the launch'],
+    // TASK-1136 kept success narration as a real action; Vinay's 2026-11-17
+    // scope (TASK-1151) drops it: the drive holds the draft.
+    ['assistant', 'saved', 'the Q3 report draft to the shared drive'],
+    // Still pins TASK-1136's memory-card exclusion: its class is
+    // action-narration, not own-narration.
+    ['assistant', 'saved_to_memory_card', 'the photos from the shoot'],
+    ['assistant', 'created_file', 'notes.md'],
+    ['assistant', 'generated_image', 'a watercolor fox'],
+    ['assistant', 'wrote_file', 'src/index.ts'],
+    ['assistant', 'updated_routine', 'the daily digest now runs at 9am'],
+    ['assistant', 'added_connector', 'Slack'],
+    // `connector` names AX's own connectors, so it counts anywhere after the verb.
+    ['assistant', 'added_slack_connector', 'for the team workspace'],
+    ['assistant', 'scheduled_routine', 'a weekly report on Mondays'],
+    ['assistant', 'set_up_routine', 'a weekly digest'],
+    // `routine` is also an everyday word, so it counts only bare, with
+    // nothing but determiners before it.
+    ['assistant', 'created_a_new_routine', 'a daily digest at 9am'],
+    // So do `chart`, `graph`, `page` and `diagram`.
+    ['assistant', 'created_chart', 'Q3 revenue by region'],
+    ['assistant', 'generated_a_graph', 'weekly sign-ups'],
+    ['assistant', 'updated_page', 'the pricing page'],
+    ['assistant', 'created_diagram', 'the Q3 funnel'],
+    ['assistant', 'edited_document', 'the onboarding doc'],
+    // The verb's object ends at its first preposition; its head is the word before.
+    ['assistant', 'created_artifact_for_q3_sales_review', 'x'],
+    ['assistant', 'generated_image_of_the_q3_funnel', 'one bar per stage'],
+    ['assistant', 'added_slack_connector_to_workspace', 'Acme'],
+    ['assistant', 'created_file_with_notes', 'notes.md'],
+    ['Assistant', 'Published Artifact', 'the dashboard'],
+    ['the_assistant', 'ran-tests', 'all passed'],
+    ['AI assistant', 'Created Artifact', 'the dashboard'],
+  ])('drops %s | %s | %s: narration of its own action', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('action-narration');
+    expect(isAgentContextSelfReport(fact)).toBe(true);
+  });
+
+  it.each([
+    ['assistant', 'stated_limitation', 'cannot browse the internet'], // card: x3
+    ['assistant', 'has_limitation', 'no real-time data'],
+    ['assistant', 'acknowledged_limitations', "can't see images in this chat"],
+    // No verb at all is no holder either: these read the object's start.
+    ['assistant', 'limitation', 'no access to the calendar'],
+    ['assistant', 'known_limitations', 'cannot read images or PDFs'],
+    ['assistant', 'stated_its_limitations', 'no web access'],
+    ['assistant', 'has_no_access_to', 'real-time stock prices'],
+    ['assistant', "doesn't_have_access", 'to the internet'],
+    ['assistant', 'lacks_access', 'to the shared drive'],
+    ['the assistant', 'Stated Limitation', 'cannot open PDFs'],
+    // `has_…`, `had_…` or `have_…` makes the assistant the holder: no object
+    // check, so "for …" is still its own limit, not a topic.
+    ['assistant', 'has_limitation', 'knowledge cutoff of early 2024'],
+    ['assistant', 'has_limitations', 'for image input: it reads text only'],
+    // A reporting verb can report anyone's limits, and so can a predicate with
+    // no verb, so they need the assistant marked: in the predicate (`its`,
+    // `own`), or at the object's start.
+    ['assistant', 'described_its_capabilities', 'web search, code execution and charts'],
+    ['assistant', 'acknowledged_own_limitations', 'text only, no image input'],
+    ['assistant', 'noted_limitation', 'unable to send email'],
+    ['assistant', 'clarified_limitation', 'I don’t have access to your calendar'],
+    ['assistant', 'admitted_limitation', 'the assistant could not open attachments'],
+    ['assistant', 'stated_limitation', 'no internet access'],
+    ['assistant', 'disclosed_limitation', 'lacks real-time data'],
+    ['assistant', 'noted_limitation', 'does not have access to your files'],
+    ['assistant', 'stated_limitation', 'unable to browse the web'],
+    ['assistant', 'stated_limitation', 'unable to begin a phone call'], // "be" only as a whole word
+  ])('drops %s | %s | %s: what it says it can or cannot do', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('capability');
+    expect(isAgentContextSelfReport(fact)).toBe(true);
+  });
+
+  // The card's whole keep-set, plus two rows where an identity word beats an
+  // action word (`saved_…`, `published_…`).
+  it.each([
+    ['assistant', 'has_name', 'Ember'],
+    ['assistant', 'is_named', 'Ember'],
+    ['assistant', 'was_named', 'Ember, by the user'],
+    ['assistant', 'introduced_as', 'Ember, a research assistant'],
+    ['assistant', 'adopted_identity', 'a calm, curious research partner'],
+    ['assistant', 'adopted_signature_emoji', '✨'],
+    ['assistant', 'default_design_style', 'minimal, lots of whitespace'],
+    ['assistant', 'established_rule', 'always cite sources'],
+    ['assistant', 'saved_standing_preference', 'reply in bullet points'],
+    ['assistant', 'was_created_by_user', 'Vinay'],
+    ['assistant', 'published_style_guide', 'brand colors and fonts'],
+  ])('keeps %s | %s | %s: who it is', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('identity');
+    expect(isAgentContextSelfReport(fact)).toBe(false);
+  });
+
+  // What the assistant supplied: the pinned extraction prompt's contract.
+  it.each([
+    ['assistant', 'recommended_sealant', 'Mod Podge or another sealant, to seal the newspaper flower vase'],
+    ['assistant', 'recommended', 'the Fenway walking tour'],
+    ['assistant', 'listed', 'the 10 hiking trails near Denver, in order'],
+    ['assistant', 'listed_options', 'three plans: basic, plus, pro'],
+    ['assistant', 'provided_forecast', '72 F and sunny on Tuesday'], // the card called it narration; scope B keeps it
+    ['assistant', 'provided_solution', 'a composite index on (agent_key, slot)'],
+    ['assistant', 'stated', 'the Roth IRA income limit is $161k'],
+    ['assistant', 'described_architecture', 'three tiers: web, api, db'],
+    ['assistant', 'explained', 'how compound interest works'],
+    ['assistant', 'suggested', 'a vegetarian lasagna'],
+    ['assistant', 'noted', 'the API allows 100 requests a minute'],
+    ['assistant', 'reported_findings', '3 issues, the worst an open redirect'],
+    ['assistant', 'created_meal_plan', 'Mon oatmeal, Tue eggs, Wed yogurt'], // `created` needs an artifact noun
+    ['assistant', 'created', 'a 5-day Lisbon itinerary: Belem, Sintra, Cascais'],
+    ['assistant', 'generated_list', '10 baby names, starting with Ada'],
+    ['assistant', 'wrote', 'a haiku about autumn'],
+    ['assistant', 'wrote_code', 'def parse(s): return s.split(",")'], // code it supplied is content
+    ['assistant', 'updated_itinerary', 'Day 2 is now Sintra'],
+    ['assistant', 'added', 'a vegetarian option: lentil curry'],
+    ['assistant', 'compiled', 'a list of 10 trails'],
+    ['assistant', 'drafted_email', 'Subject: Q3 update'],
+    // Everyday nouns: a routine, skills or a workflow it wrote for the person.
+    ['assistant', 'created_workout_routine', 'Mon push, Tue pull, Wed legs'],
+    ['assistant', 'updated_workout_routine', 'Mon push, Tue pull, Wed legs, Thu rest'],
+    ['assistant', 'added_skills', 'Python, SQL'],
+    ['assistant', 'added_skills_to_resume', 'Python, SQL and Tableau'],
+    ['assistant', 'created_workflow', '1. intake 2. triage 3. assign 4. close'],
+    ['assistant', 'created_home_automation_plan', 'porch lights on at sunset, thermostat to 62 at 11pm'],
+    // An artifact word that only modifies the head: an outline, a map, a
+    // message or a prompt it wrote.
+    ['assistant', 'created_presentation_outline', '1. Intro 2. Market size 3. The ask'],
+    ['assistant', 'created_site_map', 'home, about, pricing, blog'],
+    ['assistant', 'created_app_idea', 'a plant-watering reminder app'],
+    ['assistant', 'created_file_naming_convention', 'YYYY-MM-DD_client_project'],
+    ['assistant', 'created_branch_naming_scheme', 'feat/<ticket>-<slug>'],
+    ['assistant', 'wrote_landing_page_copy', 'Ship faster with fewer meetings'],
+    ['assistant', 'wrote_commit_message', 'fix: handle empty input in parser'],
+    ['assistant', 'wrote_pr_description', 'Adds retry with jitter to the uploader'],
+    ['assistant', 'wrote_document_summary', 'the lease allows pets under 25 lb'],
+    ['assistant', 'wrote_component_spec', 'DatePicker: min, max, locale props'],
+    ['assistant', 'generated_image_prompt', 'a watercolor fox in a misty forest, soft light'],
+    // Content phrased like a build.
+    ['assistant', 'built', 'a 12-week training plan'],
+    ['assistant', 'rebuilt', 'the training plan around 3 runs a week'],
+    ['assistant', 'implemented_solution', 'memoized fib'],
+    // Content phrased like debugging, a test or a merge.
+    ['assistant', 'debugged', 'the regex: the dot needs escaping'],
+    ['assistant', 'tested_hypothesis', 'with a t-test: p = 0.03, significant'],
+    ['assistant', 'retested_hypothesis', 'on the full sample: p = 0.04'],
+    ['assistant', 'merged_lists', 'the two guest lists: 42 names'],
+    // A reporting verb reports anyone's limits. A topic's stay.
+    ['assistant', 'explained_limitations', 'of the Roth IRA: an income cap of $161k'],
+    ['assistant', 'listed_limitations', 'the Roth IRA caps income at $161k'],
+    ['assistant', 'described_capabilities', 'Kubernetes HPA can scale on custom metrics'],
+    ['assistant', 'listed_limitations', 'no control group and a small sample (n=40)'],
+    ['assistant', 'described_limitations', 'lacks a control group, so it shows correlation only'],
+    ['assistant', 'outlined_limitations', 'only covers in-network providers'],
+    ['assistant', 'explained_limitations_of_the_study', 'small sample size'],
+    // With no verb, a limitation predicate is no holder: anyone's limits.
+    ['assistant', 'known_limitations', 'of the study: n=40, no control group'],
+    ['assistant', 'technical_limitations', 'Postgres max row size is 1.6 TB'],
+    ['assistant', 'limitations', 'Roth IRA: income cap $161k'],
+    ['assistant', 'capabilities', 'Kubernetes HPA: scale on custom metrics'],
+    // "it" and a plain "can" don't mark the assistant: a product has them too.
+    ['assistant', 'noted_limitation', "it doesn't work offline"],
+    ['assistant', 'noted_limitation', "it can't be refunded after 30 days"],
+    ['assistant', 'described_capabilities', 'can export to PDF and Excel'],
+    // A topic's limit with no subject of its own: passive voice ("cannot BE
+    // combined") is never the assistant's own limit, and a bare "does not"
+    // is one only before "have".
+    ['assistant', 'explained_limitations', 'cannot be combined with other offers'],
+    ['assistant', 'listed_limitations', 'cannot be used for international travel'],
+    ['assistant', 'explained_limitations', 'could not be verified by an independent lab'],
+    ['assistant', 'noted_limitation', 'unable to be refunded after 30 days'],
+    ['assistant', 'listed_limitations', 'does not cover dental or vision'],
+    ['assistant', 'explained_limitations', "doesn't apply to rollovers"],
+    ['assistant', 'explained_limitations', 'do not include taxes'],
+    ['assistant', 'explained_limitations', 'cannot  be combined with other offers'], // any whitespace
+    // "does not have" counts only before access, the internet or an ability.
+    ['assistant', 'listed_limitations', 'does not have a free tier'],
+    ['assistant', 'known_limitations', "doesn't have offline mode"],
+    // A chart, graph or page it wrote: these count only bare, like `routine`.
+    ['assistant', 'created_org_chart', 'CEO -> VP Eng -> 3 managers'],
+    ['assistant', 'created_chore_chart', 'Mon dishes, Tue laundry'],
+    ['assistant', 'created_gantt_chart', 'design wk1-2, build wk3-6'],
+    ['assistant', 'wrote_landing_page', 'Ship faster with fewer meetings'],
+    ['assistant', 'wrote_cover_page', 'Q3 Report, prepared for the board'],
+    ['assistant', 'created_dependency_graph', 'A -> B -> C'],
+    ['assistant', 'created_sequence_diagram', 'client -> api -> db'],
+    // An opener word must end where it ends: "no accessories", "no webhooks"
+    // and "cantilevered" aren't the assistant's own limits.
+    ['assistant', 'listed_limitations', 'no accessories in the box'],
+    ['assistant', 'listed_limitations', 'no webhooks on the free plan'],
+    ['assistant', 'known_limitations', 'cantilevered decks need an engineer'],
+    // A limitation or no-access word mid-predicate is a topic: both
+    // capability tests are anchored at the start.
+    ['assistant', 'explained_study_limitations', 'small sample size, no control group'],
+    ['assistant', 'explained_why_the_guest_has_no_access', 'the share link expired yesterday'],
+    ['assistant', 'runs', 'a daily digest at 9am'], // present tense: a standing behaviour
+    ['assistant', 'publishes', 'the weekly report on Fridays'],
+  ])('keeps %s | %s | %s: what it supplied', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('other');
+    expect(isAgentContextSelfReport(fact)).toBe(false);
+  });
+
+  // Accepted residuals, kept on purpose: a missed junk row is the cheap
+  // direction. Only "kept" is pinned, not why.
+  it.each([
+    ['assistant', 'searched_web', 'for flights to Lisbon'],
+    ['assistant', 'checked', 'the deploy status: green'],
+    ['assistant', 'renamed_file', 'a.txt to b.txt'], // `renamed` is an identity word
+    ['assistant', 'added_skill', 'pdf-tools'], // `skill` isn't an artifact noun: `added_skills | Python, SQL` is a résumé
+    ['assistant', 'set_up_weekly_routine', 'a digest every Monday at 9am'], // `routine` counts only bare
+    // The artifact noun isn't the head of the verb's object.
+    ['assistant', 'wrote_to_file', 'results.csv'], // no object before the preposition
+    ['assistant', 'created_artifact_showing_q3_sales', 'a bar chart'], // the head is `sales`
+    // Its own limits, opened by words a product's can start with too.
+    ['assistant', 'noted_limitation', 'it is unable to send email'],
+    ['assistant', 'described_capabilities', 'can browse, run code and make charts'],
+    ['assistant', 'described_capabilities', "I don't browse the web"],
+    // A chart named by its kind, a word after the head, and an "and" list.
+    ['assistant', 'created_bar_chart', 'Q3 revenue by region'],
+    ['assistant', 'created_artifact_successfully', 'the Q3 dashboard'],
+    ['assistant', 'created_dashboard_and_report', 'for Q3'],
+  ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
+    expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
+  });
+
+  it.each([
+    ['user', 'created_artifact', 'the Q3 dashboard'],
+    ['sam', 'ran_tests', 'all passed'],
+    ['agent', 'published_artifact', 'x'], // `agent` is an everyday noun (TASK-1136)
+    ['the_agent', 'published', 'the listing on Zillow'],
+    ['vinay', 'stated_limitation', 'no weekend meetings'],
+  ])('keeps %s | %s | %s: not the assistant', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBeNull();
+    expect(isAgentContextSelfReport(fact)).toBe(false);
+  });
+
+  it("names TASK-612's class: walk TASK-607's fact is context", () => {
+    expect(classifyAgentFact(WALK_FACT)).toBe('context');
+  });
+
+  // TASK-612 reads `agent` and `the_agent` as the agent too, and the observer
+  // still drops these. But `agent` is an everyday noun (a real-estate agent's
+  // "no instructions from the seller"), and the cleanup's delete is permanent,
+  // so they get a class of their own, which the cleanup keeps
+  // (`narration-cleanup.test.ts`).
+  it.each([
+    ['agent', WALK_FACT.predicate, WALK_FACT.object],
+    ['The Agent', WALK_FACT.predicate, WALK_FACT.object],
+    ['the_agent', 'received', 'no instructions from the seller about the counteroffer'],
+    ['agent', 'has_no_rules', 'about pets in the unit'],
+    ['the agent', 'stated', "doesn't have any memory of the phone call"],
+    ['Agent', 'said', 'my instructions are to accept anything over 450k'],
+  ])("names TASK-612's class for %s | %s | %s: agent-context, still dropped", (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('agent-context');
+    expect(isAgentContextSelfReport(fact)).toBe(true);
+  });
+
+  it.each(['the_assistant', 'AI assistant', 'Assistant'])(
+    "names TASK-612's class for %s: the assistant's own context",
+    (subject) => {
+      expect(classifyAgentFact({ ...WALK_FACT, subject })).toBe('context');
+    },
+  );
+
+  it("names TASK-1136's class: a failed save is its own narration", () => {
+    expect(classifyAgentFact({ subject: 'assistant', predicate: 'could_not_save_memory', object: 'x' })).toBe(
+      'own-narration',
+    );
+  });
+
+  it("runs TASK-1136's check before the action verbs: saved_to_memory is its own narration", () => {
+    // Its first word, `saved`, is also an action verb.
+    expect(
+      classifyAgentFact({ subject: 'assistant', predicate: 'saved_to_memory', object: 'the standup time' }),
+    ).toBe('own-narration');
+  });
+
+  it('stays fast on huge, repetitive, untrusted input (TASK-1151)', () => {
+    const start = performance.now();
+    for (const word of ['created artifact ', 'stated limitation ', 'has no access ', 'saved standing preference ', 'set up ']) {
+      classifyAgentFact({
+        subject: 'assistant',
+        predicate: `${word.replace(/ /g, '_').repeat(20_000)}x`,
+        object: `${word.repeat(40_000)}x`,
+      });
+    }
+    // A megabyte of spaces before the topic's "of".
+    classifyAgentFact({
+      subject: 'assistant',
+      predicate: 'explained_limitations',
+      object: `${' '.repeat(1_000_000)}of the study`,
+    });
+    // The object's start is read for a reporting verb: a megabyte of "it "
+    // and "no " before a self-limit. And a long run of determiners before a
+    // routine (its size is the loop's: more only times TASK-612's uncut work).
+    for (const object of [`${'it '.repeat(400_000)}cannot`, `${'no '.repeat(400_000)}access`]) {
+      classifyAgentFact({ subject: 'assistant', predicate: 'listed_limitations', object });
+    }
+    classifyAgentFact({ subject: 'assistant', predicate: `created_${'a_new_'.repeat(20_000)}routine`, object: 'x' });
     expect(performance.now() - start).toBeLessThan(250);
   });
 });

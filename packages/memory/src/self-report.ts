@@ -1,7 +1,7 @@
 /**
  * The agent's reports about its OWN runtime context are not facts (TASK-612),
  * and neither is its narration of its own memory operations and tool failures
- * (TASK-1136).
+ * (TASK-1136), of its own actions, or of what it can't do (TASK-1151).
  *
  * ## What went wrong
  *
@@ -100,6 +100,121 @@
  * verb (`could_not_open | the museum on Mondays`).
  * The other way round, a tool failure phrased as a search (`could_not_find |
  * the weather page`) is kept.
+ *
+ * ## Its narration of its own actions (TASK-1151)
+ *
+ * The card quoted rows like these from prod:
+ *
+ *     assistant | created_artifact | the Q3 revenue dashboard
+ *     assistant | ran_tests | all 42 passed
+ *     assistant | stated_limitation | cannot browse the internet
+ *
+ * The first two are the agent's play-by-play of its own tool use. The tool's
+ * own state is the source of truth for what it did: the artifact store, the
+ * files, the routines, the repo, the test run. A transcript copy of it is a
+ * second source, stale on arrival (invariant 4). This supersedes TASK-1136's
+ * call that success narration (`assistant | saved | the draft to the drive`)
+ * "is a real action": Vinay's 2026-11-17 scope for TASK-1151 drops it, and the
+ * drive holds the draft.
+ *
+ * The third is a capability statement: what the agent says it can or can't do.
+ * That's true of one session's tools, not something to remember. But limits
+ * can be anyone's: `listed_limitations | the Roth IRA caps income at $161k`,
+ * `described_capabilities | Kubernetes HPA can scale on custom metrics` and
+ * `technical_limitations | Postgres max row size is 1.6 TB` are answers. So
+ * a limitation predicate counts only when the assistant is the one with the
+ * limit:
+ *
+ * - The predicate makes it the holder: `has_limitation`, `had_limitations`,
+ *   and the no-access family (`has_no_access_to`, `lacks_access`). These need
+ *   no object check: "the assistant has a limitation" is about the assistant.
+ * - Anything else needs the assistant marked, whether a reporting verb leads
+ *   it (`stated_`, `listed_`, `described_`, …) or nothing does
+ *   (`limitations`, `known_limitations`): `its` or `own` in the predicate
+ *   (`stated_its_limitations`), or a {@link SELF_LIMIT_OBJECT} at the
+ *   object's start ("cannot browse the internet", "unable to send email",
+ *   "no internet access"). "It" doesn't mark the assistant ("it doesn't work
+ *   offline" is a product's), and neither does a plain "can" ("can export to
+ *   PDF and Excel"). An object that starts with a topic, "of" or "for"
+ *   included, stays.
+ *
+ * What the agent SUPPLIED stays: recommendations, lists, values, forecasts,
+ * explanations, the plans and drafts it wrote. It is the pinned prompt's
+ * contract (`extraction-prompt.ts:65-75`), and it is what moved
+ * single-session-assistant 45.5 -> 81.8.
+ *
+ * So the rule is a DENYLIST, and when unsure it keeps. Predicates are
+ * model-written and mostly one-offs, so an allowlist of content verbs would
+ * drop real answers phrased with a verb nobody listed (`outlined_steps`,
+ * `calculated_total`). A missed junk row is the cheap direction.
+ *
+ * - Past tense only. A completed action is narration (`ran_tests`). A
+ *   present-tense one is a standing behaviour (`runs | a daily digest at
+ *   9am`), so it stays.
+ * - {@link ACTION_VERBS} (`published`, `deployed`, `ran`, `fixed`, `saved`,
+ *   `sent`, …) drop on the predicate's first word alone.
+ * - {@link ARTIFACT_VERBS} (`created`, `wrote`, `updated`, `added`, `built`,
+ *   `tested`, `merged`, …) read two ways: "created a meal plan", "built a
+ *   12-week training plan", "tested the hypothesis" and "merged the two guest
+ *   lists" are content it supplied, "created an artifact", "wrote a file" and
+ *   "merged the PR" are narration. So they drop only when the
+ *   HEAD of the verb's object is an {@link ARTIFACT_NOUNS} word. The object
+ *   runs to its first {@link PREPOSITIONS} word, and its head is its last
+ *   word. `created_artifact_for_q3_sales_review` and `added_slack_connector`
+ *   made an artifact and a connector. `created_presentation_outline`,
+ *   `wrote_commit_message` and `generated_image_prompt` are an outline, a
+ *   message and a prompt it wrote: the artifact word there only modifies.
+ * - {@link EVERYDAY_NOUNS} name an AX surface and an everyday thing at once.
+ *   "Updated the routine" is narration, but a workout routine is a plan it
+ *   wrote. So `routine` counts only bare, with nothing but determiners before
+ *   it: `updated_routine` and `created_a_new_routine` drop,
+ *   `created_workout_routine` stays. Charts, graphs and pages are the same:
+ *   `created_chart` drops, `created_org_chart` and `wrote_cover_page` stay.
+ * - Some words aren't artifact nouns at all. `added_skills | Python, SQL` is
+ *   a résumé, and an install still drops on its verb (`installed_skill`). A
+ *   workflow or an automation it designed is a procedure it supplied, the
+ *   kind skill reflection recalls memory for
+ *   (`packages/routines/src/reflection-prompt.ts`), and AX has neither as a
+ *   surface. `connector` is AX's own word, so it counts with a modifier in
+ *   front too: `added_slack_connector` is narration.
+ * - The identity guard runs first. A predicate with an identity word (`name`,
+ *   `persona`, `emoji`, `style`, `rule`, `preference`, `standing`, `default`,
+ *   …) or a `created_by` pair says who the agent is, and stays even when it
+ *   starts with an action verb: the card's own keep-set has
+ *   `saved_standing_preference`. It shields only these new checks. TASK-612's
+ *   and TASK-1136's run before it, in their old order, so `saved_to_memory` is
+ *   still its own narration.
+ *
+ * One class the observer drops, the one-off cleanup keeps. TASK-612 reads the
+ * subjects `agent` and `the_agent` as the agent too, so the observer still
+ * drops their context self-reports on the way in. But `agent` is an everyday
+ * word ("the agent received no instructions from the seller" is about
+ * someone's real-estate agent), and the cleanup's delete is for good. So
+ * those rows are `agent-context`, not `context`, and the cleanup leaves the
+ * saved ones alone.
+ *
+ * The accepted residuals:
+ *
+ * - Kept, though it's narration: a verb nobody listed (`searched_web | for
+ *   flights to Lisbon`, `checked | the deploy status`); `renamed_file`,
+ *   because `renamed` is an identity word; a skill it created or added
+ *   (`added_skill | pdf-tools`); a routine, chart, graph, page or diagram
+ *   named by its kind (`set_up_weekly_routine`, `created_bar_chart`); an
+ *   artifact word that isn't its object's head (`wrote_to_file`,
+ *   `created_artifact_showing_q3_sales`), or that a word follows
+ *   (`created_artifact_successfully`), or that ends an "and" list's first
+ *   half (`created_dashboard_and_report`); and its own limits when "it", a
+ *   plain "can", a passive or a "doesn't" without "have" + access opens
+ *   them (`noted_limitation | it is unable to send email`,
+ *   `described_capabilities | can browse, run code and make charts`, `I
+ *   don't browse the web`).
+ * - Dropped, though it's content: `sent | a summary of the call`,
+ *   `saved | the user $120 a year on the annual plan`, `fixed_typo | their ->
+ *   there`, `edited_document | the essay intro`, a bare `created_routine |
+ *   6am wake, 6:15 stretch`, and a chart that isn't a picture
+ *   (`created_chart_of_accounts`). So is a topic's limit written with no
+ *   subject of its own, in the active voice: `listed_limitations | can't
+ *   establish causation` reads as the assistant's.
  */
 
 /**
@@ -262,13 +377,93 @@ const MEMORY_PLACE = /\b(?:to|in|into|from) (?:(?:my|its|the) )?memor(?:y|ies)$/
 const MEMORY_OP_PREDICATE =
   /^(?:save|saved|store|stored|note|noted|add|added|record|recorded|write|wrote|written|keep|kept)_(?:(?:it|that|this)_)?(?:to|in|into)_(?:(?:my|its|the|long_term)_)?memor(?:y|ies)(?!_(?:foam|cards?|sticks?)(?:_|$))(?:_|$)/;
 
+// TASK-1151. Every set below holds whole words of `normalizePredicate`'s
+// output, split on `_`.
+
+// Past tense only: a completed action is narration; `runs`/`publishes` is a standing behaviour.
+const ACTION_VERBS = new Set(['published', 'unpublished', 'republished', 'deployed', 'redeployed', 'ran', 'reran',
+  'executed', 'committed', 'pushed', 'installed', 'uninstalled', 'reinstalled', 'fixed', 'patched', 'refactored',
+  'uploaded', 'downloaded', 'deleted', 'restarted', 'configured', 'reconfigured', 'migrated', 'saved', 'sent',
+  'posted', 'opened', 'attached', 'exported', 'imported', 'cloned', 'forked', 'moved', 'invoked', 'triggered']);
+// Narration only when the head of the verb's object is an artifact noun: "created a meal plan", "wrote
+// a haiku", "built a 12-week training plan" and "tested the hypothesis" are content. `setup` stands for
+// the two words `set_up`.
+const ARTIFACT_VERBS = new Set(['created', 'generated', 'made', 'wrote', 'rewrote', 'updated', 'modified', 'changed',
+  'added', 'removed', 'edited', 'shared', 'scheduled', 'rendered', 'setup', 'built', 'rebuilt', 'implemented',
+  'debugged', 'tested', 'retested', 'merged']);
+// As the head of the verb's object: `created_artifact_for_q3_sales_review` is narration,
+// `created_presentation_outline` is an outline it wrote. No `skill`, `workflow` or `automation`:
+// `added_skills | Python, SQL` is a résumé, and a workflow is a procedure it wrote.
+const ARTIFACT_NOUNS = new Set(['artifact', 'artifacts', 'file', 'files', 'folder', 'folders', 'directory',
+  'directories', 'document', 'documents', 'doc', 'docs', 'webpage', 'webpages', 'site', 'sites',
+  'website', 'websites', 'app', 'apps', 'dashboard', 'dashboards', 'visual', 'visuals', 'visualization',
+  'visualizations', 'spreadsheet', 'spreadsheets', 'deck', 'decks',
+  'presentation', 'presentations', 'image', 'images', 'repo', 'repos', 'repository',
+  'repositories', 'branch', 'branches', 'commit', 'commits', 'pr', 'prs', 'connector', 'connectors', 'component',
+  'components', 'endpoint', 'endpoints', 'pdf', 'pdfs', 'csv', 'csvs']);
+// Artifact nouns that are everyday words too: as the head only bare, with nothing but determiners
+// before them. `updated_routine` is narration; `created_workout_routine` is a plan it wrote. So
+// with charts, graphs and pages: `created_chart` is narration; `created_org_chart`,
+// `created_dependency_graph` and `wrote_cover_page` are what it wrote.
+const EVERYDAY_NOUNS = new Set(['routine', 'routines', 'chart', 'charts', 'graph', 'graphs', 'page', 'pages',
+  'diagram', 'diagrams']);
+const DETERMINERS = new Set(['a', 'an', 'the', 'new', 'my', 'your', 'its']);
+// The verb's object ends at its first preposition, so its head is the word before one.
+const PREPOSITIONS = new Set(['for', 'of', 'to', 'in', 'on', 'about', 'with', 'from', 'at', 'into', 'via', 'by']);
+// Checked first: the card's keep-set includes `saved_standing_preference`.
+const IDENTITY_WORDS = new Set(['name', 'names', 'named', 'renamed', 'nickname', 'nicknamed', 'identity', 'persona',
+  'personality', 'introduced', 'introduction', 'signature', 'emoji', 'avatar', 'style', 'tone', 'voice', 'pronoun',
+  'pronouns', 'rule', 'rules', 'preference', 'preferences', 'standing', 'default', 'defaults']);
+/** Who made it is who it is: `was_created_by_user`. */
+const CREATED_BY = /(?:^|_)(?:created|made|built|designed)_by(?:_|$)/;
+/**
+ * What it says it can or can't do: `stated_limitation`, `has_limitation`,
+ * `described_capabilities`, `stated_its_limitations`. Ends at the
+ * limitation word, so `explained_limitations_of_the_study` is a topic.
+ * Group 1 is a holder (`has_`, `had_`, `have_`): the assistant has the limit.
+ * Anything else can be anyone's limits, with a reporting verb
+ * (`listed_limitations`) or none (`limitations`, `known_limitations`).
+ */
+const LIMITATION_PREDICATE =
+  /^(?:(?:stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(has|had|have)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
+/**
+ * What it says it can't reach: `has_no_access_to`, `doesnt_have_access`,
+ * `lacks_access`. Like `has_limitation`, it makes the assistant the holder,
+ * and it has no reporting form, so it needs no object check.
+ */
+const NO_ACCESS_PREDICATE =
+  /^(?:has_no|have_no|had_no|lacks?|lacked|does_not_have|doesnt_have|did_not_have|didnt_have)_(?:(?:direct|real_?time|live|internet|web|external)_)?access(?:_|$)/;
+/**
+ * An object that starts with the assistant's own limit, for a limitation
+ * predicate that isn't a holder: "cannot browse the internet", "unable to
+ * send email", "I don't have access to your calendar", "no internet access".
+ * Read on the windowed, trimmed, lowercased object, and anchored at its
+ * start: "Kubernetes HPA can't scale to zero" is a topic. With no subject of
+ * its own, a negative modal reads as the assistant's: that's the card's
+ * `stated_limitation | cannot browse the internet`. A subject counts only
+ * when it's "I" or "the assistant": "it doesn't work offline" is a
+ * product's. A plain "can" doesn't count at all: "can export to PDF and
+ * Excel" could be any product's too. "no", "has no" and "lacks" count only
+ * before access, the internet, the web, browsing, real-time data or the
+ * ability to do something ("no control group" is a study's limit), and
+ * "only" and "without" don't count ("only covers in-network providers").
+ * Passive voice never counts, with or without a subject: the assistant's
+ * own limits are active ("cannot browse"), and "cannot be combined with
+ * other offers" is an offer's. "does not"/"don't" counts only as "doesn't
+ * have" + the same access words as "has no" ("doesn't have access"): "does
+ * not cover dental" and "does not have a free tier" are a plan's, and "I
+ * don't browse the web" is kept too.
+ */
+const SELF_LIMIT_OBJECT =
+  /^(?:(?:i|the assistant) )?(?:(?:can(?:not|'?t| not)|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to)(?!\s+be(?![a-z]))|(?:(?:does|do)(?:n'?t| not) have|(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
+
 function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
 /**
- * For the TASK-1136 checks only (a predicate, or a bare failure's object
- * head): cut to the scanned window first,
+ * For the TASK-1136 and TASK-1151 checks only (a predicate, or a bare
+ * failure's object head): cut to the scanned window first,
  * like the text, then trimmed, lowercased, apostrophes dropped (`couldn't` →
  * `couldnt`), and each run of spaces or hyphens made one `_`.
  */
@@ -304,20 +499,116 @@ function isOwnNarration(normalized: string, object: string, text: string): boole
   return NARRATION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/** What a fact about the agent is. The cleanup script prints these names. */
+export type AgentFactClass =
+  | 'context' //          TASK-612: its own rules/instructions/memory   (dropped)
+  | 'agent-context' //    TASK-612, filed under `agent`/`the_agent`     (dropped; the cleanup keeps it)
+  | 'own-narration' //    TASK-1136: its memory operations, tool failures (dropped)
+  | 'action-narration' // TASK-1151: what it did with its tools         (dropped)
+  | 'capability' //       TASK-1151: what it says it can't do           (dropped)
+  | 'identity' //         kept: name, persona, standing rules
+  | 'other'; //           kept: everything else, incl. what it supplied
+
+/**
+ * TASK-1151: the assistant's statement about itself, once the older checks
+ * have kept it. Reads the windowed, normalized predicate, and the object only
+ * inside the window.
+ */
+function classifyOwnStatement(normalized: string, object: string): AgentFactClass {
+  const words = normalized.split('_').filter((word) => word !== '');
+  // Who it is, first: `saved_standing_preference` starts with an action verb.
+  if (words.some((word) => IDENTITY_WORDS.has(word)) || CREATED_BY.test(normalized)) return 'identity';
+  // A holder (`has_limitation`) is the assistant. Anything else, a reporting
+  // verb or none, needs it marked: `its`/`own` in the predicate, or a
+  // self-limit at the object's start.
+  const limitation = LIMITATION_PREDICATE.exec(normalized);
+  if (
+    limitation !== null &&
+    (limitation[1] !== undefined ||
+      words.includes('its') ||
+      words.includes('own') ||
+      SELF_LIMIT_OBJECT.test(object.slice(0, MAX_SCANNED_CHARS).trimStart().toLowerCase().replace(/[‘’]/g, "'")))
+  ) {
+    return 'capability';
+  }
+  if (NO_ACCESS_PREDICATE.test(normalized)) return 'capability';
+  const setUp = words[0] === 'set' && words[1] === 'up';
+  const verb = setUp ? 'setup' : (words[0] ?? '');
+  if (ACTION_VERBS.has(verb)) return 'action-narration';
+  if (!ARTIFACT_VERBS.has(verb)) return 'other';
+  // The verb's object runs to its first preposition, and its last word, the
+  // head, is what was made: `created_artifact_for_q3_sales_review` made an
+  // artifact, `created_presentation_outline` an outline.
+  const rest = words.slice(setUp ? 2 : 1);
+  const end = rest.findIndex((word) => PREPOSITIONS.has(word));
+  const phrase = end === -1 ? rest : rest.slice(0, end);
+  const head = phrase[phrase.length - 1];
+  if (head === undefined) return 'other';
+  // An everyday noun counts only bare: `created_a_new_routine`, not `created_workout_routine`.
+  const artifact =
+    ARTIFACT_NOUNS.has(head) ||
+    (EVERYDAY_NOUNS.has(head) && phrase.slice(0, -1).every((word) => DETERMINERS.has(word)));
+  return artifact ? 'action-narration' : 'other';
+}
+
+/**
+ * What a fact about the agent is, or `null` when its subject isn't the agent
+ * (see the header). The observer drops `context`, `agent-context`,
+ * `own-narration`, `action-narration` and `capability`, and keeps `identity`
+ * and `other` ({@link isAgentContextSelfReport}). `agent` and `the_agent`
+ * only ever get `agent-context` or `null`: TASK-1136's and TASK-1151's checks
+ * take the assistant alone.
+ *
+ * The one-off cleanup, `packages/memory/scripts/clean-assistant-narration.mjs`,
+ * deletes saved rows with this very function: it pipes this file, as text,
+ * ahead of its own into `node --input-type=module-typescript`. It deletes
+ * every class the observer drops except `agent-context`: `agent` is an
+ * everyday noun, and that delete is for good. So this file
+ * stays import-free and uses only erasable TypeScript (annotations, `as`,
+ * `readonly`; no `enum`, `namespace` or parameter properties), and its
+ * top-level names share that program's scope.
+ */
+export function classifyAgentFact(fact: {
+  subject: string;
+  predicate: string;
+  object: string;
+}): AgentFactClass | null {
+  // The agent as subject, FIRST: everything below is only its own narration.
+  const subject = normalizeSubject(fact.subject);
+  if (!AGENT_SUBJECTS.has(subject)) return null;
+  // TASK-612 reads `agent` as the agent too, but under a class of its own.
+  const context = ASSISTANT_SUBJECTS.has(subject) ? 'context' : 'agent-context';
+  const predicate = fact.predicate.trim().toLowerCase();
+  if (CONTEXT_PREDICATE.test(predicate)) return context;
+  const text = `${predicate.replace(/_/g, ' ')} ${fact.object}`
+    .slice(0, MAX_SCANNED_CHARS)
+    .toLowerCase()
+    .replace(/[‘’]/g, "'");
+  if (CONTEXT_PATTERNS.some((pattern) => pattern.test(text))) return context;
+  // `agent` is an everyday noun: the checks below take the assistant alone.
+  if (!ASSISTANT_SUBJECTS.has(subject)) return null;
+  const normalized = normalizePredicate(fact.predicate);
+  // Before the action verbs: `saved_to_memory` starts with one.
+  if (isOwnNarration(normalized, fact.object, text)) return 'own-narration';
+  return classifyOwnStatement(normalized, fact.object);
+}
+
+/**
+ * Whether the observer drops the fact: its class is one of the five dropped
+ * ones. The name predates TASK-1136 and TASK-1151; `toStatements` calls it by
+ * that name.
+ */
 export function isAgentContextSelfReport(fact: {
   subject: string;
   predicate: string;
   object: string;
 }): boolean {
-  // The agent as subject, FIRST: everything below is only its own narration.
-  const subject = normalizeSubject(fact.subject);
-  if (!AGENT_SUBJECTS.has(subject)) return false;
-  const predicate = fact.predicate.trim().toLowerCase();
-  if (CONTEXT_PREDICATE.test(predicate)) return true;
-  const text = `${predicate.replace(/_/g, ' ')} ${fact.object}`
-    .slice(0, MAX_SCANNED_CHARS)
-    .toLowerCase()
-    .replace(/[‘’]/g, "'");
-  if (CONTEXT_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  return ASSISTANT_SUBJECTS.has(subject) && isOwnNarration(normalizePredicate(fact.predicate), fact.object, text);
+  const kind = classifyAgentFact(fact);
+  return (
+    kind === 'context' ||
+    kind === 'agent-context' ||
+    kind === 'own-narration' ||
+    kind === 'action-narration' ||
+    kind === 'capability'
+  );
 }
