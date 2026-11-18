@@ -13,8 +13,9 @@
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
  * wants (the same write headers as `lib/branding.ts`).
  *
- * `GET /admin/slack`, while nothing is connected, also lists the Slack apps an
- * earlier Disconnect couldn't delete (`leftoverApps`). It is advisory: a broken
+ * `GET /admin/slack`, while nothing is connected or an install is unfinished,
+ * also lists the Slack apps an earlier Disconnect couldn't delete
+ * (`leftoverApps`). It is advisory: a broken
  * list reads as none, and an app id becomes a link only when it is plain
  * letters and digits.
  *
@@ -33,7 +34,13 @@ export interface LeftoverSlackApp {
 
 export type SlackStatus =
   | { state: 'not-connected'; defaultBotName: string; canConnect: boolean; leftoverApps: LeftoverSlackApp[] }
-  | { state: 'pending'; botName: string; connectedBy: string; connectedAt: string }
+  | {
+      state: 'pending';
+      botName: string;
+      connectedBy: string;
+      connectedAt: string;
+      leftoverApps: LeftoverSlackApp[];
+    }
   | {
       state: 'connected';
       botName: string;
@@ -135,7 +142,7 @@ function parseStatus(body: unknown): SlackStatus | null {
     }
     case 'pending':
       if (botName === null || connectedBy === null || connectedAt === null) return null;
-      return { state: 'pending', botName, connectedBy, connectedAt };
+      return { state: 'pending', botName, connectedBy, connectedAt, leftoverApps: parseLeftoverApps(body['leftoverApps']) };
     case 'connected': {
       const workspaceName = str('workspaceName');
       if (botName === null || workspaceName === null || connectedBy === null || connectedAt === null) {

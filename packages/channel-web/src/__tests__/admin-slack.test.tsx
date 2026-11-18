@@ -77,7 +77,13 @@ describe('fetchSlackStatus', () => {
         canConnect: true,
         leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX' }],
       },
-      { state: 'pending', botName: 'canopy', connectedBy: 'Ada Admin', connectedAt: '2026-11-13T12:00:00.000Z' },
+      {
+        state: 'pending',
+        botName: 'canopy',
+        connectedBy: 'Ada Admin',
+        connectedAt: '2026-11-13T12:00:00.000Z',
+        leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX' }],
+      },
       {
         state: 'connected',
         botName: 'canopy',
@@ -88,7 +94,7 @@ describe('fetchSlackStatus', () => {
     ];
     for (const s of states) {
       const sent =
-        s.state === 'not-connected'
+        s.state === 'not-connected' || s.state === 'pending'
           ? {
               ...s,
               leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX', installId: 'should-not-pass-through' }],
@@ -136,6 +142,17 @@ describe('fetchSlackStatus', () => {
         ],
       });
     expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [good] });
+  });
+
+  it('leftoverApps on a pending install: well-formed apps kept, a missing or broken list reads as none', async () => {
+    const base = { state: 'pending', botName: 'canopy', connectedBy: 'Ada Admin', connectedAt: '2026-11-13T12:00:00.000Z' };
+    const good = { botName: 'ax', appId: 'A0CHZPVDJHX' };
+    answer = () => json(200, { ...base, leftoverApps: [null, { botName: 'ax', appId: 'A0/../x' }, good] });
+    expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [good] });
+    for (const broken of [undefined, 'x', null]) {
+      answer = () => json(200, { ...base, leftoverApps: broken });
+      expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [] });
+    }
   });
 
   it('slackAppSettingsUrl points at that one app on api.slack.com', () => {

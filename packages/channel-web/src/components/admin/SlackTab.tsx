@@ -12,7 +12,9 @@
  *                  address, why Slack can't reach us yet (and no form); and
  *                  above either, any Slack app an earlier Disconnect couldn't
  *                  delete, each linked to its own page on Slack
- *   pending        the app exists but nobody clicked Allow: continue or cancel
+ *   pending        the app exists but nobody clicked Allow: continue or cancel;
+ *                  above it, any leftover app Connect couldn't delete (same
+ *                  note as not-connected)
  *   connected      the workspace, the bot (with Rename), who added the token
  *                  and when
  *
@@ -723,7 +725,12 @@ function StatusView({ status, ...actions }: { status: SlackStatusRead } & Action
         </>
       );
     case 'pending':
-      return <PendingCard status={status} {...actions} />;
+      return (
+        <>
+          <LeftoverAppsNote apps={status.leftoverApps} />
+          <PendingCard status={status} {...actions} />
+        </>
+      );
     case 'connected':
       return <ConnectedCard status={status} {...actions} />;
   }

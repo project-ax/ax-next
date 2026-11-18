@@ -50,6 +50,7 @@ const PENDING: SlackStatusRead = {
   botName: 'canopy',
   connectedBy: 'Ada Admin',
   connectedAt: CONNECTED_AT,
+  leftoverApps: [],
 };
 const CONNECTED: SlackStatusRead = {
   state: 'connected',
@@ -159,6 +160,15 @@ describe('SlackTab states', () => {
     expect(alerts[0]).toHaveTextContent("We couldn't delete this Slack app");
     expect(alerts[1]).toHaveTextContent('Slack needs a public https address to reach this server');
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+  });
+
+  it("pending, with a Slack app Connect couldn't delete: still names it, linked to its own page, and still offers Continue in Slack", async () => {
+    renderTab({ ...PENDING, leftoverApps: [LEFT] });
+    const first = await screen.findByText("We couldn't delete this Slack app, so it may still be on Slack:");
+    const alert = first.closest('[role="alert"]') as HTMLElement;
+    const link = within(alert).getByRole('link', { name: 'canopy' });
+    expect(link).toHaveAttribute('href', 'https://api.slack.com/apps/A0CHZPVDJHX');
+    expect(screen.getByRole('button', { name: 'Continue in Slack' })).toBeInTheDocument();
   });
 
   it('nothing left over: no note', async () => {

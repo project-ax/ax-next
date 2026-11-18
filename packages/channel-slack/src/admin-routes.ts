@@ -23,7 +23,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * pick an unfinished install back up, rename the bot, and disconnect. Plus the
  * OAuth callback Slack sends the admin's browser to after they click Allow.
  *
- *   GET  /admin/slack                 → SlackStatus (not connected: with the apps Disconnect couldn't delete)
+ *   GET  /admin/slack                 → SlackStatus (not connected or pending: with the apps Disconnect couldn't delete)
  *   POST /admin/slack/connect         { accessToken, refreshToken, botName? } → { installUrl, iconSet }
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
@@ -86,7 +86,14 @@ export type SlackStatus =
       /** The apps Disconnect couldn't delete, oldest first: a name and an app id each, nothing else. */
       leftoverApps: Array<{ botName: string; appId: string }>;
     }
-  | { state: 'pending'; botName: string; connectedBy: string; connectedAt: string }
+  | {
+      state: 'pending';
+      botName: string;
+      connectedBy: string;
+      connectedAt: string;
+      /** Same list as not-connected: a failed delete in Connect's leftover pass would otherwise vanish here. */
+      leftoverApps: Array<{ botName: string; appId: string }>;
+    }
   | {
       state: 'connected';
       botName: string;
@@ -616,9 +623,10 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
 
   async function status(): Promise<Reply> {
     const install = await d.store.current();
+    // The name and the app id only: the install id and the date stay here.
+    const leftovers = async () => (await d.store.leftoverApps()).map(({ botName, appId }) => ({ botName, appId }));
     if (install === null) {
-      // The name and the app id only: the install id and the date stay here.
-      const leftoverApps = (await d.store.leftoverApps()).map(({ botName, appId }) => ({ botName, appId }));
+      const leftoverApps = await leftovers();
       const out: SlackStatus = {
         state: 'not-connected',
         defaultBotName: await brandedBotName(),
@@ -636,7 +644,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     const out: SlackStatus =
       install.status === 'active'
         ? { state: 'connected', ...shared, workspaceName: install.teamName ?? '' }
-        : { state: 'pending', ...shared };
+        : { state: 'pending', ...shared, leftoverApps: await leftovers() };
     return json(200, out);
   }
 

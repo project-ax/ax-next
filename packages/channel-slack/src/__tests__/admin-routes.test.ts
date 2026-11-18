@@ -750,12 +750,29 @@ describe('GET /admin/slack', () => {
       ],
     });
 
-    // Pending (and connected) never carry the list, even while an app is still left over.
+    // Pending lists them too, while an app is still left over: a failed delete would otherwise vanish
+    // from the tab the moment Connect went ahead. Exact, like the case above.
     w.slack.on.deleteApp = async () => {
       throw new SlackApiError('apps.manifest.delete', 'no_permission');
     };
-    expect((await w.connect()).status).toBe(200);
+    const connected = await w.connect();
+    expect(connected.status).toBe(200);
     expect(w.memory.leftovers.size).toBe(2);
+    expect((await w.status()).body).toEqual({
+      state: 'pending',
+      botName: 'Canopy Bot',
+      connectedBy: 'Ada Admin',
+      connectedAt: new Date(NOW_MS).toISOString(),
+      leftoverApps: [
+        { botName: 'First Bot', appId: LEFT_1.appId },
+        { botName: 'Second Bot', appId: LEFT_2.appId },
+      ],
+    });
+
+    // Connected never carries it: no Connect will retry, so the list would only linger.
+    w.advance(90_000);
+    expect((await w.callback({ code: CODE, state: stateOf(connected) })).location).toBe(back('connected'));
+    expect((await w.status()).body).toMatchObject({ state: 'connected' });
     expect((await w.status()).body).not.toHaveProperty('leftoverApps');
   });
 
@@ -768,6 +785,7 @@ describe('GET /admin/slack', () => {
       botName: 'Canopy Bot',
       connectedBy: 'Ada Admin',
       connectedAt: new Date(NOW_MS).toISOString(),
+      leftoverApps: [],
     });
 
     w.advance(90_000);
@@ -1697,6 +1715,11 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       },
     ]);
     expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    // The unfinished install still names it, so the admin can go and delete it by hand.
+    expect((await w.status()).body).toMatchObject({
+      state: 'pending',
+      leftoverApps: [{ botName: 'Canopy Bot', appId: LEFT_1.appId }],
+    });
 
     // Cancel deletes the new app; the one Slack wouldn't delete is still named.
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
