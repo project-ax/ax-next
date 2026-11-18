@@ -63,9 +63,10 @@ it('uses the pinned upstream node-forge fix without a local patch or audit excep
   // covered by a local patch, patches/zod@3.25.76.patch (TASK-938), guarded by
   // zod-issue-bound.test.js and zod-audit-exception.test.js. The minimatch
   // (GHSA-g3hv-75wg-m249) and glob (GHSA-3g3m-2fjr-6pw4) exceptions are guarded
-  // by minimatch-glob-dev-only-audit-exception.test.js. Any further entry
-  // needs a guard too.
+  // by minimatch-glob-dev-only-audit-exception.test.js, and the picomatch one
+  // (GHSA-fc5q-39xc-vjpf) by picomatch-audit-exception.test.js. Any further
+  // entry needs a guard too.
   expect(manifest.pnpm.auditConfig).toEqual({
-    ignoreGhsas: ['GHSA-vfj7-8cjw-p6xm', 'GHSA-mrhx-c7xc-m3w5', 'GHSA-g3hv-75wg-m249', 'GHSA-3g3m-2fjr-6pw4'],
+    ignoreGhsas: ['GHSA-vfj7-8cjw-p6xm', 'GHSA-mrhx-c7xc-m3w5', 'GHSA-g3hv-75wg-m249', 'GHSA-3g3m-2fjr-6pw4', 'GHSA-fc5q-39xc-vjpf'],
   });
 });
