@@ -110,7 +110,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // outsiders' thread, any thread that had a turn while the switch was off,
 // for good, and any thread whose channel is switched off or no longer
 // connected to its agent. Memory asks before every extraction pass and every
-// `memory_note`, so the veto stops both.
+// `memory_note`, so the veto stops both. A member's turn also records the
+// names its sender label shows, and the veto answers a thread it lets
+// through with them, so memory stores nothing said there under the
+// speaker's name (TASK-1146).
 //
 // TASK-1095: when a DM or an attended turn's agent has a call held for the
 // sender's OK, the reply ends with the ask and a prompt follows it in the

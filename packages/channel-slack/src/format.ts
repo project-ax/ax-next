@@ -295,3 +295,21 @@ export function channelSenderLabel(channel: string, name: string, slackUserId: s
 function senderOf(name: string, slackUserId: string): string {
   return name.length > 0 ? `${name} (${slackUserId})` : slackUserId;
 }
+
+/**
+ * The names a sender label shows for its sender (TASK-1146), in label order,
+ * each once, empties dropped: `['Alice Smith', 'U123']`, or `['U123']` when
+ * the sender has no name. Exactly the text `dmSenderLabel` and
+ * `channelSenderLabel` show for them, so the names the model reads in the
+ * transcript, and the ones an extractor can file what they said under.
+ * channel-slack keeps a member's on their thread (channel-store.ts), and the
+ * capture veto hands them to memory, which stores no shared fact under them.
+ * The sender's own Slack profile text: untrusted, compared and never logged.
+ */
+export function senderLabelNames(name: string, slackUserId: string): string[] {
+  const names: string[] = [];
+  for (const shown of [name, slackUserId]) {
+    if (shown.length > 0 && !names.includes(shown)) names.push(shown);
+  }
+  return names;
+}

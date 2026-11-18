@@ -100,33 +100,53 @@ const byChannel = (a: { channelId: string }, b: { channelId: string }): number =
 const CONV = 'conv_support_thread_1';
 const OTHER_CONV = 'conv_support_thread_2';
 
-/** A member's #support thread of the support agent, remembered, unless told otherwise. */
+/**
+ * The names Mel's label shows, as the router hands them over with a member's
+ * turn (format.ts `senderLabelNames`): her display name, then her Slack id.
+ */
+const MEL = ['Mel', 'U07MEL00001'];
+
+/**
+ * A member's #support thread of the support agent, remembered, its turns
+ * Mel's, unless told otherwise.
+ */
 const supportThread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
   installId: INSTALL,
   channelId: SUPPORT,
   agentId: AGENT,
   notRemembered: false,
   external: false,
+  speakerNames: MEL,
   ...o,
 });
 
-type ThreadIds = Omit<ChannelThread, 'notRemembered' | 'external'>;
-/** Whose turn: a member's (the default), or an outsider's, run as `runAs` (Ada, who connects #support, by default). */
-type Turn = { mode?: 'attended' | 'external'; runAs?: string };
+/** The thread outsiders' turns run in: no names, ever (memory never learns from it). */
+const outsiderThread = (o: Partial<ChannelThread> = {}): ChannelThread =>
+  supportThread({ external: true, speakerNames: [], ...o });
+
+type ThreadIds = Omit<ChannelThread, 'notRemembered' | 'external' | 'speakerNames'>;
+/**
+ * Whose turn: a member's (the default), labelled with `speakerNames` (Mel's
+ * by default), or an outsider's, run as `runAs` (Ada, who connects #support,
+ * by default).
+ */
+type Turn = { mode?: 'attended' | 'external'; runAs?: string; speakerNames?: readonly string[] };
 
 /**
  * A turn starting in `conversationId`: a member's, in #support of the support
  * agent, unless told otherwise; the switch as it is.
  */
 function record(conversationId: string, o: Partial<ThreadIds> & Turn = {}): ReturnType<ChannelStore['recordThread']> {
-  const { mode, runAs, ...ids } = o;
+  const { mode, runAs, speakerNames, ...ids } = o;
   return channels.recordThread({
     installId: INSTALL,
     channelId: SUPPORT,
     agentId: AGENT,
     ...ids,
     conversationId,
-    ...(mode === 'external' ? { mode, runAs: runAs ?? ADA } : { mode: 'attended' as const }),
+    ...(mode === 'external'
+      ? { mode, runAs: runAs ?? ADA }
+      : { mode: 'attended' as const, speakerNames: speakerNames ?? MEL }),
   });
 }
 
@@ -146,6 +166,8 @@ function vetoFor(conversationId: string) {
 
 const REFUSED = { rejected: true, reason: 'channel-not-remembered' };
 const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn' };
+/** Memory may learn from the conversation, and hears who is speaking in it (TASK-1146). */
+const remembered = (conversationId: string, speakerNames: readonly string[] = MEL) => ({ conversationId, speakerNames });
 
 async function threadCount(): Promise<number> {
   const r = await sql<{ n: number }>`SELECT count(*)::int AS n FROM channel_slack_v1_threads`.execute(db);
@@ -153,7 +175,7 @@ async function threadCount(): Promise<number> {
 }
 
 describe('runMigrations', () => {
-  it('a second run keeps every binding and thread (additive and idempotent)', async () => {
+  it('a second run keeps every binding and thread, names included (additive and idempotent)', async () => {
     await connect();
     await recordOff(CONV);
     await record(OTHER_CONV, { mode: 'external' });
@@ -161,7 +183,39 @@ describe('runMigrations', () => {
     await runMigrations(db);
     expect((await channels.get(INSTALL, SUPPORT))?.agentId).toBe(AGENT);
     expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
-    expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread({ external: true }));
+    expect(await channels.getThread(OTHER_CONV)).toEqual(outsiderThread());
+  });
+
+  it('adds speaker_names to a thread table made before it, every old row with none until its next member turn (TASK-1146)', async () => {
+    // The table as TASK-1094 left it, `external` added on, with one member's row.
+    await sql`DROP TABLE channel_slack_v1_threads`.execute(db);
+    await sql`
+      CREATE TABLE channel_slack_v1_threads (
+        conversation_id TEXT PRIMARY KEY,
+        install_id      TEXT NOT NULL,
+        channel_id      TEXT NOT NULL,
+        agent_id        TEXT NOT NULL,
+        not_remembered  BOOLEAN NOT NULL DEFAULT false,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        external        BOOLEAN NOT NULL DEFAULT true
+      )
+    `.execute(db);
+    await sql`
+      INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id, external)
+      VALUES (${CONV}, ${INSTALL}, ${SUPPORT}, ${AGENT}, false)
+    `.execute(db);
+
+    await runMigrations(db);
+    await runMigrations(db);
+
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ speakerNames: [] }));
+    await connect();
+    // No names to hand over: memory hears no opinion, as before TASK-1146.
+    expect(await vetoFor(CONV)).toBeUndefined();
+    // The member's next turn adds theirs.
+    expect(await record(CONV)).toBe('recorded');
+    expect(await channels.getThread(CONV)).toEqual(supportThread());
+    expect(await vetoFor(CONV)).toEqual(remembered(CONV));
   });
 
   it("adds `external` to a thread table made before it, every row an outsider's: fail closed (none exist in production)", async () => {
@@ -186,10 +240,10 @@ describe('runMigrations', () => {
     await runMigrations(db);
 
     // Nothing in the row says who spoke, so the veto treats it as outsiders' and refuses memory.
-    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true, external: true }));
+    expect(await channels.getThread(CONV)).toEqual(outsiderThread({ notRemembered: true }));
     await connect();
     expect(await record(OTHER_CONV, { mode: 'external' })).toBe('recorded');
-    expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread({ external: true }));
+    expect(await channels.getThread(OTHER_CONV)).toEqual(outsiderThread());
   });
 
   it("a thread row written without `external` is an outsider's: the column fails closed", async () => {
@@ -197,7 +251,7 @@ describe('runMigrations', () => {
       INSERT INTO channel_slack_v1_threads (conversation_id, install_id, channel_id, agent_id)
       VALUES (${CONV}, ${INSTALL}, ${SUPPORT}, ${AGENT})
     `.execute(db);
-    expect(await channels.getThread(CONV)).toEqual(supportThread({ external: true }));
+    expect(await channels.getThread(CONV)).toEqual(outsiderThread());
     // recordThread names it every time, so a member's thread is still a member's.
     await connect();
     expect(await record(OTHER_CONV)).toBe('recorded');
@@ -483,7 +537,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect(await threadCount()).toBe(2);
   });
 
-  it("a conversation's thread is written once: a later record changes only the taint", async () => {
+  it("a conversation's thread is written once: a later record never moves it to another install, channel or agent", async () => {
     await connect();
     await connect({ installId: OTHER_INSTALL, channelId: SALES, agentId: OTHER_AGENT });
     expect(await record(CONV)).toBe('recorded');
@@ -499,7 +553,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     await recordOff(CONV);
     expect(await record(OTHER_CONV, { installId: OTHER_INSTALL })).toBe('recorded');
     expect(await vetoFor(CONV)).toEqual(REFUSED);
-    expect(await vetoFor(OTHER_CONV)).toBeUndefined();
+    expect(await vetoFor(OTHER_CONV)).toEqual(remembered(OTHER_CONV));
 
     // Admin › Slack › Disconnect: the install and its bindings go, its threads stay.
     await installs.remove(INSTALL);
@@ -526,7 +580,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);
 
     expect(await connect()).toBe('connected');
-    expect(await vetoFor(CONV)).toBeUndefined();
+    expect(await vetoFor(CONV)).toEqual(remembered(CONV));
     expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);
   });
 
@@ -534,7 +588,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     await connect();
     expect(await record(CONV, { mode: 'external' })).toBe('recorded');
     expect(await record(OTHER_CONV)).toBe('recorded');
-    expect(await channels.getThread(CONV)).toEqual(supportThread({ external: true }));
+    expect(await channels.getThread(CONV)).toEqual(outsiderThread());
     expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread());
 
     // A conversation's key fixes its mode; if one were ever recorded both ways, it stays external.
@@ -554,7 +608,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect(await channels.getThread(OTHER_CONV)).toBeNull();
     // A thread Ada's turns were recorded in is left exactly as it was.
     expect(await record(CONV, { mode: 'external', runAs: ADA })).toBe('reconnected');
-    expect(await channels.getThread(CONV)).toEqual(supportThread({ external: true }));
+    expect(await channels.getThread(CONV)).toEqual(outsiderThread());
     expect(await threadCount()).toBe(1);
 
     // Run as Bob, it records; a member's turn doesn't depend on who connected.
@@ -575,7 +629,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect(await record(CONV, { mode: 'external' })).toBe('recorded');
     expect(await record(OTHER_CONV)).toBe('recorded');
     expect(await vetoFor(CONV)).toEqual(OUTSIDER_THREAD);
-    expect(await vetoFor(OTHER_CONV)).toBeUndefined();
+    expect(await vetoFor(OTHER_CONV)).toEqual(remembered(OTHER_CONV));
   });
 
   it('the switch, read at capture time: off refuses every thread of the channel, on again lets the clean ones through', async () => {
@@ -584,6 +638,95 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
     expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
     expect(await vetoFor(CONV)).toEqual(REFUSED);
     expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
-    expect(await vetoFor(CONV)).toBeUndefined();
+    expect(await vetoFor(CONV)).toEqual(remembered(CONV));
+  });
+});
+
+describe("the speakers' names on a member's thread (TASK-1146)", () => {
+  /*
+    Memory must not file a statement made in a channel under the name of the
+    person who made it. The names are the ones the member's sender label
+    showed (format.ts `senderLabelNames`), recorded in the same statement as
+    the thread, before the turn runs, and handed to memory by the veto. The
+    idle observer can run long after the turn, over turns from before a
+    rename, so the row keeps the union.
+  */
+
+  it('a member turn records its label names, and getThread returns them exactly as written', async () => {
+    await connect();
+    // Slack's text as the label showed it: quotes, a backslash, braces and a comma survive the array round trip.
+    const names = ['Mel "the {boss}", \\o/', 'U07MEL00001'];
+    expect(await record(CONV, { speakerNames: names })).toBe('recorded');
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ speakerNames: names }));
+    // A turn whose names repeat stores each once.
+    expect(await record(OTHER_CONV, { speakerNames: ['U07MEL00001', 'U07MEL00001'] })).toBe('recorded');
+    expect((await channels.getThread(OTHER_CONV))?.speakerNames).toEqual(['U07MEL00001']);
+  });
+
+  it('a second turn adds nothing it already has, and a rename adds the new name: both stay', async () => {
+    await connect();
+    expect(await record(CONV, { speakerNames: ['Mel', 'U1'] })).toBe('recorded');
+    expect(await record(CONV, { speakerNames: ['Mel', 'U1'] })).toBe('recorded');
+    expect((await channels.getThread(CONV))?.speakerNames).toEqual(['Mel', 'U1']);
+    expect(await record(CONV, { speakerNames: ['Mel B', 'U1'] })).toBe('recorded');
+    // Oldest first, by when each was last seen: `U1` came after `Mel B`.
+    expect((await channels.getThread(CONV))?.speakerNames).toEqual(['Mel', 'Mel B', 'U1']);
+  });
+
+  it('keeps the 16 most recently seen names', async () => {
+    await connect();
+    for (let i = 0; i <= 16; i += 1) {
+      expect(await record(CONV, { speakerNames: [`n${i}`, 'U1'] })).toBe('recorded');
+    }
+    // `n0` and `n1` were seen longest ago; the id, seen in every turn, stays.
+    expect((await channels.getThread(CONV))?.speakerNames).toEqual([
+      'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8', 'n9', 'n10', 'n11', 'n12', 'n13', 'n14', 'n15', 'n16', 'U1',
+    ]);
+    // One turn with more than 16 names keeps its last 16 too.
+    const many = Array.from({ length: 17 }, (_, i) => `m${i}`);
+    expect(await record(OTHER_CONV, { speakerNames: many })).toBe('recorded');
+    expect((await channels.getThread(OTHER_CONV))?.speakerNames).toEqual(many.slice(1));
+  });
+
+  it("an outsider's turn records no names, even when a caller hands it some", async () => {
+    await connect();
+    expect(await record(CONV, { mode: 'external' })).toBe('recorded');
+    expect((await channels.getThread(CONV))?.speakerNames).toEqual([]);
+    // The store's own rule, not just the type's: names on an outsider's turn are not stored.
+    const outsider = {
+      installId: INSTALL,
+      channelId: SUPPORT,
+      agentId: AGENT,
+      conversationId: OTHER_CONV,
+      mode: 'external',
+      runAs: ADA,
+      speakerNames: ['Bob Jones', 'U07BOBBY001'],
+    } as unknown as Parameters<ChannelStore['recordThread']>[0];
+    expect(await channels.recordThread(outsider)).toBe('recorded');
+    expect((await channels.getThread(OTHER_CONV))?.speakerNames).toEqual([]);
+  });
+
+  it("two members' threads keep their own names, and memory hears each conversation's own", async () => {
+    await connect();
+    const team = ['Standup Team', 'U07TEAM0001'];
+    expect(await record(CONV)).toBe('recorded');
+    expect(await record(OTHER_CONV, { speakerNames: team })).toBe('recorded');
+    expect((await channels.getThread(CONV))?.speakerNames).toEqual(MEL);
+    expect((await channels.getThread(OTHER_CONV))?.speakerNames).toEqual(team);
+    // A display name of work words ("Standup Team") drops facts only in its own member's conversation.
+    expect(await vetoFor(CONV)).toEqual(remembered(CONV));
+    expect(await vetoFor(OTHER_CONV)).toEqual(remembered(OTHER_CONV, team));
+  });
+
+  it("two member turns starting at once in one conversation keep both turns' names", async () => {
+    await connect();
+    for (let i = 0; i < 8; i += 1) {
+      const conversationId = `conv_names_race_${i}`;
+      const before = () => record(conversationId, { speakerNames: ['Mel', 'U1'] });
+      const renamed = () => record(conversationId, { speakerNames: ['Mel B', 'U1'] });
+      expect(await Promise.all(i % 2 === 0 ? [before(), renamed()] : [renamed(), before()])).toEqual(['recorded', 'recorded']);
+      const names = (await channels.getThread(conversationId))?.speakerNames ?? [];
+      expect([...names].sort(), conversationId).toEqual(['Mel', 'Mel B', 'U1']);
+    }
   });
 });

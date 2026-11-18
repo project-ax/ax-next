@@ -64,6 +64,8 @@ const ADA = 'U07ADA00001';
 const BEN = 'U07BEN00001';
 /** A confirmed full member whose email is on no approved domain. */
 const MALLORY = 'U07MALLORY2';
+/** A member with no name on Slack at all: their label shows the id alone. */
+const NONAME = 'U07NONAME01';
 
 const DM_ALICE = 'D07DMALICE1';
 const DM_BOB = 'D07DMBOBBY1';
@@ -95,6 +97,7 @@ const SLACK_USERS: Record<string, unknown> = {
   [ADA]: member(ADA, 'ada@canopyworks.com', 'Ada Admin'),
   [BEN]: member(BEN, 'ben@canopyworks.com', 'Ben'),
   [MALLORY]: member(MALLORY, 'mallory@evil.example', 'Mallory'),
+  [NONAME]: member(NONAME, 'nona@canopyworks.com', ''),
 };
 
 /** AX's answer to auth:find-user-by-email, by the email exactly as users.info gave it. */
@@ -104,6 +107,7 @@ const AX_USERS: Record<string, string> = {
   'dave@canopyworks.com': 'usr_dave',
   'ada@canopyworks.com': 'usr_ada',
   'ben@canopyworks.com': 'usr_ben',
+  'nona@canopyworks.com': 'usr_nona',
 };
 
 // ── The channel: #support, connected to the support team's agent by Ada ───
@@ -2378,6 +2382,8 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
         channelId: SUPPORT,
         agentId: SUPPORT_AGENT.id,
         mode: 'attended',
+        // The names her label shows (TASK-1146): her display name (Slack has none, so her full name), then her id.
+        speakerNames: ['Alice Smith', ALICE],
         notRemembered: true,
         invokesBefore: 0,
       },
@@ -2514,6 +2520,18 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     await w.idle();
 
     expect(w.threadWrites.map((t) => t.conversationId)).toEqual([`conv:${externalKey('1763035400.000400')}`]);
+  });
+
+  it('a member with no name on Slack is recorded by their Slack id alone, as their label shows them (TASK-1146)', async () => {
+    const w = world();
+    w.agents.setRole(SUPPORT_TEAM, 'usr_nona', 'member');
+    await w.dispatch(INSTALL, mention({ user: NONAME }));
+    await w.idle();
+
+    expect(w.invokes.map((i) => [i.ctx.userId, contentOf(i)])).toEqual([
+      ['usr_nona', `[Slack · #support · ${NONAME}]: <@${BOT_USER_ID}> what is open?`],
+    ]);
+    expect(w.threadWrites.map((t) => [t.mode, t.mode === 'attended' ? t.speakerNames : null])).toEqual([['attended', [NONAME]]]);
   });
 
   it('a DM records no thread: the conversation is the sender\'s own, and the switch is a channel\'s', async () => {

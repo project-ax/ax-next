@@ -32,12 +32,21 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     `external` marks the conversation outsiders' turns run in (the
  *     connector's, key suffix `:external`): memory never learns from it,
  *     whatever the switch says. A conversation's key fixes it, so it never
- *     changes.
+ *     changes. `speaker_names` (TASK-1146) keeps the names a member's turns
+ *     in the thread were labelled with, their display name and Slack id, so
+ *     the veto can hand them to memory's speaker rule: memory stores nothing
+ *     said in a channel under the name of the person who said it. Each name
+ *     once, oldest first by when it was last seen, the 16 most recent
+ *     (channel-store.ts). An outsiders' thread keeps none.
  *
  * The install's four secrets are NOT here: they live in the credentials vault
- * under `slack:<install_id>:<name>` (secrets.ts). Nor is anyone's name:
- * `connected_by_user_id` is an id in both tables, and the name is read from
- * auth when it is shown (invariant 4). The OAuth `state` is kept only as
+ * under `slack:<install_id>:<name>` (secrets.ts). Nor is any AX account's
+ * name: `connected_by_user_id` is an id in the installs and channels tables,
+ * and that person's name is read from auth when it is shown (invariant 4).
+ * The one kind of person's name kept here is Slack's: `speaker_names` holds
+ * members' Slack display names and ids as their sender labels showed them,
+ * untrusted profile text for memory to compare against, never shown, logged
+ * or used for identity. The OAuth `state` is kept only as
  * a sha256, beside the admin it was minted for and its expiry, so it survives
  * a restart between Connect and Allow and can be spent exactly once.
  *
@@ -93,6 +102,7 @@ export interface ChannelSlackThreadsTable {
   agent_id: string;
   not_remembered: ColumnType<boolean, boolean | undefined, boolean>;
   external: ColumnType<boolean, boolean | undefined, boolean>;
+  speaker_names: ColumnType<string[], string[] | undefined, string[]>;
   created_at: ColumnType<Date, Date | undefined, never>;
 }
 
@@ -169,5 +179,14 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     ALTER TABLE channel_slack_v1_threads
       ADD COLUMN IF NOT EXISTS external BOOLEAN NOT NULL DEFAULT true
+  `.execute(db);
+  // The names a member's turns were labelled with (TASK-1146), for memory's
+  // speaker rule. A row from before this column has none until its member's
+  // next turn adds theirs (not backfilled: this plugin learns a member's
+  // names only from users.info as their turn starts); until then memory
+  // applies its `user` rule alone.
+  await sql`
+    ALTER TABLE channel_slack_v1_threads
+      ADD COLUMN IF NOT EXISTS speaker_names TEXT[] NOT NULL DEFAULT '{}'
   `.execute(db);
 }

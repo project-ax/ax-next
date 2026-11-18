@@ -1,15 +1,18 @@
 import {
   HookBus,
   MEMORY_PRE_CAPTURE_HOOK,
+  MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX,
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
   makeAgentContext,
   type AgentContext,
   type Logger,
+  type MemoryPreCapturePayload,
 } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CAPTURE_CHECK_DEADLINE_MS, CAPTURE_VETO_KEY, channelCaptureVeto, subscribeCaptureVeto } from '../capture-veto.js';
 import type { ChannelBinding, ChannelThread } from '../channel-store.js';
+import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
 
 /*
   The "Let the agent remember this channel" switch (TASK-1094), as memory
@@ -21,6 +24,10 @@ import type { ChannelBinding, ChannelThread } from '../channel-store.js';
   thread's agent, or when the switch is off now. A conversation it never
   recorded (a web chat, a DM) gets no opinion. It fails closed: a lookup that
   throws, or that misses half of memory's own bound, refuses.
+
+  A member's thread it lets memory learn from is answered with the names
+  their turns were labelled with (TASK-1146), so memory files nothing said
+  there under the speaker's name.
 */
 
 const INSTALL = 'q3VtZ0xH4kTn9Wb2LmPa1A';
@@ -37,13 +44,14 @@ const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn' };
  */
 const CHECK_FAILED = { rejected: true, reason: 'capture-check-failed' };
 
-/** A member's thread of #support, remembered, unless told otherwise. */
+/** A member's thread of #support, remembered, with no names recorded (a row from before TASK-1146), unless told otherwise. */
 const thread = (o: Partial<ChannelThread> = {}): ChannelThread => ({
   installId: INSTALL,
   channelId: SUPPORT,
   agentId: AGENT,
   notRemembered: false,
   external: false,
+  speakerNames: [],
   ...o,
 });
 
@@ -190,7 +198,7 @@ describe("channelCaptureVeto: an outsider's thread is never remembered", () => {
   it("memory_note in an outsider's turn asks as memory asks (the turn's own ctx and its conversation id) and is refused", async () => {
     const bus = new HookBus();
     subscribeCaptureVeto(bus, channelsWith({ threads: { [THREAD]: thread({ external: true }) } }));
-    // @ax/memory's captureRefusal: the tool call's ctx, its host-set conversationId as the payload, memory's bound.
+    // @ax/memory's captureCheck: the tool call's ctx, its host-set conversationId as the payload, memory's bound.
     const noteCtx = pass();
     expect(
       await bus.fire(MEMORY_PRE_CAPTURE_HOOK, noteCtx, { conversationId: noteCtx.conversationId }, {
@@ -322,6 +330,125 @@ describe('channelCaptureVeto: fails closed, and says the check failed', () => {
   });
 });
 
+describe('channelCaptureVeto: the speakers memory must not file facts under (TASK-1146)', () => {
+  /*
+    Memory reads `speakerNames` from the fire's final payload and, in a turn
+    that isn't private, stores no statement whose subject is made of them.
+    So a name is a fact memory won't file under it: the veto hands over every
+    name a member's turns in the thread were labelled with, keeps every name
+    an earlier subscriber added, and refuses rather than drop one.
+  */
+
+  /** The names Mel's turns in the thread were labelled with: display name, then Slack id. */
+  const MEL = ['Mel', 'U07MEL00001'];
+  /** Memory is asked about a member's thread: Mel's own pass. */
+  const memberPass = (o: Partial<Parameters<typeof makeAgentContext>[0]> = {}) => pass({ source: 'user', userId: 'usr_mel', ...o });
+  /** More names, with an earlier subscriber's, than one answer may carry. */
+  const OVER_CAP = { rejected: true, reason: 'speaker-names-over-cap' };
+  /** A payload it can't read, when it has names to add: refused, never answered over. */
+  const UNREADABLE = { rejected: true, reason: 'capture-payload-unreadable' };
+  /** `n` names an earlier subscriber added. */
+  const earlier = (n: number) => Array.from({ length: n }, (_, i) => `Speaker ${i}`);
+
+  it('a thread it lets memory learn from answers with its names', async () => {
+    const channels = channelsWith({ threads: { [THREAD]: thread({ speakerNames: MEL }) } });
+    expect(await channelCaptureVeto(channels, memberPass(), { conversationId: THREAD })).toEqual({
+      conversationId: THREAD,
+      speakerNames: MEL,
+    });
+  });
+
+  it('a refused thread answers the refusal and no names, whatever names it holds', async () => {
+    const named = thread({ speakerNames: MEL });
+    const refused: Array<[string, Parameters<typeof channelsWith>[0], unknown]> = [
+      ['a turn ran while the switch was off', { threads: { [THREAD]: thread({ notRemembered: true, speakerNames: MEL }) } }, REFUSED],
+      ['the switch is off now', { threads: { [THREAD]: named }, binding: binding({ remember: false }) }, REFUSED],
+      ['the channel is no longer connected', { threads: { [THREAD]: named }, binding: null }, REFUSED],
+      ['the channel is connected to another agent now', { threads: { [THREAD]: named }, binding: binding({ agentId: 'agt_sales' }) }, REFUSED],
+      ["outsiders' turns run in it", { threads: { [THREAD]: thread({ external: true, speakerNames: MEL }) } }, OUTSIDER_THREAD],
+    ];
+    for (const [why, world, refusal] of refused) {
+      expect(await channelCaptureVeto(channelsWith(world), memberPass(), { conversationId: THREAD }), why).toEqual(refusal);
+    }
+    // The control: the same names on a thread it lets through are memory's.
+    expect(await channelCaptureVeto(channelsWith({ threads: { [THREAD]: named } }), memberPass(), { conversationId: THREAD })).toEqual({
+      conversationId: THREAD,
+      speakerNames: MEL,
+    });
+  });
+
+  it('appends its names to those an earlier subscriber added, once each, and keeps the rest of what it was given', async () => {
+    const channels = channelsWith({ threads: { [THREAD]: thread({ speakerNames: MEL }) } });
+    expect(
+      await channelCaptureVeto(channels, memberPass(), { conversationId: THREAD, speakerNames: ['Ana', 'Mel'], from: 'earlier' }),
+    ).toEqual({ conversationId: THREAD, speakerNames: ['Ana', 'Mel', 'U07MEL00001'], from: 'earlier' });
+    // With no names of its own (a web chat), it has no opinion: what it was given goes on as it came.
+    const web = { conversationId: 'conv-web', speakerNames: ['Ana'] };
+    expect(await channelCaptureVeto(channels, memberPass({ conversationId: 'conv-web' }), web)).toBeUndefined();
+  });
+
+  it(`refuses rather than drop a name: past ${MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX} in all, nothing is answered, and no name is logged`, async () => {
+    const { logger, lines } = recordingLogger();
+    const channels = channelsWith({ threads: { [THREAD]: thread({ speakerNames: MEL }) } });
+    const ask = (speakerNames: string[]) =>
+      channelCaptureVeto(channels, memberPass({ logger }), { conversationId: THREAD, speakerNames });
+    // One over the cap with Mel's two.
+    expect(await ask(earlier(MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX - 1))).toEqual(OVER_CAP);
+    // Exactly the cap: every one of them goes to memory.
+    const fits = earlier(MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX - 2);
+    expect(await ask(fits)).toEqual({ conversationId: THREAD, speakerNames: [...fits, ...MEL] });
+    // A name it shares with an earlier subscriber counts once, so this fits too.
+    expect(await ask([...fits, 'Mel'])).toEqual({ conversationId: THREAD, speakerNames: [...fits, 'Mel', 'U07MEL00001'] });
+    expect(JSON.stringify(lines)).not.toMatch(/Speaker|Mel/);
+  });
+
+  it('both ids it asks about contribute names', async () => {
+    const other = 'conv-support-thread-ana';
+    const channels = channelsWith({
+      threads: { [THREAD]: thread({ speakerNames: MEL }), [other]: thread({ speakerNames: ['Ana', 'U07ANA00001'] }) },
+    });
+    // An earlier subscriber rewrote the payload to name another thread: memory hears the speakers of both.
+    expect(await channelCaptureVeto(channels, memberPass(), { conversationId: other })).toEqual({
+      conversationId: other,
+      speakerNames: ['Mel', 'U07MEL00001', 'Ana', 'U07ANA00001'],
+    });
+
+    // Two full threads still fit one answer: it never refuses over its own names.
+    const full = (who: string) => Array.from({ length: THREAD_SPEAKER_NAMES_MAX }, (_, i) => `${who} ${i}`);
+    const busy = channelsWith({
+      threads: { [THREAD]: thread({ speakerNames: full('Mel') }), [other]: thread({ speakerNames: full('Ana') }) },
+    });
+    expect(await channelCaptureVeto(busy, memberPass(), { conversationId: other })).toEqual({
+      conversationId: other,
+      speakerNames: [...full('Mel'), ...full('Ana')],
+    });
+  });
+
+  it('a payload it cannot read is refused when it has names to add, never answered over', async () => {
+    const old = 'conv-support-thread-old';
+    const channels = channelsWith({ threads: { [THREAD]: thread({ speakerNames: MEL }), [old]: thread() } });
+    for (const unreadable of [
+      { conversationId: 7 },
+      { conversationId: THREAD, speakerNames: 'Ana' },
+      { conversationId: THREAD, speakerNames: [''] },
+      { conversationId: THREAD, speakerNames: earlier(MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX + 1) },
+    ]) {
+      expect(await channelCaptureVeto(channels, memberPass(), unreadable), JSON.stringify(unreadable).slice(0, 60)).toEqual(UNREADABLE);
+    }
+    // With no names to add it has no opinion, as before TASK-1146: memory won't read that answer either.
+    expect(await channelCaptureVeto(channels, memberPass({ conversationId: old }), { conversationId: 7 })).toBeUndefined();
+  });
+
+  it('a thread row with no names list at all is refused as a failed check, never read as one with no names', async () => {
+    const { logger, lines } = recordingLogger();
+    const unread = thread({ speakerNames: undefined as unknown as string[] });
+    expect(await channelCaptureVeto(channelsWith({ threads: { [THREAD]: unread } }), memberPass({ logger }), { conversationId: THREAD })).toEqual(
+      CHECK_FAILED,
+    );
+    expect(lines).toEqual([{ level: 'warn', msg: 'slack_capture_check_failed', fields: { code: 'unknown' } }]);
+  });
+});
+
 describe('subscribeCaptureVeto', () => {
   const fire = (bus: HookBus, conversationId: string) =>
     bus.fire(MEMORY_PRE_CAPTURE_HOOK, pass({ conversationId }), { conversationId }, {
@@ -353,5 +480,22 @@ describe('subscribeCaptureVeto', () => {
 
     expect(await fire(bus, 'conv-on')).toEqual({ rejected: false, payload: { conversationId: 'conv-on' } });
     expect(bus.unsubscribe(MEMORY_PRE_CAPTURE_HOOK, CAPTURE_VETO_KEY)).toBe(1);
+  });
+
+  it("memory reads the speakers from the fire's final payload: an earlier subscriber's names, then the thread's (TASK-1146)", async () => {
+    const bus = new HookBus();
+    // An earlier subscriber that names a speaker as the contract says: the payload it was given, its name appended.
+    bus.subscribe<MemoryPreCapturePayload>(MEMORY_PRE_CAPTURE_HOOK, 'test-earlier', async (_ctx, payload) => ({
+      ...payload,
+      speakerNames: [...(payload.speakerNames ?? []), 'Ana'],
+    }));
+    subscribeCaptureVeto(bus, channelsWith({ threads: { 'conv-on': thread({ speakerNames: ['Mel', 'U07MEL00001'] }) } }));
+
+    expect(await fire(bus, 'conv-on')).toEqual({
+      rejected: false,
+      payload: { conversationId: 'conv-on', speakerNames: ['Ana', 'Mel', 'U07MEL00001'] },
+    });
+    // A conversation it never recorded: the earlier subscriber's answer goes on untouched.
+    expect(await fire(bus, 'conv-web')).toEqual({ rejected: false, payload: { conversationId: 'conv-web', speakerNames: ['Ana'] } });
   });
 });
