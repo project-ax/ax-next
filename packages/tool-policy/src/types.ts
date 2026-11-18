@@ -145,6 +145,27 @@ export interface PolicyRule {
   /** Reviewed create/update hold exception; never a general agent override. */
   routineConsent?: 'create-update';
   /**
+   * THIS HOLD IS ONLY FOR A TURN NOBODY IS THERE TO ANSWER (TASK-1135). On a
+   * `hold` rule, it tells `@ax/decisions` to let the call run in a turn its
+   * attendance read calls ATTENDED: someone is in the conversation to answer,
+   * and it is not an outsider's turn. Every other turn is held as before: a
+   * routine's own run, an outsider's turn, and any turn whose attendance
+   * cannot be read.
+   *
+   * ONLY for a tool that does nothing but put its OWN card in front of the
+   * person, where Allow on that card is what grants. Holding that call in an
+   * attended turn asks the same person the same question twice, and the first
+   * time with less to go on. NEVER on a tool that acts by itself: there the
+   * hold is the only question anybody is asked, and an attended turn is
+   * exactly when it has to be asked.
+   *
+   * `true` or omitted. It means nothing on a rule that is not a hold, and
+   * `evaluate()` reports it only on an answer that is still a hold, so a hold
+   * relaxed to `allow` (egress, routine consent) answers without it.
+   * `rules.test.ts` pins the rules that carry it to an exact list.
+   */
+  holdsOnlyUnattended?: true;
+  /**
    * See `ToolEffect`. OMITTED means unclassified, not harmless.
    *
    * An EMPTY ARRAY is not a second spelling of "unclassified" — it is rejected
@@ -305,6 +326,19 @@ export interface EvaluateResult {
    * the `spends`-is-money-only caveat, which applies here unchanged.
    */
   effect: ToolEffect[];
+  /**
+   * `true` only when the matched rule sets `PolicyRule.holdsOnlyUnattended`
+   * AND `verdict` is `'hold'`: this hold applies only when nobody is there to
+   * answer the tool's own card, so `@ax/decisions` lets the call run in an
+   * attended turn (TASK-1135).
+   *
+   * OPTIONAL, unlike `effect`, because absent is the safe answer: it means
+   * "hold whoever is there". A caller that never reads it, or a producer that
+   * never sends it, keeps holding. `| undefined` only so `EvaluateResultSchema`'s
+   * `.optional()` output fits this type; `evaluate()` never sets it to
+   * `undefined`, it leaves the key out.
+   */
+  holdsOnlyUnattended?: true | undefined;
 }
 
 /** One row of "What it may do alone". */
@@ -742,6 +776,16 @@ export const EvaluateResultSchema = z.object({
   // REQUIRED, matching the interface: a producer that omits it fails the parse
   // loudly instead of under-disclosing quietly.
   effect: z.array(ToolEffectSchema),
+  // The same strip hazard (TASK-1135). Delete this line and the field vanishes
+  // on the way out of the bus. That fails safe, because `@ax/decisions` holds
+  // again, but silently: every attended `request_capability` asks twice
+  // again. `tool-policy.canary.test.ts` notices.
+  //
+  // `z.literal(true)` and not `z.boolean()`: the only other spelling is
+  // absent. A producer that sends `false` fails the parse loudly, as one that
+  // omits `effect` does, and `@ax/decisions` refuses the call rather than
+  // guess.
+  holdsOnlyUnattended: z.literal(true).optional(),
 });
 
 export const CapabilityRowSchema = z.object({
