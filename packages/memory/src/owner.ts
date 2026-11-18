@@ -35,7 +35,8 @@ import { PLUGIN_NAME } from './plugin-name.js';
  * statements are that user's, like anyone's. The person who spoke is not the
  * owner, and keeping their words out of the owner's memory is `audience`'s
  * job, not ownership's: a shared turn's rows are stamped shared and
- * none has a person subject (`audience.ts`). (From Slack none is captured:
+ * none has a person subject, `user`, `user:<id>` or a speaker's name
+ * (`audience.ts`). (From Slack none is captured:
  * channel-slack's `memory:pre-capture` veto refuses every thread an outsider
  * talks in, TASK-1094.)
  *

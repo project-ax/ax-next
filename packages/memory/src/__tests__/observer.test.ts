@@ -852,7 +852,9 @@ describe("the agent's narration of its own operations is not a fact (TASK-1136)"
         { role: 'assistant', content: "I couldn't save that to memory." },
       ],
     });
-    // `vinay` stays on purpose: a work fact under the sender's name is design §2a's accepted gap.
+    // `vinay` stays: nothing answered memory:pre-capture with the speaker's
+    // names here, and they come only from there (TASK-1146). With channel-slack's
+    // names, the same batch keeps nothing: the walk test in audience.test.ts.
     expect(readRows(h.databasePath).map((r) => [r.about, r.audience])).toEqual([['vinay', 'shared']]);
     const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).find((l) => l.bindings.outcome === 'recorded');
     expect(run?.bindings).toMatchObject({ recorded: 1, selfReports: 1, speakerFacts: 0 });
@@ -1041,6 +1043,27 @@ describe('a run another plugin refuses is not captured (TASK-908)', () => {
     // gate `asked` would stay empty here too.
     await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-asked', source: 'routine' }) });
     expect(asked).toEqual([{ conversationId: 'conv-asked' }]);
+  });
+
+  // TASK-1146: an answer can carry the speakers' names, and one memory can't
+  // read is one it can't trust. Treating it as "no names" would fail open.
+  it('an answer memory cannot read records nothing and warns, and the model is never called', async () => {
+    const h = await withLlm(() => reply(extraction([fact()])));
+    h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-garbled', async (_ctx, payload) => ({
+      ...payload,
+      speakerNames: ['Vinay Pulim', 7] as unknown as string[],
+    }));
+
+    await chatEnd(h);
+
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    expect(h.llmCalls).toHaveLength(0);
+    const failures = eventsNamed(h.logs, OBSERVER_FAILED_EVENT);
+    expect(failures.map((e) => [e.level, e.bindings.reason])).toEqual([['warn', 'observer-threw']]);
+    // The error names no value from the answer.
+    expect((failures[0]?.bindings.err as Error).message).not.toContain('Pulim');
+    // Not a refusal: nobody refused, memory couldn't read the answer.
+    expect(eventsNamed(h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
   });
 });
 

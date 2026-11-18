@@ -158,6 +158,18 @@ export const TURN_HARD_CAP_MS = 900_000;
  */
 export const TURN_END_GRACE_MS = 60_000;
 
+// ── Memory's speaker rule ───────────────────────────────────────────────────
+
+/**
+ * The most speaker names one channel thread keeps (TASK-1146): the names its
+ * member's turns were labelled with (format.ts `senderLabelNames`), the most
+ * recently seen kept. Two threads' worth, the most one capture check asks
+ * about, fit in one `memory:pre-capture` answer
+ * (`MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX` in core, 32), so the veto never
+ * has to refuse over its own names.
+ */
+export const THREAD_SPEAKER_NAMES_MAX = 16;
+
 // ── Approval prompts ────────────────────────────────────────────────────────
 // Slack's numbers in this section were read on 2026-11-14 (see
 // `.claude/memory/decisions/2026-11-14-TASK-1095.md`).

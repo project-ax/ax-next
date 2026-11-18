@@ -8,8 +8,8 @@ import {
 } from '@ax/core';
 
 import { resolveMemoryAccess } from './access.js';
-import { breaksSpeakerRule, recordFacts } from './audience.js';
-import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
+import { breaksSpeakerRule, recordFacts, SPEAKER_RULE_READS_AT_MOST } from './audience.js';
+import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -82,6 +82,7 @@ const NOT_SAVED =
   'NOT SAVED: nothing was written to memory — do not tell the person it was saved.';
 
 const FIELDS_MESSAGE = 'about, relation and value must be non-empty strings.';
+const ABOUT_TOO_LONG_MESSAGE = `about must be at most ${SPEAKER_RULE_READS_AT_MOST} characters.`;
 const KEYS_MESSAGE = 'unexpected field(s) — only about, relation, value, when are accepted.';
 const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
@@ -221,6 +222,14 @@ export async function registerMemoryNote(
             throw new NoteInputError(FIELDS_MESSAGE);
           }
         }
+        // Both engines refuse an `about` this long in every audience, so
+        // nothing is lost by saying so here, once, for every turn. Without
+        // it a shared turn's long subject would break the speaker rule unread
+        // and answer `PERSON_IN_SHARED_MESSAGE`, which says the note is about
+        // a person.
+        if ((input.about as string).length > SPEAKER_RULE_READS_AT_MOST) {
+          throw new NoteInputError(ABOUT_TOO_LONG_MESSAGE);
+        }
         const when = input.when === undefined ? undefined : normalizeWhen(input.when);
         // TASK-1091: in a turn people without access to the agent can read,
         // the person a note calls `user` could be anyone in the room. Refused
@@ -228,26 +237,36 @@ export async function registerMemoryNote(
         // any bus call, so nothing is read or written. `recordFacts` would
         // refuse it anyway; refusing here says why, in words the model can
         // pass on. The same function as the observer and `recordFacts`, so
-        // the three can't drift (TASK-1136).
-        if (breaksSpeakerRule(audienceOf(ctx), input.about as string)) {
+        // the three can't drift (TASK-1136). This is the rule's `user` half,
+        // with no names: it comes before the ask (TASK-1094's order), and the
+        // names half comes right after it.
+        if (breaksSpeakerRule(audienceOf(ctx), input.about as string, [])) {
           throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
         }
         // TASK-1094: ask `memory:pre-capture` first, as every extraction
-        // pass does (`captureRefusal`). A plugin that keeps a conversation
+        // pass does (`captureCheck`). A plugin that keeps a conversation
         // out of memory keeps the agent's own notes in it out too; otherwise
         // the agent could write down what memory was told not to learn.
         // After the input and person checks, so those refusals still say
         // what's wrong; before access and the engine, so a refused note
-        // reads nothing and writes nothing.
-        const refusal = await captureRefusal(bus, ctx);
-        if (refusal !== undefined) {
+        // reads nothing and writes nothing. An answer memory can't read
+        // throws `invalid-return`, and the note is not saved.
+        const check = await captureCheck(bus, ctx);
+        if (check.refusal !== undefined) {
           ctx.logger.info(CAPTURE_REFUSED_EVENT, {
             agentId: ctx.agentId,
-            refusedBy: refusal.source,
-            reason: refusal.reason,
+            refusedBy: check.refusal.source,
+            reason: check.refusal.reason,
             tool: MEMORY_NOTE_DESCRIPTOR.name,
           });
           throw new NoteInputError(NOT_SAVED_HERE_MESSAGE, 'forbidden');
+        }
+        // TASK-1146: the answer names the people speaking in the
+        // conversation, and a note filed under one of their names (`vinay`)
+        // is a note about a person, refused like `user`, with the same words.
+        // Still before access and the engine.
+        if (breaksSpeakerRule(audienceOf(ctx), input.about as string, check.speakerNames)) {
+          throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
         }
 
         const access = await resolveMemoryAccess(bus, ctx);
@@ -261,7 +280,8 @@ export async function registerMemoryNote(
         }
         const slot = deriveSlot(input.relation as string);
         // `recordFacts`, like every engine write: it stamps the turn's
-        // audience on the note (TASK-1091).
+        // audience on the note (TASK-1091). Handed the names this note was
+        // answered with, so a note asks once (TASK-1146).
         const result = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
@@ -281,6 +301,7 @@ export async function registerMemoryNote(
               },
             ],
           },
+          check.speakerNames,
         );
         const records = result === null || typeof result !== 'object' ? undefined : result.records;
         if (
@@ -313,7 +334,17 @@ export async function registerMemoryNote(
         try {
           ctx.logger[isMissingCredential(err) ? 'error' : deliberate ? 'info' : 'warn'](
             memoryFailureEvent(err, NOTE_FAILED_EVENT),
-            { agentId: ctx.agentId, path: 'note', reason: error },
+            {
+              agentId: ctx.agentId,
+              path: 'note',
+              reason: error,
+              // Which hook faulted and how, never the message. Only for this
+              // plugin's own errors: their code and hook are fixed strings,
+              // while another plugin's code is text we don't control.
+              ...(err instanceof PluginError && err.plugin === PLUGIN_NAME
+                ? { code: err.code, hookName: err.hookName }
+                : {}),
+            },
           );
         } catch {
         }
