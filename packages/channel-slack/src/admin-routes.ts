@@ -169,6 +169,21 @@ const CONFIG_TOKEN_REFUSED: ReadonlySet<string> = new Set([
  */
 const UNCONFIRMED_CODES: ReadonlySet<string> = new Set(['timeout', 'network', 'bad-response', 'too-large']);
 const HTTP_5XX = /^http-5\d\d$/;
+/**
+ * A leftover-app delete failure that is about Slack or the pasted token, not
+ * that one app: every later delete in the same Connect would fail the same
+ * way, each after up to a full per-call deadline, while the admin lock is
+ * held. So the pass stops at the first one.
+ */
+function stopsLeftoverPass(err: unknown): boolean {
+  if (!(err instanceof SlackApiError)) return false;
+  return (
+    TOKEN_ERRORS.has(err.code) ||
+    UNCONFIRMED_CODES.has(err.code) ||
+    HTTP_5XX.test(err.code) ||
+    err.code === 'ratelimited'
+  );
+}
 
 /** "Connected by" when auth has no name for the admin, no account, or no answer. */
 const FALLBACK_NAME = 'Administrator';
@@ -378,8 +393,10 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * whose earlier token made them; that a new token can delete them is
    * UNMEASURED, decisions shard). Deleted, or already gone on Slack's side
    * (`app_not_found`): forgotten. Anything else: kept, logged code-only, and
-   * still listed. Never stops the Connect; a store fault reading the list
-   * throws, before Slack is asked anything.
+   * still listed; a failure about Slack or the token rather than that app
+   * (stopsLeftoverPass) also ends the pass, so one Connect waits on at most
+   * one dead deadline. Never stops the Connect; a store fault reading the
+   * list throws, before Slack is asked anything.
    */
   async function deleteLeftoverApps(accessToken: string): Promise<void> {
     for (const app of await d.store.leftoverApps()) {
@@ -388,6 +405,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       } catch (err) {
         if (!(err instanceof SlackApiError && err.code === 'app_not_found')) {
           failed('delete-leftover-app', err, app.installId);
+          if (stopsLeftoverPass(err)) return;
           continue;
         }
       }

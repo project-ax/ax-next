@@ -1705,6 +1705,34 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     ]);
   });
 
+  it.each([
+    ['timeout', 'warn'],
+    ['network', 'warn'],
+    ['ratelimited', 'warn'],
+    ['http-503', 'warn'],
+    ['invalid_auth', 'warn'],
+  ] as const)(
+    'a %s answer is about Slack or the token, not that one app: the pass stops after it, so the admin lock is not held for every leftover; Connect still goes ahead',
+    async (code, level) => {
+      const w = world();
+      leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 180_000);
+      leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 120_000);
+      leaveApp(w, { installId: 'inst_left_3', appId: 'A07LEFTAPP03' }, 'Third Bot', NOW_MS - 60_000);
+      w.slack.on.deleteApp = async () => {
+        throw new SlackApiError('apps.manifest.delete', code);
+      };
+      expect((await w.connect()).status).toBe(200);
+      // One try, not three.
+      expect(slackMethods(w).filter((m) => m === 'deleteApp')).toHaveLength(1);
+      expect(slackMethods(w).filter((m) => m === 'createApp')).toHaveLength(1);
+      expect(w.lines).toEqual([
+        { level, msg: 'slack_admin_failed', fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code } },
+      ]);
+      // All three are still remembered, for the next Connect.
+      expect(w.memory.leftovers.size).toBe(3);
+    },
+  );
+
   it('a Connect refused before Slack never touches a leftover', async () => {
     // A body it can't use: refused before the store is read.
     const badBody = world();
