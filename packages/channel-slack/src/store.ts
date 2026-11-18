@@ -1,5 +1,6 @@
 import { sql, type Kysely, type Selectable } from 'kysely';
 import { cleanLabel } from './label.js';
+import { LEFTOVER_APPS_MAX } from './limits.js';
 import type { ChannelSlackDatabase, ChannelSlackInstallsTable } from './migrations.js';
 
 /**
@@ -30,6 +31,15 @@ export interface OAuthState {
   /** The admin it was minted for. */
   userId: string;
   expiresAt: Date;
+}
+
+/** A Slack app AX made that Disconnect couldn't delete, so it may still be on Slack. No secret. */
+export interface LeftoverApp {
+  /** The removed install's id: how logs name it, and the key to forget it by. */
+  installId: string;
+  appId: string;
+  botName: string;
+  leftAt: Date;
 }
 
 export interface InstallStore {
@@ -69,8 +79,11 @@ export interface InstallStore {
   /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
+   * With `appLeft`, the install's Slack app is still on Slack (Disconnect
+   * couldn't delete it): its id and name move to the leftover list in the
+   * same statement, so a later Connect can delete it.
    */
-  remove(installId: string): Promise<void>;
+  remove(installId: string, o?: { appLeft?: boolean }): Promise<void>;
   /**
    * Delete every install, any status, and their channel bindings, in ONE
    * statement, and return exactly the installs that statement deleted, in no
@@ -79,9 +92,17 @@ export interface InstallStore {
    * only with an install this delete removed.
    */
   removeAll(): Promise<RemovedInstall[]>;
+  /**
+   * The Slack apps Disconnect couldn't delete, oldest first (by when they
+   * were left, then install id), at most LEFTOVER_APPS_MAX.
+   */
+  leftoverApps(): Promise<LeftoverApp[]>;
+  /** Forget one leftover app, by its removed install's id. A missing one is not an error. */
+  forgetLeftoverApp(installId: string): Promise<void>;
 }
 
 const INSTALLS = 'channel_slack_v1_installs';
+const LEFTOVER_APPS = 'channel_slack_v1_leftover_apps';
 
 /** Every column but the OAuth state, which never leaves this file in a row. */
 const ROW_COLUMNS = [
@@ -260,7 +281,29 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
     // see each other only through RETURNING): a delete that fails rolls the
     // whole statement back, and one that skips an install keeps its bindings.
     // channel-store.ts owns every other query against the bindings.
-    async remove(installId) {
+    //
+    // With `appLeft`, the app moves to the leftover list from that same
+    // RETURNING (Postgres runs a data-modifying CTE to completion even though
+    // nothing reads it): it is never in both tables, and an insert that fails
+    // keeps the install and its bindings. `ON CONFLICT` keeps the first app
+    // an id left, which only tests can hit (they re-use install ids).
+    async remove(installId, o) {
+      if (o?.appLeft === true) {
+        await sql`
+          WITH removed AS (
+            DELETE FROM channel_slack_v1_installs
+             WHERE install_id = ${installId}
+            RETURNING install_id, app_id, bot_name
+          ), kept AS (
+            INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
+            SELECT install_id, app_id, bot_name FROM removed
+            ON CONFLICT (install_id) DO NOTHING
+          )
+          DELETE FROM channel_slack_v1_channels
+           WHERE install_id IN (SELECT install_id FROM removed)
+        `.execute(db);
+        return;
+      }
       await sql`
         WITH removed AS (
           DELETE FROM channel_slack_v1_installs
@@ -284,6 +327,26 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         SELECT install_id, app_id, team_id FROM removed
       `.execute(db);
       return r.rows.map((row) => ({ installId: row.install_id, appId: row.app_id, teamId: row.team_id }));
+    },
+
+    async leftoverApps() {
+      const rows = await db
+        .selectFrom(LEFTOVER_APPS)
+        .select(['install_id', 'app_id', 'bot_name', 'left_at'])
+        .orderBy('left_at', 'asc')
+        .orderBy('install_id', 'asc')
+        .limit(LEFTOVER_APPS_MAX)
+        .execute();
+      return rows.map((r) => ({
+        installId: r.install_id,
+        appId: r.app_id,
+        botName: r.bot_name,
+        leftAt: r.left_at,
+      }));
+    },
+
+    async forgetLeftoverApp(installId) {
+      await db.deleteFrom(LEFTOVER_APPS).where('install_id', '=', installId).execute();
     },
   };
 }
