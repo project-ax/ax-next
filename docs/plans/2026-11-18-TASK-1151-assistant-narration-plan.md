@@ -12,7 +12,7 @@
 
 ## Changed after review
 
-Two whole-branch reviews changed the rule and the cleanup after this plan was written. The interface and the program contract below are updated in place. Where a task step disagrees with the code, the code and the shard's review rows win.
+Four whole-branch reviews changed the rule and the cleanup after this plan was written. The interface and the program contract below are updated in place. Where a task step disagrees with the code, the code and the shard's review rows win.
 
 - **First review** (the shard's "Review fix" rows):
   - `routine` counts only as the verb's bare object.
@@ -26,6 +26,10 @@ Two whole-branch reviews changed the rule and the cleanup after this plan was wr
   - Only `has_`/`had_`/`have_` skip the capability object check. "It" and a plain "can" no longer mark the assistant.
   - An apply runs FTS5's integrity check before COMMIT.
   - The big-store timing bound is 6 s.
+- **Third and fourth reviews** (the shard's round-2 and round-3 rows):
+  - `chart(s)`, `graph(s)`, `page(s)` and `diagram(s)` count only bare, like `routine`.
+  - A passive ("cannot be combined") never marks the assistant's own limit, and "does not have" counts only before the same access words as "has no".
+  - The integrity check maps only SQLITE_CORRUPT to `fts-integrity-check-failed`. Any other failure during it prints SQLite's own generic reason.
 
 ## Global Constraints
 
@@ -342,7 +346,7 @@ git commit -m "[TASK-1151] Memory: drop the assistant's narration of its own act
   - **Exit codes:**
     - `0`: done.
     - `2`: refused, nothing changed.
-    - `1`: error, nothing changed. stderr gets one line: `narration-cleanup: failed: <err.errstr ?? err.code ?? 'unknown error'>`. Never `err.message`. After review, an apply also runs FTS5's `integrity-check` before COMMIT, and a failure is the fixed reason `fts-integrity-check-failed`.
+    - `1`: error, nothing changed. stderr gets one line: `narration-cleanup: failed: <err.errstr ?? err.code ?? 'unknown error'>`. Never `err.message`. After review, an apply also runs FTS5's `integrity-check` before COMMIT, and a SQLITE_CORRUPT failure is the fixed reason `fts-integrity-check-failed` (any other error during it prints SQLite's generic reason).
 
 - [ ] **Step 1: Write the failing test `narration-cleanup.test.ts`.**
 
