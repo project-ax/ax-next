@@ -248,6 +248,18 @@ export interface ChatOrchestratorConfig {
   idleWindowMs?: number;
   /** Grace after the cancel before a force handle.kill() (ms). Default 10 s. */
   idleGraceMs?: number;
+  /**
+   * TASK-1150 — the longest the idle reaper holds a warm session, in total,
+   * because the conversation's row binds a request to it (ms). The clock
+   * starts at the first hold, and starts over when a turn starts or ends on
+   * the session. Past it the session is reaped anyway
+   * (`keepalive_reap_hold_expired`): the host can't tell a running decision
+   * continuation from a stale binding (a refused turn, a wake-up that never
+   * ran, a failed compare-clear). Default 15 min, the cap channel-slack puts
+   * on one reply, a woken continuation's included. A finite number ≥ 0
+   * (0 never holds); anything else is refused at init.
+   */
+  reapHoldMaxMs?: number;
   /** System/built-in skills materialized into every session at LOWEST precedence
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
@@ -1417,6 +1429,20 @@ function validAugmentDeadline(value: number): number {
 }
 
 /**
+ * TASK-1150 — the idle reaper's hold bound must be finite: `Infinity` (or
+ * NaN) would hold a session for as long as a stale binding lasts, the very
+ * fail-open the bound closes. Refused at boot.
+ */
+function validReapHoldMax(value: number): number {
+  if (Number.isFinite(value) && value >= 0) return value;
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    message: `reapHoldMaxMs must be a finite number of 0 or more (got ${value})`,
+  });
+}
+
+/**
  * Fail at boot, not on every turn: an invalid bound would make each bounded
  * fire reject (HookBus.fire validates it), so catch it here.
  */
@@ -2209,6 +2235,7 @@ export function createOrchestrator(
   const keepAlive = config.keepAlive ?? false;
   const idleWindowMs = config.idleWindowMs ?? 5 * 60 * 1000;
   const idleGraceMs = config.idleGraceMs ?? 10 * 1000;
+  const reapHoldMaxMs = validReapHoldMax(config.reapHoldMaxMs ?? 15 * 60 * 1000);
   // Sessions that have already been cancelled — prevents a second
   // chat:turn-end (from a misbehaving runner) from queueing a duplicate
   // cancel entry.
@@ -2223,9 +2250,11 @@ export function createOrchestrator(
   // it with session:queue-work, so nothing clears the timer its held turn
   // armed. Before it reaps, the timer reads the conversation's row, and while
   // the row binds a request to this session (`activeSessionId` is this
-  // session and `activeReqId` is set) it re-arms a full window instead. No
-  // conversation, no conversations:get, or a read that fails: it reaps, as
-  // before.
+  // session and `activeReqId` is set) it re-arms instead. No conversation, no
+  // conversations:get, or a read that fails: it reaps, as before. The hold is
+  // bounded: `reapHoldMaxMs` (15 min) in total, counted from the first hold
+  // since a turn last started or ended there. The host can't tell a running
+  // continuation from a stale binding, so past the bound it reaps anyway.
   interface WarmEntry {
     handle: OpenSessionHandle;
     // The agent this runner serves (`ctx.agentId` at spawn). `agents:deleted`
@@ -2249,6 +2278,16 @@ export function createOrchestrator(
     // TASK-1150 — the armed idle timer reaps without reading the row
     // (armReapTimer's `force`).
     reapForced: boolean;
+    // TASK-1150 — true while the reap reads the row. Both timers are null
+    // then, but no routed turn runs: `connectors:deleted` closes the proxy
+    // session at once, as for an armed timer. clearReapTimers clears it with
+    // the read it drops.
+    reapReading: boolean;
+    // TASK-1150 — when the row first held this session's reap since a turn
+    // last started or ended there (`performance.now()`), or null. The hold
+    // ends `reapHoldMaxMs` after it. Only a turn resets it (resetReapHold):
+    // the reaper's own re-arm keeps it.
+    heldSince: number | null;
   }
   const warmSessions = new Map<string, WarmEntry>();
   function clearReapTimers(sessionId: string): void {
@@ -2256,14 +2295,22 @@ export function createOrchestrator(
     if (entry === undefined) return;
     // Also drops a reap still reading the row (both timers are null then).
     entry.reapGen += 1;
+    entry.reapReading = false;
     if (entry.idleTimer !== null) { clearTimeout(entry.idleTimer); entry.idleTimer = null; }
     if (entry.graceTimer !== null) { clearTimeout(entry.graceTimer); entry.graceTimer = null; }
   }
 
+  // TASK-1150 — a turn started or ended on the session: a hold after this one
+  // counts from its own start. Called by the routed path and onTurnEnd only.
+  function resetReapHold(sessionId: string): void {
+    const entry = warmSessions.get(sessionId);
+    if (entry !== undefined) entry.heldSince = null;
+  }
+
   // Arms the idle reap `delayMs` from now. When it fires it reads the row and
-  // holds off while a turn is bound there (reapUnlessTurnRunning), unless
-  // `force` is set: then it reaps without asking (the deleted-connector reap at
-  // a turn end, see onTurnEnd).
+  // holds off while a turn is bound there, for `reapHoldMaxMs` at most
+  // (reapUnlessTurnRunning), unless `force` is set: then it reaps without
+  // asking (the deleted-connector reap at a turn end, see onTurnEnd).
   function armReapTimer(
     ctx: AgentContext,
     delayMs: number = idleWindowMs,
@@ -2293,7 +2340,9 @@ export function createOrchestrator(
 
   // The reap: a graceful cancel, then a kill after `idleGraceMs`. A session
   // holding a since-deleted connector loses its proxy session first (TASK-833,
-  // TASK-877): from the reap on, nothing it runs may use the deleted key.
+  // TASK-877): from the reap on, nothing it runs may use the deleted key. (If
+  // no routed turn ran there at the delete, the delete closed it already,
+  // TASK-1150; the close is idempotent.)
   function reapNow(ctx: AgentContext, sessionId: string, entry: WarmEntry): void {
     if (connectorDeletedSessions.has(sessionId)) closeProxyForDeletedConnector(ctx, sessionId);
     // Graceful first: queue a cancel so a HEALTHY runner drains and emits
@@ -2345,18 +2394,23 @@ export function createOrchestrator(
   }
 
   // TASK-1150 — the idle reap, unless a turn is bound to the session. Then it
-  // re-arms a full window (never 0, which would spin on the read): the session
-  // is checked again then, or reaped from the bound turn's own turn end. Both
-  // timers are null while the read runs, so whatever cleared them meanwhile (a
-  // turn routed in, a re-arm, an agent delete) or an exit owns the session
-  // now, and this reap is dropped. A read that throws is logged and the
-  // session reaped, as before the check existed. Never throws.
+  // re-arms a full window, or only what is left of the hold when that is
+  // shorter (never 0, which would spin on the read): the session is checked
+  // again then, or reaped from the bound turn's own turn end. The hold lasts
+  // `reapHoldMaxMs` from the first one (`heldSince`); past it the session is
+  // reaped anyway (`keepalive_reap_hold_expired`), because a binding nothing
+  // will clear looks just like a running continuation. Both timers are null
+  // while the read runs (`reapReading` says so), so whatever cleared them
+  // meanwhile (a turn routed in, a re-arm, an agent delete) or an exit owns
+  // the session now, and this reap is dropped. A read that throws is logged
+  // and the session reaped, as before the check existed. Never throws.
   async function reapUnlessTurnRunning(
     ctx: AgentContext,
     sessionId: string,
     entry: WarmEntry,
   ): Promise<void> {
     const gen = entry.reapGen;
+    entry.reapReading = true;
     let running = false;
     try {
       running = await turnBoundTo(ctx, sessionId, entry);
@@ -2367,10 +2421,17 @@ export function createOrchestrator(
       });
     }
     if (entry.reapGen !== gen || warmSessions.get(sessionId) !== entry) return;
+    entry.reapReading = false;
     if (running) {
-      ctx.logger.info('keepalive_reap_deferred', { sessionId });
-      armReapTimer(ctx, idleWindowMs);
-      return;
+      const now = performance.now();
+      entry.heldSince ??= now;
+      const holdLeftMs = entry.heldSince + reapHoldMaxMs - now;
+      if (holdLeftMs > 0) {
+        ctx.logger.info('keepalive_reap_deferred', { sessionId });
+        armReapTimer(ctx, Math.min(idleWindowMs, holdLeftMs));
+        return;
+      }
+      ctx.logger.warn('keepalive_reap_hold_expired', { sessionId });
     }
     reapNow(ctx, sessionId, entry);
   }
@@ -2612,13 +2673,15 @@ export function createOrchestrator(
   // TASK-833 — sessions that folded a connector which has since been DELETED
   // (`connectors:deleted`). The delete purged the connector's stored key, but a
   // live credential-proxy session keeps the value it resolved at open and goes
-  // on substituting it until the session closes. So a marked session is reaped
-  // the moment it is idle (now, or as soon as its in-flight turn ends) — its
-  // proxy session is closed right then (TASK-877: directly, not only when the
-  // runner exits) and the runner is cancelled / killed — and if a message
-  // beats the reaper it is retired at routing instead. Same lifetime +
-  // single-replica posture as `rotationFailedSessions`; the fingerprint compare
-  // above is the replica-independent backstop.
+  // on substituting it until the session closes. So a marked session loses its
+  // proxy session (TASK-877: directly, not only when the runner exits) at the
+  // delete when no routed turn runs there (see onConnectorDeleted), or as soon
+  // as the routed turn running there ends. It is reaped (the runner cancelled
+  // / killed) once it is idle: at once, after that routed turn, or
+  // (TASK-1150) once a continuation the row binds ends or the reaper's hold
+  // runs out. If a message beats the reaper it is retired at routing instead.
+  // Same lifetime + single-replica posture as `rotationFailedSessions`; the
+  // fingerprint compare above is the replica-independent backstop.
   const connectorDeletedSessions = new Set<string>();
 
   /** Order-insensitive key for the agent row's connector selection. */
@@ -2686,10 +2749,14 @@ export function createOrchestrator(
   // is reaped, not when its runner finally exits. The reap is a graceful cancel
   // and then a kill after `idleGraceMs`; the exit watcher's proxy close waits on
   // `handle.exited`, so the deleted connector's key stayed injectable for the
-  // whole window — and indefinitely if the kill never landed. Called only as
-  // a session is reaped (`reapNow`) or for one already in its reap's grace
-  // window, so nothing it is doing needs the proxy; a runner that wakes anyway
-  // reaches upstream without credentials.
+  // whole window — and indefinitely if the kill never landed. Called as a
+  // session is reaped (`reapNow`), and by `connectors:deleted` for every
+  // session not running a routed turn: its reap armed, under way or reading
+  // the row. That includes a running decision continuation (TASK-1150): the
+  // host can't tell one from a stale binding, so it gets no grace with the
+  // deleted key and its calls fail upstream from then on. A runner that wakes
+  // anyway reaches upstream without credentials. Never called for a routed
+  // turn still running: that one keeps the key until it ends (TASK-833).
   // Idempotent in credential-proxy, so the exit watcher's later close (and a
   // routing retire's) is a no-op. Fire-and-forget; never throws.
   function closeProxyForDeletedConnector(ctx: AgentContext, sessionId: string): void {
@@ -2748,14 +2815,19 @@ export function createOrchestrator(
 
   // TASK-833 — `connectors:deleted` (fired by @ax/connectors after the row is
   // gone and its stored key purged). Marks every session that folded that
-  // connector, and reaps the idle ones now — the reap closes their proxy
-  // sessions first (TASK-877). A session mid-turn is not interrupted:
-  // `onTurnEnd` reaps it (and closes its proxy session) as soon as the turn
-  // ends. A running decision continuation counts as mid-turn (TASK-1150): it
-  // has the reaper armed, like an idle session, but the reap reads the
-  // conversation's row first and holds off while the row binds a request to
-  // the session. So it keeps the session, and its proxy session, until it
-  // ends, as a routed turn does.
+  // connector. A session not running a routed turn (its reap armed, under way
+  // or reading the row) has its proxy session closed now (TASK-877), and an
+  // armed one is reaped now too. A routed turn is not interrupted and keeps
+  // the key: `onTurnEnd` closes its proxy session and reaps it as soon as the
+  // turn ends (TASK-833).
+  //
+  // TASK-1150 — a running decision continuation has the reaper armed, like an
+  // idle session. The reap reads the conversation's row first and holds off
+  // while the row binds a request to the session, so the continuation isn't
+  // cancelled or killed until it ends (or the hold runs out). But the host
+  // can't tell it from a stale binding, so it gets no grace with the deleted
+  // key: its proxy session (every credential it had) is closed at once, and
+  // its calls fail upstream from then on.
   //
   // Connector ids are not unique across owners, so the event's tool namespaces
   // (derived from the row OWNER) must match what the session was handed. A
@@ -2786,17 +2858,21 @@ export function createOrchestrator(
       connectorDeletedSessions.add(sessionId);
       marked += 1;
       const entry = warmSessions.get(sessionId);
-      // A grace timer already running means a reap is under way: the session
-      // is idle, so its proxy session is closed now (TASK-877).
-      if (entry !== undefined && entry.graceTimer !== null) {
+      // Not running a routed turn: the reaper is armed (a turn ended and none
+      // has started since, or a decision continuation runs, TASK-1150), a reap
+      // is under way (grace timer), or the reaper is reading the row (neither
+      // timer set). A routed turn clears all three until it ends. Closed now
+      // (TASK-877); the reap's own close (reapNow) is then a no-op.
+      if (
+        entry !== undefined &&
+        (entry.idleTimer !== null || entry.graceTimer !== null || entry.reapReading)
+      ) {
         closeProxyForDeletedConnector(ctx, sessionId);
       }
-      // The reaper armed means a turn ended and none has started since, or
-      // (TASK-1150) a decision continuation is running: nothing clears the
-      // timer for one. So the reap runs now, through the row check, and closes
-      // the proxy session itself (reapNow). `reaped` counts the sessions sent
-      // to a reap; one may still hold. A delete that lands while the reaper is
-      // still reading the row (neither timer set) is closed by that reap too.
+      // An armed reaper: the reap runs now, through the row check, so a
+      // continuation the row binds is not cancelled yet. `reaped` counts the
+      // sessions sent to a reap; one may still hold. A reap already reading
+      // the row decides for itself.
       if (entry !== undefined && entry.idleTimer !== null) {
         armReapTimer({ ...ctx, sessionId }, 0);
         reaped += 1;
@@ -3457,13 +3533,17 @@ export function createOrchestrator(
 
       // Turn starting on a warm session: cancel any pending idle reap,
       // including one still reading the conversation's row (TASK-1150: the
-      // generation bump drops it when its read returns). It is re-armed on
-      // this turn's chat:turn-end. (Narrow race: if the idle timer already
-      // fired and queued a cancel during its grace window, that cancel is in
-      // the inbox FIFO ahead of this message; the runner exits, this turn
-      // resolves terminated, and the next turn re-spawns fresh. Accepted for
-      // the simplest single-user slice.)
-      if (keepAlive) clearReapTimers(sessionId);
+      // generation bump drops it when its read returns), and start the row
+      // check's hold over. It is re-armed on this turn's chat:turn-end.
+      // (Narrow race: if the idle timer already fired and queued a cancel
+      // during its grace window, that cancel is in the inbox FIFO ahead of
+      // this message; the runner exits, this turn resolves terminated, and the
+      // next turn re-spawns fresh. Accepted for the simplest single-user
+      // slice.)
+      if (keepAlive) {
+        clearReapTimers(sessionId);
+        resetReapHold(sessionId);
+      }
 
       // (1) Bind reqId on the conversation row. ctx.conversationId is
       //     known non-undefined here because we entered this branch.
@@ -4728,6 +4808,7 @@ export function createOrchestrator(
           handle, agentId: ctx.agentId, proxyOpened, idleTimer: null, graceTimer: null,
           // TASK-1150 — what the reaper reads the row with (see WarmEntry).
           conversationId: ctx.conversationId, userId: ctx.userId, reapGen: 0, reapForced: false,
+          reapReading: false, heldSince: null,
         });
         proxyCloseDeferredToHandle = proxyOpened;
         const warmCtx = ctx;
@@ -5123,6 +5204,9 @@ export function createOrchestrator(
       // Idempotent across the two turn-ends one user message emits.
       resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
       resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
+      // TASK-1150 — a turn ended here: a hold the reaper starts after this one
+      // counts from its own start (`reapHoldMaxMs`).
+      resetReapHold(ctx.sessionId);
       // TASK-833 — a session holding a since-deleted connector is reaped now.
       // The reap closes its proxy session first (TASK-877), rather than on
       // runner exit. It is forced (TASK-1150): it doesn't read the row, so a

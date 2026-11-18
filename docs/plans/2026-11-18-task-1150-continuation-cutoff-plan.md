@@ -10,7 +10,7 @@
 - **F2:** channel-web's resume after Connect waits for a reply that is still running instead of replacing it.
 
 **Architecture:** Three packages. No hook signature changes; one manifest change.
-- `@ax/chat-orchestrator` (Tasks 1–2): each warm session remembers the conversation and user it was opened for. The reaper reads that conversation's row before it reaps, and holds off while the row binds a request to the session. A grant whose row read fails marks that conversation's warm sessions.
+- `@ax/chat-orchestrator` (Tasks 1–2): each warm session remembers the conversation and user it was opened for. The reaper reads that conversation's row before it reaps, and holds off while the row binds a request to the session, for 15 minutes at most (Task 1b). A grant whose row read fails marks that conversation's warm sessions.
 - `@ax/channel-slack` (Task 3): the Allow binds the continuation's reqId (`conversations:get`, then `conversations:bind-session`, a new optional call).
 - `@ax/channel-web` (Task 4): `resumeParkedTurn` follows the conversation's live reply (`liveReqId`) to its end, up to 60 s, before re-sending. Past that it sends nothing, and the row says so.
 
@@ -45,16 +45,17 @@
 - **F3: a turn is running when the conversation's row binds a request to this session.**
   - `WarmEntry` gains `conversationId: string | undefined`, `userId: string` (the spawning ctx's, fixed for the session's life) and `reapGen: number`.
   - Before it reaps, the timer reads `conversations:get({ conversationId, userId })` using the entry's two fields. A turn is running when `row.activeSessionId === sessionId && typeof row.activeReqId === 'string' && row.activeReqId.length > 0`.
-    - Running: log `keepalive_reap_deferred {sessionId}` and re-arm a full `idleWindowMs`, never 0.
+    - Running: log `keepalive_reap_deferred {sessionId}` and re-arm a full `idleWindowMs`, or only what is left of the hold when that is shorter (Task 1b); never 0.
+    - Past the hold's bound (Task 1b): warn `keepalive_reap_hold_expired {sessionId}`, then reap.
     - Not running, no conversation on the entry, or no `conversations:get` on the bus: reap as today.
     - A read that throws: warn `keepalive_reap_check_failed {sessionId, err}`, then reap as today.
   - `clearReapTimers` bumps `reapGen`. The reap snapshots it before the read. It is dropped if the counter changed, or if the entry is gone (`warmSessions.get(sessionId) !== entry`): a turn that started, a re-arm, an agent delete or an exit owns the session now.
   - `onConnectorDeleted`: a session whose idle timer is armed goes through the same check (`armReapTimer({ ...ctx, sessionId }, 0)`).
-    - The proxy close moves into the reap itself: `reapNow` first closes the proxy session when `connectorDeletedSessions` has the session. So a running continuation keeps its proxy session until it ends, as TASK-833 lets a routed turn.
-    - The grace-timer branch keeps its direct close.
+    - Its proxy session is closed at once, as before TASK-1150, whenever no routed turn runs there: idle timer armed, grace timer armed, or the reaper's row read in flight (Task 1b; Task 1 first moved this close into the reap, which let a continuation keep its proxy session until it ended). `reapNow` closes too (idempotent), for the turn-end reap.
+    - So a running continuation loses its proxy session (every credential it had) at the delete, and its calls fail upstream; it is not cancelled or killed until it ends. Only a routed turn keeps the key until it ends (TASK-833).
   - The deleted-connector reap at a turn end (in `onTurnEnd`) skips the check: `armReapTimer(ctx, 0, { force: true })`, as today. Its direct close goes, because `reapNow` closes.
-    - This keeps TASK-833's bound: the key stays usable until the end of the turn running at the delete, and never into a turn that starts after it.
-  - Stale bindings hold a session until the binding clears, or until the runner's own 15-minute inbox floor ends it (`agent-runner-core/src/inbox-loop.ts:40-42`, `run-runner.ts:1055-1063`). Examples: a refused turn (TASK-1063), a wake-up that never ran, a failed compare-clear. Accepted; see the decisions shard.
+    - This keeps TASK-833's bound: the key stays usable until the end of the routed turn running at the delete, and never into a turn that starts after it.
+  - **The hold is bounded (Task 1b):** `reapHoldMaxMs` (orchestrator config, default 15 min, the cap channel-slack puts on a woken continuation's reply) in total, counted from the first hold (`WarmEntry.heldSince`) and started over when a turn starts or ends on the session (the routed path's clear, `onTurnEnd`), never by the reaper's own re-arm. The host can't tell a running continuation from a stale binding (a refused turn, TASK-1063; a wake-up that never ran; a failed compare-clear), so past the bound the session is reaped anyway. A cooperative runner usually exits first, at its own 15-minute inbox floor (`agent-runner-core/src/inbox-loop.ts:40-42`, `run-runner.ts:1055-1063`); the bound is the host-side guarantee. See the decisions shard.
 - **Minor 1: a failed read marks the conversation's warm sessions.**
   - `activeAliveSession` answers `'lookup-failed'` from its catch. Its other `null`s stay.
   - `retireOrMarkForSkillGrant` then marks every warm session with `entry.conversationId === conversationId && entry.userId === userId`, skipping any already marked. It logs `skill_grant_restart_deferred {sessionId}` for each one it marks.
@@ -75,10 +76,10 @@
 
 - No hook, payload or IPC change, so no boundary review (only existing hooks are used). Say so in the PR body.
 - One manifest change: channel-slack's `optionalCalls` gains `conversations:bind-session`. Pin it in BOTH `packages/channel-slack/src/__tests__/plugin.test.ts:547-610` and `presets/k8s/src/__tests__/preset.test.ts:1287-1356`.
-- Tasks 1, 2 and 3 each get a security-checklist walk, and each appends its row to `.claude/memory/decisions/2026-11-18-TASK-1150.md`.
+- Tasks 1, 1b, 2 and 3 each get a security-checklist walk, and each appends its row to `.claude/memory/decisions/2026-11-18-TASK-1150.md`.
 - The orchestrator's new reads use host-written values only: the entry's spawn-time `conversationId` and `userId`, and the conversation row. Nothing a runner sends.
 - New state stays in memory, single-replica, and bounded by the warm-session map.
-- Log names, exactly: `keepalive_reap_deferred` (info), `keepalive_reap_check_failed` (warn), `skill_grant_restart_deferred` (existing), and `slack_prompt_failed` with stage `bind`.
+- Log names, exactly: `keepalive_reap_deferred` (info), `keepalive_reap_check_failed` (warn), `keepalive_reap_hold_expired` (warn, Task 1b), `skill_grant_restart_deferred` (existing), and `slack_prompt_failed` with stage `bind`.
 - Commands put `--filter` before the script: `pnpm --filter @ax/chat-orchestrator test`. For one file: `pnpm --filter @ax/chat-orchestrator exec vitest run src/__tests__/keepalive.test.ts -t "<name>"`. Same shape for `@ax/channel-slack`, `@ax/channel-web` and `@ax/preset-k8s`.
 - `tsc` excludes `__tests__` in chat-orchestrator and channel-slack, so their `build` checks only product code. channel-web's `tsc --build` DOES type-check its tests: run `pnpm --filter @ax/channel-web build`.
 - `packages/channel-slack/src/__tests__/plugin.test.ts` starts Postgres in its top-level `beforeAll` (`:354-355`). Set `DOCKER_HOST` before running even its manifest pin (CLAUDE.md, "Docker-backed tests").
@@ -95,10 +96,11 @@
 ## Review Focus
 
 1. **A turn that starts while the reaper is still reading the row** must not get a `cancel` queued under it. Pinned by Task 1, test K5.
-2. **A continuation bound when a connector is deleted** keeps its proxy session until it ends. A continuation bound while a deleted-connector turn is ending doesn't hold that turn's reap. Pinned by Task 1, K6 and K7.
+2. **A continuation bound when a connector is deleted** loses its proxy session at once, but isn't cancelled until it ends; so does a session whose reaper is reading the row, while a turn routed in during that read keeps its key until it ends. A continuation bound while a deleted-connector turn is ending doesn't hold that turn's reap. Pinned by K6, K11, K12 (Task 1b) and K7.
 3. **A failed read must fail toward today's reap**, never toward holding the session. Pinned by Task 1, K4.
 4. **A Slack Allow whose conversation has no live session any more** reads the row and binds nothing. Pinned by Task 3, S3.
 5. **The web's wait on a reply whose binding is stale** sits on keepalives. The 60 s bound ends it: the busy sentence shows and nothing is re-sent. Pinned by Task 4, W3 and W6.
+6. **A binding nothing clears holds a session for `reapHoldMaxMs` at most**, and only a real turn starts that clock over. Pinned by Task 1b, K9 and K10.
 
 ## Files
 
@@ -107,6 +109,7 @@
 | `packages/chat-orchestrator/src/orchestrator.ts` | `WarmEntry` `:2217-2230`; `clearReapTimers`/`armReapTimer` `:2232-2271`, plus new `reapNow`, `reapUnlessTurnRunning`, `turnBoundTo`; `onConnectorDeleted` `:2618-2666`; comment on the routed path's clear `:3316-3322`; `warmSessions.set` `:4583-4585`; `onTurnEnd`'s keepAlive branch `:4970-4987` | 1 |
 | `packages/chat-orchestrator/src/plugin.ts` | comment on the conditionally-called peers `:142-169` | 1 |
 | `packages/chat-orchestrator/src/__tests__/keepalive.test.ts` | new describe (K1, K2, K4, K5); TASK-833 `setup` row gains `activeReqId`; K6, K7 | 1 |
+| `packages/chat-orchestrator/src/orchestrator.ts`, `plugin.ts`, `__tests__/keepalive.test.ts` | `reapHoldMaxMs` config + boot check; `WarmEntry.heldSince`/`reapReading`; `resetReapHold`; the bound in `reapUnlessTurnRunning`; `onConnectorDeleted`'s close; K6 changed, K9–K12, config rejects | 1b |
 | `packages/chat-orchestrator/src/orchestrator.ts` | `retireOrMarkForSkillGrant` `:5189-5242`; `activeAliveSession` `:5244-5279`; new `markWarmSessionsOf`; comment on the routed end mark `:3453-3455` | 2 |
 | `packages/chat-orchestrator/src/__tests__/skill-grant-running-turn.test.ts` | `grant()` takes an optional userId; G1, G2, G3 | 2 |
 | `packages/channel-slack/src/decision-answer.ts` | header `:15-26`; Allow branch `:350-363`; `startBinding` beside `startFollowing` `:379-394` | 3 |
@@ -127,6 +130,8 @@
 ---
 
 ### Task 1: The idle reaper holds off while the conversation binds a request to the session [tier: sensitive]
+
+> **Superseded in part by Task 1b** (a review finding, built after Task 1): the hold below has no bound, and `onConnectorDeleted`'s idle branch only arms, so K6 expected a running continuation to keep its proxy session. Task 1b bounds the hold and closes the proxy session at the delete again; K6's expectation changed with it. The steps below are kept as Task 1 was built.
 
 Needs the **security-checklist** walk (Step 6).
 
@@ -306,6 +311,14 @@ Needs the **security-checklist** walk (Step 6).
   - **Supply chain:** no dependency change.
 
 - [ ] **Step 7: Commit** — `[TASK-1150] chat-orchestrator: the idle reaper holds off while a continuation runs`
+
+### Task 1b: The hold is bounded, and a continuation the host can't verify gets no grace with a deleted key [tier: sensitive]
+
+A security review of Task 1 (MEDIUM, fail-open): the deferral re-armed a full window every time the row looked bound, with no bound, and the host can't tell a live continuation from a stale binding (the "F3 residual" row). So a connector-deleted session with a stale binding kept the deleted key until its runner exited on its own (TASK-877 removed exactly that dependence), and any stale binding lost the host-side kill. Needs the **security-checklist** walk.
+
+- **Bound the hold.** New config `reapHoldMaxMs` (default 15 min; a finite number ≥ 0, else refused at init). `WarmEntry.heldSince` is set at the first hold, reset by `resetReapHold` from the routed path's clear and from `onTurnEnd` (a real turn), never by the reaper's own re-arm. A hold re-arms `min(idleWindowMs, what is left)`; past the bound: warn `keepalive_reap_hold_expired {sessionId}`, then `reapNow`.
+- **No credential grace at a delete.** `onConnectorDeleted` closes the proxy session at once for every session not running a routed turn: idle timer armed, grace timer armed, or `WarmEntry.reapReading` (set before the reaper's row read, cleared after it and by `clearReapTimers`). The reap still goes through the row check, so a running continuation isn't cancelled until it ends; it loses its proxy session (every credential it had) and its calls fail upstream. A routed turn keeps TASK-833's bound. `reapNow`'s close stays (idempotent).
+- **Tests** (`keepalive.test.ts`): K6 changed (closed at the delete, before any reap; no cancel or kill until the continuation's turn end). New: K9 (a binding that never clears is reaped exactly at the bound, logs `keepalive_reap_hold_expired`), K10 (a turn end starts the hold over), K11 (a delete during the reaper's row read closes at once), K12 (a turn routed in during that read keeps its key through a delete until it ends), and `reapHoldMaxMs` = Infinity, NaN, −1 refused at init.
 
 ### Task 2: A grant whose row read fails still restarts the conversation's session [tier: sensitive]
 
@@ -685,12 +698,14 @@ No security-checklist. This is client-side only: the same reads and POST as toda
     off, and the cap's stop reaches it. A wake-up that never runs (refused,
     say) leaves its request bound until the next message or the session's
     end, so the reaper holds that idle session until the runner's own
-    15-minute idle floor ends it.
+    15-minute idle floor ends it, and for 15 minutes at most: the host can't
+    tell that binding from a running continuation, so past that it reaps the
+    session anyway.
   ```
 
 - [ ] **Step 3: Architecture doc** (`docs/plans/2026-05-24-current-architecture.md:232-234`)
 
-  After "…and a per-session idle reaper (graceful cancel → force kill) collects it later." add: "It holds off while the conversation's row binds a request to that session (`active_req_id`): a decision continuation runs without an `agent:invoke`, and that binding is how the host sees it (TASK-1150)."
+  After "…and a per-session idle reaper (graceful cancel → force kill) collects it later." add: "It holds off while the conversation's row binds a request to that session (`active_req_id`), for 15 minutes at most (`reapHoldMaxMs`): a decision continuation runs without an `agent:invoke`, and that binding is how the host sees it (TASK-1150)."
 
 - [ ] **Step 4: Changesets**
 
@@ -708,7 +723,8 @@ No security-checklist. This is client-side only: the same reads and POST as toda
 
   - In the web app, clicking Connect while the agent is still answering now lets that answer finish first. Then your message goes again, with the new connection in place. If the agent is still busy a minute later, we leave it be and tell you to send it a message once it's done.
   - In Slack, the reply the agent writes after you Allow one of its requests is now tracked like any other reply. Allowing a skill while it runs lets it finish (your next message gets the skill), and the 15-minute limit can actually stop it now.
-  - A sandbox that's been quiet for five minutes is no longer shut down while the agent is still working on something you approved. Deleting a connector waits for that work to finish too, the same as it does for a normal reply.
+  - A sandbox that's been quiet for five minutes is no longer shut down while the agent is still working on something you approved. That work gets up to 15 more minutes: we can't always tell it apart from a leftover, so we don't wait forever.
+  - Deleting a connector still takes its key away right away, even from work like that. Same reason: we'd rather that work's next calls fail than keep a key you deleted. A normal reply that's mid-answer keeps it until it's done, as before.
   - If AX can't read the conversation for a moment while you allow a skill, your next message still gets it.
   ```
 
@@ -719,7 +735,7 @@ No security-checklist. This is client-side only: the same reads and POST as toda
   # TASK-1150 — continuations, the idle reaper and the web's resume (context)
 
   - 2026-11-18 — **Both channels now bind a decision continuation's reqId at approve time.** channel-slack's Allow (`decision-answer.ts` `startBinding`, once `decisions:approve` hands the approval to the agent under the minted id) reads `conversations:get` and calls `conversations:bind-session`, as channel-web's `bindContinuationTurn` does. @ax/conversations compare-clears it on the continuation's own `chat:turn-end`. CORRECTS `context/2026-11-17-TASK-1127.md`, row "The host can't see a decision continuation" ("channel-slack doesn't. `sessionBusy` and the idle reaper are both blind to it"): the grant's busy check, the idle reaper and `agent:interrupt` all see a bound continuation now. Nothing clears a continuation that never starts (a refused wake-up): it stays bound until the next turn binds or the session ends, on both channels.
-  - 2026-11-18 — **The idle reaper holds off while the conversation binds a request to the session.** Before it reaps, it reads the row (`conversations:get`, with the conversation and user kept on the session's `WarmEntry`), and re-arms a full window while `activeSessionId` is that session and `activeReqId` is set (log `keepalive_reap_deferred`). A failed read reaps as before (`keepalive_reap_check_failed`). A generation counter drops a reap whose read was overtaken by a turn start. `connectors:deleted` sends an idle-looking session through the same check, and its proxy close moved into the reap. The deleted-connector reap at a turn end is forced (TASK-833's bound). A stale binding holds an idle session until the runner's own 15-minute inbox floor ends it.
+  - 2026-11-18 — **The idle reaper holds off while the conversation binds a request to the session.** Before it reaps, it reads the row (`conversations:get`, with the conversation and user kept on the session's `WarmEntry`), and re-arms while `activeSessionId` is that session and `activeReqId` is set (log `keepalive_reap_deferred`), for `reapHoldMaxMs` (15 min) in total at most, counted from the first hold and started over only by a turn starting or ending there; past it, it reaps anyway (`keepalive_reap_hold_expired`). A failed read reaps as before (`keepalive_reap_check_failed`). A generation counter drops a reap whose read was overtaken by a turn start. `connectors:deleted` closes the proxy session at once for every session not running a routed turn (reaper armed, grace under way, or the reaper's row read in flight), a running continuation included, and sends an armed one through the same check for the reap. The deleted-connector reap at a turn end is forced (TASK-833's bound). A stale binding holds an idle session until the runner's own 15-minute inbox floor ends it, or the hold's bound does.
   - 2026-11-18 — **The web's resume after Connect waits for a reply that is still running** (`workspace-resume.ts`, `RESUME_WAIT_MS` 60 s, following the detail's `liveReqId` stream). Past the wait it sends nothing, and the row says `GRANT_NOT_RESUMED_BUSY`. CORRECTS `context/2026-11-17-TASK-1127.md`, row 2's "That's how the web's re-POST supersedes a running turn": it no longer does. The routing still retires a busy marked session under a running turn, for a second tab or a Slack message after its reply's grace period or cap.
   - 2026-11-18 — **A skill grant whose row read fails marks the conversation's warm sessions** (those this host opened for that conversation and user), so the next turn restarts with the skill. Before, it did nothing unless a turn was in flight (TASK-1127 review round 2, Minor 1).
   ```
@@ -737,9 +753,9 @@ No security-checklist. This is client-side only: the same reads and POST as toda
 ## For the PR body
 
 - **No hook-surface change.** One manifest change: channel-slack's `optionalCalls` gains `conversations:bind-session` (pinned in channel-slack's plugin test and in the k8s preset test). No boundary review, since it's an existing hook.
-- **Security note:** from Tasks 1–3, in the decisions shard.
+- **Security note:** from Tasks 1, 1b, 2 and 3, in the decisions shard (Task 1b's row corrects Task 1's on the hold and the delete).
 - **Residuals:**
-  - A stale binding holds an idle session past 5 minutes. Causes: a refused turn, a wake-up that never ran, or a failed compare-clear. The runner's own 15-minute idle floor ends it.
+  - A stale binding holds an idle session past 5 minutes. Causes: a refused turn, a wake-up that never ran, or a failed compare-clear. The runner's own 15-minute idle floor normally ends it; the host reaps it anyway 15 minutes after its first hold (`reapHoldMaxMs`, Task 1b), and a deleted connector's key is gone from it at the delete.
   - A busy marked session is still retired under a running turn for a second tab, a Slack message after its reply's grace period or cap, or a message during a Slack continuation.
   - Slack's read-then-bind has the same millisecond race as channel-web's.
   - Answering a grant from Today while a later turn runs waits for that turn, then re-sends the last user text.
