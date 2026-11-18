@@ -1274,9 +1274,10 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       return holds[n - 1];
     };
     invokeScript = async (ctx) => {
-      // The runner's pre-call, on the real policy: request_capability is held. Then the held
+      // The runner's pre-call, on the real policy: connector_propose is held for whoever is there
+      // (an attended request_capability no longer is: its own card asks, TASK-1135). Then the held
       // result and the turn's end, the way the runners send them.
-      const call = { id: `toolu_held_${invokes.length}`, name: 'request_capability', input: { capability: 'calendar' } };
+      const call = { id: `toolu_held_${invokes.length}`, name: 'connector_propose', input: { connectorId: 'calendar' } };
       holds.push(await theBus!.fire('tool:pre-call', ctx, call));
       await theBus!.fire('chat:stream-chunk', ctx, {
         reqId: ctx.reqId,
@@ -1352,7 +1353,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const { installId, agentId } = await supportChannel();
     invokes.length = 0;
     invokeScript = async (ctx) => {
-      const call = { id: `toolu_held_${invokes.length}`, name: 'request_capability', input: { capability: invokes.length > 1 ? 'drive' : 'calendar' } };
+      // connector_propose and not request_capability: an attended request_capability is no
+      // longer held, since its own card asks (TASK-1135).
+      const call = { id: `toolu_held_${invokes.length}`, name: 'connector_propose', input: { connectorId: invokes.length > 1 ? 'drive' : 'calendar' } };
       await theBus!.fire('tool:pre-call', ctx, call);
       await theBus!.fire('chat:stream-chunk', ctx, {
         reqId: ctx.reqId,
@@ -1527,9 +1530,17 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     invokes.length = 0;
     addHostCalls.length = 0;
     grantCalls.length = 0;
-    // `request_capability`'s card, fired from inside the turn with the turn's own ctx.
+    // `request_capability`'s card, fired from inside the turn with the turn's own ctx, in the broker's
+    // shape: without `hosts` and `packages` Slack can't name its reach, and sends Mel to the web app (TASK-1135).
     invokeScript = turnFiring(() => [
-      { kind: 'skill', skillId: 'calendar-booking', description: 'Books meetings for you.', slots: [] },
+      {
+        kind: 'skill',
+        skillId: 'calendar-booking',
+        description: 'Books meetings for you.',
+        hosts: [],
+        slots: [],
+        packages: { npm: [], pypi: [] },
+      },
     ]);
     try {
       const melTs = nextTs();
@@ -1575,6 +1586,91 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       await invokedTurn(2);
       await channelTurnCalls(mark);
       await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
+      expect(grantCalls).toHaveLength(1);
+    } finally {
+      invokeScript = null;
+      await dropAgent(agentId);
+    }
+  });
+
+  it("a skill that reaches a connector: a member's request isn't held, its card is the one prompt and names the host, and Allow attaches it; an outsider's is still held for the owner's Today (TASK-1135)", async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    grantCalls.length = 0;
+    const verdicts: unknown[] = [];
+    // The `n`th turn's pre-call verdict, once it has one (the turn reaches agent:invoke before the
+    // real gate, which reads Postgres, has answered).
+    const verdictOf = async (n: number): Promise<unknown> => {
+      await vi.waitFor(() => expect(verdicts).toHaveLength(n), { timeout: 10_000 });
+      return verdicts[n - 1];
+    };
+    // `request_capability` on the real tool-policy and decisions. The broker isn't in this preset's
+    // KEEP, so the script fires its card the way the broker does, once the call wasn't held.
+    invokeScript = async (ctx) => {
+      const call = { id: `toolu_skill_${invokes.length}`, name: 'request_capability', input: { skillId: 'walk-weather-report' } };
+      const verdict = await theBus!.fire('tool:pre-call', ctx, call);
+      verdicts.push(verdict);
+      if (isHold(verdict)) {
+        await theBus!.fire('chat:stream-chunk', ctx, {
+          reqId: ctx.reqId,
+          kind: 'tool-result',
+          held: true,
+          toolCallId: call.id,
+          output: 'held',
+        });
+      } else {
+        await theBus!.fire('chat:stream-chunk', ctx, { reqId: ctx.reqId, kind: 'text', text: 'Working on it.' });
+        await theBus!.fire('chat:permission-request', ctx, {
+          kind: 'skill',
+          skillId: 'walk-weather-report',
+          description: 'Gets the current weather for a city.',
+          hosts: ['api.open-meteo.com'],
+          slots: [],
+          packages: { npm: [], pypi: [] },
+        });
+      }
+      await theBus!.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
+    };
+    try {
+      // Mel is there to answer: the call runs, nothing is held, and the card is the one question.
+      const melTs = nextTs();
+      let mark = slackCalls.length;
+      expect((await deliver(installId, mention(MEL, melTs, 'use the weather skill'))).status).toBe(200);
+      const attended = await invokedTurn(1);
+      expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
+      expect(isHold(await verdictOf(1))).toBe(false);
+      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      expect(await listDecisions('usr_mel')).toEqual([]);
+      const asked = promptsIn(calls);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
+      expect(JSON.stringify(asked[0]!.blocks)).toContain('api.open-meteo.com');
+      expect(sentText(calls)).not.toContain('I need your OK');
+
+      // Mel's Allow attaches it: one grant, as her.
+      mark = slackCalls.length;
+      expect((await click(installId, MEL, asked[0]!, 'allow')).status).toBe(200);
+      calls = await slackCallsUntil(mark, 'chat.update');
+      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Connected. Send your message again and I'll use it.");
+      expect(grantCalls).toHaveLength(1);
+      expect(grantCalls[0]).toMatchObject({
+        userId: 'usr_mel',
+        input: { conversationId: attended.ctx.conversationId, userId: 'usr_mel', agentId, skillId: 'walk-weather-report' },
+      });
+
+      // Carol is no member: her turn runs as Ada with nobody there, so the call is still held, the
+      // row waits in Ada's Today, and no prompt goes into the thread.
+      mark = slackCalls.length;
+      expect((await deliver(installId, mention(CAROL, nextTs(), 'use the weather skill'))).status).toBe(200);
+      const external = await invokedTurn(2);
+      expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
+      expect(isHold(await verdictOf(2))).toBe(true);
+      await channelTurnCalls(mark);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const adaRows = await listDecisions('usr_ada');
+      expect(adaRows).toHaveLength(1);
+      expect(adaRows[0]).toMatchObject({ ruleId: 'skills.request-capability', status: 'pending', ownerUserId: 'usr_ada' });
       expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
       expect(grantCalls).toHaveLength(1);
     } finally {

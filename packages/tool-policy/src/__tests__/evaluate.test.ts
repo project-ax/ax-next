@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluate } from '../evaluate.js';
+import { BUILTIN_RULES } from '../rules.js';
 import { EvaluateResultSchema, type PolicyRule } from '../types.js';
 
 const RULES: PolicyRule[] = [
@@ -368,5 +369,72 @@ describe('evaluate — effect (TASK-383)', () => {
     const result = evaluate(EFFECT_RULES, { name: 'extract', input: {} });
     expect(EvaluateResultSchema.parse(result)).toEqual(result);
     expect(EvaluateResultSchema.parse(result).effect).toEqual(['spends', 'outward']);
+  });
+});
+
+describe('evaluate — holdsOnlyUnattended (TASK-1135)', () => {
+  /*
+    The flag RELAXES a hold: `@ax/decisions` lets an attended call run, because
+    the tool's own card asks the person there. So an answer carries it only
+    when the matched rule sets it AND the answer is still a hold. On an allow
+    it would mean nothing. On any other answer it would be a relaxation that no
+    rule asked for.
+
+    `not.toHaveProperty` and not `toBeUndefined`: the field is absent, not
+    present-and-undefined, so one spelling means "this hold applies whoever is
+    there".
+  */
+  it('a hold that holds only unattended calls says so; no other answer carries the field', () => {
+    expect(
+      evaluate(BUILTIN_RULES, { name: 'request_capability', input: { skillId: 'x' } }),
+    ).toMatchObject({
+      verdict: 'hold',
+      ruleId: 'skills.request-capability',
+      holdsOnlyUnattended: true,
+    });
+
+    // A hold whose rule doesn't set it, an allow, and no rule at all.
+    for (const name of ['connector_propose', 'web_search', 'no_such_tool']) {
+      expect(evaluate(BUILTIN_RULES, { name, input: {} }), name).not.toHaveProperty(
+        'holdsOnlyUnattended',
+      );
+    }
+
+    // A flagged rule whose answer was relaxed to allow (here by its egress
+    // contingency) drops the flag with the hold.
+    const rules: PolicyRule[] = [
+      {
+        id: 't.x',
+        match: { tool: 'x' },
+        providedBy: 'host',
+        verdict: 'hold',
+        capability: 'do x',
+        subject: 'agent',
+        egress: { urlField: 'url' },
+        holdsOnlyUnattended: true,
+      },
+    ];
+    const relaxed = evaluate(
+      rules,
+      { name: 'x', input: { url: 'https://a.example/p' } },
+      { allowedHosts: new Set(['a.example']) },
+    );
+    expect(relaxed.verdict).toBe('allow');
+    expect(relaxed).not.toHaveProperty('holdsOnlyUnattended');
+  });
+
+  it('EvaluateResultSchema.parse keeps holdsOnlyUnattended, and refuses any value but true', () => {
+    // The same strip hazard as `irreversible` and `effect` above. Losing this
+    // key fails SAFE (decisions holds again), but silently, and then every
+    // attended skill request asks twice. `tool-policy.canary.test.ts` proves
+    // it through a real bus; this one names the schema.
+    const result = evaluate(BUILTIN_RULES, { name: 'request_capability', input: {} });
+    expect(EvaluateResultSchema.parse(result)).toEqual(result);
+    expect(EvaluateResultSchema.parse(result).holdsOnlyUnattended).toBe(true);
+    // One spelling: `true`, or absent. A producer that sends `false` fails the
+    // parse, and the caller fails closed.
+    expect(() =>
+      EvaluateResultSchema.parse({ ...result, holdsOnlyUnattended: false }),
+    ).toThrow();
   });
 });

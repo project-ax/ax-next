@@ -75,12 +75,13 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  *     card) is shown only once it passes the egress proxy's own HOST_RE,
  *     and its prompt links nowhere (nothing about a blocked host waits in
  *     Today).
- *   - A catalog skill the agent asked to use (request_capability's card;
- *     in Slack, in the continuation after that call's own hold was
- *     allowed) is asked about with its id and description, and its prompt links
- *     Today, where the same card waits. One that needs a key, or a bus
- *     without what its Allow calls, gets a link to the web app instead,
- *     with nothing to click.
+ *   - A catalog skill the agent asked to use (request_capability's card,
+ *     which comes in the turn itself: tool-policy holds that call only when
+ *     nobody is there to answer the card) is asked about with its id, the
+ *     hosts it reaches and its description, and its prompt links Today,
+ *     where the same card waits. One that needs a key, one whose reach the
+ *     subject can't name whole, or a bus without what its Allow calls, gets
+ *     a link to the web app instead, with nothing to click.
  *
  * Should a prompt or a link for something that waits in Today not be
  * posted, the line that sends the person to Today follows instead, as for a
@@ -669,7 +670,7 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   /** What to ask about one card, keyed by what it asks for; null when it is not asked about (counted). */
   const askFor = (p: PermissionIn): { key: string; ask: Ask } | null => {
     if (p.kind === 'skill') {
-      // Buttons only for a skill that needs nothing but a yes: anything else, the web app.
+      // Buttons only for a skill that needs nothing but a yes, its reach named whole: anything else, the web app.
       const shown = skillPromptFor(p, d.bus);
       return {
         key: `skill:${p.skillId}`,
@@ -854,9 +855,8 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   if (start.kind === 'woken' && outcome === 'complete' && !said) {
     quietly(() => d.logger.info('slack_continuation_missed', { installId, reason: 'said-nothing' }));
     await start.missed(ctx);
-    // A continuation whose only output was a card (the skill request_capability
-    // asks for, re-issued after its Allow): no reply to put it after, so it is
-    // asked about on its own.
+    // A continuation whose only output was a card (a skill the woken agent
+    // asked for): no reply to put it after, so it is asked about on its own.
     await askPermissions();
     return;
   }
