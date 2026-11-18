@@ -168,10 +168,14 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     });
   }
 
-  /** Nothing a row holds reaches the output: no predicate (they all have `_`), value or id. */
+  /**
+   * Nothing a row holds reaches stdout OR stderr: no value (each carries
+   * `V-`), no id, and no `_`, which most seeded predicates and
+   * `the_assistant` have (the output's own words use hyphens).
+   */
   function expectCountsOnly(result: SpawnSyncReturns<string>): void {
-    expect(result.stdout).not.toContain('_');
     for (const text of [result.stdout, result.stderr]) {
+      expect(text).not.toContain('_');
       expect(text).not.toContain('V-');
       for (const id of Object.values(ids)) expect(text).not.toContain(id);
     }
