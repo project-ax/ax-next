@@ -150,6 +150,11 @@ export function createChatOrchestratorPlugin(
       // orchestrator without a conversation context, so they don't need
       // the peers loaded.
       //
+      // TASK-1150 — the keepalive idle reaper reads `conversations:get` too,
+      // for a warm session opened for a conversation: it holds off while the
+      // row binds a request to that session (a decision continuation). Without
+      // the hook it reaps as before.
+      //
       // The system-prompt contribution family (W1) —
       // `system-prompt:augment:required:<name>` / `…:optional:<name>` — is
       // discovered at spawn time with `bus.listServices()`, the same way
