@@ -186,6 +186,11 @@ recalled in a channel.
     clear them when a channel is disconnected or a conversation is deleted.
     They're display names and Slack IDs, read only by the veto, and the row
     already outlives the conversation.
+  - The rule stops new rows, not old ones. A shared row saved under a member's
+    name before this shipped (the TASK-1134 walk's `vinay | stated_standup_time`,
+    live since rev86) stays until someone deletes it. A cleanup is a follow-up:
+    count the shared rows whose `about` matches the names now on their
+    conversation's thread row, then retract them through the forget path.
   - Closing a slot is tenant-wide, so a private statement can close a shared
     one. A Fix on a shared memory saves as private.
 - **What outsiders say is never remembered.** An external turn's conversation
