@@ -1846,11 +1846,11 @@ export function createOrchestrator(
   // grant landed for their conversation (retireOrMarkForSkillGrant flags each
   // one). The grant may have had no session to mark: it can't find a turn's
   // session until that session is up (warm) and the row names it, and a
-  // failed row lookup finds none at all. So a flagged turn marks the session
-  // it runs on itself (markIfSkillGrantFlagged): a cold spawn as soon as its
-  // session is up, any turn as it ends. Only ever holds reqIds of the
-  // registry above, and cleared by the same finally, so it is bounded the
-  // same way.
+  // failed row lookup marks only the sessions already warm (TASK-1150,
+  // markWarmSessionsOf). So a flagged turn marks the session it runs on
+  // itself (markIfSkillGrantFlagged): a cold spawn as soon as its session is
+  // up, any turn as it ends. Only ever holds reqIds of the registry above,
+  // and cleared by the same finally, so it is bounded the same way.
   const skillGrantDuringReqIds = new Set<string>();
   // Reactive egress wall (TASK-37) — dedup raised host-grant cards per
   // (sessionId, host) so repeated 403s to the same blocked host don't spam the
@@ -2415,6 +2415,31 @@ export function createOrchestrator(
     if (!warmSessions.has(sessionId) || respawnSessions.has(sessionId)) return;
     respawnSessions.add(sessionId);
     ctx.logger.info('skill_grant_restart_deferred', { sessionId });
+  }
+
+  // TASK-1150 — a skill grant whose row read failed (retireOrMarkForSkillGrant)
+  // can't tell which session serves the conversation, or whether it's busy.
+  // So it marks every warm session this host opened for that conversation AND
+  // that user, by the ids the entry recorded at spawn: a mark restarts a
+  // session only at its next routed turn, and never cuts the turn running
+  // there. The user filter keeps the grant from marking anyone else's session,
+  // even for a caller that skipped its ownership check (its own ACL'd read is
+  // the one that failed). A session already marked is left alone, so it logs
+  // once. True when such a session is marked, now or already.
+  function markWarmSessionsOf(
+    ctx: AgentContext,
+    conversationId: string,
+    userId: string,
+  ): boolean {
+    let found = false;
+    for (const [sessionId, entry] of warmSessions) {
+      if (entry.conversationId !== conversationId || entry.userId !== userId) continue;
+      found = true;
+      if (respawnSessions.has(sessionId)) continue;
+      respawnSessions.add(sessionId);
+      ctx.logger.info('skill_grant_restart_deferred', { sessionId });
+    }
+    return found;
   }
 
   // TASK-612 — the second reason a warm session is retired at its next turn:
@@ -3569,8 +3594,9 @@ export function createOrchestrator(
         await fireChatEvent('chat:end', ctx, { outcome });
       }
       // TASK-1127 — a skill grant flagged this turn but couldn't mark the
-      // session it runs on (the grant's row lookup failed; it marks it
-      // directly otherwise). Mark it now: its next turn restarts it.
+      // session it runs on (belt and braces: since TASK-1150 a grant whose
+      // read fails marks the conversation's warm sessions itself). Mark it
+      // now: its next turn restarts it.
       markIfSkillGrantFlagged(ctx, sessionId);
       // No handle.kill() — we did not open this sandbox.
       return outcome;
@@ -4964,7 +4990,8 @@ export function createOrchestrator(
     // TASK-1127 — a skill grant flagged this turn after its session came up
     // and still couldn't mark it: the row didn't name the session yet (the
     // grant landed before this turn's bind, on a channel that doesn't bind at
-    // POST), or the grant's row lookup failed. Mark it now: its next turn
+    // POST). (Since TASK-1150 a grant whose row read fails marks the
+    // conversation's warm sessions itself.) Mark it now: its next turn
     // restarts it with the skill. Only a session kept warm: a killed one
     // restarts anyway.
     if (keepWarm) markIfSkillGrantFlagged(ctx, sessionId);
@@ -5304,11 +5331,14 @@ export function createOrchestrator(
   //
   // An idle session whose terminate fails is marked too (the failure is
   // logged as `retireFailedLog`): it may have survived, still named by the
-  // row, and its next turn must not be served with the old skills.
+  // row, and its next turn must not be served with the old skills. So are the
+  // conversation's warm sessions when the row can't be read at all
+  // (TASK-1150): that read is the one that tells idle from busy.
   //
   // 'retired': ended now. 'marked': restarts at its next turn (marked now, or
-  // by a flagged turn in flight, on the session it runs on). 'none': no live
-  // session and no turn in flight.
+  // by a flagged turn in flight, on the session it runs on), which covers a
+  // failed read that found a warm session of the conversation. 'none': no
+  // live session and no turn in flight.
   async function retireOrMarkForSkillGrant(
     ctx: AgentContext,
     conversationId: string,
@@ -5318,7 +5348,8 @@ export function createOrchestrator(
     // First, synchronously, before the lookup's first await: flag every turn
     // of this conversation in flight now (`skillGrantDuringReqIds`). The
     // lookup can't find a cold-spawning turn's session until it is up (warm)
-    // and the row names it, a failed lookup finds no session at all, and the
+    // and the row names it, a failed lookup can't tell which session serves
+    // the conversation (its warm sessions are marked instead), and the
     // skills a cold spawn read may predate the attach. So a flagged turn marks
     // the session it runs on itself (markIfSkillGrantFlagged): a cold spawn
     // as soon as its session is up, any turn as it ends. Flagged before the
@@ -5338,6 +5369,14 @@ export function createOrchestrator(
       flagged = true;
     }
     const live = await activeAliveSession(ctx, conversationId, userId);
+    // The read failed, so idle can't be told from busy: mark the
+    // conversation's warm sessions (TASK-1150). Scanned even when a turn is
+    // flagged: a flagged turn not routed yet, or any turn routed in before a
+    // flagged one ends, must find the mark, or it runs without the skill.
+    if (live === 'lookup-failed') {
+      const marked = markWarmSessionsOf(ctx, conversationId, userId);
+      return marked || flagged ? 'marked' : 'none';
+    }
     // Nothing to end or mark now; each flagged turn marks the session it runs
     // on (markIfSkillGrantFlagged).
     if (live === null) return flagged ? 'marked' : 'none';
@@ -5367,17 +5406,18 @@ export function createOrchestrator(
 
   // Resolve the conversation's ACTIVE + ALIVE session id (or null), with the
   // row's bound request (`activeReqId`) from the same read. Shared by the
-  // catalog + authored grant paths (end or mark). Best-effort: any lookup
-  // failure → null. That does NOT self-correct for a grant: with no turn in
-  // flight nothing is flagged, so the session is neither ended nor marked and
-  // the next turn routes into it without the skill (TASK-1127 residual; a
-  // follow-up tracks marking the conversation's warm sessions on a failed
-  // lookup).
+  // catalog + authored grant paths (end or mark). Null: the row names no live
+  // session (with keepAlive, none this host keeps warm), or conversations:get
+  // / session:is-alive isn't on the bus. A read that throws (the row's or
+  // is-alive's) is logged and answers 'lookup-failed' (TASK-1150): the grant
+  // then marks the conversation's warm sessions, those opened for that user
+  // (markWarmSessionsOf), so the next turn restarts with the skill. It used
+  // to answer null, and an idle session's next turn ran without the skill.
   async function activeAliveSession(
     ctx: AgentContext,
     conversationId: string,
     userId: string,
-  ): Promise<{ sessionId: string; activeReqId: string | null } | null> {
+  ): Promise<{ sessionId: string; activeReqId: string | null } | null | 'lookup-failed'> {
     if (!bus.hasService('conversations:get') || !bus.hasService('session:is-alive')) return null;
     try {
       const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
@@ -5397,7 +5437,7 @@ export function createOrchestrator(
         conversationId,
         err: err instanceof Error ? err : new Error(String(err)),
       });
-      return null;
+      return 'lookup-failed';
     }
   }
 
