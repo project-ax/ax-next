@@ -165,7 +165,9 @@ recalled in a channel.
   with its `memory:pre-capture` answer. Outsiders' threads record none, since
   memory never learns from them.
 - What counts as a name: a subject whose words are all words of those names
-  (`vinay`, `vinay_pulim`, `uhte83xe1`). So `vinays_team`, `team_standup` and
+  (`vinay`, `vinay_pulim`, `uhte83xe1`). The extractor's own word for the
+  speaker counts beside a name, so `user_vinay` drops too. So `vinays_team`,
+  `team_standup` and
   `team_standup | owner | vinay` are kept: the rule reads the subject, never
   the value. A subject over 1024 code units is dropped unread, since the
   engines refuse one that long anyway and reading it costs host time its
@@ -175,7 +177,8 @@ recalled in a channel.
     stored. Telling a person from a thing would need the pinned extraction
     prompt.
   - Names the label doesn't show are missed: nicknames and initials (`vp`,
-    `vinay_p`), titles (`mr_pulim`), transliterations, digits added to a name
+    `vinay_p`), titles (`mr_pulim`), role words other than `user`
+    (`speaker_vinay`, `member_vinay`), transliterations, digits added to a name
     (`vinay2`). The run-together rule works inside one name only, so
     `pulimvinay` (the other order) is missed, and so is `vinaypulim` when the
     label gives "Vinay" and "Pulim" as separate entries.
@@ -187,8 +190,9 @@ recalled in a channel.
     They're display names and Slack IDs, read only by the veto, and the row
     already outlives the conversation.
   - The rule stops new rows, not old ones. A shared row saved under a member's
-    name before this shipped (the TASK-1134 walk's `vinay | stated_standup_time`,
-    live since rev86) stays until someone deletes it. A cleanup is a follow-up:
+    name before this shipped stays until someone deletes it: the TASK-1134
+    walk's `vinay | stated_standup_time` on kind, and whatever prod's channels
+    stored since Slack shipped there (rev86). A cleanup is a follow-up:
     count the shared rows whose `about` matches the names now on their
     conversation's thread row, then retract them through the forget path.
   - Closing a slot is tenant-wide, so a private statement can close a shared
