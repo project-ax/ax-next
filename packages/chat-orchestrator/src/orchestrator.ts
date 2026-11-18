@@ -3339,12 +3339,12 @@ export function createOrchestrator(
               //
               // This usually runs between turns, but not always. A turn routed
               // here while the session still runs another one retires it under
-              // that turn: a second tab, channel-web's re-POST right after a
-              // skill Connect, or a Slack message after the grace period or the
-              // cap already ended its reply. The running turn ends
-              // `sandbox-terminated`, and a continuation just stops. For the
-              // re-POST that's the point: it supersedes the running turn and
-              // gets the skill. (The routine-turn and mode-change reasons fire
+              // that turn: a second tab, or a Slack message after the grace
+              // period or the cap already ended its reply. The running turn
+              // ends `sandbox-terminated`, and a continuation just stops.
+              // channel-web's re-POST after a skill Connect waits for a running
+              // reply to end first, and sends nothing if it outlasts the wait
+              // (TASK-1150). (The routine-turn and mode-change reasons fire
               // only on an idle session, see above. A routine turn routed into
               // a busy session that's marked still retires it, for the mark.)
               //
@@ -5401,17 +5401,18 @@ export function createOrchestrator(
   //     (`invokeInFlightFor`): a routed turn that's running, one still being
   //     assembled or cold-spawning, or one routed but not yet bound;
   //   - the row's `activeReqId` is bound: the host's durable "a turn may be
-  //     running", read the same way by agent:interrupt. It is the only signal
-  //     for a decision continuation channel-web bound, which has no
-  //     agent:invoke. A stale binding (a refused turn, TASK-1063) reads as
-  //     busy too: that session restarts at its next turn instead of now,
-  //     which loses nothing.
-  // Neither sees a continuation channel-slack woke (no agent:invoke, reqId
-  // never bound), so a grant during one still ends it (follow-up F1).
+  //     running", read the same way by agent:interrupt and the idle reaper.
+  //     It is the only signal for a decision continuation, which has no
+  //     agent:invoke: channel-web and (TASK-1150) channel-slack bind its
+  //     reqId at approve time. A stale binding (a refused turn, TASK-1063)
+  //     reads as busy too: that session restarts at its next turn instead of
+  //     now, which loses nothing.
   //
   // The routing retires a marked session at its next routed turn even while
-  // it is still busy. channel-web's re-POST after a skill Connect relies on
-  // that: it supersedes the running turn and gets the skill.
+  // it is still busy (a second tab, or a Slack message after its reply's
+  // grace period or cap). channel-web's re-POST after a skill Connect waits
+  // for a running reply to end first (TASK-1150), so it normally meets an
+  // idle session.
   //
   // An idle session whose terminate fails is marked too (the failure is
   // logged as `retireFailedLog`): it may have survived, still named by the
@@ -5441,8 +5442,8 @@ export function createOrchestrator(
     // callers attach first, so a turn that starts after this reads the skill.
     // A turn flagged before its own skill read already has the skill, and its
     // mark still restarts the session at the next routed turn. A turn routed in
-    // while it is still running retires it under that turn (the supersede the
-    // web's re-POST relies on), so a spare mark can cost a running turn.
+    // while it is still running retires it under that turn, so a spare mark
+    // can cost a running turn.
     // The ownership check comes after this (the lookup), so for the flag this
     // relies on the callers, which both read `conversations:get` as the user
     // first; a flag can only restart a session, never widen one.

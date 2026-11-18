@@ -489,7 +489,11 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      is woken by the approval (a warm session, after the 10-second undo window),
      the bot follows that continuation into the thread. The follower starts the
      moment `decisions:approve` returns, not after the prompt is redrawn, so
-     the first words aren't missed. If the agent never carries on in the
+     the first words aren't missed. The Allow also binds the continuation's
+     request to the conversation, as the web app's approve does (TASK-1150),
+     so the host sees it running: a skill Allow during it marks the session
+     instead of ending it, the idle reaper holds off, and the 15-minute cap's
+     stop reaches it. If the agent never carries on in the
      thread (its session ended inside the undo window, the wake-up was
      refused, or it woke and said nothing), nothing is posted there: the
      prompt's "I'll pick it up in a moment." is redrawn with what the decision
@@ -781,15 +785,20 @@ connectors. The protections are:
 - **A skill Allow retires the conversation's warm session**, as the web
   app's Connect does. Since TASK-1127 it ends the session at once only when
   it's idle. While a turn is running there (a reply, one still starting up
-  its sandbox, or a continuation the web app bound), it marks the session
-  instead, as `skills:proposed` does: the running reply finishes, and the
-  next message restarts the session with the skill.
-- **A skill Allow can still end a woken continuation.** Slack never binds a
-  continuation's request to the conversation (the web app does, at approve
-  time), and a continuation has no `agent:invoke` waiter, so the host can't
-  tell it's running. Allow during one ends it, and its follower waits out
-  the cap. Fix: bind it, as channel-web's `bindContinuationTurn` does
-  (follow-up).
+  its sandbox, or a woken continuation), it marks the session instead, as
+  `skills:proposed` does: the running reply finishes, and the next message
+  restarts the session with the skill.
+- **A woken continuation is bound to its conversation** (TASK-1150). The
+  Allow binds its request at approve time, as channel-web's
+  `bindContinuationTurn` does, and @ax/conversations clears it when the
+  continuation's turn ends. That binding is how the host sees it running: a
+  skill Allow marks the session instead of ending it, the idle reaper holds
+  off, and the cap's stop reaches it. A wake-up that never runs (refused,
+  say) leaves its request bound until the next message or the session's
+  end, so the reaper holds that idle session until the runner's own
+  15-minute idle floor ends it, and for 15 minutes at most: the host can't
+  tell that binding from a running continuation, so past that it reaps the
+  session anyway.
 - **A message routed into a marked session that's still busy restarts it
   under the running turn.** Slack's lanes make that rare: it takes a reply
   that the cap or the grace period already ended while the agent kept

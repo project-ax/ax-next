@@ -231,7 +231,7 @@ One `agent:invoke` call does roughly:
   `chat:turn-end` the orchestrator queues a `cancel` so the persistent runner
   exits cleanly. The channel-web/k8s preset sets `keepAlive: true`: a turn
   completes on `chat:turn-end`, the runner stays warm, and a per-session idle
-  reaper (graceful cancel → force kill) collects it later.
+  reaper (graceful cancel → force kill) collects it later. It holds off while the conversation's row binds a request to that session (`active_req_id`), for 15 minutes at most (`reapHoldMaxMs`): a decision continuation runs without an `agent:invoke`, and that binding is how the host sees it (TASK-1150).
 - **`cancel` vs `interrupt` (Stop).** They are two different inbox entries and
   must never be confused. `cancel` ends the *session* (the runner drains and
   exits). `interrupt` (`agent:interrupt`, called by
