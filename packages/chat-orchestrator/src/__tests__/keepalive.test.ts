@@ -602,6 +602,10 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     runnerExitsOnKill?: boolean; idleWindowMs?: number; idleGraceMs?: number;
     // TASK-1150 — hold the idle reaper's first row read until this settles.
     holdReaperRead?: Promise<void>;
+    // TASK-1150 — load proxy:rotate-session, the credential refresh a turn's
+    // routing runs last before it joins a warm session (TASK-860), and hold
+    // req-2's until this settles.
+    holdRoutingRefresh?: Promise<void>;
   } = {}) {
     const state = { effective: [linear()] as Effective[] };
     const agentRow = { ...TEST_AGENT, connectorAttachments: ['linear'], connectorExclusions: [] as string[] };
@@ -631,6 +635,9 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     // A model of the proxy's substitution table: the credential env names each
     // OPEN proxy session still injects. Close drops the session's entry.
     const proxyTables = new Map<string, string[]>();
+    // What the proxy would inject at the moment each user message reached a runner.
+    const injectedAtQueue: Array<{ sessionId: string; injected: string[] }> = [];
+    let routingRefreshes = 0;
     const logs: Array<Record<string, unknown>> = [];
 
     const services: Record<string, ServiceHandler> = {
@@ -641,6 +648,9 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
       'session:queue-work': async (_c, input: unknown) => {
         const i = input as { sessionId: string; entry: { type: string } };
         queued.push({ sessionId: i.sessionId, type: i.entry.type });
+        if (i.entry.type === 'user-message') {
+          injectedAtQueue.push({ sessionId: i.sessionId, injected: [...(proxyTables.get(i.sessionId) ?? [])] });
+        }
         return { cursor: 0 };
       },
       'session:terminate': async (_c, input: unknown) => {
@@ -690,6 +700,16 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
         return {};
       },
     };
+    if (opts.holdRoutingRefresh !== undefined) {
+      const hold = opts.holdRoutingRefresh;
+      services['proxy:rotate-session'] = async (c) => {
+        if (c.reqId === 'req-2') {
+          routingRefreshes += 1;
+          await hold;
+        }
+        return { envMap: {} };
+      };
+    }
 
     const h = await createTestHarness({
       services,
@@ -737,9 +757,14 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
       state, conv, h, handles, turn, deleteConnector, settle,
       get opens() { return opens; },
       get reaperReads() { return reaperReads; },
-      queued, terminated, proxyOpens, proxyCloses, proxyTables, logs,
+      get routingRefreshes() { return routingRefreshes; },
+      queued, terminated, proxyOpens, proxyCloses, proxyTables, injectedAtQueue, logs,
     };
   }
+
+  /** The `connector_deleted_sessions_retired` line a delete logged. */
+  const retiredLog = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.logs.find((l) => l.msg === 'connector_deleted_sessions_retired');
 
   /** Credential env names any still-open proxy session injects for `linear`. */
   const linearStillInjected = (t: Awaited<ReturnType<typeof setup>>) =>
@@ -881,6 +906,8 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     });
     await t.settle();
     expect(closedMidTurn).toBe(false);
+    // The delete itself closed nothing and sent nothing to a reap.
+    expect(retiredLog(t)).toMatchObject({ marked: 1, closed: 0, reaped: 0 });
     expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
     expect(t.proxyCloses).toContain('s-1');
     expect(linearStillInjected(t)).toEqual([]);
@@ -929,6 +956,8 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     // At once: the delete itself closes it, before any reap has run.
     expect(t.proxyCloses).toContain('s-1');
     expect(linearStillInjected(t)).toEqual([]);
+    // Sent to a reap, which holds: `reaped` counts sends, `closed` the closes.
+    expect(retiredLog(t)).toMatchObject({ marked: 1, closed: 1, reaped: 1 });
     await t.settle();
     expect(t.queued.filter((q) => q.type === 'cancel')).toEqual([]);
     expect(t.handles[0]!.state.kills).toBe(0);
@@ -954,6 +983,8 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     await t.deleteConnector('linear', LINEAR_NS);
     expect(t.proxyCloses).toContain('s-1');
     expect(linearStillInjected(t)).toEqual([]);
+    // Closed, but not sent to a reap: the one reading the row decides.
+    expect(retiredLog(t)).toMatchObject({ marked: 1, closed: 1, reaped: 0 });
     releaseRead();
     await t.settle();
     expect(t.queued.filter((q) => q.type === 'cancel')).toEqual([]);
@@ -1031,6 +1062,45 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     expect(t.proxyCloses).toContain('s-1');
     for (const hk of t.handles) hk.forceExit();
   });
+
+  // TASK-833's bound, for a turn whose routing is still under way at the
+  // delete. A second tab's message reads the session as fine (nothing deleted
+  // yet) and waits on the credential refresh. The delete lands while turn 1
+  // runs there, so nothing is closed: turn 1 keeps the key until it ends. Turn
+  // 1 ends; the refresh returns before the turn-end reap fires, and the second
+  // turn joins the session and clears that reap. So the turn end must close
+  // the proxy session itself: the reap that would have closed it never runs.
+  it('K13: a turn that joins the session after a deleted-connector turn ends never gets the key, though its routing began before the delete', async () => {
+    let releaseRefresh!: () => void;
+    const holdRoutingRefresh = new Promise<void>((res) => { releaseRefresh = res; });
+    const t = await setup({ holdRoutingRefresh });
+    // Runs right after the orchestrator's own chat:turn-end subscriber: turn
+    // 1's reap is armed and has not fired yet.
+    t.h.bus.subscribe('chat:turn-end', 'test-release-routing', async (_c, p) => {
+      if ((p as { reqId?: string } | undefined)?.reqId === 'req-1') releaseRefresh();
+      return undefined;
+    });
+    let second: Promise<AgentOutcome> | undefined;
+    await t.turn('s-1', 'req-1', async () => {
+      // `turn` ends the turn on the sessionId it invokes with: s-1, the
+      // session the row routes the second turn into.
+      second = t.turn('s-1', 'req-2', async () => {
+        await vi.waitFor(() => expect(t.injectedAtQueue).toHaveLength(2)); // it joined s-1
+      });
+      await vi.waitFor(() => expect(t.routingRefreshes).toBe(1)); // its routing waits on the refresh
+      t.state.effective = [];
+      await t.deleteConnector('linear', LINEAR_NS);
+      expect(t.proxyCloses).not.toContain('s-1'); // turn 1 keeps the key until it ends
+    });
+    expect(await second).toEqual({ kind: 'complete', messages: [] });
+    expect(t.opens).toBe(1); // the second turn ran on s-1
+    // When its message reached the runner, nothing injected the deleted key.
+    expect(t.injectedAtQueue[1]).toEqual({ sessionId: 's-1', injected: [] });
+    await t.settle();
+    // Its own turn end reaps the session, still marked.
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    for (const hk of t.handles) hk.forceExit();
+  });
 });
 
 // TASK-1150 — @ax/decisions wakes a decision continuation with
@@ -1043,6 +1113,10 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
 describe('TASK-1150: the idle reaper holds off while the conversation binds a request to the session', () => {
   async function reaperSetup(o: {
     failRead?: boolean; holdFirstRead?: Promise<void>; reapHoldMaxMs?: number;
+    idleWindowMs?: number;
+    // The reaper's logger (the arming turn end's) throws on this message,
+    // after recording it: a log sink that fails.
+    throwOnLog?: string;
   } = {}) {
     // The conversation's row, as @ax/conversations keeps it.
     const row = { activeSessionId: null as string | null, activeReqId: null as string | null };
@@ -1074,11 +1148,11 @@ describe('TASK-1150: the idle reaper holds off while the conversation binds a re
         // The reaper reads on the ctx of the turn end that armed it.
         if (c.reqId === 'ipc-fresh') {
           reads += 1;
-          if (o.failRead === true) throw new Error('store unavailable');
           if (o.holdFirstRead !== undefined && !firstReadHeld) {
             firstReadHeld = true;
             await o.holdFirstRead; // then answers the row as it was when read
           }
+          if (o.failRead === true) throw new Error('store unavailable'); // after any hold
         }
         return { conversation: {
           conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent', ...asRead,
@@ -1099,7 +1173,7 @@ describe('TASK-1150: the idle reaper holds off while the conversation binds a re
       services,
       plugins: [createChatOrchestratorPlugin({
         runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
-        keepAlive: true, idleWindowMs: 1_000, idleGraceMs: 500,
+        keepAlive: true, idleWindowMs: o.idleWindowMs ?? 1_000, idleGraceMs: 500,
         ...(o.reapHoldMaxMs !== undefined ? { reapHoldMaxMs: o.reapHoldMaxMs } : {}),
       })],
     });
@@ -1117,7 +1191,13 @@ describe('TASK-1150: the idle reaper holds off while the conversation binds a re
           makeAgentContext({ sessionId, agentId: 'a', userId: 'u', reqId: 'ipc-fresh',
             logger: createLogger({
               reqId: 'ipc-fresh',
-              writer: (line: string) => { logs.push(JSON.parse(line) as Record<string, unknown>); },
+              writer: (line: string) => {
+                const entry = JSON.parse(line) as Record<string, unknown>;
+                logs.push(entry);
+                if (o.throwOnLog !== undefined && entry.msg === o.throwOnLog) {
+                  throw new Error('log sink failed');
+                }
+              },
             }) }),
           { reason: 'user-message-wait', reqId });
       });
@@ -1283,6 +1363,112 @@ describe('TASK-1150: the idle reaper holds off while the conversation binds a re
       await vi.advanceTimersByTimeAsync(1); // +5.5 s: 2.5 s since the hold started over
       expect(cancels(r)).toEqual(['s-1']);
       expect(holdExpiries(r)).toHaveLength(1);
+      r.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The row binds a new request to the session only when a turn starts there:
+  // a channel's POST, or a person's approval of a decision, whose continuation
+  // has no agent:invoke and no turn end of its own yet. So a hold that finds
+  // another request bound than the one it started on starts over. Otherwise a
+  // binding nothing clears (a refused turn) starts the clock, and a
+  // continuation approved minutes later is cut off well short of the bound.
+  it('K14: a new request bound during a hold (a continuation approved) starts the hold over', async () => {
+    vi.useFakeTimers();
+    try {
+      const r = await reaperSetup({ reapHoldMaxMs: 2_500 });
+      await r.firstTurn();
+      r.row.activeReqId = 'stale-1'; // a binding nothing will clear (a refused turn)
+      await vi.advanceTimersByTimeAsync(2_000); // held at +1 s (the clock starts) and +2 s
+      expect(deferrals(r)).toBe(2);
+      r.row.activeReqId = 'cont-1'; // a person approves: the channel binds the continuation it wakes
+      // Held at +3 s, where the read finds cont-1 and the clock starts over,
+      // and at +4 s. Counted from +1 s, the hold would have run out at +3.5 s.
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(cancels(r)).toEqual([]);
+      expect(holdExpiries(r)).toEqual([]);
+      expect(deferrals(r)).toBe(4);
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(cancels(r)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1); // +5.5 s: 2.5 s since the read that found cont-1
+      expect(cancels(r)).toEqual(['s-1']);
+      expect(holdExpiries(r)).toHaveLength(1);
+      r.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A hold reads the row again after an idle window. With none at all (0 ms)
+  // that would be a read loop for as long as the hold lasts, so the next read
+  // waits a second at least. The bound itself still lands on time.
+  it('K15: with a 0 ms idle window, a held session is read again after a second, not in a loop', async () => {
+    vi.useFakeTimers();
+    try {
+      const r = await reaperSetup({ idleWindowMs: 0, reapHoldMaxMs: 2_500 });
+      await r.firstTurn(); // its turn end armed a 0 ms reap, which has not fired yet
+      r.row.activeReqId = 'stale-1';
+      await vi.advanceTimersByTimeAsync(1); // the reap reads the row and holds: the clock starts
+      expect(r.reads()).toBe(1);
+      expect(deferrals(r)).toBe(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(r.reads()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1); // a second after the first read
+      expect(r.reads()).toBe(2);
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(cancels(r)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1); // 2.5 s since the first hold: the bound
+      expect(cancels(r)).toEqual(['s-1']);
+      expect(holdExpiries(r)).toHaveLength(1);
+      r.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The reap check is meant never to throw, but the line that logs a failed
+  // read can (a log sink that throws). The reap must still run then, as for
+  // any failed read (K4), and nothing may be left as an unhandled rejection.
+  it('K16: a failed read whose log line throws still reaps the session', async () => {
+    vi.useFakeTimers();
+    try {
+      const r = await reaperSetup({ failRead: true, throwOnLog: 'keepalive_reap_check_failed' });
+      await r.firstTurn();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(r.logs.find((l) => l.msg === 'keepalive_reap_check_failed')).toMatchObject({ sessionId: 's-1' });
+      expect(cancels(r)).toEqual(['s-1']);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(r.kills()).toBe(1);
+      r.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ...unless a turn was routed in while that read was out: the turn owns the
+  // session now (K5), whatever the read did after.
+  it('K17: a failed read whose log line throws, overtaken by a turn routed in, does not reap', async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseRead!: () => void;
+      const holdFirstRead = new Promise<void>((res) => { releaseRead = res; });
+      const r = await reaperSetup({
+        holdFirstRead, failRead: true, throwOnLog: 'keepalive_reap_check_failed',
+      });
+      await r.firstTurn();
+      await vi.advanceTimersByTimeAsync(1_000); // the window ends; the reaper's read is held
+      const t2 = r.invoke('s-2', 'req-2'); // routed into s-1
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(2);
+      releaseRead(); // the read fails, and its log line throws
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.logs.find((l) => l.msg === 'keepalive_reap_check_failed')).toMatchObject({ sessionId: 's-1' });
+      expect(cancels(r)).toEqual([]);
+      r.endTurn('s-1', 'req-2');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await t2).toEqual({ kind: 'complete', messages: [] });
       r.forceExit();
     } finally {
       vi.useRealTimers();
