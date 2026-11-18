@@ -27,10 +27,13 @@ is rejected before it touches anything.
 
 ## Minimal by design
 
-`request_capability` returns the bare minimum — a status and the skill id. It
-deliberately does **not** echo back hosts or credential slot names to the model. The
-human approval card (a later component) is the surface that shows those; the model has
-nothing sensitive to be steered into narrating or exfiltrating.
+`request_capability` returns the bare minimum: a status, the skill id and, when it put
+an approval card in front of the person, one fixed message we wrote on the host ("not
+connected yet, end your turn"). That message is a constant. Nothing from the catalog,
+a connector or the model's own input goes into it. The tool deliberately does **not**
+echo back hosts, credential slot names, packages or keys to the model. The human
+approval card is the surface that shows those; the model has nothing sensitive to be
+steered into narrating or exfiltrating.
 
 The candidate summaries `search_catalog` returns (descriptions, hosts, slots) come from
 **admin-vetted** catalog skills, and the human is the ultimate backstop at the approval

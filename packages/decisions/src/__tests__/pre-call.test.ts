@@ -1,6 +1,7 @@
 import {
   HookBus,
   PluginError,
+  createLogger,
   isHold,
   isRejection,
   makeAgentContext,
@@ -520,6 +521,151 @@ describe('tool:pre-call subscriber — attendance', () => {
       conversationId: 'c1',
       call: SEND,
     });
+  });
+});
+
+describe('TASK-1135: a hold that applies only when nobody is there', () => {
+  // `request_capability` does nothing but put its own skill card in front of
+  // the person, and Allow on THAT card is what grants. Holding it in a turn
+  // someone is there to answer asked the same person the same question twice,
+  // the first time with less to go on. tool-policy says so on the answer
+  // (`holdsOnlyUnattended`), and the gate lets the call run when the turn is
+  // attended. Everything else about the hold is unchanged, and every way of
+  // not knowing fails toward holding.
+  const ONLY_UNATTENDED: PolicyAnswer = { ...HOLD, holdsOnlyUnattended: true };
+
+  /** An `attendanceFor` that counts its reads. */
+  function counting(answer: unknown): { attendanceFor: PreCallDeps['attendanceFor']; reads: () => number } {
+    let reads = 0;
+    return {
+      attendanceFor: async () => {
+        reads += 1;
+        return answer as 'attended';
+      },
+      reads: () => reads,
+    };
+  }
+
+  it('attended: the call runs, nothing is recorded or raised, and it is logged', async () => {
+    const bus = new HookBus();
+    const raised: unknown[] = [];
+    bus.subscribe('decisions:raised', 'test', async (_c, p) => {
+      raised.push(p);
+      return undefined;
+    });
+    const lines: string[] = [];
+    const { sub, store } = build(ONLY_UNATTENDED, createFakeStore(), async () => 'attended', bus);
+
+    const r = await sub(ctx({ logger: createLogger({ reqId: 'r', writer: (l) => lines.push(l) }) }), CALL);
+
+    expect(r).toBeUndefined();
+    // `decisions:raised` is fired without awaiting, so let anything it queued run.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(store.rows.size).toBe(0);
+    expect(raised).toEqual([]);
+    const logged = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged.find((e) => e.msg === 'decision_hold_skipped_attended')).toMatchObject({
+      level: 'info',
+      plugin: '@ax/decisions',
+      tool: 'request_capability',
+      ruleId: 'skills.request-capability',
+    });
+  });
+
+  it('unattended: held as before, and the row says unattended', async () => {
+    const { sub, store } = build(ONLY_UNATTENDED, createFakeStore(), async () => 'unattended');
+    const r = await sub(ctx(), CALL);
+    expect(isHold(r)).toBe(true);
+    const row = (await store.get((r as Hold).hold.decisionId))!;
+    expect(row.attendance).toBe('unattended');
+    expect(row.ruleId).toBe('skills.request-capability');
+    expect(row.status).toBe('pending');
+  });
+
+  it('only true relaxes: absent or any other value holds in an attended turn', async () => {
+    for (const [label, answer] of [
+      ['absent', HOLD],
+      ['false', { ...HOLD, holdsOnlyUnattended: false }],
+      ["'yes'", { ...HOLD, holdsOnlyUnattended: 'yes' as unknown as boolean }],
+    ] as const) {
+      const { sub, store } = build(answer, createFakeStore(), async () => 'attended');
+      expect(isHold(await sub(ctx(), CALL)), label).toBe(true);
+      expect(store.rows.size, label).toBe(1);
+    }
+  });
+
+  it("only 'attended' relaxes: an attendance read that says anything else holds", async () => {
+    // The real resolver answers `unattended` for every "we do not know", but
+    // the gate must not lean on that: `!== 'unattended'` would let a value it
+    // doesn't know through.
+    for (const said of ['Attended', undefined, null]) {
+      const { sub, store } = build(ONLY_UNATTENDED, createFakeStore(), counting(said).attendanceFor);
+      expect(isHold(await sub(ctx(), CALL)), String(said)).toBe(true);
+      expect(store.rows.size, String(said)).toBe(1);
+    }
+  });
+
+  it('attendance is read once per held call', async () => {
+    const flagged = counting('unattended');
+    expect(isHold(await build(ONLY_UNATTENDED, createFakeStore(), flagged.attendanceFor).sub(ctx(), CALL))).toBe(true);
+    expect(flagged.reads()).toBe(1);
+
+    const plain = counting('unattended');
+    expect(isHold(await build(HOLD, createFakeStore(), plain.attendanceFor).sub(ctx(), CALL))).toBe(true);
+    expect(plain.reads()).toBe(1);
+
+    const skipped = counting('attended');
+    expect(await build(ONLY_UNATTENDED, createFakeStore(), skipped.attendanceFor).sub(ctx(), CALL)).toBeUndefined();
+    expect(skipped.reads()).toBe(1);
+  });
+
+  it('a non-hold answer never reads the flag or attendance', async () => {
+    const allowed = counting('attended');
+    expect(
+      await build({ ...ALLOW, holdsOnlyUnattended: true }, createFakeStore(), allowed.attendanceFor).sub(ctx(), CALL),
+    ).toBeUndefined();
+    expect(allowed.reads()).toBe(0);
+
+    // A deny the flag rode along on is still a deny, never an attended allow.
+    const denied = counting('attended');
+    const d = await build({ ...DENY, holdsOnlyUnattended: true }, createFakeStore(), denied.attendanceFor).sub(ctx(), CALL);
+    expect(isRejection(d)).toBe(true);
+    expect(isHold(d)).toBe(false);
+    expect(denied.reads()).toBe(0);
+
+    // And so is a verdict nobody can read.
+    const unknown = counting('attended');
+    const u = await build(
+      { verdict: 'maybe' as 'hold', ruleId: null, capability: null, holdsOnlyUnattended: true },
+      createFakeStore(),
+      unknown.attendanceFor,
+    ).sub(ctx(), CALL);
+    expect(isRejection(u)).toBe(true);
+    expect(isHold(u)).toBe(false);
+    expect(unknown.reads()).toBe(0);
+  });
+
+  it('a routine write is held even when its hold carries the flag: its row is its only consent', async () => {
+    // A routine write acts by itself, so the flag never belongs on its rule
+    // (tool-policy pins the flagged rules to `skills.request-capability`). A
+    // policy engine that put it there anyway must not turn the routine's one
+    // question into none.
+    const bus = new HookBus();
+    bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));
+    const flagged: PolicyAnswer = {
+      verdict: 'hold',
+      ruleId: 'routines.delete',
+      capability: 'delete routines',
+      holdsOnlyUnattended: true,
+    };
+    const { sub, store } = build(flagged, createFakeStore(), async () => 'attended', bus);
+    const change: ToolCall = {
+      id: 'c-delete',
+      name: 'routine_delete',
+      input: { requestId: 'r-delete', routineId: 'rtn_a', expectedRevision: 'rev_a' },
+    };
+    expect(isHold(await sub(ctx(), change))).toBe(true);
+    expect(store.rows.size).toBe(1);
   });
 });
 

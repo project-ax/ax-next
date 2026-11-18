@@ -1106,7 +1106,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // @ax/web-tools), and consumes only untrusted intent text in-memory.
   //
   // TASK-228 (AW-7): it also registers the FRESHNESS PAIR for
-  // `request_capability` — the AW-3 rule table holds that call, and the host
+  // `request_capability` — the AW-3 rule table holds that call when nobody is
+  // there to answer its card (a routine's own run, an outsider's turn: since
+  // TASK-1135 an attended one runs, and its card is the question), and the host
   // replays it verbatim on approval, so a human can approve at 1pm a catalog
   // entry they were shown at 7am. The predicate is one `skills:get` read, which
   // is why this is the cheap-and-obvious half of AW-7's pair. Its absence would
@@ -1179,7 +1181,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // resolves to `approved-pending-agent` and goes ahead only if a later run
   // makes exactly the same request. @ax/skill-broker's `request_capability`
   // (pushed unconditionally above) is the host-executed case the canary
-  // exercises.
+  // exercises, on the unattended path: an attended one is no longer held
+  // (TASK-1135).
   //
   // `decisions:sweep` runs on a timer inside the plugin and does three things:
   // it expires decisions nobody answered; it runs the deferred replay of an

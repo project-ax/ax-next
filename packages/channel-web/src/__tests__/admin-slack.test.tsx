@@ -10,9 +10,11 @@ import {
   connectSlack,
   disconnectSlack,
   fetchSlackStatus,
+  forgetLeftoverSlackApp,
   goToSlack,
   renameSlackBot,
   resumeSlackInstall,
+  slackAppSettingsUrl,
   slackErrorCopy,
   slackStateChanged,
 } from '../lib/slack-admin';
@@ -70,8 +72,81 @@ afterEach(() => {
 describe('fetchSlackStatus', () => {
   it('GETs /admin/slack with the session cookie and returns each state, extra fields dropped', async () => {
     const states = [
-      { state: 'not-connected', defaultBotName: 'canopy', canConnect: true },
-      { state: 'pending', botName: 'canopy', connectedBy: 'Ada Admin', connectedAt: '2026-11-13T12:00:00.000Z' },
+      {
+        state: 'not-connected',
+        defaultBotName: 'canopy',
+        canConnect: true,
+        leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX' }],
+      },
+      {
+        state: 'pending',
+        botName: 'canopy',
+        connectedBy: 'Ada Admin',
+        connectedAt: '2026-11-13T12:00:00.000Z',
+        leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX' }],
+      },
+      {
+        state: 'connected',
+        botName: 'canopy',
+        workspaceName: 'Canopy Works',
+        connectedBy: 'Ada Admin',
+        connectedAt: '2026-11-13T12:00:00.000Z',
+        leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX' }],
+      },
+    ];
+    for (const s of states) {
+      const sent = {
+        ...s,
+        leftoverApps: [{ botName: 'canopy', appId: 'A0CHZPVDJHX', installId: 'should-not-pass-through' }],
+      };
+      answer = () => json(200, { ...sent, installId: 'should-not-pass-through' });
+      expect(await fetchSlackStatus()).toEqual(s);
+    }
+    expect(calls).toHaveLength(3);
+    for (const c of calls) {
+      expect(c).toMatchObject({ url: '/admin/slack', method: 'GET', credentials: 'include' });
+    }
+  });
+
+  it('leftoverApps: a missing or broken list reads as none, and only well-formed apps are kept', async () => {
+    const base = { state: 'not-connected', defaultBotName: 'canopy', canConnect: true };
+    for (const broken of [undefined, 'x', null]) {
+      answer = () => json(200, { ...base, leftoverApps: broken });
+      expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [] });
+    }
+    answer = () => json(200, base);
+    expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [] });
+
+    const good = { botName: 'ax', appId: 'A0CHZPVDJHX' };
+    answer = () =>
+      json(200, {
+        ...base,
+        leftoverApps: [
+          null,
+          'A0X',
+          { botName: '', appId: 'A01' },
+          { botName: 5, appId: 'A01' },
+          { botName: 'x'.repeat(81), appId: 'A01' },
+          { botName: 'ax', appId: 'A0/../x' },
+          { botName: 'ax', appId: 'javascript:alert(1)' },
+          { botName: 'ax', appId: 'A'.repeat(65) },
+          // The server's id check lets these through; as a link, `..` and `.`
+          // would leave that one app's page, so the SPA's own check must not.
+          { botName: 'ax', appId: '..' },
+          { botName: 'ax', appId: '.' },
+          { botName: 'ax', appId: 'A0.B' },
+          { botName: 'ax', appId: 'A0_B' },
+          { botName: 'ax', appId: 'A0-B' },
+          good,
+        ],
+      });
+    expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [good] });
+  });
+
+  it.each([
+    ['a pending install', { state: 'pending', botName: 'canopy', connectedBy: 'Ada Admin', connectedAt: '2026-11-13T12:00:00.000Z' }],
+    [
+      'a connected install',
       {
         state: 'connected',
         botName: 'canopy',
@@ -79,15 +154,19 @@ describe('fetchSlackStatus', () => {
         connectedBy: 'Ada Admin',
         connectedAt: '2026-11-13T12:00:00.000Z',
       },
-    ];
-    for (const s of states) {
-      answer = () => json(200, { ...s, installId: 'should-not-pass-through' });
-      expect(await fetchSlackStatus()).toEqual(s);
+    ],
+  ])('leftoverApps on %s: well-formed apps kept, a missing or broken list reads as none', async (_label, base) => {
+    const good = { botName: 'ax', appId: 'A0CHZPVDJHX' };
+    answer = () => json(200, { ...base, leftoverApps: [null, { botName: 'ax', appId: 'A0/../x' }, { botName: 'ax', appId: '..' }, good] });
+    expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [good] });
+    for (const broken of [undefined, 'x', null]) {
+      answer = () => json(200, { ...base, leftoverApps: broken });
+      expect(await fetchSlackStatus()).toEqual({ ...base, leftoverApps: [] });
     }
-    expect(calls).toHaveLength(3);
-    for (const c of calls) {
-      expect(c).toMatchObject({ url: '/admin/slack', method: 'GET', credentials: 'include' });
-    }
+  });
+
+  it('slackAppSettingsUrl points at that one app on api.slack.com', () => {
+    expect(slackAppSettingsUrl('A0CHZPVDJHX')).toBe('https://api.slack.com/apps/A0CHZPVDJHX');
   });
 
   it('a 404, or a page that is not JSON (the app shell), means Slack is unavailable here', async () => {
@@ -149,6 +228,31 @@ describe('the writes', () => {
         body: { botName: '  Ada   Helper ' },
       },
     ]);
+  });
+
+  it('forgetLeftoverSlackApp POSTs exactly the app id with the CSRF header', async () => {
+    answer = () => json(200, {});
+    await expect(forgetLeftoverSlackApp('A0CHZPVDJHX')).resolves.toBeUndefined();
+    expect(calls).toEqual([
+      {
+        url: '/admin/slack/forget-leftover-app',
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: { appId: 'A0CHZPVDJHX' },
+      },
+    ]);
+  });
+
+  it('a refused forget carries the status and the server’s code', async () => {
+    answer = () => json(400, { error: 'invalid-app-id' });
+    await expect(forgetLeftoverSlackApp('A0CHZPVDJHX')).rejects.toMatchObject({
+      name: 'SlackAdminError',
+      status: 400,
+      code: 'invalid-app-id',
+    });
+    answer = () => json(500, { error: 'internal' });
+    await expect(forgetLeftoverSlackApp('A0CHZPVDJHX')).rejects.toBeInstanceOf(SlackAdminError);
   });
 
   it('a rename answer without a usable name is refused', async () => {

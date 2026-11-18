@@ -8,10 +8,17 @@
  *   POST /admin/slack/install-url  → { installUrl }, while an install is unfinished
  *   POST /admin/slack/rename       { botName } → { botName }
  *   POST /admin/slack/disconnect   → { appDeleted }
+ *   POST /admin/slack/forget-leftover-app  { appId } → {}
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
  * wants (the same write headers as `lib/branding.ts`).
+ *
+ * `GET /admin/slack`, in every state, also lists the Slack apps an earlier
+ * Disconnect couldn't delete (`leftoverApps`). It is advisory: a broken list
+ * reads as none, and an app id becomes a link only when it is plain letters
+ * and digits. `forget-leftover-app` drops one from that list once the admin
+ * has deleted it on Slack's page; nothing is asked of Slack.
  *
  * The two pasted configuration tokens go out in the one Connect body and
  * nowhere else: nothing here keeps, logs or returns them. Answers are read
@@ -20,15 +27,28 @@
  */
 import { HttpError, httpFetch } from './http';
 
+/** A Slack app an earlier Disconnect couldn't delete (TASK-1132). */
+export interface LeftoverSlackApp {
+  botName: string;
+  appId: string;
+}
+
 export type SlackStatus =
-  | { state: 'not-connected'; defaultBotName: string; canConnect: boolean }
-  | { state: 'pending'; botName: string; connectedBy: string; connectedAt: string }
+  | { state: 'not-connected'; defaultBotName: string; canConnect: boolean; leftoverApps: LeftoverSlackApp[] }
+  | {
+      state: 'pending';
+      botName: string;
+      connectedBy: string;
+      connectedAt: string;
+      leftoverApps: LeftoverSlackApp[];
+    }
   | {
       state: 'connected';
       botName: string;
       workspaceName: string;
       connectedBy: string;
       connectedAt: string;
+      leftoverApps: LeftoverSlackApp[];
     };
 
 /** `unavailable`: this server doesn't run the Slack plugin. */
@@ -45,6 +65,7 @@ const CONNECT_PATH = '/admin/slack/connect';
 const INSTALL_URL_PATH = '/admin/slack/install-url';
 const RENAME_PATH = '/admin/slack/rename';
 const DISCONNECT_PATH = '/admin/slack/disconnect';
+const FORGET_LEFTOVER_APP_PATH = '/admin/slack/forget-leftover-app';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -81,6 +102,29 @@ function codeOf(value: unknown): string | null {
   return typeof value === 'string' && CODE_RE.test(value) ? value : null;
 }
 
+/** Slack's own app ids are letters and digits; anything else never becomes a link. */
+const APP_ID_RE = /^[A-Za-z0-9]{1,64}$/;
+const BOT_NAME_MAX = 80;
+
+/** Advisory: a missing or broken list is none, and a malformed app is skipped. */
+function parseLeftoverApps(value: unknown): LeftoverSlackApp[] {
+  if (!Array.isArray(value)) return [];
+  const apps: LeftoverSlackApp[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const { botName, appId } = item;
+    if (typeof botName !== 'string' || botName.length < 1 || botName.length > BOT_NAME_MAX) continue;
+    if (typeof appId !== 'string' || !APP_ID_RE.test(appId)) continue;
+    apps.push({ botName, appId });
+  }
+  return apps;
+}
+
+/** The Slack page for one app: its settings, and the Delete App button. */
+export function slackAppSettingsUrl(appId: string): string {
+  return `https://api.slack.com/apps/${encodeURIComponent(appId)}`;
+}
+
 const badResponse = (status: number): SlackAdminError => new SlackAdminError(status, 'bad-response');
 
 function parseStatus(body: unknown): SlackStatus | null {
@@ -97,17 +141,24 @@ function parseStatus(body: unknown): SlackStatus | null {
       const defaultBotName = str('defaultBotName');
       const canConnect = body['canConnect'];
       if (defaultBotName === null || typeof canConnect !== 'boolean') return null;
-      return { state: 'not-connected', defaultBotName, canConnect };
+      return { state: 'not-connected', defaultBotName, canConnect, leftoverApps: parseLeftoverApps(body['leftoverApps']) };
     }
     case 'pending':
       if (botName === null || connectedBy === null || connectedAt === null) return null;
-      return { state: 'pending', botName, connectedBy, connectedAt };
+      return { state: 'pending', botName, connectedBy, connectedAt, leftoverApps: parseLeftoverApps(body['leftoverApps']) };
     case 'connected': {
       const workspaceName = str('workspaceName');
       if (botName === null || workspaceName === null || connectedBy === null || connectedAt === null) {
         return null;
       }
-      return { state: 'connected', botName, workspaceName, connectedBy, connectedAt };
+      return {
+        state: 'connected',
+        botName,
+        workspaceName,
+        connectedBy,
+        connectedAt,
+        leftoverApps: parseLeftoverApps(body['leftoverApps']),
+      };
     }
     default:
       return null;
@@ -200,6 +251,15 @@ export async function disconnectSlack(): Promise<{ appDeleted: boolean }> {
   const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
   if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
   return { appDeleted };
+}
+
+/**
+ * "I deleted it": the admin deleted a leftover app on Slack's page, so the
+ * status stops naming it. Nothing is asked of Slack, and an app the server
+ * no longer lists is not an error.
+ */
+export async function forgetLeftoverSlackApp(appId: string): Promise<void> {
+  await post(FORGET_LEFTOVER_APP_PATH, { appId });
 }
 
 /** Rename the bot. Sends the name as typed; the answer is the name the server kept. */

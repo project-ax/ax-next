@@ -130,6 +130,14 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   //      still-warm agent re-issuing the call — the first real case of "a hold
   //      the host cannot replay".
   //
+  // THE "TURN-SCOPED CARD" PREMISE ABOVE IS STALE. Since TASK-66
+  // `@ax/conversations` has persisted every permission card raised in a
+  // conversation as a `permission-card` event (`persistPermissionCard`), so
+  // the card comes back with its thread. That premise is what made the
+  // `request_capability` hold look necessary when someone is there to answer
+  // the card. It isn't, and since TASK-1135 that hold applies only when
+  // nobody is there (`holdsOnlyUnattended`, on the rule below).
+  //
   // None is marked `irreversible`: approving `request_capability` grants reach
   // that is revocable, `connector_propose` files a zero-reach request for an admin,
   // and an installed skill can be uninstalled. A future rule whose approval
@@ -139,9 +147,20 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // (This line used to say the flag stops AW-5 offering undo, which is
   // backwards. See TASK-384 and TASK-409.)
   {
-    // The canary's rule: @ax/skill-broker is pushed UNCONDITIONALLY into the
-    // k8s preset, so `request_capability` is always in the catalog, and it is
-    // host-executed and therefore replayable by AW-5.
+    // ATTENDED CALLS RUN (TASK-1135). The call grants nothing itself: it
+    // reads the catalog, raises the skill card, and (for an id the catalog
+    // doesn't have) files a cold-start request for an admin, which
+    // `search_catalog`, an `allow`, already does with freer text. Allow on the
+    // card is what grants, so when someone is there to answer it, the card is
+    // the question. This hold is for a turn nobody is there to answer (a
+    // routine's own run, an outsider's turn), where the durable Decision row
+    // is how the owner gets asked.
+    //
+    // @ax/skill-broker is pushed UNCONDITIONALLY into the k8s preset, so
+    // `request_capability` is always in the catalog, and it is host-executed
+    // and therefore replayable by AW-5 on that unattended path. AW-4's canary
+    // takes the first hold rule WITHOUT the flag, since this one no longer
+    // holds an attended turn.
     id: 'skills.request-capability',
     match: { tool: 'request_capability' },
     providedBy: 'host',
@@ -149,11 +168,13 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     capability: 'gain access to a new service or key',
     subject: 'agent',
     provenance: 'rule',
+    holdsOnlyUnattended: true,
   },
   {
     // `connector_propose` and `skill_propose` are registered only when
     // AX_ALLOW_USER_INSTALLED_SKILLS=true. Inert otherwise — do not build a
-    // canary on either.
+    // canary that needs either in a live deployment's catalog. A canary that
+    // fires `tool:pre-call` itself, as AW-4's does, may use either.
     id: 'connectors.propose',
     match: { tool: 'connector_propose' },
     providedBy: 'host',

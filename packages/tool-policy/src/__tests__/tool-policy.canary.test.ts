@@ -47,6 +47,10 @@ describe('tool-policy canary', () => {
       // declared" `[]`, while a rule spells it by omission — the two spellings
       // are deliberate and documented on both types.
       effect: holdRule.effect ?? [],
+      // Derived the same way: present on a hold only when its rule sets it
+      // (TASK-1135). The first hold rule today is `skills.request-capability`,
+      // which does.
+      ...(holdRule.holdsOnlyUnattended === true ? { holdsOnlyUnattended: true } : {}),
     });
 
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
@@ -57,6 +61,26 @@ describe('tool-policy canary', () => {
     expect(caps.rows.length).toBe(BUILTIN_RULES.length);
     const order = caps.rows.map((r) => VERDICT_ORDER.indexOf(r.verdict));
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('holdsOnlyUnattended survives the bus returns parse', async () => {
+    /*
+      TASK-1135. `@ax/decisions` lets an attended `request_capability` run
+      because this answer says its hold applies only when nobody is there. A
+      `z.object` STRIPS what it does not declare: delete the
+      `holdsOnlyUnattended` line from `EvaluateResultSchema` and this fails,
+      while every unit test on the object `evaluate()` returns stays green.
+      That loss fails safe, but silently: decisions would hold every attended
+      request again, and each one would ask twice.
+    */
+    const h = await boot();
+    const answer = await h.bus.call<unknown, EvaluateResult>(
+      'tool-policy:evaluate',
+      h.ctx(),
+      { call: { name: 'request_capability', input: { skillId: 'x' } }, agentId: 'a1' },
+    );
+    expect(answer.verdict).toBe('hold');
+    expect(answer.holdsOnlyUnattended).toBe(true);
   });
 
   it('applies outOfReach ACROSS THE BUS, keeping every deny', async () => {

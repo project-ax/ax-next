@@ -1,5 +1,6 @@
 import { cleanPromptSubject, mrkdwnEscape, neutralizeSlackControls } from './format.js';
 import { SLASH_COMMAND } from './manifest.js';
+import type { SkillReach } from './turn-registry.js';
 
 /**
  * Everything the bot says in Slack on its own behalf. Nothing else in this
@@ -24,8 +25,9 @@ import { SLASH_COMMAND } from './manifest.js';
  * shown as `plain_text` (format.ts `cleanPromptSubject`). Two lines frame
  * outside text as a subject, raw, cleaned where it is drawn: `hostSubject`
  * (a host past the egress proxy's HOST_RE, permission-prompts.ts) and
- * `skillSubject` (a catalog skill's id and description, which can hold anything).
- * Neither is ever mrkdwn, a notification or a log.
+ * `skillSubject` (a catalog skill's id, the hosts it reaches and its
+ * description, which can hold anything). Neither is ever mrkdwn, a
+ * notification or a log.
  */
 
 /**
@@ -46,6 +48,24 @@ export type ChannelNotAllowed = 'not-public' | 'archived' | 'shared' | 'workspac
 
 const CONNECT = `\`${SLASH_COMMAND} connect\``;
 const DISCONNECT = `\`${SLASH_COMMAND} disconnect\``;
+
+/** `a`, `a and b`, `a, b and c`: in the order given, each as given. */
+function listed(items: readonly string[]): string {
+  const last = items.length - 1;
+  return last < 1 ? items.join('') : `${items.slice(0, last).join(', ')} and ${items[last]}`;
+}
+
+/**
+ * `skillSubject`'s clause for what a skill reaches (its hosts, and one
+ * sentence when it downloads packages, never which: the web app's grant row
+ * doesn't name them either), or null when there is nothing to name.
+ */
+function reachClause(reach: SkillReach): string | null {
+  const downloads = 'will download some extra software from the internet';
+  if (reach.hosts.length === 0) return reach.downloads ? `which ${downloads}` : null;
+  const hosts = `which needs to reach ${listed(reach.hosts)}`;
+  return reach.downloads ? `${hosts}, and it ${downloads}` : hosts;
+}
 
 export const COPY = {
   notMapped: (origin: string) =>
@@ -140,8 +160,16 @@ export const COPY = {
   // ── A catalog skill the agent asked to use (permission-prompts.ts) ─────────
   /*
     `skillSubject` is the prompt's subject, plain_text: the skill's id, then
-    the catalog skill's description as its card carries it, both raw (the draw
-    cleans the whole subject, once). The id is no model text: the card only
+    what it reaches (its card's hosts, and one sentence when it downloads
+    packages), then the catalog skill's description as its card carries it,
+    all raw (the draw cleans the whole subject, once). The reach comes
+    BEFORE the description, so the subject's cap (PROMPT_SUBJECT_MAX) can
+    only ever cut the description, never a host. Hosts are offered for Allow
+    only when each passes HOST_RE and the subject up to the description
+    reads the same once cleaned (permission-prompts.ts `skillPromptFor`);
+    otherwise the subject leaves the reach out, and the person is sent to
+    the web app, which shows it whole. A reach with nothing in it (or none
+    given) reads as before. The id is no model text: the card only
     fires after `skills:get` finds an exact catalog match, and a catalog id
     is a manifest name, `^[a-z][a-z0-9-]{0,63}$` (skills-parser NAME_RE; the
     broker's own SKILL_ID_RE is wider, and allows dots). It is still cleaned
@@ -152,13 +180,17 @@ export const COPY = {
     `skillAllowed` asks them to send it again. A skill card waits in Today
     too, so the two that send the person to the web app link Today.
     `skillNeedsWeb` stands where the buttons would be when Slack can't take
-    the request (a key to enter, which Slack never collects);
+    the request (a key to enter, which Slack never collects, or a reach it
+    can't show whole);
     `skillFailed` replaces them when an Allow couldn't connect it.
   */
-  skillSubject: (skillId: string, description: string) =>
-    cleanPromptSubject(description) === ''
-      ? `Wants to start using the ${skillId} skill.`
-      : `Wants to start using the ${skillId} skill: ${description}`,
+  skillSubject: (skillId: string, description: string, reach?: SkillReach) => {
+    const lead = `Wants to start using the ${skillId} skill`;
+    const clause = reach === undefined ? null : reachClause(reach);
+    const blank = cleanPromptSubject(description) === '';
+    if (clause === null) return blank ? `${lead}.` : `${lead}: ${description}`;
+    return blank ? `${lead}, ${clause}.` : `${lead}, ${clause}. ${description}`;
+  },
   skillAllowed: "Connected. Send your message again and I'll use it.",
   skillDenied: "Okay. I won't use it.",
   skillNeedsWeb: (todayLink: string) =>

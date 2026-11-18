@@ -99,6 +99,7 @@ beforeEach(() => {
     workspaceName: 'Canopy Works',
     connectedBy: 'Alice',
     connectedAt: '2026-11-13T12:00:00.000Z',
+    leftoverApps: [],
   });
   installShellFetch();
   replaceState = vi.spyOn(window.history, 'replaceState');

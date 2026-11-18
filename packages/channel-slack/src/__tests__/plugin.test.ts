@@ -362,7 +362,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   while (booted.length > 0) await booted.pop()!.close({ onError: () => {} });
   try {
-    await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_threads`.execute(probe);
+    await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_leftover_apps`.execute(probe);
   } catch {
     // Not created yet.
   }
@@ -594,6 +594,11 @@ describe('@ax/channel-slack plugin', () => {
           hook,
           degradation: 'a skill request in a Slack turn links to the web app instead of showing buttons',
         })),
+        // A continuation an Allow woke is bound to its conversation, as the web app binds it (TASK-1150).
+        {
+          hook: 'conversations:bind-session',
+          degradation: "an Allow's continuation isn't bound to its conversation, so a skill Allow or the idle reaper can end it, and the 15-minute cap can't stop it",
+        },
       ],
       subscribes: [
         'bootstrap:reset-cleanup',
@@ -646,7 +651,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the fourteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the fifteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -660,6 +665,12 @@ describe('@ax/channel-slack plugin', () => {
       { method: 'POST', path: '/admin/slack/install-url', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/rename', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/disconnect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      {
+        method: 'POST',
+        path: '/admin/slack/forget-leftover-app',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
       { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
@@ -689,7 +700,7 @@ describe('@ax/channel-slack plugin', () => {
     const answer = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
     expect(answer).toEqual({
       status: 200,
-      body: { state: 'not-connected', defaultBotName: 'ax', canConnect: false },
+      body: { state: 'not-connected', defaultBotName: 'ax', canConnect: false, leftoverApps: [] },
       done: true,
     });
   });
@@ -706,6 +717,7 @@ describe('@ax/channel-slack plugin', () => {
         workspaceName: 'Canopy Works',
         connectedBy: 'Ada Admin',
         connectedAt: expect.any(String),
+        leftoverApps: [],
       },
       done: true,
     });
@@ -1042,9 +1054,14 @@ describe('@ax/channel-slack plugin', () => {
     await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.postMessage'));
     const posted = slack.calls.find((c) => c.method === 'chat.postMessage')!;
     const blocks = posted.body['blocks'] as Array<Record<string, unknown>>;
+    // It names the host the card says the skill reaches, before the description (TASK-1135).
     expect(blocks[0]).toEqual({
       type: 'section',
-      text: { type: 'plain_text', text: 'Wants to start using the gmail-sender skill: Reads and sends email.', emoji: false },
+      text: {
+        type: 'plain_text',
+        text: 'Wants to start using the gmail-sender skill, which needs to reach gmail.googleapis.com. Reads and sends email.',
+        emoji: false,
+      },
     });
     const actions = blocks.find((b) => b['type'] === 'actions')!;
     const promptId = (actions['elements'] as Array<{ value: string }>)[0]!.value;
@@ -1216,6 +1233,116 @@ describe('@ax/channel-slack plugin', () => {
     expect(logs.filter((l) => l['msg'] === 'slack_turns_dropped')).toEqual([
       expect.objectContaining({ level: 'info', installId: INSTALL_ID, reason: 'disconnected', count: 1 }),
     ]);
+  });
+
+  it("a Disconnect that can't delete the Slack app keeps its id on Postgres, and the next Connect deletes it with the pasted access token: one app left (TASK-1132)", async () => {
+    const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
+    const live = new Set<string>();
+    let created = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = String(input).replace('https://slack.com/api/', '');
+      const headers = new Headers(init?.headers);
+      const raw = typeof init?.body === 'string' ? init.body : '';
+      const body: Record<string, unknown> = (headers.get('content-type') ?? '').startsWith('application/json')
+        ? (JSON.parse(raw) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(raw));
+      calls.push({ method, auth: headers.get('authorization'), body });
+      let answer: Record<string, unknown> = { ok: true };
+      if (method === 'apps.manifest.create') {
+        created += 1;
+        const appId = created === 1 ? 'A07FIRSTAPP1' : 'A07SECONDAP2';
+        live.add(appId);
+        answer = {
+          ok: true,
+          app_id: appId,
+          credentials: {
+            client_id: '7000000001.7000000002',
+            client_secret: 'plugin-client-secret-not-real',
+            signing_secret: SIGNING_SECRET,
+          },
+        };
+      } else if (method === 'apps.manifest.delete') {
+        live.delete(String(body['app_id']));
+      } else if (method === 'tooling.tokens.rotate') {
+        answer = { ok: false, error: 'invalid_refresh_token' };
+      }
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { call } = await boot({ fetchImpl });
+    const connect = () =>
+      call(
+        'POST',
+        '/admin/slack/connect',
+        request('POST', '/admin/slack/connect', {
+          as: ADMIN.id,
+          body: Buffer.from(
+            JSON.stringify({
+              accessToken: fakeConfigAccessToken(),
+              refreshToken: fakeConfigRefreshToken(),
+              botName: 'canopy-works',
+            }),
+          ),
+        }),
+      );
+
+    expect((await connect()).status).toBe(200);
+    expect(await installCount()).toBe(1);
+
+    // The stored refresh token is dead: Disconnect can't delete the app.
+    const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
+    expect(off).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect(await installCount()).toBe(0);
+    const left = await sql<{ install_id: string; app_id: string; bot_name: string }>`
+      SELECT install_id, app_id, bot_name FROM channel_slack_v1_leftover_apps`.execute(probe);
+    expect(left.rows).toHaveLength(1);
+    expect(left.rows[0]).toMatchObject({ app_id: 'A07FIRSTAPP1', bot_name: 'canopy-works' });
+    const status = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
+    expect(status.body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'canopy-works', appId: 'A07FIRSTAPP1' }],
+    });
+
+    // The next Connect deletes it first, with the access token just pasted.
+    expect((await connect()).status).toBe(200);
+    const methods = calls.map((c) => c.method);
+    const deleteAt = calls.findIndex(
+      (c) =>
+        c.method === 'apps.manifest.delete' &&
+        c.auth === `Bearer ${fakeConfigAccessToken()}` &&
+        c.body['app_id'] === 'A07FIRSTAPP1',
+    );
+    expect(deleteAt).toBeGreaterThan(-1);
+    expect(deleteAt).toBeLessThan(methods.lastIndexOf('apps.manifest.create'));
+    const after = await sql`SELECT 1 FROM channel_slack_v1_leftover_apps`.execute(probe);
+    expect(after.rows).toEqual([]);
+    expect(await installCount()).toBe(1);
+    expect([...live]).toEqual(['A07SECONDAP2']);
+  });
+
+  it('"I deleted it" forgets that app on Postgres and nothing else, even while connected; the status stops naming it (TASK-1132)', async () => {
+    const { call } = await boot();
+    await insertActiveInstall();
+    await sql`
+      INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
+      VALUES ('inst_left_1', 'A07LEFTAPP01', 'canopy'), ('inst_left_2', 'A07LEFTAPP02', 'canopy')`.execute(probe);
+    const forget = await call(
+      'POST',
+      '/admin/slack/forget-leftover-app',
+      request('POST', '/admin/slack/forget-leftover-app', {
+        as: ADMIN.id,
+        body: Buffer.from(JSON.stringify({ appId: 'A07LEFTAPP01' })),
+      }),
+    );
+    expect(forget).toEqual({ status: 200, body: {}, done: true });
+    const left = await sql<{ install_id: string }>`
+      SELECT install_id FROM channel_slack_v1_leftover_apps`.execute(probe);
+    expect(left.rows).toEqual([{ install_id: 'inst_left_2' }]);
+    const status = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
+    expect(status.body).toMatchObject({
+      state: 'connected',
+      leftoverApps: [{ botName: 'canopy', appId: 'A07LEFTAPP02' }],
+    });
+    expect(await installCount()).toBe(1);
   });
 
   it('a bad signature is refused with 401 and nothing is dispatched', async () => {
@@ -1703,7 +1830,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(14);
+    expect(s.routes).toHaveLength(15);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

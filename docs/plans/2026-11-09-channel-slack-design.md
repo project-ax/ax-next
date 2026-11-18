@@ -247,10 +247,12 @@ recalled in a channel.
    (`xoxe.xoxp-…`, valid for 12 hours) and the refresh token (`xoxe-…`).
 2. The admin confirms the bot's name. The name defaults to the branding name,
    checked against Slack's name rules (§7 Q3), otherwise `ax`.
-3. AX creates the shared app with `apps.manifest.create`, then sets the avatar
-   (the branding logo) with `apps.icon.set`. The manifest sets the name, scopes,
-   and the event and interactivity URLs. Slack sends no challenge and needs no
-   manual Verify click (§7 Q1).
+3. AX first deletes any app an earlier Disconnect couldn't (below), with the
+   access token just pasted. Then it creates the shared app with
+   `apps.manifest.create` and sets the avatar (the branding logo) with
+   `apps.icon.set`. The manifest sets the name, scopes, and the event and
+   interactivity URLs. Slack sends no challenge and needs no manual Verify
+   click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
    the bot token. This click is the only one a person must make, and only
    someone with install rights can make it.
@@ -289,6 +291,15 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
   can't do that last step itself. Whether that Revoke also ends the refresh
   tokens rotates have minted since (the one AX holds after a rename) is
   unmeasured (TASK-1134).
+  Deleting the app needs the stored token, so a dead or revoked one (or
+  Slack not answering) leaves the app on Slack. Disconnect still removes the
+  install, but keeps the app's id and name (TASK-1132): the Slack tab names
+  it in every state, linked to its own settings page, and the next Connect
+  tries to delete it with the newly pasted access token. The name stays
+  until Connect deletes it or the admin clicks **I deleted it** after
+  deleting it by hand. Cancelling an unfinished install is the same
+  Disconnect. Whether a new token can delete an app an earlier token of the
+  same person made is unmeasured.
 
 ### Scopes (smallest set)
 
@@ -489,7 +500,11 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
      is woken by the approval (a warm session, after the 10-second undo window),
      the bot follows that continuation into the thread. The follower starts the
      moment `decisions:approve` returns, not after the prompt is redrawn, so
-     the first words aren't missed. If the agent never carries on in the
+     the first words aren't missed. The Allow also binds the continuation's
+     request to the conversation, as the web app's approve does (TASK-1150),
+     so the host sees it running: a skill Allow during it marks the session
+     instead of ending it, the idle reaper holds off, and the 15-minute cap's
+     stop reaches it. If the agent never carries on in the
      thread (its session ended inside the undo window, the wake-up was
      refused, or it woke and said nothing), nothing is posted there: the
      prompt's "I'll pick it up in a moment." is redrawn with what the decision
@@ -538,14 +553,15 @@ workspace would buy nothing: a personal agent only talks to one person, in a DM.
        that". **Deny** calls nothing; the host stays refused and
        the agent asks again if it needs it. A host prompt has no Today link:
        the web app keeps host cards out of Today on purpose.
-     - **A catalog skill the agent asked to use.** In Slack the card comes
-       in a continuation: tool-policy holds `request_capability` itself, and the
-       card fires once that hold is allowed and the woken agent asks again. A
-       continuation whose only output is the card still posts its prompt. Its
-       subject names the skill's id (so two skills with the same, or no,
-       description are told apart) and its description (text its author
-       wrote): both cleaned and drawn as plain text, and the prompt links Today, where the card
-       waits too. **Allow**
+     - **A catalog skill the agent asked to use.** The card comes in the turn
+       itself: tool-policy holds `request_capability` only when nobody is
+       there to answer its card (TASK-1135), so an attended turn runs the call
+       and its card is the one question. A card that follows a reply still
+       posts its prompt. Its subject names the skill's id (so two skills with
+       the same, or no, description are told apart), the hosts it will reach
+       (plus one sentence when it downloads extra software), then its
+       description (text its author wrote): all cleaned and drawn as plain
+       text, and the prompt links Today, where the card waits too. **Allow**
        does what the web app's `/api/chat/permission-decision` does
        (`routes-chat.ts:885`), as the asker: `conversations:get` first (the
        conversation is theirs and its frozen agent is the prompt's), then
@@ -756,10 +772,15 @@ connectors. The protections are:
 - **A click on a forgotten prompt says "it's in Today"** whatever the kind
   (a restart or the 24-hour limit leaves no kind to tailor by). For a host
   that points at nothing: the agent just asks again.
-- **A skill prompt shows only the id and description**, not the hosts and packages the
-  web card lists ("To do this, it needs to reach: ..."). The reach is the
-  skill's connectors', which an admin curates, and anything needing a key goes
-  to the web app.
+- **A skill prompt names its hosts, not its packages.** It lists the hosts the
+  skill reaches before the description, plus one sentence when it downloads
+  extra software (never which, like the web grant row). Allow is offered only
+  when every host passes the egress proxy's `HOST_RE` and the subject names
+  them whole; otherwise the subject leaves the reach out (a host is never
+  shown cut) and the person gets the web link. Anything needing a key goes to
+  the web app.
+- **An outsider's skill request asks the owner twice in Today.** The held call
+  comes first, then the card after the replay.
 - **After a Slack Allow (or Deny) the skill card stays in Today.** The web
   app's buffer clears a card only on its own route, and no hook reaches it.
   Answering it there attaches again (a no-op).
@@ -775,15 +796,20 @@ connectors. The protections are:
 - **A skill Allow retires the conversation's warm session**, as the web
   app's Connect does. Since TASK-1127 it ends the session at once only when
   it's idle. While a turn is running there (a reply, one still starting up
-  its sandbox, or a continuation the web app bound), it marks the session
-  instead, as `skills:proposed` does: the running reply finishes, and the
-  next message restarts the session with the skill.
-- **A skill Allow can still end a woken continuation.** Slack never binds a
-  continuation's request to the conversation (the web app does, at approve
-  time), and a continuation has no `agent:invoke` waiter, so the host can't
-  tell it's running. Allow during one ends it, and its follower waits out
-  the cap. Fix: bind it, as channel-web's `bindContinuationTurn` does
-  (follow-up).
+  its sandbox, or a woken continuation), it marks the session instead, as
+  `skills:proposed` does: the running reply finishes, and the next message
+  restarts the session with the skill.
+- **A woken continuation is bound to its conversation** (TASK-1150). The
+  Allow binds its request at approve time, as channel-web's
+  `bindContinuationTurn` does, and @ax/conversations clears it when the
+  continuation's turn ends. That binding is how the host sees it running: a
+  skill Allow marks the session instead of ending it, the idle reaper holds
+  off, and the cap's stop reaches it. A wake-up that never runs (refused,
+  say) leaves its request bound until the next message or the session's
+  end, so the reaper holds that idle session until the runner's own
+  15-minute idle floor ends it, and for 15 minutes at most: the host can't
+  tell that binding from a running continuation, so past that it reaps the
+  session anyway.
 - **A message routed into a marked session that's still busy restarts it
   under the running turn.** Slack's lanes make that rare: it takes a reply
   that the cap or the grace period already ended while the agent kept

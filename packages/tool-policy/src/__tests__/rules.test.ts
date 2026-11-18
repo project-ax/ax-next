@@ -38,13 +38,28 @@ describe('BUILTIN_RULES', () => {
     expect(BUILTIN_RULES.some((r) => r.verdict === 'hold')).toBe(true);
   });
 
-  it('holds request_capability, the one hold tool that is always in the catalog', () => {
-    // @ax/skill-broker is pushed unconditionally into the k8s preset, so this
-    // is the rule AW-4's canary can rely on firing. The other two hold rules
-    // are behind AX_ALLOW_USER_INSTALLED_SKILLS and are inert by default.
+  it('holds request_capability when nobody is there to answer its own card', () => {
+    // The call's only effect is a card, and Allow on that card is what grants.
+    // When someone is there to answer it, the card asks, and `@ax/decisions`
+    // lets the call run (TASK-1135). The hold is for a turn nobody is there to
+    // answer: a routine's own run, or an outsider's turn. So AW-4's canary no
+    // longer builds on this rule: it takes the first hold rule WITHOUT the
+    // flag.
     const rule = BUILTIN_RULES.find((r) => r.match.tool === 'request_capability');
     expect(rule).toBeDefined();
     expect(rule!.verdict).toBe('hold');
+    expect(rule!.holdsOnlyUnattended).toBe(true);
+  });
+
+  it('holdsOnlyUnattended is on skills.request-capability alone, and only a hold may carry it', () => {
+    // The flag RELAXES a hold, so the list of rules carrying it is pinned
+    // exactly. A new entry is a new tool whose hold an attended turn skips,
+    // and that needs a reviewed change here, not a quiet one-line flag.
+    const flagged = BUILTIN_RULES.filter((r) => r.holdsOnlyUnattended === true);
+    expect(flagged.map((r) => r.id)).toEqual(['skills.request-capability']);
+    for (const rule of flagged) {
+      expect(rule.verdict, rule.id).toBe('hold');
+    }
   });
 
   it('marks the catalog-fact allows as catalog, never as deliberated rules', () => {
