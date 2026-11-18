@@ -18,7 +18,9 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
     'Request that a catalog skill be connected for the user. Pass a skill id from ' +
     'search_catalog results. The user will be asked to approve the hosts it reaches and ' +
     'enter any required keys. Do not narrate this step or restate any keys — the approval ' +
-    'surface handles it. Once the user approves, the conversation will continue ' +
+    'surface handles it. Until the user approves, the skill is not connected: end your ' +
+    "turn after requesting it, and don't try to do the same thing another way in the " +
+    'meantime. Once the user approves, the conversation will continue ' +
     'automatically; do not ask the user to repeat their request. ' +
     'If the result is { status: "not-found" }, the capability is not in the catalog yet ' +
     'and a request to add it is filed for the administrator automatically — tell the user ' +
@@ -38,9 +40,28 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
   },
 };
 
+// TASK-1135: what the model reads when a card was raised. Fixed, host-written
+// text, never built from the catalog, a connector or the model's input. In the
+// TASK-1134 walk the model read a bare `{status:'requested'}` as "now
+// connected!" and reached for web_extract, which raised a second, held prompt
+// before the skill card. This adds no new trust: it says what `requested`
+// already means (the person is being asked, and nothing is connected until
+// they answer) and what to do next. It names no host, slot, package or key
+// (SECURITY.md). `web_extract` is only an example of "another way": it is the
+// tool the walk saw, and the sentence still reads on a deployment or agent
+// that doesn't offer it. Same pattern as @ax/tool-connector-propose's
+// REPLY_MESSAGES.
+export const REQUESTED_MESSAGE: string =
+  "Not connected yet. The user has been asked to approve this skill, and it can't be used until they do. " +
+  "Tell them in one short sentence that you've asked, then end your turn. " +
+  "Don't try to do the same thing another way in the meantime (for example with web_extract): wait for their answer.";
+
 interface RequestCapabilityResult {
   status: 'requested' | 'not-found';
   skillId: string;
+  // TASK-1135: REQUESTED_MESSAGE, present iff this call raised a card. The
+  // no-card branches (not-found, nothing to gate) return without it.
+  message?: string;
 }
 
 // Mirrors the subset of @ax/skills' SkillDetail the broker reads. Re-declared
@@ -315,7 +336,10 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       };
       await bus.fire('chat:permission-request', toolCtx, card);
 
-      return { status: 'requested', skillId };
+      // TASK-1135: only a raised card earns the message, so it is returned
+      // after the fire and nowhere else. Its words are fixed (see
+      // REQUESTED_MESSAGE): the model still learns no host, slot or key.
+      return { status: 'requested', skillId, message: REQUESTED_MESSAGE };
     },
     { timeoutMs: 30_000 },
   );

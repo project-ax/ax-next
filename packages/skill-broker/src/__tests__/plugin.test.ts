@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin } from '../plugin.js';
-import { REQUEST_CAPABILITY_DESCRIPTOR } from '../tools/request-capability.js';
+import { REQUEST_CAPABILITY_DESCRIPTOR, REQUESTED_MESSAGE } from '../tools/request-capability.js';
 import { SEARCH_CATALOG_DESCRIPTOR } from '../tools/search-catalog.js';
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
@@ -445,7 +445,8 @@ describe('request_capability — bundled approval card (chat:permission-request)
       input: { skillId: 'linear' },
     });
 
-    expect(ack).toEqual({ status: 'requested', skillId: 'linear' });
+    // TASK-1135 — a card fired, so the answer carries the fixed message.
+    expect(ack).toStrictEqual({ status: 'requested', skillId: 'linear', message: REQUESTED_MESSAGE });
     expect(cards).toHaveLength(1);
     expect(cards[0]).toEqual({
       kind: 'skill',
@@ -894,5 +895,85 @@ describe('request_capability — packages on approval card (TASK-100: from conne
 
     // TASK-100 — a skill declares no caps; with no connector reach, no card fires.
     expect(cards).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1135 — "not connected yet: end your turn". In the TASK-1134 walk the model
+// read a bare `{status:'requested'}` as "now connected!" and reached for
+// web_extract, which raised a second (held) prompt before the skill card. When a
+// card fires, the answer now says so in fixed, host-written words. They name no
+// host, slot or package: the card is the person's surface for those, and the
+// model still gets the minimum (SECURITY.md).
+// ---------------------------------------------------------------------------
+
+describe('TASK-1135: request_capability says the skill is not connected yet', () => {
+  it('a fired card: the answer says not connected yet and to end the turn, in fixed words that name no host, slot or package', async () => {
+    const { bus } = busWithStubs({
+      linearConnectors: ['open-meteo'],
+      connectorsResolve: (id) => ({
+        id,
+        capabilities: {
+          allowedHosts: ['api.open-meteo.com'],
+          credentials: [{ slot: 'api_key', kind: 'api-key' }],
+          mcpServers: [],
+          packages: { npm: ['left-pad'], pypi: [] },
+        },
+      }),
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{
+      hosts: string[];
+      slots: Array<{ slot: string }>;
+      packages: { npm: string[]; pypi: string[] };
+    }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    const ack = await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+
+    // The card carries the reach: it is what the person reads...
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.hosts).toEqual(['api.open-meteo.com']);
+    expect(cards[0]!.slots.map((s) => s.slot)).toEqual(['api_key']);
+    expect(cards[0]!.packages.npm).toEqual(['left-pad']);
+    // ...and the model's answer carries none of it: a status, the id, one fixed message.
+    expect(ack).toStrictEqual({ status: 'requested', skillId: 'linear', message: REQUESTED_MESSAGE });
+    expect(REQUESTED_MESSAGE).not.toMatch(/open-meteo|api_key|left-pad/);
+    expect(JSON.stringify(ack)).not.toMatch(/open-meteo|api_key|left-pad/);
+    // What the message has to say (the walk's misread was "requested" = "connected").
+    const said = REQUESTED_MESSAGE.toLowerCase();
+    expect(said).toContain('not connected yet');
+    expect(said).toContain('end your turn');
+    expect(said).toContain("don't try to do the same thing another way");
+  });
+
+  it('no card (nothing it reaches): the answer is unchanged, TASK-1137 owns that branch', async () => {
+    // The stub `linear` skill references no connectors, so there is no reach to
+    // gate and no card fires. Whatever that branch should say is TASK-1137's call.
+    const { bus } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p);
+      return undefined;
+    });
+
+    const ack = await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+
+    expect(cards).toHaveLength(0);
+    expect(ack).toStrictEqual({ status: 'requested', skillId: 'linear' });
+  });
+
+  it('the descriptor says to end the turn after requesting', () => {
+    expect(REQUEST_CAPABILITY_DESCRIPTOR.description).toContain('end your turn after requesting it');
   });
 });
