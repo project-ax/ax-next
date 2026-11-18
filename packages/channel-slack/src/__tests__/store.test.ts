@@ -4,6 +4,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { LEFTOVER_APPS_MAX } from '../limits.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import {
   createInstallStore,
@@ -27,7 +28,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels`.execute(db);
+  await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_leftover_apps`.execute(db);
 });
 
 afterAll(async () => {
@@ -107,6 +108,29 @@ async function withInstallDeleteTrigger(body: string, fn: () => Promise<void>): 
       .raw(
         `DROP TRIGGER IF EXISTS channel_slack_store_test_on_delete ON channel_slack_v1_installs;
          DROP FUNCTION IF EXISTS channel_slack_store_test_on_delete();`,
+      )
+      .execute(db);
+  }
+}
+
+/** The same, as a BEFORE INSERT row trigger on the leftover apps table. */
+async function withLeftoverInsertTrigger(body: string, fn: () => Promise<void>): Promise<void> {
+  await sql
+    .raw(
+      `CREATE FUNCTION channel_slack_store_test_on_leftover() RETURNS trigger LANGUAGE plpgsql AS $fn$
+         BEGIN ${body} END
+       $fn$;
+       CREATE TRIGGER channel_slack_store_test_on_leftover BEFORE INSERT ON channel_slack_v1_leftover_apps
+         FOR EACH ROW EXECUTE FUNCTION channel_slack_store_test_on_leftover();`,
+    )
+    .execute(db);
+  try {
+    await fn();
+  } finally {
+    await sql
+      .raw(
+        `DROP TRIGGER IF EXISTS channel_slack_store_test_on_leftover ON channel_slack_v1_leftover_apps;
+         DROP FUNCTION IF EXISTS channel_slack_store_test_on_leftover();`,
       )
       .execute(db);
   }
@@ -366,6 +390,137 @@ describe("an install's channel bindings go with it", () => {
       expect((await store.removeAll()).map((r) => r.installId)).toEqual([gone]);
       expect(await bindings()).toEqual([`${kept}/C07SUPPORT1`]);
     });
+  });
+});
+
+/*
+  Disconnect deletes the install's Slack app with a token minted from the
+  stored refresh token. When Slack won't (the token is dead or revoked, or
+  Slack doesn't answer), the install still goes, and its app's id and name
+  move to the leftover list in the statement that deletes it, so the next
+  Connect can delete the app. The id is never in both tables, and a delete
+  that doesn't happen remembers nothing.
+*/
+describe("an app Disconnect couldn't delete is remembered with the install's removal (TASK-1132)", () => {
+  it('remove with appLeft moves the app id and name into the leftover list, and the bindings still go', async () => {
+    const a = await pending();
+    await bind(a, 'C07SUPPORT1');
+
+    await store.remove(a, { appLeft: true });
+
+    expect(await store.get(a)).toBeNull();
+    expect(await bindings()).toEqual([]);
+    expect(await store.leftoverApps()).toEqual([
+      { installId: a, appId: PENDING.appId, botName: PENDING.botName, leftAt: expect.any(Date) },
+    ]);
+  });
+
+  it('remove without appLeft, or with appLeft false, remembers nothing', async () => {
+    const a = await pending();
+    const b = await pending();
+
+    await store.remove(a);
+    await store.remove(b, { appLeft: false });
+
+    expect(await store.get(a)).toBeNull();
+    expect(await store.get(b)).toBeNull();
+    expect(await store.leftoverApps()).toEqual([]);
+  });
+
+  it('a failing or skipped install delete remembers nothing', async () => {
+    const a = await pending();
+
+    await withInstallDeleteTrigger(`RAISE EXCEPTION 'refused in test'; RETURN OLD;`, async () => {
+      await expect(store.remove(a, { appLeft: true })).rejects.toThrow(/refused in test/);
+    });
+    expect(await store.get(a)).not.toBeNull();
+    expect(await store.leftoverApps()).toEqual([]);
+
+    // A row trigger returning NULL skips that row's delete without an error.
+    await withInstallDeleteTrigger(`IF OLD.install_id = '${a}' THEN RETURN NULL; END IF; RETURN OLD;`, async () => {
+      await expect(store.remove(a, { appLeft: true })).resolves.toBeUndefined();
+    });
+    expect(await store.get(a)).not.toBeNull();
+    expect(await store.leftoverApps()).toEqual([]);
+
+    // No such install: nothing deleted, so nothing remembered.
+    await expect(store.remove(newInstallId(), { appLeft: true })).resolves.toBeUndefined();
+    expect(await store.leftoverApps()).toEqual([]);
+  });
+
+  it('if remembering the app fails, the install and its bindings stay: one statement', async () => {
+    const a = await pending();
+    await bind(a, 'C07SUPPORT1');
+
+    await withLeftoverInsertTrigger(`RAISE EXCEPTION 'refused in test'; RETURN NEW;`, async () => {
+      await expect(store.remove(a, { appLeft: true })).rejects.toThrow(/refused in test/);
+    });
+
+    expect(await store.get(a)).not.toBeNull();
+    expect(await bindings()).toEqual([`${a}/C07SUPPORT1`]);
+    expect(await store.leftoverApps()).toEqual([]);
+  });
+
+  it('leftoverApps lists the oldest first, at most LEFTOVER_APPS_MAX; forgetLeftoverApp drops only the one named', async () => {
+    const removed: string[] = [];
+    for (let i = 0; i < LEFTOVER_APPS_MAX + 2; i += 1) {
+      const installId = await pending();
+      await store.remove(installId, { appLeft: true });
+      removed.push(installId);
+    }
+    // One minute apart, the LAST one removed the oldest: the list's order can
+    // only come from left_at, never from the random ids or the order the rows
+    // were written in.
+    const base = Date.parse('2026-11-18T12:00:00.000Z');
+    for (const [i, installId] of removed.entries()) {
+      const leftAt = new Date(base + (removed.length - 1 - i) * 60_000);
+      await sql`UPDATE channel_slack_v1_leftover_apps SET left_at = ${leftAt}
+                WHERE install_id = ${installId}`.execute(db);
+    }
+    const oldestFirst = [...removed].reverse();
+
+    const listed = await store.leftoverApps();
+    expect(listed).toHaveLength(LEFTOVER_APPS_MAX);
+    expect(listed.map((l) => l.installId)).toEqual(oldestFirst.slice(0, LEFTOVER_APPS_MAX));
+    expect(listed[0]).toEqual({
+      installId: oldestFirst[0],
+      appId: PENDING.appId,
+      botName: PENDING.botName,
+      leftAt: new Date(base),
+    });
+
+    await store.forgetLeftoverApp(oldestFirst[0]!);
+    expect((await store.leftoverApps()).map((l) => l.installId)).toEqual(
+      oldestFirst.slice(1, LEFTOVER_APPS_MAX + 1),
+    );
+
+    // One that isn't there is not an error, and nothing else is forgotten.
+    await expect(store.forgetLeftoverApp(newInstallId())).resolves.toBeUndefined();
+    expect((await store.leftoverApps()).map((l) => l.installId)).toEqual(
+      oldestFirst.slice(1, LEFTOVER_APPS_MAX + 1),
+    );
+  });
+
+  it('the same install id remembered twice keeps the first (only tests reuse ids)', async () => {
+    const a = await pending();
+    await store.remove(a, { appLeft: true });
+    await store.insertPending({ installId: a, ...PENDING, appId: 'A07OTHERAPP1' });
+
+    await expect(store.remove(a, { appLeft: true })).resolves.toBeUndefined();
+
+    expect(await store.get(a)).toBeNull();
+    expect(await store.leftoverApps()).toEqual([
+      { installId: a, appId: PENDING.appId, botName: PENDING.botName, leftAt: expect.any(Date) },
+    ]);
+  });
+
+  it('removeAll leaves the leftover list alone', async () => {
+    const left = await pending();
+    await store.remove(left, { appLeft: true });
+    const live = await pending();
+
+    expect((await store.removeAll()).map((r) => r.installId)).toEqual([live]);
+    expect((await store.leftoverApps()).map((l) => l.installId)).toEqual([left]);
   });
 });
 

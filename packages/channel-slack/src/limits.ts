@@ -26,6 +26,11 @@ export const OAUTH_STATE_BYTES = 32;
 export const ADMIN_BODY_MAX_BYTES = 16_384;
 /** The longest team name or admin name shown, in UTF-16 code units (label.ts). */
 export const LABEL_MAX = 120;
+/**
+ * The most Slack apps Disconnect couldn't delete that the store lists, oldest
+ * first: what one Connect tries to delete and the Slack tab names.
+ */
+export const LEFTOVER_APPS_MAX = 10;
 
 // ── Events ingress ──────────────────────────────────────────────────────────
 

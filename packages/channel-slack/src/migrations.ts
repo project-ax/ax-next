@@ -39,6 +39,14 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     once, oldest first by when it was last seen, the 16 most recent
  *     (channel-store.ts). An outsiders' thread keeps none.
  *
+ *   channel_slack_v1_leftover_apps — Slack apps AX made that Disconnect
+ *     couldn't delete (TASK-1132): the stored configuration token was dead
+ *     or revoked, or Slack didn't answer. The install's row moves its app id
+ *     and name here in the statement that deletes it (store.ts), so the id
+ *     is never in both tables. The next Connect deletes them with the pasted
+ *     access token, and the Slack tab names them until then. Keyed by the
+ *     removed install's id. No secret and no person.
+ *
  * The install's four secrets are NOT here: they live in the credentials vault
  * under `slack:<install_id>:<name>` (secrets.ts). Nor is any AX account's
  * name: `connected_by_user_id` is an id in the installs and channels tables,
@@ -106,10 +114,18 @@ export interface ChannelSlackThreadsTable {
   created_at: ColumnType<Date, Date | undefined, never>;
 }
 
+export interface ChannelSlackLeftoverAppsTable {
+  install_id: string;
+  app_id: string;
+  bot_name: string;
+  left_at: ColumnType<Date, Date | undefined, never>;
+}
+
 export interface ChannelSlackDatabase {
   channel_slack_v1_installs: ChannelSlackInstallsTable;
   channel_slack_v1_channels: ChannelSlackChannelsTable;
   channel_slack_v1_threads: ChannelSlackThreadsTable;
+  channel_slack_v1_leftover_apps: ChannelSlackLeftoverAppsTable;
 }
 
 export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
@@ -188,5 +204,13 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     ALTER TABLE channel_slack_v1_threads
       ADD COLUMN IF NOT EXISTS speaker_names TEXT[] NOT NULL DEFAULT '{}'
+  `.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS channel_slack_v1_leftover_apps (
+      install_id             TEXT PRIMARY KEY,
+      app_id                 TEXT NOT NULL,
+      bot_name               TEXT NOT NULL,
+      left_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
   `.execute(db);
 }

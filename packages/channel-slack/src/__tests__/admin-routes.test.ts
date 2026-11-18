@@ -3,7 +3,7 @@ import { HookBus, PluginError, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { createAdminRoutes } from '../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
-import { ADMIN_BODY_MAX_BYTES, OAUTH_STATE_TTL_MS, SLACK_TOKEN_MAX } from '../limits.js';
+import { ADMIN_BODY_MAX_BYTES, LEFTOVER_APPS_MAX, OAUTH_STATE_TTL_MS, SLACK_TOKEN_MAX } from '../limits.js';
 import { BOT_SCOPES, buildAppManifest, slackUrls } from '../manifest.js';
 import {
   BOT_PREFIX,
@@ -22,7 +22,7 @@ import {
   type RotatedConfigToken,
   type SlackApi,
 } from '../slack-api.js';
-import { InstallStoreError, type InstallRow, type InstallStore } from '../store.js';
+import { InstallStoreError, type InstallRow, type InstallStore, type LeftoverApp } from '../store.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -173,6 +173,8 @@ type StoreMethod = keyof InstallStore;
 
 function memoryStore(clock: () => number, trail: string[]) {
   const rows = new Map<string, Row>();
+  /** The Slack apps Disconnect couldn't delete, by the removed install's id. */
+  const leftovers = new Map<string, LeftoverApp>();
   const calls: Array<{ method: StoreMethod; args: unknown[] }> = [];
   /** A method listed here throws this, every time, until it is deleted. */
   const failures = new Map<StoreMethod, unknown>();
@@ -273,8 +275,14 @@ function memoryStore(clock: () => number, trail: string[]) {
       if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
       r.botName = botName;
     },
-    async remove(installId) {
-      await enter('remove', [installId]);
+    async remove(installId, o) {
+      await enter('remove', [installId, o]);
+      // One statement in the real store: the app is remembered only with its
+      // row's own delete, and an id already remembered keeps its first app.
+      const r = rows.get(installId);
+      if (r !== undefined && o?.appLeft === true && !leftovers.has(installId)) {
+        leftovers.set(installId, { installId, appId: r.appId, botName: r.botName, leftAt: new Date(clock()) });
+      }
       rows.delete(installId);
     },
     async removeAll() {
@@ -287,8 +295,19 @@ function memoryStore(clock: () => number, trail: string[]) {
       rows.clear();
       return removed;
     },
+    async leftoverApps() {
+      await enter('leftoverApps', []);
+      return [...leftovers.values()]
+        .sort((a, b) => a.leftAt.getTime() - b.leftAt.getTime() || a.installId.localeCompare(b.installId))
+        .slice(0, LEFTOVER_APPS_MAX)
+        .map((l) => ({ ...l }));
+    },
+    async forgetLeftoverApp(installId) {
+      await enter('forgetLeftoverApp', [installId]);
+      leftovers.delete(installId);
+    },
   };
-  return { store, rows, calls, failures };
+  return { store, rows, leftovers, calls, failures };
 }
 
 // ── A fake Slack: the six calls the admin routes make ───────────────────────
