@@ -356,7 +356,9 @@ describe('I deleted it', () => {
     renderTab({ ...CONNECTED, leftoverApps: [LEFT] });
     const alert = await leftoverNote();
     fireEvent.click(button(alert, LEFT));
-    const error = await screen.findByText(SLACK_ERROR_COPY.generic);
+    // The route never calls Slack, so the message mustn't blame it.
+    const error = await screen.findByText("We couldn't update that list just now. Try again in a minute.");
+    expect(error.textContent).not.toContain('Slack');
     expect(error.closest('[role="alert"]')).not.toBe(alert);
     expect(document.body.textContent).not.toContain('internal');
     expect(status).toHaveBeenCalledTimes(1);
@@ -367,7 +369,7 @@ describe('I deleted it', () => {
     status.mockResolvedValueOnce(CONNECTED);
     fireEvent.click(button(alert, LEFT));
     await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText(SLACK_ERROR_COPY.generic)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/couldn't update that list/)).toBeNull());
     expect(forget).toHaveBeenCalledTimes(2);
   });
 });

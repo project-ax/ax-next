@@ -81,6 +81,8 @@ import {
 } from '@/lib/slack-admin';
 
 const SLACK_APPS_URL = 'https://api.slack.com/apps';
+/** "I deleted it" failing: the route only edits our own list, so Slack isn't to blame. */
+const FORGET_FAILED = "We couldn't update that list just now. Try again in a minute.";
 
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; status: SlackStatusRead };
 
@@ -210,9 +212,10 @@ function LeftoverAppsNote({
       // before React paints "loading" would leave every button waiting.
       setBusyAppId(null);
       onForgotten();
-    } catch (err) {
+    } catch {
       setBusyAppId(null);
-      setError(slackErrorCopy(err).message);
+      // Only our own list was touched, never Slack, so the message says that.
+      setError(FORGET_FAILED);
     }
   }
 
