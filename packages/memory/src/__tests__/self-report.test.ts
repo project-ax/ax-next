@@ -295,10 +295,13 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'deployed', 'the staging build'],
     ['assistant', 'committed_changes', 'to the main branch'],
     ['assistant', 'opened_pr', '#43 to fix the login redirect'],
+    // `merged`, `tested` and `debugged` need an artifact noun too:
+    // `merged_lists | the two guest lists` is content.
     ['assistant', 'merged_pr', '#42'],
     ['assistant', 'installed_package', 'pandas 2.2'],
     ['assistant', 'executed_command', 'npm ci'],
     ['assistant', 'tested_endpoint', '/api/health returned 200'],
+    ['assistant', 'debugged_app', 'the login crash on Android'],
     ['assistant', 'configured_connector', 'Gmail'],
     // `skill` isn't an artifact noun (`added_skills | Python, SQL` is a résumé), but an install is narration.
     ['assistant', 'installed_skill', 'pdf-tools'],
@@ -435,6 +438,11 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'built', 'a 12-week training plan'],
     ['assistant', 'rebuilt', 'the training plan around 3 runs a week'],
     ['assistant', 'implemented_solution', 'memoized fib'],
+    // Content phrased like debugging, a test or a merge.
+    ['assistant', 'debugged', 'the regex: the dot needs escaping'],
+    ['assistant', 'tested_hypothesis', 'with a t-test: p = 0.03, significant'],
+    ['assistant', 'retested_hypothesis', 'on the full sample: p = 0.04'],
+    ['assistant', 'merged_lists', 'the two guest lists: 42 names'],
     // A reporting verb reports anyone's limits. A topic's stay.
     ['assistant', 'explained_limitations', 'of the Roth IRA: an income cap of $161k'],
     ['assistant', 'listed_limitations', 'the Roth IRA caps income at $161k'],

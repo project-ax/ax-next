@@ -150,9 +150,10 @@
  * - {@link ACTION_VERBS} (`published`, `deployed`, `ran`, `fixed`, `saved`,
  *   `sent`, …) drop on the predicate's first word alone.
  * - {@link ARTIFACT_VERBS} (`created`, `wrote`, `updated`, `added`, `built`,
- *   `implemented`, …) read two ways: "created a meal plan", "wrote a haiku"
- *   and "built a 12-week training plan" are content it supplied, "created an
- *   artifact" and "wrote a file" are narration. So they drop only when the
+ *   `tested`, `merged`, …) read two ways: "created a meal plan", "built a
+ *   12-week training plan", "tested the hypothesis" and "merged the two guest
+ *   lists" are content it supplied, "created an artifact", "wrote a file" and
+ *   "merged the PR" are narration. So they drop only when the
  *   HEAD of the verb's object is an {@link ARTIFACT_NOUNS} word. The object
  *   runs to its first {@link PREPOSITIONS} word, and its head is its last
  *   word. `created_artifact_for_q3_sales_review` and `added_slack_connector`
@@ -196,11 +197,12 @@
  *   (`set_up_weekly_routine`); an artifact word that isn't its object's head
  *   (`wrote_to_file`, `created_artifact_showing_q3_sales`).
  * - Dropped, though it's content: `sent | a summary of the call`,
- *   `edited_document | the essay intro`, a bare `created_routine | 6am wake,
- *   6:15 stretch`, and a chart that isn't a picture (`created_seating_chart`,
- *   `created_chart_of_accounts`). So is a topic's limit written with no
- *   subject of its own: `listed_limitations | can't establish causation`
- *   reads as the assistant's.
+ *   `saved | the user $120 a year on the annual plan`, `fixed_typo | their ->
+ *   there`, `edited_document | the essay intro`, a bare `created_routine |
+ *   6am wake, 6:15 stretch`, and a chart that isn't a picture
+ *   (`created_seating_chart`, `created_chart_of_accounts`). So is a topic's
+ *   limit written with no subject of its own: `listed_limitations | can't
+ *   establish causation` reads as the assistant's.
  */
 
 /**
@@ -368,14 +370,15 @@ const MEMORY_OP_PREDICATE =
 
 // Past tense only: a completed action is narration; `runs`/`publishes` is a standing behaviour.
 const ACTION_VERBS = new Set(['published', 'unpublished', 'republished', 'deployed', 'redeployed', 'ran', 'reran',
-  'executed', 'committed', 'merged', 'pushed', 'installed', 'uninstalled', 'reinstalled', 'fixed', 'debugged',
-  'patched', 'refactored', 'tested', 'retested', 'uploaded', 'downloaded', 'deleted', 'restarted', 'configured',
-  'reconfigured', 'migrated', 'saved', 'sent', 'posted', 'opened', 'attached', 'exported', 'imported', 'cloned',
-  'forked', 'moved', 'invoked', 'triggered']);
+  'executed', 'committed', 'pushed', 'installed', 'uninstalled', 'reinstalled', 'fixed', 'patched', 'refactored',
+  'uploaded', 'downloaded', 'deleted', 'restarted', 'configured', 'reconfigured', 'migrated', 'saved', 'sent',
+  'posted', 'opened', 'attached', 'exported', 'imported', 'cloned', 'forked', 'moved', 'invoked', 'triggered']);
 // Narration only when the head of the verb's object is an artifact noun: "created a meal plan", "wrote
-// a haiku" and "built a 12-week training plan" are content. `setup` stands for the two words `set_up`.
+// a haiku", "built a 12-week training plan" and "tested the hypothesis" are content. `setup` stands for
+// the two words `set_up`.
 const ARTIFACT_VERBS = new Set(['created', 'generated', 'made', 'wrote', 'rewrote', 'updated', 'modified', 'changed',
-  'added', 'removed', 'edited', 'shared', 'scheduled', 'rendered', 'setup', 'built', 'rebuilt', 'implemented']);
+  'added', 'removed', 'edited', 'shared', 'scheduled', 'rendered', 'setup', 'built', 'rebuilt', 'implemented',
+  'debugged', 'tested', 'retested', 'merged']);
 // As the head of the verb's object: `created_artifact_for_q3_sales_review` is narration,
 // `created_presentation_outline` is an outline it wrote. No `skill`, `workflow` or `automation`:
 // `added_skills | Python, SQL` is a résumé, and a workflow is a procedure it wrote.
@@ -385,7 +388,7 @@ const ARTIFACT_NOUNS = new Set(['artifact', 'artifacts', 'file', 'files', 'folde
   'visualizations', 'chart', 'charts', 'graph', 'graphs', 'spreadsheet', 'spreadsheets', 'deck', 'decks',
   'presentation', 'presentations', 'image', 'images', 'diagram', 'diagrams', 'repo', 'repos', 'repository',
   'repositories', 'branch', 'branches', 'commit', 'commits', 'pr', 'prs', 'connector', 'connectors', 'component',
-  'components', 'pdf', 'pdfs', 'csv', 'csvs']);
+  'components', 'endpoint', 'endpoints', 'pdf', 'pdfs', 'csv', 'csvs']);
 // Artifact nouns that are everyday words too: as the head only bare, with nothing but determiners
 // before them. `updated_routine` is narration; `created_workout_routine` is a plan it wrote.
 const EVERYDAY_NOUNS = new Set(['routine', 'routines']);
