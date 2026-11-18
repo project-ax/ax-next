@@ -3,4 +3,4 @@
 '@ax/channel-web': patch
 ---
 
-Trying Slack again no longer leaves an extra Slack app behind. When Disconnect, or cancelling a connection that didn't finish, can't delete the Slack app we made (usually because the configuration token we hold has stopped working, for example after it was revoked on Slack's page), we now remember that app instead of forgetting it. Admin > Slack names it, with a link straight to its settings page, and the next Connect deletes it with the token you paste.
+When Disconnect, or cancelling a Slack connection that didn't finish, can't delete the Slack app we made, we now remember that app instead of forgetting it. That usually happens because the configuration token we hold has stopped working, for example after it was revoked on Slack's page. Admin > Slack names the app, with a link straight to its settings page, and the next Connect tries to delete it with the token you paste. We haven't yet checked on real Slack that a new token can always delete an app an older one made, so if the note is still there after you connect, deleting it by hand is the sure fix.
