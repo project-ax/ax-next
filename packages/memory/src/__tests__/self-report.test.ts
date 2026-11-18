@@ -387,6 +387,10 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'drafted_email', 'Subject: Q3 update'],
     ['assistant', 'explained_limitations', 'of the Roth IRA: an income cap of $161k'], // a topic
     ['assistant', 'explained_limitations_of_the_study', 'small sample size'],
+    // A limitation or no-access word mid-predicate is a topic: both
+    // capability tests are anchored at the start.
+    ['assistant', 'explained_study_limitations', 'small sample size, no control group'],
+    ['assistant', 'explained_why_the_guest_has_no_access', 'the share link expired yesterday'],
     ['assistant', 'runs', 'a daily digest at 9am'], // present tense: a standing behaviour
     ['assistant', 'publishes', 'the weekly report on Fridays'],
   ])('keeps %s | %s | %s: what it supplied', (subject, predicate, object) => {
