@@ -236,6 +236,10 @@ function speakerIndex(speakerNames: readonly string[]): SpeakerIndex {
  * (the IPC frame is 4 MiB), and NFKC grows some characters eighteenfold
  * (measured: 4 MiB of U+FDFA took ~4 s to compare with names). Refusing it
  * is the cheap direction, as everywhere in this rule.
+ *
+ * A caller that counts what the rule dropped counts these too: the observer's
+ * `speakerFacts` includes a fact whose subject is this long, so a non-zero
+ * count doesn't prove a person was named.
  */
 export const SPEAKER_RULE_READS_AT_MOST = 1024;
 

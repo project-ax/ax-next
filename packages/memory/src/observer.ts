@@ -169,10 +169,7 @@ export type ObserverResult =
        * Facts dropped because they had a person subject (`user`, `user:<id>`,
        * or a speaker's name), in a shared turn (TASK-1091, TASK-1146,
        * `toStatements`). Always 0 in a private turn. Not `unusable`: this is
-       * the rule working, not the extractor failing. Also counts a fact whose
-       * subject is over 1024 code units, which the rule drops unread
-       * (`SPEAKER_RULE_READS_AT_MOST`): that isn't a person, so a non-zero
-       * count doesn't prove one was named.
+       * the rule working, not the extractor failing.
        */
       speakerFacts: number;
       /**
