@@ -185,6 +185,11 @@ recalled in a channel.
   - A work subject made of a display name's words ("Standup Team") drops
     `team_standup`. We'd rather lose one fact than pin someone's words on a
     person.
+  - A thread row keeps only the 16 most recently seen names. Sixteen newer
+    names (eight other members, or one member renaming fifteen times) push out
+    an earlier speaker's, and a pass that still covers that speaker's turns
+    then keeps facts under their name. A default pass covers four turns, so
+    this is normally out of reach.
   - Thread rows keep members' label names until the agent is deleted. We don't
     clear them when a channel is disconnected or a conversation is deleted.
     They're display names and Slack IDs, read only by the veto, and the row
