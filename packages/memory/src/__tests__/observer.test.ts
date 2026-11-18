@@ -863,6 +863,30 @@ describe("the agent's narration of its own operations is not a fact (TASK-1136)"
 
 // ---------------------------------------------------------------------------
 
+describe("the assistant's narration of its own actions is not a fact (TASK-1151)", () => {
+  it('drops action narration and limits, keeps its identity and what it supplied', async () => {
+    const h = await withLlm(() =>
+      reply(
+        extraction([
+          fact(),
+          fact({ subject: 'assistant', predicate: 'created_artifact', object: 'the Q3 revenue dashboard' }),
+          fact({ subject: 'assistant', predicate: 'stated_limitation', object: 'cannot browse the internet' }),
+          fact({ subject: 'assistant', predicate: 'has_name', object: 'Ember' }),
+          fact({ subject: 'assistant', predicate: 'recommended', object: 'the Fenway walking tour' }),
+        ]),
+      ),
+    );
+    await chatEnd(h);
+
+    expect(readRows(h.databasePath).map((r) => r.relation).sort()).toEqual(['has_name', 'lives_in', 'recommended']);
+    // Counted with the other self-reports: the same filter, the same counter.
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).find((l) => l.bindings.outcome === 'recorded');
+    expect(run?.bindings).toMatchObject({ recorded: 3, selfReports: 2, unusable: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('a routine run is not a conversation the person had (TASK-616)', () => {
   // The skill-reflection gate counts DISTINCT conversations in one recall
   // answer. Every routine fire (skill-reflection's own included) runs in a
