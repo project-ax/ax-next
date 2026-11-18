@@ -479,7 +479,11 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
   // scans the whole table. Once per deleted fact (to count, then to delete),
   // that took 5.1 s at 20,000 rows and 1,000 deletions (measured); one pass
   // took 0.13 s. The store here is twice that size, so a scan per deletion in
-  // EITHER step costs about four times as much and can't hide under the bound.
+  // EITHER step costs about four times as much: 9 to 19 s, measured, for the
+  // two one-step variants and the original. The one-pass apply, Node's
+  // start-up and the index check included, takes about 0.2 s here, so the 6 s
+  // bound leaves room for a slow CI machine and still sits well under the slow
+  // shapes.
   it('keeps the write lock short on a big store: one pass over the search table, not one per deletion', () => {
     const writer = new Database(databasePath);
     try {
@@ -520,6 +524,6 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
       reader.close();
     }
     // The whole process, Node's start-up included.
-    expect(elapsed).toBeLessThan(2_000);
+    expect(elapsed).toBeLessThan(6_000);
   });
 });
