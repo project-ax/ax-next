@@ -43,9 +43,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     couldn't delete (TASK-1132): the stored configuration token was dead
  *     or revoked, or Slack didn't answer. The install's row moves its app id
  *     and name here in the statement that deletes it (store.ts), so the id
- *     is never in both tables. The next Connect deletes them with the pasted
- *     access token, and the Slack tab names them until then. Keyed by the
- *     removed install's id. No secret and no person.
+ *     is never in both tables. The next Connect tries to delete them with
+ *     the pasted access token; the Slack tab names them until that works or
+ *     the admin says they deleted one by hand (`forget-leftover-app`). Keyed
+ *     by the removed install's id. No secret and no person.
  *
  * The install's four secrets are NOT here: they live in the credentials vault
  * under `slack:<install_id>:<name>` (secrets.ts). Nor is any AX account's
