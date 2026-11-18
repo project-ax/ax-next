@@ -466,6 +466,31 @@ describe("the assistant's narration of its own actions, and what it says it can'
     expect(classifyAgentFact(WALK_FACT)).toBe('context');
   });
 
+  // TASK-612 reads `agent` and `the_agent` as the agent too, and the observer
+  // still drops these. But `agent` is an everyday noun (a real-estate agent's
+  // "no instructions from the seller"), and the cleanup's delete is permanent,
+  // so they get a class of their own, which the cleanup keeps
+  // (`narration-cleanup.test.ts`).
+  it.each([
+    ['agent', WALK_FACT.predicate, WALK_FACT.object],
+    ['The Agent', WALK_FACT.predicate, WALK_FACT.object],
+    ['the_agent', 'received', 'no instructions from the seller about the counteroffer'],
+    ['agent', 'has_no_rules', 'about pets in the unit'],
+    ['the agent', 'stated', "doesn't have any memory of the phone call"],
+    ['Agent', 'said', 'my instructions are to accept anything over 450k'],
+  ])("names TASK-612's class for %s | %s | %s: agent-context, still dropped", (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('agent-context');
+    expect(isAgentContextSelfReport(fact)).toBe(true);
+  });
+
+  it.each(['the_assistant', 'AI assistant', 'Assistant'])(
+    "names TASK-612's class for %s: the assistant's own context",
+    (subject) => {
+      expect(classifyAgentFact({ ...WALK_FACT, subject })).toBe('context');
+    },
+  );
+
   it("names TASK-1136's class: a failed save is its own narration", () => {
     expect(classifyAgentFact({ subject: 'assistant', predicate: 'could_not_save_memory', object: 'x' })).toBe(
       'own-narration',

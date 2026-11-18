@@ -175,6 +175,14 @@
  *   and TASK-1136's run before it, in their old order, so `saved_to_memory` is
  *   still its own narration.
  *
+ * One class the observer drops, the one-off cleanup keeps. TASK-612 reads the
+ * subjects `agent` and `the_agent` as the agent too, so the observer still
+ * drops their context self-reports on the way in. But `agent` is an everyday
+ * word ("the agent received no instructions from the seller" is about
+ * someone's real-estate agent), and the cleanup's delete is for good. So
+ * those rows are `agent-context`, not `context`, and the cleanup leaves the
+ * saved ones alone.
+ *
  * The accepted residuals: narration with a verb nobody listed stays
  * (`searched_web | for flights to Lisbon`, `checked | the deploy status`), and
  * so does `renamed_file`, because `renamed` is an identity word. So do a skill
@@ -453,6 +461,7 @@ function isOwnNarration(normalized: string, object: string, text: string): boole
 /** What a fact about the agent is. The cleanup script prints these names. */
 export type AgentFactClass =
   | 'context' //          TASK-612: its own rules/instructions/memory   (dropped)
+  | 'agent-context' //    TASK-612, filed under `agent`/`the_agent`     (dropped; the cleanup keeps it)
   | 'own-narration' //    TASK-1136: its memory operations, tool failures (dropped)
   | 'action-narration' // TASK-1151: what it did with its tools         (dropped)
   | 'capability' //       TASK-1151: what it says it can't do           (dropped)
@@ -494,15 +503,17 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
 
 /**
  * What a fact about the agent is, or `null` when its subject isn't the agent
- * (see the header). The observer drops `context`, `own-narration`,
- * `action-narration` and `capability`, and keeps `identity` and `other`
- * ({@link isAgentContextSelfReport}). `agent` and `the_agent` only ever get
- * `context` or `null`: TASK-1136's and TASK-1151's checks take the assistant
- * alone.
+ * (see the header). The observer drops `context`, `agent-context`,
+ * `own-narration`, `action-narration` and `capability`, and keeps `identity`
+ * and `other` ({@link isAgentContextSelfReport}). `agent` and `the_agent`
+ * only ever get `agent-context` or `null`: TASK-1136's and TASK-1151's checks
+ * take the assistant alone.
  *
  * The one-off cleanup, `packages/memory/scripts/clean-assistant-narration.mjs`,
  * deletes saved rows with this very function: it pipes this file, as text,
- * ahead of its own into `node --input-type=module-typescript`. So this file
+ * ahead of its own into `node --input-type=module-typescript`. It deletes
+ * every class the observer drops except `agent-context`: `agent` is an
+ * everyday noun, and that delete is for good. So this file
  * stays import-free and uses only erasable TypeScript (annotations, `as`,
  * `readonly`; no `enum`, `namespace` or parameter properties), and its
  * top-level names share that program's scope.
@@ -515,13 +526,15 @@ export function classifyAgentFact(fact: {
   // The agent as subject, FIRST: everything below is only its own narration.
   const subject = normalizeSubject(fact.subject);
   if (!AGENT_SUBJECTS.has(subject)) return null;
+  // TASK-612 reads `agent` as the agent too, but under a class of its own.
+  const context = ASSISTANT_SUBJECTS.has(subject) ? 'context' : 'agent-context';
   const predicate = fact.predicate.trim().toLowerCase();
-  if (CONTEXT_PREDICATE.test(predicate)) return 'context';
+  if (CONTEXT_PREDICATE.test(predicate)) return context;
   const text = `${predicate.replace(/_/g, ' ')} ${fact.object}`
     .slice(0, MAX_SCANNED_CHARS)
     .toLowerCase()
     .replace(/[‘’]/g, "'");
-  if (CONTEXT_PATTERNS.some((pattern) => pattern.test(text))) return 'context';
+  if (CONTEXT_PATTERNS.some((pattern) => pattern.test(text))) return context;
   // `agent` is an everyday noun: the checks below take the assistant alone.
   if (!ASSISTANT_SUBJECTS.has(subject)) return null;
   const normalized = normalizePredicate(fact.predicate);
@@ -531,7 +544,7 @@ export function classifyAgentFact(fact: {
 }
 
 /**
- * Whether the observer drops the fact: its class is one of the four dropped
+ * Whether the observer drops the fact: its class is one of the five dropped
  * ones. The name predates TASK-1136 and TASK-1151; `toStatements` calls it by
  * that name.
  */
@@ -541,5 +554,11 @@ export function isAgentContextSelfReport(fact: {
   object: string;
 }): boolean {
   const kind = classifyAgentFact(fact);
-  return kind === 'context' || kind === 'own-narration' || kind === 'action-narration' || kind === 'capability';
+  return (
+    kind === 'context' ||
+    kind === 'agent-context' ||
+    kind === 'own-narration' ||
+    kind === 'action-narration' ||
+    kind === 'capability'
+  );
 }

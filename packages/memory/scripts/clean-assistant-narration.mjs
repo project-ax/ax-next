@@ -22,6 +22,12 @@
 //   full-text (FTS5) and vector (vec0) search rows, in ONE transaction, the
 //   way the store's own forget does it (packages/memory-facts-sqlite/src/purge.ts).
 //
+//   One class the observer drops stays: `agent-context`. TASK-612's check
+//   reads the subjects `agent` and `the_agent` as the agent too. But `agent`
+//   is an everyday word ("the agent received no instructions from the
+//   seller" is about someone's real-estate agent), and this delete can't be
+//   taken back. So those rows are kept, and counted on their own.
+//
 // ONE RULE, NOT TWO
 //   This file has no copy of the rule. The runbook pipes self-report.ts in
 //   front of it, so it deletes with the observer's own function. That's why
@@ -34,13 +40,16 @@
 //   subject, id or agent key: those are people's memories, and a predicate is
 //   written by a model from the chat, so it can say anything.
 //     {"mode":"dry-run","examined":n,"delete":{"context":n,"own-narration":n,
-//      "action-narration":n,"capability":n},"keep":{"identity":n,"other":n},
-//      "ftsRows":n,"vecRows":n,"keptClosedByDeleted":n,"deleted":n,"refused":null}
+//      "action-narration":n,"capability":n},"keep":{"identity":n,"other":n,
+//      "agent-context":n},"ftsRows":n,"vecRows":n,"keptClosedByDeleted":n,
+//      "deleted":n,"refused":null}
 //   - examined: every `extracted` row it read. A fact about anyone but the
-//     assistant counts here and nowhere else.
+//     assistant counts here and nowhere else, unless it's keep.agent-context.
 //   - keep.identity: every predicate with an identity word in it (`name`,
 //     `persona`, `style`, `rule`, `preference`, `default`, ...). That's a bit
 //     wider than "its name and its rules": `renamed_file` counts here too.
+//   - keep.agent-context: rows about `agent` or `the_agent` that the
+//     observer drops but this keeps (see WHAT IT DELETES).
 //   - ftsRows, vecRows: the search rows the deleted facts have. vecRows is
 //     null when there are vectors but the extension isn't loaded (no
 //     --vec-extension, or a wrong one).
@@ -114,7 +123,8 @@ import { DatabaseSync } from 'node:sqlite';
  */
 function cleanAssistantNarration() {
   const DROPPED = ['context', 'own-narration', 'action-narration', 'capability'];
-  const KEPT = ['identity', 'other'];
+  // `agent-context`: the observer drops it, this keeps it (see WHAT IT DELETES).
+  const KEPT = ['identity', 'other', 'agent-context'];
   const VEC_FLAG = '--vec-extension=';
   const print = (report) => console.log(JSON.stringify(report));
   const refuse = (refused) => {
@@ -163,7 +173,7 @@ function cleanAssistantNarration() {
       mode: apply ? 'apply' : 'dry-run',
       examined: 0,
       delete: { context: 0, 'own-narration': 0, 'action-narration': 0, capability: 0 },
-      keep: { identity: 0, other: 0 },
+      keep: { identity: 0, other: 0, 'agent-context': 0 },
       ftsRows: 0,
       vecRows: hasVec && !vecLoaded ? null : 0,
       keptClosedByDeleted: 0,

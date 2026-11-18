@@ -50,7 +50,7 @@ const DIMENSIONS = 384;
 
 type Label =
   | 'D1' | 'D2' | 'D3' | 'D4' | 'D5' | 'D6' | 'D7'
-  | 'K1' | 'K2' | 'K3' | 'K4' | 'K5' | 'K6' | 'K7' | 'K8';
+  | 'K1' | 'K2' | 'K3' | 'K4' | 'K5' | 'K6' | 'K7' | 'K8' | 'K9' | 'K10';
 
 interface SeedRow {
   label: Label;
@@ -88,18 +88,28 @@ const SEED: readonly SeedRow[] = [
   { label: 'K6', about: 'agent', relation: 'published_artifact', value: 'the listing on Zillow V-K6' },
   { label: 'K7', provenance: 'agent', about: 'assistant', relation: 'created_artifact', value: 'the launch checklist V-K7' },
   { label: 'K8', provenance: 'human', about: 'assistant', relation: 'ran_tests', value: 'all passed V-K8' },
+  // Kept although the observer drops them: TASK-612's check reads `agent` as
+  // the agent too, but here it's a real-estate agent, and the delete is for good.
+  {
+    label: 'K9',
+    about: 'the_agent',
+    relation: 'received',
+    value: 'no instructions from the seller about the counteroffer V-K9',
+  },
+  { label: 'K10', about: 'agent', relation: 'has_no_rules', value: 'about pets in the unit V-K10' },
 ];
 
 const DOOMED: readonly Label[] = ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'];
-const KEPT: readonly Label[] = ['K1', 'K2', 'K3', 'K4', 'K5', 'K6', 'K7', 'K8'];
+const KEPT: readonly Label[] = ['K1', 'K2', 'K3', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10'];
 
 /** The seed, counted the way the script counts it, in its output's key order. */
 const SEED_COUNTS = {
   // Every `extracted` row: all but K7 (agent) and K8 (human).
-  examined: 13,
+  examined: 15,
   delete: { context: 1, 'own-narration': 1, 'action-narration': 4, capability: 1 },
-  // K5 and K6 aren't the assistant, so they're counted in neither.
-  keep: { identity: 2, other: 2 },
+  // K5 and K6 aren't the agent, so they're counted in neither. K9 and K10
+  // are TASK-612's `agent` rows, kept on purpose.
+  keep: { identity: 2, other: 2, 'agent-context': 2 },
   ftsRows: 7,
   vecRows: 7,
   keptClosedByDeleted: 0,
@@ -312,9 +322,9 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     expect(again.stdout).toBe(
       line({
         mode: 'apply',
-        examined: 6,
+        examined: 8,
         delete: { context: 0, 'own-narration': 0, 'action-narration': 0, capability: 0 },
-        keep: { identity: 2, other: 2 },
+        keep: { identity: 2, other: 2, 'agent-context': 2 },
         ftsRows: 0,
         vecRows: 0,
         keptClosedByDeleted: 0,
@@ -481,8 +491,8 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     try {
       const count = (table: string): number =>
         (reader.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
-      expect(count('memory_facts_v1')).toBe(15 - 7 + 38_000);
-      expect(count('memory_facts_v1_fts')).toBe(15 - 7 + 38_000);
+      expect(count('memory_facts_v1')).toBe(SEED.length - 7 + 38_000);
+      expect(count('memory_facts_v1_fts')).toBe(SEED.length - 7 + 38_000);
     } finally {
       reader.close();
     }
