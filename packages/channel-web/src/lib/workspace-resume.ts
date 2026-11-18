@@ -140,35 +140,59 @@ export function lastUserText(thread: readonly ThreadMessage[]): string | null {
 }
 
 /**
- * Follow a reply that is still being written until it ends. `true` when it
- * ended (`onDone`, `onError`, or a stream that can't be read at all: none of
- * those leaves a running reply to protect), `false` when it was still going at
+ * How following a reply ended. Only `ended` is proof the reply is over.
+ */
+type TurnEnd = 'ended' | 'unproven' | 'timeout';
+
+/**
+ * Follow a reply that is still being written until it ends. `'ended'` only on
+ * `onDone` (a `done` frame, or a resume 404: the host no longer runs that turn).
+ * `'unproven'` for every other way the wait stopped: `onError` fires for a turn's
+ * error frame AND for a failed first open, a 401/403/429/5xx or spent
+ * reconnects, and the callback carries nothing to tell them apart, so none of
+ * them proves the reply ended; a stream that returns with no terminal frame or
+ * rejects is no proof either. `'timeout'` when it was still going at
  * `timeoutMs`. Aborts its stream either way and never rejects.
  */
-function waitForTurnEnd(reqId: string, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+function waitForTurnEnd(reqId: string, timeoutMs: number): Promise<TurnEnd> {
+  return new Promise<TurnEnd>((resolve) => {
     const controller = new AbortController();
-    const finish = (ended: boolean): void => {
+    const finish = (end: TurnEnd): void => {
       clearTimeout(timer);
       controller.abort();
-      resolve(ended);
+      resolve(end);
     };
-    const timer = setTimeout(() => finish(false), timeoutMs);
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
     workspaceApi
       .streamReply(reqId, {
         resume: true,
         signal: controller.signal,
         onText: () => undefined,
-        onDone: () => finish(true),
-        onError: () => finish(true),
+        onDone: () => finish('ended'),
+        onError: () => finish('unproven'),
       })
       .then(
-        // The stream returned without a terminal frame (aborted by us, or
-        // closed): nothing left to wait on, and `finish` is idempotent.
-        () => finish(true),
-        () => finish(true),
+        // Returned without a terminal frame (closed under us), or a reader bug:
+        // `finish` is idempotent, so a stream we aborted ourselves changes nothing.
+        () => finish('unproven'),
+        () => finish('unproven'),
       );
   });
+}
+
+/**
+ * After a wait that proved nothing, is a reply still live in the conversation?
+ * Any live reply counts, not only the one we followed: a re-send would retire
+ * its session just the same. A failed read cannot rule one out, so it counts.
+ */
+async function replyStillLive(agentId: string, conversationId: string): Promise<boolean> {
+  try {
+    const detail = await workspaceApi.agent(agentId, conversationId);
+    return typeof detail.liveReqId === 'string' && detail.liveReqId.length > 0;
+  } catch (e) {
+    console.warn('[workspace] could not re-check for a running reply', e);
+    return true;
+  }
 }
 
 /**
@@ -210,8 +234,12 @@ export async function resumeParkedTurn(target: {
   // A reply is still being written here. Let it finish; re-sending now would
   // restart the session under it. Still going at the bound: send nothing.
   if (typeof liveReqId === 'string' && liveReqId.length > 0) {
-    const ended = await waitForTurnEnd(liveReqId, RESUME_WAIT_MS);
-    if (!ended) return { resumed: false, reason: 'still-running' };
+    const end = await waitForTurnEnd(liveReqId, RESUME_WAIT_MS);
+    if (end === 'timeout') return { resumed: false, reason: 'still-running' };
+    // Not seeing the end is not the end: ask the host once before re-sending.
+    if (end === 'unproven' && (await replyStillLive(agentId, conversationId))) {
+      return { resumed: false, reason: 'still-running' };
+    }
   }
   try {
     const { reqId, conversationId: landed } = await workspaceApi.sendMessage({
