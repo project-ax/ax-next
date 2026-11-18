@@ -1613,9 +1613,18 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(first).toMatchObject({ userId: 'usr_mel', source: 'user' });
     const conv1 = first.conversationId!;
     await channelTurnCalls(mark);
-    expect((await preCapture(conv1)).rejected).toBe(false);
-    // A conversation this plugin never recorded (a web chat) isn't its to refuse.
-    expect((await preCapture('cnv_a_web_chat')).rejected).toBe(false);
+    // TASK-1146: the answer carries the names the thread's label shows (the display name the
+    // Slack fake serves, and the member id), so memory can tell who is speaking.
+    const melNames = ['Mel', 'U07MEL00001'];
+    expect(await preCapture(conv1)).toEqual({
+      rejected: false,
+      payload: { conversationId: conv1, speakerNames: melNames },
+    });
+    // A conversation this plugin never recorded (a web chat) isn't its to refuse, or to name.
+    expect(await preCapture('cnv_a_web_chat')).toEqual({
+      rejected: false,
+      payload: { conversationId: 'cnv_a_web_chat' },
+    });
 
     // An outsider's thread is never captured, with the switch on: Carol runs as Ada, and what
     // she says would otherwise be recalled as fact in the agent's later turns, members' included.
@@ -1644,7 +1653,10 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const conv3 = (await invokedTurn(4)).ctx.conversationId!;
     await channelTurnCalls(mark);
     expect(conv3).not.toBe(conv1);
-    expect((await preCapture(conv3)).rejected).toBe(false);
+    expect(await preCapture(conv3)).toEqual({
+      rejected: false,
+      payload: { conversationId: conv3, speakerNames: melNames },
+    });
     // The outsider's thread is still out, the switch on or not.
     expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
 

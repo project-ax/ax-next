@@ -14,7 +14,7 @@ import {
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
 import { recallFacts, recordFacts } from './audience.js';
-import { CAPTURE_REFUSED_EVENT, captureRefusal } from './capture.js';
+import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 import {
@@ -1528,7 +1528,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // answers for it, in a real thread, so it is captured and attributed
         // like any other. What governs its capture is `ctx.audience`, not
         // `source`: a shared turn's statements are stamped shared, and it
-        // stores nothing under a person subject (`breaksSpeakerRule`).
+        // stores nothing under a person subject: `user`, `user:<id>`, or a
+        // speaker's name from `memory:pre-capture` (`breaksSpeakerRule`,
+        // TASK-1146).
         // (From Slack none is captured: channel-slack's `memory:pre-capture`
         // veto refuses every thread an outsider talks in, TASK-1094.)
         //
@@ -1694,6 +1696,11 @@ interface ObserveDeps {
   ownerUserId: string;
   /** The turn's audience (TASK-1091): `audienceOf(ctx)`, like the owner. */
   audience: AgentContextAudience;
+  /**
+   * The speakers this pass's `memory:pre-capture` answer named (TASK-1146):
+   * in a shared turn, no fact is stored under them.
+   */
+  speakerNames: readonly string[];
   userId: string | undefined;
 }
 
@@ -1730,15 +1737,21 @@ async function observe(
     // MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS). With no conversation there
     // is nothing to refuse, and memory doesn't ask. `memory_note` asks the
     // same question before it writes (TASK-1094), through the same
-    // `captureRefusal`, so a refusal stops the agent's own notes too.
-    const refusal = await captureRefusal(bus, ctx);
-    if (refusal !== undefined) {
+    // `captureCheck`, so a refusal stops the agent's own notes too.
+    //
+    // The answer also names the people speaking in the conversation
+    // (TASK-1146), and the producer below drops a shared turn's facts filed
+    // under them. An answer memory can't read throws, so the catch below
+    // records nothing and an incremental pass keeps its cursor: the turns
+    // are tried again, never captured without the names.
+    const check = await captureCheck(bus, ctx);
+    if (check.refusal !== undefined) {
       // `info`: a refusal is a decision, not a fault. Ids and the
       // subscriber's own reason only, never conversation text.
       ctx.logger.info(CAPTURE_REFUSED_EVENT, {
         agentId: ctx.agentId,
-        refusedBy: refusal.source,
-        reason: refusal.reason,
+        refusedBy: check.refusal.source,
+        reason: check.refusal.reason,
         ...(trigger !== undefined ? { trigger } : {}),
       });
       return true;
@@ -1784,13 +1797,15 @@ async function observe(
       record: async (input: ObserverRecordInput) => {
         await resolveMemoryAccess(bus, ctx);
         // `recordFacts`: the batch is stamped with this turn's audience, and
-        // the person-subject backstop runs, from the same `ctx` as the
-        // `audience` below that already dropped those facts.
+        // the person-subject backstop runs, from the same `ctx` and the same
+        // names as the `audience` and `speakerNames` below that already
+        // dropped those facts. Handed the names, it doesn't ask again.
         const out = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
           FACTS_RECORD_HOOK,
           input,
+          check.speakerNames,
         );
         cfg.onFactsChanged?.(ctx);
         return out;
@@ -1802,6 +1817,9 @@ async function observe(
       // From `ctx`, never a payload, like the owner: what the producer's
       // statements may say about a person (TASK-1091).
       audience: audienceOf(ctx),
+      // From the answer above, never the extraction: who a shared turn's
+      // statements may not be filed under (TASK-1146).
+      speakerNames: check.speakerNames,
       userId,
     });
 
@@ -1873,7 +1891,7 @@ function observeMessages(
   ctx: AgentContext,
   cfg: ObserveConfig,
   messages: UntrustedMessage[],
-  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId, audience }: ObserveDeps,
+  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId, audience, speakerNames }: ObserveDeps,
 ): Promise<ObserverResult> {
   return runObserver({
     messages,
@@ -1884,6 +1902,7 @@ function observeMessages(
     retractedRows,
     ownerUserId,
     audience,
+    speakerNames,
     // The batch identity keeps the real conversation; the rows are
     // attributed per `conversationOf` (a routine run is not a
     // conversation the person had — TASK-616).
@@ -1953,7 +1972,7 @@ async function runConversationPass(
   };
 
   const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
-    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, audience, userId } = deps;
+    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, audience, speakerNames, userId } = deps;
     const record: ObserveDeps['record'] = async (input) => {
       const out = await deps.record(input);
       for (const row of out?.records ?? []) {
@@ -2010,6 +2029,7 @@ async function runConversationPass(
         retractedRows,
         ownerUserId,
         audience,
+        speakerNames,
         userId,
       });
     }
@@ -2044,6 +2064,7 @@ async function runConversationPass(
       retractedRows,
       ownerUserId,
       audience,
+      speakerNames,
       // Batch identity: the real conversation. Stored attribution: per
       // `conversationOf`, so a routine turn's rows carry none (TASK-616).
       conversationId,
@@ -2322,8 +2343,9 @@ function logObserverResult(
         // save that"), dropped (TASK-612, TASK-1136). Informational; not a
         // failure.
         selfReports: result.selfReports,
-        // Facts with a person subject a shared turn kept out (TASK-1091). 0 in a
-        // private turn. Informational: the rule working, not a failure.
+        // Facts with a person subject (`user`, `user:<id>`, a speaker's name)
+        // a shared turn kept out (TASK-1091, TASK-1146). 0 in a private turn.
+        // Informational: the rule working, not a failure.
         speakerFacts: result.speakerFacts,
         // Positive readings of a negated statement, dropped (TASK-652).
         // Informational; not a failure.

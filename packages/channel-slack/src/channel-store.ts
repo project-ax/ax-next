@@ -1,5 +1,6 @@
 import { sql, type Kysely, type Selectable } from 'kysely';
 import { cleanChannelName } from './label.js';
+import { THREAD_SPEAKER_NAMES_MAX } from './limits.js';
 import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migrations.js';
 
 /**
@@ -19,10 +20,12 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * It also keeps the memory switch's thread map (TASK-1094): which
  * conversations are channel threads, of which channel and agent, whether
  * outsiders' turns run in it, and whether one ever had a turn while the
- * switch was off. The capture veto (capture-veto.ts) reads it; the router
- * writes it when a channel turn starts. Only `removeForAgent` deletes a
- * thread row: an install's removal and a disconnect keep them, so what was
- * said while the switch was off stays out of memory after Slack is gone.
+ * switch was off; and, for a member's thread, the names their turns were
+ * labelled with (TASK-1146). The capture veto (capture-veto.ts) reads it;
+ * the router writes it when a channel turn starts. Only `removeForAgent`
+ * deletes a thread row: an install's removal and a disconnect keep them, so
+ * what was said while the switch was off stays out of memory after Slack is
+ * gone.
  */
 export interface ChannelBinding {
   installId: string;
@@ -52,14 +55,26 @@ export interface ChannelThread {
    * from it, whatever the switch says. Fixed by the conversation's key.
    */
   external: boolean;
+  /**
+   * The names member turns here were labelled with (TASK-1146): each turn's
+   * display name and Slack id (format.ts `senderLabelNames`). Each once,
+   * oldest first by when it was last seen, at most THREAD_SPEAKER_NAMES_MAX
+   * (the most recently seen). The capture veto hands them to memory, which
+   * stores no shared statement whose subject is made of them. Empty for an
+   * outsiders' thread, and for a row from before TASK-1146 until its next
+   * member turn. Slack's untrusted profile text: compared, never shown,
+   * logged or used for identity.
+   */
+  speakerNames: string[];
 }
 
 /**
  * Whose turn is starting, as the router decided it: a member's, run as
- * themselves (`attended`), or an outsider's, run as the person who connected
- * the channel when it was planned (`external`, `runAs`).
+ * themselves (`attended`), with the names their sender label shows
+ * (`speakerNames`); or an outsider's, run as the person who connected the
+ * channel when it was planned (`external`, `runAs`), which brings no names.
  */
-export type ThreadTurn = { mode: 'attended' } | { mode: 'external'; runAs: string };
+export type ThreadTurn = { mode: 'attended'; speakerNames: readonly string[] } | { mode: 'external'; runAs: string };
 
 export interface ChannelStore {
   get(installId: string, channelId: string): Promise<ChannelBinding | null>;
@@ -100,9 +115,13 @@ export interface ChannelStore {
    * but the channel is connected by someone other than `runAs` now; nothing
    * was written, and the turn must not run (it was planned as `runAs`, in
    * their conversation). A member's turn doesn't depend on who connected.
+   * A member's turn adds its names to the thread's in the same statement
+   * (TASK-1146): the union, each once, ordered by when last seen, keeping
+   * the THREAD_SPEAKER_NAMES_MAX most recent. An outsider's turn adds none,
+   * whatever it is handed. Names arrive only with an attended turn.
    */
   recordThread(
-    t: Omit<ChannelThread, 'notRemembered' | 'external'> & { conversationId: string } & ThreadTurn,
+    t: Omit<ChannelThread, 'notRemembered' | 'external' | 'speakerNames'> & { conversationId: string } & ThreadTurn,
   ): Promise<'recorded' | 'no-binding' | 'reconnected'>;
   /** The thread a conversation is, or null when no channel turn ever ran in it (a web chat, a DM). */
   getThread(conversationId: string): Promise<ChannelThread | null>;
@@ -122,6 +141,21 @@ const COLUMNS = [
 ] as const;
 
 type SelectedRow = Pick<Selectable<ChannelSlackChannelsTable>, (typeof COLUMNS)[number]>;
+
+/**
+ * `names` each once, in the order each was last seen, keeping the
+ * THREAD_SPEAKER_NAMES_MAX seen most recently: what recordThread's conflict
+ * does to a thread's union, done to one turn's own names before they're
+ * written, so a new row holds no more than an old one could.
+ */
+function mostRecentNames(names: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (let i = names.length - 1; i >= 0 && kept.length < THREAD_SPEAKER_NAMES_MAX; i -= 1) {
+    const name = names[i]!;
+    if (!kept.includes(name)) kept.push(name);
+  }
+  return kept.reverse();
+}
 
 function toBinding(r: SelectedRow): ChannelBinding {
   return {
@@ -234,8 +268,18 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // `binding` has its row but nothing is written, and that difference is
       // the answer. Anything but `attended` is an outsider's turn, and one
       // without a `runAs` matches no connector.
+      //
+      // A member's turn adds the names its label showed (TASK-1146), in the
+      // same statement: the conflict keeps the union, each name once at the
+      // place it was last seen, the THREAD_SPEAKER_NAMES_MAX most recent,
+      // oldest first. In SQL, so two turns at once can't lose each other's
+      // names. An outsider's turn adds none, whatever it was handed: memory
+      // never learns from its thread. The names go in as ONE array
+      // parameter (node-postgres writes a JS array as an array literal,
+      // quoting each element), never spliced into the statement.
       const external = t.mode !== 'attended';
       const connector = t.mode === 'attended' ? sql`true` : sql`b.connected_by_user_id = ${t.runAs ?? null}`;
+      const names = t.mode === 'attended' ? mostRecentNames(t.speakerNames) : [];
       const r = await sql<{ bound: number; recorded: number }>`
         WITH binding AS (
           SELECT c.install_id, c.channel_id, c.agent_id, c.remember, c.connected_by_user_id
@@ -245,13 +289,25 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
              AND c.agent_id = ${t.agentId}
         ), recorded AS (
           INSERT INTO channel_slack_v1_threads
-            (conversation_id, install_id, channel_id, agent_id, not_remembered, external)
-          SELECT ${t.conversationId}, b.install_id, b.channel_id, b.agent_id, NOT b.remember, CAST(${external} AS boolean)
+            (conversation_id, install_id, channel_id, agent_id, not_remembered, external, speaker_names)
+          SELECT ${t.conversationId}, b.install_id, b.channel_id, b.agent_id, NOT b.remember, CAST(${external} AS boolean),
+                 ${names}::text[]
             FROM binding b
            WHERE ${connector}
           ON CONFLICT (conversation_id) DO UPDATE
              SET not_remembered = channel_slack_v1_threads.not_remembered OR EXCLUDED.not_remembered,
-                 external = channel_slack_v1_threads.external OR EXCLUDED.external
+                 external = channel_slack_v1_threads.external OR EXCLUDED.external,
+                 speaker_names = (
+                   SELECT COALESCE(array_agg(kept.n ORDER BY kept.seen), '{}')
+                     FROM (
+                       SELECT u.n, max(u.o) AS seen
+                         FROM unnest(channel_slack_v1_threads.speaker_names || EXCLUDED.speaker_names)
+                              WITH ORDINALITY AS u(n, o)
+                        GROUP BY u.n
+                        ORDER BY seen DESC
+                        LIMIT ${THREAD_SPEAKER_NAMES_MAX}
+                     ) AS kept
+                 )
           RETURNING conversation_id
         )
         SELECT (SELECT count(*) FROM binding)::int AS bound, (SELECT count(*) FROM recorded)::int AS recorded
@@ -264,7 +320,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     async getThread(conversationId) {
       const row = await db
         .selectFrom(THREADS)
-        .select(['install_id', 'channel_id', 'agent_id', 'not_remembered', 'external'])
+        .select(['install_id', 'channel_id', 'agent_id', 'not_remembered', 'external', 'speaker_names'])
         .where('conversation_id', '=', conversationId)
         .executeTakeFirst();
       return row === undefined
@@ -275,6 +331,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
             agentId: row.agent_id,
             notRemembered: row.not_remembered,
             external: row.external,
+            speakerNames: row.speaker_names,
           };
     },
   };

@@ -15,7 +15,7 @@ import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { agentAccess, type AgentAccess } from './channels.js';
 import { COPY } from './copy.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
-import { channelSenderLabel, dmSenderLabel } from './format.js';
+import { channelSenderLabel, dmSenderLabel, senderLabelNames } from './format.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
 import type { InstallRow, InstallStore } from './store.js';
@@ -80,9 +80,13 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      outsider's turn records its conversation as outsiders', which memory
  *      never learns from, whatever the switch says, and only while the
  *      channel is still connected by the person it runs as: a reconnect
- *      since step 8 drops it as there. If the record can't be written the
- *      turn doesn't run, and the sender is told privately to try again. A DM
- *      records nothing: the switch is a channel's.
+ *      since step 8 drops it as there. A member's turn also records the
+ *      names its sender label shows (format.ts `senderLabelNames`), which
+ *      the veto hands to memory so nothing said in the thread is stored
+ *      under them (TASK-1146); an outsider's records none. If the record
+ *      can't be written the turn doesn't run, and the sender is told
+ *      privately to try again. A DM records nothing: the switch is a
+ *      channel's.
  *   Lines before the turn are ephemeral, for the sender alone (in the
  *   mention's thread when it was in one); the reply goes in the thread.
  *
@@ -536,8 +540,13 @@ async function routeMention(
         installId,
         channelId: m.channel,
         agentId,
-        // An outsiders' thread is never remembered, whatever the switch says (capture-veto.ts).
-        ...(external ? { mode: 'external' as const, runAs } : { mode: 'attended' as const }),
+        // An outsiders' thread is never remembered, whatever the switch says
+        // (capture-veto.ts), so it keeps no names. A member's keeps the names
+        // their label shows, from the same `admission.name` and `m.sender` as
+        // the label below: what memory must not file their words under.
+        ...(external
+          ? { mode: 'external' as const, runAs }
+          : { mode: 'attended' as const, speakerNames: senderLabelNames(admission.name, m.sender) }),
       });
     } catch (err) {
       await failed('thread', err);

@@ -1,10 +1,12 @@
 import {
   MEMORY_PRE_CAPTURE_HOOK,
+  MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX,
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   MemoryPreCapturePayloadSchema,
   reject,
   type AgentContext,
   type HookBus,
+  type MemoryPreCapturePayload,
   type Rejection,
 } from '@ax/core';
 import type { ChannelStore } from './channel-store.js';
@@ -18,6 +20,15 @@ import { logCode } from './log-code.js';
 // this answers it for the conversations of Slack channel threads. The shape
 // is @ax/routines' `taskCaptureVeto` (routines/src/capture.ts), copied
 // rather than imported: plugins don't import each other (invariant 2).
+//
+// TASK-1146: the answer also tells memory who is speaking. Each member turn
+// records the names its sender label showed on the thread (channel-store.ts
+// `speakerNames`); a thread this lets memory learn from is answered with
+// them, added after any an earlier subscriber put in the payload, and in a
+// turn that isn't private memory stores no statement whose subject is made
+// of them. A name is a fact memory won't file under it, so this never drops
+// one: past what one answer may carry, or on a payload it can't read, it
+// refuses instead. The names are never logged.
 // ---------------------------------------------------------------------------
 
 /** The subscriber's name on the bus. Memory logs it as the plugin that refused. */
@@ -45,24 +56,41 @@ export const CAPTURE_CHECK_DEADLINE_MS = MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_M
 const REFUSALS = ['channel-external-turn', 'channel-not-remembered'] as const;
 type Refusal = (typeof REFUSALS)[number];
 
-/** What a pass on one conversation needs answered: is it a channel thread memory must stay out of, and why? */
-async function refusalFor(
-  channels: Pick<ChannelStore, 'getThread' | 'get'>,
-  conversationId: string,
-): Promise<Refusal | null> {
+/** Why memory must stay out of one conversation, if it must; and if not, who is speaking in it. */
+interface Lookup {
+  refusal: Refusal | null;
+  speakerNames: readonly string[];
+}
+
+const NO_NAMES: readonly string[] = Object.freeze([]);
+
+/**
+ * What a pass on one conversation needs answered: is it a channel thread
+ * memory must stay out of, and why; and if memory may learn from it, who is
+ * speaking in it. Names only ever come from a thread it doesn't refuse; a
+ * conversation it never recorded has none.
+ */
+async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, conversationId: string): Promise<Lookup> {
   const thread = await channels.getThread(conversationId);
-  // Not a channel thread (a web chat, a DM): not this plugin's to refuse.
-  if (thread === null) return null;
-  // Outsiders' turns run here: never, whatever the switch says now.
-  if (thread.external !== false) return 'channel-external-turn';
+  // Not a channel thread (a web chat, a DM): not this plugin's to refuse, nor its names to give.
+  if (thread === null) return { refusal: null, speakerNames: NO_NAMES };
+  // Outsiders' turns run here: never, whatever the switch says now. Their
+  // thread records no names (channel-store.ts), so lifting this refusal
+  // means recording outsiders' names first, or memory would file what they
+  // say under them.
+  if (thread.external !== false) return { refusal: 'channel-external-turn', speakerNames: NO_NAMES };
   // A turn ran while the switch was off. Sticky, whatever the switch says now.
-  if (thread.notRemembered !== false) return 'channel-not-remembered';
+  if (thread.notRemembered !== false) return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   const binding = await channels.get(thread.installId, thread.channelId);
   // Disconnected (or its install removed), connected to another agent since,
   // or switched off now.
-  return binding === null || binding.agentId !== thread.agentId || binding.remember !== true
-    ? 'channel-not-remembered'
-    : null;
+  if (binding === null || binding.agentId !== thread.agentId || binding.remember !== true) {
+    return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
+  }
+  // As stored, with no default: a row that has no names list throws when
+  // read below, and the check refuses, rather than answer "nobody is
+  // speaking" for a thread whose speakers it can't tell.
+  return { refusal: null, speakerNames: thread.speakerNames };
 }
 
 /**
@@ -80,19 +108,38 @@ async function refusalFor(
  * or when the channel is no longer connected to its agent, or when the
  * switch is off now (`channel-not-remembered`).
  *
+ * A member's thread it lets through is answered with the names that
+ * member's turns were labelled with (TASK-1146): the payload it was given,
+ * every name an earlier subscriber added still in it, and its own appended
+ * (from each id it asked about, in that order), each name once. No names of
+ * its own (a thread from before TASK-1146, or a conversation it never
+ * recorded): no opinion, and the payload goes on as it came. It never drops
+ * a name, since memory could file facts under a dropped one, so it refuses
+ * instead:
+ *   - `capture-payload-unreadable`: it has names to add, but the payload an
+ *     earlier subscriber left doesn't parse, so it can't add them without
+ *     answering over that subscriber's;
+ *   - `speaker-names-over-cap`: with an earlier subscriber's, the names come
+ *     to more than one answer may carry
+ *     (`MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX`). Its own never do alone: a
+ *     thread keeps at most half that (limits.ts `THREAD_SPEAKER_NAMES_MAX`),
+ *     and it asks about two threads at most.
+ *
  * Fails closed: a lookup that throws, or takes longer than `deadlineMs`,
- * refuses too, as `capture-check-failed` (never a switch's reason). For an
- * extraction pass a refusal costs nothing but time (the cursor stays put, so
- * a later pass reads those turns), which is why refusing an ordinary chat's
- * pass while the database is slow is the cheap mistake; a `memory_note`
- * refused then is not saved. Logs a failure by its code alone.
+ * refuses too, as `capture-check-failed` (never a switch's reason). So does
+ * a thread row that has no names list at all: it is never read as one with
+ * no names. For an extraction pass a refusal costs nothing but time (the
+ * cursor stays put, so a later pass reads those turns), which is why
+ * refusing an ordinary chat's pass while the database is slow is the cheap
+ * mistake; a `memory_note` refused then is not saved. Logs a failure by its
+ * code alone, and never a name.
  */
 export async function channelCaptureVeto(
   channels: Pick<ChannelStore, 'getThread' | 'get'>,
   ctx: AgentContext,
   payload: unknown,
   deadlineMs = CAPTURE_CHECK_DEADLINE_MS,
-): Promise<Rejection | undefined> {
+): Promise<Rejection | MemoryPreCapturePayload | undefined> {
   /**
    * The answer when the check itself fails: a refusal, saying only that. A
    * slow or not-ready store refuses every conversation's pass (a web chat's
@@ -115,12 +162,21 @@ export async function channelCaptureVeto(
       );
       timer.unref?.();
     });
-    const answers = await Promise.race([
-      Promise.all([...ids].map((conversationId) => refusalFor(channels, conversationId))),
+    const found = await Promise.race([
+      Promise.all([...ids].map((conversationId) => lookup(channels, conversationId))),
       deadline,
     ]);
-    const reason = REFUSALS.find((r) => answers.includes(r));
-    return reason === undefined ? undefined : reject({ reason });
+    const reason = REFUSALS.find((r) => found.some((f) => f.refusal === r));
+    if (reason !== undefined) return reject({ reason });
+    const own: string[] = [];
+    // Spread, not flatMap: a lookup without a names list throws here, inside the try.
+    for (const f of found) own.push(...f.speakerNames);
+    if (own.length === 0) return undefined;
+    if (!parsed.success) return reject({ reason: 'capture-payload-unreadable' });
+    const speakerNames = [...new Set([...(parsed.data.speakerNames ?? []), ...own])];
+    if (speakerNames.length > MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX) return reject({ reason: 'speaker-names-over-cap' });
+    // What it was given, keys it doesn't know included, with the names added.
+    return { ...(payload as Record<string, unknown>), ...parsed.data, speakerNames };
   } catch (err) {
     // Logged after the refusal is built: a logger that throws can't turn it into a skipped subscriber.
     try {

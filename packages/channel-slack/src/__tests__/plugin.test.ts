@@ -1623,12 +1623,14 @@ describe('@ax/channel-slack plugin', () => {
     await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
     const offThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035300.000300`;
     expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: offThread, userId: ADMIN.id, source: 'user' });
+    // Her label's names are kept with the thread (TASK-1146): users.info's name for her, then her Slack id.
     expect(await channels.getThread(offThread)).toEqual({
       installId: INSTALL_ID,
       channelId: SUPPORT_CH,
       agentId: TEAM_AGENT.id,
       notRemembered: true,
       external: false,
+      speakerNames: ['Ada', ADA_SLACK],
     });
     expect(await askMemory(harness.bus, offThread)).toEqual(NOT_REMEMBERED);
 
@@ -1637,12 +1639,15 @@ describe('@ax/channel-slack plugin', () => {
     expect(await askMemory(harness.bus, offThread)).toEqual(NOT_REMEMBERED);
     expect(await askMemory(harness.bus, 'conv_web_chat')).toEqual({ rejected: false, payload: { conversationId: 'conv_web_chat' } });
 
-    // A new thread, started while the switch is on, is remembered.
+    // A new thread, started while the switch is on, is remembered, and memory hears who speaks in it.
     expect((await post(mentionBody('Ev07ABCDEF21', '1763035400.000400', 'a new question', ADA_SLACK))).status).toBe(200);
     await vi.waitFor(() => expect(s.invokesReturned).toBe(2));
     const onThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035400.000400`;
     expect(s.invokes![1]!.ctx.conversationId).toBe(onThread);
-    expect(await askMemory(harness.bus, onThread)).toEqual({ rejected: false, payload: { conversationId: onThread } });
+    expect(await askMemory(harness.bus, onThread)).toEqual({
+      rejected: false,
+      payload: { conversationId: onThread, speakerNames: ['Ada', ADA_SLACK] },
+    });
 
     // Alice isn't on the team: her mention runs as Ada, in the thread's external conversation, and
     // what she says is never remembered, with the switch on.
@@ -1651,6 +1656,8 @@ describe('@ax/channel-slack plugin', () => {
     const outsiderThread = `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035500.000500:external`;
     expect(s.invokes![2]!.ctx).toMatchObject({ conversationId: outsiderThread, userId: ADMIN.id, source: 'external' });
     expect((await channels.getThread(outsiderThread))?.external).toBe(true);
+    // Nothing of Alice's is kept: memory never learns from her thread, so it needs no names.
+    expect((await channels.getThread(outsiderThread))?.speakerNames).toEqual([]);
     expect(await askMemory(harness.bus, outsiderThread)).toEqual(OUTSIDER_THREAD);
   });
 

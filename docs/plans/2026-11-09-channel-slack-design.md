@@ -152,16 +152,56 @@ recalled in a channel.
   to expose where a statement came from. A later card.
 - A shared session gets no `/memory` file view. The export holds every fact the
   agent has, so it would walk around the recall filter.
-- The speaker rule is a filter, not a prompt change. In a shared turn, any
-  statement whose subject is `user` or starts with `user:` is dropped. The
-  observer, `memory_note` and the write door ask one function
-  (`breaksSpeakerRule`, TASK-1136), and a refused note tells the agent to save a
-  work fact with the work as `about`.
-- Known gaps, accepted: the extractor may name the speaker from the sender
-  label (the TASK-1134 walk saw it: `vinay | stated_standup_time | Team standup
-  moved to 10:15 on Tuesdays`, stored shared, and the rule doesn't see it);
-  closing a slot is tenant-wide, so a private statement can close a shared one;
-  a Fix on a shared memory saves as private.
+- The speaker rule is a filter, not a prompt change. In a shared turn, a
+  statement is dropped when its subject is `user`, starts with `user:`, or is
+  made of the speakers' label names (TASK-1146). The observer, `memory_note`
+  and the write door ask one function (`breaksSpeakerRule`, TASK-1136), and a
+  refused note tells the agent to save a work fact with the work as `about`.
+  The TASK-1134 walk is why the rule exists: the extractor read the sender
+  label and filed `vinay | stated_standup_time | Team standup moved to 10:15
+  on Tuesdays` as a shared row.
+- How memory learns the names: channel-slack records each member's label name
+  and Slack ID on the thread's row before their turn runs, and hands them over
+  with its `memory:pre-capture` answer. Outsiders' threads record none, since
+  memory never learns from them.
+- What counts as a name: a subject whose words are all words of those names
+  (`vinay`, `vinay_pulim`, `uhte83xe1`). So `vinays_team`, `team_standup` and
+  `team_standup | owner | vinay` are kept: the rule reads the subject, never
+  the value. The extractor's own word for the speaker is set aside beside a
+  name, so `user_vinay` and `user_vinaypulim` drop too. A subject over 1024
+  code units is dropped unread, since the engines refuse one that long anyway
+  and reading it costs host time its writer picks.
+- Known gaps, accepted:
+  - Someone named only in what's said ("Ada is out next week") is still
+    stored. Telling a person from a thing would need the pinned extraction
+    prompt.
+  - Names the label doesn't show are missed: nicknames and initials (`vp`,
+    `vinay_p`), titles (`mr_pulim`), role words other than `user`
+    (`speaker_vinay`, `member_vinay`), the speaker word run into a name
+    (`uservinay`), transliterations, digits added to a name
+    (`vinay2`). The run-together rule works inside one name only, so
+    `pulimvinay` (the other order) is missed, and so is `vinaypulim` when the
+    label gives "Vinay" and "Pulim" as separate entries.
+  - A work subject made of a display name's words ("Standup Team") drops
+    `team_standup`. We'd rather lose one fact than pin someone's words on a
+    person.
+  - A thread row keeps only the 16 most recently seen names. Sixteen newer
+    names (eight other members, or one member renaming fifteen times) push out
+    an earlier speaker's, and a pass that still covers that speaker's turns
+    then keeps facts under their name. A default pass covers four turns, so
+    this is normally out of reach.
+  - Thread rows keep members' label names until the agent is deleted. We don't
+    clear them when a channel is disconnected or a conversation is deleted.
+    They're display names and Slack IDs, read only by the veto, and the row
+    already outlives the conversation.
+  - The rule stops new rows, not old ones. A shared row saved under a member's
+    name before this shipped stays until someone deletes it: the TASK-1134
+    walk's `vinay | stated_standup_time` on kind, and whatever prod's channels
+    stored since Slack shipped there (rev86). A cleanup is a follow-up:
+    count the shared rows whose `about` matches the names now on their
+    conversation's thread row, then retract them through the forget path.
+  - Closing a slot is tenant-wide, so a private statement can close a shared
+    one. A Fix on a shared memory saves as private.
 - **What outsiders say is never remembered.** An external turn's conversation
   (the connector's, key suffix `:external`) is refused by channel-slack's
   capture veto whatever the switch says, and so is the agent's own
@@ -569,6 +609,30 @@ approvals; `audience` says who sees the reply and decides memory.
 - **Subscriber risk:** a reader that ignores the field gets today's behavior,
   which leaks in exactly the case this field exists for. So memory's recall
   **must** branch on it, and a test pins that.
+
+**`memory:pre-capture` can name the speakers** (TASK-1146). The answer gains
+an optional `speakerNames` list, so memory can tell a person's name from a
+work subject.
+
+- A subscriber that lets memory learn from a conversation, and labels who
+  wrote each message, adds names to the answer. It appends and never removes.
+  Memory reads the fire's final payload. At most 32 names, each 1 to 256 code
+  units; an answer that doesn't parse throws, and memory learns nothing from
+  it, in a private turn too.
+- channel-slack appends its own names after any an earlier subscriber added,
+  each once. It refuses instead of dropping a name: `speaker-names-over-cap`
+  when the list would pass 32, and `capture-payload-unreadable` when it has
+  names to add and can't read what it was handed. Memory treats every refusal
+  alike and logs the reason, never a name.
+- **Alternate implementation:** any channel that labels who wrote each message,
+  such as Teams or Discord (display names), or email-in (the From name).
+  `@ax/routines` answers the same hook and adds no names.
+- **Leaky field names:** none. The names are whatever the channel shows, and
+  memory only compares words with them.
+- **Subscriber risk:** a subscriber that drops or rewrites names an earlier one
+  added would let facts under them through, hence append-only. A Slack member
+  ID is just another name to memory.
+- **Wire surface:** none. A host-only fire, never an IPC action.
 
 **Finding a user by verified email** is a new service hook on the auth plugin,
 `auth:find-user-by-email`: `{ email } → { userId } | null` (TASK-1092).

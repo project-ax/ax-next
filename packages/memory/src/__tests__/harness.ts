@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   HookBus,
   makeAgentContext,
+  MEMORY_PRE_CAPTURE_HOOK,
   PluginError,
   type AgentContext,
   type AgentContextAudience,
@@ -11,6 +12,7 @@ import {
   type LlmCallInput,
   type LlmCallOutput,
   type Logger,
+  type MemoryPreCapturePayload,
   type Plugin,
   type ToolDescriptor,
 } from '@ax/core';
@@ -262,6 +264,29 @@ export function registerMemoryAgents(
       },
     };
   });
+}
+
+/**
+ * Answer `memory:pre-capture` the way a channel that labels its speakers does
+ * (TASK-1146): let memory learn, and add `names` to the payload after any an
+ * earlier subscriber added. With `conversationId`, only that conversation is
+ * answered, and any other gets no opinion.
+ *
+ * Returns every payload it was asked with, in order, so a test can count the
+ * asks and see that memory asked with the conversation alone.
+ */
+export function answerSpeakerNames(
+  bus: HookBus,
+  names: readonly string[],
+  conversationId?: string,
+): MemoryPreCapturePayload[] {
+  const asked: MemoryPreCapturePayload[] = [];
+  bus.subscribe<MemoryPreCapturePayload>(MEMORY_PRE_CAPTURE_HOOK, 'test-speaker-names', async (_ctx, payload) => {
+    asked.push(payload);
+    if (conversationId !== undefined && payload.conversationId !== conversationId) return undefined;
+    return { ...payload, speakerNames: [...(payload.speakerNames ?? []), ...names] };
+  });
+  return asked;
 }
 
 export function capturingLogger(sink: LoggedEvent[]): Logger {
