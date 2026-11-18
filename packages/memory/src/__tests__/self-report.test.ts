@@ -320,11 +320,15 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'added_slack_connector', 'for the team workspace'],
     ['assistant', 'scheduled_routine', 'a weekly report on Mondays'],
     ['assistant', 'set_up_routine', 'a weekly digest'],
-    // `routine` is also an everyday word, so it counts only as the verb's own
-    // object, past at most two determiners.
+    // `routine` is also an everyday word, so it counts only bare, with
+    // nothing but determiners before it.
     ['assistant', 'created_a_new_routine', 'a daily digest at 9am'],
     ['assistant', 'edited_document', 'the onboarding doc'],
-    ['assistant', 'created_artifact_for_q3_sales_review', 'x'], // a noun anywhere after the verb
+    // The verb's object ends at its first preposition; its head is the word before.
+    ['assistant', 'created_artifact_for_q3_sales_review', 'x'],
+    ['assistant', 'generated_image_of_the_q3_funnel', 'one bar per stage'],
+    ['assistant', 'added_slack_connector_to_workspace', 'Acme'],
+    ['assistant', 'created_file_with_notes', 'notes.md'],
     ['Assistant', 'Published Artifact', 'the dashboard'],
     ['the_assistant', 'ran-tests', 'all passed'],
     ['AI assistant', 'Created Artifact', 'the dashboard'],
@@ -414,6 +418,19 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'added_skills_to_resume', 'Python, SQL and Tableau'],
     ['assistant', 'created_workflow', '1. intake 2. triage 3. assign 4. close'],
     ['assistant', 'created_home_automation_plan', 'porch lights on at sunset, thermostat to 62 at 11pm'],
+    // An artifact word that only modifies the head: an outline, a map, a
+    // message or a prompt it wrote.
+    ['assistant', 'created_presentation_outline', '1. Intro 2. Market size 3. The ask'],
+    ['assistant', 'created_site_map', 'home, about, pricing, blog'],
+    ['assistant', 'created_app_idea', 'a plant-watering reminder app'],
+    ['assistant', 'created_file_naming_convention', 'YYYY-MM-DD_client_project'],
+    ['assistant', 'created_branch_naming_scheme', 'feat/<ticket>-<slug>'],
+    ['assistant', 'wrote_landing_page_copy', 'Ship faster with fewer meetings'],
+    ['assistant', 'wrote_commit_message', 'fix: handle empty input in parser'],
+    ['assistant', 'wrote_pr_description', 'Adds retry with jitter to the uploader'],
+    ['assistant', 'wrote_document_summary', 'the lease allows pets under 25 lb'],
+    ['assistant', 'wrote_component_spec', 'DatePicker: min, max, locale props'],
+    ['assistant', 'generated_image_prompt', 'a watercolor fox in a misty forest, soft light'],
     // Content phrased like a build.
     ['assistant', 'built', 'a 12-week training plan'],
     ['assistant', 'rebuilt', 'the training plan around 3 runs a week'],
@@ -445,7 +462,10 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'checked', 'the deploy status: green'],
     ['assistant', 'renamed_file', 'a.txt to b.txt'], // `renamed` is an identity word
     ['assistant', 'added_skill', 'pdf-tools'], // `skill` isn't an artifact noun: `added_skills | Python, SQL` is a résumé
-    ['assistant', 'set_up_weekly_routine', 'a digest every Monday at 9am'], // `routine` counts only right after the verb
+    ['assistant', 'set_up_weekly_routine', 'a digest every Monday at 9am'], // `routine` counts only bare
+    // The artifact noun isn't the head of the verb's object.
+    ['assistant', 'wrote_to_file', 'results.csv'], // no object before the preposition
+    ['assistant', 'created_artifact_showing_q3_sales', 'a bar chart'], // the head is `sales`
   ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });

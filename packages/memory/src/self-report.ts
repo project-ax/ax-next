@@ -152,21 +152,25 @@
  * - {@link ARTIFACT_VERBS} (`created`, `wrote`, `updated`, `added`, `built`,
  *   `implemented`, …) read two ways: "created a meal plan", "wrote a haiku"
  *   and "built a 12-week training plan" are content it supplied, "created an
- *   artifact" and "wrote a file" are narration. So they drop only when an
- *   {@link ARTIFACT_NOUNS} word comes anywhere after the verb
- *   (`created_artifact_for_q3_sales_review`).
+ *   artifact" and "wrote a file" are narration. So they drop only when the
+ *   HEAD of the verb's object is an {@link ARTIFACT_NOUNS} word. The object
+ *   runs to its first {@link PREPOSITIONS} word, and its head is its last
+ *   word. `created_artifact_for_q3_sales_review` and `added_slack_connector`
+ *   made an artifact and a connector. `created_presentation_outline`,
+ *   `wrote_commit_message` and `generated_image_prompt` are an outline, a
+ *   message and a prompt it wrote: the artifact word there only modifies.
  * - {@link EVERYDAY_NOUNS} name an AX surface and an everyday thing at once.
  *   "Updated the routine" is narration, but a workout routine is a plan it
- *   wrote. So `routine` counts only as the verb's own object, past at most two
- *   determiners: `updated_routine` and `created_a_new_routine` drop,
+ *   wrote. So `routine` counts only bare, with nothing but determiners before
+ *   it: `updated_routine` and `created_a_new_routine` drop,
  *   `created_workout_routine` stays.
  * - Some words aren't artifact nouns at all. `added_skills | Python, SQL` is
  *   a résumé, and an install still drops on its verb (`installed_skill`). A
  *   workflow or an automation it designed is a procedure it supplied, the
  *   kind skill reflection recalls memory for
  *   (`packages/routines/src/reflection-prompt.ts`), and AX has neither as a
- *   surface. `connector` stays an artifact noun anywhere after the verb: it's
- *   AX's own word, and `added_slack_connector` is narration.
+ *   surface. `connector` is AX's own word, so it counts with a modifier in
+ *   front too: `added_slack_connector` is narration.
  * - The identity guard runs first. A predicate with an identity word (`name`,
  *   `persona`, `emoji`, `style`, `rule`, `preference`, `standing`, `default`,
  *   …) or a `created_by` pair says who the agent is, and stays even when it
@@ -183,15 +187,20 @@
  * those rows are `agent-context`, not `context`, and the cleanup leaves the
  * saved ones alone.
  *
- * The accepted residuals: narration with a verb nobody listed stays
- * (`searched_web | for flights to Lisbon`, `checked | the deploy status`), and
- * so does `renamed_file`, because `renamed` is an identity word. So do a skill
- * it created or added (`added_skill | pdf-tools`) and a routine named by its
- * kind (`set_up_weekly_routine`). Content phrased like an action is dropped:
- * `sent | a summary of the call`, `edited_document | the essay intro`, a bare
- * `created_routine | 6am wake, 6:15 stretch`. So is a topic's limit written
- * with no subject of its own: `listed_limitations | can't establish
- * causation` reads as the assistant's.
+ * The accepted residuals:
+ *
+ * - Kept, though it's narration: a verb nobody listed (`searched_web | for
+ *   flights to Lisbon`, `checked | the deploy status`); `renamed_file`,
+ *   because `renamed` is an identity word; a skill it created or added
+ *   (`added_skill | pdf-tools`); a routine named by its kind
+ *   (`set_up_weekly_routine`); an artifact word that isn't its object's head
+ *   (`wrote_to_file`, `created_artifact_showing_q3_sales`).
+ * - Dropped, though it's content: `sent | a summary of the call`,
+ *   `edited_document | the essay intro`, a bare `created_routine | 6am wake,
+ *   6:15 stretch`, and a chart that isn't a picture (`created_seating_chart`,
+ *   `created_chart_of_accounts`). So is a topic's limit written with no
+ *   subject of its own: `listed_limitations | can't establish causation`
+ *   reads as the assistant's.
  */
 
 /**
@@ -363,12 +372,13 @@ const ACTION_VERBS = new Set(['published', 'unpublished', 'republished', 'deploy
   'patched', 'refactored', 'tested', 'retested', 'uploaded', 'downloaded', 'deleted', 'restarted', 'configured',
   'reconfigured', 'migrated', 'saved', 'sent', 'posted', 'opened', 'attached', 'exported', 'imported', 'cloned',
   'forked', 'moved', 'invoked', 'triggered']);
-// Narration only when an artifact noun follows: "created a meal plan", "wrote a haiku" and "built a
-// 12-week training plan" are content. `setup` stands for the two words `set_up`.
+// Narration only when the head of the verb's object is an artifact noun: "created a meal plan", "wrote
+// a haiku" and "built a 12-week training plan" are content. `setup` stands for the two words `set_up`.
 const ARTIFACT_VERBS = new Set(['created', 'generated', 'made', 'wrote', 'rewrote', 'updated', 'modified', 'changed',
   'added', 'removed', 'edited', 'shared', 'scheduled', 'rendered', 'setup', 'built', 'rebuilt', 'implemented']);
-// Anywhere after the verb: `created_artifact_for_q3_sales_review`. No `skill`, `workflow` or
-// `automation`: `added_skills | Python, SQL` is a résumé, and a workflow is a procedure it wrote.
+// As the head of the verb's object: `created_artifact_for_q3_sales_review` is narration,
+// `created_presentation_outline` is an outline it wrote. No `skill`, `workflow` or `automation`:
+// `added_skills | Python, SQL` is a résumé, and a workflow is a procedure it wrote.
 const ARTIFACT_NOUNS = new Set(['artifact', 'artifacts', 'file', 'files', 'folder', 'folders', 'directory',
   'directories', 'document', 'documents', 'doc', 'docs', 'page', 'pages', 'webpage', 'webpages', 'site', 'sites',
   'website', 'websites', 'app', 'apps', 'dashboard', 'dashboards', 'visual', 'visuals', 'visualization',
@@ -376,10 +386,12 @@ const ARTIFACT_NOUNS = new Set(['artifact', 'artifacts', 'file', 'files', 'folde
   'presentation', 'presentations', 'image', 'images', 'diagram', 'diagrams', 'repo', 'repos', 'repository',
   'repositories', 'branch', 'branches', 'commit', 'commits', 'pr', 'prs', 'connector', 'connectors', 'component',
   'components', 'pdf', 'pdfs', 'csv', 'csvs']);
-// Artifact nouns that are everyday words too: only as the verb's own object, past at most two
-// determiners. `updated_routine` is narration; `created_workout_routine` is a plan it wrote.
+// Artifact nouns that are everyday words too: as the head only bare, with nothing but determiners
+// before them. `updated_routine` is narration; `created_workout_routine` is a plan it wrote.
 const EVERYDAY_NOUNS = new Set(['routine', 'routines']);
 const DETERMINERS = new Set(['a', 'an', 'the', 'new', 'my', 'your', 'its']);
+// The verb's object ends at its first preposition, so its head is the word before one.
+const PREPOSITIONS = new Set(['for', 'of', 'to', 'in', 'on', 'about', 'with', 'from', 'at', 'into', 'via', 'by']);
 // Checked first: the card's keep-set includes `saved_standing_preference`.
 const IDENTITY_WORDS = new Set(['name', 'names', 'named', 'renamed', 'nickname', 'nicknamed', 'identity', 'persona',
   'personality', 'introduced', 'introduction', 'signature', 'emoji', 'avatar', 'style', 'tone', 'voice', 'pronoun',
@@ -491,14 +503,22 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
   }
   if (NO_ACCESS_PREDICATE.test(normalized)) return 'capability';
   const setUp = words[0] === 'set' && words[1] === 'up';
-  const head = setUp ? 'setup' : (words[0] ?? '');
+  const verb = setUp ? 'setup' : (words[0] ?? '');
+  if (ACTION_VERBS.has(verb)) return 'action-narration';
+  if (!ARTIFACT_VERBS.has(verb)) return 'other';
+  // The verb's object runs to its first preposition, and its last word, the
+  // head, is what was made: `created_artifact_for_q3_sales_review` made an
+  // artifact, `created_presentation_outline` an outline.
   const rest = words.slice(setUp ? 2 : 1);
-  if (ACTION_VERBS.has(head)) return 'action-narration';
-  if (!ARTIFACT_VERBS.has(head)) return 'other';
-  if (rest.some((word) => ARTIFACT_NOUNS.has(word))) return 'action-narration';
-  // The verb's own object, past at most two determiners: `created_a_new_routine`.
-  const noun = rest.find((word, index) => index >= 2 || !DETERMINERS.has(word));
-  return noun !== undefined && EVERYDAY_NOUNS.has(noun) ? 'action-narration' : 'other';
+  const end = rest.findIndex((word) => PREPOSITIONS.has(word));
+  const phrase = end === -1 ? rest : rest.slice(0, end);
+  const head = phrase[phrase.length - 1];
+  if (head === undefined) return 'other';
+  // An everyday noun counts only bare: `created_a_new_routine`, not `created_workout_routine`.
+  const artifact =
+    ARTIFACT_NOUNS.has(head) ||
+    (EVERYDAY_NOUNS.has(head) && phrase.slice(0, -1).every((word) => DETERMINERS.has(word)));
+  return artifact ? 'action-narration' : 'other';
 }
 
 /**
