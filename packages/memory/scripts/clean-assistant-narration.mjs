@@ -258,11 +258,17 @@ function cleanAssistantNarration() {
     // FTS5's own check, after the deletes and before they commit. The table
     // keeps its own text (no `content=` option), so this checks the index
     // against every row's text. A failure is a damaged index, from before this
-    // ran or from it: roll back and say so, with a fixed reason.
+    // ran or from it: roll back and say so, with a fixed reason. Only
+    // SQLITE_CORRUPT (11, and its extended codes such as CORRUPT_VTAB 267)
+    // means that. A full disk, an I/O error or an interrupt during the check
+    // is rethrown, so the outer catch prints SQLite's own generic reason.
     try {
       db.exec("INSERT INTO memory_facts_v1_fts(memory_facts_v1_fts) VALUES('integrity-check')");
-    } catch {
-      throw Object.assign(new Error('full-text index check failed'), { code: 'fts-integrity-check-failed' });
+    } catch (err) {
+      if (typeof err?.errcode === 'number' && (err.errcode & 0xff) === 11) {
+        throw Object.assign(new Error('full-text index check failed'), { code: 'fts-integrity-check-failed' });
+      }
+      throw err;
     }
     db.exec('COMMIT');
     print(report);

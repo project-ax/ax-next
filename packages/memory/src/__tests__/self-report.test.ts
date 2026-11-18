@@ -326,6 +326,10 @@ describe("the assistant's narration of its own actions, and what it says it can'
     // `routine` is also an everyday word, so it counts only bare, with
     // nothing but determiners before it.
     ['assistant', 'created_a_new_routine', 'a daily digest at 9am'],
+    // So do `chart`, `graph` and `page`.
+    ['assistant', 'created_chart', 'Q3 revenue by region'],
+    ['assistant', 'generated_a_graph', 'weekly sign-ups'],
+    ['assistant', 'updated_page', 'the pricing page'],
     ['assistant', 'edited_document', 'the onboarding doc'],
     // The verb's object ends at its first preposition; its head is the word before.
     ['assistant', 'created_artifact_for_q3_sales_review', 'x'],
@@ -367,6 +371,8 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'admitted_limitation', 'the assistant could not open attachments'],
     ['assistant', 'stated_limitation', 'no internet access'],
     ['assistant', 'disclosed_limitation', 'lacks real-time data'],
+    ['assistant', 'noted_limitation', 'does not have access to your files'],
+    ['assistant', 'stated_limitation', 'unable to browse the web'],
   ])('drops %s | %s | %s: what it says it can or cannot do', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBe('capability');
@@ -462,6 +468,23 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'noted_limitation', "it doesn't work offline"],
     ['assistant', 'noted_limitation', "it can't be refunded after 30 days"],
     ['assistant', 'described_capabilities', 'can export to PDF and Excel'],
+    // A topic's limit with no subject of its own: passive voice ("cannot BE
+    // combined") is never the assistant's own limit, and a bare "does not"
+    // is one only before "have".
+    ['assistant', 'explained_limitations', 'cannot be combined with other offers'],
+    ['assistant', 'listed_limitations', 'cannot be used for international travel'],
+    ['assistant', 'explained_limitations', 'could not be verified by an independent lab'],
+    ['assistant', 'noted_limitation', 'unable to be refunded after 30 days'],
+    ['assistant', 'listed_limitations', 'does not cover dental or vision'],
+    ['assistant', 'explained_limitations', "doesn't apply to rollovers"],
+    ['assistant', 'explained_limitations', 'do not include taxes'],
+    // A chart, graph or page it wrote: these count only bare, like `routine`.
+    ['assistant', 'created_org_chart', 'CEO -> VP Eng -> 3 managers'],
+    ['assistant', 'created_chore_chart', 'Mon dishes, Tue laundry'],
+    ['assistant', 'created_gantt_chart', 'design wk1-2, build wk3-6'],
+    ['assistant', 'wrote_landing_page', 'Ship faster with fewer meetings'],
+    ['assistant', 'wrote_cover_page', 'Q3 Report, prepared for the board'],
+    ['assistant', 'created_dependency_graph', 'A -> B -> C'],
     // A limitation or no-access word mid-predicate is a topic: both
     // capability tests are anchored at the start.
     ['assistant', 'explained_study_limitations', 'small sample size, no control group'],

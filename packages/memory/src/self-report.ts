@@ -168,7 +168,8 @@
  *   "Updated the routine" is narration, but a workout routine is a plan it
  *   wrote. So `routine` counts only bare, with nothing but determiners before
  *   it: `updated_routine` and `created_a_new_routine` drop,
- *   `created_workout_routine` stays.
+ *   `created_workout_routine` stays. Charts, graphs and pages are the same:
+ *   `created_chart` drops, `created_org_chart` and `wrote_cover_page` stay.
  * - Some words aren't artifact nouns at all. `added_skills | Python, SQL` is
  *   a résumé, and an install still drops on its verb (`installed_skill`). A
  *   workflow or an automation it designed is a procedure it supplied, the
@@ -207,8 +208,8 @@
  *   `saved | the user $120 a year on the annual plan`, `fixed_typo | their ->
  *   there`, `edited_document | the essay intro`, a bare `created_routine |
  *   6am wake, 6:15 stretch`, and a chart that isn't a picture
- *   (`created_seating_chart`, `created_chart_of_accounts`). So is a topic's
- *   limit written with no subject of its own: `listed_limitations | can't
+ *   (`created_chart_of_accounts`). So is a topic's limit written with no
+ *   subject of its own, in the active voice: `listed_limitations | can't
  *   establish causation` reads as the assistant's.
  */
 
@@ -390,15 +391,17 @@ const ARTIFACT_VERBS = new Set(['created', 'generated', 'made', 'wrote', 'rewrot
 // `created_presentation_outline` is an outline it wrote. No `skill`, `workflow` or `automation`:
 // `added_skills | Python, SQL` is a résumé, and a workflow is a procedure it wrote.
 const ARTIFACT_NOUNS = new Set(['artifact', 'artifacts', 'file', 'files', 'folder', 'folders', 'directory',
-  'directories', 'document', 'documents', 'doc', 'docs', 'page', 'pages', 'webpage', 'webpages', 'site', 'sites',
+  'directories', 'document', 'documents', 'doc', 'docs', 'webpage', 'webpages', 'site', 'sites',
   'website', 'websites', 'app', 'apps', 'dashboard', 'dashboards', 'visual', 'visuals', 'visualization',
-  'visualizations', 'chart', 'charts', 'graph', 'graphs', 'spreadsheet', 'spreadsheets', 'deck', 'decks',
+  'visualizations', 'spreadsheet', 'spreadsheets', 'deck', 'decks',
   'presentation', 'presentations', 'image', 'images', 'diagram', 'diagrams', 'repo', 'repos', 'repository',
   'repositories', 'branch', 'branches', 'commit', 'commits', 'pr', 'prs', 'connector', 'connectors', 'component',
   'components', 'endpoint', 'endpoints', 'pdf', 'pdfs', 'csv', 'csvs']);
 // Artifact nouns that are everyday words too: as the head only bare, with nothing but determiners
-// before them. `updated_routine` is narration; `created_workout_routine` is a plan it wrote.
-const EVERYDAY_NOUNS = new Set(['routine', 'routines']);
+// before them. `updated_routine` is narration; `created_workout_routine` is a plan it wrote. So
+// with charts, graphs and pages: `created_chart` is narration; `created_org_chart`,
+// `created_dependency_graph` and `wrote_cover_page` are what it wrote.
+const EVERYDAY_NOUNS = new Set(['routine', 'routines', 'chart', 'charts', 'graph', 'graphs', 'page', 'pages']);
 const DETERMINERS = new Set(['a', 'an', 'the', 'new', 'my', 'your', 'its']);
 // The verb's object ends at its first preposition, so its head is the word before one.
 const PREPOSITIONS = new Set(['for', 'of', 'to', 'in', 'on', 'about', 'with', 'from', 'at', 'into', 'via', 'by']);
@@ -439,9 +442,13 @@ const NO_ACCESS_PREDICATE =
  * before access, the internet, the web, browsing, real-time data or the
  * ability to do something ("no control group" is a study's limit), and
  * "only" and "without" don't count ("only covers in-network providers").
+ * Passive voice never counts: the assistant's own limits are active ("cannot
+ * browse"), and "cannot be combined with other offers" is an offer's. A bare
+ * "does not"/"don't" counts only before "have" ("doesn't have access"):
+ * "does not cover dental" is a plan's.
  */
 const SELF_LIMIT_OBJECT =
-  /^(?:(?:i|the assistant) )?(?:can(?:not|'?t| not)|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to|(?:does|do)(?:n'?t| not)|(?:(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
+  /^(?:(?:i|the assistant) )?(?:(?:can(?:not|'?t| not)|could(?:n'?t| not)|(?:is |am )?(?:unable|not able) to)(?! be(?![a-z]))|(?:does|do)(?:n'?t| not)(?= have(?![a-z]))|(?:(?:has|have) no|no|lacks?) (?:direct |real[- ]?time |live |internet |web |external )?(?:access|internet|web|browsing|real[- ]?time|(?:the )?ability))(?![a-z])/;
 
 function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase().replace(/[\s-]+/g, '_');
