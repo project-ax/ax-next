@@ -439,12 +439,17 @@ describe('a reply still being written in that conversation', () => {
     });
 
     it('nothing live re-sends', async () => {
-      vi.spyOn(workspaceApi, 'agent')
+      const read = vi
+        .spyOn(workspaceApi, 'agent')
         .mockResolvedValueOnce(detail(askedThread, 'req-ask'))
         .mockResolvedValueOnce(detail(askedThread, null));
       const send = sendOk();
 
       await expect(endAfterWait()).resolves.toMatchObject({ resumed: true });
+      // The re-read happened, and it read the grant's own conversation, not
+      // whichever one the agent is on now.
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(read).toHaveBeenNthCalledWith(2, 'a-quill', 'cnv-1');
       expect(send).toHaveBeenCalledTimes(1);
     });
 

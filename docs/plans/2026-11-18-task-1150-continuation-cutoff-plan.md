@@ -606,7 +606,7 @@ No security-checklist. This is client-side only: the same reads and POST as toda
      * reply is done.
      */
     export const GRANT_NOT_RESUMED_BUSY =
-      'Connected. The agent was still working on a reply, so we didn’t interrupt it. ' +
+      'Connected. The agent may still be working on a reply, so we didn’t interrupt it. ' +
       'Once it’s done, send it a message and it will carry on with this connection in place.';
     ```
     The doc headed "ONE SENTENCE FOR EVERY `ResumeFailure`" (`:200-212`) gets a sentence naming the two reasons that have their own sentence (`read-only`, `still-running`).

@@ -81,8 +81,9 @@ export type ResumeFailure =
  * What a grant's `onGranted` reports back to its row: `true` the agent picked
  * up again; `false` it did not, and a message to it here will; `'reply-elsewhere'`
  * it did not, and its conversation is a Slack thread that takes messages only
- * in Slack; `'reply-when-done'` it was still working on a reply, so we left it
- * alone, and a message once that reply is done will pick the connection up.
+ * in Slack; `'reply-when-done'` it may still have been working on a reply (or we
+ * couldn’t tell), so we left it alone, and a message once that reply is done
+ * will pick the connection up.
  */
 export type GrantResume = boolean | 'reply-elsewhere' | 'reply-when-done';
 
