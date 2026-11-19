@@ -67,8 +67,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //
 // It mounts, through `http:register-route`:
 //
-//   GET  /admin/slack, POST /admin/slack/{connect,install-url,rename,disconnect,
-//        forget-leftover-app},
+//   GET  /admin/slack, POST /admin/slack/{connect,install-url,rename,
+//        replace-token,disconnect,forget-leftover-app},
 //   GET  /admin/slack/oauth/callback  — admin only, CSRF-checked (admin-routes.ts)
 //   POST /slack/events/:installId     — Slack's deliveries,
 //   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts), and

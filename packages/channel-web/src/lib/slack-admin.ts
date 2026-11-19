@@ -7,6 +7,7 @@
  *   POST /admin/slack/connect      { accessToken, refreshToken, botName, iconPng? } → { installUrl }
  *   POST /admin/slack/install-url  → { installUrl }, while an install is unfinished
  *   POST /admin/slack/rename       { botName } → { botName }
+ *   POST /admin/slack/replace-token  { refreshToken } → {}
  *   POST /admin/slack/disconnect   → { appDeleted }
  *   POST /admin/slack/forget-leftover-app  { appId } → {}
  *
@@ -21,8 +22,9 @@
  * has deleted it on Slack's page; nothing is asked of Slack.
  *
  * The bot's picture, drawn by `lib/slack-avatar.ts`, rides in the same Connect
- * body as `iconPng`. The two pasted configuration tokens go out in that body
- * and nowhere else: nothing here keeps, logs or returns them. Answers are read
+ * body as `iconPng`. The pasted configuration tokens go out in one body each
+ * (Connect's two, Replace's refresh token) and nowhere else: nothing here
+ * keeps, logs or returns them. Answers are read
  * field by field, and an install link is followed only when it is Slack's own
  * Allow page.
  */
@@ -67,6 +69,7 @@ const STATUS_PATH = '/admin/slack';
 const CONNECT_PATH = '/admin/slack/connect';
 const INSTALL_URL_PATH = '/admin/slack/install-url';
 const RENAME_PATH = '/admin/slack/rename';
+const REPLACE_TOKEN_PATH = '/admin/slack/replace-token';
 const DISCONNECT_PATH = '/admin/slack/disconnect';
 const FORGET_LEFTOVER_APP_PATH = '/admin/slack/forget-leftover-app';
 
@@ -274,6 +277,15 @@ export async function renameSlackBot(botName: string): Promise<{ botName: string
   return { botName: kept };
 }
 
+/**
+ * Replace the configuration token with a pasted refresh token. The server
+ * tries it once and keeps it only if Slack lets it manage this app; an answer
+ * without an error is the whole answer.
+ */
+export async function replaceSlackConfigToken(refreshToken: string): Promise<void> {
+  await post(REPLACE_TOKEN_PATH, { refreshToken });
+}
+
 /** Hand the whole page to Slack's Allow page. Refuses any other address. */
 export function goToSlack(installUrl: string): void {
   if (!isSlackAllowPage(installUrl)) throw new Error('not a Slack install link');
@@ -288,13 +300,17 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
   // Connect tried the pasted refresh token once and Slack refused it; the app we made was deleted
   // again, or (when Slack wouldn't) is listed as left over.
-  'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new pair and paste both again.",
+  // Shared by Connect and Replace: the same advice fits both, since either can be turned away on its refresh token.
+  'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new token and try again.",
+  // Replace: the token works, but its owner can't manage this app (or is in another workspace).
+  'slack-not-app-manager':
+    "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.",
   'slack-name': "Slack didn't accept that bot name. Try another.",
   'slack-config-token':
-    "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
+    "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again.",
   // A 409 the Rename form shows itself: a connected card has no https view for the re-read to land on.
   'public-origin-not-https':
-    "Our public address isn't https right now, so we can't send Slack a new name. Whoever runs this server can fix that.",
+    "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that.",
   'slack-app-gone':
     'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',
   // Connect never heard back from Slack, so the app may exist with no way for us to delete it.
@@ -332,6 +348,8 @@ export function slackErrorCopy(err: unknown): { field: SlackErrorField; message:
         return { field: null, message: SLACK_ERROR_COPY['slack-token'] };
       case 'slack-refresh-token':
         return { field: null, message: SLACK_ERROR_COPY['slack-refresh-token'] };
+      case 'slack-not-app-manager':
+        return { field: null, message: SLACK_ERROR_COPY['slack-not-app-manager'] };
       case 'slack-config-token':
         return { field: null, message: SLACK_ERROR_COPY['slack-config-token'] };
       case 'public-origin-not-https':

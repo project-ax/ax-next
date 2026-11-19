@@ -9,6 +9,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     from Connect until the admin clicks Allow, then `active`. At most one
  *     shared-app install per AX instance today (admin operations run one at a
  *     time); later cards add per-agent installs here.
+ *     `connected_by_user_id` is the admin who added the configuration token
+ *     the install holds (at Connect, or the latest Replace, TASK-1128), and
+ *     vault reads name them. `config_token_added_at` is when they added it.
+ *     `created_at` is still when the row was made, and it orders `current()`.
  *
  *   channel_slack_v1_channels — the bindings (TASK-1094): which team agent a
  *     public channel of an install is connected to. The primary key makes it
@@ -54,7 +58,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     the one it minted and never stored). No secret and no person.
  *
  * The install's four secrets are NOT here: they live in the credentials vault
- * under `slack:<install_id>:<name>` (secrets.ts). Nor is any AX account's
+ * under `slack:<install_id>:<name>` (secrets.ts). The vault keys those global
+ * rows by ref alone, so changing whom `connected_by_user_id` names (a Replace)
+ * never changes which row a read finds. Nor is any AX account's
  * name: `connected_by_user_id` is an id in the installs and channels tables,
  * and that person's name is read from auth when it is shown (invariant 4).
  * The one kind of person's name kept here is Slack's: `speaker_names` holds
@@ -92,6 +98,7 @@ export interface ChannelSlackInstallsTable {
   bot_user_id: string | null;
   connected_by_user_id: string;
   created_at: ColumnType<Date, Date | undefined, never>;
+  config_token_added_at: ColumnType<Date, Date | undefined, Date>;
   installed_at: Date | null;
   oauth_state_hash: string | null;
   oauth_state_user_id: string | null;
@@ -218,5 +225,29 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
       bot_name               TEXT NOT NULL,
       left_at                TIMESTAMPTZ NOT NULL DEFAULT now()
     )
+  `.execute(db);
+  // When the install's configuration token was added (TASK-1128): Connect's
+  // INSERT sets it with created_at's own now(), and a Replace moves it. Four
+  // steps, because a single `ADD COLUMN … NOT NULL DEFAULT now()` would stamp
+  // every existing install with the migration's time, so "Added on" would show
+  // the deploy date. An install from before the column takes its created_at,
+  // the moment Connect added its token. The UPDATE fills only NULLs, so a
+  // later boot never overwrites a replace.
+  await sql`
+    ALTER TABLE channel_slack_v1_installs
+      ADD COLUMN IF NOT EXISTS config_token_added_at TIMESTAMPTZ NULL
+  `.execute(db);
+  await sql`
+    ALTER TABLE channel_slack_v1_installs
+      ALTER COLUMN config_token_added_at SET DEFAULT now()
+  `.execute(db);
+  await sql`
+    UPDATE channel_slack_v1_installs
+       SET config_token_added_at = created_at
+     WHERE config_token_added_at IS NULL
+  `.execute(db);
+  await sql`
+    ALTER TABLE channel_slack_v1_installs
+      ALTER COLUMN config_token_added_at SET NOT NULL
   `.execute(db);
 }
