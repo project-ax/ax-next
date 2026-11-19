@@ -16,18 +16,26 @@ import { buildAppManifest, buildInstallUrl, slackUrls, withoutTrailingSlashes } 
 import type { Mutex } from './mutex.js';
 import { personName } from './person-name.js';
 import type { SecretOwner, SecretStore } from './secrets.js';
-import { SlackApiError, type CreatedApp, type OAuthInstall, type SlackApi } from './slack-api.js';
+import {
+  SlackApiError,
+  type CreatedApp,
+  type OAuthInstall,
+  type RotatedConfigToken,
+  type SlackApi,
+} from './slack-api.js';
 import { InstallStoreError, type InstallRow, type InstallStore } from './store.js';
 
 /**
  * channel-slack's admin surface: see how Slack stands, connect a workspace,
- * pick an unfinished install back up, rename the bot, and disconnect. Plus the
- * OAuth callback Slack sends the admin's browser to after they click Allow.
+ * pick an unfinished install back up, rename the bot, replace the
+ * configuration token, and disconnect. Plus the OAuth callback Slack sends
+ * the admin's browser to after they click Allow.
  *
  *   GET  /admin/slack                 → SlackStatus (every state: with the Slack apps AX made and couldn't delete)
  *   POST /admin/slack/connect         { accessToken, refreshToken, botName? } → { installUrl, iconSet }
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
+ *   POST /admin/slack/replace-token   { refreshToken } → {}, only once the install is active
  *   POST /admin/slack/disconnect      → { appDeleted }
  *   POST /admin/slack/forget-leftover-app  { appId } → {}, once the admin has deleted that app by hand
  *   GET  /admin/slack/oauth/callback  ?code&state or ?error&state → 302 to `<publicOrigin>/?slack=<outcome>`
@@ -58,6 +66,16 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     in the vault BEFORE the access token is used. If that write fails,
  *     Rename stops (a retry soon after may still work with the old token)
  *     and Disconnect deletes the app anyway.
+ *   - Replace (TASK-1128) takes a newly pasted REFRESH token, once the
+ *     install is active, and tries it once, as Connect does. The access
+ *     token that rotate mints first sends Slack the app's whole manifest, as
+ *     Rename does: Slack taking it shows the new token's owner can manage
+ *     this app. Only then is the minted refresh token stored over the old
+ *     one, as the admin replacing it, and the row moved to them; last, the
+ *     same access token deletes the leftover apps (below). Nothing reads or
+ *     rotates the old token, so any failure before the store leaves the
+ *     install as it was; after a replace, the old token stays live on Slack
+ *     until whoever generated it revokes it.
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
  *     an install, a stage or reason, a code, and whether Slack deleted an app.
@@ -70,9 +88,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * does the same when trying the pasted refresh token fails in any way and
  * Slack then won't delete the app Connect just made: no install row holds
  * that one yet, so it goes straight onto the list. The status names
- * them in every state, and the next Connect deletes them with the newly
- * pasted access token; to Connect, only Slack's `app_not_found` means
- * already gone. An admin who deleted one on Slack's page says so with
+ * them in every state, and the next Connect (with its newly pasted access
+ * token) or Replace (with the access token its rotate minted) deletes them;
+ * to either, only Slack's `app_not_found` means already gone. An admin who deleted one on Slack's page says so with
  * forget-leftover-app, which takes their word for it and asks Slack nothing
  * (no token here could ask): it only stops the note naming that app.
  *
@@ -142,6 +160,7 @@ export const ADMIN_STATUS_PATH = '/admin/slack';
 export const ADMIN_CONNECT_PATH = '/admin/slack/connect';
 export const ADMIN_INSTALL_URL_PATH = '/admin/slack/install-url';
 export const ADMIN_RENAME_PATH = '/admin/slack/rename';
+export const ADMIN_REPLACE_TOKEN_PATH = '/admin/slack/replace-token';
 export const ADMIN_DISCONNECT_PATH = '/admin/slack/disconnect';
 export const ADMIN_FORGET_LEFTOVER_APP_PATH = '/admin/slack/forget-leftover-app';
 /** Must match the `redirect_uri` slackUrls registers in the manifest. */
@@ -185,12 +204,26 @@ const REFRESH_TOKEN_REFUSED: ReadonlySet<string> = new Set([...TOKEN_ERRORS, 'in
  * no retry fixes. Either it is dead (REFRESH_TOKEN_REFUSED), or it works but
  * its owner can't manage this app (`no_permission`,
  * `app_not_owned_by_manager_app`, both listed for `apps.manifest.update`).
- * The remedy is the same for all: Disconnect, then Connect with a new token.
+ * The remedy is the same for all: Replace the token with one whose owner can
+ * manage the app.
  */
 const CONFIG_TOKEN_REFUSED: ReadonlySet<string> = new Set([
   ...REFRESH_TOKEN_REFUSED,
   'no_permission',
   'app_not_owned_by_manager_app',
+]);
+/**
+ * Slack refusing Replace's check (TASK-1128): the newly pasted token works,
+ * but its owner can't manage this app (`no_permission`,
+ * `app_not_owned_by_manager_app`) or can't see it (`app_not_found`). With a
+ * new, unproven token, Slack can't tell "can't manage" from "another
+ * workspace" from "gone" here. "Gone" sends the admin to Disconnect, which
+ * costs every channel, so none of the three is called gone.
+ */
+const NOT_APP_MANAGER: ReadonlySet<string> = new Set([
+  'no_permission',
+  'app_not_owned_by_manager_app',
+  'app_not_found',
 ]);
 /**
  * `apps.manifest.create` failures where Slack may have made the app anyway:
@@ -308,6 +341,20 @@ function renameError(stage: string, err: unknown): RenameRefusal {
   if (stage === 'update-app' && err.code === 'invalid_manifest') return 'slack-name';
   // A retry can't bring back an app that was deleted on Slack's side.
   if (stage === 'update-app' && err.code === 'app_not_found') return 'slack-app-gone';
+  return 'slack-error';
+}
+
+/**
+ * What a replace's failed check tells the admin. `slack-refresh-token`: the
+ * access token the pasted refresh token minted is no good, so only a new
+ * token helps. `slack-not-app-manager`: Slack says the token's owner can't
+ * manage this app (NOT_APP_MANAGER). Anything else is `slack-error`: a retry
+ * soon after may work while Slack still honours the pasted token.
+ */
+function replaceCheckError(err: unknown): 'slack-refresh-token' | 'slack-not-app-manager' | 'slack-error' {
+  if (!(err instanceof SlackApiError)) return 'slack-error';
+  if (REFRESH_TOKEN_REFUSED.has(err.code)) return 'slack-refresh-token';
+  if (NOT_APP_MANAGER.has(err.code)) return 'slack-not-app-manager';
   return 'slack-error';
 }
 
@@ -451,18 +498,20 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
-   * Before a new app: delete the ones an earlier Disconnect couldn't, with
-   * the access token the admin just pasted (its owner is usually the person
-   * whose earlier token made them; that a new token can delete them is
-   * UNMEASURED, decisions shard). Deleted, or already gone on Slack's side
-   * (`app_not_found`): forgotten, and then logged at info
-   * (`slack_leftover_app_deleted`, with `reason: 'already-gone'` for the
-   * second). If the forget fails, only that failure is logged, and the next
-   * Connect finds the app gone. Anything else: kept, logged code-only, and
-   * still listed; a failure about Slack or the token rather than that app
-   * (stopsLeftoverPass) also ends the pass, so one Connect waits on at most
-   * one dead deadline. Never stops the Connect; a store fault reading the
-   * list throws, before Slack is asked anything.
+   * Run by Connect (before a new app, with the access token the admin just
+   * pasted) and by Replace (after the replace, with the access token its
+   * rotate minted): delete the apps an earlier Disconnect couldn't. The
+   * token's owner is usually the person whose earlier token made them; that
+   * a new token can delete them is UNMEASURED, decisions shard. Deleted, or
+   * already gone on Slack's side (`app_not_found`): forgotten, and then
+   * logged at info (`slack_leftover_app_deleted`, with
+   * `reason: 'already-gone'` for the second). If the forget fails, only that
+   * failure is logged, and the next Connect or Replace finds the app gone.
+   * Anything else: kept, logged code-only, and still listed; a failure about
+   * Slack or the token rather than that app (stopsLeftoverPass) also ends the
+   * pass, so one Connect or Replace waits on at most one dead deadline. Never
+   * stops either; a store fault reading the list throws, before Slack is
+   * asked anything.
    */
   async function deleteLeftoverApps(accessToken: string): Promise<void> {
     for (const app of await d.store.leftoverApps()) {
@@ -688,10 +737,11 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
-   * Who connected the install, as auth knows them now: the row keeps only
-   * their id (invariant 4: names are auth's). The display name, else the
-   * email (only admins see this), else "Administrator", which also stands in
-   * for an account that's gone or an auth that can't answer.
+   * Who added the configuration token the install holds (at Connect, or the
+   * latest Replace), as auth knows them now: the row keeps only their id
+   * (invariant 4: names are auth's). The display name, else the email (only
+   * admins see this), else "Administrator", which also stands in for an
+   * account that's gone or an auth that can't answer.
    */
   function connectedByName(install: InstallRow): Promise<string> {
     return personName(d.bus, ctx, install.connectedByUserId, {
@@ -716,11 +766,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       };
       return json(200, out);
     }
-    // connectedAt is when the configuration token was added, not when Allow was clicked.
+    // connectedAt is when the configuration token was added (Connect, or the
+    // latest Replace), not when Allow was clicked.
     const shared = {
       botName: install.botName,
       connectedBy: await connectedByName(install),
-      connectedAt: install.createdAt.toISOString(),
+      connectedAt: install.configTokenAddedAt.toISOString(),
       leftoverApps,
     };
     const out: SlackStatus =
@@ -803,6 +854,87 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         throw err;
       }
       return json(200, { botName: name.name });
+    });
+  }
+
+  /**
+   * Replace the configuration token the install holds with one an admin
+   * pastes (TASK-1128), keeping the install, its channels and its other
+   * secrets. The pasted refresh token is tried once. The access token that
+   * mints sends Slack the app's whole manifest, as Rename does: Slack taking
+   * it shows the new token's owner can manage this app. Only then is the
+   * minted refresh token stored, as the admin replacing it, and the row
+   * moved to them. The old token is never read or rotated, so any failure
+   * before the store leaves the install exactly as it was.
+   */
+  async function replaceToken(req: RouteRequest, actor: AdminActor): Promise<Reply> {
+    // http-server's maxBodyBytes refused anything larger already; this is the backstop.
+    if (req.body.length > ADMIN_BODY_MAX_BYTES) return json(413, { error: 'body-too-large' });
+    const body = bodyObject(req.body);
+    if (body === null) return json(400, { error: 'invalid-body' });
+    // Checked before anything else, so an access token pasted into the refresh box never reaches Slack.
+    const refreshToken = configToken(body['refreshToken'], REFRESH_TOKEN_PREFIX);
+    if (refreshToken === null) return json(400, { error: 'invalid-refresh-token' });
+
+    return d.lock.run(async () => {
+      const install = await d.store.current();
+      // Active only: an unfinished install has no channels yet, so Cancel and Connect again cost nothing.
+      if (install === null || install.status !== 'active') return json(409, { error: 'not-connected' });
+      // The manifest carries the URLs Slack calls back on: https only, as at Connect.
+      if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      const { installId } = install;
+
+      let minted: RotatedConfigToken;
+      try {
+        minted = await d.api.rotateConfigToken(refreshToken);
+      } catch (err) {
+        failed('try-refresh-token', err, installId);
+        return json(502, { error: refreshTokenError(err) });
+      }
+      // The check comes BEFORE the store. Rename stores first because the
+      // token it spent is the stored one. Here the spent token is the pasted
+      // one, and the stored one stays untouched until Slack has taken this
+      // app's manifest from the new token: one whose owner can't manage the
+      // app must never overwrite one that may still work.
+      try {
+        await d.api.updateApp(
+          minted.accessToken,
+          install.appId,
+          buildAppManifest(install.botName, slackUrls(d.publicOrigin, installId)),
+        );
+      } catch (err) {
+        failed('check-app', err, installId);
+        return json(502, { error: replaceCheckError(err) });
+      }
+      // Written as the admin replacing it: every read after this names them.
+      if (!(await saveRotatedToken({ ...install, connectedByUserId: actor.id }, minted.refreshToken))) {
+        return INTERNAL;
+      }
+      try {
+        await d.store.setConfigTokenOwner(installId, { userId: actor.id, addedAt: new Date(d.now()) });
+      } catch (err) {
+        if (err instanceof InstallStoreError) {
+          // Gone meanwhile: a reset removes installs without this lock. Take
+          // back the token just stored, as Rename does (a failed delete is
+          // logged).
+          await d.secrets.remove(install, 'config-refresh-token');
+          return json(409, { error: 'not-connected' });
+        }
+        // A 500, logged with its install. The vault keeps the new token,
+        // which Slack just took for this app; only "Added by" is stale until
+        // a retry.
+        failed('save-owner', err, installId);
+        return INTERNAL;
+      }
+      log('info', 'slack_config_token_replaced', { installId });
+      // Best-effort, after the replace has happened: the new token may delete
+      // apps an earlier one couldn't. A fault reading the list changes nothing.
+      try {
+        await deleteLeftoverApps(minted.accessToken);
+      } catch (err) {
+        failed('leftover-apps', err, installId);
+      }
+      return json(200, {});
     });
   }
 
@@ -943,6 +1075,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     route('POST', ADMIN_CONNECT_PATH, 'connect', connect),
     route('POST', ADMIN_INSTALL_URL_PATH, 'install-url', installUrl),
     route('POST', ADMIN_RENAME_PATH, 'rename', rename),
+    route('POST', ADMIN_REPLACE_TOKEN_PATH, 'replace-token', replaceToken),
     route('POST', ADMIN_DISCONNECT_PATH, 'disconnect', disconnect),
     route('POST', ADMIN_FORGET_LEFTOVER_APP_PATH, 'forget-leftover-app', forgetLeftoverApp),
     // A browser lands here from Slack: a refusal or a fault still sends it home, with `failed`.

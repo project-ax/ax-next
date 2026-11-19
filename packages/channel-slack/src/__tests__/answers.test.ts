@@ -53,6 +53,7 @@ const INSTALL: InstallRow = {
   botUserId: 'U07BOTUSER1',
   connectedByUserId: 'usr_admin',
   createdAt: new Date('2026-11-13T10:00:00Z'),
+  configTokenAddedAt: new Date('2026-11-13T10:00:00Z'),
   installedAt: new Date('2026-11-13T10:05:00Z'),
 };
 /** A second install for the same workspace: its own app, its own prompts. */

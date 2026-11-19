@@ -17,9 +17,20 @@ export interface InstallRow {
   teamId: string | null;
   teamName: string | null;
   botUserId: string | null;
-  /** The admin who pasted the configuration token. Their name is auth's, read when shown. */
+  /**
+   * The admin who added the configuration token the install holds (at
+   * Connect, or the latest Replace); vault reads name them. Their name is
+   * auth's, read when shown.
+   */
   connectedByUserId: string;
+  /** When the row was made, by Connect. Orders `current()`. */
   createdAt: Date;
+  /**
+   * When the configuration token this install holds was added. At Connect
+   * that is the same instant as `createdAt`; after a Replace it is the latest
+   * replace (TASK-1128).
+   */
+  configTokenAddedAt: Date;
   installedAt: Date | null;
 }
 
@@ -83,6 +94,13 @@ export interface InstallStore {
    */
   setBotName(installId: string, botName: string): Promise<void>;
   /**
+   * Record who added the configuration token an ACTIVE install holds, and
+   * when (a Replace, TASK-1128): one UPDATE of those two columns and nothing
+   * else, so the channel bindings (another table) stay as they are. Throws
+   * `install-not-active` when the install is missing or still pending.
+   */
+  setConfigTokenOwner(installId: string, o: { userId: string; addedAt: Date }): Promise<void>;
+  /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
    * With `appLeft`, the install's Slack app is still on Slack (Disconnect
@@ -127,6 +145,7 @@ const ROW_COLUMNS = [
   'bot_user_id',
   'connected_by_user_id',
   'created_at',
+  'config_token_added_at',
   'installed_at',
 ] as const;
 
@@ -145,6 +164,7 @@ function toRow(r: SelectedRow): InstallRow {
     botUserId: r.bot_user_id,
     connectedByUserId: r.connected_by_user_id,
     createdAt: r.created_at,
+    configTokenAddedAt: r.config_token_added_at,
     installedAt: r.installed_at,
   };
 }
@@ -281,6 +301,16 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       const r = await db
         .updateTable(INSTALLS)
         .set({ bot_name: botName })
+        .where('install_id', '=', installId)
+        .where('status', '=', 'active')
+        .executeTakeFirst();
+      if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
+    },
+
+    async setConfigTokenOwner(installId, o) {
+      const r = await db
+        .updateTable(INSTALLS)
+        .set({ connected_by_user_id: o.userId, config_token_added_at: o.addedAt })
         .where('install_id', '=', installId)
         .where('status', '=', 'active')
         .executeTakeFirst();

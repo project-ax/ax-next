@@ -152,6 +152,33 @@ describe('runMigrations', () => {
     expect(stateIndexes[0]!.indexdef).toMatch(/WHERE \(oauth_state_hash IS NOT NULL\)/);
   });
 
+  it('adds config_token_added_at to an installs table from before it: backfilled from created_at, NOT NULL with a default, and a later run keeps a replaced value', async () => {
+    const installId = await pending();
+    await sql`UPDATE channel_slack_v1_installs SET created_at = '2026-11-01T00:00:00Z'
+              WHERE install_id = ${installId}`.execute(db);
+    // The table as it was before the column: no value and no default.
+    await sql`ALTER TABLE channel_slack_v1_installs DROP COLUMN config_token_added_at`.execute(db);
+
+    await runMigrations(db);
+    // The day Connect added the token, never the day of the deploy that added the column.
+    expect((await store.get(installId))?.configTokenAddedAt).toEqual(new Date('2026-11-01T00:00:00Z'));
+
+    await store.activate(installId, { ...TEAM, installedAt: new Date('2026-11-01T00:05:00.000Z') });
+    const replacedAt = new Date('2026-11-19T09:00:00.000Z');
+    await store.setConfigTokenOwner(installId, { userId: 'usr_admin2', addedAt: replacedAt });
+    await runMigrations(db);
+    // The backfill fills only NULLs: a later boot never undoes a replace.
+    expect((await store.get(installId))?.configTokenAddedAt).toEqual(replacedAt);
+
+    const column = await sql<{ is_nullable: string; column_default: string | null }>`
+      SELECT is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'channel_slack_v1_installs' AND column_name = 'config_token_added_at'
+    `.execute(db);
+    expect(column.rows).toHaveLength(1);
+    expect(column.rows[0]!.is_nullable).toBe('NO');
+    expect(column.rows[0]!.column_default).toMatch(/now\(\)/);
+  });
+
   it('two installs can never hold the same state hash', async () => {
     const a = await pending();
     const b = await pending();
@@ -170,7 +197,7 @@ describe('install rows', () => {
     const installId = await pending();
 
     const row = await store.get(installId);
-    const expected: Omit<InstallRow, 'createdAt'> = {
+    const expected: Omit<InstallRow, 'createdAt' | 'configTokenAddedAt'> = {
       installId,
       status: 'pending',
       ...PENDING,
@@ -181,9 +208,11 @@ describe('install rows', () => {
     };
     expect(row).toMatchObject(expected);
     expect(row?.createdAt).toBeInstanceOf(Date);
+    // Connect adds the configuration token as it makes the row: one instant.
+    expect(row?.configTokenAddedAt).toEqual(row?.createdAt);
     // The row is the install, never its OAuth state.
     expect(Object.keys(row!).sort()).toEqual(
-      [...Object.keys(expected), 'createdAt'].sort(),
+      [...Object.keys(expected), 'createdAt', 'configTokenAddedAt'].sort(),
     );
     expect(await store.current()).toEqual(row);
     expect(await store.get(newInstallId())).toBeNull();
@@ -283,6 +312,46 @@ describe('install rows', () => {
     expect((await store.get(installId))?.botName).toBe(PENDING.botName);
 
     const missing = await store.setBotName(newInstallId(), 'Ada Helper').catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(InstallStoreError);
+    expect((missing as InstallStoreError).code).toBe('install-not-active');
+  });
+
+  it('setConfigTokenOwner changes who added the token and when on an active install, and nothing else: not its other columns, not another install, not its channel bindings', async () => {
+    const a = await pending();
+    await store.activate(a, { ...TEAM, installedAt: new Date('2026-11-13T12:00:00.000Z') });
+    const b = await pending();
+    // Active too, so an update that lost its install_id filter would also pass the active filter on b.
+    await store.activate(b, { ...TEAM, teamId: 'T07OTHERTM9', installedAt: new Date('2026-11-13T13:00:00.000Z') });
+    await bind(a, 'C07SUPPORT1');
+    await bind(b, 'C07SALES002', 'agt_sales');
+    const snapshotA = await store.get(a);
+    const snapshotB = await store.get(b);
+    // Whole rows: a binding's own connected_by_user_id is who its channel's outsiders run as.
+    const allBindings = async () =>
+      (await sql`SELECT * FROM channel_slack_v1_channels ORDER BY install_id, channel_id`.execute(db)).rows;
+    const bindingsBefore = await allBindings();
+    expect(bindingsBefore).toHaveLength(2);
+
+    const addedAt = new Date('2026-11-19T09:00:00.000Z');
+    await store.setConfigTokenOwner(a, { userId: 'usr_admin2', addedAt });
+
+    // createdAt included: it keeps meaning "row made", and keeps ordering current().
+    expect(await store.get(a)).toEqual({ ...snapshotA, connectedByUserId: 'usr_admin2', configTokenAddedAt: addedAt });
+    expect(await store.get(b)).toEqual(snapshotB);
+    expect(await allBindings()).toEqual(bindingsBefore);
+  });
+
+  it('setConfigTokenOwner refuses an install that is missing or still pending, and changes nothing', async () => {
+    const installId = await pending();
+    const before = await store.get(installId);
+    const owner = { userId: 'usr_admin2', addedAt: new Date('2026-11-19T09:00:00.000Z') };
+
+    const err = await store.setConfigTokenOwner(installId, owner).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InstallStoreError);
+    expect((err as InstallStoreError).code).toBe('install-not-active');
+    expect(await store.get(installId)).toEqual(before);
+
+    const missing = await store.setConfigTokenOwner(newInstallId(), owner).catch((e: unknown) => e);
     expect(missing).toBeInstanceOf(InstallStoreError);
     expect((missing as InstallStoreError).code).toBe('install-not-active');
   });
