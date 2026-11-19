@@ -39,7 +39,7 @@
 7. **The skill card doesn't name the host** it will reach. This was already known.
 8. **A successful Disconnect leaves no log line,** so `appDeleted` can't be verified after the fact. Log `{installId, appDeleted}`.
 9. **The connect logged two `slack_install_refused {reason:'unauthenticated'}`** (01:16:37 and 01:16:59 UTC) in the middle of a connect that succeeded. The cause isn't known.
-10. **The icon upload still fails** with `error_bad_format` on every connect (TASK-1133).
+10. **The icon upload still fails** with `error_bad_format` on every connect (TASK-1133). *Found later (TASK-1133): there was no upload. Connect gave Slack a URL to the branding logo, which 404s with no logo uploaded (Slack then says `error_bad_format`) and is an SVG wordmark on prod. The admin's browser now draws a 512 px PNG and Connect uploads it.*
 
 ## Still unmeasured
 
