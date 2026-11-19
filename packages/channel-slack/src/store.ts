@@ -33,9 +33,15 @@ export interface OAuthState {
   expiresAt: Date;
 }
 
-/** A Slack app AX made that Disconnect couldn't delete, so it may still be on Slack. No secret. */
+/**
+ * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own after Slack
+ * refused the pasted refresh token), so it may still be on Slack. No secret.
+ */
 export interface LeftoverApp {
-  /** The removed install's id: how logs name it, and the key to forget it by. */
+  /**
+   * The install's id (a removed install's, or the one Connect minted and never
+   * stored): how logs name it, and the key to forget it by.
+   */
   installId: string;
   appId: string;
   botName: string;
@@ -93,10 +99,15 @@ export interface InstallStore {
    */
   removeAll(): Promise<RemovedInstall[]>;
   /**
-   * The Slack apps Disconnect couldn't delete, oldest first (by when they
+   * The Slack apps AX made and couldn't delete, oldest first (by when they
    * were left, then install id), at most LEFTOVER_APPS_MAX.
    */
   leftoverApps(): Promise<LeftoverApp[]>;
+  /**
+   * Remember a Slack app Connect made and couldn't take back (TASK-1159): no
+   * install row ever held it. An id already on the list keeps its first app.
+   */
+  rememberLeftoverApp(app: Pick<LeftoverApp, 'installId' | 'appId' | 'botName'>): Promise<void>;
   /** Forget one leftover app, by its removed install's id. A missing one is not an error. */
   forgetLeftoverApp(installId: string): Promise<void>;
 }
@@ -343,6 +354,14 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         botName: r.bot_name,
         leftAt: r.left_at,
       }));
+    },
+
+    async rememberLeftoverApp(app) {
+      await sql`
+        INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
+        VALUES (${app.installId}, ${app.appId}, ${app.botName})
+        ON CONFLICT (install_id) DO NOTHING
+      `.execute(db);
     },
 
     async forgetLeftoverApp(installId) {

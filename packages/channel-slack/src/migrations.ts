@@ -39,14 +39,18 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     once, oldest first by when it was last seen, the 16 most recent
  *     (channel-store.ts). An outsiders' thread keeps none.
  *
- *   channel_slack_v1_leftover_apps — Slack apps AX made that Disconnect
- *     couldn't delete (TASK-1132): the stored configuration token was dead
- *     or revoked, or Slack didn't answer. The install's row moves its app id
- *     and name here in the statement that deletes it (store.ts), so the id
- *     is never in both tables. The next Connect tries to delete them with
- *     the pasted access token; the Slack tab names them until that works or
- *     the admin says they deleted one by hand (`forget-leftover-app`). Keyed
- *     by the removed install's id. No secret and no person.
+ *   channel_slack_v1_leftover_apps — Slack apps AX made and couldn't
+ *     delete. Disconnect's (TASK-1132): the stored configuration token was
+ *     dead or revoked, or Slack didn't answer; the install's row moves its
+ *     app id and name here in the statement that deletes it (store.ts).
+ *     Connect's own (TASK-1159): Slack refused the pasted refresh token, or
+ *     didn't answer, and then wouldn't delete the app Connect had just made;
+ *     no install row ever held that one, so Connect writes it here directly.
+ *     Either way the id is never in both tables. The next Connect tries to
+ *     delete them with the pasted access token; the Slack tab names them
+ *     until that works or the admin says they deleted one by hand
+ *     (`forget-leftover-app`). Keyed by the install's id (for Connect's own,
+ *     the one it minted and never stored). No secret and no person.
  *
  * The install's four secrets are NOT here: they live in the credentials vault
  * under `slack:<install_id>:<name>` (secrets.ts). Nor is any AX account's

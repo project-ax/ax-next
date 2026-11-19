@@ -309,6 +309,17 @@ function memoryStore(clock: () => number, trail: string[]) {
         .slice(0, LEFTOVER_APPS_MAX)
         .map((l) => ({ ...l }));
     },
+    async rememberLeftoverApp(a) {
+      await enter('rememberLeftoverApp', [a]);
+      if (!leftovers.has(a.installId)) {
+        leftovers.set(a.installId, {
+          installId: a.installId,
+          appId: a.appId,
+          botName: a.botName,
+          leftAt: new Date(clock()),
+        });
+      }
+    },
     async forgetLeftoverApp(installId) {
       await enter('forgetLeftoverApp', [installId]);
       leftovers.delete(installId);
