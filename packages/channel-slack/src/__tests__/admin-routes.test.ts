@@ -1736,9 +1736,10 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     const w = world();
     leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
     leaveApp(w, LEFT_2, 'Second Bot');
-    // The admin already deleted the second one on api.slack.com/apps.
+    // The admin already deleted the first one on api.slack.com/apps. It comes
+    // first so a deleted app after it must not inherit its `already-gone`.
     w.slack.on.deleteApp = async (_token, appId) => {
-      if (appId === LEFT_2.appId) throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+      if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'app_not_found');
     };
     expect((await w.connect()).status).toBe(200);
     expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
@@ -1765,8 +1766,8 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       'setAppIcon',
     ]);
     expect(w.lines).toEqual([
-      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId } },
-      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId, reason: 'already-gone' } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId, reason: 'already-gone' } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
     ]);
   });
 
