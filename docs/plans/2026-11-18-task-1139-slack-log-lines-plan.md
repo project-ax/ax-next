@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, vitest, `@ax/channel-slack`.
 
-**Spec:** the card (TASK-1139, from `deploy/kind/walks/2026-11-16-TASK-1134/REPORT.md` findings 8 and 9) and `.claude/memory/decisions/2026-11-18-TASK-1139.md`. Read the shard first: it has the names, the evidence and every cut.
+**Spec:** the card (TASK-1139, from `deploy/kind/walks/2026-11-16-TASK-1134/REPORT.md` findings 8 and 9) and `.claude/memory/decisions/2026-11-18-TASK-1139.md`. Read the shard first: it has the names, the evidence and every cut. **After review:** the shard's last row corrects Task 3's pinned texts (the TASK-1097 note is a different browser and stays unexplained; the user-facing claim is from the code, not watched; the cookie wording is "belongs to the host it was set on"). The committed walk notes and skill bullet are the source of truth, not the texts below.
 
 ## What the code shows (both premises hold)
 
