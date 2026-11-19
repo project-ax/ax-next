@@ -336,6 +336,7 @@ describe('what an error says', () => {
     [refusal(400, 'invalid-bot-name', 'reserved'), 'botName', 'Slack keeps that name for itself. Pick another.'],
     [refusal(400, 'invalid-bot-name', 'something-new'), 'botName', "Slack can't use that name. Try another."],
     [refusal(502, 'slack-token'), null, "Slack didn't accept the access token. Generate a new pair and paste both again."],
+    [refusal(502, 'slack-refresh-token'), null, "Slack didn't accept the refresh token. Generate a new pair and paste both again."],
     [refusal(502, 'slack-name'), 'botName', "Slack didn't accept that bot name. Try another."],
     [
       refusal(502, 'slack-unconfirmed'),

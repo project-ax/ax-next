@@ -28,11 +28,13 @@ import { logCode } from './log-code.js';
  * (scripts/__tests__/channel-slack-boundaries.test.js), not at runtime. No method here returns a value anywhere but to its
  * caller, and no log line carries one: failures log the install and a code.
  *
- * The configuration refresh token stored here starts as the one the admin
- * pasted. After each rotate, admin-routes.ts writes the one Slack mints
- * alongside over it, because Slack retires a rotated refresh token within
- * minutes to hours (slack-api.ts). If that write fails, the old one stays,
- * and works only until Slack retires it.
+ * Since TASK-1159, the configuration refresh token stored here is never the
+ * one the admin pasted: Connect rotates that one once and stores the refresh
+ * token Slack mints with it. (An install connected earlier still holds its
+ * pasted one until a rotate's new token is kept.) After each later rotate, admin-routes.ts writes
+ * the one Slack mints alongside over it, because Slack retires a rotated
+ * refresh token within minutes to hours (slack-api.ts). If that write fails,
+ * the old one stays, and works only until Slack retires it.
  */
 
 export const SECRET_NAMES = Object.freeze([

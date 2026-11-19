@@ -524,6 +524,47 @@ describe("an app Disconnect couldn't delete is remembered with the install's rem
   });
 });
 
+describe("an app Connect couldn't take back is remembered with no install row (TASK-1159)", () => {
+  it('rememberLeftoverApp lists the app under the id Connect minted, touches no install, and is forgotten like any other', async () => {
+    const live = await pending();
+    const id = newInstallId();
+
+    await store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP001', botName: 'canopy' });
+
+    expect(await store.leftoverApps()).toEqual([
+      { installId: id, appId: 'A07NEWAPP001', botName: 'canopy', leftAt: expect.any(Date) },
+    ]);
+    expect(await store.get(id)).toBeNull();
+    expect((await store.current())?.installId).toBe(live);
+
+    await store.forgetLeftoverApp(id);
+    expect(await store.leftoverApps()).toEqual([]);
+  });
+
+  it('the same id remembered twice keeps the first app', async () => {
+    const id = newInstallId();
+    await store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP001', botName: 'canopy' });
+
+    await expect(
+      store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP002', botName: 'other' }),
+    ).resolves.toBeUndefined();
+
+    expect(await store.leftoverApps()).toEqual([
+      { installId: id, appId: 'A07NEWAPP001', botName: 'canopy', leftAt: expect.any(Date) },
+    ]);
+  });
+
+  it('a failing insert rejects, so the caller can say so, and leaves nothing', async () => {
+    await withLeftoverInsertTrigger(`RAISE EXCEPTION 'refused in test'; RETURN NEW;`, async () => {
+      await expect(
+        store.rememberLeftoverApp({ installId: newInstallId(), appId: 'A07NEWAPP001', botName: 'canopy' }),
+      ).rejects.toThrow(/refused in test/);
+    });
+
+    expect(await store.leftoverApps()).toEqual([]);
+  });
+});
+
 describe('OAuth state', () => {
   const expiresAt = new Date('2026-11-13T12:10:00.000Z');
 
