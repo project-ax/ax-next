@@ -247,23 +247,31 @@ recalled in a channel.
    (`xoxe.xoxp-…`, valid for 12 hours) and the refresh token (`xoxe-…`).
 2. The admin confirms the bot's name. The name defaults to the branding name,
    checked against Slack's name rules (§7 Q3), otherwise `ax`.
-3. AX first deletes any app an earlier Disconnect couldn't (below), with the
-   access token just pasted. Then it creates the shared app with
-   `apps.manifest.create` and uploads the bot's picture with
-   `apps.icon.set`: the admin's browser draws the branding logo (with no
-   logo and no product name, the AX mark) centred on a white 512 px square,
-   and Connect sends that PNG (TASK-1133). Under a custom name with no logo
-   the bot keeps Slack's default picture. The manifest sets the name, scopes, and the event and
+3. AX first deletes any app an earlier Disconnect or Connect couldn't
+   (below), with the access token just pasted. Then it creates the shared app
+   with `apps.manifest.create`, tries the pasted refresh token once (step 5),
+   and uploads the bot's picture with `apps.icon.set`: the admin's browser
+   draws the branding logo (with no logo and no product name, the AX mark)
+   centred on a white 512 px square, and Connect sends that PNG (TASK-1133).
+   Under a custom name with no logo the bot keeps Slack's default picture. If
+   the refresh-token try fails in any way, AX deletes the new app again (or,
+   when Slack won't let it, lists it as left over), so an install never
+   starts with a token Slack won't take (TASK-1159). When Slack refused the
+   refresh token itself, the admin is asked for a new pair; any other failure
+   says to try again. The manifest sets the name, scopes, and the event and
    interactivity URLs. Slack sends no challenge and needs no manual Verify
    click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
    the bot token. This click is the only one a person must make, and only
    someone with install rights can make it.
-5. AX keeps the **refresh token** and gets a fresh access token from it with
-   `tooling.tokens.rotate` whenever it needs one. Each rotate also hands back a
-   new refresh token, and Slack retires the old one within minutes to hours
-   (§7, configuration tokens), so AX stores the new one before it uses the
-   access token (TASK-1129). Access tokens are never stored past their 12 hours.
+5. AX keeps a **refresh token** and gets a fresh access token from it with
+   `tooling.tokens.rotate` whenever it needs one. The first rotate is at
+   Connect (step 3), so for any install connected since TASK-1159 the one AX
+   keeps is never the one pasted. Each rotate
+   also hands back a new refresh token, and Slack retires the old one within
+   minutes to hours (§7, configuration tokens), so AX stores the new one
+   before it uses the access token (TASK-1129). Access tokens are never stored
+   past their 12 hours.
 
 **Renaming:** Admin › Slack → **Rename** (TASK-1096), once Slack is connected.
 AX checks the name (§7 Q3) and applies it with `apps.manifest.update`, using an
@@ -292,13 +300,15 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
   can't do that last step itself. Whether that Revoke also ends the refresh
-  tokens rotates have minted since (the one AX holds after a rename) is
-  unmeasured (TASK-1134).
+  tokens rotates have minted since (the one AX holds from Connect on) is
+  unmeasured: the TASK-1134 walk revoked right after a reconnect, before any
+  rename, so the token it revoked was most likely the pasted one.
   Deleting the app needs the stored token, so a dead or revoked one (or
   Slack not answering) leaves the app on Slack. Disconnect still removes the
   install, but keeps the app's id and name (TASK-1132): the Slack tab names
   it in every state, linked to its own settings page, and the next Connect
-  tries to delete it with the newly pasted access token. The name stays
+  tries to delete it with the newly pasted access token. Connect keeps one
+  the same way when it can't take back the app it just made (step 3). The name stays
   until Connect deletes it or the admin clicks **I deleted it** after
   deleting it by hand. Cancelling an unfinished install is the same
   Disconnect. Whether a new token can delete an app an earlier token of the
@@ -377,14 +387,18 @@ A team agent that wants its own `@ada`:
    by its other bots in that workspace**. Slack itself allows duplicates: it
    quietly gives the second bot a suffixed `name` field (`axspikea2`), and in the
    spike the duplicate fooled even the person testing it (§7 Q5).
-2. The workspace's AX-side Slack admins get a DM from the shared bot:
-   **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**. The
-   same request shows up in AX admin settings.
+2. **Who approves (decided 2026-11-18, Vinay): the agent's owner, or else an AX
+   admin.** If the owner can install apps in the Slack workspace, they approve
+   it themselves: the request goes straight to step 3 with them as the approver.
+   If they can't, it goes to the AX admins as a DM from the shared bot,
+   **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**, and
+   the same request shows up in AX admin settings. Either way, Slack's own
+   install screen still decides in the end: only someone allowed to install
+   apps there can click Allow.
 3. **Approve** creates the app (`apps.manifest.create` + `apps.icon.set`) and
-   opens Slack's install screen straight away. The admin's **Allow** there is
+   opens Slack's install screen straight away. The approver's **Allow** there is
    the approval: one click, on Slack's own screen. There's no second AX-side
-   approve step. Only someone who's allowed to install apps can click Allow, and
-   the configuration token doesn't skip it.
+   approve step, and the configuration token doesn't skip it.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
    bot's real `name` field as read back from `users.info`. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
@@ -393,12 +407,38 @@ Everything except Allow is automatic. In the spike, Slack sent no challenge and
 needed no Verify click (§7 Q1).
 
 **Plan limit:** free Slack allows at most 10 custom or third-party apps, and
-each dedicated bot is one of them. The request form shows how many are in use,
-and phase 2 is really for paid workspaces.
+each dedicated bot is one of them. The request form shows how many are in use.
+Canopy's workspace is on a paid plan (confirmed 2026-11-18), so this is a line
+on the form, not a design constraint.
 
-For a dedicated bot, being invited to a channel *is* the binding: the app's id
-tells us which agent it is. Disconnecting deletes the app with
-`apps.manifest.delete`.
+For a dedicated bot, being invited to a channel *is* the binding: the install
+tells us which agent it is.
+
+**Events URL (decided 2026-11-18).** Each dedicated bot is its own install, with
+its own events URL, `POST /slack/events/<installId>` (§5), and its own signing
+secret. The id in the URL picks which signing secret to check, and nothing else:
+an unknown id gets the same answer as a bad signature. After the signature
+passes, the body's `api_app_id` must match the app stored for that install, or
+the request is dropped. The id stays an opaque one we choose, not Slack's app id
+or name, so the route still never handles a Slack id before the signature check.
+
+**Channels it was already in (decided 2026-11-18).** When an agent gets its own
+bot, any channel already connected to it through the shared app stays
+connected, but the agent answers only its new `@ada` handle from then on.
+Mentioning the shared `@ax` there no longer reaches it, although other agents
+on the shared app in that channel carry on as before. So two bots can't both
+answer for one agent. The owner is told which channels changed, and that
+`/invite @ada` is needed in each one before `@ada` can hear anything there.
+
+**Lifecycle (decided 2026-11-18).**
+- **Deleting the agent, or its team, deletes the bot** (`apps.manifest.delete`),
+  through the same path as Disconnect. An app that can't be deleted goes on the
+  leftover-apps list (TASK-1132).
+- **The owner can rename the bot or change its avatar later** from agent
+  settings (`apps.manifest.update` + `apps.icon.set`). That's the same rename
+  path the shared bot uses (TASK-1096), and the same name check from step 1
+  applies. Neither needs a new approval.
+- **Disconnect** deletes the app with `apps.manifest.delete`.
 
 Personal agents stay on the shared app. Fifty personal bots cluttering the
 workspace would buy nothing: a personal agent only talks to one person, in a DM.
@@ -871,7 +911,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 | 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got `axspikea2` as its `name` field. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
 | 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API; past 10 minutes or 12,000 characters, a new stream in the same thread (§5). | Docs |
 | 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
-| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead about 6 minutes after the first rotate on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The walk report names no confound for the 3 hours. The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds after a rename) is unmeasured (TASK-1134). | Tested (spike; corrected by the TASK-1097 walk) |
+| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead about 6 minutes after the first rotate on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The walk report names no confound for the 3 hours. The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds from Connect on) is unmeasured: the TASK-1134 walk revoked right after a reconnect, before any rename. | Tested (spike; corrected by the TASK-1097 walk) |
 | — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
 
 ## 8. Open questions
@@ -882,9 +922,8 @@ and the configuration token revoked. "Tested" means we watched it happen;
    personal agent, and a slash command can switch to another. Until then
    (TASK-1093), a DM goes to the owner's OLDEST personal agent, so creating a
    new one doesn't silently move their Slack thread.
-3. **Who counts as a Slack admin for phase 2 approvals?** Recommendation: the
-   person who connected the workspace, plus admins added in AX settings,
-   following Slack's `is_admin` if it turns out to be reliable.
+3. ~~**Who counts as a Slack admin for phase 2 approvals?**~~ **Decided
+   2026-11-18 (Vinay):** the agent's owner, or else an AX admin. See §4.
 4. **Telling the owner what goes to Slack.** Slack keeps a copy of everything
    the agent says, including in DMs, under its retention and export rules. And
    whoever controls a Slack session controls that person's personal agent.
@@ -921,6 +960,15 @@ and the configuration token revoked. "Tested" means we watched it happen;
 
 **Phase 2: dedicated bots**
 
-- **8.** Request a bot, the admin approval DM and its AX twin, creating and
-  installing the app, routing by app id, and delete on disconnect.
+Before starting: TASK-1133 (the avatar upload works), TASK-1159 (Connect tries
+the pasted token), TASK-1128 (an admin can replace a dead configuration token)
+and TASK-1139 (Disconnect logs whether the app was deleted). Also one
+measurement on a real workspace: can a newer configuration token delete an app
+an older one made?
+
+- **8.** Request a bot (name and avatar), approval by the owner or an AX admin,
+  creating and installing the app, its own events URL and signing secret,
+  moving already-connected channels to the new handle, rename and avatar change,
+  and deleting the bot when its agent or team is deleted or it's disconnected.
+  Too big for one PR: decompose with `auto-ship --design`.
 - **9. Walk (walk).**

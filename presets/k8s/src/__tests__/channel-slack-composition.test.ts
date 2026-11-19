@@ -832,6 +832,10 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       }),
     });
     expect(connect).toMatchObject({ status: 200, body: { iconSet: true } });
+    // Right after Slack makes the app, Connect tries the pasted refresh token once (TASK-1159).
+    const connectCalls = slackCalls.slice(connectMark).slice(0, 2);
+    expect(connectCalls.map((c) => c.method)).toEqual(['apps.manifest.create', 'tooling.tokens.rotate']);
+    expect(connectCalls[1]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
     // Uploaded through the real client, with the pasted access token, for the app just made.
     const iconCalls = slackCalls.slice(connectMark).filter((c) => c.method === 'apps.icon.set');
     expect(iconCalls).toHaveLength(1);
@@ -872,20 +876,25 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // The four secrets went into the real vault, globally.
     expect(await readSecret(installId, 'bot-token')).toBe(BOT_TOKEN);
     expect(await readSecret(installId, 'signing-secret')).toBe(SIGNING_SECRET);
+    // The refresh token kept is the one Slack minted at Connect, never the pasted one.
+    const atConnect = await readSecret(installId, 'config-refresh-token');
+    expect(atConnect).toBe(rotatedRefreshToken(rotateSeq));
+    expect(atConnect).not.toBe(CONFIG_REFRESH_TOKEN);
     actor = null;
 
-    // 2b. The admin renames the bot (TASK-1096). The route rotates the stored
-    //     configuration token, then sends Slack the WHOLE manifest (Slack
-    //     replaces it on update) with only the two name fields changed. The row
-    //     shows the new name only after Slack said yes. Nothing else in the
-    //     scenario reads the name, and Disconnect at step 6 cleans the install up.
+    // 2b. The admin renames the bot (TASK-1096). The route rotates the
+    //     configuration token Connect kept, then sends Slack the WHOLE manifest
+    //     (Slack replaces it on update) with only the two name fields changed.
+    //     The row shows the new name only after Slack said yes. Nothing else in
+    //     the scenario reads the name, and Disconnect at step 6 cleans the
+    //     install up.
     const renameMark = slackCalls.length;
     actor = { id: ADMIN, isAdmin: true };
     const rename = await callRoute('POST', '/admin/slack/rename', { body: jsonBody({ botName: 'Canopy Helper' }) });
     expect(rename).toMatchObject({ status: 200, body: { botName: 'Canopy Helper' } });
     const renameCalls = slackCalls.slice(renameMark);
     expect(renameCalls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.update']);
-    expect(renameCalls[0]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
+    expect(renameCalls[0]!.body).toEqual({ refresh_token: atConnect });
     const update = renameCalls[1]!;
     expect(update.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
     expect(update.body['app_id']).toBe(APP_ID);
@@ -902,6 +911,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const kept = await readSecret(installId, 'config-refresh-token');
     expect(kept).toBe(rotatedRefreshToken(rotateSeq));
     expect(kept).not.toBe(CONFIG_REFRESH_TOKEN);
+    expect(kept).not.toBe(atConnect);
     expect(await callRoute('GET', '/admin/slack')).toMatchObject({
       status: 200,
       body: { state: 'connected', botName: 'Canopy Helper' },
