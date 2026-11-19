@@ -424,6 +424,7 @@ describe('Connect', () => {
 
   it.each([
     ['slack-token', "Slack didn't accept the access token. Generate a new pair and paste both again."],
+    ['slack-refresh-token', "Slack didn't accept the refresh token. Generate a new pair and paste both again."],
     [
       'slack-unconfirmed',
       "Slack didn't give us a clear answer, so a Slack app may have been created anyway. Check api.slack.com/apps and delete it before you try again.",

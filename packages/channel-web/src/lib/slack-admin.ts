@@ -282,6 +282,8 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'invalid-access-token': "That doesn't look like an access token. It starts with xoxe.xoxp-.",
   'invalid-refresh-token': "That doesn't look like a refresh token. It starts with xoxe-.",
   'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
+  // Connect tried the pasted refresh token once and Slack refused it; the app we made is gone again.
+  'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new pair and paste both again.",
   'slack-name': "Slack didn't accept that bot name. Try another.",
   'slack-config-token':
     "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
@@ -323,6 +325,8 @@ export function slackErrorCopy(err: unknown): { field: SlackErrorField; message:
       }
       case 'slack-token':
         return { field: null, message: SLACK_ERROR_COPY['slack-token'] };
+      case 'slack-refresh-token':
+        return { field: null, message: SLACK_ERROR_COPY['slack-refresh-token'] };
       case 'slack-config-token':
         return { field: null, message: SLACK_ERROR_COPY['slack-config-token'] };
       case 'public-origin-not-https':
