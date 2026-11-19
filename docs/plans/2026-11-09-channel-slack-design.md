@@ -254,9 +254,9 @@ recalled in a channel.
    fails in any way, AX deletes the new app again (or, when Slack won't let
    it, lists it as left over), so an install never starts with a token Slack
    won't take (TASK-1159). When Slack refused the refresh token itself, the
-   admin is asked for a new pair; any other failure says to try again. The manifest sets the name, scopes, and the event and
-   interactivity URLs. Slack sends no challenge and needs no manual Verify
-   click (§7 Q1).
+   admin is asked for a new pair; any other failure says to try again. The
+   manifest sets the name, scopes, and the event and interactivity URLs.
+   Slack sends no challenge and needs no manual Verify click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
    the bot token. This click is the only one a person must make, and only
    someone with install rights can make it.

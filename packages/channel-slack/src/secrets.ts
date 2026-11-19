@@ -29,9 +29,9 @@ import { logCode } from './log-code.js';
  * caller, and no log line carries one: failures log the install and a code.
  *
  * Since TASK-1159, the configuration refresh token stored here is never the
- * one the admin pasted (an install connected earlier and never renamed still
- * holds its pasted one): Connect rotates that one once and stores the refresh token Slack
- * mints with it (TASK-1159). After each later rotate, admin-routes.ts writes
+ * one the admin pasted: Connect rotates that one once and stores the refresh
+ * token Slack mints with it. (An install connected earlier still holds its
+ * pasted one until a rotate's new token is kept.) After each later rotate, admin-routes.ts writes
  * the one Slack mints alongside over it, because Slack retires a rotated
  * refresh token within minutes to hours (slack-api.ts). If that write fails,
  * the old one stays, and works only until Slack retires it.

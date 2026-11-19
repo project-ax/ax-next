@@ -67,9 +67,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * token is dead or revoked, or Slack doesn't answer), the install still
  * goes, and in the same statement its app's id and name move to the
  * leftover list (store.ts) instead of being forgotten. Connect's own undo
- * does the same when Slack refuses the pasted refresh token (or doesn't
- * answer) and then won't delete the app Connect just made: no install row
- * holds that one yet, so it goes straight onto the list. The status names
+ * does the same when trying the pasted refresh token fails in any way and
+ * Slack then won't delete the app Connect just made: no install row holds
+ * that one yet, so it goes straight onto the list. The status names
  * them in every state, and the next Connect deletes them with the newly
  * pasted access token; to Connect, only Slack's `app_not_found` means
  * already gone. An admin who deleted one on Slack's page says so with
