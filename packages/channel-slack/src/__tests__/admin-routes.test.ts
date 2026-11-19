@@ -2841,7 +2841,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     'store:leftoverApps',
   ];
   /** How far into ONE_REPLACE a replace gets before the step its log line names fails. */
-  const STOPS_AFTER = { 'try-refresh-token': 2, 'check-app': 3, 'save-config-token': 4, 'replace-token': 5 } as const;
+  const STOPS_AFTER = { 'try-refresh-token': 2, 'check-app': 3, 'save-config-token': 4, 'save-owner': 5 } as const;
   /** A day after Connect, when Grace replaces the token. */
   const REPLACED_AT = NOW_MS + 86_400_000;
   const configRef = (installId: string): string => secretRef(installId, 'config-refresh-token');
@@ -3113,7 +3113,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     const mark = w.trail.length;
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 500, body: { error: 'internal' } });
     // Not taken back: Slack just accepted it for this app, and the token it was minted from is spent.
-    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['replace-token']));
+    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['save-owner']));
     expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
     expect(onlyRow(w)).toEqual(before);
     expect(w.lines).toEqual([
@@ -3132,7 +3132,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     const mark = w.trail.length;
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
     expect(w.trail.slice(mark)).toEqual([
-      ...ONE_REPLACE.slice(0, STOPS_AFTER['replace-token']),
+      ...ONE_REPLACE.slice(0, STOPS_AFTER['save-owner']),
       'vault:delete config-refresh-token',
     ]);
     expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token');
