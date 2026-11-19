@@ -411,13 +411,14 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * the access token the admin just pasted (its owner is usually the person
    * whose earlier token made them; that a new token can delete them is
    * UNMEASURED, decisions shard). Deleted, or already gone on Slack's side
-   * (`app_not_found`): forgotten, and logged at info
+   * (`app_not_found`): forgotten, and then logged at info
    * (`slack_leftover_app_deleted`, with `reason: 'already-gone'` for the
-   * second). Anything else: kept, logged code-only, and still listed; a
-   * failure about Slack or the token rather than that app (stopsLeftoverPass)
-   * also ends the pass, so one Connect waits on at most one dead deadline.
-   * Never stops the Connect; a store fault reading the list throws, before
-   * Slack is asked anything.
+   * second). If the forget fails, only that failure is logged, and the next
+   * Connect finds the app gone. Anything else: kept, logged code-only, and
+   * still listed; a failure about Slack or the token rather than that app
+   * (stopsLeftoverPass) also ends the pass, so one Connect waits on at most
+   * one dead deadline. Never stops the Connect; a store fault reading the
+   * list throws, before Slack is asked anything.
    */
   async function deleteLeftoverApps(accessToken: string): Promise<void> {
     for (const app of await d.store.leftoverApps()) {
