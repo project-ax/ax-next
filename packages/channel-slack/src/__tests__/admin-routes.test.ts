@@ -210,6 +210,7 @@ function memoryStore(clock: () => number, trail: string[]) {
       botUserId: r.botUserId,
       connectedByUserId: r.connectedByUserId,
       createdAt: r.createdAt,
+      configTokenAddedAt: r.configTokenAddedAt,
       installedAt: r.installedAt,
     };
   }
@@ -235,13 +236,16 @@ function memoryStore(clock: () => number, trail: string[]) {
     async insertPending(r) {
       await enter('insertPending', [r]);
       if (rows.has(r.installId)) throw new Error('duplicate key value violates unique constraint');
+      // One INSERT in the real store: both dates are its now().
+      const at = clock();
       rows.set(r.installId, {
         ...r,
         status: 'pending',
         teamId: null,
         teamName: null,
         botUserId: null,
-        createdAt: new Date(clock()),
+        createdAt: new Date(at),
+        configTokenAddedAt: new Date(at),
         installedAt: null,
         stateHash: null,
         stateUserId: null,
@@ -287,6 +291,13 @@ function memoryStore(clock: () => number, trail: string[]) {
       const r = rows.get(installId);
       if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
       r.botName = botName;
+    },
+    async setConfigTokenOwner(installId, o) {
+      await enter('setConfigTokenOwner', [installId, o]);
+      const r = rows.get(installId);
+      if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
+      r.connectedByUserId = o.userId;
+      r.configTokenAddedAt = new Date(o.addedAt.getTime());
     },
     async remove(installId, o) {
       await enter('remove', [installId, o]);
@@ -837,6 +848,15 @@ describe('GET /admin/slack', () => {
       connectedAt: new Date(NOW_MS).toISOString(),
       leftoverApps: [],
     });
+  });
+
+  it("connectedAt is when the configuration token was added, which a replace moves; the row's createdAt does not", async () => {
+    const { w } = await connectedWorld();
+    const replacedAt = new Date(NOW_MS + 86_400_000);
+    onlyRow(w).configTokenAddedAt = replacedAt;
+
+    expect((await w.status()).body).toMatchObject({ state: 'connected', connectedAt: replacedAt.toISOString() });
+    expect(onlyRow(w).createdAt).toEqual(new Date(NOW_MS));
   });
 
   it('connectedBy falls back to the email, then "Administrator", when the admin has no display name', async () => {
@@ -2455,6 +2475,7 @@ describe('POST /admin/slack/rename', () => {
       botUserId: GRANT.botUserId,
       connectedByUserId: ADA.id,
       createdAt: new Date(NOW_MS),
+      configTokenAddedAt: new Date(NOW_MS),
       installedAt: new Date(NOW_MS),
       stateHash: null,
       stateUserId: null,

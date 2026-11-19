@@ -60,6 +60,7 @@ const ACTIVE: InstallRow = {
   botUserId: 'U07BOTUSER1',
   connectedByUserId: 'usr_installer',
   createdAt: new Date('2026-11-13T11:00:00.000Z'),
+  configTokenAddedAt: new Date('2026-11-13T11:00:00.000Z'),
   installedAt: new Date('2026-11-13T11:05:00.000Z'),
 };
 const PENDING: InstallRow = {

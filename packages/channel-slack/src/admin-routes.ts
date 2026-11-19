@@ -703,11 +703,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       };
       return json(200, out);
     }
-    // connectedAt is when the configuration token was added, not when Allow was clicked.
+    // connectedAt is when the configuration token was added (Connect, or the
+    // latest Replace), not when Allow was clicked.
     const shared = {
       botName: install.botName,
       connectedBy: await connectedByName(install),
-      connectedAt: install.createdAt.toISOString(),
+      connectedAt: install.configTokenAddedAt.toISOString(),
       leftoverApps,
     };
     const out: SlackStatus =
