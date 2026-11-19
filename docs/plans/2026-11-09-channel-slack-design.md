@@ -374,14 +374,18 @@ A team agent that wants its own `@ada`:
    by its other bots in that workspace**. Slack itself allows duplicates: it
    quietly gives the second bot a suffixed `name` field (`axspikea2`), and in the
    spike the duplicate fooled even the person testing it (§7 Q5).
-2. The workspace's AX-side Slack admins get a DM from the shared bot:
-   **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**. The
-   same request shows up in AX admin settings.
+2. **Who approves (decided 2026-11-18, Vinay): the agent's owner, or else an AX
+   admin.** If the owner can install apps in the Slack workspace, they approve
+   it themselves: the request goes straight to step 3 with them as the approver.
+   If they can't, it goes to the AX admins as a DM from the shared bot,
+   **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**, and
+   the same request shows up in AX admin settings. Either way, Slack's own
+   install screen still decides in the end: only someone allowed to install
+   apps there can click Allow.
 3. **Approve** creates the app (`apps.manifest.create` + `apps.icon.set`) and
-   opens Slack's install screen straight away. The admin's **Allow** there is
+   opens Slack's install screen straight away. The approver's **Allow** there is
    the approval: one click, on Slack's own screen. There's no second AX-side
-   approve step. Only someone who's allowed to install apps can click Allow, and
-   the configuration token doesn't skip it.
+   approve step, and the configuration token doesn't skip it.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
    bot's real `name` field as read back from `users.info`. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
@@ -390,12 +394,38 @@ Everything except Allow is automatic. In the spike, Slack sent no challenge and
 needed no Verify click (§7 Q1).
 
 **Plan limit:** free Slack allows at most 10 custom or third-party apps, and
-each dedicated bot is one of them. The request form shows how many are in use,
-and phase 2 is really for paid workspaces.
+each dedicated bot is one of them. The request form shows how many are in use.
+Canopy's workspace is on a paid plan (confirmed 2026-11-18), so this is a line
+on the form, not a design constraint.
 
-For a dedicated bot, being invited to a channel *is* the binding: the app's id
-tells us which agent it is. Disconnecting deletes the app with
-`apps.manifest.delete`.
+For a dedicated bot, being invited to a channel *is* the binding: the install
+tells us which agent it is.
+
+**Events URL (decided 2026-11-18).** Each dedicated bot is its own install, with
+its own events URL, `POST /slack/events/<installId>` (§5), and its own signing
+secret. The id in the URL picks which signing secret to check, and nothing else:
+an unknown id gets the same answer as a bad signature. After the signature
+passes, the body's `api_app_id` must match the app stored for that install, or
+the request is dropped. The id stays an opaque one we choose, not Slack's app id
+or name, so the route still never handles a Slack id before the signature check.
+
+**Channels it was already in (decided 2026-11-18).** When an agent gets its own
+bot, any channel already connected to it through the shared app stays
+connected, but the agent answers only its new `@ada` handle from then on.
+Mentioning the shared `@ax` there no longer reaches it, although other agents
+on the shared app in that channel carry on as before. So two bots can't both
+answer for one agent. The owner is told which channels changed, and that
+`/invite @ada` is needed in each one before `@ada` can hear anything there.
+
+**Lifecycle (decided 2026-11-18).**
+- **Deleting the agent, or its team, deletes the bot** (`apps.manifest.delete`),
+  through the same path as Disconnect. An app that can't be deleted goes on the
+  leftover-apps list (TASK-1132).
+- **The owner can rename the bot or change its avatar later** from agent
+  settings (`apps.manifest.update` + `apps.icon.set`). That's the same rename
+  path the shared bot uses (TASK-1096), and the same name check from step 1
+  applies. Neither needs a new approval.
+- **Disconnect** deletes the app with `apps.manifest.delete`.
 
 Personal agents stay on the shared app. Fifty personal bots cluttering the
 workspace would buy nothing: a personal agent only talks to one person, in a DM.
@@ -879,9 +909,8 @@ and the configuration token revoked. "Tested" means we watched it happen;
    personal agent, and a slash command can switch to another. Until then
    (TASK-1093), a DM goes to the owner's OLDEST personal agent, so creating a
    new one doesn't silently move their Slack thread.
-3. **Who counts as a Slack admin for phase 2 approvals?** Recommendation: the
-   person who connected the workspace, plus admins added in AX settings,
-   following Slack's `is_admin` if it turns out to be reliable.
+3. ~~**Who counts as a Slack admin for phase 2 approvals?**~~ **Decided
+   2026-11-18 (Vinay):** the agent's owner, or else an AX admin. See §4.
 4. **Telling the owner what goes to Slack.** Slack keeps a copy of everything
    the agent says, including in DMs, under its retention and export rules. And
    whoever controls a Slack session controls that person's personal agent.
@@ -918,6 +947,15 @@ and the configuration token revoked. "Tested" means we watched it happen;
 
 **Phase 2: dedicated bots**
 
-- **8.** Request a bot, the admin approval DM and its AX twin, creating and
-  installing the app, routing by app id, and delete on disconnect.
+Before starting: TASK-1133 (the avatar upload works), TASK-1159 (Connect tries
+the pasted token), TASK-1128 (an admin can replace a dead configuration token)
+and TASK-1139 (Disconnect logs whether the app was deleted). Also one
+measurement on a real workspace: can a newer configuration token delete an app
+an older one made?
+
+- **8.** Request a bot (name and avatar), approval by the owner or an AX admin,
+  creating and installing the app, its own events URL and signing secret,
+  moving already-connected channels to the new handle, rename and avatar change,
+  and deleting the bot when its agent or team is deleted or it's disconnected.
+  Too big for one PR: decompose with `auto-ship --design`.
 - **9. Walk (walk).**
