@@ -12,13 +12,13 @@
  *                  address, why Slack can't reach us yet (and no form)
  *   pending        the app exists but nobody clicked Allow: continue or cancel
  *   connected      the workspace, the bot (with Rename), who added the token
- *                  and when
+ *                  and when (with Replace)
  * Above each of the last three, one note names any Slack app an earlier
  * Disconnect couldn't delete, each linked to its own page on Slack and with
  * an "I deleted it" button. Only the not-connected note says a Connect will
  * try again: from the other two, nothing will.
  *
- * THE TWO PASTED TOKENS NEVER LIVE IN REACT STATE. They are uncontrolled
+ * THE PASTED TOKENS (Connect's two, Replace's one) NEVER LIVE IN REACT STATE. They are uncontrolled
  * password inputs (so React never writes them into a `value` attribute),
  * read once on submit and cleared as the request goes out, whatever Slack
  * says. Nothing on the page holds them afterwards, and nothing ever shows the
@@ -69,6 +69,7 @@ import {
   forgetLeftoverSlackApp,
   goToSlack,
   renameSlackBot,
+  replaceSlackConfigToken,
   resumeSlackInstall,
   SlackAdminError,
   slackAppSettingsUrl,
@@ -90,6 +91,7 @@ type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; status: S
 type Notice =
   | { kind: 'disconnected' }
   | { kind: 'renamed'; botName: string }
+  | { kind: 'replaced' }
   | { kind: 'changed' };
 
 interface Actions {
@@ -97,6 +99,8 @@ interface Actions {
   onDisconnected: () => void;
   /** A rename went through: say what Slack shows now, then read again. */
   onRenamed: (botName: string) => void;
+  /** A token replace went through: say how to retire the old one, then read again. */
+  onReplaced: () => void;
   /** Someone else changed things first: read again, and say why it moved. */
   onChanged: () => void;
 }
@@ -160,9 +164,8 @@ function DisconnectedNotice() {
     <Alert>
       <AlertDescription className="flex flex-col gap-2">
         <p>
-          Slack is disconnected. One more step only you can do: on <SlackAppsLink />, under{' '}
-          <strong>Your App Configuration Tokens</strong>, click <strong>Revoke</strong>. Slack doesn&apos;t let
-          us do that part.
+          Slack is disconnected. One more step that Slack doesn&apos;t let us do: on <SlackAppsLink />, under{' '}
+          <strong>Your App Configuration Tokens</strong>, whoever generated the token clicks <strong>Revoke</strong>.
         </p>
       </AlertDescription>
     </Alert>
@@ -225,8 +228,8 @@ function LeftoverAppsNote({
         <AlertDescription className="flex flex-col gap-2">
           <p>
             {one
-              ? "We couldn't delete this Slack app, so it may still be on Slack:"
-              : "We couldn't delete these Slack apps, so they may still be on Slack:"}
+              ? "We couldn't confirm this Slack app was deleted, so it may still be on Slack:"
+              : "We couldn't confirm these Slack apps were deleted, so they may still be on Slack:"}
           </p>
           <ul className="flex list-disc flex-col gap-1 pl-5">
             {apps.map((app) => (
@@ -668,6 +671,141 @@ function RenameDialog({
   );
 }
 
+/**
+ * The form inside the Replace dialog: one refresh token from someone who can
+ * manage this Slack app. Like `RenameForm` it lives under `DialogContent`, so
+ * every opening mounts it empty; `busy` belongs to the dialog.
+ */
+function ReplaceTokenForm({
+  busy,
+  setBusy,
+  onCancel,
+  onReplaced,
+  onChanged,
+}: {
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+  onCancel: () => void;
+} & Pick<Actions, 'onReplaced' | 'onChanged'>) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<{ field: SlackErrorField; message: string } | null>(null);
+
+  // The token was cleared with the failed attempt, so the next step is pasting one again.
+  useEffect(() => {
+    if (error !== null) inputRef.current?.focus();
+  }, [error]);
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (busy) return;
+    const refreshToken = (inputRef.current?.value ?? '').trim();
+    // Write-only: the token leaves the page with this request, whatever Slack says.
+    if (inputRef.current !== null) inputRef.current.value = '';
+    setBusy(true);
+    setError(null);
+    try {
+      await replaceSlackConfigToken(refreshToken);
+      onReplaced();
+    } catch (err) {
+      setBusy(false);
+      // Before the state-changed check: a connected card has no https view to re-read into, so refreshing would loop.
+      if (err instanceof SlackAdminError && err.code === 'public-origin-not-https') {
+        setError(slackErrorCopy(err));
+        return;
+      }
+      if (slackStateChanged(err)) {
+        onChanged();
+        return;
+      }
+      setError(slackErrorCopy(err));
+    }
+  }
+
+  const tokenError = error !== null && error.field === 'refreshToken' ? error.message : null;
+
+  return (
+    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
+      <DialogHeader>
+        <DialogTitle>Replace the configuration token</DialogTitle>
+        <DialogDescription>
+          Do this when the token we have stops working, or when whoever added it is leaving. Conversations and
+          connected channels keep working.
+        </DialogDescription>
+      </DialogHeader>
+      <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
+        <li>
+          Open <SlackAppsLink />. Under <strong>Your App Configuration Tokens</strong>, click{' '}
+          <strong>Generate Token</strong> for this workspace. The token has to come from someone who can manage this
+          Slack app.
+        </li>
+        <li>Paste its refresh token below. We keep it encrypted, and nobody can read it back.</li>
+      </ol>
+      <FieldGroup>
+        <TokenField
+          id="slack-replace-refresh-token"
+          label="Refresh token"
+          hint="Starts with xoxe-"
+          inputRef={inputRef}
+          error={tokenError}
+          disabled={busy}
+        />
+      </FieldGroup>
+      {error !== null && error.field === null && (
+        <Alert variant="destructive">
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      )}
+      <DialogFooter className="gap-2">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? <Busy>Replacing…</Busy> : 'Replace token'}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+function ReplaceTokenDialog({
+  open,
+  onOpenChange,
+  onReplaced,
+  onChanged,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+} & Pick<Actions, 'onReplaced' | 'onChanged'>) {
+  const [busy, setBusy] = useState(false);
+  // Escape and the overlay wait while Slack answers.
+  const close = (next: boolean) => {
+    if (busy) return;
+    onOpenChange(next);
+  };
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent>
+        <ReplaceTokenForm
+          busy={busy}
+          setBusy={setBusy}
+          onCancel={() => close(false)}
+          // As with Rename: whichever way the request ended, the dialog closes itself.
+          onReplaced={() => {
+            setBusy(false);
+            onOpenChange(false);
+            onReplaced();
+          }}
+          onChanged={() => {
+            setBusy(false);
+            onOpenChange(false);
+            onChanged();
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { state: 'pending' }> } & Actions) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -728,6 +866,7 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
 function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { state: 'connected' }> } & Actions) {
   const [confirming, setConfirming] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [replacing, setReplacing] = useState(false);
   return (
     <Card variant="settings">
       <CardHeader>
@@ -752,8 +891,13 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
           </div>
           <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
             <dt>Configuration token</dt>
-            <dd className="text-muted-foreground">
-              Added by {status.connectedBy} on {shortDate(status.connectedAt)}
+            <dd className="flex items-center gap-3">
+              <span className="text-muted-foreground">
+                Added by {status.connectedBy} on {shortDate(status.connectedAt)}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => setReplacing(true)}>
+                Replace
+              </Button>
             </dd>
           </div>
         </dl>
@@ -768,6 +912,12 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
         onOpenChange={setRenaming}
         current={status.botName}
         onRenamed={actions.onRenamed}
+        onChanged={actions.onChanged}
+      />
+      <ReplaceTokenDialog
+        open={replacing}
+        onOpenChange={setReplacing}
+        onReplaced={actions.onReplaced}
         onChanged={actions.onChanged}
       />
       <DisconnectDialog open={confirming} onOpenChange={setConfirming} kind="connected" {...actions} />
@@ -846,6 +996,10 @@ export function SlackTab() {
     },
     [read],
   );
+  const onReplaced = useCallback(() => {
+    setNotice({ kind: 'replaced' });
+    void read();
+  }, [read]);
   const onChanged = useCallback(() => {
     setNotice({ kind: 'changed' });
     void read();
@@ -863,6 +1017,14 @@ export function SlackTab() {
           <AlertDescription>Renamed. People in Slack now see the bot as {notice.botName}.</AlertDescription>
         </Alert>
       )}
+      {notice?.kind === 'replaced' && (
+        <Alert>
+          <AlertDescription>
+            Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click{' '}
+            <strong>Revoke</strong> for it on <SlackAppsLink />, under <strong>Your App Configuration Tokens</strong>.
+          </AlertDescription>
+        </Alert>
+      )}
       {notice?.kind === 'changed' && (
         <Alert>
           <AlertDescription>This changed while you were here, so we&apos;ve refreshed it.</AlertDescription>
@@ -875,6 +1037,7 @@ export function SlackTab() {
           status={load.status}
           onDisconnected={onDisconnected}
           onRenamed={onRenamed}
+          onReplaced={onReplaced}
           onChanged={onChanged}
           onForgotten={onForgotten}
         />

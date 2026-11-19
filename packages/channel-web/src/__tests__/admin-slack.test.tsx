@@ -13,6 +13,7 @@ import {
   forgetLeftoverSlackApp,
   goToSlack,
   renameSlackBot,
+  replaceSlackConfigToken,
   resumeSlackInstall,
   slackAppSettingsUrl,
   slackErrorCopy,
@@ -230,6 +231,31 @@ describe('the writes', () => {
     ]);
   });
 
+  it('replaceSlackConfigToken POSTs exactly the refresh token with the CSRF header', async () => {
+    answer = () => json(200, {});
+    await expect(replaceSlackConfigToken(REFRESH)).resolves.toBeUndefined();
+    expect(calls).toEqual([
+      {
+        url: '/admin/slack/replace-token',
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: { refreshToken: REFRESH },
+      },
+    ]);
+  });
+
+  it('a refused replace carries the status and the server’s code', async () => {
+    answer = () => json(502, { error: 'slack-not-app-manager' });
+    await expect(replaceSlackConfigToken(REFRESH)).rejects.toMatchObject({
+      name: 'SlackAdminError',
+      status: 502,
+      code: 'slack-not-app-manager',
+    });
+    answer = () => json(400, { error: 'invalid-refresh-token' });
+    await expect(replaceSlackConfigToken(ACCESS)).rejects.toMatchObject({ status: 400, code: 'invalid-refresh-token' });
+  });
+
   it('forgetLeftoverSlackApp POSTs exactly the app id with the CSRF header', async () => {
     answer = () => json(200, {});
     await expect(forgetLeftoverSlackApp('A0CHZPVDJHX')).resolves.toBeUndefined();
@@ -336,7 +362,12 @@ describe('what an error says', () => {
     [refusal(400, 'invalid-bot-name', 'reserved'), 'botName', 'Slack keeps that name for itself. Pick another.'],
     [refusal(400, 'invalid-bot-name', 'something-new'), 'botName', "Slack can't use that name. Try another."],
     [refusal(502, 'slack-token'), null, "Slack didn't accept the access token. Generate a new pair and paste both again."],
-    [refusal(502, 'slack-refresh-token'), null, "Slack didn't accept the refresh token. Generate a new pair and paste both again."],
+    [refusal(502, 'slack-refresh-token'), null, "Slack didn't accept the refresh token. Generate a new token and try again."],
+    [
+      refusal(502, 'slack-not-app-manager'),
+      null,
+      "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.",
+    ],
     [refusal(502, 'slack-name'), 'botName', "Slack didn't accept that bot name. Try another."],
     [
       refusal(502, 'slack-unconfirmed'),
@@ -346,12 +377,12 @@ describe('what an error says', () => {
     [
       refusal(502, 'slack-config-token'),
       null,
-      "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. To fix it, disconnect Slack, then connect it again with a new token. Channels will need connecting again after that.",
+      "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again.",
     ],
     [
       refusal(409, 'public-origin-not-https'),
       null,
-      "Our public address isn't https right now, so we can't send Slack a new name. Whoever runs this server can fix that.",
+      "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that.",
     ],
     [
       refusal(502, 'slack-app-gone'),

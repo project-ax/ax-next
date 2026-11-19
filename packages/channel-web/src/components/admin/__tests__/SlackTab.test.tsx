@@ -14,6 +14,7 @@ import {
   forgetLeftoverSlackApp,
   goToSlack,
   renameSlackBot,
+  replaceSlackConfigToken,
   resumeSlackInstall,
   SLACK_ERROR_COPY,
   type SlackStatusRead,
@@ -27,6 +28,7 @@ vi.mock('@/lib/slack-admin', async (original) => ({
   resumeSlackInstall: vi.fn(),
   disconnectSlack: vi.fn(),
   renameSlackBot: vi.fn(),
+  replaceSlackConfigToken: vi.fn(),
   forgetLeftoverSlackApp: vi.fn(),
   goToSlack: vi.fn(),
 }));
@@ -71,6 +73,7 @@ const connect = vi.mocked(connectSlack);
 const resume = vi.mocked(resumeSlackInstall);
 const disconnect = vi.mocked(disconnectSlack);
 const rename = vi.mocked(renameSlackBot);
+const replace = vi.mocked(replaceSlackConfigToken);
 const forget = vi.mocked(forgetLeftoverSlackApp);
 const navigate = vi.mocked(goToSlack);
 
@@ -78,8 +81,8 @@ const navigate = vi.mocked(goToSlack);
 async function leftoverNote(several = false): Promise<HTMLElement> {
   const first = await screen.findByText(
     several
-      ? "We couldn't delete these Slack apps, so they may still be on Slack:"
-      : "We couldn't delete this Slack app, so it may still be on Slack:",
+      ? "We couldn't confirm these Slack apps were deleted, so they may still be on Slack:"
+      : "We couldn't confirm this Slack app was deleted, so it may still be on Slack:",
   );
   return first.closest('[role="alert"]') as HTMLElement;
 }
@@ -145,7 +148,7 @@ describe('SlackTab states', () => {
 
   it("not connected, with a Slack app we couldn't delete: names it, links to its own settings page, and still offers Connect", async () => {
     renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT] });
-    const first = await screen.findByText("We couldn't delete this Slack app, so it may still be on Slack:");
+    const first = await screen.findByText("We couldn't confirm this Slack app was deleted, so it may still be on Slack:");
     const alert = first.closest('[role="alert"]') as HTMLElement;
     expect(alert).toHaveTextContent(
       "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page.",
@@ -159,7 +162,7 @@ describe('SlackTab states', () => {
 
   it('several apps: each listed and linked to its own page, even with the same name', async () => {
     renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] });
-    const first = await screen.findByText("We couldn't delete these Slack apps, so they may still be on Slack:");
+    const first = await screen.findByText("We couldn't confirm these Slack apps were deleted, so they may still be on Slack:");
     const alert = first.closest('[role="alert"]') as HTMLElement;
     expect(alert).toHaveTextContent(
       "We'll try again the next time you connect. To delete one yourself, open it and click Delete App at the bottom of the page.",
@@ -174,7 +177,7 @@ describe('SlackTab states', () => {
     renderTab({ ...NO_HTTPS, leftoverApps: [LEFT] });
     const alerts = await screen.findAllByRole('alert');
     expect(alerts).toHaveLength(2);
-    expect(alerts[0]).toHaveTextContent("We couldn't delete this Slack app");
+    expect(alerts[0]).toHaveTextContent("We couldn't confirm this Slack app was deleted");
     expect(alerts[1]).toHaveTextContent('Slack needs a public https address to reach this server');
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
   });
@@ -217,7 +220,7 @@ describe('SlackTab states', () => {
   it('nothing left over: no note', async () => {
     renderTab(NOT_CONNECTED);
     await screen.findByRole('button', { name: 'Connect' });
-    expect(screen.queryByText(/couldn't delete/)).toBeNull();
+    expect(screen.queryByText(/couldn't confirm/)).toBeNull();
   });
 
   it('not connected: the three steps, the privacy note, write-only token fields and a prefilled name', async () => {
@@ -332,7 +335,7 @@ describe('I deleted it', () => {
     fireEvent.click(button(await leftoverNote(), LEFT));
     expect(await screen.findByRole('heading', { level: 2, name: 'Connected to Canopy Works' })).toBeInTheDocument();
     await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText(/couldn't delete/)).toBeNull();
+    expect(screen.queryByText(/couldn't confirm/)).toBeNull();
   });
 
   it('is one request at a time: every button in the note waits while the server answers', async () => {
@@ -424,7 +427,7 @@ describe('Connect', () => {
 
   it.each([
     ['slack-token', "Slack didn't accept the access token. Generate a new pair and paste both again."],
-    ['slack-refresh-token', "Slack didn't accept the refresh token. Generate a new pair and paste both again."],
+    ['slack-refresh-token', "Slack didn't accept the refresh token. Generate a new token and try again."],
     [
       'slack-unconfirmed',
       "Slack didn't give us a clear answer, so a Slack app may have been created anyway. Check api.slack.com/apps and delete it before you try again.",
@@ -464,7 +467,7 @@ describe('Connect', () => {
     await fillAndConnect();
     expect(await screen.findByText(/Slack needs a public https address to reach this server/)).toBeInTheDocument();
     expect(status).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText(/can't send Slack a new name/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/can't update the Slack app/)).not.toBeInTheDocument();
   });
 });
 
@@ -493,7 +496,7 @@ describe('Pending', () => {
     expect(dialog).toHaveTextContent("We'll delete the Slack app we started. You can connect again any time.");
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop connecting' }));
     await waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText(/One more step only you can do/)).toBeInTheDocument();
+    expect(await screen.findByText(/One more step that Slack doesn't let us do/)).toBeInTheDocument();
   });
 });
 
@@ -520,10 +523,10 @@ describe('Disconnect', () => {
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
 
-    const note = await screen.findByText(/One more step only you can do/);
+    const note = await screen.findByText(/One more step that Slack doesn't let us do/);
     const alert = note.closest('[role="alert"]') as HTMLElement;
     expect(alert).toHaveTextContent(
-      "Slack is disconnected. One more step only you can do: on Slack's app settings, under Your App Configuration Tokens, click Revoke. Slack doesn't let us do that part.",
+      "Slack is disconnected. One more step that Slack doesn't let us do: on Slack's app settings, under Your App Configuration Tokens, whoever generated the token clicks Revoke.",
     );
     expect(within(alert).getByRole('link', { name: "Slack's app settings" })).toHaveAttribute(
       'href',
@@ -539,9 +542,9 @@ describe('Disconnect', () => {
     renderTab(CONNECTED, { ...NOT_CONNECTED, leftoverApps: [LEFT] });
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
-    const note = await screen.findByText(/One more step only you can do/);
+    const note = await screen.findByText(/One more step that Slack doesn't let us do/);
     expect(note.closest('[role="alert"]')).not.toHaveTextContent("We couldn't remove the Slack app itself.");
-    const left = await screen.findByText(/We couldn't delete this Slack app/);
+    const left = await screen.findByText(/We couldn't confirm this Slack app was deleted/);
     expect(left.closest('[role="alert"]')).toHaveTextContent('canopy');
     expect(screen.getByRole('link', { name: 'canopy' })).toHaveAttribute(
       'href',
@@ -557,7 +560,7 @@ describe('Disconnect', () => {
     expect(
       await within(dialog).findByText('Something went wrong talking to Slack. Try again in a minute.'),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/One more step only you can do/)).toBeNull();
+    expect(screen.queryByText(/One more step that Slack doesn't let us do/)).toBeNull();
     expect(status).toHaveBeenCalledTimes(1);
   });
 });
@@ -624,6 +627,9 @@ describe('Rename', () => {
     submit(dialog, 'Ada Helper');
     const alert = await within(dialog).findByRole('alert');
     expect(alert).toHaveTextContent(SLACK_ERROR_COPY['slack-config-token']);
+    expect(alert).toHaveTextContent(
+      "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again.",
+    );
     expect(document.body.textContent).not.toContain('slack-config-token');
     expect(status).toHaveBeenCalledTimes(1);
   });
@@ -634,7 +640,9 @@ describe('Rename', () => {
     const dialog = await openDialog();
     submit(dialog, 'Ada Helper');
     const alert = await within(dialog).findByRole('alert');
-    expect(alert).toHaveTextContent("Our public address isn't https right now");
+    expect(alert).toHaveTextContent(
+      "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that.",
+    );
     expect(document.body.textContent).not.toContain('public-origin-not-https');
     expect(document.body.textContent).not.toContain('This changed while you were here');
     expect(status).toHaveBeenCalledTimes(1);
@@ -714,5 +722,173 @@ describe('Rename', () => {
     dialog = await openDialog();
     expect(within(dialog).queryByText(GENERIC)).toBeNull();
     expect(nameInput(dialog).value).toBe('canopy');
+  });
+});
+
+describe('Replace the configuration token', () => {
+  const GENERIC = 'Something went wrong talking to Slack. Try again in a minute.';
+  const NOT_MANAGER =
+    "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.";
+
+  async function openDialog() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace' }));
+    return screen.findByRole('dialog', { name: 'Replace the configuration token' });
+  }
+  function tokenInput(dialog: HTMLElement): HTMLInputElement {
+    return within(dialog).getByLabelText('Refresh token') as HTMLInputElement;
+  }
+  function submit(dialog: HTMLElement, value = REFRESH) {
+    fireEvent.change(tokenInput(dialog), { target: { value } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace token' }));
+  }
+
+  it('the connected card shows who added the token and when, with Replace; the dialog asks for one refresh token from someone who can manage the app', async () => {
+    renderTab(CONNECTED);
+    expect(await screen.findByText(`Added by Ada Admin on ${CONNECTED_DATE}`)).toBeInTheDocument();
+    const dialog = await openDialog();
+    expect(dialog).toHaveTextContent(
+      'Do this when the token we have stops working, or when whoever added it is leaving. Conversations and connected channels keep working.',
+    );
+    const steps = within(dialog).getAllByRole('listitem');
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toHaveTextContent(
+      "Open Slack's app settings. Under Your App Configuration Tokens, click Generate Token for this workspace. The token has to come from someone who can manage this Slack app.",
+    );
+    expect(within(steps[0]!).getByRole('link', { name: "Slack's app settings" })).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps',
+    );
+    expect(steps[1]).toHaveTextContent(
+      'Paste its refresh token below. We keep it encrypted, and nobody can read it back.',
+    );
+    const field = tokenInput(dialog);
+    expect(field).toHaveAttribute('type', 'password');
+    expect(field).toHaveAttribute('id', 'slack-replace-refresh-token');
+    expect(within(dialog).getByText('Starts with xoxe-')).toBeInTheDocument();
+    expect(within(dialog).getAllByLabelText(/token/i)).toHaveLength(1);
+    expect(within(dialog).queryByLabelText(/access token/i)).toBeNull();
+  });
+
+  it('Replace sends the pasted refresh token, trimmed; the field is empty as the request goes out and the token is never on the page; then the dialog closes, the notice says the old one can be revoked, and the tab reads again', async () => {
+    let finish!: () => void;
+    replace.mockReturnValueOnce(new Promise<void>((r) => (finish = r)));
+    renderTab(CONNECTED, CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog, `  ${REFRESH} `);
+    expect(replace).toHaveBeenCalledWith(REFRESH);
+    expect(tokenInput(dialog).value).toBe('');
+    expect(document.body.innerHTML).not.toContain(REFRESH);
+    finish();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const note = (await screen.findByText(/Token replaced\./)).closest('[role="alert"]') as HTMLElement;
+    expect(note).toHaveTextContent(
+      "Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click Revoke for it on Slack's app settings, under Your App Configuration Tokens.",
+    );
+    expect(within(note).getByRole('link', { name: "Slack's app settings" })).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps',
+    );
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(document.body.innerHTML).not.toContain(REFRESH);
+  });
+
+  it.each([
+    [new SlackAdminError(502, 'slack-refresh-token'), "Slack didn't accept the refresh token. Generate a new token and try again."],
+    [new SlackAdminError(502, 'slack-not-app-manager'), NOT_MANAGER],
+  ])("a token Slack refuses, or one that can't manage this app, says so in the dialog, never the raw code; the field is empty and focused (%#)", async (err, message) => {
+    replace.mockRejectedValueOnce(err);
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    within(dialog).getByRole('button', { name: 'Cancel' }).focus();
+    submit(dialog);
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent(message);
+    expect(document.body.textContent).not.toContain(err.code);
+    expect(tokenInput(dialog).value).toBe('');
+    await waitFor(() => expect(tokenInput(dialog)).toHaveFocus());
+    expect(document.body.innerHTML).not.toContain(REFRESH);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Token replaced/)).toBeNull();
+  });
+
+  it('a malformed token shows under the field', async () => {
+    replace.mockRejectedValueOnce(new SlackAdminError(400, 'invalid-refresh-token'));
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    within(dialog).getByRole('button', { name: 'Cancel' }).focus();
+    submit(dialog, ACCESS);
+    const message = `That doesn't look like a refresh token. It starts with ${CONFIG_REFRESH_PREFIX}.`;
+    expect(await within(dialog).findByText(message)).toBeInTheDocument();
+    const field = tokenInput(dialog);
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(message));
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(document.body.innerHTML).not.toContain(ACCESS);
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it('other trouble reads as the generic sentence and changes nothing', async () => {
+    replace.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog);
+    expect(await within(dialog).findByText(GENERIC)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Failed to fetch');
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it('refused for want of https: says so in the dialog instead of refreshing in a loop', async () => {
+    replace.mockRejectedValueOnce(new SlackAdminError(409, 'public-origin-not-https'));
+    renderTab(CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog);
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent(
+      "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that.",
+    );
+    expect(document.body.textContent).not.toContain('public-origin-not-https');
+    expect(document.body.textContent).not.toContain('This changed while you were here');
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it('someone else disconnected meanwhile: it refreshes and says so', async () => {
+    replace.mockRejectedValueOnce(new SlackAdminError(409, 'not-connected'));
+    renderTab(CONNECTED, NOT_CONNECTED);
+    const dialog = await openDialog();
+    submit(dialog);
+    expect(await screen.findByText("This changed while you were here, so we've refreshed it.")).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Connect' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(/Token replaced/)).toBeNull();
+  });
+
+  it('is one request at a time: Replace token and Cancel wait while Slack answers', async () => {
+    let finish!: () => void;
+    replace.mockReturnValueOnce(new Promise<void>((r) => (finish = r)));
+    renderTab(CONNECTED, CONNECTED);
+    const dialog = await openDialog();
+    fireEvent.change(tokenInput(dialog), { target: { value: REFRESH } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace token' }));
+    const busy = await within(dialog).findByRole('button', { name: /Replacing/ });
+    fireEvent.click(busy);
+    fireEvent.click(busy);
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(busy).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Replace the configuration token' })).toBeInTheDocument();
+    finish();
+    expect(await screen.findByText(/Token replaced\./)).toBeInTheDocument();
+  });
+
+  it('Cancel closes without a request; opening again starts with an empty field', async () => {
+    renderTab(CONNECTED);
+    let dialog = await openDialog();
+    fireEvent.change(tokenInput(dialog), { target: { value: 'half-pasted' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(replace).not.toHaveBeenCalled();
+    dialog = await openDialog();
+    expect(tokenInput(dialog).value).toBe('');
   });
 });
