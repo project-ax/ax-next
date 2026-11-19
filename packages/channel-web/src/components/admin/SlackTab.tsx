@@ -16,7 +16,8 @@
  * Above each of the last three, one note names any Slack app an earlier
  * Disconnect couldn't delete, each linked to its own page on Slack and with
  * an "I deleted it" button. Only the not-connected note says a Connect will
- * try again: from the other two, nothing will.
+ * try again: from the other two, nothing will. (A Replace also tries, once
+ * Slack is connected, but the note doesn't promise it.)
  *
  * THE PASTED TOKENS (Connect's two, Replace's one) NEVER LIVE IN REACT STATE. They are uncontrolled
  * password inputs (so React never writes them into a `value` attribute),
@@ -25,12 +26,12 @@
  * stored one. Connect hands the page to Slack's Allow page; Slack sends the
  * admin back to `/?slack=…`, which App.tsx turns into a toast and this tab.
  *
- * After a disconnect one step is the admin's alone: revoking the
- * configuration token on Slack's own page (Slack has no API for it). The
- * alert that says so stays until they leave the tab. An app a disconnect
- * couldn't delete is named by that note instead. It comes from the status,
- * so it outlasts a reload, until the app is gone: a Connect deletes it when
- * Slack lets it, or the admin deletes it on Slack's page and clicks
+ * After a disconnect one step is left to whoever generated the token:
+ * revoking the configuration token on Slack's own page (Slack has no API
+ * for it). The alert that says so stays until they leave the tab. An app a
+ * disconnect couldn't delete is named by that note instead. It comes from
+ * the status, so it outlasts a reload, until the app is gone: a Connect or
+ * a Replace deletes it when Slack lets it, or the admin deletes it on Slack's page and clicks
  * "I deleted it" (TASK-1132).
  *
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
@@ -728,7 +729,7 @@ function ReplaceTokenForm({
       <DialogHeader>
         <DialogTitle>Replace the configuration token</DialogTitle>
         <DialogDescription>
-          Do this when the token we have stops working, or when whoever added it is leaving. Conversations and
+          Do this when the token we have stops working, or when whoever generated it is leaving. Conversations and
           connected channels keep working.
         </DialogDescription>
       </DialogHeader>
@@ -1021,7 +1022,7 @@ export function SlackTab() {
         <Alert>
           <AlertDescription>
             Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click{' '}
-            <strong>Revoke</strong> for it on <SlackAppsLink />, under <strong>Your App Configuration Tokens</strong>.
+            <strong>Revoke</strong> for it on <SlackAppsLink />, under <strong>Your App Configuration Tokens</strong>. Don&apos;t revoke the token you just pasted: that&apos;s the one we use now.
           </AlertDescription>
         </Alert>
       )}

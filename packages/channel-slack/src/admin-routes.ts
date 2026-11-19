@@ -88,9 +88,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * does the same when trying the pasted refresh token fails in any way and
  * Slack then won't delete the app Connect just made: no install row holds
  * that one yet, so it goes straight onto the list. The status names
- * them in every state, and the next Connect deletes them with the newly
- * pasted access token; to Connect, only Slack's `app_not_found` means
- * already gone. An admin who deleted one on Slack's page says so with
+ * them in every state, and the next Connect (with its newly pasted access
+ * token) or Replace (with the access token its rotate minted) deletes them;
+ * to either, only Slack's `app_not_found` means already gone. An admin who deleted one on Slack's page says so with
  * forget-leftover-app, which takes their word for it and asks Slack nothing
  * (no token here could ask): it only stops the note naming that app.
  *
@@ -498,18 +498,20 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
-   * Before a new app: delete the ones an earlier Disconnect couldn't, with
-   * the access token the admin just pasted (its owner is usually the person
-   * whose earlier token made them; that a new token can delete them is
-   * UNMEASURED, decisions shard). Deleted, or already gone on Slack's side
-   * (`app_not_found`): forgotten, and then logged at info
-   * (`slack_leftover_app_deleted`, with `reason: 'already-gone'` for the
-   * second). If the forget fails, only that failure is logged, and the next
-   * Connect finds the app gone. Anything else: kept, logged code-only, and
-   * still listed; a failure about Slack or the token rather than that app
-   * (stopsLeftoverPass) also ends the pass, so one Connect waits on at most
-   * one dead deadline. Never stops the Connect; a store fault reading the
-   * list throws, before Slack is asked anything.
+   * Run by Connect (before a new app, with the access token the admin just
+   * pasted) and by Replace (after the replace, with the access token its
+   * rotate minted): delete the apps an earlier Disconnect couldn't. The
+   * token's owner is usually the person whose earlier token made them; that
+   * a new token can delete them is UNMEASURED, decisions shard. Deleted, or
+   * already gone on Slack's side (`app_not_found`): forgotten, and then
+   * logged at info (`slack_leftover_app_deleted`, with
+   * `reason: 'already-gone'` for the second). If the forget fails, only that
+   * failure is logged, and the next Connect or Replace finds the app gone.
+   * Anything else: kept, logged code-only, and still listed; a failure about
+   * Slack or the token rather than that app (stopsLeftoverPass) also ends the
+   * pass, so one Connect or Replace waits on at most one dead deadline. Never
+   * stops either; a store fault reading the list throws, before Slack is
+   * asked anything.
    */
   async function deleteLeftoverApps(accessToken: string): Promise<void> {
     for (const app of await d.store.leftoverApps()) {
@@ -918,9 +920,11 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
           await d.secrets.remove(install, 'config-refresh-token');
           return json(409, { error: 'not-connected' });
         }
-        // The route's 500. The vault keeps the new token, which Slack just
-        // took for this app; only "Added by" is stale until a retry.
-        throw err;
+        // A 500, logged with its install. The vault keeps the new token,
+        // which Slack just took for this app; only "Added by" is stale until
+        // a retry.
+        failed('save-owner', err, installId);
+        return INTERNAL;
       }
       log('info', 'slack_config_token_replaced', { installId });
       // Best-effort, after the replace has happened: the new token may delete

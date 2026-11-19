@@ -3117,7 +3117,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
     expect(onlyRow(w)).toEqual(before);
     expect(w.lines).toEqual([
-      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'replace-token', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-owner', code: 'ECONNRESET' } },
     ]);
 
     // The install keeps a working token: only "Added by" is stale.

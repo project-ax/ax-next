@@ -278,7 +278,7 @@ see, and @mention, the bot by its new name: on the TASK-1097 walk,
 `@ax` became `@ax-walk`. If the stored
 token can't be used (Slack refuses it, or its owner can't manage the app), the tab says so and the fix is **Replace** (below), which keeps every channel connected. If the Slack app was deleted on Slack's side, the fix is Disconnect, then Connect again.
 
-**Replacing the token:** Admin › Slack → **Replace**, next to who added the configuration token (TASK-1128), once Slack is connected. The admin pastes one value, a refresh token, from someone who can manage this Slack app. AX tries it once (`tooling.tokens.rotate`) and sends the app's whole manifest with the access token that rotate minted (`apps.manifest.update`, as Rename does). Slack taking it shows that the token's owner can manage this app. Only then does AX store the minted refresh token in place of the old one and record who added it and when. The install, its channels, the bot token and the other secrets stay as they are, and if any step fails, the old token stays. AX never reads or rotates the old token here, so it keeps working on Slack until whoever generated it revokes it, and the tab says so. A replace also tries again to delete any Slack apps listed as left over. Whether another admin's token can manage an app the first admin's token made, or only an app collaborator's can, is unmeasured (§8 Q5).
+**Replacing the token:** Admin › Slack → **Replace**, next to who added the configuration token (TASK-1128), once Slack is connected. The admin pastes one value, a refresh token, from someone who can manage this Slack app. AX tries it once (`tooling.tokens.rotate`) and sends the app's whole manifest with the access token that rotate minted (`apps.manifest.update`, as Rename does). Slack taking it shows that the token's owner can manage this app. Only then does AX store the minted refresh token in place of the old one and record who added it and when. The install, its channels, the bot token and the other secrets stay as they are, and if any step fails, the old token stays. AX never reads or rotates the old token here, so it keeps working on Slack until whoever generated it revokes it, and the tab says so. Like Rename, Replace sends this build's manifest, so it also syncs the app to it: a hand edit on api.slack.com is overwritten, and a scope a later build adds would make Slack ask for the app to be reinstalled. A replace also tries again to delete any Slack apps listed as left over. Whether another admin's token can manage an app the first admin's token made, or only an app collaborator's can, is unmeasured (§8 Q5).
 
 **The secrets:** bot token, signing secret, client secret, and the
 configuration **refresh token**. All live in the credentials store, readable
@@ -292,15 +292,15 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 - Admin settings shows who added the token and when (an AX admin; configuration tokens
   belong to one person). The token AX holds changes with every rotate whose new token it manages to save (step 5), and with **Replace** (above), which also changes who added it and when.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
-  tells the admin to click **Revoke** on Slack's configuration-tokens page. AX
+  tells whoever generated the token to click **Revoke** on Slack's configuration-tokens page. AX
   can't do that last step itself. Whether that Revoke also ends the refresh
-  tokens rotates have minted since (the one AX holds from Connect on) is
+  tokens rotates have minted since (the one AX holds, from Connect or the latest Replace on) is
   unmeasured: the TASK-1134 walk revoked right after a reconnect, before any
   rename, so the token it revoked was most likely the pasted one.
   Deleting the app needs the stored token, so a dead or revoked one (or
   Slack not answering) leaves the app on Slack. Disconnect still removes the
   install, but keeps the app's id and name (TASK-1132): the Slack tab names
-  it in every state, linked to its own settings page, and the next Connect
+  it in every state, linked to its own settings page, and the next Connect or Replace
   tries to delete it with the newly pasted access token. Connect keeps one
   the same way when it can't take back the app it just made (step 3). The name stays
   until Connect deletes it or the admin clicks **I deleted it** after

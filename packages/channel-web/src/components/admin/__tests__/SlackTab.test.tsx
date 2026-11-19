@@ -747,7 +747,7 @@ describe('Replace the configuration token', () => {
     expect(await screen.findByText(`Added by Ada Admin on ${CONNECTED_DATE}`)).toBeInTheDocument();
     const dialog = await openDialog();
     expect(dialog).toHaveTextContent(
-      'Do this when the token we have stops working, or when whoever added it is leaving. Conversations and connected channels keep working.',
+      'Do this when the token we have stops working, or when whoever generated it is leaving. Conversations and connected channels keep working.',
     );
     const steps = within(dialog).getAllByRole('listitem');
     expect(steps).toHaveLength(2);
@@ -782,7 +782,7 @@ describe('Replace the configuration token', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const note = (await screen.findByText(/Token replaced\./)).closest('[role="alert"]') as HTMLElement;
     expect(note).toHaveTextContent(
-      "Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click Revoke for it on Slack's app settings, under Your App Configuration Tokens.",
+      "Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click Revoke for it on Slack's app settings, under Your App Configuration Tokens. Don't revoke the token you just pasted: that's the one we use now.",
     );
     expect(within(note).getByRole('link', { name: "Slack's app settings" })).toHaveAttribute(
       'href',

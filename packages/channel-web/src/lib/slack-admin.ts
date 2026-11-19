@@ -295,7 +295,7 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
   // Connect tried the pasted refresh token once and Slack refused it; the app we made was deleted
   // again, or (when Slack wouldn't) is listed as left over.
-  // Shared by Connect and Replace: one refresh token is all either has to paste again.
+  // Shared by Connect and Replace: the same advice fits both, since either can be turned away on its refresh token.
   'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new token and try again.",
   // Replace: the token works, but its owner can't manage this app (or is in another workspace).
   'slack-not-app-manager':
