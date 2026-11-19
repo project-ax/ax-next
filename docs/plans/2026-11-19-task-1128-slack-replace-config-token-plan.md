@@ -341,7 +341,7 @@ Migration: hard to reverse once shipped.
 
 `SLACK_ERROR_COPY` changes:
 - `'slack-refresh-token'`: "Slack didn't accept the refresh token. Generate a new token and try again." Shared by Connect and Replace. It used to say "…a new pair and paste both again", which is wrong for a one-field form.
-- New `'slack-not-app-manager'`: "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace. If this Slack app is no longer listed on api.slack.com/apps, Disconnect and connect again instead."
+- New `'slack-not-app-manager'`: "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace."
 - `'slack-config-token'`: "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again."
 - `'public-origin-not-https'`: "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that."
 

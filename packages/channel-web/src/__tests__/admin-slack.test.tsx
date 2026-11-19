@@ -366,7 +366,7 @@ describe('what an error says', () => {
     [
       refusal(502, 'slack-not-app-manager'),
       null,
-      "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace. If this Slack app is no longer listed on api.slack.com/apps, Disconnect and connect again instead.",
+      "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.",
     ],
     [refusal(502, 'slack-name'), 'botName', "Slack didn't accept that bot name. Try another."],
     [

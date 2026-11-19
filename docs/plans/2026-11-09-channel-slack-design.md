@@ -301,7 +301,7 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
   Slack not answering) leaves the app on Slack. Disconnect still removes the
   install, but keeps the app's id and name (TASK-1132): the Slack tab names
   it in every state, linked to its own settings page, and the next Connect or Replace
-  tries to delete it with a fresh access token (the one Connect was pasted, or the one Replace's rotate minted). Connect keeps one
+  tries to delete it with a fresh access token (the one pasted at Connect, or the one Replace's rotate minted). Connect keeps one
   the same way when it can't take back the app it just made (step 3). The name stays
   until a Connect or Replace deletes it or the admin clicks **I deleted it** after
   deleting it by hand. Cancelling an unfinished install is the same

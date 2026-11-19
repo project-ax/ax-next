@@ -728,7 +728,7 @@ describe('Rename', () => {
 describe('Replace the configuration token', () => {
   const GENERIC = 'Something went wrong talking to Slack. Try again in a minute.';
   const NOT_MANAGER =
-    "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace. If this Slack app is no longer listed on api.slack.com/apps, Disconnect and connect again instead.";
+    "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.";
 
   async function openDialog() {
     fireEvent.click(await screen.findByRole('button', { name: 'Replace' }));
