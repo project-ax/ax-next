@@ -299,7 +299,7 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new token and try again.",
   // Replace: the token works, but its owner can't manage this app (or is in another workspace).
   'slack-not-app-manager':
-    "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.",
+    "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace. If this Slack app is no longer listed on api.slack.com/apps, Disconnect and connect again instead.",
   'slack-name': "Slack didn't accept that bot name. Try another.",
   'slack-config-token':
     "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again.",

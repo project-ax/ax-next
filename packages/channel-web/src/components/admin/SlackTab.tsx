@@ -173,7 +173,7 @@ function DisconnectedNotice() {
   );
 }
 
-/** The leftover note's last sentence. Only a Connect tries again, so only the not-connected view promises it. */
+/** The leftover note's last sentence. Connect and Replace both try again, but only the not-connected view promises it: a connected one has no next Connect to promise. */
 const LEFTOVER_LAST_SENTENCE = {
   retry: {
     one: "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page.",

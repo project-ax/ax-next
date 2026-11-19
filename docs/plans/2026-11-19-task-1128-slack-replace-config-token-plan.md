@@ -139,8 +139,8 @@ Migration: hard to reverse once shipped.
     - 500: `internal`
     - the gate's 401/403
   - Logs:
-    - failures: `slack_admin_failed { installId, stage, code }`, with stages `try-refresh-token`, `check-app`, `save-config-token` and `leftover-apps`
-    - the route-level catch: `{ stage: 'replace-token', code }`
+    - failures: `slack_admin_failed { installId, stage, code }`, with stages `try-refresh-token`, `check-app`, `save-config-token`, `save-owner` (added in review round 1) and `leftover-apps`
+    - the route-level catch: `{ stage: 'replace-token', code }` (after review round 1, a failed row write logs `save-owner` with its installId instead)
     - success: `slack_config_token_replaced { installId }` at **info**
 - `function replaceCheckError(err: unknown): 'slack-refresh-token' | 'slack-not-app-manager' | 'slack-error'`:
   - not a `SlackApiError` → `slack-error`
@@ -231,7 +231,7 @@ Migration: hard to reverse once shipped.
   h. `'the row write failing after the store → 500 internal; the vault holds the new token (Slack took it for this app) and the row still names Ada'`
      - Set up: `memory.failures.set('setConfigTokenOwner', connectionReset())`.
      - The vault holds `mintedRefresh(2)`, and the row still names Ada.
-     - Lines are `[{ level: 'error', msg: 'slack_admin_failed', fields: { stage: 'replace-token', code: 'ECONNRESET' } }]`.
+     - Lines are `[{ level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-owner', code: 'ECONNRESET' } }]` (review round 1; the plan first had the route-level `replace-token` line).
 
   i. `'the install removed meanwhile (a reset) → the token just stored is deleted again → 409 not-connected'`
      - Set up: `failures.set('setConfigTokenOwner', new InstallStoreError('install-not-active'))`.
@@ -341,7 +341,7 @@ Migration: hard to reverse once shipped.
 
 `SLACK_ERROR_COPY` changes:
 - `'slack-refresh-token'`: "Slack didn't accept the refresh token. Generate a new token and try again." Shared by Connect and Replace. It used to say "…a new pair and paste both again", which is wrong for a one-field form.
-- New `'slack-not-app-manager'`: "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace."
+- New `'slack-not-app-manager'`: "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace. If this Slack app is no longer listed on api.slack.com/apps, Disconnect and connect again instead."
 - `'slack-config-token'`: "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again."
 - `'public-origin-not-https'`: "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that."
 
