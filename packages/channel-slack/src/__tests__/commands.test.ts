@@ -82,6 +82,7 @@ const OLDER: InstallRow = {
   appId: 'A07OLDAPP01',
   botUserId: 'U07OLDBOT01',
   createdAt: new Date('2026-11-12T11:00:00.000Z'),
+  configTokenAddedAt: new Date('2026-11-12T11:00:00.000Z'),
   installedAt: new Date('2026-11-12T11:05:00.000Z'),
 };
 

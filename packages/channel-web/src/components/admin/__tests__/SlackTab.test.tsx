@@ -809,6 +809,7 @@ describe('Replace the configuration token', () => {
     expect(document.body.innerHTML).not.toContain(REFRESH);
     expect(status).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/Token replaced/)).toBeNull();
+    expect(document.body.innerHTML).not.toContain(REFRESH);
   });
 
   it('a malformed token shows under the field', async () => {
@@ -834,6 +835,7 @@ describe('Replace the configuration token', () => {
     submit(dialog);
     expect(await within(dialog).findByText(GENERIC)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('Failed to fetch');
+    expect(document.body.innerHTML).not.toContain(REFRESH);
     expect(status).toHaveBeenCalledTimes(1);
   });
 
@@ -848,6 +850,7 @@ describe('Replace the configuration token', () => {
     );
     expect(document.body.textContent).not.toContain('public-origin-not-https');
     expect(document.body.textContent).not.toContain('This changed while you were here');
+    expect(document.body.innerHTML).not.toContain(REFRESH);
     expect(status).toHaveBeenCalledTimes(1);
   });
 

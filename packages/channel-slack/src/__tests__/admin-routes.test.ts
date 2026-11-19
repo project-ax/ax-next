@@ -3173,7 +3173,11 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       [MINTED_ACCESS, LEFT_2.appId],
     ]);
     expect(w.memory.leftovers.size).toBe(0);
-    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_config_token_replaced', fields: { installId } }]);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_config_token_replaced', fields: { installId } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
 
     // Slack refusing one: it stays listed, logged under its own install id, and the next one still goes.
     const refused = await connectedWorld();
@@ -3193,6 +3197,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
         msg: 'slack_admin_failed',
         fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code: 'no_permission' },
       },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
     ]);
 
     // Reading the list failing: logged, and the replace stands.
