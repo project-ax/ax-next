@@ -55,7 +55,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     app anyway.
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
- *     an install, a stage or reason, and a code.
+ *     an install, a stage or reason, a code, and whether Slack deleted an app.
  *
  * Disconnect (and Cancel, the same route) deletes the Slack app with an
  * access token minted from the stored refresh token. When Slack won't (the
@@ -301,7 +301,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
 
   // ── Logs: code-only, and a log line never changes an answer ──────────────
 
-  const log = (level: 'info' | 'warn' | 'error', msg: string, fields: Record<string, string>): void => {
+  const log = (level: 'info' | 'warn' | 'error', msg: string, fields: Record<string, string | boolean>): void => {
     try {
       d.logger[level](msg, fields);
     } catch {
@@ -411,7 +411,9 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * the access token the admin just pasted (its owner is usually the person
    * whose earlier token made them; that a new token can delete them is
    * UNMEASURED, decisions shard). Deleted, or already gone on Slack's side
-   * (`app_not_found`): forgotten. Anything else: kept, logged code-only, and
+   * (`app_not_found`): forgotten, and logged at info
+   * (`slack_leftover_app_deleted`, with `reason: 'already-gone'` for the
+   * second). Anything else: kept, logged code-only, and
    * still listed; a failure about Slack or the token rather than that app
    * (stopsLeftoverPass) also ends the pass, so one Connect waits on at most
    * one dead deadline. Never stops the Connect; a store fault reading the
@@ -419,6 +421,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    */
   async function deleteLeftoverApps(accessToken: string): Promise<void> {
     for (const app of await d.store.leftoverApps()) {
+      let alreadyGone = false;
       try {
         await d.api.deleteApp(accessToken, app.appId);
       } catch (err) {
@@ -427,12 +430,18 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
           if (stopsLeftoverPass(err)) return;
           continue;
         }
+        alreadyGone = true;
       }
       try {
         await d.store.forgetLeftoverApp(app.installId);
       } catch (err) {
         failed('forget-leftover-app', err, app.installId);
+        continue;
       }
+      log('info', 'slack_leftover_app_deleted', {
+        installId: app.installId,
+        ...(alreadyGone ? { reason: 'already-gone' } : {}),
+      });
     }
   }
 
@@ -793,9 +802,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       // didn't delete is remembered in the same statement, so the next
       // Connect can delete it and the tab names it until then. If the row
       // won't go, nothing is remembered and the secrets stay too, so a retry
-      // can still delete the app.
+      // can still delete the app. Once it answers, the outcome is logged at
+      // info with the answer's `appDeleted` (`slack_disconnected`), so a walk
+      // can check it afterwards.
       await d.store.remove(install.installId, { appLeft: !appDeleted });
       await d.secrets.removeAll(install);
+      log('info', 'slack_disconnected', { installId: install.installId, appDeleted });
       return json(200, { appDeleted });
     });
   }
