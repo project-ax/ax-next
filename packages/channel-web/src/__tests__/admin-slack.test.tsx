@@ -206,6 +206,12 @@ describe('the writes', () => {
     ]);
   });
 
+  it('connectSlack sends the picture when it has one', async () => {
+    answer = () => json(200, { installUrl: INSTALL_URL, iconSet: true });
+    await connectSlack({ accessToken: ACCESS, refreshToken: REFRESH, botName: 'Canopy Bot', iconPng: 'QUJD' });
+    expect(calls[0]?.body).toEqual({ accessToken: ACCESS, refreshToken: REFRESH, botName: 'Canopy Bot', iconPng: 'QUJD' });
+  });
+
   it('resumeSlackInstall and disconnectSlack POST with the CSRF header and read their answers', async () => {
     answer = (c) =>
       c.url === '/admin/slack/install-url' ? json(200, { installUrl: INSTALL_URL }) : json(200, { appDeleted: false });

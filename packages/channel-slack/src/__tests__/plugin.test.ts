@@ -26,6 +26,7 @@ import { COPY } from '../copy.js';
 import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
 import {
   ADMIN_BODY_MAX_BYTES,
+  ADMIN_CONNECT_BODY_MAX_BYTES,
   COMMANDS_MAX_BODY_BYTES,
   EVENTS_MAX_BODY_BYTES,
   INTERACTIONS_MAX_BODY_BYTES,
@@ -661,7 +662,8 @@ describe('@ax/channel-slack plugin', () => {
     }));
     expect(shapes).toEqual([
       { method: 'GET', path: '/admin/slack', bypassCsrf: false, maxBodyBytes: undefined },
-      { method: 'POST', path: '/admin/slack/connect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // Connect's body can carry the bot's picture (TASK-1133).
+      { method: 'POST', path: '/admin/slack/connect', bypassCsrf: false, maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/install-url', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/rename', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       { method: 'POST', path: '/admin/slack/replace-token', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },

@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { crc32 } from 'node:zlib';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -104,6 +105,29 @@ const ROTATED_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONRO
 // Slack mints a NEW refresh token on every rotate and retires the old one some time
 // after the rotate (minutes to hours), so the fake numbers them: a test can tell which one it holds.
 const rotatedRefreshToken = (n: number): string => join('xo', 'xe-', '1-', 'COMPOSITIONROTATEDREFRESH', String(n));
+
+/** One PNG chunk: its data's length, its type, the data, and a CRC over type and data. */
+function pngChunk(type: string, data: Buffer): Buffer {
+  const typed = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typed));
+  return Buffer.concat([length, typed, crc]);
+}
+
+/**
+ * The bot's picture the admin's browser would send (TASK-1133): the start of
+ * a 512 x 512 PNG (signature, IHDR, IEND), which is all channel-slack reads
+ * before it hands the bytes to Slack. Built here, like channel-slack's own
+ * `fake-png.ts`, which a preset test can't import.
+ */
+const ICON_PNG = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  // 512 x 512, then bit depth 8, colour type 6 (RGBA), compression, filter and interlace 0.
+  pngChunk('IHDR', Buffer.from([0, 0, 2, 0, 0, 0, 2, 0, 0x08, 0x06, 0x00, 0x00, 0x00])),
+  pngChunk('IEND', Buffer.alloc(0)),
+]);
 
 interface SlackPerson {
   slackId: string;
@@ -261,6 +285,7 @@ function createStubsPlugin(): Plugin {
 interface SlackCall {
   method: string;
   auth: string | null;
+  /** The form, JSON or multipart fields; a multipart file stays a File. */
   body: Record<string, unknown>;
   /** The `ts` Slack's answer gave a posted message. */
   replyTs?: string;
@@ -285,9 +310,13 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
   const method = url.replace('https://slack.com/api/', '');
   const headers = new Headers(init?.headers);
   const raw = typeof init?.body === 'string' ? init.body : '';
-  const body: Record<string, unknown> = (headers.get('content-type') ?? '').startsWith('application/json')
-    ? (JSON.parse(raw) as Record<string, unknown>)
-    : Object.fromEntries(new URLSearchParams(raw));
+  // An upload (the bot's picture, `apps.icon.set`) arrives as FormData.
+  const body: Record<string, unknown> =
+    init?.body instanceof FormData
+      ? Object.fromEntries(init.body)
+      : (headers.get('content-type') ?? '').startsWith('application/json')
+        ? (JSON.parse(raw) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(raw));
   const call: SlackCall = { method, auth: headers.get('authorization'), body };
   slackCalls.push(call);
 
@@ -794,15 +823,30 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     const before = await callRoute('GET', '/admin/slack');
     expect(before).toMatchObject({ status: 200, body: { state: 'not-connected', canConnect: true } });
 
+    // The body carries the bot's picture the admin's browser drew (TASK-1133).
     const connectMark = slackCalls.length;
     const connect = await callRoute('POST', '/admin/slack/connect', {
-      body: jsonBody({ accessToken: CONFIG_ACCESS_TOKEN, refreshToken: CONFIG_REFRESH_TOKEN }),
+      body: jsonBody({
+        accessToken: CONFIG_ACCESS_TOKEN,
+        refreshToken: CONFIG_REFRESH_TOKEN,
+        iconPng: ICON_PNG.toString('base64'),
+      }),
     });
-    expect(connect.status).toBe(200);
+    expect(connect).toMatchObject({ status: 200, body: { iconSet: true } });
     // Right after Slack makes the app, Connect tries the pasted refresh token once (TASK-1159).
     const connectCalls = slackCalls.slice(connectMark).slice(0, 2);
     expect(connectCalls.map((c) => c.method)).toEqual(['apps.manifest.create', 'tooling.tokens.rotate']);
     expect(connectCalls[1]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
+    // Uploaded through the real client, with the pasted access token, for the app just made.
+    const iconCalls = slackCalls.slice(connectMark).filter((c) => c.method === 'apps.icon.set');
+    expect(iconCalls).toHaveLength(1);
+    const iconCall = iconCalls[0]!;
+    expect(iconCall.auth).toBe(`Bearer ${CONFIG_ACCESS_TOKEN}`);
+    expect(Object.keys(iconCall.body).sort()).toEqual(['app_id', 'file']);
+    expect(iconCall.body['app_id']).toBe(APP_ID);
+    const iconFile = iconCall.body['file'];
+    if (!(iconFile instanceof File)) throw new Error('apps.icon.set got no file');
+    expect(Buffer.from(await iconFile.arrayBuffer()).equals(ICON_PNG)).toBe(true);
     const installUrl = new URL((connect.body as { installUrl: string }).installUrl);
     expect(installUrl.origin + installUrl.pathname).toBe('https://slack.com/oauth/v2/authorize');
     const state = installUrl.searchParams.get('state')!;

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pngHeader } from './fake-png.js';
 import { BOT_PREFIX, fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { CHANNEL_LIST_PAGE_LIMIT, SLACK_RESPONSE_CAP_BYTES } from '../limits.js';
 import { buildAppManifest, slackUrls } from '../manifest.js';
@@ -14,6 +15,8 @@ const NEW_BOT = `${BOT_PREFIX}9-9-NEWBOT`;
 const CLIENT_SECRET = 'CLIENTSECRET0123456789abcdef';
 const SECRETS = [BOT, CFG, REFRESH, CLIENT_SECRET, 'SECRET'];
 const REDIRECT = 'https://ax.example/admin/slack/oauth/callback';
+/** The bot's picture, as Connect hands it over: a 512 px PNG's bytes. */
+const PNG = pngHeader(512, 512);
 
 /** One request the fake Slack received. */
 interface Sent {
@@ -141,10 +144,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
     ['apps.manifest.create', () => api.createApp(CFG, { display_information: { name: 'ax' } })],
     ['apps.manifest.update', () => api.updateApp(CFG, 'A0APP', { display_information: { name: 'ax' } })],
     ['apps.manifest.delete', () => api.deleteApp(CFG, 'A0APP')],
-    [
-      'apps.icon.set',
-      () => api.setAppIcon(CFG, 'A0APP', 'https://ax.example/api/branding/logo/light'),
-    ],
+    ['apps.icon.set', () => api.setAppIcon(CFG, 'A0APP', PNG)],
     [
       'oauth.v2.access',
       () =>
@@ -192,13 +192,14 @@ const FORM_METHODS = [
   'apps.manifest.create',
   'apps.manifest.update',
   'apps.manifest.delete',
-  'apps.icon.set',
   'oauth.v2.access',
   'users.info',
   'conversations.info',
   'conversations.list',
   'conversations.join',
 ];
+/** Methods that upload a file: `multipart/form-data`, its boundary written by fetch. */
+const MULTIPART_METHODS = ['apps.icon.set'];
 
 /** The SlackApiError a call rejects with; fails the test on anything else. */
 async function failure(p: Promise<unknown>): Promise<SlackApiError> {
@@ -242,7 +243,12 @@ describe('requests', () => {
       expect(req.init.redirect).toBe('manual');
       expect(req.init.signal).toBeInstanceOf(AbortSignal);
       const type = req.headers.get('content-type') ?? '';
-      if (FORM_METHODS.includes(req.method)) {
+      const multipart = MULTIPART_METHODS.includes(req.method);
+      if (multipart) {
+        // fetch writes the content type, with the boundary only it knows.
+        expect(req.init.body, req.method).toBeInstanceOf(FormData);
+        expect(req.headers.get('content-type'), req.method).toBeNull();
+      } else if (FORM_METHODS.includes(req.method)) {
         expect(type, req.method).toMatch(/^application\/x-www-form-urlencoded/);
       } else {
         expect(req.method).toMatch(/^(chat|reactions)\./);
@@ -252,9 +258,9 @@ describe('requests', () => {
       if (req.method === 'tooling.tokens.rotate') expect(auth).toBeNull();
       else if (req.method === 'oauth.v2.access') expect(auth).toMatch(/^Basic /);
       else expect(auth, req.method).toBe(`Bearer ${req.method.startsWith('apps.') ? CFG : BOT}`);
-      // Nothing but the content type and, maybe, the credential.
-      expect([...req.headers.keys()].sort()).toStrictEqual(
-        auth === null ? ['content-type'] : ['authorization', 'content-type'],
+      // Nothing but the content type (unless fetch writes it) and, maybe, the credential.
+      expect([...req.headers.keys()].sort(), req.method).toStrictEqual(
+        multipart ? ['authorization'] : auth === null ? ['content-type'] : ['authorization', 'content-type'],
       );
     }
   });
@@ -644,19 +650,33 @@ describe('requests', () => {
     expect((await longest.createApp(CFG, {})).signingSecret).toHaveLength(512);
   });
 
-  it('deleteApp and setAppIcon send form fields with the config token', async () => {
+  it('deleteApp sends a form field with the config token', async () => {
     const slack = fakeSlack(() => okJson());
-    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
-    await api.deleteApp(CFG, 'A0APP');
-    await api.setAppIcon(CFG, 'A0APP', 'https://ax.example/api/branding/logo/light');
+    await createSlackApi({ fetchImpl: slack.fetchImpl }).deleteApp(CFG, 'A0APP');
     expect(slack.sent.map((r) => [r.method, formOf(r), r.headers.get('authorization')])).toStrictEqual([
       ['apps.manifest.delete', { app_id: 'A0APP' }, `Bearer ${CFG}`],
-      [
-        'apps.icon.set',
-        { app_id: 'A0APP', url: 'https://ax.example/api/branding/logo/light' },
-        `Bearer ${CFG}`,
-      ],
     ]);
+  });
+
+  it('setAppIcon uploads the PNG as multipart "file" beside "app_id", with the config token and no hand-set content type', async () => {
+    const slack = fakeSlack(() => okJson());
+    await createSlackApi({ fetchImpl: slack.fetchImpl }).setAppIcon(CFG, 'A0APP', PNG);
+
+    expect(slack.sent.map((r) => r.url)).toStrictEqual(['https://slack.com/api/apps.icon.set']);
+    const [req] = slack.sent;
+    expect(req!.headers.get('authorization')).toBe(`Bearer ${CFG}`);
+    // fetch writes `multipart/form-data; boundary=…` itself; a hand-set one would lack the boundary.
+    expect(req!.headers.get('content-type')).toBeNull();
+    const form = req!.init.body;
+    if (!(form instanceof FormData)) throw new Error('expected a FormData body');
+    expect([...form.keys()].sort()).toStrictEqual(['app_id', 'file']);
+    expect(form.getAll('app_id')).toStrictEqual(['A0APP']);
+    expect(form.getAll('file')).toHaveLength(1);
+    const file = form.get('file');
+    if (!(file instanceof File)) throw new Error('expected "file" to be a File');
+    expect(file.name).toBe('icon.png');
+    expect(file.type).toBe('image/png');
+    expect(Buffer.from(await file.arrayBuffer()).equals(PNG)).toBe(true);
   });
 
   it('updateApp sends the app id and the whole manifest as form fields with the config token', async () => {

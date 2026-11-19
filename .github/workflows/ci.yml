@@ -194,12 +194,15 @@ jobs:
       - name: Install zsh (the shell the skill blocks actually run under)
         if: matrix.shard != 'routines' && matrix.shard != 'agents'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
-      # Two hostile-content suites drive a real Chromium:
+      # Three suites drive a real Chromium:
       #  - packages/channel-web/src/__tests__/visual-hostile.browser.test.ts
       #    (a chat visual can't send a request, navigate, or read cookies/storage)
       #  - packages/attachments/src/__tests__/artifacts-webrtc-hostile.browser.test.ts
       #    (artifact HTML served by the real content origin can't reach a UDP/TCP
       #    canary through WebRTC or a child frame; TASK-1082)
+      #  - packages/channel-web/src/__tests__/slack-avatar.browser.test.ts
+      #    (the Slack bot's picture: a prod-shaped SVG logo becomes a square
+      #    512 px PNG within Slack's documented size rules; TASK-1133)
       # (The browser and zsh installs below are skipped only on main's
       # `routines` and `agents` shards, whose packages use neither.)
       # Locally each skips when Chromium isn't installed; here they must RUN, so

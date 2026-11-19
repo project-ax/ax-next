@@ -147,8 +147,6 @@ export interface ChannelSlackConfig {
    * https origin can connect a workspace (Slack refuses plain http).
    */
   publicOrigin: string;
-  /** A public image Slack fetches for the bot's avatar. Best-effort. */
-  iconUrl?: string;
   /** Test seam. Default: the global fetch, looked up at call time. */
   fetchImpl?: typeof fetch;
   /** Epoch milliseconds. Test seam. */
@@ -337,7 +335,6 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             api,
             lock: createMutex(),
             publicOrigin,
-            ...(config.iconUrl !== undefined ? { iconUrl: config.iconUrl } : {}),
             logger,
             now,
             randomBytes,

@@ -4,7 +4,7 @@
  * answers by shape, not by import (the SPA depends on no host plugin).
  *
  *   GET  /admin/slack              → SlackStatus
- *   POST /admin/slack/connect      { accessToken, refreshToken, botName } → { installUrl }
+ *   POST /admin/slack/connect      { accessToken, refreshToken, botName, iconPng? } → { installUrl }
  *   POST /admin/slack/install-url  → { installUrl }, while an install is unfinished
  *   POST /admin/slack/rename       { botName } → { botName }
  *   POST /admin/slack/replace-token  { refreshToken } → {}
@@ -21,8 +21,10 @@
  * and digits. `forget-leftover-app` drops one from that list once the admin
  * has deleted it on Slack's page; nothing is asked of Slack.
  *
- * The pasted configuration tokens go out in one body each (Connect's two,
- * Replace's refresh token) and nowhere else: nothing here keeps, logs or returns them. Answers are read
+ * The bot's picture, drawn by `lib/slack-avatar.ts`, rides in the same Connect
+ * body as `iconPng`. The pasted configuration tokens go out in one body each
+ * (Connect's two, Replace's refresh token) and nowhere else: nothing here
+ * keeps, logs or returns them. Answers are read
  * field by field, and an install link is followed only when it is Slack's own
  * Allow page.
  */
@@ -59,6 +61,8 @@ export interface ConnectSlackInput {
   accessToken: string;
   refreshToken: string;
   botName: string;
+  /** Base64 PNG of the bot's picture; left out when there is none to send. */
+  iconPng?: string;
 }
 
 const STATUS_PATH = '/admin/slack';
@@ -238,6 +242,7 @@ export async function connectSlack(input: ConnectSlackInput): Promise<{ installU
       accessToken: input.accessToken,
       refreshToken: input.refreshToken,
       botName: input.botName,
+      ...(input.iconPng !== undefined ? { iconPng: input.iconPng } : {}),
     }),
   );
 }

@@ -3,8 +3,16 @@ import { HookBus, PluginError, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { createAdminRoutes } from '../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
-import { ADMIN_BODY_MAX_BYTES, LEFTOVER_APPS_MAX, OAUTH_STATE_TTL_MS, SLACK_TOKEN_MAX } from '../limits.js';
+import {
+  ADMIN_BODY_MAX_BYTES,
+  ADMIN_CONNECT_BODY_MAX_BYTES,
+  LEFTOVER_APPS_MAX,
+  OAUTH_STATE_TTL_MS,
+  SLACK_ICON_MAX_BYTES,
+  SLACK_TOKEN_MAX,
+} from '../limits.js';
 import { BOT_SCOPES, buildAppManifest, slackUrls } from '../manifest.js';
+import { pngBase64, pngHeader } from './fake-png.js';
 import {
   BOT_PREFIX,
   CONFIG_ACCESS_PREFIX,
@@ -28,7 +36,8 @@ import { InstallStoreError, type InstallRow, type InstallStore, type LeftoverApp
 
 const ORIGIN = 'https://ax.example';
 const HTTP_ORIGIN = 'http://ax.internal:8080';
-const ICON_URL = `${ORIGIN}/api/branding/logo/light`;
+/** The bot's picture the admin's browser drew: a 512 px PNG (its header, which is all Connect reads). */
+const ICON = pngHeader(512, 512);
 const CALLBACK = '/admin/slack/oauth/callback';
 /** "I deleted it": the admin deleted a leftover app on Slack's page themselves (TASK-1132). */
 const FORGET = '/admin/slack/forget-leftover-app';
@@ -75,9 +84,14 @@ const GRANT: OAuthInstall = {
   enterpriseInstall: false,
 };
 const CODE = '7512345678901.7598765432109.0123456789abcdef';
-const CONNECT_BODY = { accessToken: ACCESS, refreshToken: REFRESH, botName: 'Canopy Bot' };
+const CONNECT_BODY = {
+  accessToken: ACCESS,
+  refreshToken: REFRESH,
+  botName: 'Canopy Bot',
+  iconPng: ICON.toString('base64'),
+};
 /** A new pair, as an admin pastes after a Cancel: the strict fake retires REFRESH as soon as a Connect rotates it. */
-const SECOND_PAIR = { accessToken: SECOND_ACCESS, refreshToken: SECOND_REFRESH, botName: 'Canopy Bot' };
+const SECOND_PAIR = { ...CONNECT_BODY, accessToken: SECOND_ACCESS, refreshToken: SECOND_REFRESH };
 /** The app a second Connect makes, when a test needs it told apart from the first. */
 const SECOND_APP_ID = 'A07SECONDAPP';
 /** Slack apps an earlier Disconnect couldn't delete, by the removed install's id (TASK-1132). */
@@ -352,7 +366,7 @@ interface SlackBehaviour {
   createApp(token: string, manifest: Record<string, unknown>): Promise<CreatedApp>;
   updateApp(token: string, appId: string, manifest: Record<string, unknown>): Promise<void>;
   deleteApp(token: string, appId: string): Promise<void>;
-  setAppIcon(token: string, appId: string, url: string): Promise<void>;
+  setAppIcon(token: string, appId: string, png: Uint8Array): Promise<void>;
   oauthAccess(i: {
     clientId: string;
     clientSecret: string;
@@ -417,9 +431,9 @@ function fakeSlack(trail: string[]) {
       await on.deleteApp(token, appId);
       live.delete(appId);
     },
-    setAppIcon: async (token, appId, url) => {
-      record('setAppIcon', [token, appId, url]);
-      return on.setAppIcon(token, appId, url);
+    setAppIcon: async (token, appId, png) => {
+      record('setAppIcon', [token, appId, png]);
+      return on.setAppIcon(token, appId, png);
     },
     oauthAccess: async (i) => {
       record('oauthAccess', [i]);
@@ -456,8 +470,6 @@ interface Line {
 function world(
   o: {
     publicOrigin?: string;
-    /** null: no icon URL configured. */
-    iconUrl?: string | null;
     /** 'absent': no branding plugin; an Error: branding:get throws it. */
     branding?: { name: string | null } | 'absent' | Error;
     /** auth:require-user throws this for everyone. */
@@ -557,7 +569,6 @@ function world(
 
   const memory = memoryStore(() => nowMs, trail);
   const slack = fakeSlack(trail);
-  const iconUrl = o.iconUrl === undefined ? ICON_URL : o.iconUrl;
   const routes = createAdminRoutes({
     bus,
     store: memory.store,
@@ -565,7 +576,6 @@ function world(
     api: slack.api,
     lock: createMutex(),
     publicOrigin: o.publicOrigin ?? ORIGIN,
-    ...(iconUrl !== null ? { iconUrl } : {}),
     logger,
     now: () => nowMs,
     randomBytes: (n) => randomBytes(n),
@@ -683,7 +693,7 @@ const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
 // ── The routes ──────────────────────────────────────────────────────────────
 
 describe('the route table', () => {
-  it('is exactly the eight admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
+  it("is exactly the eight admin routes; none bypasses CSRF; the POSTs cap their bodies, Connect's with room for the bot's picture", () => {
     const { routes } = world();
     expect(routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
       'GET /admin/slack',
@@ -697,7 +707,11 @@ describe('the route table', () => {
     ]);
     for (const r of routes) {
       expect(r.bypassCsrf, r.path).not.toBe(true);
-      if (r.method === 'POST') expect(r.maxBodyBytes, r.path).toBe(ADMIN_BODY_MAX_BYTES);
+      if (r.method === 'POST') {
+        expect(r.maxBodyBytes, r.path).toBe(
+          r.path === '/admin/slack/connect' ? ADMIN_CONNECT_BODY_MAX_BYTES : ADMIN_BODY_MAX_BYTES,
+        );
+      }
     }
     // The callback serves the redirect_uri the manifest registers with Slack.
     expect(slackUrls(ORIGIN, 'AAAAAAAAAAAAAAAAAAAAAA').redirectUrl).toBe(REDIRECT_URI);
@@ -957,7 +971,11 @@ describe('POST /admin/slack/connect', () => {
       'createApp',
       'setAppIcon',
     ]);
-    expect(w.slack.calls.find((c) => c.method === 'setAppIcon')!.args).toEqual([ACCESS, APP.appId, ICON_URL]);
+    // The picture the browser sent, byte for byte, for the app just made.
+    const icon = w.slack.calls.find((c) => c.method === 'setAppIcon')!;
+    expect(icon.args).toHaveLength(3);
+    expect(icon.args.slice(0, 2)).toEqual([ACCESS, APP.appId]);
+    expect(Buffer.from(icon.args[2] as Uint8Array).equals(ICON)).toBe(true);
   });
 
   it('stores client-secret, signing-secret and the refresh token Slack minted from the pasted one, then a pending row', async () => {
@@ -1080,9 +1098,20 @@ describe('POST /admin/slack/connect', () => {
     for (const body of ['', 'not json', '[1,2]', '"text"', Buffer.from([0xff, 0xfe, 0x7b, 0x7d])]) {
       expect(await w.connect(body), String(body)).toMatchObject({ status: 400, body: { error: 'invalid-body' } });
     }
-    const huge = JSON.stringify({ ...CONNECT_BODY, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) });
+    const huge = JSON.stringify({ ...CONNECT_BODY, pad: 'x'.repeat(ADMIN_CONNECT_BODY_MAX_BYTES) });
     expect(await w.connect(huge)).toMatchObject({ status: 413, body: { error: 'body-too-large' } });
     expect(w.trail).toEqual([]);
+  });
+
+  it('a picture of exactly SLACK_ICON_MAX_BYTES gets through the body check and reaches Slack whole', async () => {
+    const w = world();
+    const body = { ...CONNECT_BODY, iconPng: pngBase64(512, 512, SLACK_ICON_MAX_BYTES) };
+    // Far past the 16 KiB every other admin route takes.
+    expect(JSON.stringify(body).length).toBeGreaterThan(1_000_000);
+    expect(await w.connect(body)).toMatchObject({ status: 200, body: { iconSet: true } });
+    const icon = w.slack.calls.find((c) => c.method === 'setAppIcon')!;
+    expect(icon.args[2] as Uint8Array).toHaveLength(1_048_576);
+    expect(w.lines).toEqual([]);
   });
 
   it('→ 409 already-connected / public-origin-not-https', async () => {
@@ -1182,32 +1211,47 @@ describe('POST /admin/slack/connect', () => {
     });
   });
 
-  it('icon_not_accessible → iconSet false and no log; another icon error → iconSet false and one code-only log', async () => {
-    const quiet = world();
-    quiet.slack.on.setAppIcon = async () => {
-      throw new SlackApiError('apps.icon.set', 'icon_not_accessible');
+  it('the picture is best-effort: Slack refusing it, none sent, or an unusable one never fails Connect', async () => {
+    /** Connect went ahead without the picture: 200, `iconSet: false`, the install pending. */
+    const connectedWithout = async (w: World, body: unknown, label: string): Promise<void> => {
+      const res = await w.connect(body);
+      expect(res, label).toMatchObject({ status: 200, body: { installUrl: expect.any(String), iconSet: false } });
+      expect(onlyRow(w).status, label).toBe('pending');
     };
-    expect(await quiet.connect()).toMatchObject({ status: 200, body: { iconSet: false } });
-    expect(quiet.lines).toEqual([]);
-    expect(onlyRow(quiet).status).toBe('pending');
 
-    const loud = world();
-    loud.slack.on.setAppIcon = async () => {
-      throw new SlackApiError('apps.icon.set', 'ratelimited', 60_000);
+    // (i) Slack refuses it: one code-only warning.
+    const refused = world();
+    refused.slack.on.setAppIcon = async () => {
+      throw new SlackApiError('apps.icon.set', 'error_bad_format');
     };
-    expect(await loud.connect()).toMatchObject({ status: 200, body: { iconSet: false } });
-    expect(loud.lines).toEqual([
+    await connectedWithout(refused, CONNECT_BODY, 'Slack refused it');
+    expect(refused.lines).toEqual([
       {
         level: 'warn',
         msg: 'slack_admin_failed',
-        fields: { installId: mintedInstallId(loud), stage: 'icon', code: 'ratelimited' },
+        fields: { installId: mintedInstallId(refused), stage: 'icon', code: 'error_bad_format' },
       },
     ]);
-    expect(onlyRow(loud).status).toBe('pending');
 
-    const noIcon = world({ iconUrl: null });
-    expect(await noIcon.connect()).toMatchObject({ status: 200, body: { iconSet: false } });
-    expect(slackMethods(noIcon)).toEqual(['createApp', 'rotateConfigToken']);
+    // (ii) None sent (a browser that couldn't draw one): Slack isn't asked, and that's not a failure.
+    const none = world();
+    await connectedWithout(none, { accessToken: ACCESS, refreshToken: REFRESH, botName: 'Canopy Bot' }, 'none sent');
+    expect(slackMethods(none)).toEqual(['createApp', 'rotateConfigToken']);
+    expect(none.lines).toEqual([]);
+
+    // (iii) One icon.ts refuses: never sent to Slack, one warning naming why.
+    const unusable: Array<[unknown, string]> = [
+      [pngBase64(511, 511), 'icon-bad-size'],
+      [42, 'icon-not-base64'],
+    ];
+    for (const [iconPng, code] of unusable) {
+      const w = world();
+      await connectedWithout(w, { ...CONNECT_BODY, iconPng }, code);
+      expect(slackMethods(w), code).toEqual(['createApp', 'rotateConfigToken']);
+      expect(w.lines, code).toEqual([
+        { level: 'warn', msg: 'slack_admin_failed', fields: { installId: mintedInstallId(w), stage: 'icon', code } },
+      ]);
+    }
   });
 
   it('two concurrent connects → one 200, one 409', async () => {
@@ -3440,6 +3484,8 @@ describe('secrets never leave', () => {
     // Every failure world really failed somewhere and said so.
     expect(worlds.every((w) => w === happy || (w.answers.length > 0 && w.lines.length > 0))).toBe(true);
     for (const secret of SECRETS) expect(seen).not.toContain(secret);
+    // Nor the bot's picture: it goes to Slack and nowhere else.
+    expect(seen).not.toContain(CONNECT_BODY.iconPng);
     expect(seen).not.toContain('failed:');
     const lines = worlds.flatMap((w) => w.lines);
     // The new lines are in the scan (TASK-1139), so the allowlist is tested on them.

@@ -250,13 +250,17 @@ recalled in a channel.
 3. AX first deletes any app an earlier Disconnect or Connect couldn't
    (below), with the access token just pasted. Then it creates the shared app
    with `apps.manifest.create`, tries the pasted refresh token once (step 5),
-   and sets the avatar (the branding logo) with `apps.icon.set`. If that try
-   fails in any way, AX deletes the new app again (or, when Slack won't let
-   it, lists it as left over), so an install never starts with a token Slack
-   won't take (TASK-1159). When Slack refused the refresh token itself, the
-   admin is asked for a new pair; any other failure says to try again. The
-   manifest sets the name, scopes, and the event and interactivity URLs.
-   Slack sends no challenge and needs no manual Verify click (§7 Q1).
+   and uploads the bot's picture with `apps.icon.set`: the admin's browser
+   draws the branding logo (with no logo and no product name, the AX mark)
+   centred on a white 512 px square, and Connect sends that PNG (TASK-1133).
+   Under a custom name with no logo the bot keeps Slack's default picture. If
+   the refresh-token try fails in any way, AX deletes the new app again (or,
+   when Slack won't let it, lists it as left over), so an install never
+   starts with a token Slack won't take (TASK-1159). When Slack refused the
+   refresh token itself, the admin is asked for a new pair; any other failure
+   says to try again. The manifest sets the name, scopes, and the event and
+   interactivity URLs. Slack sends no challenge and needs no manual Verify
+   click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
    the bot token. This click is the only one a person must make, and only
    someone with install rights can make it.
@@ -898,7 +902,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 | # | Question | Answer | Source |
 |---|---|---|---|
 | 1 | Does the event URL need verifying? | **No.** Neither `apps.manifest.create` nor `apps.manifest.update` sent a `url_verification` challenge. A DM to the installed bot arrived as a signed `event_callback` (`message`, `channel_type: im`) with no Verify click. The manifest docs say the URL must be "manually verified"; in practice it wasn't needed. | Tested |
-| 2 | Avatar by API? | **Yes.** `apps.icon.set` with the configuration token and a PNG returned `ok`. | Tested |
+| 2 | Avatar by API? | **Yes.** `apps.icon.set` with the configuration token and a PNG returned `ok`. Slack documents either `file` (an upload) or `url`; the spike didn't record which it used. Until TASK-1133 Connect passed a `url` to the branding logo; since then it uploads a PNG as `file` (Slack accepting it is unmeasured until the next real-Slack walk). On every kind walk (no logo, so the URL 404'd) Slack answered `error_bad_format`, and prod's logo, a 517×123 SVG wordmark, is outside the documented 512–2000 px. | Tested |
 | 3 | Rename | `apps.manifest.update` changing only the name: `permissions_updated: false`, no reinstall, and the bot token kept working. `real_name` changed and the `name` field stayed as it was at install, but **the @handle people see and type follows the new name**: on the TASK-1097 walk, `@ax` became `@ax-walk`. | Tested (spike; handle corrected by the TASK-1097 walk) |
 | 3 | Name rules | Accepted: ASCII letters, digits, spaces, `-`, `_`, `.`, and long names. Rejected by `apps.manifest.validate`: reserved words (`slackbot`, `here`, `channel`, `everyone` → `invalid_reserved_word`), non-ASCII (`Café` → `bad_username`), and other symbols (`!!` → `invalid_name_specials`). The `name` field drops hyphens: `ax-spike-a` became `axspikea`. Docs: at most 21 characters for the `name` field, 35 for the app name, 80 for the bot's display name. | Tested + docs |
 | 4 | App approval | An admin installing a manifest-created app saw only Slack's normal Allow screen: no request, no wait. Slack's approval API (`admin.apps.approve`) is Enterprise-only. **Not seen:** what a regular member gets; the docs say members can't install restricted apps. The design needs no member installs. | Tested (admin only) + docs |

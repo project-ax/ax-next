@@ -3,8 +3,10 @@ import { makeAgentContext, type HookBus, type Logger } from '@ax/core';
 import { checkAdmin, type AdminActor } from './admin-auth.js';
 import { checkBotName, defaultBotName } from './bot-name.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
+import { parseIconPng, type ParsedIcon } from './icon.js';
 import {
   ADMIN_BODY_MAX_BYTES,
+  ADMIN_CONNECT_BODY_MAX_BYTES,
   INSTALL_ID_BYTES,
   OAUTH_STATE_BYTES,
   OAUTH_STATE_TTL_MS,
@@ -32,7 +34,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * the admin's browser to after they click Allow.
  *
  *   GET  /admin/slack                 → SlackStatus (every state: with the Slack apps AX made and couldn't delete)
- *   POST /admin/slack/connect         { accessToken, refreshToken, botName? } → { installUrl, iconSet }
+ *   POST /admin/slack/connect         { accessToken, refreshToken, botName?, iconPng? } → { installUrl, iconSet }
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
  *   POST /admin/slack/replace-token   { refreshToken } → {}, only once the install is active
@@ -79,6 +81,11 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   - The client secret, signing secret and bot token go to the vault.
  *   - No response body and no log line carries any of them. Log lines name
  *     an install, a stage or reason, a code, and whether Slack deleted an app.
+ *
+ * The bot's picture is drawn by the admin's browser and arrives as
+ * `iconPng`, a base64 PNG (icon.ts checks it). It is uploaded to Slack as it
+ * is, and never stored, logged or decoded past its header. A missing or
+ * unusable one leaves Slack's default picture and never fails a Connect.
  *
  * Disconnect (and Cancel, the same route) deletes the Slack app with an
  * access token minted from the stored refresh token. When Slack won't (the
@@ -148,8 +155,6 @@ export interface AdminRoutesDeps {
   lock: Mutex;
   /** Where Slack reaches AX, and where the admin is sent back to. Only https can connect. */
   publicOrigin: string;
-  /** A public image Slack fetches for the bot's avatar. Setting it is best-effort. */
-  iconUrl?: string;
   logger: Logger;
   /** Epoch milliseconds. */
   now: () => number;
@@ -442,16 +447,29 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     });
   }
 
-  /** Best-effort. No logo yet (`icon_not_accessible`) is expected, so it isn't logged. */
-  async function setIcon(accessToken: string, appId: string, installId: string): Promise<boolean> {
-    if (d.iconUrl === undefined) return false;
+  /**
+   * The bot's picture, best-effort: true only when Slack took it. None sent
+   * (`null`: the browser had none to draw): Slack isn't asked and nothing is
+   * logged. One icon.ts refused: never sent, one warning naming why. Slack
+   * refusing it, or not answering: one warning with its code. Never throws,
+   * so it never fails a Connect.
+   */
+  async function setIcon(
+    accessToken: string,
+    appId: string,
+    installId: string,
+    icon: ParsedIcon | null,
+  ): Promise<boolean> {
+    if (icon === null) return false;
+    if (!icon.ok) {
+      log('warn', 'slack_admin_failed', { installId, stage: 'icon', code: icon.code });
+      return false;
+    }
     try {
-      await d.api.setAppIcon(accessToken, appId, d.iconUrl);
+      await d.api.setAppIcon(accessToken, appId, icon.png);
       return true;
     } catch (err) {
-      if (!(err instanceof SlackApiError && err.code === 'icon_not_accessible')) {
-        failed('icon', err, installId);
-      }
+      failed('icon', err, installId);
       return false;
     }
   }
@@ -544,6 +562,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     accessToken: string,
     refreshToken: string,
     botName: string,
+    icon: ParsedIcon | null,
   ): Promise<Reply> {
     const installId = d.randomBytes(INSTALL_ID_BYTES).toString('base64url');
     let app: CreatedApp;
@@ -580,7 +599,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         botName,
         connectedByUserId: actor.id,
       });
-      const iconSet = await setIcon(accessToken, app.appId, installId);
+      const iconSet = await setIcon(accessToken, app.appId, installId, icon);
       const installUrl = await mintInstallUrl(installId, app.clientId, actor.id);
       return json(200, { installUrl, iconSet });
     } catch (err) {
@@ -783,7 +802,8 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
 
   async function connect(req: RouteRequest, actor: AdminActor): Promise<Reply> {
     // http-server's maxBodyBytes refused anything larger already; this is the backstop.
-    if (req.body.length > ADMIN_BODY_MAX_BYTES) return json(413, { error: 'body-too-large' });
+    // Connect's cap, not the other routes': its body can carry the bot's picture.
+    if (req.body.length > ADMIN_CONNECT_BODY_MAX_BYTES) return json(413, { error: 'body-too-large' });
     const body = bodyObject(req.body);
     if (body === null) return json(400, { error: 'invalid-body' });
     // Checked before anything else, so a token pasted into the wrong box never reaches Slack.
@@ -795,12 +815,14 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     if (typeof rawName !== 'string') return json(400, { error: 'invalid-bot-name', reason: 'bad-characters' });
     const name = checkBotName(rawName);
     if (!name.ok) return json(400, { error: 'invalid-bot-name', reason: name.reason });
+    // Never a 400: an unusable picture is skipped (and logged) once the install exists.
+    const icon = body['iconPng'] === undefined ? null : parseIconPng(body['iconPng']);
 
     return d.lock.run(async () => {
       if ((await d.store.current()) !== null) return json(409, { error: 'already-connected' });
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
       await deleteLeftoverApps(accessToken);
-      return createInstall(actor, accessToken, refreshToken, name.name);
+      return createInstall(actor, accessToken, refreshToken, name.name, icon);
     });
   }
 
@@ -1034,20 +1056,21 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * `run` didn't handle is logged code-only. A JSON route answers the gate's
    * refusal with its status and a fault with 500. A browser route (the OAuth
    * callback, where the admin lands from Slack) answers both by sending the
-   * browser home with `failed`.
+   * browser home with `failed`. A POST's body is capped at `maxBodyBytes`,
+   * ADMIN_BODY_MAX_BYTES unless the route says otherwise.
    */
   function route(
     method: RouteSpec['method'],
     path: string,
     stage: string,
     run: (req: RouteRequest, actor: AdminActor) => Promise<Reply>,
-    o: { browser?: true } = {},
+    o: { browser?: true; maxBodyBytes?: number } = {},
   ): RouteSpec {
     const browser = o.browser === true;
     return {
       method,
       path,
-      ...(method === 'POST' ? { maxBodyBytes: ADMIN_BODY_MAX_BYTES } : {}),
+      ...(method === 'POST' ? { maxBodyBytes: o.maxBodyBytes ?? ADMIN_BODY_MAX_BYTES } : {}),
       handler: async (req, res) => {
         const gate = await checkAdmin(d.bus, ctx, req);
         let reply: Reply;
@@ -1072,7 +1095,8 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
 
   return [
     route('GET', ADMIN_STATUS_PATH, 'status', status),
-    route('POST', ADMIN_CONNECT_PATH, 'connect', connect),
+    // Its body can carry the bot's picture (icon.ts).
+    route('POST', ADMIN_CONNECT_PATH, 'connect', connect, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
     route('POST', ADMIN_INSTALL_URL_PATH, 'install-url', installUrl),
     route('POST', ADMIN_RENAME_PATH, 'rename', rename),
     route('POST', ADMIN_REPLACE_TOKEN_PATH, 'replace-token', replaceToken),

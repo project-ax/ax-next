@@ -14,6 +14,22 @@ export const BOT_NAME_MAX = 35;
 /** Slack cuts the bot's @handle, derived from its display name, to this many characters. */
 export const BOT_HANDLE_MAX = 21;
 
+// ── The bot's picture ───────────────────────────────────────────────────────
+// Slack's numbers here were read on docs.slack.dev on 2026-11-18 (see
+// `.claude/memory/decisions/2026-11-18-TASK-1133.md`).
+
+/**
+ * The most decoded bytes of the bot's picture Connect takes (icon.ts):
+ * branding's own cap on one logo (`MAX_LOGO_BYTES`). channel-web's
+ * `SLACK_AVATAR_MAX_BYTES` (lib/slack-avatar-draw.ts) mirrors it, so the
+ * browser never sends a picture this refuses. Neither package imports the
+ * other (invariant 2): change both together.
+ */
+export const SLACK_ICON_MAX_BYTES = 1_048_576;
+/** `apps.icon.set`'s `invalid_icon_size`: "between 512x512px and 2000x2000px". */
+export const SLACK_ICON_MIN_PX = 512;
+export const SLACK_ICON_MAX_PX = 2000;
+
 // ── Installing ──────────────────────────────────────────────────────────────
 
 /** Random bytes in an `installId` (base64url: 22 characters). */
@@ -22,8 +38,18 @@ export const INSTALL_ID_BYTES = 16;
 export const OAUTH_STATE_TTL_MS = 600_000;
 /** Random bytes in an OAuth `state` (hex: 64 characters). */
 export const OAUTH_STATE_BYTES = 32;
-/** An admin route's request body. Connect's two pasted tokens and a name need well under 2 KiB. */
+/**
+ * An admin route's request body: a name, an app id, nothing at all. Connect
+ * has its own cap, ADMIN_CONNECT_BODY_MAX_BYTES, because its body can carry
+ * the bot's picture.
+ */
 export const ADMIN_BODY_MAX_BYTES = 16_384;
+/**
+ * Connect's request body: room for its two pasted tokens and a name (well
+ * under 2 KiB, inside ADMIN_BODY_MAX_BYTES) plus the base64 of the largest
+ * picture it takes (SLACK_ICON_MAX_BYTES): 1,414,488 bytes.
+ */
+export const ADMIN_CONNECT_BODY_MAX_BYTES = ADMIN_BODY_MAX_BYTES + Math.ceil(SLACK_ICON_MAX_BYTES / 3) * 4;
 /** The longest team name or admin name shown, in UTF-16 code units (label.ts). */
 export const LABEL_MAX = 120;
 /**
