@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SlackTab } from '../SlackTab';
+import { renderSlackAvatar } from '@/lib/slack-avatar';
 import {
   SlackAdminError,
   connectSlack,
@@ -30,6 +31,8 @@ vi.mock('@/lib/slack-admin', async (original) => ({
   forgetLeftoverSlackApp: vi.fn(),
   goToSlack: vi.fn(),
 }));
+
+vi.mock('@/lib/slack-avatar', () => ({ renderSlackAvatar: vi.fn() }));
 
 const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1.2&state=ab';
 // Distinctive, so a leak into the page is easy to spot.
@@ -86,6 +89,7 @@ async function leftoverNote(several = false): Promise<HTMLElement> {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(renderSlackAvatar).mockResolvedValue('AVATARB64');
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -380,9 +384,23 @@ describe('Connect', () => {
     renderTab(NOT_CONNECTED);
     await fillAndConnect({ access: `  ${ACCESS}\n`, refresh: ` ${REFRESH} `, name: 'Canopy Bot' });
     await waitFor(() => expect(navigate).toHaveBeenCalledWith(INSTALL_URL));
-    expect(connect).toHaveBeenCalledWith({ accessToken: ACCESS, refreshToken: REFRESH, botName: 'Canopy Bot' });
+    expect(connect).toHaveBeenCalledWith({
+      accessToken: ACCESS,
+      refreshToken: REFRESH,
+      botName: 'Canopy Bot',
+      iconPng: 'AVATARB64',
+    });
     expect(connect).toHaveBeenCalledTimes(1);
     expectNoSecretsOnPage();
+  });
+
+  it('with no picture to send, Connect still goes, without iconPng', async () => {
+    vi.mocked(renderSlackAvatar).mockResolvedValue(null);
+    connect.mockResolvedValueOnce({ installUrl: INSTALL_URL });
+    renderTab(NOT_CONNECTED);
+    await fillAndConnect();
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(INSTALL_URL));
+    expect(Object.keys(connect.mock.calls[0]![0]).sort()).toEqual(['accessToken', 'botName', 'refreshToken']);
   });
 
   it('sends the suggested name when the admin leaves it alone', async () => {

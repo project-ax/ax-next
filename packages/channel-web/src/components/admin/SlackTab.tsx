@@ -79,6 +79,7 @@ import {
   type SlackStatus,
   type SlackStatusRead,
 } from '@/lib/slack-admin';
+import { renderSlackAvatar } from '@/lib/slack-avatar';
 
 const SLACK_APPS_URL = 'https://api.slack.com/apps';
 /** "I deleted it" failing: the route only edits our own list, so Slack isn't to blame. */
@@ -362,7 +363,14 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
     setBusy(true);
     setError(null);
     try {
-      const { installUrl } = await connectSlack({ accessToken, refreshToken, botName });
+      // Best effort and never throws: no picture means Connect goes on without one.
+      const iconPng = await renderSlackAvatar();
+      const { installUrl } = await connectSlack({
+        accessToken,
+        refreshToken,
+        botName,
+        ...(iconPng !== null ? { iconPng } : {}),
+      });
       // The page is leaving for Slack, so it stays busy.
       goToSlack(installUrl);
     } catch (err) {
