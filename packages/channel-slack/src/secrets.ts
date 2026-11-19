@@ -34,10 +34,10 @@ import { logCode } from './log-code.js';
  * one the admin pasted: Connect rotates that one once and stores the refresh
  * token Slack mints with it. Replace (TASK-1128) does the same with a refresh
  * token pasted later, and stores the minted one only after Slack accepted the
- * app's manifest from the access token minted with it.
- * (An install connected earlier still holds its
- * pasted one until a rotate's new token is kept.) After each later rotate, admin-routes.ts writes
- * the one Slack mints alongside over it, because Slack retires a rotated
+ * app's manifest from the access token minted with it. (An install
+ * connected earlier still holds its pasted one until a rotate's new token is
+ * kept.) After each later rotate, admin-routes.ts writes the one Slack mints
+ * alongside over it, because Slack retires a rotated
  * refresh token within minutes to hours (slack-api.ts). If that write fails,
  * the old one stays, and works only until Slack retires it.
  */
