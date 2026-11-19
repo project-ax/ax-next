@@ -19,9 +19,11 @@ import { logCode } from './log-code.js';
  * so nothing a person or an agent stored under the same ref can stand in for
  * an install's secret: a user-scoped `slack:<id>:signing-secret` would
  * otherwise shadow the real one and let whoever planted it sign events. The
- * read still names the admin who connected the install (the hook requires a
- * userId), with a ctx whose `agentId` is `''`: a non-empty one that isn't an
- * agent id makes the store throw.
+ * read still names the admin who added the install's configuration token
+ * (Connect, or the latest Replace), because the hook requires a userId. The
+ * vault keys a global row by its ref alone, so who is named never changes
+ * which row is read. Its ctx's `agentId` is `''`: a non-empty one that isn't
+ * an agent id makes the store throw.
  *
  * Nothing in the vault limits which plugin reads a ref, so "only channel-slack
  * reads these" is held by a repo-scan guard on `slack:` strings
@@ -30,7 +32,10 @@ import { logCode } from './log-code.js';
  *
  * Since TASK-1159, the configuration refresh token stored here is never the
  * one the admin pasted: Connect rotates that one once and stores the refresh
- * token Slack mints with it. (An install connected earlier still holds its
+ * token Slack mints with it. Replace (TASK-1128) does the same with a refresh
+ * token pasted later, and stores the minted one only after Slack accepted the
+ * app's manifest from the access token minted with it.
+ * (An install connected earlier still holds its
  * pasted one until a rotate's new token is kept.) After each later rotate, admin-routes.ts writes
  * the one Slack mints alongside over it, because Slack retires a rotated
  * refresh token within minutes to hours (slack-api.ts). If that write fails,

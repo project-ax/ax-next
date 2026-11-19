@@ -485,14 +485,24 @@ function world(
   const bus = new HookBus();
   const vault = new Map<string, string>();
   const vaultCalls: Array<{ hook: string; ref: string }> = [];
+  /**
+   * Whom each vault call names (TASK-1128): a read's `userId`, a write's or
+   * delete's ctx user. Apart from vaultCalls, whose entries tests compare whole.
+   */
+  const vaultAs: Array<{ hook: string; name: string; userId: string }> = [];
   /** `<hook> <secret name>` → what that call throws. */
   const vaultFailures = new Map<string, unknown>();
   const nameOf = (ref: string): string => ref.slice(ref.lastIndexOf(':') + 1);
   const vaultHook = (hook: string, run: (input: Record<string, unknown>) => unknown): void => {
-    bus.registerService(hook, '@ax/credentials', async (_ctx, raw) => {
+    bus.registerService(hook, '@ax/credentials', async (ctx, raw) => {
       const input = raw as Record<string, unknown>;
       const ref = String(input['ref']);
       vaultCalls.push({ hook, ref });
+      vaultAs.push({
+        hook,
+        name: nameOf(ref),
+        userId: hook === 'credentials:get' ? String(input['userId']) : ctx.userId,
+      });
       trail.push(`vault:${hook.slice('credentials:'.length)} ${nameOf(ref)}`);
       const failure = vaultFailures.get(`${hook} ${nameOf(ref)}`);
       if (failure !== undefined) throw failure;
@@ -578,6 +588,7 @@ function world(
     userLookups,
     vault,
     vaultCalls,
+    vaultAs,
     vaultFailures,
     memory,
     slack,
@@ -595,6 +606,8 @@ function world(
     installUrl: (as: TestUser | null = ADA) => call('POST', '/admin/slack/install-url', { as }),
     rename: (body: unknown = { botName: 'Ada Helper' }, as: TestUser | null = ADA) =>
       call('POST', '/admin/slack/rename', { as, body }),
+    replace: (body: unknown = { refreshToken: SECOND_REFRESH }, as: TestUser | null = ADA) =>
+      call('POST', '/admin/slack/replace-token', { as, body }),
     callback: (query: Record<string, string>, as: TestUser | null = ADA) =>
       call('GET', CALLBACK, { as, query }),
     disconnect: (as: TestUser | null = ADA) => call('POST', '/admin/slack/disconnect', { as }),
@@ -663,7 +676,7 @@ const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
 // ── The routes ──────────────────────────────────────────────────────────────
 
 describe('the route table', () => {
-  it('is exactly the seven admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
+  it('is exactly the eight admin routes; none bypasses CSRF; the POSTs cap their bodies', () => {
     const { routes } = world();
     expect(routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
       'GET /admin/slack',
@@ -673,6 +686,7 @@ describe('the route table', () => {
       'POST /admin/slack/forget-leftover-app',
       'POST /admin/slack/install-url',
       'POST /admin/slack/rename',
+      'POST /admin/slack/replace-token',
     ]);
     for (const r of routes) {
       expect(r.bypassCsrf, r.path).not.toBe(true);
@@ -2750,6 +2764,453 @@ describe('POST /admin/slack/rename', () => {
   });
 });
 
+describe('POST /admin/slack/replace-token (TASK-1128)', () => {
+  /**
+   * Everything one replace touches, in order: the row, a rotate of the pasted
+   * token, the check (the app's whole manifest, sent with the access token
+   * that rotate minted), the vault (the refresh token it minted), the row's
+   * owner and date, and last the leftover list. The stored token is never read.
+   */
+  const ONE_REPLACE = [
+    'store:current',
+    'slack:rotateConfigToken',
+    'slack:updateApp',
+    'vault:set config-refresh-token',
+    'store:setConfigTokenOwner',
+    'store:leftoverApps',
+  ];
+  /** How far into ONE_REPLACE a replace gets before the step its log line names fails. */
+  const STOPS_AFTER = { 'try-refresh-token': 2, 'check-app': 3, 'save-config-token': 4, 'replace-token': 5 } as const;
+  /** A day after Connect, when Grace replaces the token. */
+  const REPLACED_AT = NOW_MS + 86_400_000;
+  const configRef = (installId: string): string => secretRef(installId, 'config-refresh-token');
+  const rotatedTokens = (w: World): unknown[] =>
+    w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0]);
+  const otherSecrets = (w: World, installId: string): Array<string | undefined> =>
+    (['bot-token', 'signing-secret', 'client-secret'] as const).map((n) => w.vault.get(secretRef(installId, n)));
+
+  it("Grace replaces the token Ada added: the pasted token is tried once, Slack gets the app's whole manifest with the token it minted, then the minted refresh token is stored and the row moves; the install, its id and its other secrets stay", async () => {
+    const { w, installId } = await connectedWorld();
+    const before = { ...onlyRow(w) };
+    expect(otherSecrets(w, installId)).toEqual([BOT_TOKEN, SIGNING_SECRET, CLIENT_SECRET]);
+    w.advance(86_400_000);
+    const slackMark = w.slack.calls.length;
+    const mark = w.trail.length;
+
+    const res = await w.replace({ refreshToken: SECOND_REFRESH }, GRACE);
+    expect(res).toMatchObject({ status: 200, how: 'json' });
+    expect(res.body).toStrictEqual({});
+    // No vault read or delete and no store:remove*: the install and its other secrets are never touched.
+    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE);
+    expect(w.slack.calls.slice(slackMark)).toEqual([
+      { method: 'rotateConfigToken', args: [SECOND_REFRESH] },
+      {
+        method: 'updateApp',
+        args: [MINTED_ACCESS, APP.appId, buildAppManifest('Canopy Bot', slackUrls(ORIGIN, installId))],
+      },
+    ]);
+    // The whole manifest, exactly as Connect made the app: nothing on it is dropped.
+    const created = w.slack.calls.find((c) => c.method === 'createApp')!.args[1];
+    expect(w.slack.calls[slackMark + 1]!.args[2]).toEqual(created);
+
+    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
+    expect(otherSecrets(w, installId)).toEqual([BOT_TOKEN, SIGNING_SECRET, CLIENT_SECRET]);
+    expect(w.vault.size).toBe(4);
+    expect(onlyRow(w)).toEqual({ ...before, connectedByUserId: GRACE.id, configTokenAddedAt: new Date(REPLACED_AT) });
+    expect(onlyRow(w)).toMatchObject({ installId, status: 'active', botName: 'Canopy Bot', createdAt: new Date(NOW_MS) });
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_config_token_replaced', fields: { installId } }]);
+  });
+
+  it('after a replace, the vault is read and written as the admin who replaced it, and Rename then Disconnect use the replaced token', async () => {
+    const { w } = await connectedWorld();
+    // Until now, every vault call named Ada, who connected.
+    expect(new Set(w.vaultAs.map((v) => v.userId))).toEqual(new Set([ADA.id]));
+    w.advance(86_400_000);
+    let mark = w.vaultAs.length;
+    expect(await w.replace({ refreshToken: SECOND_REFRESH }, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(w.vaultAs.slice(mark)).toEqual([{ hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE.id }]);
+    // Added by Grace, on the day she replaced it.
+    expect((await w.status()).body).toMatchObject({
+      state: 'connected',
+      connectedBy: 'Grace Hopper',
+      connectedAt: new Date(REPLACED_AT).toISOString(),
+    });
+
+    // Ada renames: the rotate spends the token Grace's replace stored, read and kept as Grace.
+    mark = w.vaultAs.length;
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(rotatedTokens(w)).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(2)]);
+    expect(w.vaultAs.slice(mark)).toEqual([
+      { hook: 'credentials:get', name: 'config-refresh-token', userId: GRACE.id },
+      { hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE.id },
+    ]);
+
+    mark = w.vaultAs.length;
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(rotatedTokens(w)).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(2), mintedRefresh(3)]);
+    expect(w.vaultAs.slice(mark).filter((v) => v.hook !== 'credentials:delete')).toEqual([
+      { hook: 'credentials:get', name: 'config-refresh-token', userId: GRACE.id },
+      { hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE.id },
+    ]);
+    expect(w.vault.size).toBe(0);
+    expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+  });
+
+  it('checked before the lock: not a JSON object → 400 invalid-body; no usable refresh token → 400 invalid-refresh-token; neither touches anything', async () => {
+    const { w } = await connectedWorld();
+    const mark = w.trail.length;
+    for (const body of ['', 'not json', '[1,2]', '"text"', 'null', Buffer.from([0xff, 0xfe, 0x7b, 0x7d])]) {
+      const res = await w.replace(body, GRACE);
+      expect(res, String(body)).toMatchObject({ status: 400 });
+      expect(res.body, String(body)).toStrictEqual({ error: 'invalid-body' });
+    }
+    const tooLong = `${CONFIG_REFRESH_PREFIX}${'a'.repeat(SLACK_TOKEN_MAX + 1 - CONFIG_REFRESH_PREFIX.length)}`;
+    expect(tooLong).toHaveLength(513);
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['no refresh token', {}],
+      ['an access token in the refresh box', { refreshToken: ACCESS }],
+      ['the prefix alone', { refreshToken: CONFIG_REFRESH_PREFIX }],
+      ['513 characters', { refreshToken: tooLong }],
+      ['an embedded space', { refreshToken: `${CONFIG_REFRESH_PREFIX}1-SECOND REFRESH` }],
+    ];
+    for (const [label, body] of cases) {
+      const res = await w.replace(body, GRACE);
+      expect(res, label).toMatchObject({ status: 400 });
+      expect(res.body, label).toStrictEqual({ error: 'invalid-refresh-token' });
+    }
+    const huge = JSON.stringify({ refreshToken: SECOND_REFRESH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) });
+    expect(await w.replace(huge, GRACE)).toMatchObject({ status: 413, body: { error: 'body-too-large' } });
+    // Not the store, not the vault, not Slack, and nothing logged.
+    expect(w.trail.slice(mark)).toEqual([]);
+    expect(w.lines).toEqual([]);
+    expect(onlyRow(w).connectedByUserId).toBe(ADA.id);
+
+    // A full-length one is fine.
+    const longest = tooLong.slice(0, SLACK_TOKEN_MAX);
+    expect(await w.replace({ refreshToken: longest }, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(rotatedTokens(w).at(-1)).toBe(longest);
+  });
+
+  it('→ 409 not-connected with nothing connected or an unfinished install; → 409 public-origin-not-https on an http origin; none touches the vault or Slack', async () => {
+    const w = world();
+    expect(await w.replace()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(w.trail).toEqual(['store:current']);
+
+    // Pending: Cancel and Connect again instead (no channels yet).
+    expect((await w.connect()).status).toBe(200);
+    const slackMark = w.slack.calls.length;
+    const vaultMark = w.vaultCalls.length;
+    expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(w.slack.calls.slice(slackMark)).toEqual([]);
+    expect(w.vaultCalls.slice(vaultMark)).toEqual([]);
+    expect(onlyRow(w)).toMatchObject({ status: 'pending', connectedByUserId: ADA.id });
+
+    // An active install with a refresh token that would work: only the origin stops it.
+    const http = world({ publicOrigin: HTTP_ORIGIN });
+    const installId = 'AAAAAAAAAAAAAAAAAAAAAA';
+    http.memory.rows.set(installId, {
+      installId,
+      status: 'active',
+      appId: APP.appId,
+      clientId: APP.clientId,
+      botName: 'Canopy Bot',
+      teamId: GRANT.teamId,
+      teamName: GRANT.teamName,
+      botUserId: GRANT.botUserId,
+      connectedByUserId: ADA.id,
+      createdAt: new Date(NOW_MS),
+      configTokenAddedAt: new Date(NOW_MS),
+      installedAt: new Date(NOW_MS),
+      stateHash: null,
+      stateUserId: null,
+      stateExpiresAt: null,
+    });
+    http.vault.set(configRef(installId), REFRESH);
+    expect(await http.replace(undefined, GRACE)).toMatchObject({
+      status: 409,
+      body: { error: 'public-origin-not-https' },
+    });
+    expect(http.trail).toEqual(['store:current']);
+    expect(http.slack.calls).toEqual([]);
+    expect(http.vaultCalls).toEqual([]);
+    expect(onlyRow(http).connectedByUserId).toBe(ADA.id);
+    expect([...w.lines, ...http.lines]).toEqual([]);
+  });
+
+  it('Slack refusing the pasted token → 502 slack-refresh-token; anything else at the try → 502 slack-error; nothing is stored, the row is unchanged, and the old token still renames', async () => {
+    const rotate = (code: string, retryAfterMs?: number): SlackApiError =>
+      new SlackApiError('tooling.tokens.rotate', code, retryAfterMs);
+    const cases: Array<[unknown, string]> = [
+      // Slack refusing the pasted token itself: only a new one helps.
+      ...['invalid_refresh_token', 'invalid_auth', 'token_revoked', 'account_inactive'].map(
+        (code): [unknown, string] => [rotate(code), 'slack-refresh-token'],
+      ),
+      // Anything else: Slack may or may not have spent it, and a retry soon after may work.
+      ...['timeout', 'network', 'http-503', 'bad-response'].map((code): [unknown, string] => [rotate(code), 'slack-error']),
+      [rotate('ratelimited', 60_000), 'slack-error'],
+      [new Error('not a Slack answer'), 'slack-error'],
+    ];
+    for (const [err, error] of cases) {
+      const { w, installId } = await connectedWorld();
+      const before = { ...onlyRow(w) };
+      const rotateAsSlack = w.slack.on.rotateConfigToken;
+      failRotate(w, err);
+      const mark = w.trail.length;
+      const res = await w.replace(undefined, GRACE);
+      const label = String(err);
+      expect(res.status, label).toBe(502);
+      expect(res.body, label).toStrictEqual({ error });
+      expect(w.trail.slice(mark), label).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['try-refresh-token']));
+      expect(w.vault.get(configRef(installId)), label).toBe(mintedRefresh(1));
+      expect(onlyRow(w), label).toEqual(before);
+      expect(w.lines, label).toEqual([
+        {
+          level: err instanceof SlackApiError ? 'warn' : 'error',
+          msg: 'slack_admin_failed',
+          fields: { installId, stage: 'try-refresh-token', code: err instanceof SlackApiError ? err.code : 'unknown' },
+        },
+      ]);
+
+      // The token Ada added still works: the replace never read or rotated it.
+      w.slack.on.rotateConfigToken = rotateAsSlack;
+      expect(await w.rename(), label).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+      expect(rotatedTokens(w), label).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(1)]);
+    }
+  });
+
+  it("Slack refusing the check: a token that can't manage or can't see this app → 502 slack-not-app-manager, never slack-app-gone; a dead token → slack-refresh-token; anything else → slack-error; nothing is stored and the old token still renames", async () => {
+    const update = (code: string, retryAfterMs?: number): SlackApiError =>
+      new SlackApiError('apps.manifest.update', code, retryAfterMs);
+    const cases: Array<[unknown, string]> = [
+      // Alive, but its owner can't manage this app, or can't see it (another
+      // workspace, or gone: a new token can't tell those apart).
+      ...['no_permission', 'app_not_owned_by_manager_app', 'app_not_found'].map(
+        (code): [unknown, string] => [update(code), 'slack-not-app-manager'],
+      ),
+      // The access token the pasted one minted is no good.
+      ...['invalid_auth', 'token_revoked'].map((code): [unknown, string] => [update(code), 'slack-refresh-token']),
+      ...['invalid_manifest', 'timeout', 'http-500'].map((code): [unknown, string] => [update(code), 'slack-error']),
+      [update('ratelimited', 60_000), 'slack-error'],
+      [new Error('not a Slack answer'), 'slack-error'],
+    ];
+    for (const [err, error] of cases) {
+      const { w, installId } = await connectedWorld();
+      const before = { ...onlyRow(w) };
+      w.slack.on.updateApp = async () => {
+        throw err;
+      };
+      const mark = w.trail.length;
+      const res = await w.replace(undefined, GRACE);
+      const label = String(err);
+      expect(res.status, label).toBe(502);
+      expect(res.body, label).toStrictEqual({ error });
+      expect(w.trail.slice(mark), label).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['check-app']));
+      // Slack refused the new token for this app, so the one Ada added stays.
+      expect(w.vault.get(configRef(installId)), label).toBe(mintedRefresh(1));
+      expect(onlyRow(w), label).toEqual(before);
+      expect(w.lines, label).toEqual([
+        {
+          level: err instanceof SlackApiError ? 'warn' : 'error',
+          msg: 'slack_admin_failed',
+          fields: { installId, stage: 'check-app', code: err instanceof SlackApiError ? err.code : 'unknown' },
+        },
+      ]);
+
+      w.slack.on.updateApp = async () => {};
+      expect(await w.rename(), label).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+      expect(rotatedTokens(w), label).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(1)]);
+      expect(w.vault.get(configRef(installId)), label).toBe(mintedRefresh(3));
+    }
+  });
+
+  it('storing the minted token failing → 500 internal: the old token and the row stay, one error line; a retry while Slack still honours the pasted token lands', async () => {
+    const { w, installId } = await connectedWorld();
+    const before = { ...onlyRow(w) };
+    w.vaultFailures.set('credentials:set config-refresh-token', connectionReset());
+    const mark = w.trail.length;
+    expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['save-config-token']));
+    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(1));
+    expect(onlyRow(w)).toEqual(before);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' } },
+    ]);
+
+    // While Slack still honours the pasted token, pasting it again lands.
+    w.vaultFailures.delete('credentials:set config-refresh-token');
+    w.slack.rotatedStillWork = true;
+    w.advance(60_000);
+    expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(3));
+    expect(onlyRow(w)).toMatchObject({ connectedByUserId: GRACE.id, configTokenAddedAt: new Date(NOW_MS + 60_000) });
+  });
+
+  it('the row write failing after the store → 500 internal; the vault holds the new token (Slack took it for this app) and the row still names Ada', async () => {
+    const { w, installId } = await connectedWorld();
+    const before = { ...onlyRow(w) };
+    w.memory.failures.set('setConfigTokenOwner', connectionReset());
+    const mark = w.trail.length;
+    expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 500, body: { error: 'internal' } });
+    // Not taken back: Slack just accepted it for this app, and the token it was minted from is spent.
+    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['replace-token']));
+    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
+    expect(onlyRow(w)).toEqual(before);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'replace-token', code: 'ECONNRESET' } },
+    ]);
+
+    // The install keeps a working token: only "Added by" is stale.
+    w.memory.failures.delete('setConfigTokenOwner');
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(rotatedTokens(w).at(-1)).toBe(mintedRefresh(2));
+  });
+
+  it('the install removed meanwhile (a reset) → the token just stored is deleted again → 409 not-connected', async () => {
+    const { w, installId } = await connectedWorld();
+    w.memory.failures.set('setConfigTokenOwner', new InstallStoreError('install-not-active'));
+    const mark = w.trail.length;
+    expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(w.trail.slice(mark)).toEqual([
+      ...ONE_REPLACE.slice(0, STOPS_AFTER['replace-token']),
+      'vault:delete config-refresh-token',
+    ]);
+    expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token');
+    expect(w.vault.has(configRef(installId))).toBe(false);
+    expect(w.lines).toEqual([]);
+
+    // The same race for real: a reset (which takes no admin lock) removes the install while Slack checks the token.
+    const { w: raced, installId: racedId } = await connectedWorld();
+    raced.slack.on.updateApp = async () => {
+      await raced.memory.store.removeAll();
+    };
+    expect(await raced.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(raced.memory.calls.at(-1)).toEqual({
+      method: 'setConfigTokenOwner',
+      args: [racedId, { userId: GRACE.id, addedAt: new Date(NOW_MS) }],
+    });
+    expect(raced.trail.at(-1)).toBe('vault:delete config-refresh-token');
+    expect(raced.vault.has(configRef(racedId))).toBe(false);
+    expect(raced.lines).toEqual([]);
+  });
+
+  it('leftover apps go with the minted access token after the replace, and are forgotten; a refusal keeps one and a list fault is logged, and neither changes the 200', async () => {
+    // Both deleted with the access token the replace's rotate minted, once the replace is done.
+    const { w, installId } = await connectedWorld();
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
+    leaveApp(w, LEFT_2, 'Second Bot');
+    const mark = w.trail.length;
+    expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(w.trail.slice(mark)).toEqual([
+      ...ONE_REPLACE,
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+    ]);
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
+      [MINTED_ACCESS, LEFT_1.appId],
+      [MINTED_ACCESS, LEFT_2.appId],
+    ]);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_config_token_replaced', fields: { installId } }]);
+
+    // Slack refusing one: it stays listed, logged under its own install id, and the next one still goes.
+    const refused = await connectedWorld();
+    leaveApp(refused.w, LEFT_1, 'First Bot', NOW_MS - 120_000);
+    leaveApp(refused.w, LEFT_2, 'Second Bot');
+    refused.w.slack.on.deleteApp = async (_token, appId) => {
+      if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'no_permission');
+    };
+    expect(await refused.w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect([...refused.w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    expect(refused.w.vault.get(configRef(refused.installId))).toBe(mintedRefresh(2));
+    expect(onlyRow(refused.w).connectedByUserId).toBe(GRACE.id);
+    expect(refused.w.lines).toEqual([
+      { level: 'info', msg: 'slack_config_token_replaced', fields: { installId: refused.installId } },
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code: 'no_permission' },
+      },
+    ]);
+
+    // Reading the list failing: logged, and the replace stands.
+    const listFault = await connectedWorld();
+    leaveApp(listFault.w, LEFT_1);
+    listFault.w.memory.failures.set('leftoverApps', connectionReset());
+    expect(await listFault.w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(slackMethods(listFault.w)).not.toContain('deleteApp');
+    expect(listFault.w.vault.get(configRef(listFault.installId))).toBe(mintedRefresh(2));
+    expect(onlyRow(listFault.w)).toMatchObject({ connectedByUserId: GRACE.id, configTokenAddedAt: new Date(NOW_MS) });
+    expect(listFault.w.lines).toEqual([
+      { level: 'info', msg: 'slack_config_token_replaced', fields: { installId: listFault.installId } },
+      {
+        level: 'error',
+        msg: 'slack_admin_failed',
+        fields: { installId: listFault.installId, stage: 'leftover-apps', code: 'ECONNRESET' },
+      },
+    ]);
+  });
+
+  it("two replaces at once take turns: the second finds the pasted token spent and answers 502 slack-refresh-token; the first one's token stays", async () => {
+    const { w, installId } = await connectedWorld();
+    const gate = deferred();
+    w.slack.on.updateApp = async () => {
+      await gate.promise;
+    };
+    const mark = w.trail.length;
+    const one = w.replace(undefined, GRACE);
+    const two = w.replace(undefined, ADA);
+    await settle();
+    gate.resolve();
+    expect(await one).toMatchObject({ status: 200, body: {} });
+    expect(await two).toMatchObject({ status: 502, body: { error: 'slack-refresh-token' } });
+    // One at a time: the second read the row only once the first was done, then Slack refused the spent token.
+    expect(w.trail.slice(mark)).toEqual([...ONE_REPLACE, 'store:current', 'slack:rotateConfigToken']);
+    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
+    expect(onlyRow(w).connectedByUserId).toBe(GRACE.id);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_config_token_replaced', fields: { installId } },
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId, stage: 'try-refresh-token', code: 'invalid_refresh_token' },
+      },
+    ]);
+  });
+
+  it('a replace started while a Disconnect is in flight waits for it, then answers 409 not-connected and stores nothing', async () => {
+    const { w } = await connectedWorld();
+    const deleting = deferred();
+    w.slack.on.deleteApp = async () => {
+      await deleting.promise;
+    };
+    const mark = w.trail.length;
+    const disconnected = w.disconnect();
+    const replaced = w.replace(undefined, GRACE);
+    await settle();
+    deleting.resolve();
+    expect(await disconnected).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(await replaced).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    // The whole Disconnect, then the replace's one step: a store read.
+    expect(w.trail.slice(mark)).toEqual([
+      'store:current',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:remove',
+      ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+      'store:current',
+    ]);
+    expect(rotatedTokens(w)).not.toContain(SECOND_REFRESH);
+    expect(w.vaultAs.filter((v) => v.userId === GRACE.id)).toEqual([]);
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+    expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+  });
+});
+
 describe('secrets never leave', () => {
   it('no response body or log line contains any of the four secrets, either pasted token or a token a rotate minted', async () => {
     const leak = (where: string): Error => new Error(`${where} failed: ${SECRETS.join(' ')}`);
@@ -2764,6 +3225,7 @@ describe('secrets never leave', () => {
     leaveApp(happy, LEFT_1);
     await happy.status();
     await happy.installUrl();
+    await happy.replace();
     await happy.rename();
     await happy.forget();
     await happy.disconnect();
@@ -2878,6 +3340,29 @@ describe('secrets never leave', () => {
     const disconnectSave = track((await connectedWorld()).w);
     disconnectSave.vaultFailures.set('credentials:set config-refresh-token', leak('vault'));
     await disconnectSave.disconnect();
+
+    // Replace (TASK-1128): trying the pasted token failing, the check failing,
+    // the vault failing, the row write failing, a leftover delete failing.
+    const replaceRotate = track((await connectedWorld()).w);
+    failRotate(replaceRotate, leak('rotate'));
+    await replaceRotate.replace();
+    const replaceCheck = track((await connectedWorld()).w);
+    replaceCheck.slack.on.updateApp = async () => {
+      throw leak('updateApp');
+    };
+    await replaceCheck.replace();
+    const replaceSave = track((await connectedWorld()).w);
+    replaceSave.vaultFailures.set('credentials:set config-refresh-token', leak('vault'));
+    await replaceSave.replace();
+    const replaceRow = track((await connectedWorld()).w);
+    replaceRow.memory.failures.set('setConfigTokenOwner', leak('setConfigTokenOwner'));
+    await replaceRow.replace();
+    const replaceLeftover = track((await connectedWorld()).w);
+    leaveApp(replaceLeftover, LEFT_1);
+    replaceLeftover.slack.on.deleteApp = async () => {
+      throw leak('deleteApp');
+    };
+    await replaceLeftover.replace();
 
     // Auth and branding faults.
     await track(world({ authFault: leak('auth') })).status();
