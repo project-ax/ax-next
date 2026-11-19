@@ -247,13 +247,14 @@ recalled in a channel.
    (`xoxe.xoxp-…`, valid for 12 hours) and the refresh token (`xoxe-…`).
 2. The admin confirms the bot's name. The name defaults to the branding name,
    checked against Slack's name rules (§7 Q3), otherwise `ax`.
-3. AX first deletes any app an earlier Disconnect couldn't (below), with the
-   access token just pasted. Then it creates the shared app with
-   `apps.manifest.create`, tries the pasted refresh token once (step 5), and
-   sets the avatar (the branding logo) with `apps.icon.set`. If Slack refuses
-   the refresh token, or doesn't answer, AX deletes the new app again and
-   asks for a new pair, so an install never starts with a token Slack won't
-   take (TASK-1159). The manifest sets the name, scopes, and the event and
+3. AX first deletes any app an earlier Disconnect or Connect couldn't
+   (below), with the access token just pasted. Then it creates the shared app
+   with `apps.manifest.create`, tries the pasted refresh token once (step 5),
+   and sets the avatar (the branding logo) with `apps.icon.set`. If that try
+   fails in any way, AX deletes the new app again (or, when Slack won't let
+   it, lists it as left over), so an install never starts with a token Slack
+   won't take (TASK-1159). When Slack refused the refresh token itself, the
+   admin is asked for a new pair; any other failure says to try again. The manifest sets the name, scopes, and the event and
    interactivity URLs. Slack sends no challenge and needs no manual Verify
    click (§7 Q1).
 4. The admin is sent to Slack's install screen and clicks **Allow**. AX stores
@@ -261,7 +262,8 @@ recalled in a channel.
    someone with install rights can make it.
 5. AX keeps a **refresh token** and gets a fresh access token from it with
    `tooling.tokens.rotate` whenever it needs one. The first rotate is at
-   Connect (step 3), so the one AX keeps is never the one pasted. Each rotate
+   Connect (step 3), so for any install connected since TASK-1159 the one AX
+   keeps is never the one pasted. Each rotate
    also hands back a new refresh token, and Slack retires the old one within
    minutes to hours (§7, configuration tokens), so AX stores the new one
    before it uses the access token (TASK-1129). Access tokens are never stored

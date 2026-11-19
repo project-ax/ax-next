@@ -47,7 +47,8 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   - The pasted REFRESH token is tried once, right after Slack makes the
  *     app: Connect rotates it and stores the refresh token Slack mints in
  *     its place, and never uses that rotate's access token (TASK-1159). If
- *     the rotate fails, nothing is stored and the app goes again (below), so
+ *     the rotate fails in any way, no secret is stored and the app goes
+ *     again, or onto the leftover list when Slack won't delete it (below), so
  *     an install never starts with a token Slack won't take. No route ever
  *     returns the stored one. Only Disconnect and Rename read it, each to
  *     mint one access token that is used once: Disconnect to delete the

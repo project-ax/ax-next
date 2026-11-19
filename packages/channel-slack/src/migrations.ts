@@ -43,8 +43,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     delete. Disconnect's (TASK-1132): the stored configuration token was
  *     dead or revoked, or Slack didn't answer; the install's row moves its
  *     app id and name here in the statement that deletes it (store.ts).
- *     Connect's own (TASK-1159): Slack refused the pasted refresh token, or
- *     didn't answer, and then wouldn't delete the app Connect had just made;
+ *     Connect's own (TASK-1159): trying the pasted refresh token failed (Slack
+ *     refused it, didn't answer, or answered something else), and then Slack
+ *     wouldn't delete the app Connect had just made;
  *     no install row ever held that one, so Connect writes it here directly.
  *     Either way the id is never in both tables. The next Connect tries to
  *     delete them with the pasted access token; the Slack tab names them

@@ -34,8 +34,8 @@ export interface OAuthState {
 }
 
 /**
- * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own after Slack
- * refused the pasted refresh token), so it may still be on Slack. No secret.
+ * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own after trying
+ * the pasted refresh token failed), so it may still be on Slack. No secret.
  */
 export interface LeftoverApp {
   /**
