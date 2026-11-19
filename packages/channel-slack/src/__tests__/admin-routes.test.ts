@@ -465,6 +465,8 @@ function world(
     authFault?: Error;
     /** auth:get-user throws this for everyone. */
     getUserFault?: Error;
+    /** Every logger call records its line, then throws this. */
+    logFault?: Error;
   } = {},
 ) {
   let nowMs = NOW_MS;
@@ -473,6 +475,7 @@ function world(
   const lines: Line[] = [];
   const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
     lines.push({ level, msg, fields });
+    if (o.logFault !== undefined) throw o.logFault;
   };
   const logger: Logger = {
     debug: at('debug'),
@@ -647,7 +650,11 @@ async function connectedWorld(o: Parameters<typeof world>[0] = {}) {
   const w = world(o);
   const state = stateOf(await w.connect());
   expect((await w.callback({ code: CODE, state })).location).toBe(back('connected'));
-  return { w, state, installId: mintedInstallId(w) };
+  const installId = mintedInstallId(w);
+  // A clean Connect and Allow log exactly this line (TASK-1139). Cleared, so each test sees only its own.
+  expect(w.lines).toEqual([{ level: 'info', msg: 'slack_connected', fields: { installId } }]);
+  w.lines.length = 0;
+  return { w, state, installId };
 }
 
 function deferred<T = void>() {
@@ -1599,6 +1606,21 @@ describe('GET /admin/slack/oauth/callback', () => {
     // The token is stored before the row says "active".
     const tail = w.trail.slice(w.trail.indexOf('slack:oauthAccess'));
     expect(tail.indexOf('vault:set bot-token')).toBeLessThan(tail.indexOf('store:activate'));
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_connected', fields: { installId } }]);
+  });
+
+  it('the TASK-1134 walk: two callbacks the admin gate refuses, then one from the signed-in admin; the log shows both refusals, then slack_connected (TASK-1139)', async () => {
+    const w = world();
+    const state = stateOf(await w.connect());
+    const installId = mintedInstallId(w);
+    expect(await w.callback({ code: CODE, state }, null)).toStrictEqual(FAILED);
+    expect(await w.callback({ code: CODE, state }, null)).toStrictEqual(FAILED);
+    expect((await w.callback({ code: CODE, state })).location).toBe(back('connected'));
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_install_refused', fields: { reason: 'unauthenticated' } },
+      { level: 'info', msg: 'slack_install_refused', fields: { reason: 'unauthenticated' } },
+      { level: 'info', msg: 'slack_connected', fields: { installId } },
+    ]);
   });
 
   it('the redirect never leaves the public origin, whatever the request carries', async () => {
@@ -1671,6 +1693,10 @@ describe('GET /admin/slack/oauth/callback', () => {
     expect((await w.callback({ code: CODE, state: stateOf(await w.installUrl()) })).location).toBe(
       back('connected'),
     );
+    // One line, from the retry.
+    expect(w.lines.filter((l) => l.msg === 'slack_connected')).toEqual([
+      { level: 'info', msg: 'slack_connected', fields: { installId } },
+    ]);
   });
 
   it('storing the bot token failing → failed, the token removed, the install still pending', async () => {
@@ -1713,6 +1739,7 @@ describe('GET /admin/slack/oauth/callback', () => {
     expect(await w.callback({ code: CODE, state })).toStrictEqual(FAILED);
     expect(slackMethods(w).filter((m) => m === 'oauthAccess')).toHaveLength(1);
     expect(onlyRow(w).status).toBe('active');
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_install_refused', fields: { reason: 'invalid-state' } }]);
   });
 
   it('a store fault mid-callback → failed, logged code-only', async () => {
@@ -1760,6 +1787,7 @@ describe('POST /admin/slack/disconnect', () => {
     // Slack deleted it: nothing to remember.
     expect(w.memory.leftovers.size).toBe(0);
     expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } }]);
   });
 
   it('rotate fails, deleteApp fails or the token is gone → { appDeleted: false }, row and secrets still removed, and the app remembered', async () => {
@@ -1796,11 +1824,10 @@ describe('POST /admin/slack/disconnect', () => {
       expect(await w.disconnect(), stage).toMatchObject({ status: 200, body: { appDeleted: false } });
       expect(w.memory.rows.size, stage).toBe(0);
       expect(w.vault.size, stage).toBe(0);
-      expect(w.lines, stage).toContainEqual({
-        level: 'warn',
-        msg: 'slack_admin_failed',
-        fields: { installId, stage, code },
-      });
+      expect(w.lines, stage).toEqual([
+        { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage, code } },
+        { level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: false } },
+      ]);
       // The app may still be on Slack: its id and name outlive the row (TASK-1132).
       expect([...w.memory.leftovers.values()], stage).toEqual([
         { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
@@ -1813,7 +1840,7 @@ describe('POST /admin/slack/disconnect', () => {
   });
 
   it('an app Slack says is already gone (app_not_found) counts as deleted: { appDeleted: true }, no failure logged', async () => {
-    const { w } = await connectedWorld();
+    const { w, installId } = await connectedWorld();
     // Someone deleted it on api.slack.com/apps first.
     w.slack.on.deleteApp = async () => {
       throw new SlackApiError('apps.manifest.delete', 'app_not_found');
@@ -1822,7 +1849,7 @@ describe('POST /admin/slack/disconnect', () => {
     expect(slackMethods(w).filter((m) => m === 'deleteApp')).toHaveLength(1);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
-    expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } }]);
     // Gone already: nothing to remember.
     expect(w.memory.leftovers.size).toBe(0);
     expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
@@ -1835,12 +1862,16 @@ describe('POST /admin/slack/disconnect', () => {
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
     expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_disconnected', fields: { installId: mintedInstallId(w), appDeleted: true } },
+    ]);
   });
 
   it('with nothing connected → 409 not-connected', async () => {
     const w = world();
     expect(await w.disconnect()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
     expect(w.slack.calls).toEqual([]);
+    expect(w.lines).toEqual([]);
   });
 
   it('writes only the refresh token Slack minted, before deleting the app; the minted access token goes nowhere but deleteApp', async () => {
@@ -1863,7 +1894,7 @@ describe('POST /admin/slack/disconnect', () => {
     ]);
   });
 
-  it('storing the new refresh token failing still deletes the app with the token in hand; the row and secrets go; one error line', async () => {
+  it('storing the new refresh token failing still deletes the app with the token in hand; the row and secrets go; one error line, then slack_disconnected', async () => {
     const { w, installId } = await connectedWorld();
     w.vaultFailures.set(
       'credentials:set config-refresh-token',
@@ -1881,6 +1912,7 @@ describe('POST /admin/slack/disconnect', () => {
         msg: 'slack_admin_failed',
         fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' },
       },
+      { level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } },
     ]);
     expect(w.memory.leftovers.size).toBe(0);
   });
@@ -1889,12 +1921,14 @@ describe('POST /admin/slack/disconnect', () => {
     const { w, installId } = await connectedWorld();
     w.memory.failures.set('remove', new Error('connection reset'));
     expect(await w.disconnect()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.lines.map((l) => l.msg)).not.toContain('slack_disconnected');
     expect(w.vault.has(secretRef(installId, 'bot-token'))).toBe(true);
     // The token the retry needs: the one Slack minted, not the one it retired.
     expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(2));
     expect(w.memory.leftovers.size).toBe(0);
     w.memory.failures.delete('remove');
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(w.lines.filter((l) => l.msg === 'slack_disconnected')).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } }]);
     expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').at(-1)!.args).toEqual([
       mintedRefresh(2),
     ]);
@@ -1908,6 +1942,7 @@ describe('POST /admin/slack/disconnect', () => {
     };
     w.memory.failures.set('remove', connectionReset());
     expect(await w.disconnect()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.lines.map((l) => l.msg)).not.toContain('slack_disconnected');
     // One statement: the row stayed, so the app was not remembered, and the secrets stay too.
     expect(w.memory.rows.has(installId)).toBe(true);
     expect(w.memory.leftovers.size).toBe(0);
@@ -1915,11 +1950,27 @@ describe('POST /admin/slack/disconnect', () => {
 
     w.memory.failures.delete('remove');
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect(w.lines.filter((l) => l.msg === 'slack_disconnected')).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: false } }]);
     expect([...w.memory.leftovers.values()]).toEqual([
       { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
     ]);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
+  });
+});
+
+describe('a log line never changes an answer (TASK-1139)', () => {
+  it('with a log sink that throws, Connect (deleting a leftover), Allow and Disconnect still succeed, and each line was attempted', async () => {
+    const w = world({ logFault: new Error('log sink is down') });
+    leaveApp(w, LEFT_1);
+    const state = stateOf(await w.connect());
+    expect(w.memory.leftovers.size).toBe(0);
+    expect((await w.callback({ code: CODE, state })).location).toBe(back('connected'));
+    expect(onlyRow(w).status).toBe('active');
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+    expect(w.lines.map((l) => l.msg)).toEqual(['slack_leftover_app_deleted', 'slack_connected', 'slack_disconnected']);
   });
 });
 
@@ -1939,11 +1990,6 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
     };
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: false } });
-    expect(w.lines).toContainEqual({
-      level: 'warn',
-      msg: 'slack_admin_failed',
-      fields: { installId: firstInstallId, stage: 'rotate', code: 'invalid_refresh_token' },
-    });
     expect((await w.status()).body).toEqual({
       state: 'not-connected',
       defaultBotName: 'canopy-works',
@@ -1968,15 +2014,22 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     ]);
     expect([...w.slack.live]).toEqual([SECOND_APP_ID]);
     expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_install_refused', fields: { reason: 'unauthenticated' } },
+      { level: 'warn', msg: 'slack_admin_failed', fields: { installId: firstInstallId, stage: 'rotate', code: 'invalid_refresh_token' } },
+      { level: 'info', msg: 'slack_disconnected', fields: { installId: firstInstallId, appDeleted: false } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: firstInstallId } },
+    ]);
   });
 
   it('Connect deletes every leftover app with the pasted access token before it creates the new one, and forgets each one Slack deleted or no longer has', async () => {
     const w = world();
     leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000);
     leaveApp(w, LEFT_2, 'Second Bot');
-    // The admin already deleted the second one on api.slack.com/apps.
+    // The admin already deleted the first one on api.slack.com/apps. It comes
+    // first so a deleted app after it must not inherit its `already-gone`.
     w.slack.on.deleteApp = async (_token, appId) => {
-      if (appId === LEFT_2.appId) throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+      if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'app_not_found');
     };
     expect((await w.connect()).status).toBe(200);
     expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
@@ -2001,6 +2054,10 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       'deleteApp',
       'createApp',
       'setAppIcon',
+    ]);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId, reason: 'already-gone' } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
     ]);
   });
 
@@ -2061,6 +2118,7 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
       expect(w.lines).toEqual([
         { level: 'warn', msg: 'slack_admin_failed', fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code } },
+        { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
       ]);
     },
   );
@@ -2171,6 +2229,9 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     expect(w.memory.leftovers.size).toBe(0);
     // Only the first forget's failure was logged.
     expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toHaveLength(1);
+    expect(w.lines.filter((l) => l.msg === 'slack_leftover_app_deleted')).toEqual([
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId, reason: 'already-gone' } },
+    ]);
   });
 });
 
@@ -2376,7 +2437,7 @@ describe('POST /admin/slack/rename', () => {
   });
 
   it('two renames in a row, then Disconnect: each rotate spends the token the one before it stored, so all three work (TASK-1129)', async () => {
-    const { w } = await connectedWorld();
+    const { w, installId } = await connectedWorld();
     expect(await w.rename({ botName: 'First Name' })).toMatchObject({ status: 200, body: { botName: 'First Name' } });
     expect(await w.rename({ botName: 'Second Name' })).toMatchObject({
       status: 200,
@@ -2389,7 +2450,7 @@ describe('POST /admin/slack/rename', () => {
       mintedRefresh(2),
       mintedRefresh(3),
     ]);
-    expect(w.lines).toEqual([]);
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } }]);
     expect(w.vault.size).toBe(0);
   });
 
@@ -2791,6 +2852,8 @@ describe('secrets never leave', () => {
     await happy.forget();
     await happy.disconnect();
     await happy.status();
+    leaveApp(happy, LEFT_2);
+    await happy.connect();
 
     // Slack refusing Connect with every secret in its error.
     const refused = track(world());
@@ -2913,10 +2976,19 @@ describe('secrets never leave', () => {
     // Nor the bot's picture: it goes to Slack and nowhere else.
     expect(seen).not.toContain(CONNECT_BODY.iconPng);
     expect(seen).not.toContain('failed:');
-    for (const line of worlds.flatMap((w) => w.lines)) {
+    const lines = worlds.flatMap((w) => w.lines);
+    // The new lines are in the scan (TASK-1139), so the allowlist is tested on them.
+    expect(lines.map((l) => l.msg)).toEqual(
+      expect.arrayContaining(['slack_disconnected', 'slack_leftover_app_deleted']),
+    );
+    for (const line of lines) {
       expect(line.msg, JSON.stringify(line)).toMatch(/^slack_/);
       for (const key of Object.keys(line.fields ?? {})) {
-        expect(['installId', 'reason', 'stage', 'code'], JSON.stringify(line)).toContain(key);
+        expect(['installId', 'reason', 'stage', 'code', 'appDeleted'], JSON.stringify(line)).toContain(key);
+      }
+      // The one field that isn't a code or an id: a yes or a no, never a value.
+      if (line.fields !== undefined && 'appDeleted' in line.fields) {
+        expect(typeof line.fields['appDeleted'], JSON.stringify(line)).toBe('boolean');
       }
     }
     // Every refresh token the fake Slack minted, whichever rotate minted it.
