@@ -1239,6 +1239,8 @@ describe('@ax/channel-slack plugin', () => {
     const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
     const live = new Set<string>();
     let created = 0;
+    /** The refresh token Slack mints when Connect tries the pasted one (TASK-1159). */
+    const minted = fakeConfigRefreshToken('E2EMINTEDREFRESH');
     const fetchImpl: typeof fetch = async (input, init) => {
       const method = String(input).replace('https://slack.com/api/', '');
       const headers = new Headers(init?.headers);
@@ -1264,11 +1266,20 @@ describe('@ax/channel-slack plugin', () => {
       } else if (method === 'apps.manifest.delete') {
         live.delete(String(body['app_id']));
       } else if (method === 'tooling.tokens.rotate') {
-        answer = { ok: false, error: 'invalid_refresh_token' };
+        answer =
+          body['refresh_token'] === minted
+            ? // The token AX holds has since been revoked on Slack's page.
+              { ok: false, error: 'invalid_refresh_token' }
+            : {
+                ok: true,
+                token: fakeConfigAccessToken('E2EROTATEDACCESS'),
+                refresh_token: minted,
+                exp: 4_102_444_800,
+              };
       }
       return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
     };
-    const { call } = await boot({ fetchImpl });
+    const { s, call } = await boot({ fetchImpl });
     const connect = () =>
       call(
         'POST',
@@ -1287,6 +1298,11 @@ describe('@ax/channel-slack plugin', () => {
 
     expect((await connect()).status).toBe(200);
     expect(await installCount()).toBe(1);
+    // Connect tried the pasted refresh token and kept the one Slack minted (TASK-1159).
+    const installs = await sql<{ install_id: string }>`
+      SELECT install_id FROM channel_slack_v1_installs`.execute(probe);
+    expect(installs.rows).toHaveLength(1);
+    expect(s.vault.get(secretRef(installs.rows[0]!.install_id, 'config-refresh-token'))).toBe(minted);
 
     // The stored refresh token is dead: Disconnect can't delete the app.
     const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
