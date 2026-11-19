@@ -21,9 +21,13 @@
  * `tooling.tokens.rotate`, `oauth.v2.access` and `users.info` take ONLY form
  * bodies ("arguments sent in a JSON body are ignored by methods that don't
  * list application/json"), and so do `conversations.info` and
- * `conversations.list` (read 2026-11-13). `conversations.join` and every
- * `apps.*` call here list both (the `apps.*` pages read 2026-11-15) and are
- * sent as forms like their siblings.
+ * `conversations.list` (read 2026-11-13). `conversations.join` and the
+ * `apps.manifest.*` calls list both (the `apps.*` pages read 2026-11-15) and
+ * are sent as forms like their siblings. `apps.icon.set` uploads its image as
+ * `multipart/form-data`: the PNG as `file`, beside `app_id` (read on
+ * docs.slack.dev 2026-11-18; the `url` argument made Slack fetch an image it
+ * then refused, TASK-1133). Its content type is fetch's to write, because
+ * only fetch knows the multipart boundary.
  * Every `chat.*` call is JSON, and so are `reactions.add` and
  * `reactions.remove` (both list JSON; MEASURED working on the kind walk,
  * 2026-11-13). `oauth.v2.access` authenticates the app with HTTP Basic, so
@@ -164,7 +168,8 @@ export interface SlackApi {
    */
   updateApp(configToken: string, appId: string, manifest: Record<string, unknown>): Promise<void>;
   deleteApp(configToken: string, appId: string): Promise<void>;
-  setAppIcon(configToken: string, appId: string, url: string): Promise<void>;
+  /** Upload the app's picture: a PNG's bytes, sent as they are (icon.ts checks them first). */
+  setAppIcon(configToken: string, appId: string, png: Uint8Array): Promise<void>;
   oauthAccess(i: {
     clientId: string;
     clientSecret: string;
@@ -253,7 +258,12 @@ type Auth =
 
 type Body =
   | { kind: 'form'; fields: Record<string, string> }
-  | { kind: 'json'; fields: Record<string, unknown> };
+  | { kind: 'json'; fields: Record<string, unknown> }
+  | {
+      kind: 'multipart';
+      fields: Record<string, string>;
+      file: { name: string; filename: string; type: string; bytes: Uint8Array };
+    };
 
 const API_BASE = 'https://slack.com/api/';
 const FORM_TYPE = 'application/x-www-form-urlencoded';
@@ -365,6 +375,18 @@ function chunkOut(chunk: StreamChunkOut): Record<string, string> {
   return { type: 'task_update', id: chunk.id, title: chunk.title, status: chunk.status };
 }
 
+/** A body as fetch sends it. */
+function payloadOf(body: Body): string | FormData {
+  if (body.kind === 'form') return new URLSearchParams(body.fields).toString();
+  if (body.kind === 'json') return JSON.stringify(body.fields);
+  const out = new FormData();
+  for (const [name, value] of Object.entries(body.fields)) out.append(name, value);
+  const { name, filename, type, bytes } = body.file;
+  // A copy on a plain ArrayBuffer: a Blob won't take a view that may sit on a SharedArrayBuffer.
+  out.append(name, new Blob([new Uint8Array(bytes)], { type }), filename);
+  return out;
+}
+
 const form = (fields: Record<string, string>): Body => ({ kind: 'form', fields });
 const json = (fields: Record<string, unknown>): Body => ({ kind: 'json', fields });
 const bearer = (token: string): Auth => ({ kind: 'bearer', token });
@@ -379,18 +401,16 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
 
   /** One call. Resolves with Slack's answer when `ok` is true; rejects with SlackApiError. */
   async function call(method: SlackMethod, auth: Auth, body: Body): Promise<Record<string, unknown>> {
-    const headers: Record<string, string> = {
-      'content-type': body.kind === 'form' ? FORM_TYPE : JSON_TYPE,
-    };
+    const headers: Record<string, string> = {};
+    // Never set by hand for multipart: fetch writes it, with the boundary.
+    if (body.kind === 'form') headers['content-type'] = FORM_TYPE;
+    if (body.kind === 'json') headers['content-type'] = JSON_TYPE;
     if (auth.kind === 'bearer') headers['authorization'] = `Bearer ${auth.token}`;
     if (auth.kind === 'basic') {
       const pair = Buffer.from(`${auth.clientId}:${auth.clientSecret}`, 'utf8').toString('base64');
       headers['authorization'] = `Basic ${pair}`;
     }
-    const payload =
-      body.kind === 'form'
-        ? new URLSearchParams(body.fields).toString()
-        : JSON.stringify(body.fields);
+    const payload = payloadOf(body);
     const fail = (code: string, retryAfter?: number): SlackApiError =>
       new SlackApiError(method, code, retryAfter);
 
@@ -507,8 +527,12 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       await call('apps.manifest.delete', bearer(configToken), form({ app_id: appId }));
     },
 
-    async setAppIcon(configToken, appId, url) {
-      await call('apps.icon.set', bearer(configToken), form({ app_id: appId, url }));
+    async setAppIcon(configToken, appId, png) {
+      await call('apps.icon.set', bearer(configToken), {
+        kind: 'multipart',
+        fields: { app_id: appId },
+        file: { name: 'file', filename: 'icon.png', type: 'image/png', bytes: png },
+      });
     },
 
     async oauthAccess({ clientId, clientSecret, code, redirectUri }) {

@@ -1525,10 +1525,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // credentials vault, all loaded above; `branding:get` is optional (the bot's
   // default name).
   //
-  // Both URLs come from here, because the preset is the layer allowed to know
-  // two plugins' surfaces: the same public origin @ax/mcp-oauth gets, and
-  // branding's public light logo for the bot's avatar (Slack fetches it itself;
-  // a missing or unsuitable logo just leaves Slack's default).
+  // The public origin comes from here, because the preset is the layer allowed to know
+  // two plugins' surfaces: the same one @ax/mcp-oauth gets. The bot's picture isn't configured
+  // here: the admin's browser draws it and Connect uploads it (TASK-1133).
   //
   // Single-replica: its event dedupe, admin lock and open approval prompts are
   // in-process, which the chart's one-host pin (ax-next.validateHostReplicas) keeps honest.
@@ -1536,7 +1535,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(
     createChannelSlackPlugin({
       publicOrigin: slackOrigin,
-      iconUrl: `${slackOrigin}/api/branding/logo/light`,
       ...(config.channelSlack?.fetchImpl !== undefined
         ? { fetchImpl: config.channelSlack.fetchImpl }
         : {}),
