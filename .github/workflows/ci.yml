@@ -201,8 +201,8 @@ jobs:
       #    (artifact HTML served by the real content origin can't reach a UDP/TCP
       #    canary through WebRTC or a child frame; TASK-1082)
       #  - packages/channel-web/src/__tests__/slack-avatar.browser.test.ts
-      #    (the Slack bot's picture: a prod-shaped SVG logo becomes a 512 px PNG
-      #    Slack accepts; TASK-1133)
+      #    (the Slack bot's picture: a prod-shaped SVG logo becomes a square
+      #    512 px PNG within Slack's documented size rules; TASK-1133)
       # (The browser and zsh installs below are skipped only on main's
       # `routines` and `agents` shards, whose packages use neither.)
       # Locally each skips when Chromium isn't installed; here they must RUN, so

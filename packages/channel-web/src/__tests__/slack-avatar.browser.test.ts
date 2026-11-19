@@ -217,6 +217,18 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('Slack bot picture in Chromium', () 
     expect(pixels[4]).not.toEqual(WHITE);
   });
 
+  it('the AX mark as the bundle ships it, an inlined data: URI, draws the same', async () => {
+    // The mark is under Vite's inline limit, so `import markLight from …svg`
+    // is a `data:image/svg+xml,…` URI in the built SPA, not an HTTP URL. This
+    // is the path a server with no logo and no name actually takes.
+    const corners: Array<[number, number]> = [[2, 2], [509, 2], [2, 509], [509, 509]];
+    const dataUri = `data:image/svg+xml,${encodeURIComponent(axMark.toString('utf8'))}`;
+    const { base64, pixels } = await draw(dataUri, [...corners, [141, 256]]);
+    expectSquarePng(base64);
+    for (let i = 0; i < 4; i += 1) near(pixels[i], WHITE, 0);
+    expect(pixels[4]).not.toEqual(WHITE);
+  });
+
   it('a logo that 404s rejects', async () => {
     const outcome = await withPage((page) =>
       page.evaluate(async () => {
