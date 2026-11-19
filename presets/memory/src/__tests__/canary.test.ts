@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -776,6 +776,19 @@ describe('@ax/preset-memory canary', () => {
     expect(
       await apiJson('POST', '/admin/slack/forget-leftover-app', CANARY_ADMIN, { appId: 'A0CANARYAPP' }),
     ).toEqual({ status: 200, json: {} });
+    // Replace the configuration token (TASK-1128): no CSRF header, no entry. With it,
+    // the route's own answer to a body with no refresh token in it, which an unmounted
+    // POST (the router's 405) could not give. `{}` keeps token-shaped literals out of source.
+    const noCsrfReplace = await fetch(url('/admin/slack/replace-token'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+      body: '{}',
+    });
+    expect(noCsrfReplace.status).toBe(403);
+    expect(await apiJson('POST', '/admin/slack/replace-token', CANARY_ADMIN, {})).toEqual({
+      status: 400,
+      json: { error: 'invalid-refresh-token' },
+    });
 
     // ...and Slack's deliveries skip it: no CSRF header, and an install that
     // doesn't exist gets a "not found", compared with one fetched here rather

@@ -99,6 +99,7 @@ const join = (...parts: string[]): string => parts.join('');
 const BOT_TOKEN = join('xo', 'xb-', '1111-2222-', 'COMPOSITIONBOT');
 const CONFIG_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONACCESS');
 const CONFIG_REFRESH_TOKEN = join('xo', 'xe-', '1-', 'COMPOSITIONREFRESH');
+const SECOND_CONFIG_REFRESH_TOKEN = join('xo', 'xe-', '1-', 'COMPOSITIONSECONDREFRESH');
 const ROTATED_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONROTATED');
 // Slack mints a NEW refresh token on every rotate and retires the old one some time
 // after the rotate (minutes to hours), so the fake numbers them: a test can tell which one it holds.
@@ -1777,6 +1778,81 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     actor = null;
     expect(disconnected).toMatchObject({ status: 200, body: { removed: true } });
     expect(await preCapture(conv3)).toMatchObject(refused);
+    await dropAgent(agentId);
+  });
+
+  it('an admin replaces the configuration token: the install, its channel and every secret stay, the plugin reads them as the new admin, and Rename then rotates the new token (TASK-1128)', async () => {
+    const { installId, agentId } = await supportChannel();
+    invokes.length = 0;
+    const before = await bindings();
+    const rowOf = async (): Promise<Record<string, unknown>> => {
+      const rows = await query(
+        'SELECT install_id, status, connected_by_user_id, config_token_added_at FROM channel_slack_v1_installs',
+      );
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    };
+    const rowBefore = await rowOf();
+    expect(rowBefore['connected_by_user_id']).toBe(ADMIN);
+
+    // Another admin pastes a new refresh token.
+    actor = { id: 'usr_grace', isAdmin: true };
+    const mark = slackCalls.length;
+    const replaced = await callRoute('POST', '/admin/slack/replace-token', {
+      body: jsonBody({ refreshToken: SECOND_CONFIG_REFRESH_TOKEN }),
+    });
+    expect(replaced).toEqual({ status: 200, body: {} });
+    // Slack was asked twice: the pasted token tried once, then the app's manifest
+    // sent with the access token that rotate minted, before anything was stored.
+    const calls = slackCalls.slice(mark);
+    expect(calls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.update']);
+    expect(calls[0]!.body).toEqual({ refresh_token: SECOND_CONFIG_REFRESH_TOKEN });
+    expect(calls[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
+    expect(calls[1]!.body['app_id']).toBe(APP_ID);
+
+    // The vault holds the token Slack minted; the other secrets did not move.
+    const kept = await readSecret(installId, 'config-refresh-token');
+    expect(kept).toBe(rotatedRefreshToken(rotateSeq));
+    expect(kept).not.toBe(SECOND_CONFIG_REFRESH_TOKEN);
+    expect(await readSecret(installId, 'bot-token')).toBe(BOT_TOKEN);
+    expect(await readSecret(installId, 'signing-secret')).toBe(SIGNING_SECRET);
+
+    // The same install moved to the new admin; the channel binding is untouched.
+    const rowAfter = await rowOf();
+    expect(rowAfter['install_id']).toBe(installId);
+    expect(rowAfter['status']).toBe('active');
+    expect(rowAfter['connected_by_user_id']).toBe('usr_grace');
+    expect(rowAfter['config_token_added_at']).not.toEqual(rowBefore['config_token_added_at']);
+    expect(await bindings()).toEqual(before);
+    // The auth stub names anyone but the first admin by their id.
+    // `created_at` is the database's clock and the replace uses the host's, so compare to the row itself.
+    const status = await callRoute('GET', '/admin/slack');
+    expect(status).toMatchObject({
+      status: 200,
+      body: {
+        state: 'connected',
+        connectedBy: 'usr_grace',
+        connectedAt: (rowAfter['config_token_added_at'] as Date).toISOString(),
+      },
+    });
+
+    // The plugin still reads the signing secret and the bot token, now naming the new admin.
+    actor = null;
+    const turnMark = slackCalls.length;
+    expect((await deliver(installId, mention(MEL, nextTs(), 'still there?'))).status).toBe(200);
+    expect((await invokedTurn(1)).ctx.agentId).toBe(agentId);
+    const turnCalls = await channelTurnCalls(turnMark);
+    expect(callOf(turnCalls, 'chat.startStream').auth).toBe(`Bearer ${BOT_TOKEN}`);
+
+    // Rename rotates the replaced token, not the one Connect kept.
+    actor = { id: 'usr_grace', isAdmin: true };
+    const renameMark = slackCalls.length;
+    const rename = await callRoute('POST', '/admin/slack/rename', { body: jsonBody({ botName: 'Canopy Helper' }) });
+    expect(rename).toMatchObject({ status: 200, body: { botName: 'Canopy Helper' } });
+    expect(slackCalls[renameMark]!.method).toBe('tooling.tokens.rotate');
+    expect(slackCalls[renameMark]!.body).toEqual({ refresh_token: kept });
+
+    actor = null;
     await dropAgent(agentId);
   });
 });
