@@ -1239,6 +1239,8 @@ describe('@ax/channel-slack plugin', () => {
     const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
     const live = new Set<string>();
     let created = 0;
+    /** The refresh token Slack mints when Connect tries the pasted one (TASK-1159). */
+    const minted = fakeConfigRefreshToken('E2EMINTEDREFRESH');
     const fetchImpl: typeof fetch = async (input, init) => {
       const method = String(input).replace('https://slack.com/api/', '');
       const headers = new Headers(init?.headers);
@@ -1264,11 +1266,20 @@ describe('@ax/channel-slack plugin', () => {
       } else if (method === 'apps.manifest.delete') {
         live.delete(String(body['app_id']));
       } else if (method === 'tooling.tokens.rotate') {
-        answer = { ok: false, error: 'invalid_refresh_token' };
+        answer =
+          body['refresh_token'] === minted
+            ? // The token AX holds has since been revoked on Slack's page.
+              { ok: false, error: 'invalid_refresh_token' }
+            : {
+                ok: true,
+                token: fakeConfigAccessToken('E2EROTATEDACCESS'),
+                refresh_token: minted,
+                exp: 4_102_444_800,
+              };
       }
       return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
     };
-    const { call } = await boot({ fetchImpl });
+    const { s, call } = await boot({ fetchImpl });
     const connect = () =>
       call(
         'POST',
@@ -1287,6 +1298,11 @@ describe('@ax/channel-slack plugin', () => {
 
     expect((await connect()).status).toBe(200);
     expect(await installCount()).toBe(1);
+    // Connect tried the pasted refresh token and kept the one Slack minted (TASK-1159).
+    const installs = await sql<{ install_id: string }>`
+      SELECT install_id FROM channel_slack_v1_installs`.execute(probe);
+    expect(installs.rows).toHaveLength(1);
+    expect(s.vault.get(secretRef(installs.rows[0]!.install_id, 'config-refresh-token'))).toBe(minted);
 
     // The stored refresh token is dead: Disconnect can't delete the app.
     const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
@@ -1317,6 +1333,109 @@ describe('@ax/channel-slack plugin', () => {
     expect(after.rows).toEqual([]);
     expect(await installCount()).toBe(1);
     expect([...live]).toEqual(['A07SECONDAP2']);
+  });
+
+  it("a Connect whose pasted refresh token Slack refuses keeps nothing on Postgres or in the vault; an app Slack then won't delete is remembered there, and the next Connect deletes it (TASK-1159)", async () => {
+    const dead = fakeConfigRefreshToken('DEADREFRESHSECRET');
+    const minted = fakeConfigRefreshToken('E2EMINTEDREFRESH2');
+    let deleteRefuses = false;
+    const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
+    const live = new Set<string>();
+    let created = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = String(input).replace('https://slack.com/api/', '');
+      const headers = new Headers(init?.headers);
+      const raw = typeof init?.body === 'string' ? init.body : '';
+      const body: Record<string, unknown> = (headers.get('content-type') ?? '').startsWith('application/json')
+        ? (JSON.parse(raw) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(raw));
+      calls.push({ method, auth: headers.get('authorization'), body });
+      let answer: Record<string, unknown> = { ok: true };
+      if (method === 'apps.manifest.create') {
+        created += 1;
+        const appId = ['A07FIRSTAPP1', 'A07SECONDAP2', 'A07THIRDAPP3'][created - 1]!;
+        live.add(appId);
+        answer = {
+          ok: true,
+          app_id: appId,
+          credentials: {
+            client_id: '7000000001.7000000002',
+            client_secret: 'plugin-client-secret-not-real',
+            signing_secret: SIGNING_SECRET,
+          },
+        };
+      } else if (method === 'apps.manifest.delete') {
+        if (deleteRefuses) answer = { ok: false, error: 'internal_error' };
+        else live.delete(String(body['app_id']));
+      } else if (method === 'tooling.tokens.rotate') {
+        answer =
+          body['refresh_token'] === dead
+            ? { ok: false, error: 'invalid_refresh_token' }
+            : {
+                ok: true,
+                token: fakeConfigAccessToken('E2EROTATEDACCESS2'),
+                refresh_token: minted,
+                exp: 4_102_444_800,
+              };
+      }
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { s, call } = await boot({ fetchImpl });
+    const connect = (refreshToken: string) =>
+      call(
+        'POST',
+        '/admin/slack/connect',
+        request('POST', '/admin/slack/connect', {
+          as: ADMIN.id,
+          body: Buffer.from(
+            JSON.stringify({ accessToken: fakeConfigAccessToken(), refreshToken, botName: 'canopy-works' }),
+          ),
+        }),
+      );
+    const leftover = () =>
+      sql<{ install_id: string; app_id: string; bot_name: string }>`
+        SELECT install_id, app_id, bot_name FROM channel_slack_v1_leftover_apps`.execute(probe);
+
+    // Slack refuses the pasted refresh token and takes the new app back: nothing is kept.
+    expect(await connect(dead)).toMatchObject({ status: 502, body: { error: 'slack-refresh-token' } });
+    expect(await installCount()).toBe(0);
+    expect((await leftover()).rows).toEqual([]);
+    expect(s.vault.size).toBe(0);
+    expect([...live]).toEqual([]);
+
+    // Slack refuses that, and then won't take the app back either: the app is remembered.
+    deleteRefuses = true;
+    expect(await connect(dead)).toMatchObject({ status: 502, body: { error: 'slack-refresh-token' } });
+    const left = await leftover();
+    expect(left.rows).toHaveLength(1);
+    expect(left.rows[0]).toMatchObject({ app_id: 'A07SECONDAP2', bot_name: 'canopy-works' });
+    expect(left.rows[0]!.install_id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(await installCount()).toBe(0);
+    expect(s.vault.size).toBe(0);
+    const status = await call('GET', '/admin/slack', request('GET', '/admin/slack', { as: ADMIN.id }));
+    expect(status.body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'canopy-works', appId: 'A07SECONDAP2' }],
+    });
+
+    // A good pair: the next Connect deletes the remembered app first, then connects.
+    deleteRefuses = false;
+    expect((await connect(fakeConfigRefreshToken())).status).toBe(200);
+    const deleteAt = calls.findIndex(
+      (c) =>
+        c.method === 'apps.manifest.delete' &&
+        c.auth === `Bearer ${fakeConfigAccessToken()}` &&
+        c.body['app_id'] === 'A07SECONDAP2',
+    );
+    expect(deleteAt).toBeGreaterThan(-1);
+    expect(deleteAt).toBeLessThan(calls.map((c) => c.method).lastIndexOf('apps.manifest.create'));
+    expect((await leftover()).rows).toEqual([]);
+    expect(await installCount()).toBe(1);
+    const installs = await sql<{ install_id: string }>`
+      SELECT install_id FROM channel_slack_v1_installs`.execute(probe);
+    expect(installs.rows).toHaveLength(1);
+    expect(s.vault.get(secretRef(installs.rows[0]!.install_id, 'config-refresh-token'))).toBe(minted);
+    expect([...live]).toEqual(['A07THIRDAPP3']);
   });
 
   it('"I deleted it" forgets that app on Postgres and nothing else, even while connected; the status stops naming it (TASK-1132)', async () => {
