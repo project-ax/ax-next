@@ -1,5 +1,5 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
-import { isBotNameTaken } from './bot-name.js';
+import { RESERVED_BOT_NAMES, isBotNameTaken } from './bot-name.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
 import { INSTALL_ID_BYTES } from './limits.js';
@@ -7,12 +7,19 @@ import { DEDICATED_BOT_SCOPES, botUrls, buildBotManifest } from './manifest.js';
 import type { Mutex } from './mutex.js';
 import { personName } from './person-name.js';
 import { configTokenRef, type SecretOwner, type SecretStore } from './secrets.js';
-import { SlackApiError, type CreatedApp, type RotatedConfigToken, type SlackApi } from './slack-api.js';
+import {
+  SlackApiError,
+  type CreatedApp,
+  type OAuthInstall,
+  type RotatedConfigToken,
+  type SlackApi,
+} from './slack-api.js';
 import {
   REFRESH_TOKEN_REFUSED,
   createAppError,
   createAppSteps,
   isHttps,
+  isRecord,
   namesInUse,
   refreshTokenError,
   type InstallLink,
@@ -51,12 +58,19 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     (`undoConnect`): the app deleted, or left on the leftover list naming
  *     the approver, and their token released unless something names them.
  *
+ * The approver's Allow comes back to the bot's own callback (bot-callback.ts),
+ * which spends the OAuth state only for the person it was minted for and
+ * hands the bot to `finish`. The bot goes live only for its approver, only
+ * while they still manage its agent, and only in the workspace the shared
+ * bot is live in. Its @handle is read once there, and kept only when a copy
+ * line can show it.
+ *
  * Every step that touches a Slack app or a configuration token runs under the
  * one app lock (`lock`), which plugin.ts creates once and shares with Admin ›
  * Slack: bot names are unique across every bot and the shared bot, and one
  * person's token serves all their apps, so nothing narrower would do. It
  * isn't re-entrant (mutex.ts): each method says whether it takes it, and
- * `removeBot` runs under its caller's.
+ * `finish` and `removeBot` run under their caller's.
  *
  * A bot has three secrets of its own, under its install (bot token, signing
  * secret, client secret), and never a configuration token. No answer carries
@@ -89,6 +103,27 @@ export interface BotReply {
   status: number;
   body: unknown;
 }
+
+/**
+ * Why `finish` didn't make a bot live. `oauth-access` and `store-grant` are a
+ * step that failed and already logged its own code (`slack_bot_failed`); the
+ * rest are refusals for the callback to name. A rights refusal keeps
+ * channels.ts's word for it.
+ */
+export type BotFinishRefusal =
+  | 'not-pending'
+  | 'not-approver'
+  | Extract<Rights, { ok: false }>['reason']
+  | 'no-workspace'
+  | 'no-client-secret'
+  | 'oauth-access'
+  | 'app-mismatch'
+  | 'enterprise-install'
+  | 'team-mismatch'
+  | 'store-grant';
+
+/** What `finish` did with an approver's Allow. */
+export type BotFinish = { outcome: 'connected' } | { outcome: 'failed'; reason: BotFinishRefusal };
 
 export interface BotDeps {
   bus: HookBus;
@@ -158,6 +193,26 @@ export interface Bots {
    */
   cancel(i: { agentId: string }): Promise<BotReply>;
   /**
+   * The approver's Allow, back from Slack: bot-callback.ts checked that the
+   * OAuth state was minted for `actorUserId`, spent it, and read `install`
+   * from the row it named. The bot goes live only if it is a pending bot,
+   * `actorUserId` is its approver (their token made the app), they still
+   * manage its agent (asked again here: a demoted admin can't finish what
+   * they started), and the shared bot is live. Then the code is traded with
+   * the bot's own client secret and redirect_uri, and the workspace Slack
+   * installed it in must be the shared bot's: a configuration token from
+   * another workspace makes the app there, and its Allow must not put the
+   * agent in that workspace. The bot token is kept BEFORE the row says
+   * active. Last, best-effort, Slack's @handle for the bot user is read and
+   * kept only when a copy line can show it. A refusal leaves the bot pending
+   * with no bot token, so Continue in Slack and Cancel still work.
+   *
+   * Runs under the caller's app lock and never takes it (mutex.ts isn't
+   * re-entrant). A rights check that can't be answered, or a vault fault
+   * reading the client secret, throws.
+   */
+  finish(i: { actorUserId: string; ctx: AgentContext; install: InstallRow; code: string }): Promise<BotFinish>;
+  /**
    * What the agent's settings show of its bot to `viewerUserId`, given
    * whether they manage the agent and whether the shared bot is live. Takes
    * no lock and never rotates or writes: the one vault read is whether the
@@ -175,6 +230,13 @@ export interface Bots {
 
 /** The approver's name when auth has none, no account or no answer. Never the email: members read this. */
 const APPROVER_FALLBACK = 'A teammate';
+/**
+ * A bot user's @handle we keep: Slack's `name` field as its username rules
+ * allow it. Copy lines show it as `@<handle>`, so it is also never a
+ * RESERVED_BOT_NAMES word (`@channel`, `@here` and `@everyone` ping a whole
+ * channel).
+ */
+const HANDLE_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 
 const json = (status: number, body: unknown): BotReply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
@@ -403,6 +465,67 @@ export function createBots(d: BotDeps): Bots {
   }
 
   /**
+   * Slack's @handle for the new bot user, kept only when a copy line can show
+   * it (HANDLE_RE, and no reserved word). It is Slack's text, so it is checked
+   * here, before it is stored, and never cleaned into something else.
+   * Best-effort: a failed read, an answer about anyone but the bot, or a name
+   * outside the rule leaves it null, logged code-only, and never fails the
+   * Allow. The caller holds the app lock.
+   */
+  async function keepHandle(installId: string, granted: OAuthInstall): Promise<void> {
+    let user: unknown;
+    try {
+      user = await d.api.usersInfo(granted.botToken, granted.botUserId);
+    } catch (err) {
+      steps.failed('bot-handle', err, installId);
+      return;
+    }
+    if (!isRecord(user) || user['id'] !== granted.botUserId) {
+      log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: 'user-mismatch' });
+      return;
+    }
+    const handle = user['name'];
+    if (typeof handle !== 'string' || !HANDLE_RE.test(handle) || RESERVED_BOT_NAMES.has(handle)) {
+      log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: 'unusable-handle' });
+      return;
+    }
+    try {
+      await d.installs.setBotHandle(installId, handle);
+    } catch (err) {
+      steps.failed('bot-handle', err, installId);
+    }
+  }
+
+  async function finish(i: {
+    actorUserId: string;
+    ctx: AgentContext;
+    install: InstallRow;
+    code: string;
+  }): Promise<BotFinish> {
+    const bot = i.install;
+    const refuse = (reason: BotFinishRefusal): BotFinish => ({ outcome: 'failed', reason });
+    // A team agent's bot waiting for its Allow, and nothing else.
+    if (bot.kind !== 'bot' || bot.status !== 'pending' || bot.agentId === null) return refuse('not-pending');
+    // Their token made the app, so only their Allow finishes it.
+    if (bot.connectedByUserId !== i.actorUserId) return refuse('not-approver');
+    // As things stand now, not as they stood at the request.
+    const rights = await checkRights(d.bus, i.ctx, bot.agentId, i.actorUserId, 'manage');
+    if (!rights.ok) return refuse(rights.reason);
+    // The workspace the shared bot is live in, read before Slack is asked anything.
+    const shared = await d.installs.current();
+    if (shared === null || shared.status !== 'active') return refuse('no-workspace');
+    const exchanged = await steps.exchangeCode(bot, i.code, botLink(bot.installId).redirectUrl);
+    if (!exchanged.ok) return refuse(exchanged.reason);
+    // Slack made and installed the app wherever the approver's configuration
+    // token was from. Another workspace's bot token is never kept: the bot
+    // stays pending, and Cancel deletes the app with the approver's token.
+    if (exchanged.granted.teamId !== shared.teamId) return refuse('team-mismatch');
+    if (!(await steps.storeGrant(bot, exchanged.granted))) return refuse('store-grant');
+    await keepHandle(bot.installId, exchanged.granted);
+    return { outcome: 'connected' };
+  }
+
+  /**
    * Whether AX holds the viewer's own configuration token: read only for
    * someone who could ask for a bot now (they manage the agent, and the
    * shared bot is live). Only whether it is there: a rotate is the one
@@ -471,5 +594,5 @@ export function createBots(d: BotDeps): Bots {
     };
   }
 
-  return { removeForAgent, request, installUrl, cancel, status };
+  return { removeForAgent, request, installUrl, cancel, finish, status };
 }

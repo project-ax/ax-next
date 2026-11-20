@@ -332,14 +332,20 @@ function fakeResponse(): { res: RouteResponse; answer: Answer } {
 function request(
   method: 'GET' | 'POST',
   path: string,
-  o: { as?: string; body?: Buffer; params?: Record<string, string>; headers?: Record<string, string> } = {},
+  o: {
+    as?: string;
+    body?: Buffer;
+    params?: Record<string, string>;
+    query?: Record<string, string>;
+    headers?: Record<string, string>;
+  } = {},
 ): RouteRequest {
   return {
     method,
     path,
     rawPath: path,
     params: o.params ?? {},
-    query: {},
+    query: o.query ?? {},
     headers: { ...(o.as !== undefined ? { 'x-test-user': o.as } : {}), ...o.headers },
     body: o.body ?? Buffer.alloc(0),
   };
@@ -665,7 +671,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the nineteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the twenty routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -715,6 +721,8 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/settings/slack/:agentId/bot/cancel', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // Where Slack sends a bot's approver back after Allow: signed in, its OAuth state the proof.
+      { method: 'GET', path: '/slack/bots/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
     ]);
     // Nothing is written to the vault just by booting.
     expect(s.credentialSets).toBe(0);
@@ -2075,7 +2083,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(19);
+    expect(s.routes).toHaveLength(20);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2097,7 +2105,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(19);
+    expect(s.routes).toHaveLength(20);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2126,7 +2134,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(19);
+    expect(s.routes).toHaveLength(20);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2180,6 +2188,18 @@ describe('@ax/channel-slack plugin', () => {
       status: 200,
       body: { state: 'ready', canManage: true, channels: [] },
     });
+  });
+
+  it('the bot callback is mounted: signed out it redirects to /?slack-bot=failed', async () => {
+    const { call, s } = await boot();
+    const path = '/slack/bots/oauth/callback';
+    expect(await call('GET', path, request('GET', path, { query: { state: 'x' } }))).toEqual({
+      status: 302,
+      body: 'https://ax.example/?slack-bot=failed',
+      done: true,
+    });
+    // Turned away before anything is read.
+    expect(s.credentialGets).toEqual([]);
   });
 
   it('deleting an agent removes its channel bindings, through the real store on Postgres', async () => {
@@ -2400,7 +2420,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(19);
+    expect(s.routes).toHaveLength(20);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

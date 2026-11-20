@@ -31,8 +31,25 @@ export const GRANT: OAuthInstall = {
   teamName: 'Canopy Works',
   enterpriseInstall: false,
 };
+/**
+ * The bot user GRANT names, as `users.info` describes it: a team agent's own
+ * bot reads its @handle (`name`) once, at its Allow (TASK-1167). Slack's own
+ * shape for a bot user, trimmed to the fields it always sends.
+ */
+export const BOT_USER = {
+  id: GRANT.botUserId,
+  team_id: GRANT.teamId,
+  name: 'supporthelper',
+  deleted: false,
+  real_name: 'Support Helper',
+  is_admin: false,
+  is_owner: false,
+  is_bot: true,
+  is_app_user: false,
+  profile: { real_name: 'Support Helper', display_name: '', bot_id: 'B07BOTID0001' },
+};
 
-// ── A fake Slack: the six calls the admin routes make ───────────────────────
+// ── A fake Slack: the calls the admin routes and the team bots make ─────────
 
 export interface SlackBehaviour {
   rotateConfigToken(refreshToken: string): Promise<RotatedConfigToken>;
@@ -46,6 +63,8 @@ export interface SlackBehaviour {
     code: string;
     redirectUri: string;
   }): Promise<OAuthInstall>;
+  /** Only a team bot's callback asks, for its new bot user's handle. */
+  usersInfo(botToken: string, userId: string): Promise<unknown>;
 }
 
 export function fakeSlack(trail: string[]) {
@@ -76,13 +95,18 @@ export function fakeSlack(trail: string[]) {
     deleteApp: async () => {},
     setAppIcon: async () => {},
     oauthAccess: async () => ({ ...GRANT }),
+    // This Slack knows one user, the bot GRANT names: anyone else isn't found.
+    usersInfo: async (_botToken, userId) => {
+      if (userId !== BOT_USER.id) throw new SlackApiError('users.info', 'user_not_found');
+      return structuredClone(BOT_USER);
+    },
   };
   const record = (method: keyof SlackBehaviour, args: unknown[]): void => {
     calls.push({ method, args });
     trail.push(`slack:${method}`);
   };
   const notHere = async (): Promise<never> => {
-    throw new Error('the admin routes never make this call');
+    throw new Error('neither the admin routes nor the team bots make this call');
   };
   const api: SlackApi = {
     rotateConfigToken: async (refreshToken) => {
@@ -112,7 +136,10 @@ export function fakeSlack(trail: string[]) {
       record('oauthAccess', [i]);
       return on.oauthAccess(i);
     },
-    usersInfo: notHere,
+    usersInfo: async (botToken, userId) => {
+      record('usersInfo', [botToken, userId]);
+      return on.usersInfo(botToken, userId);
+    },
     postMessage: notHere,
     postBlocks: notHere,
     updateMessage: notHere,
