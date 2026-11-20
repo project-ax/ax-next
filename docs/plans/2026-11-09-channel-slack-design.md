@@ -452,6 +452,24 @@ answer for one agent. The owner is told which channels changed, and that
   someone to delete by hand on api.slack.com. Admin settings shows each bot's
   approver, so an offboarding admin can see which bots need rebuilding.
 
+**More phase 2 decisions (2026-11-19, Vinay, from decomposing it into TASK-1167..1174).**
+- An outsider's turn in a dedicated bot's channel runs as **the agent's owner**,
+  read when the turn runs. An `/invite` is the binding, so there's no "person who
+  connected the channel" to run as.
+- **Dedicated bots are channels only:** no DM scopes, and the Messages tab is
+  off. DMs would be unwatched, would leak into team memory, and would have no
+  one suitable to approve held actions. Adding DM scopes later would make Slack
+  ask for every bot to be approved again, so this is a deliberate choice, not a
+  deferral.
+- **Self-approve is the owner's pick:** "I can install apps in Slack" (they
+  paste their own configuration token) or "Ask an AX admin". No Slack API we
+  hold can tell who may install apps, so Slack's Allow screen still decides.
+- **Disconnecting or resetting the shared bot leaves dedicated bots alone.**
+- **Only a bot's approver can replace its token** (§8 Q5). AX admins don't see
+  Replace on someone else's bot.
+- **Deleting an agent deletes its bot** (`agents:deleted`). AX has no team
+  delete yet. One that deletes the team's agents first gets this for free.
+
 Personal agents stay on the shared app. Fifty personal bots cluttering the
 workspace would buy nothing: a personal agent only talks to one person, in a DM.
 
