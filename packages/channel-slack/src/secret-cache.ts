@@ -17,6 +17,11 @@ import type { SecretStore } from './secrets.js';
  * either is not kept. So a disconnect, or any write of the install's secrets,
  * is seen at once, not up to `ttlMs` later. `clear` forgets every install.
  *
+ * A person's configuration token (`getConfigToken`, `putConfigToken`,
+ * `removeConfigToken`) passes straight through. It is never remembered, and
+ * storing or deleting it leaves the signing secret's entry alone: that
+ * secret didn't change.
+ *
  * In-process and bounded (`max` installs, the oldest forgotten first), like
  * the event-id dedupe: the chart pins one replica.
  */
@@ -84,6 +89,18 @@ export function cacheSigningSecrets(
 
     removeAll(install) {
       return changing(install.installId, () => inner.removeAll(install));
+    },
+
+    getConfigToken(app) {
+      return inner.getConfigToken(app);
+    },
+
+    putConfigToken(app, value) {
+      return inner.putConfigToken(app, value);
+    },
+
+    removeConfigToken(app) {
+      return inner.removeConfigToken(app);
     },
 
     clear() {
