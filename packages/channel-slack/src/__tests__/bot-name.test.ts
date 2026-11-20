@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RESERVED_BOT_NAMES, checkBotName, defaultBotName } from '../bot-name.js';
+import { RESERVED_BOT_NAMES, botNameKey, checkBotName, defaultBotName, isBotNameTaken } from '../bot-name.js';
 import { BOT_HANDLE_MAX, BOT_NAME_MAX } from '../limits.js';
 
 describe('defaultBotName (the handle form of the branding name)', () => {
@@ -106,5 +106,28 @@ describe('checkBotName', () => {
 
   it("reserves Slack's own names", () => {
     expect([...RESERVED_BOT_NAMES].sort()).toEqual(['channel', 'everyone', 'here', 'slackbot']);
+  });
+});
+
+describe('botNameKey / isBotNameTaken (one name per bot, TASK-1167)', () => {
+  it('names that differ only in case, spaces, dots, dashes or underscores share a key', () => {
+    for (const name of ['Ada Bot', 'ada-bot', 'ADA_BOT', 'ada.bot', 'adabot']) {
+      expect(botNameKey(name)).toBe('adabot');
+    }
+  });
+
+  it('a key is cut where Slack cuts the handle', () => {
+    expect(botNameKey('Customer Support Agents 1')).toBe('customersupportagents');
+    expect(botNameKey('Customer Support Agents 2')).toBe('customersupportagents');
+    expect(botNameKey('Customer Support Agents 1')).toHaveLength(BOT_HANDLE_MAX);
+  });
+
+  it('a taken name or handle is refused; a different one is not', () => {
+    expect(isBotNameTaken('Ada Bot', ['adabot'])).toBe(true);
+    expect(isBotNameTaken('ada', ['ada2'])).toBe(false);
+    expect(isBotNameTaken('Ada 2', [null, 'ada2'])).toBe(true);
+    expect(isBotNameTaken('ada', [''])).toBe(false);
+    expect(isBotNameTaken('...', [''])).toBe(false);
+    expect(isBotNameTaken('ada', [])).toBe(false);
   });
 });

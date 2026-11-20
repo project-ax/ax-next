@@ -1,6 +1,6 @@
 import { makeAgentContext, type HookBus, type Logger } from '@ax/core';
 import { checkAdmin, type AdminActor } from './admin-auth.js';
-import { checkBotName, defaultBotName } from './bot-name.js';
+import { checkBotName, defaultBotName, isBotNameTaken } from './bot-name.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
 import {
@@ -27,6 +27,7 @@ import {
   createAppError,
   createAppSteps,
   isHttps,
+  namesInUse,
   isRecord,
   refreshTokenError,
   sha256Hex,
@@ -717,6 +718,8 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         failed('connect', err);
         return INTERNAL;
       }
+      // One name per bot, before Slack is asked anything (Slack takes duplicates silently).
+      if (isBotNameTaken(name.name, await namesInUse(d.store))) return json(409, { error: 'bot-name-taken' });
       // The pasted access token is the connecting admin's own.
       await deleteLeftoverApps({ userId: actor.id, accessToken });
       return createInstall(actor, accessToken, refreshToken, name.name, icon);
@@ -754,6 +757,10 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       if (install === null || install.status !== 'active') return json(409, { error: 'not-connected' });
       // The manifest carries the URLs Slack calls back on: https only, as at Connect.
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      // Not another bot's name, nor a variant of one; its own name stays free to vary.
+      if (isBotNameTaken(name.name, await namesInUse(d.store, { except: install.installId }))) {
+        return json(409, { error: 'bot-name-taken' });
+      }
       const refusal = await updateSlackApp(install, name.name);
       if (refusal === 'token-not-kept') return INTERNAL;
       if (refusal !== null) return json(502, { error: refusal });

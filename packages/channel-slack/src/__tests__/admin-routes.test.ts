@@ -40,6 +40,9 @@ import { InstallStoreError } from '../store.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
+/** What the one-name-per-bot check reads (TASK-1167): the shared install, then every bot. */
+const NAME_CHECK = ['store:current', 'store:listBots'] as const;
+
 const ORIGIN = 'https://ax.example';
 const HTTP_ORIGIN = 'http://ax.internal:8080';
 /** The bot's picture the admin's browser drew: a 512 px PNG (its header, which is all Connect reads). */
@@ -326,6 +329,11 @@ function onlyRow(w: World): Row {
   expect(w.memory.rows.size).toBe(1);
   return [...w.memory.rows.values()][0]!;
 }
+function onlyShared(w: World): Row {
+  const shared = [...w.memory.rows.values()].filter((r) => r.kind === 'shared');
+  expect(shared).toHaveLength(1);
+  return shared[0]!;
+}
 /** The id Connect minted: the last segment of the events URL in the manifest it sent Slack. */
 function mintedInstallId(w: World): string {
   const create = w.slack.calls.find((c) => c.method === 'createApp');
@@ -381,6 +389,30 @@ async function connectedWorld(o: Parameters<typeof world>[0] = {}) {
   expect(w.lines).toEqual([{ level: 'info', msg: 'slack_connected', fields: { installId } }]);
   w.lines.length = 0;
   return { w, state, installId };
+}
+
+/** A team agent's bot, as the store holds one (TASK-1167): pending, named `botName`, live with its own handle if given. */
+async function addBot(w: World, botName: string, o: { handle?: string; installId?: string } = {}): Promise<string> {
+  const installId = o.installId ?? 'inst_bot_1';
+  await w.memory.store.insertPendingBot({
+    installId,
+    appId: 'A07BOTAPP001',
+    clientId: '1.2',
+    botName,
+    connectedByUserId: GRACE.id,
+    agentId: 'agt_team',
+    requestedByUserId: GRACE.id,
+  });
+  if (o.handle !== undefined) {
+    await w.memory.store.activate(installId, {
+      teamId: 'T1',
+      teamName: 'Team',
+      botUserId: 'U1',
+      installedAt: new Date(NOW_MS),
+    });
+    await w.memory.store.setBotHandle(installId, o.handle);
+  }
+  return installId;
 }
 
 function deferred<T = void>() {
@@ -693,8 +725,9 @@ describe('POST /admin/slack/connect', () => {
       ]),
     );
     // The pasted refresh token is tried once, right after Slack makes the app and before anything is stored.
-    expect(w.trail.slice(0, 5)).toEqual([
+    expect(w.trail.slice(0, 5 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'slack:createApp',
       'slack:rotateConfigToken',
@@ -1094,6 +1127,7 @@ describe('Connect tries the pasted refresh token once (TASK-1159)', () => {
     // Tried right after Slack made the app, before anything was stored, so the undo is one Slack call.
     expect(w.trail).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'slack:createApp',
       'slack:rotateConfigToken',
@@ -1212,8 +1246,9 @@ describe('Connect tries the pasted refresh token once (TASK-1159)', () => {
     w.slack.on.createApp = async () => ({ ...APP, appId: SECOND_APP_ID });
     const mark = w.trail.length;
     expect((await w.connect()).status).toBe(200);
-    expect(w.trail.slice(mark, mark + 6)).toEqual([
+    expect(w.trail.slice(mark, mark + 6 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'slack:deleteApp',
       'store:forgetLeftoverApp',
@@ -1899,8 +1934,9 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     w.slack.on.createApp = async () => ({ ...APP, appId: SECOND_APP_ID });
     const mark = w.trail.length;
     expect((await w.connect(SECOND_PAIR)).status).toBe(200);
-    expect(w.trail.slice(mark, mark + 5)).toEqual([
+    expect(w.trail.slice(mark, mark + 5 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'slack:deleteApp',
       'store:forgetLeftoverApp',
@@ -1933,8 +1969,9 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
       [ACCESS, LEFT_1.appId],
       [ACCESS, LEFT_2.appId],
     ]);
-    expect(w.trail.slice(0, 7)).toEqual([
+    expect(w.trail.slice(0, 7 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'slack:deleteApp',
       'store:forgetLeftoverApp',
@@ -2252,7 +2289,7 @@ describe('POST /admin/slack/forget-leftover-app: "I deleted it" (TASK-1132)', ()
     };
     const connecting = w.connect();
     await settle();
-    const held = ['store:current', 'store:leftoverApps', 'slack:deleteApp'];
+    const held = ['store:current', ...NAME_CHECK, 'store:leftoverApps', 'slack:deleteApp'];
     expect(w.trail).toEqual(held);
     const forgetting = w.forget({ appId: LEFT_1.appId });
     await settle();
@@ -2267,6 +2304,49 @@ describe('POST /admin/slack/forget-leftover-app: "I deleted it" (TASK-1132)', ()
   });
 });
 
+describe('one name per bot (TASK-1167)', () => {
+  it('Connect refuses a name a bot already has, before Slack is called', async () => {
+    const w = world();
+    await addBot(w, 'Ada Bot');
+    for (const botName of ['Ada Bot', 'ada-bot', 'ADA_BOT']) {
+      const res = await w.connect({ ...CONNECT_BODY, botName });
+      expect(res).toMatchObject({ status: 409, body: { error: 'bot-name-taken' } });
+    }
+    // Nothing reached Slack or the vault, and no shared row was made.
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.memory.rows.size).toBe(1);
+    // A different name still connects.
+    expect((await w.connect({ ...CONNECT_BODY, botName: 'Canopy Bot' })).status).toBe(200);
+  });
+
+  it("Connect also refuses a name that collides with a live bot's stored handle", async () => {
+    const w = world();
+    await addBot(w, 'Support', { handle: 'support-team' });
+    expect(await w.connect({ ...CONNECT_BODY, botName: 'Support Team' })).toMatchObject({
+      status: 409,
+      body: { error: 'bot-name-taken' },
+    });
+    expect(w.slack.calls).toEqual([]);
+  });
+
+  it("Rename refuses a bot's name, and renaming to a variant of its own name still works", async () => {
+    const { w } = await connectedWorld();
+    await addBot(w, 'Grace Bot');
+    const mark = w.slack.calls.length;
+    expect(await w.rename({ botName: 'grace-bot' })).toMatchObject({
+      status: 409,
+      body: { error: 'bot-name-taken' },
+    });
+    expect(w.slack.calls.length).toBe(mark);
+    expect(onlyShared(w).botName).toBe('Canopy Bot');
+
+    // Its own name, varied: not "taken" by itself.
+    expect(await w.rename({ botName: 'canopy-bot' })).toMatchObject({ status: 200, body: { botName: 'canopy-bot' } });
+    expect(onlyShared(w).botName).toBe('canopy-bot');
+  });
+});
+
 describe('POST /admin/slack/rename', () => {
   /**
    * Everything one rename touches, in order: the row, the vault, a rotate,
@@ -2275,6 +2355,7 @@ describe('POST /admin/slack/rename', () => {
    */
   const ONE_RENAME = [
     'store:current',
+    ...NAME_CHECK,
     'vault:get config-refresh-token',
     'slack:rotateConfigToken',
     'vault:set config-refresh-token',
@@ -2282,7 +2363,12 @@ describe('POST /admin/slack/rename', () => {
     'store:setBotName',
   ];
   /** How far into ONE_RENAME a rename gets before a step fails. */
-  const STOPS_AFTER = { 'config-token': 2, rotate: 3, 'save-config-token': 4, 'update-app': 5 } as const;
+  const STOPS_AFTER = {
+    'config-token': 2 + NAME_CHECK.length,
+    rotate: 3 + NAME_CHECK.length,
+    'save-config-token': 4 + NAME_CHECK.length,
+    'update-app': 5 + NAME_CHECK.length,
+  } as const;
   /** The two fields a rename changes, as a test reads them out of a manifest. */
   type ManifestNames = { display_information: { name: string }; features: { bot_user: { display_name: string } } };
   const updates = (w: World) => w.slack.calls.filter((c) => c.method === 'updateApp');
@@ -3461,8 +3547,9 @@ describe('leftover apps go with the token of whoever made them (TASK-1175)', () 
       adaAtDelete = w.vault.get(configTokenRef(ADA.id));
     };
     expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
-    expect(w.trail.slice(0, 10)).toEqual([
+    expect(w.trail.slice(0, 10 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'vault:get config-refresh-token',
       'slack:rotateConfigToken',
@@ -3502,8 +3589,9 @@ describe('leftover apps go with the token of whoever made them (TASK-1175)', () 
     leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000, ADA.id);
     leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 60_000, ADA.id);
     expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
-    expect(w.trail.slice(0, 12)).toEqual([
+    expect(w.trail.slice(0, 12 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'vault:get config-refresh-token',
       'slack:rotateConfigToken',
@@ -3657,8 +3745,9 @@ describe('leftover apps go with the token of whoever made them (TASK-1175)', () 
     leaveApp(slow, LEFT_3, 'Third Bot', NOW_MS - 60_000);
     failRotateOf(slow, EVE_STORED, new SlackApiError('tooling.tokens.rotate', 'timeout'));
     expect((await slow.connect(SECOND_PAIR, GRACE)).status).toBe(200);
-    expect(slow.trail.slice(0, 12)).toEqual([
+    expect(slow.trail.slice(0, 12 + NAME_CHECK.length)).toEqual([
       'store:current',
+      ...NAME_CHECK,
       'store:leftoverApps',
       'vault:get config-refresh-token',
       'slack:rotateConfigToken',

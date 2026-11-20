@@ -229,6 +229,26 @@ export interface AppSteps {
   storeGrant(install: InstallRow, granted: OAuthInstall): Promise<boolean>;
 }
 
+/**
+ * Every bot name already spoken for: the shared install's name, then each
+ * team bot's name and stored handle. `except` leaves one install out, so a
+ * rename can keep or vary its own name.
+ */
+export async function namesInUse(
+  store: Pick<InstallStore, 'current' | 'listBots'>,
+  o: { except?: string } = {},
+): Promise<string[]> {
+  const out: string[] = [];
+  const shared = await store.current();
+  if (shared !== null && shared.installId !== o.except) out.push(shared.botName);
+  for (const bot of await store.listBots()) {
+    if (bot.installId === o.except) continue;
+    out.push(bot.botName);
+    if (bot.botHandle !== null) out.push(bot.botHandle);
+  }
+  return out;
+}
+
 export function createAppSteps(d: AppStepsDeps): AppSteps {
   const failedLine = `${d.logPrefix}_failed`;
 
