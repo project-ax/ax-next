@@ -292,6 +292,19 @@ describe('upsert: one agent per channel', () => {
     });
   });
 
+  // TASK-1179: a team agent's own bot binds a channel with the switch the team
+  // already chose for it, in the same statement, so no turn ever reads it on.
+  it('a new binding written with remember off reads back off', async () => {
+    expect(await connect({ remember: false })).toBe('connected');
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
+  });
+
+  it("a reconnect keeps the stored switch, whatever remember it's handed", async () => {
+    await connect({ remember: false });
+    expect(await connect({ connectedByUserId: BOB, remember: true })).toBe('reconnected');
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
+  });
+
   it('another agent is told the channel is taken, and the row is left exactly as it was', async () => {
     await connect();
     const before = await rawRow(INSTALL, SUPPORT);

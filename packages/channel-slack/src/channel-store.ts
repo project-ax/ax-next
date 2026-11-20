@@ -35,7 +35,11 @@ export interface ChannelBinding {
   connectedByUserId: string;
   /** Slack's name for the channel when it was connected, cleaned (label.ts). */
   channelName: string;
-  /** The channel's memory switch. On for a new binding; a reconnect keeps it. */
+  /**
+   * The channel's memory switch. On for a new binding unless its writer says
+   * otherwise (a team agent's own bot carries the agent's shared-app switch,
+   * TASK-1179); a reconnect keeps it.
+   */
   remember: boolean;
   createdAt: Date;
 }
@@ -84,14 +88,17 @@ export interface ChannelStore {
   listAll(installId: string): Promise<Array<{ channelId: string; agentId: string }>>;
   /**
    * Connect a channel, in ONE statement, so of any number of concurrent
-   * connects exactly one can bind a free channel. `connected`: a new binding
-   * (remember on). `reconnected`: the channel was already this agent's; the
-   * connector and name are replaced, and remember and createdAt kept.
+   * connects exactly one can bind a free channel. `connected`: a new binding,
+   * its memory switch `remember` (on when not given). `reconnected`: the
+   * channel was already this agent's; the connector and name are replaced,
+   * and the stored remember and createdAt kept (`remember` is ignored).
    * `taken`: it is another agent's, and nothing changed. The name is stored
    * cleaned.
    */
   upsert(
-    b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'>,
+    b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'> & {
+      remember?: boolean;
+    },
   ): Promise<'connected' | 'reconnected' | 'taken'>;
   /** Disconnect a channel from THIS agent. False when it isn't this agent's (or isn't bound at all). */
   remove(installId: string, channelId: string, agentId: string): Promise<boolean>;
@@ -208,12 +215,14 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // nothing. A concurrent insert of the same channel waits on the primary
       // key, then takes that same conflict path: one statement, no
       // read-then-write window. `xmax = 0` holds only for a freshly inserted
-      // row, so it tells a new binding from a reconnect.
+      // row, so it tells a new binding from a reconnect. `remember` is
+      // written by the insert only: the conflict's SET leaves it alone.
       const r = await sql<{ inserted: boolean }>`
         INSERT INTO channel_slack_v1_channels
-          (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
+          (install_id, channel_id, agent_id, connected_by_user_id, channel_name, remember)
         VALUES
-          (${b.installId}, ${b.channelId}, ${b.agentId}, ${b.connectedByUserId}, ${cleanChannelName(b.channelName)})
+          (${b.installId}, ${b.channelId}, ${b.agentId}, ${b.connectedByUserId}, ${cleanChannelName(b.channelName)},
+           ${b.remember ?? true})
         ON CONFLICT (install_id, channel_id) DO UPDATE
            SET connected_by_user_id = EXCLUDED.connected_by_user_id,
                channel_name = EXCLUDED.channel_name,
