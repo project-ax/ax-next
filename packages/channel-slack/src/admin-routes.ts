@@ -18,7 +18,7 @@ import { logCode } from './log-code.js';
 import { buildAppManifest, buildInstallUrl, slackUrls, withoutTrailingSlashes } from './manifest.js';
 import type { Mutex } from './mutex.js';
 import { personName } from './person-name.js';
-import type { SecretOwner, SecretStore } from './secrets.js';
+import { configTokenRef, type SecretOwner, type SecretStore } from './secrets.js';
 import {
   SlackApiError,
   type CreatedApp,
@@ -71,7 +71,8 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     stored and the app goes again, or onto the leftover list when Slack
  *     won't delete it (below), so an install never starts with a token Slack
  *     won't take. An admin id that can't name a vault ref (secrets.ts) can
- *     hold no token: that Connect fails closed, and the app goes again. No
+ *     hold no token: that Connect fails closed (500) before Slack is asked
+ *     anything, so no app is made and the pasted pair is never spent. No
  *     route ever returns the stored one. Only Disconnect, Rename and the
  *     leftover pass read it, each to mint one access token for one job:
  *     Disconnect to delete the app, Rename to update its manifest, the pass
@@ -718,8 +719,9 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       // the pasted one revoked the token in their slot, so the minted one is
       // their only live token, and a later failure must not leave it unstored
       // (the undo's release then keeps it while anything names them). An id
-      // that can't name a ref throws here, before the vault, and the undo
-      // takes the app back.
+      // that can't name a ref was refused before Slack was asked (connect);
+      // should one get here, it throws before the vault, and the undo takes
+      // the app back.
       await d.secrets.putConfigToken(owner, mintedRefreshToken);
       await d.secrets.put(owner, 'client-secret', app.clientSecret);
       await d.secrets.put(owner, 'signing-secret', app.signingSecret);
@@ -958,6 +960,15 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     return d.lock.run(async () => {
       if ((await d.store.current()) !== null) return json(409, { error: 'already-connected' });
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      // An admin whose id can't name a vault ref can hold no token
+      // (secrets.ts): refused before Slack is asked anything, so no app is
+      // made and the pasted pair is never spent. Logged code-only, never the id.
+      try {
+        configTokenRef(actor.id);
+      } catch (err) {
+        failed('connect', err);
+        return INTERNAL;
+      }
       // The pasted access token is the connecting admin's own.
       await deleteLeftoverApps({ userId: actor.id, accessToken });
       return createInstall(actor, accessToken, refreshToken, name.name, icon);

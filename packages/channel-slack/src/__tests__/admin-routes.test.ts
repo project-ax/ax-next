@@ -3568,29 +3568,25 @@ describe('every configuration-token use goes through its person (TASK-1175)', ()
     ]);
   });
 
-  it('R5 Connect by an admin whose id cannot name a secret: 500, the app is taken back, nothing stored', async () => {
+  it('R5 Connect by an admin whose id cannot name a secret: 500 before Slack is asked anything, so no app is made and the pasted pair is never spent', async () => {
     const w = world();
     // `@` is fine in a vault user id but not in a ref. No AX id looks like this; only a hand-made one could.
     const odd: TestUser = { id: 'ada@example.com', displayName: 'Ada', email: 'ada@example.com', isAdmin: true };
     w.users.set(odd.id, { ...odd });
+    // An app of theirs left over: not even it is tried with their pasted token.
+    leaveApp(w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, odd.id);
     expect(await w.connect(CONNECT_BODY, odd)).toMatchObject({ status: 500, body: { error: 'internal' } });
-    const installId = mintedInstallId(w);
-    expect(w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([[ACCESS, APP.appId]]);
-    expect([...w.slack.live]).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.trail).toEqual(['store:current']);
     expect(w.memory.rows.size).toBe(0);
-    expect(w.memory.leftovers.size).toBe(0);
-    expect(w.vault.size).toBe(0);
-    // Refused before the vault: no call named a person's ref.
-    expect(w.vaultCalls.filter((c) => c.ref.startsWith('slack:person:'))).toEqual([]);
-    // Code-only, and never the id.
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    // Code-only, and never the id: there is no install to name yet.
     expect(w.lines).toEqual([
-      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'connect', code: 'invalid-person-id' } },
-      {
-        level: 'error',
-        msg: 'slack_secret_remove_failed',
-        fields: { installId, stage: 'person-config-refresh-token', code: 'invalid-person-id' },
-      },
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'connect', code: 'invalid-person-id' } },
     ]);
+    // Anyone else can still connect.
+    expect((await w.connect(CONNECT_BODY, GRACE)).status).toBe(200);
   });
 
   it("R6 Connect's undo after the token was stored drops it when nothing else names the person, keeps it when a leftover does", async () => {
