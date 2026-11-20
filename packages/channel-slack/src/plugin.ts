@@ -19,6 +19,7 @@ import { subscribeCaptureVeto } from './capture-veto.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import type { ChannelDeps } from './channels.js';
 import { COMMANDS_ROUTE_PATH, createCommandsHandler } from './commands.js';
+import { moveConfigTokens, releaseConfigToken } from './config-tokens.js';
 import { createDecisionAnswer } from './decision-answer.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
 import type { RouteSpec } from './http-types.js';
@@ -81,10 +82,14 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
 //
-// It keeps one install row in its own `channel_slack_v1_installs` table and
-// the install's four secrets in the credentials vault, and one binding row per
+// It keeps one install row in its own `channel_slack_v1_installs` table, the
+// install's three secrets in the credentials vault and, there too, one
+// configuration token per admin who made a Slack app through AX, shared by
+// every app of theirs (secrets.ts, TASK-1175), and one binding row per
 // connected channel in `channel_slack_v1_channels` (channel-store.ts), removed
-// when its agent is deleted (agents-deleted.ts). Its only egress is
+// when its agent is deleted (agents-deleted.ts). A token an install kept under
+// its own ref before TASK-1175 moves to its admin at boot, before any route
+// registers (config-tokens.ts). Its only egress is
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
 //
 // A verified event goes to the router (router.ts): a 1:1 DM from an admitted
@@ -151,6 +156,13 @@ export interface ChannelSlackConfig {
   fetchImpl?: typeof fetch;
   /** Epoch milliseconds. Test seam. */
   now?: () => number;
+  /**
+   * Whether init moves each install's old per-install configuration token to
+   * its person (config-tokens.ts, TASK-1175). Default true: the host does.
+   * `ax admin reset-bootstrap` passes false, so only the host moves tokens,
+   * and a CLI newer than the host never empties rows that host still reads.
+   */
+  moveConfigTokens?: boolean;
 }
 
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
@@ -308,6 +320,14 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           max: SIGNING_SECRET_CACHE_MAX,
           now,
         });
+        // TASK-1175: a configuration token an install kept under its own ref
+        // moves to the install's person. After the migrations, which bring
+        // the table it lists up to date, and before any route registers: a
+        // route serves as soon as it does, and reads only the person's token.
+        // It never throws, so it never fails the boot: a fault is logged, and
+        // that person's old tokens wait for the next boot. Off for the CLI
+        // reset (`moveConfigTokens: false`): only the host moves them.
+        if (config.moveConfigTokens !== false) await moveConfigTokens({ store, secrets, logger });
         const api = createSlackApi({ fetchImpl });
         const life = createLifetime();
         lifetime = life;
@@ -494,13 +514,19 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
  *
  * credentials-store-db wipes the vault before this runs, and the admin routes
  * don't wait for a reset: a step that still finds its install's row can store
- * a secret after the wipe (the refresh token a Rename's rotate just minted,
- * an OAuth callback's bot token, a Connect's first three). So once the rows
- * are gone, whatever is still stored of each removed install's secrets goes
- * too. A Rename that stores its token later finds the row gone at setBotName
- * and deletes the token itself (admin-routes.ts). Only what is still stored
- * is deleted: the vault deletes by writing an empty row in a secret's place,
- * and a reset leaves no credential rows behind.
+ * a secret after the wipe (the configuration token a Rename's or a Replace's
+ * rotate just minted, an OAuth callback's bot token, a Connect's secrets). So
+ * once the rows are gone, whatever is still stored of each removed install's
+ * secrets goes too. So does the configuration token of each removed install's
+ * person (one per person, TASK-1175), unless an install or a leftover app
+ * still names them (config-tokens.ts): the reset deletes no leftover app,
+ * which is still on Slack, and only its maker's token can delete it. A check
+ * that fails keeps the token, logged by install, stage and code; re-running
+ * the reset wipes it with the vault. A Rename or Replace that stores its
+ * token later finds the row gone and takes the token back itself, by the same
+ * rule (admin-routes.ts). Only what is still stored is deleted: the vault
+ * deletes by writing an empty row in a secret's place, and a reset leaves no
+ * credential rows behind.
  *
  * The reset runs in the CLI's own process, which loads this plugin for that
  * reason, so the `clear()` below empties the CLI's signing-secret cache, not
@@ -539,6 +565,33 @@ function subscribeResetCleanup(
     }
     // Outside the try, so a log line that throws can't leave a secret behind.
     for (const install of removed) await deleteLeftoverSecrets(secrets, install);
+    // Then each removed install's person's own token (TASK-1175), once per
+    // person, named in a log line by their first removed install.
+    const people = new Map<string, RemovedInstall>();
+    for (const install of removed) {
+      if (!people.has(install.connectedByUserId)) people.set(install.connectedByUserId, install);
+    }
+    for (const install of people.values()) {
+      await releaseConfigToken({ store, secrets }, install, {
+        // Read first, so a token the wipe already took leaves no tombstone row.
+        onlyIfStored: true,
+        // A failed check keeps the token (an error); a failed read is
+        // followed by the delete anyway (a warning).
+        onFault: (err, step) => {
+          try {
+            const fields = {
+              installId: install.installId,
+              stage: step === 'read' ? 'read-config-token' : 'release-config-token',
+              code: logCode(err),
+            };
+            if (step === 'read') logger.warn('slack_reset_cleanup_failed', fields);
+            else logger.error('slack_reset_cleanup_failed', fields);
+          } catch {
+            // Nothing left to report it with; what happens to the token doesn't change.
+          }
+        },
+      });
+    }
     return undefined;
   });
 }

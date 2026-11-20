@@ -165,7 +165,7 @@ describe('runMigrations', () => {
 
     await store.activate(installId, { ...TEAM, installedAt: new Date('2026-11-01T00:05:00.000Z') });
     const replacedAt = new Date('2026-11-19T09:00:00.000Z');
-    await store.setConfigTokenOwner(installId, { userId: 'usr_admin2', addedAt: replacedAt });
+    await store.setConfigTokenAddedAt(installId, replacedAt);
     await runMigrations(db);
     // The backfill fills only NULLs: a later boot never undoes a replace.
     expect((await store.get(installId))?.configTokenAddedAt).toEqual(replacedAt);
@@ -177,6 +177,50 @@ describe('runMigrations', () => {
     expect(column.rows).toHaveLength(1);
     expect(column.rows[0]!.is_nullable).toBe('NO');
     expect(column.rows[0]!.column_default).toMatch(/now\(\)/);
+  });
+
+  it('adds connected_by_user_id to a leftover table from before it: an old row reads null, and a second run changes nothing', async () => {
+    // The table as TASK-1132 made it: no person.
+    await sql`DROP TABLE channel_slack_v1_leftover_apps`.execute(db);
+    await sql`
+      CREATE TABLE channel_slack_v1_leftover_apps (
+        install_id             TEXT PRIMARY KEY,
+        app_id                 TEXT NOT NULL,
+        bot_name               TEXT NOT NULL,
+        left_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `.execute(db);
+    const old = newInstallId();
+    await sql`INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name, left_at)
+              VALUES (${old}, ${PENDING.appId}, ${PENDING.botName}, '2026-11-18T12:00:00Z')`.execute(db);
+
+    await runMigrations(db);
+    // Whose token made it was never recorded, and the install row that knew is gone: it stays unknown.
+    const oldApp = {
+      installId: old,
+      appId: PENDING.appId,
+      botName: PENDING.botName,
+      leftAt: new Date('2026-11-18T12:00:00Z'),
+      connectedByUserId: null,
+    };
+    expect(await store.leftoverApps()).toEqual([oldApp]);
+
+    const later = newInstallId();
+    await store.rememberLeftoverApp({ installId: later, appId: 'A07NEWAPP001', botName: 'canopy', connectedByUserId: 'usr_ada' });
+    await sql`UPDATE channel_slack_v1_leftover_apps SET left_at = '2026-11-19T12:00:00Z'
+              WHERE install_id = ${later}`.execute(db);
+    await runMigrations(db);
+    // The second run neither backfills the old row nor touches the new one.
+    expect(await store.leftoverApps()).toEqual([
+      oldApp,
+      {
+        installId: later,
+        appId: 'A07NEWAPP001',
+        botName: 'canopy',
+        leftAt: new Date('2026-11-19T12:00:00Z'),
+        connectedByUserId: 'usr_ada',
+      },
+    ]);
   });
 
   it('two installs can never hold the same state hash', async () => {
@@ -224,6 +268,41 @@ describe('install rows', () => {
               WHERE install_id = ${first}`.execute(db);
     await pending();
     expect((await store.current())?.installId).toBe(first);
+  });
+
+  it('list returns every install, any status, newest config_token_added_at first, then by install id; [] when there are none', async () => {
+    expect(await store.list()).toEqual([]);
+
+    // Shaped like real ids, and in a known order: two installs whose tokens
+    // were added at the same instant are listed by install id.
+    const tieFirst = `A${newInstallId().slice(1)}`;
+    const tieSecond = `B${newInstallId().slice(1)}`;
+    const oldest = newInstallId();
+    const newest = newInstallId();
+    // Made in an order that is neither the listed one nor its reverse, so
+    // the list's order can't come from created_at.
+    await pending(tieSecond);
+    await pending(oldest);
+    await pending(tieFirst);
+    await store.activate(tieFirst, { ...TEAM, installedAt: new Date('2026-11-10T12:05:00.000Z') });
+    await pending(newest);
+    await store.activate(newest, { ...TEAM, installedAt: new Date('2026-11-19T12:05:00.000Z') });
+    const addedAt = async (installId: string, iso: string): Promise<void> => {
+      await sql`UPDATE channel_slack_v1_installs SET config_token_added_at = ${new Date(iso)}
+                WHERE install_id = ${installId}`.execute(db);
+    };
+    await addedAt(oldest, '2026-11-01T12:00:00.000Z');
+    await addedAt(tieSecond, '2026-11-10T12:00:00.000Z');
+    await addedAt(tieFirst, '2026-11-10T12:00:00.000Z');
+    await addedAt(newest, '2026-11-19T12:00:00.000Z');
+
+    // Whole rows, as get reads them.
+    expect(await store.list()).toEqual([
+      await store.get(newest),
+      await store.get(tieFirst),
+      await store.get(tieSecond),
+      await store.get(oldest),
+    ]);
   });
 
   it('a duplicate installId is refused', async () => {
@@ -316,7 +395,7 @@ describe('install rows', () => {
     expect((missing as InstallStoreError).code).toBe('install-not-active');
   });
 
-  it('setConfigTokenOwner changes who added the token and when on an active install, and nothing else: not its other columns, not another install, not its channel bindings', async () => {
+  it('setConfigTokenAddedAt changes when the token was added on an active install, and nothing else: not its person (TASK-1175), not its other columns, not another install, not its channel bindings', async () => {
     const a = await pending();
     await store.activate(a, { ...TEAM, installedAt: new Date('2026-11-13T12:00:00.000Z') });
     const b = await pending();
@@ -333,25 +412,26 @@ describe('install rows', () => {
     expect(bindingsBefore).toHaveLength(2);
 
     const addedAt = new Date('2026-11-19T09:00:00.000Z');
-    await store.setConfigTokenOwner(a, { userId: 'usr_admin2', addedAt });
+    await store.setConfigTokenAddedAt(a, addedAt);
 
     // createdAt included: it keeps meaning "row made", and keeps ordering current().
-    expect(await store.get(a)).toEqual({ ...snapshotA, connectedByUserId: 'usr_admin2', configTokenAddedAt: addedAt });
+    // connectedByUserId stays as inserted: a Replace never moves an app to another person.
+    expect(await store.get(a)).toEqual({ ...snapshotA, configTokenAddedAt: addedAt });
     expect(await store.get(b)).toEqual(snapshotB);
     expect(await allBindings()).toEqual(bindingsBefore);
   });
 
-  it('setConfigTokenOwner refuses an install that is missing or still pending, and changes nothing', async () => {
+  it('setConfigTokenAddedAt refuses an install that is missing or still pending, and changes nothing', async () => {
     const installId = await pending();
     const before = await store.get(installId);
-    const owner = { userId: 'usr_admin2', addedAt: new Date('2026-11-19T09:00:00.000Z') };
+    const addedAt = new Date('2026-11-19T09:00:00.000Z');
 
-    const err = await store.setConfigTokenOwner(installId, owner).catch((e: unknown) => e);
+    const err = await store.setConfigTokenAddedAt(installId, addedAt).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InstallStoreError);
     expect((err as InstallStoreError).code).toBe('install-not-active');
     expect(await store.get(installId)).toEqual(before);
 
-    const missing = await store.setConfigTokenOwner(newInstallId(), owner).catch((e: unknown) => e);
+    const missing = await store.setConfigTokenAddedAt(newInstallId(), addedAt).catch((e: unknown) => e);
     expect(missing).toBeInstanceOf(InstallStoreError);
     expect((missing as InstallStoreError).code).toBe('install-not-active');
   });
@@ -370,16 +450,18 @@ describe('install rows', () => {
     expect(await store.current()).toBeNull();
   });
 
-  it('removeAll returns exactly the installs its own delete removed: ids, app ids and teams', async () => {
-    const pendingId = await pending();
-    const activeId = await pending();
+  it("removeAll returns exactly the installs its own delete removed: ids, app ids, teams and each one's person", async () => {
+    const pendingId = newInstallId();
+    await store.insertPending({ installId: pendingId, ...PENDING, connectedByUserId: 'usr_ada' });
+    const activeId = newInstallId();
+    await store.insertPending({ installId: activeId, ...PENDING, connectedByUserId: 'usr_grace' });
     await store.activate(activeId, { ...TEAM, installedAt: new Date() });
 
     const removed = await store.removeAll();
     expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
       [
-        { installId: pendingId, appId: PENDING.appId, teamId: null },
-        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId },
+        { installId: pendingId, appId: PENDING.appId, teamId: null, connectedByUserId: 'usr_ada' },
+        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: 'usr_grace' },
       ].sort((x, y) => x.installId.localeCompare(y.installId)),
     );
     expect(await store.current()).toBeNull();
@@ -418,8 +500,8 @@ describe("an install's channel bindings go with it", () => {
     const removed = await store.removeAll();
     expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
       [
-        { installId: pendingId, appId: PENDING.appId, teamId: null },
-        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId },
+        { installId: pendingId, appId: PENDING.appId, teamId: null, connectedByUserId: PENDING.connectedByUserId },
+        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: PENDING.connectedByUserId },
       ].sort((x, y) => x.installId.localeCompare(y.installId)),
     );
     expect(await bindings()).toEqual([]);
@@ -480,8 +562,31 @@ describe("an app Disconnect couldn't delete is remembered with the install's rem
     expect(await store.get(a)).toBeNull();
     expect(await bindings()).toEqual([]);
     expect(await store.leftoverApps()).toEqual([
-      { installId: a, appId: PENDING.appId, botName: PENDING.botName, leftAt: expect.any(Date) },
+      {
+        installId: a,
+        appId: PENDING.appId,
+        botName: PENDING.botName,
+        leftAt: expect.any(Date),
+        connectedByUserId: PENDING.connectedByUserId,
+      },
     ]);
+  });
+
+  it("remove with appLeft moves the install's person into the leftover row in the same statement", async () => {
+    const a = newInstallId();
+    await store.insertPending({ installId: a, ...PENDING, connectedByUserId: 'usr_ada' });
+    const b = newInstallId();
+    await store.insertPending({ installId: b, ...PENDING, connectedByUserId: 'usr_grace' });
+    await store.activate(b, { ...TEAM, installedAt: new Date() });
+
+    await store.remove(a, { appLeft: true });
+    await store.remove(b, { appLeft: true });
+
+    // Each row's own person, whatever its status: whose token made the app.
+    const left = await store.leftoverApps();
+    expect(left.find((l) => l.installId === a)?.connectedByUserId).toBe('usr_ada');
+    expect(left.find((l) => l.installId === b)?.connectedByUserId).toBe('usr_grace');
+    expect(left).toHaveLength(2);
   });
 
   it('remove without appLeft, or with appLeft false, remembers nothing', async () => {
@@ -556,6 +661,7 @@ describe("an app Disconnect couldn't delete is remembered with the install's rem
       appId: PENDING.appId,
       botName: PENDING.botName,
       leftAt: new Date(base),
+      connectedByUserId: PENDING.connectedByUserId,
     });
 
     await store.forgetLeftoverApp(oldestFirst[0]!);
@@ -570,16 +676,22 @@ describe("an app Disconnect couldn't delete is remembered with the install's rem
     );
   });
 
-  it('the same install id remembered twice keeps the first (only tests reuse ids)', async () => {
+  it('the same install id remembered twice keeps the first, and its person (only tests reuse ids)', async () => {
     const a = await pending();
     await store.remove(a, { appLeft: true });
-    await store.insertPending({ installId: a, ...PENDING, appId: 'A07OTHERAPP1' });
+    await store.insertPending({ installId: a, ...PENDING, appId: 'A07OTHERAPP1', connectedByUserId: 'usr_admin2' });
 
     await expect(store.remove(a, { appLeft: true })).resolves.toBeUndefined();
 
     expect(await store.get(a)).toBeNull();
     expect(await store.leftoverApps()).toEqual([
-      { installId: a, appId: PENDING.appId, botName: PENDING.botName, leftAt: expect.any(Date) },
+      {
+        installId: a,
+        appId: PENDING.appId,
+        botName: PENDING.botName,
+        leftAt: expect.any(Date),
+        connectedByUserId: PENDING.connectedByUserId,
+      },
     ]);
   });
 
@@ -594,43 +706,100 @@ describe("an app Disconnect couldn't delete is remembered with the install's rem
 });
 
 describe("an app Connect couldn't take back is remembered with no install row (TASK-1159)", () => {
-  it('rememberLeftoverApp lists the app under the id Connect minted, touches no install, and is forgotten like any other', async () => {
+  it('rememberLeftoverApp lists the app under the id Connect minted, with the person it was given, touches no install, and is forgotten like any other', async () => {
     const live = await pending();
     const id = newInstallId();
 
-    await store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP001', botName: 'canopy' });
+    await store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP001', botName: 'canopy', connectedByUserId: 'usr_ada' });
 
     expect(await store.leftoverApps()).toEqual([
-      { installId: id, appId: 'A07NEWAPP001', botName: 'canopy', leftAt: expect.any(Date) },
+      { installId: id, appId: 'A07NEWAPP001', botName: 'canopy', leftAt: expect.any(Date), connectedByUserId: 'usr_ada' },
     ]);
     expect(await store.get(id)).toBeNull();
     expect((await store.current())?.installId).toBe(live);
+    expect((await store.current())?.connectedByUserId).toBe(PENDING.connectedByUserId);
 
     await store.forgetLeftoverApp(id);
     expect(await store.leftoverApps()).toEqual([]);
   });
 
-  it('the same id remembered twice keeps the first app', async () => {
+  it('rememberLeftoverApp keeps the person it was given; a second remember of the same id keeps the first app and its person', async () => {
     const id = newInstallId();
-    await store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP001', botName: 'canopy' });
+    await store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP001', botName: 'canopy', connectedByUserId: 'usr_ada' });
 
     await expect(
-      store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP002', botName: 'other' }),
+      store.rememberLeftoverApp({ installId: id, appId: 'A07NEWAPP002', botName: 'other', connectedByUserId: 'usr_grace' }),
     ).resolves.toBeUndefined();
 
     expect(await store.leftoverApps()).toEqual([
-      { installId: id, appId: 'A07NEWAPP001', botName: 'canopy', leftAt: expect.any(Date) },
+      { installId: id, appId: 'A07NEWAPP001', botName: 'canopy', leftAt: expect.any(Date), connectedByUserId: 'usr_ada' },
     ]);
   });
 
   it('a failing insert rejects, so the caller can say so, and leaves nothing', async () => {
     await withLeftoverInsertTrigger(`RAISE EXCEPTION 'refused in test'; RETURN NEW;`, async () => {
       await expect(
-        store.rememberLeftoverApp({ installId: newInstallId(), appId: 'A07NEWAPP001', botName: 'canopy' }),
+        store.rememberLeftoverApp({
+          installId: newInstallId(),
+          appId: 'A07NEWAPP001',
+          botName: 'canopy',
+          connectedByUserId: 'usr_ada',
+        }),
       ).rejects.toThrow(/refused in test/);
     });
 
     expect(await store.leftoverApps()).toEqual([]);
+  });
+});
+
+/*
+  One configuration token per person (TASK-1175): it is kept while any
+  install or any leftover app still names the person whose token made it.
+  A leftover from before TASK-1175 names no one, and a channel binding's
+  person (whom its outsiders run as) holds no token.
+*/
+describe('whether anyone still names a person (TASK-1175)', () => {
+  it('personHasApps: false with nothing stored, and a leftover that names no one never counts', async () => {
+    expect(await store.personHasApps('usr_ada')).toBe(false);
+
+    // Left before TASK-1175: no person.
+    await sql`INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
+              VALUES (${newInstallId()}, 'A07OLDAPP001', 'old')`.execute(db);
+    expect(await store.personHasApps('usr_ada')).toBe(false);
+  });
+
+  it("personHasApps: true for a pending install's person, an active install's, and one named only by a leftover; false for anyone else", async () => {
+    const p = newInstallId();
+    await store.insertPending({ installId: p, ...PENDING, connectedByUserId: 'usr_pending' });
+    const a = newInstallId();
+    await store.insertPending({ installId: a, ...PENDING, connectedByUserId: 'usr_active' });
+    await store.activate(a, { ...TEAM, installedAt: new Date() });
+    await store.rememberLeftoverApp({ installId: newInstallId(), appId: 'A07NEWAPP001', botName: 'canopy', connectedByUserId: 'usr_left' });
+    await sql`INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
+              VALUES (${newInstallId()}, 'A07OLDAPP001', 'old')`.execute(db);
+    // A binding names its connecting admin (bind's usr_admin1), but no token of theirs made an app.
+    await bind(a, 'C07SUPPORT1');
+
+    expect(await store.personHasApps('usr_pending')).toBe(true);
+    expect(await store.personHasApps('usr_active')).toBe(true);
+    expect(await store.personHasApps('usr_left')).toBe(true);
+    expect(await store.personHasApps('usr_admin1')).toBe(false);
+    expect(await store.personHasApps('usr_grace')).toBe(false);
+  });
+
+  it('personHasApps follows the rows: an install left on Slack keeps naming its person until the leftover is forgotten', async () => {
+    const a = newInstallId();
+    await store.insertPending({ installId: a, ...PENDING, connectedByUserId: 'usr_ada' });
+    const b = newInstallId();
+    await store.insertPending({ installId: b, ...PENDING, connectedByUserId: 'usr_grace' });
+
+    await store.remove(a, { appLeft: true });
+    expect(await store.personHasApps('usr_ada')).toBe(true);
+    await store.remove(b);
+    expect(await store.personHasApps('usr_grace')).toBe(false);
+
+    await store.forgetLeftoverApp(a);
+    expect(await store.personHasApps('usr_ada')).toBe(false);
   });
 });
 

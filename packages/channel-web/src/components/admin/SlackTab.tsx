@@ -11,8 +11,8 @@
  *   not-connected  the three steps and the form, or, without a public https
  *                  address, why Slack can't reach us yet (and no form)
  *   pending        the app exists but nobody clicked Allow: continue or cancel
- *   connected      the workspace, the bot (with Rename), who added the token
- *                  and when (with Replace)
+ *   connected      the workspace, the bot (with Rename), whose configuration
+ *                  token it uses and when it was added (with Replace)
  * Above each of the last three, one note names any Slack app an earlier
  * Disconnect couldn't delete, each linked to its own page on Slack and with
  * an "I deleted it" button. Only the not-connected note says a Connect will
@@ -101,7 +101,7 @@ interface Actions {
   onDisconnected: () => void;
   /** A rename went through: say what Slack shows now, then read again. */
   onRenamed: (botName: string) => void;
-  /** A token replace went through: say how to retire the old one, then read again. */
+  /** A token replace went through: say it serves every app of that person, then read again. */
   onReplaced: () => void;
   /** Someone else changed things first: read again, and say why it moved. */
   onChanged: () => void;
@@ -1029,8 +1029,8 @@ export function SlackTab() {
       {notice?.kind === 'replaced' && (
         <Alert>
           <AlertDescription>
-            Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click{' '}
-            <strong>Revoke</strong> for it on <SlackAppsLink />, under <strong>Your App Configuration Tokens</strong>. Don&apos;t revoke the token you just pasted: that&apos;s the one we use now.
+            Token replaced. We now use it for this Slack app and for every other Slack app the same person made
+            through AX. Don&apos;t revoke the token you just pasted: that&apos;s the one we use now.
           </AlertDescription>
         </Alert>
       )}

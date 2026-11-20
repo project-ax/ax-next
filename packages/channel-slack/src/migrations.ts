@@ -9,10 +9,13 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     from Connect until the admin clicks Allow, then `active`. At most one
  *     shared-app install per AX instance today (admin operations run one at a
  *     time); later cards add per-agent installs here.
- *     `connected_by_user_id` is the admin who added the configuration token
- *     the install holds (at Connect, or the latest Replace, TASK-1128), and
- *     vault reads name them. `config_token_added_at` is when they added it.
- *     `created_at` is still when the row was made, and it orders `current()`.
+ *     `connected_by_user_id` is the admin who connected it: whose
+ *     configuration token made the app, and so whose token (one per person,
+ *     TASK-1175) every change to it uses. Vault reads name them. Only
+ *     Connect sets it: a Replace (TASK-1128) stores the pasted token as
+ *     theirs and moves only `config_token_added_at`, when the token was last
+ *     added. `created_at` is still when the row was made, and it orders
+ *     `current()`.
  *
  *   channel_slack_v1_channels — the bindings (TASK-1094): which team agent a
  *     public channel of an install is connected to. The primary key makes it
@@ -46,23 +49,33 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *   channel_slack_v1_leftover_apps — Slack apps AX made and couldn't
  *     delete. Disconnect's (TASK-1132): the stored configuration token was
  *     dead or revoked, or Slack didn't answer; the install's row moves its
- *     app id and name here in the statement that deletes it (store.ts).
- *     Connect's own (TASK-1159): trying the pasted refresh token failed (Slack
- *     refused it, didn't answer, or answered something else), and then Slack
- *     wouldn't delete the app Connect had just made;
- *     no install row ever held that one, so Connect writes it here directly.
- *     Either way the id is never in both tables. The next Connect tries to
- *     delete them with the pasted access token; the Slack tab names them
- *     until that works or the admin says they deleted one by hand
- *     (`forget-leftover-app`). Keyed by the install's id (for Connect's own,
- *     the one it minted and never stored). No secret and no person.
+ *     app id, name and person here in the statement that deletes it
+ *     (store.ts). Connect's own (TASK-1159): trying the pasted refresh token
+ *     failed (Slack refused it, didn't answer, or answered something else),
+ *     or storing failed before the pending row, and then Slack wouldn't
+ *     delete the app Connect had just made; no install row ever held that
+ *     one, so Connect writes it here directly, with the connecting admin as
+ *     its person. (Once the pending row exists, Connect's undo moves it here
+ *     the way Disconnect does.)
+ *     Either way the id is never in both tables. The next Connect or Replace
+ *     tries to delete each with its maker's token (admin-routes.ts); the
+ *     Slack tab names them until that works or the admin says they deleted
+ *     one by hand (`forget-leftover-app`). Keyed by the install's id (for
+ *     Connect's own, the one it minted). No secret.
+ *     `connected_by_user_id` (TASK-1175) is whose configuration token made
+ *     the app (the removed install's person, or the admin whose Connect
+ *     made it): on Slack, only that person's token can manage the app
+ *     (design §8 Q5). NULL for an app left before the column, never
+ *     backfilled.
  *
- * The install's four secrets are NOT here: they live in the credentials vault
- * under `slack:<install_id>:<name>` (secrets.ts). The vault keys those global
- * rows by ref alone, so changing whom `connected_by_user_id` names (a Replace)
- * never changes which row a read finds. Nor is any AX account's
- * name: `connected_by_user_id` is an id in the installs and channels tables,
- * and that person's name is read from auth when it is shown (invariant 4).
+ * No secret is here. They live in the credentials vault (secrets.ts): an
+ * install's three under `slack:<install_id>:<name>`, and the configuration
+ * refresh token once per person (TASK-1175), under
+ * `slack:person:<connected_by_user_id>:config-refresh-token`, shared by every
+ * app of theirs. Nor is any AX account's
+ * name: `connected_by_user_id` is an id in the installs, channels and
+ * leftover apps tables, and that person's name is read from auth when it is
+ * shown (invariant 4).
  * The one kind of person's name kept here is Slack's: `speaker_names` holds
  * members' Slack display names and ids as their sender labels showed them,
  * untrusted profile text for memory to compare against, never shown, logged
@@ -132,6 +145,7 @@ export interface ChannelSlackLeftoverAppsTable {
   app_id: string;
   bot_name: string;
   left_at: ColumnType<Date, Date | undefined, never>;
+  connected_by_user_id: string | null;
 }
 
 export interface ChannelSlackDatabase {
@@ -249,5 +263,13 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     ALTER TABLE channel_slack_v1_installs
       ALTER COLUMN config_token_added_at SET NOT NULL
+  `.execute(db);
+  // Whose configuration token made a leftover app (TASK-1175), so it can be
+  // deleted with that person's token. NULL means the app was left before
+  // this column: never backfilled, because the install row that knew the
+  // person is gone, and a guess would hand an unknown app to someone.
+  await sql`
+    ALTER TABLE channel_slack_v1_leftover_apps
+      ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT NULL
   `.execute(db);
 }

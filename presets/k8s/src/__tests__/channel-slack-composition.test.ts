@@ -752,6 +752,22 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     }
   }
 
+  /**
+   * A person's configuration refresh token (TASK-1175): one per AX user,
+   * shared by every Slack app they made through AX, read as them.
+   */
+  async function readConfigToken(userId: string): Promise<string> {
+    try {
+      return await theBus!.call<unknown, string>(
+        'credentials:get',
+        makeAgentContext({ sessionId: 'test', agentId: '', userId }),
+        { ref: `slack:person:${userId}:config-refresh-token`, userId, scope: 'global' },
+      );
+    } catch (err) {
+      return `error:${(err as { code?: string }).code ?? 'unknown'}`;
+    }
+  }
+
   beforeAll(async () => {
     savedCredentialsKey = process.env.AX_CREDENTIALS_KEY;
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
@@ -877,8 +893,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // The four secrets went into the real vault, globally.
     expect(await readSecret(installId, 'bot-token')).toBe(BOT_TOKEN);
     expect(await readSecret(installId, 'signing-secret')).toBe(SIGNING_SECRET);
-    // The refresh token kept is the one Slack minted at Connect, never the pasted one.
-    const atConnect = await readSecret(installId, 'config-refresh-token');
+    // The refresh token kept is the one Slack minted at Connect, never the
+    // pasted one, as the admin's own token (TASK-1175).
+    const atConnect = await readConfigToken(ADMIN);
     expect(atConnect).toBe(rotatedRefreshToken(rotateSeq));
     expect(atConnect).not.toBe(CONFIG_REFRESH_TOKEN);
     actor = null;
@@ -909,7 +926,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(await query('SELECT bot_name FROM channel_slack_v1_installs')).toEqual([{ bot_name: 'Canopy Helper' }]);
     // The route stored the refresh token Slack minted (before it sent the
     // update), because Slack retires the one it just rotated.
-    const kept = await readSecret(installId, 'config-refresh-token');
+    const kept = await readConfigToken(ADMIN);
     expect(kept).toBe(rotatedRefreshToken(rotateSeq));
     expect(kept).not.toBe(CONFIG_REFRESH_TOKEN);
     expect(kept).not.toBe(atConnect);
@@ -1045,6 +1062,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     for (const name of ['bot-token', 'signing-secret', 'client-secret', 'config-refresh-token']) {
       expect(await readSecret(installId, name), name).toMatch(/^error:/);
     }
+    // And the admin's own token: Slack deleted the app, and nothing else names them (TASK-1175).
+    expect(await readConfigToken(ADMIN)).toMatch(/^error:/);
     expect(await callRoute('GET', '/admin/slack')).toMatchObject({ body: { state: 'not-connected' } });
   });
 
@@ -1825,7 +1844,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     await dropAgent(agentId);
   });
 
-  it('an admin replaces the configuration token: the install, its channel and every secret stay, the plugin reads them as the new admin, and Rename then rotates the new token (TASK-1128)', async () => {
+  it('an admin replaces the configuration token: the install, its channel and every secret stay, the plugin still reads them as the admin whose token it is, and Rename then rotates the new token (TASK-1128, TASK-1175)', async () => {
     const { installId, agentId } = await supportChannel();
     invokes.length = 0;
     const before = await bindings();
@@ -1854,33 +1873,34 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(calls[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
     expect(calls[1]!.body['app_id']).toBe(APP_ID);
 
-    // The vault holds the token Slack minted; the other secrets did not move.
-    const kept = await readSecret(installId, 'config-refresh-token');
+    // The vault holds the token Slack minted, as the token of the admin whose
+    // app it is, whoever pasted it (TASK-1175); the other secrets did not move.
+    const kept = await readConfigToken(ADMIN);
     expect(kept).toBe(rotatedRefreshToken(rotateSeq));
     expect(kept).not.toBe(SECOND_CONFIG_REFRESH_TOKEN);
+    expect(await readConfigToken('usr_grace')).toMatch(/^error:/);
     expect(await readSecret(installId, 'bot-token')).toBe(BOT_TOKEN);
     expect(await readSecret(installId, 'signing-secret')).toBe(SIGNING_SECRET);
 
-    // The same install moved to the new admin; the channel binding is untouched.
+    // The same install, still the first admin's: only the date moved. The channel binding is untouched.
     const rowAfter = await rowOf();
     expect(rowAfter['install_id']).toBe(installId);
     expect(rowAfter['status']).toBe('active');
-    expect(rowAfter['connected_by_user_id']).toBe('usr_grace');
+    expect(rowAfter['connected_by_user_id']).toBe(ADMIN);
     expect(rowAfter['config_token_added_at']).not.toEqual(rowBefore['config_token_added_at']);
     expect(await bindings()).toEqual(before);
-    // The auth stub names anyone but the first admin by their id.
     // `created_at` is the database's clock and the replace uses the host's, so compare to the row itself.
     const status = await callRoute('GET', '/admin/slack');
     expect(status).toMatchObject({
       status: 200,
       body: {
         state: 'connected',
-        connectedBy: 'usr_grace',
+        connectedBy: 'Ada Admin',
         connectedAt: (rowAfter['config_token_added_at'] as Date).toISOString(),
       },
     });
 
-    // The plugin still reads the signing secret and the bot token, now naming the new admin.
+    // The plugin still reads the signing secret and the bot token, naming the first admin.
     actor = null;
     const turnMark = slackCalls.length;
     expect((await deliver(installId, mention(MEL, nextTs(), 'still there?'))).status).toBe(200);
