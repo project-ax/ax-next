@@ -94,8 +94,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     the install as it was. The old one needs no revoking: generating the
  *     new one revoked it on Slack (one per person).
  *   - A person's token goes once no install and no leftover app names them
- *     (config-tokens.ts): after Disconnect, after Connect's own undo once
- *     the token was stored, when a reset took the install while Rename or
+ *     (config-tokens.ts): after Disconnect, after Connect's own undo (on
+ *     any failure once the pasted token was rotated, whether or not the
+ *     token was stored), when a reset took the install while Rename or
  *     Replace was storing it, and when a leftover pass or "I deleted it"
  *     forgets an app of theirs. While anything still names them, it stays:
  *     it is how that app is changed or deleted. A check that fails keeps it,
