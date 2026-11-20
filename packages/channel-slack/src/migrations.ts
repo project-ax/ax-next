@@ -103,14 +103,18 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     from this, else on. It goes when its agent is deleted, with the agent's
  *     bindings and threads (agents-deleted.ts, on agents:deleted), and
  *     nothing else deletes it. Every boot fills it from the bindings, off when
- *     any of the agent's bindings of the channel is off, and never over a
- *     switch already kept: bindings written before the table (some switched
- *     off) get theirs, and so does any an older replica wrote since. Then,
- *     where still none is kept, from the threads: off where a turn ran while
- *     the switch was off. Thread rows outlive every Disconnect, so that is
- *     how a channel switched off and disconnected before the table keeps its
- *     off; one with no turn there while it was off left no trace, and its bot
- *     starts there on. It holds two opaque ids and a boolean.
+ *     any of the agent's bindings of the channel is off, and moves a switch
+ *     already kept only from on to off: an agent's channel with bindings and
+ *     no switch kept gets one (phase 1's bindings, some switched off, and any
+ *     an older replica connected since), and a kept on goes off where one of
+ *     those bindings is off (code from before the table, an older replica's
+ *     or a rollback's, flips the binding alone). Such code switching a
+ *     binding back on leaves a kept off as it is. Then, where still none is
+ *     kept, from the threads: off where a turn ran while the switch was off.
+ *     Thread rows outlive every Disconnect, so that is how a channel switched
+ *     off and disconnected before the table keeps its off; one with no turn
+ *     there while it was off left no trace, and its bot starts there on. It
+ *     holds two opaque ids and a boolean.
  *
  * No secret is here. They live in the credentials vault (secrets.ts): an
  * install's three under `slack:<install_id>:<name>`, and the configuration
@@ -425,16 +429,28 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
     )
   `.execute(db);
   // Every boot: a binding written before this table (phase 1's channels, some
-  // switched off), or by an older replica since, gets its switch kept, so a
-  // Disconnect before the agent's own bot first answers there can't lose an
-  // off. Off wins across an agent's bindings of one channel. A switch already
-  // kept is never overwritten: it is the one the team set last.
+  // switched off), or connected by an older replica since, gets its switch
+  // kept, so a Disconnect before the agent's own bot first answers there
+  // can't lose an off. Off wins across an agent's bindings of one channel.
+  // A switch already kept moves only from on to off, never back: code from
+  // before this table (an older replica during a rolling deploy, or a
+  // rollback) flips the binding alone, so a binding that is off beside a
+  // kept on is taken as the newer of the two, off being the side to err on.
+  // A kept off beside bindings that are on stays off: a fresh connect makes
+  // that pair (it keeps nothing, and the bot reads a live binding first),
+  // and so does such code switching a binding back on, which fails toward
+  // off. ON CONFLICT DO UPDATE locks every row it meets, moved or not, so
+  // rows go in key order: two boots at once lock in one order and can't
+  // deadlock.
   await sql`
     INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
     SELECT agent_id, channel_id, bool_and(remember)
       FROM channel_slack_v1_channels
      GROUP BY agent_id, channel_id
-    ON CONFLICT (agent_id, channel_id) DO NOTHING
+     ORDER BY agent_id, channel_id
+    ON CONFLICT (agent_id, channel_id) DO UPDATE
+       SET remember = false, updated_at = now()
+     WHERE channel_slack_v1_memory_switches.remember AND NOT EXCLUDED.remember
   `.execute(db);
   // Then, every boot, a channel the agent has no binding of any more:
   // switched off and disconnected before this table existed, its off went

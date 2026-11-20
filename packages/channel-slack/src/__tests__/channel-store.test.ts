@@ -576,7 +576,7 @@ describe('the switch kept for the agent and channel (TASK-1180)', () => {
     expect(await channels.keptRemember(OTHER_AGENT, GENERAL)).toBe(false);
   });
 
-  it("runMigrations keeps a switch for every binding written before the table: off if any of the agent's bindings of the channel is, never over one already kept, and a second run changes nothing", async () => {
+  it("runMigrations keeps a switch for every binding written before the table: off if any of the agent's bindings of the channel is, never turning one kept off back on, and a second run changes nothing", async () => {
     // Bindings as phase 1 wrote them, before the table: their switches only on the bindings.
     await connect();
     await connect({ installId: OTHER_INSTALL });
@@ -599,6 +599,35 @@ describe('the switch kept for the agent and channel (TASK-1180)', () => {
     }
     // The bindings themselves are untouched.
     expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+    expect((await channels.get(INSTALL, GENERAL))?.remember).toBe(true);
+  });
+
+  // Code from before the table (an older replica in a rolling deploy, or a
+  // rollback) flips the binding alone, so a kept switch can be left on
+  // beside a binding the team has since switched off.
+  it("runMigrations moves a kept switch from on to off where one of the agent's bindings of the channel is off, never from off to on, and a second run changes nothing", async () => {
+    // Kept on, then switched off on one of its two bindings by code from before the table.
+    await connect();
+    await connect({ installId: OTHER_INSTALL });
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${INSTALL} AND channel_id = ${SUPPORT}`.execute(db);
+    // Kept on, its binding on: nothing to move.
+    await connect({ channelId: SALES });
+    expect(await channels.setRemember(INSTALL, SALES, AGENT, true)).toBe(true);
+    // Kept off, then switched on again by code from before the table: it stays off (toward off only).
+    await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
+    expect(await channels.setRemember(INSTALL, GENERAL, OTHER_AGENT, false)).toBe(true);
+    await sql`UPDATE channel_slack_v1_channels SET remember = true WHERE install_id = ${INSTALL} AND channel_id = ${GENERAL}`.execute(db);
+
+    for (let run = 1; run <= 2; run += 1) {
+      await runMigrations(db);
+      expect(await channels.keptRemember(AGENT, SUPPORT), `run ${run}`).toBe(false);
+      expect(await channels.keptRemember(AGENT, SALES), `run ${run}`).toBe(true);
+      expect(await channels.keptRemember(OTHER_AGENT, GENERAL), `run ${run}`).toBe(false);
+    }
+    // The bindings themselves are untouched.
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(true);
     expect((await channels.get(INSTALL, GENERAL))?.remember).toBe(true);
   });
 });
