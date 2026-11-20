@@ -263,6 +263,21 @@ export const COPY = {
   slashChannelTaken:
     'Another agent is already connected to this channel. ' +
     `A team admin of that agent's team can disconnect it with ${DISCONNECT}.`,
+  /*
+    `/ax connect` for an agent whose own bot is live (TASK-1168): the shared
+    app connects nothing for it any more, so the line says which bot to
+    /invite instead. Only someone who manages the agent ever reads it (the
+    rights come first, commands.ts), so the agent is named. The bot is named
+    by its @handle, through `shown(handle, '@')` after the line's own `@`, or
+    by its name when it has none (the Allow kept no handle: bots.ts
+    `keepHandle`).
+  */
+  slashOwnBot: (agent: string, bot: { botName: string; handle: string | null }) =>
+    bot.handle === null
+      ? `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
+        `Invite ${shown(bot.botName)} to this channel with /invite instead.`
+      : `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
+        `Invite it to this channel with /invite @${shown(bot.handle, '@')} instead.`,
   slashChannelNotAllowed: (reason: ChannelNotAllowed) =>
     reason === 'archived'
       ? "This channel is archived, so I can't connect an agent to it."

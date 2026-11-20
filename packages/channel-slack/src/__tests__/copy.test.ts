@@ -59,6 +59,16 @@ const ARGS: Record<string, unknown[][]> = {
     ['Ops', 'channel'],
     ['Ops', 'everyone'],
   ],
+  // `/ax connect` for an agent whose own bot is live (TASK-1168): the agent, then the bot's @handle or its name.
+  slashOwnBot: [
+    ['Support', { botName: 'Support Bot', handle: 'supportbot' }],
+    ['Support', { botName: 'Support Bot', handle: null }],
+    [HOSTILE, { botName: HOSTILE, handle: HOSTILE }],
+    [HOSTILE, { botName: HOSTILE, handle: null }],
+    ['Ops', { botName: 'Ops', handle: 'here' }],
+    ['Ops', { botName: 'Ops', handle: 'channel' }],
+    ['Ops', { botName: 'Ops', handle: 'everyone' }],
+  ],
 };
 
 /** Every string the bot can say, with the ones that take arguments filled in. */
@@ -126,6 +136,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'slashDisconnected',
         'slashNothingConnected',
         'slashChannelTaken',
+        'slashOwnBot',
         'slashChannelNotAllowed',
         'slashNeedsReconnect',
         'slashWorking',
@@ -464,6 +475,19 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
     // A workspace policy is not ours to change: a Slack admin's, and never "try again".
     expect(COPY.slashChannelNotAllowed('workspace-policy')).toMatch(/Slack admin/);
     expect(COPY.slashChannelNotAllowed('workspace-policy')).not.toMatch(/try again/i);
+  });
+
+  it("an agent whose own bot is live: names the agent, then the bot's @handle to /invite, or its name without one (TASK-1168)", () => {
+    expect(COPY.slashOwnBot('Support', { botName: 'Support Bot', handle: 'supportbot' })).toBe(
+      "*Support* has its own Slack bot now, so I can't connect it here. Invite it to this channel with /invite @supportbot instead.",
+    );
+    expect(COPY.slashOwnBot('Support', { botName: 'Support Bot', handle: null })).toBe(
+      "*Support* has its own Slack bot now, so I can't connect it here. Invite Support Bot to this channel with /invite instead.",
+    );
+    // After the line's own `@`, a broadcast word gets its mark.
+    expect(COPY.slashOwnBot('Ops', { botName: 'Ops', handle: 'here' })).toContain(`/invite @${ZWSP}here instead.`);
+    const hostile = COPY.slashOwnBot(HOSTILE, { botName: HOSTILE, handle: HOSTILE }).split(ZWSP).join('');
+    expect(hostile).toContain('*&lt;!channel&gt; &amp; &lt;@U1&gt; @here* has its own Slack bot now');
   });
 
   it('"working on it" promises no follow-up: the late private reply fails where the bot is not a member', () => {
