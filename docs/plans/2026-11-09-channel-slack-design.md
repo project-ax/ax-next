@@ -393,10 +393,15 @@ A team agent that wants its own `@ada`:
    the same request shows up in AX admin settings. Either way, Slack's own
    install screen still decides in the end: only someone allowed to install
    apps there can click Allow.
-3. **Approve** creates the app (`apps.manifest.create` + `apps.icon.set`) and
-   opens Slack's install screen straight away. The approver's **Allow** there is
-   the approval: one click, on Slack's own screen. There's no second AX-side
-   approve step, and the configuration token doesn't skip it.
+3. **Approve** asks the approver for **their own** configuration refresh
+   token (decided 2026-11-19, Vinay: §8 Q6), tries it once as Connect does
+   (TASK-1159), creates the app with it (`apps.manifest.create` +
+   `apps.icon.set`) and opens Slack's install screen straight away. The
+   approver's **Allow** there is the approval: one click, on Slack's own
+   screen. There's no second AX-side approve step, and the configuration token
+   doesn't skip it. AX stores that bot's rotated configuration token under the
+   bot's own install, recorded as the approver's: each bot has its own token
+   and manager, never the shared bot's.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
    bot's real `name` field as read back from `users.info`. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
@@ -437,6 +442,15 @@ answer for one agent. The owner is told which channels changed, and that
   path the shared bot uses (TASK-1096), and the same name check from step 1
   applies. Neither needs a new approval.
 - **Disconnect** deletes the app with `apps.manifest.delete`.
+- **Only the approver can manage the bot** (measured, §8 Q5): rename, avatar,
+  re-sync and delete all use the token the approver gave. When that token
+  dies, the fix is Replace with a new token **from the same approver**
+  (TASK-1128's flow, per bot). If the approver is gone, no other token can
+  touch the app: the bot can only be **rebuilt**, meaning a new request,
+  approved under the new approver's token, with a new app and a new handle that
+  channels must `/invite` again. The old app goes on the leftover-apps list for
+  someone to delete by hand on api.slack.com. Admin settings shows each bot's
+  approver, so an offboarding admin can see which bots need rebuilding.
 
 Personal agents stay on the shared app. Fifty personal bots cluttering the
 workspace would buy nothing: a personal agent only talks to one person, in a DM.
@@ -937,7 +951,11 @@ and the configuration token revoked. "Tested" means we watched it happen;
    leftover cleanup, deleted apps an older token of theirs had made. Slack also
    allows only one configuration token per person per workspace, so "a newer
    token" always means revoke, then generate.
-6. **Whose token creates a phase 2 bot?** Q5 makes this a real choice. Only the
+6. ~~**Whose token creates a phase 2 bot?**~~ **Decided 2026-11-19 (Vinay): the
+   approver's own token** (the agent's owner, or else an AX admin; §4 step 3).
+   Chosen over one shared admin token, which would let a single departure strand
+   every bot. The trade-off: approvers paste a token when approving, and a bot
+   whose approver leaves must be rebuilt (§4 Lifecycle). Q5 made this a real choice. Only the
    creator's token can ever rename, re-sync or delete a bot. If every bot is
    created with the token of the admin who connected the shared bot, that one
    person is the only one who can ever manage any of them, and when they leave,
@@ -980,8 +998,8 @@ the pasted token), TASK-1128 (an admin can replace a dead configuration token)
 and TASK-1139 (Disconnect logs whether the app was deleted). Also one
 measurement on a real workspace: can a newer configuration token delete an app
 an older one made? **All done 2026-11-19** (deployed rev 90; walk TASK-1163:
-yes for the creator's own newer token, no for anyone else's, §8 Q5). Decide
-§8 Q6 before decomposing.
+yes for the creator's own newer token, no for anyone else's, §8 Q5). §8 Q6
+decided 2026-11-19: the approver's own token.
 
 - **8.** Request a bot (name and avatar), approval by the owner or an AX admin,
   creating and installing the app, its own events URL and signing secret,
