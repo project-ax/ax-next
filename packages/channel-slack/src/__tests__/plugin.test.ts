@@ -2030,6 +2030,29 @@ describe('@ax/channel-slack plugin', () => {
     for (const text of [old, 'vault down', ADMIN.id]) expect(all).not.toContain(text);
   });
 
+  it('P8 with moveConfigTokens: false (the CLI reset), the boot moves nothing: only the host does (TASK-1175)', async () => {
+    await runMigrations(probe);
+    await insertActiveInstall();
+    const oldRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    const personRef = configTokenRef(ADMIN.id);
+    const old = fakeConfigRefreshToken('BOOTNOMOVEOLDSECRET');
+    const logs = captureLogs();
+
+    const { s } = await boot({ moveConfigTokens: false }, {
+      seed: (s) => {
+        s.vault.set(oldRef, old);
+      },
+    });
+    expect(s.routes).toHaveLength(16);
+    // Not even read: the old row stays the install's, for the host's next boot.
+    expect(s.credentialGets).toEqual([]);
+    expect(s.credentialSets).toBe(0);
+    expect(s.credentialDeletes).toEqual([]);
+    expect(s.vault.get(oldRef)).toBe(old);
+    expect(s.vault.has(personRef)).toBe(false);
+    expect(logs.filter((l) => String(l['msg']).startsWith('slack_config_token'))).toEqual([]);
+  });
+
   it('the settings routes are mounted behind the person and the agent: 401 signed out, 404 to an outsider, the section to a team admin', async () => {
     const { call } = await boot();
     const path = '/settings/slack/:agentId';

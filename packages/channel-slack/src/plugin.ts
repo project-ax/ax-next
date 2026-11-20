@@ -156,6 +156,13 @@ export interface ChannelSlackConfig {
   fetchImpl?: typeof fetch;
   /** Epoch milliseconds. Test seam. */
   now?: () => number;
+  /**
+   * Whether init moves each install's old per-install configuration token to
+   * its person (config-tokens.ts, TASK-1175). Default true: the host does.
+   * `ax admin reset-bootstrap` passes false, so only the host moves tokens,
+   * and a CLI newer than the host never empties rows that host still reads.
+   */
+  moveConfigTokens?: boolean;
 }
 
 const RESET_CLEANUP = 'bootstrap:reset-cleanup';
@@ -318,8 +325,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // the table it lists up to date, and before any route registers: a
         // route serves as soon as it does, and reads only the person's token.
         // It never throws, so it never fails the boot: a fault is logged, and
-        // that person's old tokens wait for the next boot.
-        await moveConfigTokens({ store, secrets, logger });
+        // that person's old tokens wait for the next boot. Off for the CLI
+        // reset (`moveConfigTokens: false`): only the host moves them.
+        if (config.moveConfigTokens !== false) await moveConfigTokens({ store, secrets, logger });
         const api = createSlackApi({ fetchImpl });
         const life = createLifetime();
         lifetime = life;

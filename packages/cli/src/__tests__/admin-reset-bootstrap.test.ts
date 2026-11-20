@@ -10,6 +10,11 @@ import {
 } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
+import { HookBus, bootstrap, makeAgentContext } from '@ax/core';
+import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createStoragePostgresPlugin } from '@ax/storage-postgres';
+import { createCredentialsPlugin } from '@ax/credentials';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { runAdminResetBootstrapCommand } from '../commands/admin/reset-bootstrap.js';
 import { runAdminCommand } from '../commands/admin.js';
 
@@ -459,6 +464,98 @@ describe('admin reset-bootstrap — happy paths', () => {
         .selectAll()
         .execute();
       expect(slackInstalls).toEqual([]);
+    } finally {
+      await k2.destroy().catch(() => {});
+    }
+  });
+
+  it("never runs channel-slack's boot move of configuration tokens: only the host does (TASK-1175)", async () => {
+    // Provision the schemas, as above.
+    const seedCap = captureStreams();
+    expect(
+      await runAdminResetBootstrapCommand({
+        argv: [],
+        env: {},
+        stdout: seedCap.stdout,
+        stderr: seedCap.stderr,
+        databaseOverride: { connectionString },
+      }),
+    ).toBe(0);
+
+    // An install of usr_test's, still holding its token under its own ref, as
+    // before TASK-1175, stored through the real vault.
+    const k = new Kysely<unknown>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 1 }) }),
+    });
+    try {
+      await sql`
+        INSERT INTO channel_slack_v1_installs (
+          install_id, status, app_id, client_id, bot_name, team_id,
+          team_name, bot_user_id, connected_by_user_id, installed_at
+        )
+        VALUES (
+          'inst_test', 'active', 'A_TEST', 'cid_test', 'ax', 'T_TEST',
+          'Test Team', 'U_TEST', 'usr_test', NOW()
+        )
+      `.execute(k);
+    } finally {
+      await k.destroy().catch(() => {});
+    }
+    const vaultBus = new HookBus();
+    const vault = await bootstrap({
+      bus: vaultBus,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createStoragePostgresPlugin(),
+        createCredentialsPlugin(),
+        createCredentialsStoreDbPlugin(),
+      ],
+      config: {},
+    });
+    try {
+      await vaultBus.call('credentials:set', makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_test' }), {
+        scope: 'global',
+        ownerId: null,
+        ref: 'slack:inst_test:config-refresh-token',
+        kind: 'api-key',
+        payload: new TextEncoder().encode(['xo', 'xe-', '1-OLDPERINSTALLTOKEN'].join('')),
+      });
+    } finally {
+      await vault.shutdown();
+    }
+
+    // A completed setup, so the CLI boots every plugin and then refuses: no
+    // reset-cleanup, and no vault wipe, run to hide what init did.
+    const k1 = new Kysely<unknown>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 1 }) }),
+    });
+    try {
+      await sql`UPDATE bootstrap_state SET status = 'completed', completed_at = NOW()`.execute(k1);
+    } finally {
+      await k1.destroy().catch(() => {});
+    }
+    const cap = captureStreams();
+    expect(
+      await runAdminResetBootstrapCommand({
+        argv: [],
+        env: {},
+        stdout: cap.stdout,
+        stderr: cap.stderr,
+        databaseOverride: { connectionString },
+      }),
+    ).toBe(1);
+
+    // The old row is still the install's, and no person row was made.
+    const k2 = new Kysely<unknown>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 1 }) }),
+    });
+    try {
+      const keys = await sql<{ key: string; size: number }>`
+        SELECT key, octet_length(value) AS size FROM storage_postgres_v1_kv WHERE key LIKE 'credential:v2:global:%slack:%'
+      `.execute(k2);
+      expect(keys.rows.map((r) => r.key)).toEqual(['credential:v2:global:_:slack:inst_test:config-refresh-token']);
+      // Not emptied (the vault deletes by writing an empty row).
+      expect(keys.rows[0]!.size).toBeGreaterThan(0);
     } finally {
       await k2.destroy().catch(() => {});
     }
