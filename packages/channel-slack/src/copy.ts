@@ -29,6 +29,14 @@ import type { SkillReach } from './turn-registry.js';
  * `skillSubject` (a catalog skill's id, the hosts it reaches and its
  * description, which can hold anything). Neither is ever mrkdwn, a
  * notification or a log.
+ *
+ * The `botRequest*`, `botLive*` and `botDeclined*` lines are a bot request's
+ * DMs (TASK-1170; blocks.ts `botRequestBlocks`, bot-request-dms.ts). The
+ * admin DM's `botRequestSubject` frames outside names (the requester, the
+ * bot, the agent) as a subject, raw, cleaned where it is drawn: plain_text,
+ * never mrkdwn, a notification or a log. `botRequestAsked` is its
+ * notification and names nobody. The owner notices go out as mrkdwn through
+ * `shown`.
  */
 
 /**
@@ -304,4 +312,49 @@ export const COPY = {
   slashWorking:
     "I'm still working on it. If nothing shows up here, check the agent's Slack settings in the web app.",
   slashFailed: "Something went wrong and I couldn't finish that. Try again in a moment.",
+
+  // ── A bot request's DMs (TASK-1170; blocks.ts, bot-request-dms.ts) ──
+  // The admin DM's notification and fallback: it names nobody.
+  botRequestAsked: 'A team asked for its own Slack bot.',
+  /*
+    The DM's subject, plain_text only (like hostSubject and skillSubject): the
+    requester's display name, the bot's name and the agent's name are all from
+    outside, so they are raw here and cleaned where the section is drawn. The
+    agent is left out when it can't be named.
+  */
+  botRequestSubject: (i: { requester: string; botName: string; agentName: string | null }) =>
+    i.agentName === null
+      ? `${i.requester} wants to add @${i.botName} for a team agent.`
+      : `${i.requester} wants to add @${i.botName} (${i.agentName} agent).`,
+  // The two button labels (plain_text).
+  botRequestApprove: 'Approve',
+  botRequestDecline: 'Decline',
+  botRequestHow:
+    'Approve opens Slack settings in the web app, where you add the bot with your own configuration token. ' +
+    'Nothing secret goes through Slack.',
+  botRequestApproved: (name: string) => `${shown(name)} approved this.`,
+  botRequestDeclined: (name: string) => `${shown(name)} declined this.`,
+  // Private: to a clicker who is not an admin, and to a click on a closed request.
+  botRequestOnlyAdmin: 'Only an admin can answer this.',
+  botRequestHandled: 'This request was already handled.',
+  /*
+    To the agent's owner when someone else approved the bot: it is live, how to
+    invite it, and the channels the shared app served that now need it
+    (`channels` is already capped by the caller; `more` is how many it left
+    out). The bot is named like slashOwnBot names it.
+  */
+  botLiveForOwner: (bot: { botName: string; handle: string | null }, channels: readonly string[], more: number) => {
+    const head =
+      bot.handle === null
+        ? `${shown(bot.botName)} is live. Invite it to a channel with /invite.`
+        : `@${shown(bot.handle, '@')} is live. Invite it to a channel with /invite @${shown(bot.handle, '@')}.`;
+    if (channels.length === 0) return head;
+    const names = channels.map((c) => `#${shown(c)}`);
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    const tail = more > 0 ? ` and ${more} more` : '';
+    return `${head} These channels still need it: ${list}${tail}. Run /invite in each one.`;
+  },
+  botDeclinedForOwner: (botName: string) =>
+    `An admin declined your request for @${shown(botName, '@')}. ` +
+    "You can ask again from the agent's Slack settings in the web app.",
 } as const;
