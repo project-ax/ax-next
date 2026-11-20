@@ -136,9 +136,10 @@ export interface RouterDeps extends TurnDeps {
    * Read again when a queued turn starts: Disconnect may have removed the
    * install meanwhile. On the shared app, also whether a channel's agent has
    * a live bot of its own (TASK-1167), when a mention arrives and again when
-   * its turn starts.
+   * its turn starts. And the shared app's install when a team agent's own
+   * bot binds a channel, for the memory switch the agent had there (TASK-1179).
    */
-  installs: Pick<InstallStore, 'get' | 'botForAgent'>;
+  installs: Pick<InstallStore, 'get' | 'botForAgent' | 'current'>;
   /** DM turns and members' channel turns: one lane per conversation. */
   queue: KeyedQueue;
   /**
@@ -856,8 +857,13 @@ type BindOutcome =
  * could take (`connectable`: public, live, not Slack Connect). The binding
  * is to the bot's one agent, connected by its requester, whom the channel's
  * outsiders run as (channel-store.ts); read back, so it is the one stored.
+ * Its memory switch is the one the agent had for this channel on the shared
+ * app, if it had one there, so a channel the team chose not to have
+ * remembered stays that way (TASK-1179); otherwise on, as any new connection
+ * is. It's written by the insert itself, so no turn ever reads it on.
  * The bot never joins a channel: it is in this one because someone invited
- * it. A store failure throws.
+ * it. A store failure throws; a failed read of the shared app's install or
+ * binding throws before anything is written.
  */
 async function bindBotChannel(
   d: RouterDeps,
@@ -878,12 +884,14 @@ async function bindBotChannel(
   if (info.id !== channelId) return { ok: false, reason: 'channel-not-allowed', code: 'id-mismatch' };
   if (!connectable(info)) return { ok: false, reason: 'channel-not-allowed' };
 
+  const remember = await sharedRemember(d, install.agentId, channelId);
   const wrote = {
     installId: install.installId,
     channelId,
     agentId: install.agentId,
     connectedByUserId: install.requestedByUserId,
     channelName: info.name,
+    remember,
   };
   // `taken` can't happen here (only this writes a bot's bindings, always
   // for its agent); if it ever did, the read below finds the other agent's
@@ -894,8 +902,21 @@ async function bindBotChannel(
   // turn's own re-read then finds the install gone and drops it.
   return {
     ok: true,
-    binding: stored ?? { ...wrote, channelName: cleanChannelName(info.name), remember: true, createdAt: new Date() },
+    binding: stored ?? { ...wrote, channelName: cleanChannelName(info.name), createdAt: new Date() },
   };
+}
+
+/**
+ * The memory switch of this agent's binding of the channel on the shared
+ * app (TASK-1179): what the team chose for it there. On when the shared app
+ * isn't installed, or doesn't connect the channel to this agent: another
+ * agent's switch is about that agent's memory. A store failure throws.
+ */
+async function sharedRemember(d: RouterDeps, agentId: string, channelId: string): Promise<boolean> {
+  const shared = await d.installs.current();
+  if (shared === null) return true;
+  const binding = await d.channels.get(shared.installId, channelId);
+  return binding === null || binding.agentId !== agentId ? true : binding.remember;
 }
 
 /**

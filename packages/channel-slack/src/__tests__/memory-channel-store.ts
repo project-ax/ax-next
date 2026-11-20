@@ -5,10 +5,11 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
 /**
  * An in-memory ChannelStore with the real one's rules (channel-store.ts,
  * pinned against Postgres in channel-store.test.ts): one agent per (install,
- * channel); `upsert` answers `connected` (remember on), `reconnected` (the
- * connector and name replaced, remember and createdAt kept) or `taken`
- * (nothing changes); `remove` and `setRemember` act only on the named
- * agent's binding; a name is stored cleaned; `listForAgent` is oldest first.
+ * channel); `upsert` answers `connected` (remember as given, on by default),
+ * `reconnected` (the connector and name replaced, remember and createdAt
+ * kept) or `taken` (nothing changes); `remove` and `setRemember` act only
+ * on the named agent's binding; a name is stored cleaned; `listForAgent` is
+ * oldest first.
  * A thread is keyed by its conversation alone and written once: a later
  * `recordThread` changes only `notRemembered`, `external` and
  * `speakerNames`, and neither flag ever goes back to false. `recordThread`
@@ -74,7 +75,7 @@ export function memoryChannelStore() {
         agentId: b.agentId,
         connectedByUserId: b.connectedByUserId,
         channelName,
-        remember: true,
+        remember: b.remember ?? true,
         createdAt: new Date(created),
       });
       return 'connected';
