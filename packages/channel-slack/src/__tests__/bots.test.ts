@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createBots } from '../bots.js';
 import { parseIconPng, type ParsedIcon } from '../icon.js';
 import { OAUTH_STATE_TTL_MS } from '../limits.js';
+import { logCode } from '../log-code.js';
 import { botUrls, buildBotManifest } from '../manifest.js';
 import { createMutex, type Mutex } from '../mutex.js';
 import { SECRET_NAMES, configTokenRef, createSecretStore, secretRef } from '../secrets.js';
@@ -1481,7 +1482,7 @@ describe('listForAdmin', () => {
     });
   });
 
-  it('listForAdmin: an approver auth no longer has is null; an auth fault reads "A teammate" and is logged code-only', async () => {
+  it('listForAdmin: an approver auth no longer has is null; an auth fault fails the whole list, never a name that hides who has left', async () => {
     const w = world();
     await seedShared(w);
     const installId = await addBot(w, { handle: 'salesdesk' });
@@ -1491,14 +1492,28 @@ describe('listForAdmin', () => {
     // An account that's gone is an answer, not a fault.
     expect(w.lines).toEqual([]);
 
-    const f = world({ getUserFault: connectionReset() });
+    // Auth is down. Read as "A teammate", every "A former member" mark would
+    // go, and an offboarding admin would read the list as nobody having left.
+    // It throws instead: the route's 500, which the page shows with Try again.
+    const fault = connectionReset();
+    const f = world({ getUserFault: fault });
     await seedShared(f);
-    const faultId = await addBot(f, { handle: 'salesdesk' });
+    await f.request({ as: GRACE, refreshToken: PASTED });
+    await addBot(f, { handle: 'salesdesk' });
+    const answered = f.replies.length;
 
-    expect(await f.listForAdmin()).toEqual([expect.objectContaining({ installId: faultId, approver: 'A teammate' })]);
-    expect(f.lines).toEqual([
-      { level: 'warn', msg: 'slack_bot_failed', fields: { installId: faultId, stage: 'approver', code: 'ECONNRESET' } },
-    ]);
+    const err = await f.listForAdmin().then(
+      (listed) => ({ listed }),
+      (e: unknown) => e,
+    );
+
+    // The bus's wrap, with auth's fault as its cause: the route logs its code.
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as Error).cause).toBe(fault);
+    expect(logCode(err)).toBe('ECONNRESET');
+    // No list at all, not even part of one; and nothing logged here (the route's line has the code).
+    expect(f.replies).toHaveLength(answered);
+    expect(f.lines).toEqual([]);
   });
 
   it('listForAdmin: no bots is [] and asks auth nothing', async () => {
@@ -1798,12 +1813,6 @@ describe('answers and logs', () => {
     await disconnected.listForAdmin();
     await disconnected.disconnect(GRACE, disconnectedId);
     await disconnected.disconnect(GRACE, disconnectedId);
-
-    // The list while auth is down: each approver reads "A teammate", logged code-only.
-    const listFault = add(world({ getUserFault: connectionReset() }));
-    await seedShared(listFault);
-    await seedSupportBot(listFault);
-    await listFault.listForAdmin();
 
     // An AX admin's, then one naming the shared app.
     const adminDisconnected = add(world());

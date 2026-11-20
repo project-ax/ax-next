@@ -5,11 +5,12 @@ import { accountName, personName } from '../person-name.js';
 
 /*
   What a page calls a person it only knows by id (person-name.ts). `personName`
-  folds "auth has no such account" into its fallback; `accountName` keeps it
-  apart as null (TASK-1172: Admin › Slack marks a bot's approver who has left),
-  while an auth fault still reads as the fallback, so a name never fails the
-  page it's on. Auth's `auth:get-user` answers null for an id it doesn't know
-  and throws on a fault (@ax/auth-better's getUserById).
+  folds "auth has no such account" and an auth fault into its fallback, so a
+  name never fails the members' pages it's on. `accountName` keeps "gone" apart
+  as null and lets a fault through (TASK-1172: Admin › Slack marks a bot's
+  approver who has left, and an outage must fail that list rather than read
+  as nobody having left). Auth's `auth:get-user` answers null for an id it
+  doesn't know and throws on a fault (@ax/auth-better's getUserById).
 */
 
 const ADA = 'usr_ada';
@@ -44,31 +45,24 @@ describe('accountName', () => {
   it('accountName: a display name, cleaned to one line', async () => {
     const a = authSays({ id: ADA, displayName: '  Ada\u202E   Admin  ', email: 'ada@canopyworks.example' });
 
-    const name = await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK, onFault: a.onFault });
+    const name = await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK });
 
     expect(name).toBe('Ada Admin');
     expect(a.asked).toEqual([ADA]);
-    expect(a.faults).toEqual([]);
   });
 
   it('accountName: the email only where allowEmail says so, else the fallback', async () => {
     const a = authSays({ id: ADA, displayName: null, email: 'ada@canopyworks.example' });
 
-    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK, onFault: a.onFault })).toBe(
-      'ada@canopyworks.example',
-    );
-    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: false, fallback: FALLBACK, onFault: a.onFault })).toBe(
-      FALLBACK,
-    );
-    expect(a.faults).toEqual([]);
+    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK })).toBe('ada@canopyworks.example');
+    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: false, fallback: FALLBACK })).toBe(FALLBACK);
   });
 
   it('accountName: null when auth no longer has the account', async () => {
     const a = authSays(null);
 
-    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK, onFault: a.onFault })).toBeNull();
+    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK })).toBeNull();
     expect(a.asked).toEqual([ADA]);
-    expect(a.faults).toEqual([]);
   });
 
   it("accountName: an answer that isn't an account reads as the fallback, never as gone", async () => {
@@ -76,25 +70,26 @@ describe('accountName', () => {
     for (const answer of [undefined, 'usr_ada', ['Ada Admin'], 42]) {
       const a = authSays(answer);
       expect(
-        await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK, onFault: a.onFault }),
+        await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK }),
         JSON.stringify(answer) ?? 'undefined',
       ).toBe(FALLBACK);
-      expect(a.faults).toEqual([]);
     }
   });
 
-  it('accountName: an auth fault reaches onFault once and answers the fallback', async () => {
+  it('accountName: an auth fault throws, never a name or null: a page that marks who has left must not read an outage as nobody leaving', async () => {
     const fault = Object.assign(new Error('x'), { code: 'ECONNRESET' });
     const a = authSays(fault, { throws: true });
 
-    expect(await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK, onFault: a.onFault })).toBe(
-      FALLBACK,
+    const err = await accountName(a.bus, a.ctx, ADA, { allowEmail: true, fallback: FALLBACK }).then(
+      (name) => ({ answered: name }),
+      (e: unknown) => e,
     );
-    // That error, as the bus hands it on: wrapped, with the fault as its cause, so a page logs its code.
-    expect(a.faults).toHaveLength(1);
-    expect(a.faults[0]).toBeInstanceOf(PluginError);
-    expect((a.faults[0] as Error).cause).toBe(fault);
-    expect(logCode(a.faults[0])).toBe('ECONNRESET');
+
+    // That error, as the bus hands it on: wrapped, with the fault as its cause, so the page logs its code.
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as Error).cause).toBe(fault);
+    expect(logCode(err)).toBe('ECONNRESET');
+    expect(a.asked).toEqual([ADA]);
   });
 });
 
@@ -106,5 +101,34 @@ describe('personName', () => {
       FALLBACK,
     );
     expect(a.faults).toEqual([]);
+  });
+
+  it('personName: an auth fault reaches onFault once and answers the fallback, so a name never fails the page', async () => {
+    const fault = Object.assign(new Error('x'), { code: 'ECONNRESET' });
+    const a = authSays(fault, { throws: true });
+
+    expect(await personName(a.bus, a.ctx, ADA, { allowEmail: false, fallback: FALLBACK, onFault: a.onFault })).toBe(
+      FALLBACK,
+    );
+    // That error, as the bus hands it on: wrapped, with the fault as its cause, so a page logs its code.
+    expect(a.faults).toHaveLength(1);
+    expect(a.faults[0]).toBeInstanceOf(PluginError);
+    expect((a.faults[0] as Error).cause).toBe(fault);
+    expect(logCode(a.faults[0])).toBe('ECONNRESET');
+  });
+
+  it('personName: a display name, else the email only where allowEmail says so, else the fallback', async () => {
+    const named = authSays({ id: ADA, displayName: '  Ada\u202E   Admin  ', email: 'ada@canopyworks.example' });
+    expect(await personName(named.bus, named.ctx, ADA, { allowEmail: false, fallback: FALLBACK, onFault: named.onFault })).toBe(
+      'Ada Admin',
+    );
+    const nameless = authSays({ id: ADA, displayName: null, email: 'ada@canopyworks.example' });
+    expect(
+      await personName(nameless.bus, nameless.ctx, ADA, { allowEmail: true, fallback: FALLBACK, onFault: nameless.onFault }),
+    ).toBe('ada@canopyworks.example');
+    expect(
+      await personName(nameless.bus, nameless.ctx, ADA, { allowEmail: false, fallback: FALLBACK, onFault: nameless.onFault }),
+    ).toBe(FALLBACK);
+    expect([...named.faults, ...nameless.faults]).toEqual([]);
   });
 });

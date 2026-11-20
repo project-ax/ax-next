@@ -130,7 +130,10 @@ export interface AdminSlackBot {
   botName: string;
   /** Slack's @handle for the bot user, or null when Slack never said. */
   handle: string | null;
-  /** Display name, else email; "A teammate" when auth can't answer; null when auth has no such account. */
+  /**
+   * Display name, else email, else "A teammate"; null when auth has no such
+   * account. Never a stand-in for an auth fault: that fails the whole list.
+   */
   approver: string | null;
   state: 'pending' | 'live';
   /** When the bot was asked for: its row's `createdAt`, ISO 8601. */
@@ -295,20 +298,21 @@ export interface Bots {
    * Admin › Slack's list of every team agent's bot, pending or live, never
    * the shared app (TASK-1172), in the store's order (oldest first). Each
    * approver as auth knows them now (`accountName`): their display name, else
-   * their email (only admins read this list); "A teammate" when auth can't
-   * answer, logged `slack_bot_failed { installId, stage: 'approver', code }`;
-   * null when auth has no such account, so the page can say they've left.
-   * Takes no lock, reads no vault and asks Slack nothing. A store fault
-   * throws: the route's 500.
+   * their email (only admins read this list); null when auth has no such
+   * account, so the page can say they've left. Takes no lock, reads no vault
+   * and asks Slack nothing. A store fault throws, and so does a fault in
+   * auth, for any approver: the route's 500, which the page shows as an error
+   * with Try again. An offboarding admin reads this list for who has left, so
+   * an outage must never read as "A teammate" for everyone (nobody left).
    */
   listForAdmin(i: { ctx: AgentContext }): Promise<AdminSlackBot[]>;
 }
 
 /**
- * The approver's name when auth has none to show or can't answer. The
- * agent's settings, which members read, also show it for an account auth no
- * longer has, and never the email; Admin › Slack's list shows the email, and
- * null for an account that's gone.
+ * The approver's name when auth has none to show. The agent's settings,
+ * which members read, also show it when auth can't answer and for an account
+ * auth no longer has, and never the email. Admin › Slack's list shows the
+ * email, null for an account that's gone, and fails when auth can't answer.
  */
 const APPROVER_FALLBACK = 'A teammate';
 /**
@@ -724,11 +728,11 @@ export function createBots(d: BotDeps): Bots {
         botName: bot.botName,
         handle: bot.botHandle,
         // As auth knows them now (the row keeps only the id), the email
-        // included: only admins read this list.
+        // included: only admins read this list. A fault in auth throws: the
+        // whole list fails rather than hide who has left.
         approver: await accountName(d.bus, i.ctx, bot.connectedByUserId, {
           allowEmail: true,
           fallback: APPROVER_FALLBACK,
-          onFault: (err) => steps.failed('approver', err, bot.installId, 'warn'),
         }),
         state: bot.status === 'active' ? 'live' : 'pending',
         addedAt: bot.createdAt.toISOString(),

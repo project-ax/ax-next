@@ -547,7 +547,9 @@ answers again in the agent's old shared channels, because we never touched
 its bindings. It only stepped aside while the agent's own bot was live.
 Admin › Slack's list shows each bot's name, handle, approver (or "A former
 member" when auth no longer has them), when it was added, and its status. It
-has no agent or team column yet.
+has no agent or team column yet. If auth can't answer for an approver, the
+whole list fails and says so, with Try again: an outage that read as names
+would hide everyone who has left.
 
 ## 5. How a turn runs
 
