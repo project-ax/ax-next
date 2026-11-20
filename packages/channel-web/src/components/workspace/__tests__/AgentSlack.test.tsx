@@ -232,17 +232,33 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     );
     // Above the form: the bot name field comes after it.
     expect(note.compareDocumentPosition(screen.getByLabelText('Bot name')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The viewer made the Slack app, so only they can delete it there.
+    expect(note).toHaveTextContent(
+      "Or delete it yourself: open it in Slack's app settings and click Delete App at the bottom of the page.",
+    );
+    expect(within(note).getByRole('link', { name: "Slack's app settings" })).toBeInTheDocument();
     expect(cancel).toHaveBeenCalledWith('a1');
     expect(document.body.textContent).not.toMatch(/\bAX\b/);
   });
 
+  it('ready, cancelled by another manager: the note names the person who can delete the app', async () => {
+    await cancelThroughReRead(ready([], true, { ...PENDING_BOT, canContinue: false }), ready([], true, NONE_STORED));
+    const note = await screen.findByText(LEFT_OVER);
+    expect(note).toHaveTextContent(
+      "We cancelled the request, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Ada Lovelace set it up and can also delete it in Slack's app settings.",
+    );
+    expect(note).not.toHaveTextContent(/yourself/);
+    expect(within(note).queryByRole('link')).toBeNull();
+  });
+
   it('no workspace: the bot section goes with the request, but the note still shows', async () => {
+    // Without the shared install nobody can continue, so the status never says the viewer is the approver.
     await cancelThroughReRead(
-      { state: 'no-workspace', bot: PENDING_BOT },
+      { state: 'no-workspace', bot: { ...PENDING_BOT, canContinue: false } },
       { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
     );
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
-    expect(screen.getByText(LEFT_OVER)).toBeInTheDocument();
+    expect(screen.getByText(LEFT_OVER)).toHaveTextContent('Ada Lovelace set it up and can also delete it');
     expect(screen.queryByRole('button', { name: 'Create the Slack bot' })).toBeNull();
   });
 

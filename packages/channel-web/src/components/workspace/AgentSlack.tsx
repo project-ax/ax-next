@@ -160,7 +160,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
             />
           ) : (
             // No form to sit above here: the note stands on its own.
-            leftOver !== null && <AppLeftOverNote />
+            leftOver !== null && <AppLeftOverNote leftOver={leftOver} />
           )}
         </div>
       );

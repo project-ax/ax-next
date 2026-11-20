@@ -43,9 +43,17 @@ import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
 
-/** What a successful cancel said. `appDeleted` false: its Slack app may still be on Slack. */
+/**
+ * What a successful cancel said, and about whom. `appDeleted` false: its Slack
+ * app may still be on Slack, where only `approver` (whose token made it) can
+ * delete it. `approverIsViewer` is the pending view's `canContinue`, which is
+ * also false for the approver while Slack isn't connected; they then read the
+ * line that names them, which is still true.
+ */
 export interface BotCancelled {
   appDeleted: boolean;
+  approverIsViewer: boolean;
+  approver: string;
 }
 
 export interface AgentSlackBotProps {
@@ -99,13 +107,20 @@ function Section({ description, children }: { description?: ReactNode; children:
  * Exported for the no-workspace view, which shows no bot section once there is
  * no bot.
  */
-export function AppLeftOverNote() {
+export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
   return (
     <Alert>
       <AlertDescription>
         We cancelled the request, but we couldn&apos;t confirm its Slack app was deleted, so it may still be on
-        Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete. Or delete it yourself:
-        open it in <SlackAppsLink /> and click Delete App at the bottom of the page.
+        Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete.{' '}
+        {/* Slack's app page lists only your own apps, so the link is only any use to the one who made it. */}
+        {leftOver.approverIsViewer ? (
+          <>
+            Or delete it yourself: open it in <SlackAppsLink /> and click Delete App at the bottom of the page.
+          </>
+        ) : (
+          `${leftOver.approver} set it up and can also delete it in Slack's app settings.`
+        )}
       </AlertDescription>
     </Alert>
   );
@@ -128,7 +143,7 @@ export function AgentSlackBot({
           agentId={agentId}
           agentName={agentName}
           configTokenStored={bot.configTokenStored}
-          notice={leftOver !== null && !leftOver.appDeleted ? <AppLeftOverNote /> : null}
+          notice={leftOver !== null && !leftOver.appDeleted ? <AppLeftOverNote leftOver={leftOver} /> : null}
           onRequesting={onRequesting}
           onChanged={onChanged}
         />
@@ -293,7 +308,7 @@ function Pending({
         goToSlack(installUrl);
       } else {
         const { appDeleted } = await cancelSlackBot(agentId);
-        onCancelled({ appDeleted });
+        onCancelled({ appDeleted, approverIsViewer: bot.canContinue, approver: bot.approver });
         onChanged();
       }
     } catch (err) {

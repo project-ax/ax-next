@@ -303,27 +303,34 @@ describe('pending', () => {
   });
 
   // The note's life across the status re-read (the section unmounts while it loads) is tested in AgentSlack.test.tsx.
-  it.each([true, false])('a cancel hands what it said (appDeleted %s) up before reading the status again', async (appDeleted) => {
-    cancel.mockResolvedValueOnce({ appDeleted });
-    const order: string[] = [];
-    const onCancelled = vi.fn(() => order.push('cancelled'));
-    const onChanged = vi.fn(() => order.push('changed'));
-    render(
-      <AgentSlackBot
-        agentId="a1"
-        agentName="Quill"
-        bot={PENDING}
-        canManage
-        {...QUIET}
-        onCancelled={onCancelled}
-        onChanged={onChanged}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    expect(onCancelled).toHaveBeenCalledWith({ appDeleted });
-    expect(order).toEqual(['cancelled', 'changed']);
-  });
+  it.each([
+    [true, true],
+    [false, true],
+    [false, false],
+  ])(
+    'a cancel hands what it said (appDeleted %s) and who made the app (the viewer: %s) up before reading the status again',
+    async (appDeleted, canContinue) => {
+      cancel.mockResolvedValueOnce({ appDeleted });
+      const order: string[] = [];
+      const onCancelled = vi.fn(() => order.push('cancelled'));
+      const onChanged = vi.fn(() => order.push('changed'));
+      render(
+        <AgentSlackBot
+          agentId="a1"
+          agentName="Quill"
+          bot={{ ...PENDING, canContinue }}
+          canManage
+          {...QUIET}
+          onCancelled={onCancelled}
+          onChanged={onChanged}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+      expect(onCancelled).toHaveBeenCalledWith({ appDeleted, approverIsViewer: canContinue, approver: 'Ada Lovelace' });
+      expect(order).toEqual(['cancelled', 'changed']);
+    },
+  );
 
   it('a failed cancel hands nothing up', async () => {
     cancel.mockRejectedValueOnce(refusal(500, 'internal'));
@@ -345,7 +352,7 @@ describe('pending', () => {
         bot={NONE_STORED}
         canManage
         {...QUIET}
-        leftOver={{ appDeleted: false }}
+        leftOver={{ appDeleted: false, approverIsViewer: true, approver: 'Ada Lovelace' }}
         onRequesting={onRequesting}
         onChanged={vi.fn()}
       />,
@@ -359,6 +366,27 @@ describe('pending', () => {
     submit();
     await waitFor(() => expect(go).toHaveBeenCalledWith(INSTALL_URL));
     expect(onRequesting).toHaveBeenCalledTimes(1);
+  });
+
+  it("only the person who made the app is told to delete it themselves; anyone else is told who can", () => {
+    render(
+      <AgentSlackBot
+        agentId="a1"
+        agentName="Quill"
+        bot={NONE_STORED}
+        canManage
+        {...QUIET}
+        leftOver={{ appDeleted: false, approverIsViewer: false, approver: 'Ada Lovelace' }}
+        onChanged={vi.fn()}
+      />,
+    );
+    const note = screen.getByText(/couldn.t confirm its Slack app was deleted/);
+    expect(note).toHaveTextContent(
+      "We cancelled the request, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Ada Lovelace set it up and can also delete it in Slack's app settings.",
+    );
+    expect(note).not.toHaveTextContent(/yourself/);
+    // Slack's app page lists only your own apps: a link there would show this viewer nothing.
+    expect(screen.queryByRole('link', { name: "Slack's app settings" })).toBeNull();
   });
 
   it('a cancel that failed says so and nothing is re-read', async () => {
