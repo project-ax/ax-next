@@ -82,6 +82,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
+//   POST /settings/slack/:agentId/bot{,/install-url,/cancel}  — the agent's own
+//        Slack bot (TASK-1167, bots.ts): a team admin of its team asks for it,
+//        picks it back up in Slack, or cancels it; CSRF-checked
 //
 // It keeps one install row in its own `channel_slack_v1_installs` table, the
 // install's three secrets in the credentials vault and, there too, one
@@ -456,7 +459,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             }),
           },
           // These keep http-server's CSRF check: the caller is a signed-in browser.
-          ...createAgentSlackRoutes(channelDeps),
+          // The bot routes reach the same `bots` as agents:deleted, under the one app lock.
+          ...createAgentSlackRoutes(channelDeps, bots),
         ];
 
         for (const route of routes) {

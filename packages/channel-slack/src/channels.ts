@@ -179,6 +179,52 @@ export async function agentAccess(
 }
 
 /**
+ * The manage question, for an agent `userId` can already see: is
+ * `agents:can-set-shared-credential` an explicit yes? That is a team admin of
+ * the agent's team. Always asked as a non-admin: workspace-admin status never
+ * connects a channel (TASK-813's rule). Not-found → 'agent-gone' (deleted
+ * since it was resolved); other errors propagate.
+ */
+async function adminOfTeam(
+  bus: HookBus,
+  ctx: AgentContext,
+  agentId: string,
+  userId: string,
+): Promise<'yes' | 'no' | 'agent-gone'> {
+  let out: unknown;
+  try {
+    out = await bus.call<{ agentId: string; actor: { userId: string; isAdmin: false } }, unknown>(
+      'agents:can-set-shared-credential',
+      ctx,
+      { agentId, actor: { userId, isAdmin: false } },
+    );
+  } catch (err) {
+    if (pluginCode(err) === 'not-found') return 'agent-gone';
+    throw err;
+  }
+  return isRecord(out) && out['allowed'] === true ? 'yes' : 'no';
+}
+
+/**
+ * agentAccess, narrowed to a team admin of the agent's team (the manage
+ * question above, asked with `isAdmin: false`): a member who isn't one is
+ * 'no', and so is anyone `agents:resolve` refuses, a deleted account
+ * included; not-found → 'agent-gone'; a personal agent → 'not-team'. Other
+ * errors propagate. It is whom a team agent's own bot (TASK-1167) runs its
+ * outsiders as: its requester, only while this answers 'yes'.
+ */
+export async function teamAdminAccess(
+  bus: HookBus,
+  ctx: AgentContext,
+  agentId: string,
+  userId: string,
+): Promise<AgentAccess> {
+  const seen = await resolveFor(bus, ctx, agentId, userId);
+  if (seen.access !== 'yes') return seen.access;
+  return adminOfTeam(bus, ctx, agentId, userId);
+}
+
+/**
  * May `userId` see (`view`) or manage (`manage`) the agent's Slack channels?
  * Someone who can't see the agent gets `not-found` whether or not it exists;
  * a personal agent is `personal-agent`; a member who isn't a team admin of
@@ -196,21 +242,10 @@ export async function checkRights(
   if (seen.access === 'no' || seen.access === 'agent-gone') return { ok: false, reason: 'not-found' };
   if (seen.access === 'not-team') return { ok: false, reason: 'personal-agent' };
   if (need === 'manage') {
-    let out: unknown;
-    try {
-      // Workspace-admin status never connects a channel (TASK-813's rule);
-      // a team admin of the agent's team does.
-      out = await bus.call<{ agentId: string; actor: { userId: string; isAdmin: false } }, unknown>(
-        'agents:can-set-shared-credential',
-        ctx,
-        { agentId, actor: { userId, isAdmin: false } },
-      );
-    } catch (err) {
-      // Deleted between the two questions.
-      if (pluginCode(err) === 'not-found') return { ok: false, reason: 'not-found' };
-      throw err;
-    }
-    if (!isRecord(out) || out['allowed'] !== true) return { ok: false, reason: 'forbidden' };
+    const admin = await adminOfTeam(bus, ctx, agentId, userId);
+    // Deleted between the two questions.
+    if (admin === 'agent-gone') return { ok: false, reason: 'not-found' };
+    if (admin === 'no') return { ok: false, reason: 'forbidden' };
   }
   return { ok: true, agentId, agentName: seen.agentName };
 }

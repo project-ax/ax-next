@@ -5,6 +5,7 @@ import {
   checkRights,
   connectChannel,
   listAvailableChannels,
+  teamAdminAccess,
   type ChannelDeps,
 } from '../channels.js';
 import { CHANNEL_LIST_PAGE_LIMIT } from '../limits.js';
@@ -30,6 +31,10 @@ const INSTALL_ID = 'q3VtZ0xH4kTn9Wb2LmPa1A';
 const BOT_TOKEN = fakeBotToken('CHANNELSTESTSECRET');
 const INSTALL: InstallRow = {
   installId: INSTALL_ID,
+  kind: 'shared',
+  agentId: null,
+  requestedByUserId: null,
+  botHandle: null,
   status: 'active',
   appId: 'A07QF9ZK2MN',
   clientId: '7512345678901.7598765432109',
@@ -324,6 +329,54 @@ describe('checkRights', () => {
       w.people.faults.set(hook, outage);
       await expect(checkRights(w.bus, ctx, SUPPORT.id, ADA, 'manage'), hook).rejects.toBe(outage);
     }
+  });
+});
+
+// ── teamAdminAccess ─────────────────────────────────────────────────────────
+
+describe('teamAdminAccess', () => {
+  // Whom a team agent's own bot (TASK-1167) runs its outsiders as: its
+  // requester, and only while they are still a team admin of the agent's team.
+  it('teamAdminAccess: yes for a team admin; no for a member, a stranger or a deleted user; agent-gone for a missing agent; not-team for a personal agent; an outage propagates', async () => {
+    const w = world();
+    expect(await teamAdminAccess(w.bus, ctx, SUPPORT.id, ADA)).toBe('yes');
+    expect(await teamAdminAccess(w.bus, ctx, SUPPORT.id, MEL)).toBe('no');
+    // A stranger, another team's admin, and an account that no longer exists: agents:resolve refuses each.
+    expect(await teamAdminAccess(w.bus, ctx, SUPPORT.id, OTTO)).toBe('no');
+    expect(await teamAdminAccess(w.bus, ctx, SUPPORT.id, SAM)).toBe('no');
+    expect(await teamAdminAccess(w.bus, ctx, SUPPORT.id, 'usr_deleted')).toBe('no');
+    expect(await teamAdminAccess(w.bus, ctx, 'agt_gone', ADA)).toBe('agent-gone');
+    expect(await teamAdminAccess(w.bus, ctx, PATS.id, PAT)).toBe('not-team');
+    // Only those who could see a team agent got the admin question, each about themselves.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT.id, actor: { userId: ADA, isAdmin: false } },
+      { agentId: SUPPORT.id, actor: { userId: MEL, isAdmin: false } },
+    ]);
+
+    const outage = new PluginError({ code: 'unavailable', plugin: '@ax/teams', message: 'db down' });
+    for (const hook of ['agents:resolve', 'agents:can-set-shared-credential']) {
+      const down = world();
+      down.people.faults.set(hook, outage);
+      await expect(teamAdminAccess(down.bus, ctx, SUPPORT.id, ADA), hook).rejects.toBe(outage);
+    }
+  });
+
+  it('asks as a non-admin, so a workspace admin who is only a member is no; only an explicit true is yes; a delete between the two questions is agent-gone', async () => {
+    const w = world({ workspaceAdminsMayManage: true });
+    expect(await teamAdminAccess(w.bus, ctx, SUPPORT.id, WILL)).toBe('no');
+
+    for (const answer of [{}, { allowed: 'true' }, null, true]) {
+      const odd = world();
+      odd.people.answers.set('agents:can-set-shared-credential', answer);
+      expect(await teamAdminAccess(odd.bus, ctx, SUPPORT.id, ADA), JSON.stringify(answer)).toBe('no');
+    }
+
+    const gone = world();
+    gone.people.faults.set(
+      'agents:can-set-shared-credential',
+      new PluginError({ code: 'not-found', plugin: '@ax/agents', message: 'gone' }),
+    );
+    expect(await teamAdminAccess(gone.bus, ctx, SUPPORT.id, ADA)).toBe('agent-gone');
   });
 });
 
