@@ -182,12 +182,20 @@ export function SlackBotRequests() {
                   )}
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm" disabled={declining !== null} onClick={() => setApproving(request)}>
+                  {/* Every row's buttons read the same, so each names its bot for a screen reader. */}
+                  <Button
+                    size="sm"
+                    aria-label={`Approve ${request.botName}`}
+                    disabled={declining !== null}
+                    onClick={() => setApproving(request)}
+                  >
                     Approve…
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
+                    // While it works the visible "Declining…" is the name.
+                    aria-label={declining === request.requestId ? undefined : `Decline ${request.botName}`}
                     disabled={declining !== null}
                     onClick={() => void decline(request)}
                   >

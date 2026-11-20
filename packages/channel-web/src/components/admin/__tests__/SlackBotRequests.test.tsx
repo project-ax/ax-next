@@ -72,7 +72,7 @@ const refusal = (status: number, code: string) => new SlackAdminError(status, co
 /** Open the Approve dialog for the one row that names `botName`. */
 async function openApprove(botName = 'Quill Bot') {
   const row = (await screen.findByText(new RegExp(`^${botName} for `))).closest('li') as HTMLElement;
-  fireEvent.click(within(row).getByRole('button', { name: 'Approve…' }));
+  fireEvent.click(within(row).getByRole('button', { name: `Approve ${botName}` }));
   return screen.findByRole('dialog');
 }
 
@@ -103,8 +103,12 @@ describe('the list', () => {
     // No team name, no dot.
     expect(screen.getByText('Rook Bot for Rook')).toBeInTheDocument();
     expect(screen.getByText(`Asked by Grace Hopper on ${ASKED_DATE}.`)).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Approve…' })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'Decline' })).toHaveLength(2);
+    // Each row's buttons name their bot, so a screen reader can tell them apart; the text on screen is unchanged.
+    expect(screen.getByRole('button', { name: 'Approve Quill Bot' })).toHaveTextContent('Approve…');
+    expect(screen.getByRole('button', { name: 'Approve Rook Bot' })).toHaveTextContent('Approve…');
+    expect(screen.getByRole('button', { name: 'Decline Quill Bot' })).toHaveTextContent('Decline');
+    expect(screen.getByRole('button', { name: 'Decline Rook Bot' })).toHaveTextContent('Decline');
+    expect(screen.getAllByRole('button', { name: /^(Approve|Decline) / })).toHaveLength(4);
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
   });
 
@@ -302,7 +306,7 @@ describe('Approve', () => {
     const dialog = await openApprove();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Approve and open Slack' }));
     expect(await screen.findByText("This changed while you were here, so we've refreshed it.")).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Approve…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Approve Quill Bot' })).toBeNull();
   });
 
   it('Cancel closes it without sending anything, and the next opening starts empty', async () => {
@@ -323,7 +327,7 @@ describe('Decline', () => {
     list.mockResolvedValueOnce(withToken(QUILL, ROOK)).mockResolvedValueOnce(withToken(ROOK));
     render(<SlackBotRequests />);
     const row = (await screen.findByText('Quill Bot for Quill · Support')).closest('li') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Decline' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Decline Quill Bot' }));
     expect(await within(row).findByRole('button', { name: 'Declining…' })).toBeDisabled();
     await waitFor(() => expect(screen.queryByText('Quill Bot for Quill · Support')).toBeNull());
     expect(decline).toHaveBeenCalledWith(QUILL.requestId);
@@ -335,7 +339,7 @@ describe('Decline', () => {
   it('the last decline leaves nothing on the page', async () => {
     list.mockResolvedValueOnce(withToken(QUILL)).mockResolvedValueOnce(withToken());
     const { container } = render(<SlackBotRequests />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Decline' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Decline Quill Bot' }));
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
@@ -344,11 +348,11 @@ describe('Decline', () => {
     list.mockResolvedValue(withToken(QUILL, ROOK));
     render(<SlackBotRequests />);
     const row = (await screen.findByText('Quill Bot for Quill · Support')).closest('li') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Decline' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Decline Quill Bot' }));
     expect(await within(row).findByRole('alert')).toHaveTextContent(
       "We couldn't decline that just now. Try again in a minute.",
     );
-    expect(within(row).getByRole('button', { name: 'Decline' })).toBeEnabled();
+    expect(within(row).getByRole('button', { name: 'Decline Quill Bot' })).toBeEnabled();
     const other = screen.getByText('Rook Bot for Rook').closest('li') as HTMLElement;
     expect(within(other).queryByRole('alert')).toBeNull();
     expect(list).toHaveBeenCalledTimes(1);
@@ -359,7 +363,7 @@ describe('Decline', () => {
     list.mockResolvedValueOnce(withToken(QUILL, ROOK)).mockResolvedValueOnce(withToken(ROOK));
     render(<SlackBotRequests />);
     const row = (await screen.findByText('Quill Bot for Quill · Support')).closest('li') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Decline' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Decline Quill Bot' }));
     expect(await screen.findByText("This changed while you were here, so we've refreshed it.")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('Quill Bot for Quill · Support')).toBeNull());
   });
