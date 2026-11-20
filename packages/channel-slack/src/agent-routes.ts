@@ -23,7 +23,7 @@ import { checkUser } from './user-auth.js';
  * The Slack section of a team agent's settings (TASK-1094): the channels it
  * answers in, and connecting, disconnecting and remembering them. And the
  * agent's own Slack bot (TASK-1167, bots.ts): asking for it, picking the
- * request back up in Slack, and cancelling it.
+ * request back up in Slack, cancelling it, and disconnecting it (TASK-1172).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
@@ -33,6 +33,8 @@ import { checkUser } from './user-auth.js';
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }, its approver only, while pending
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }, while pending
+ *   POST /settings/slack/:agentId/bot/disconnect  → { appDeleted }, pending or live, with or without
+ *                                               the shared app (the domain asks the rights again)
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
@@ -45,7 +47,7 @@ import { checkUser } from './user-auth.js';
  * so it has Admin › Slack's Connect cap. Its `refreshToken` is optional (the
  * one stored for the person is used without it), but one that is there must
  * look like a configuration refresh token, so an access token pasted into
- * that box never reaches Slack. The other two bot routes read no body.
+ * that box never reaches Slack. The other bot routes read no body.
  *
  * Team members who aren't admins read the section, so "connected by" and a
  * bot's approver are a display name or "A teammate", never an email.
@@ -53,8 +55,12 @@ import { checkUser } from './user-auth.js';
  */
 
 export type AgentSlackStatus =
-  /** `bot`: a live bot outlives the shared install (Admin › Slack's Disconnect leaves it alone). */
-  | { state: 'no-workspace'; bot: AgentSlackBot }
+  /**
+   * `bot`: a live bot outlives the shared install (Admin › Slack's Disconnect
+   * leaves it alone). `canManage`: the person reading manages the agent (as
+   * `ready` says it), so they can still disconnect that bot (TASK-1172).
+   */
+  | { state: 'no-workspace'; canManage: boolean; bot: AgentSlackBot }
   /**
    * `answersDms`: a DM from the owner reaches THIS agent, their oldest
    * personal agent (router.ts `personalAgentFor`). Which one it does reach
@@ -191,7 +197,7 @@ interface Asked {
 
 export function createAgentSlackRoutes(
   d: ChannelDeps,
-  bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'status'>,
+  bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status'>,
 ): RouteSpec[] {
   const authCtx = makeAgentContext({
     sessionId: 'channel-slack',
@@ -224,8 +230,10 @@ export function createAgentSlackRoutes(
     const install = await d.installs.current();
     const sharedActive = install !== null && install.status === 'active';
     if (!rights.ok) {
-      // A personal agent has no bot of its own: none is read.
-      if (!sharedActive) return json(200, { state: 'no-workspace', bot: NO_BOT } satisfies AgentSlackStatus);
+      // A personal agent has no bot of its own: none is read, and nobody manages one.
+      if (!sharedActive) {
+        return json(200, { state: 'no-workspace', canManage: false, bot: NO_BOT } satisfies AgentSlackStatus);
+      }
       // Only its owner sees a personal agent (agents:resolve), so the person
       // asking is the one whose DMs are routed: asked exactly as the DM router asks.
       const answersDms = (await personalAgentFor(d.bus, a.ctx, a.userId)) === a.agentId;
@@ -244,7 +252,9 @@ export function createAgentSlackRoutes(
       manages: manage.ok,
       sharedActive,
     });
-    if (!sharedActive) return json(200, { state: 'no-workspace', bot } satisfies AgentSlackStatus);
+    if (!sharedActive) {
+      return json(200, { state: 'no-workspace', canManage: manage.ok, bot } satisfies AgentSlackStatus);
+    }
     const nameOf = once((userId) => connectorName(a.ctx, userId));
     const accessOf = once((userId): Promise<AgentAccess> => agentAccess(d.bus, a.ctx, a.agentId, userId));
     const channels: Extract<AgentSlackStatus, { state: 'ready' }>['channels'] = [];
@@ -378,6 +388,17 @@ export function createAgentSlackRoutes(
   }
 
   /**
+   * Take the agent's own bot away, pending or live (TASK-1172): any team
+   * admin who manages the agent may, with or without the shared app.
+   */
+  async function disconnectBot(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    // The domain asks the rights again inside the app lock, before anything else.
+    return bots.disconnect({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId });
+  }
+
+  /**
    * One route: the person, then the agent id's shape, then `run`, then
    * exactly one answer. A throw `run` didn't handle is a 500, logged
    * code-only with the route's stage. A POST's body is capped at
@@ -430,5 +451,6 @@ export function createAgentSlackRoutes(
     route('POST', '/bot', 'bot', requestBot, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
     route('POST', '/bot/install-url', 'bot-install-url', botInstallUrl),
     route('POST', '/bot/cancel', 'bot-cancel', cancelBot),
+    route('POST', '/bot/disconnect', 'bot-disconnect', disconnectBot),
   ];
 }

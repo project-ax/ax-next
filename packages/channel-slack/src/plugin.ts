@@ -83,9 +83,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
-//   POST /settings/slack/:agentId/bot{,/install-url,/cancel}  — the agent's own
-//        Slack bot (TASK-1167, bots.ts): a team admin of its team asks for it,
-//        picks it back up in Slack, or cancels it; CSRF-checked
+//   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect}  — the
+//        agent's own Slack bot (TASK-1167, bots.ts): a team admin of its team
+//        asks for it, picks it back up in Slack, cancels it, or disconnects it
+//        (TASK-1172); CSRF-checked
 //   GET  /slack/bots/oauth/callback  — where Slack sends a bot's approver after
 //        Allow (bot-callback.ts): signed in, its OAuth state bound to the
 //        approver (the proof a GET carries), under the one app lock

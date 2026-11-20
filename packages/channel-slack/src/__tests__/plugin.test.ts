@@ -671,7 +671,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the twenty routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the twenty-one routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -721,6 +721,13 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/settings/slack/:agentId/bot/cancel', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // A team admin disconnects the agent's own bot, pending or live (TASK-1172).
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/disconnect',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       // Where Slack sends a bot's approver back after Allow: signed in, its OAuth state the proof.
       { method: 'GET', path: '/slack/bots/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
     ]);
@@ -2083,7 +2090,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(20);
+    expect(s.routes).toHaveLength(21);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2105,7 +2112,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(20);
+    expect(s.routes).toHaveLength(21);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2134,7 +2141,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(20);
+    expect(s.routes).toHaveLength(21);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2177,10 +2184,10 @@ describe('@ax/channel-slack plugin', () => {
     expect((await get()).status).toBe(401);
     expect(await get('usr_bob')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
     expect(await get(ADMIN.id, 'agt_nobody')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
-    // No workspace is connected yet.
+    // No workspace is connected yet. Ada manages the agent, so she could still disconnect its own bot.
     expect(await get(ADMIN.id)).toEqual({
       status: 200,
-      body: { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+      body: { state: 'no-workspace', canManage: true, bot: { state: 'none', configTokenStored: false } },
       done: true,
     });
     await insertActiveInstall();
@@ -2420,7 +2427,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(20);
+    expect(s.routes).toHaveLength(21);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
