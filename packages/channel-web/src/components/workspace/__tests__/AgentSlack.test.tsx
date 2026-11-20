@@ -268,6 +268,17 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
   });
 
+  it('no workspace: a cancel that deleted its Slack app leaves no note either', async () => {
+    // The no-workspace view shows the note on its own, with no bot section to hide it a second time.
+    await cancelThroughReRead(
+      { state: 'no-workspace', bot: { ...PENDING_BOT, canContinue: false } },
+      { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+      true,
+    );
+    expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
+    expect(screen.queryByText(LEFT_OVER)).toBeNull();
+  });
+
   it('the note goes when another agent is shown', async () => {
     const { rerender } = await cancelThroughReRead(ready([], true, PENDING_BOT), ready([], true, NONE_STORED));
     expect(await screen.findByText(LEFT_OVER)).toBeInTheDocument();
