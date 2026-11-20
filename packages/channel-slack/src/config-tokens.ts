@@ -154,9 +154,11 @@ async function movePerson(
  * Deletes `app.connectedByUserId`'s configuration token unless an install or a
  * leftover app still names them (see above); `app.installId` only names the
  * app in the secret store's log line. A check that fails keeps the token and
- * is handed to `onFault`. With `onlyIfStored` (a reset), the token is read
- * first and deleted only when it is there or can't be read: the vault deletes
- * by writing an empty row, and a reset leaves no rows behind.
+ * is handed to `onFault` with step `check`. With `onlyIfStored` (a reset), the
+ * token is read first and deleted only when it is there or can't be read: the
+ * vault deletes by writing an empty row, and a reset leaves no rows behind. A
+ * read that fails is handed to `onFault` with step `read`, and the delete goes
+ * ahead.
  */
 export async function releaseConfigToken(
   d: {
@@ -164,24 +166,29 @@ export async function releaseConfigToken(
     secrets: Pick<SecretStore, 'getConfigToken' | 'removeConfigToken'>;
   },
   app: SecretOwner,
-  o: { onFault: (err: unknown) => void; onlyIfStored?: boolean },
+  o: { onFault: (err: unknown, step: 'check' | 'read') => void; onlyIfStored?: boolean },
 ): Promise<void> {
+  const report = (err: unknown, step: 'check' | 'read'): void => {
+    try {
+      o.onFault(err, step);
+    } catch {
+      // Nothing left to report it with; what happens next doesn't change.
+    }
+  };
   try {
     if (await d.store.personHasApps(app.connectedByUserId)) return;
   } catch (err) {
-    try {
-      o.onFault(err);
-    } catch {
-      // Nothing left to report it with; the token is kept either way.
-    }
+    // The token is kept.
+    report(err, 'check');
     return;
   }
   if (o.onlyIfStored === true) {
     let stored = true;
     try {
       stored = (await d.secrets.getConfigToken(app)) !== null;
-    } catch {
+    } catch (err) {
       // A read that fails is no proof it is gone: delete it.
+      report(err, 'read');
     }
     if (!stored) return;
   }

@@ -575,15 +575,19 @@ function subscribeResetCleanup(
       await releaseConfigToken({ store, secrets }, install, {
         // Read first, so a token the wipe already took leaves no tombstone row.
         onlyIfStored: true,
-        onFault: (err) => {
+        // A failed check keeps the token (an error); a failed read is
+        // followed by the delete anyway (a warning).
+        onFault: (err, step) => {
           try {
-            logger.error('slack_reset_cleanup_failed', {
+            const fields = {
               installId: install.installId,
-              stage: 'release-config-token',
+              stage: step === 'read' ? 'read-config-token' : 'release-config-token',
               code: logCode(err),
-            });
+            };
+            if (step === 'read') logger.warn('slack_reset_cleanup_failed', fields);
+            else logger.error('slack_reset_cleanup_failed', fields);
           } catch {
-            // Nothing left to report it with; the token is kept either way.
+            // Nothing left to report it with; what happens to the token doesn't change.
           }
         },
       });

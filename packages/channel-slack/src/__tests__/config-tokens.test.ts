@@ -179,7 +179,10 @@ function world(o: { installs?: InstallRow[]; leftovers?: Array<string | null> } 
     storeFaults,
     asked,
     move: () => moveConfigTokens({ store, secrets, logger }),
-    release: (app: SecretOwner, opts: { onFault: (err: unknown) => void; onlyIfStored?: boolean }) =>
+    release: (
+      app: SecretOwner,
+      opts: { onFault: (err: unknown, step: 'check' | 'read') => void; onlyIfStored?: boolean },
+    ) =>
       releaseConfigToken({ store, secrets }, app, opts),
   };
 }
@@ -605,17 +608,18 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     }
   });
 
-  it('X3 a failed check keeps the token and calls onFault once with the error', async () => {
+  it("X3 a failed check keeps the token and calls onFault once with the error, step 'check'", async () => {
     const w = world();
     w.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
     const fault = dbFault('57P01');
     w.storeFaults.check = fault;
-    const faults: unknown[] = [];
+    const faults: unknown[][] = [];
 
-    await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) })).resolves.toBeUndefined();
+    await expect(w.release(ADA_APP, { onFault: (err, step) => faults.push([err, step]) })).resolves.toBeUndefined();
 
     expect(faults).toHaveLength(1);
-    expect(faults[0]).toBe(fault);
+    expect(faults[0]![0]).toBe(fault);
+    expect(faults[0]![1]).toBe('check');
     expect(w.vault.calls).toEqual([]);
     expect(w.vault.rows).toEqual(new Map([[personRef(ADA), TOKEN.adaPerson]]));
 
@@ -646,11 +650,11 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     expect(faults).toEqual([]);
   });
 
-  it('X5 onlyIfStored: nothing stored, no delete (no tombstone); stored, deleted; the read faulting, deleted anyway', async () => {
-    // No case here checks anything that can fail, so none may report a fault.
-    const faults: unknown[] = [];
-    const onFault = (err: unknown): void => {
-      faults.push(err);
+  it("X5 onlyIfStored: nothing stored, no delete (no tombstone); stored, deleted; the read faulting, reported (step 'read') and deleted anyway", async () => {
+    // Only the read that fails may report a fault.
+    const faults: unknown[][] = [];
+    const onFault = (err: unknown, step: 'check' | 'read'): void => {
+      faults.push([err, step]);
     };
 
     const nothing = world();
@@ -663,14 +667,30 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     expect(stored.vault.calls.map((c) => c.hook)).toEqual(['credentials:get', 'credentials:delete']);
     expect(stored.vault.rows.size).toBe(0);
 
-    // A read that fails is no proof it is gone.
+    // A read that fails is no proof it is gone: reported, then deleted anyway.
+    expect(faults).toEqual([]);
     const unreadable = world();
     unreadable.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
-    unreadable.vault.faults.set(`credentials:get ${personRef(ADA)}`, vaultFault('invalid-envelope'));
+    const readFault = vaultFault('invalid-envelope');
+    unreadable.vault.faults.set(`credentials:get ${personRef(ADA)}`, readFault);
     await expect(unreadable.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBeUndefined();
     expect(unreadable.vault.calls.map((c) => c.hook)).toEqual(['credentials:get', 'credentials:delete']);
     expect(unreadable.vault.rows.size).toBe(0);
     expect(unreadable.lines).toEqual([]);
+    expect(faults).toHaveLength(1);
+    expect(faults[0]![0]).toBe(readFault);
+    expect(faults[0]![1]).toBe('read');
+    faults.length = 0;
+
+    // An onFault that throws still lets the delete go ahead.
+    const throwingSink = world();
+    throwingSink.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
+    throwingSink.vault.faults.set(`credentials:get ${personRef(ADA)}`, readFault);
+    const throwing = (): void => {
+      throw new Error('log sink down');
+    };
+    await expect(throwingSink.release(ADA_APP, { onFault: throwing, onlyIfStored: true })).resolves.toBeUndefined();
+    expect(throwingSink.vault.rows.size).toBe(0);
 
     // Still kept while something names the person: nothing is even read.
     const named = world({ leftovers: [ADA] });

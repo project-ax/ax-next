@@ -2053,6 +2053,31 @@ describe('@ax/channel-slack plugin', () => {
     expect(logs.filter((l) => String(l['msg']).startsWith('slack_config_token'))).toEqual([]);
   });
 
+  it("P9 a reset that can't read a person's token deletes it anyway, and says so in one warning: the install, the stage and a code (TASK-1175)", async () => {
+    const { harness, s } = await boot();
+    await insertActiveInstall();
+    const personRef = configTokenRef(ADMIN.id);
+    const kept = fakeConfigRefreshToken('RESETREADFAILSSECRET');
+    s.vault.set(personRef, kept);
+    s.vaultFailures.set(
+      `credentials:get ${personRef}`,
+      Object.assign(new Error(`vault down holding ${kept}`), { code: 'ECONNRESET' }),
+    );
+    const logs = captureLogs();
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(s.vault.has(personRef)).toBe(false);
+    expect(s.credentialDeletes).toEqual([personRef]);
+    const failed = logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed');
+    expect(failed).toEqual([
+      expect.objectContaining({ level: 'warn', installId: INSTALL_ID, stage: 'read-config-token', code: 'ECONNRESET' }),
+    ]);
+    expect(Object.keys(failed[0]!).sort()).toEqual(['code', 'installId', 'level', 'msg', 'reqId', 'stage', 'ts']);
+    const all = JSON.stringify(logs);
+    for (const text of [kept, 'vault down', ADMIN.id]) expect(all).not.toContain(text);
+  });
+
   it('the settings routes are mounted behind the person and the agent: 401 signed out, 404 to an outsider, the section to a team admin', async () => {
     const { call } = await boot();
     const path = '/settings/slack/:agentId';
