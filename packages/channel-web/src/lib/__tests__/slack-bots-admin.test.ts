@@ -5,6 +5,7 @@
  * are @ax/channel-slack's (`admin-bot-routes.ts`).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { REQUEST_TIMEOUT_MS, RequestTimeoutError } from '../http';
 import { SlackAdminError } from '../slack-admin';
 import { disconnectTeamBot, fetchSlackBots, teamBotGone } from '../slack-bots-admin';
 
@@ -91,6 +92,8 @@ describe('fetchSlackBots', () => {
       { bots: [{ ...PENDING, botName: 'x'.repeat(81) }] },
       { bots: [{ ...PENDING, handle: 7 }] },
       { bots: [{ ...PENDING, approver: 7 }] },
+      // The server always sends the field (null for a former member); one that is absent is a malformed item.
+      { bots: [{ ...PENDING, approver: undefined }] },
       { bots: [{ ...PENDING, state: 'gone' }] },
       { bots: [{ ...PENDING, addedAt: 7 }] },
       { bots: [PENDING, 'oops'] },
@@ -98,6 +101,26 @@ describe('fetchSlackBots', () => {
     for (const body of bad) {
       answer = () => json(200, body);
       await expect(fetchSlackBots()).rejects.toMatchObject({ name: 'SlackAdminError', code: 'bad-response' });
+    }
+  });
+});
+
+describe('fetchSlackBots deadline', () => {
+  it('a read that never answers rejects with a RequestTimeoutError, and its request is dropped', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      vi.stubGlobal('fetch', (_input: RequestInfo | URL, init?: RequestInit) => {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>(() => {});
+      });
+      const pending = fetchSlackBots();
+      const outcome = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      await outcome;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
