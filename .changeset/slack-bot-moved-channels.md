@@ -8,5 +8,5 @@ was already connected to through the shared bot that still need the new one:
 run `/invite @handle` in each, and a channel leaves the list once the bot has
 answered there. While its own bot is live, connecting that agent through the
 shared bot (from its settings or with `/ax connect`) is refused, and the reply
-names the bot to invite instead. One agent, one bot per channel. We like things
-tidy.
+names the bot to invite instead. Never two bots answering for one agent: we
+like things tidy.

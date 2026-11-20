@@ -459,7 +459,8 @@ under "These channels still need @ada: run /invite @ada in each one." A channel
 leaves the list once @ada has answered there: AX hears only mentions, and the
 first one binds the channel to the bot. The old shared connection stays,
 unused, and Disconnect still removes it. The bot's own channels aren't listed
-yet.
+yet, so a channel that left the list doesn't come back if the bot is later
+removed from it.
 
 **Lifecycle (decided 2026-11-18).**
 - **Deleting the agent, or its team, deletes the bot** (`apps.manifest.delete`),
