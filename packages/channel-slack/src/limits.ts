@@ -57,6 +57,12 @@ export const LABEL_MAX = 120;
  * first: what one Connect tries to delete and the Slack tab names.
  */
 export const LEFTOVER_APPS_MAX = 10;
+/**
+ * The most open bot requests (TASK-1169) Admin › Slack lists, oldest first.
+ * The store's own list is uncapped: an agent has one open request at most,
+ * and a name check has to see every one.
+ */
+export const BOT_REQUESTS_MAX = 20;
 
 // ── Events ingress ──────────────────────────────────────────────────────────
 
