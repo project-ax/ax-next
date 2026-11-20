@@ -383,6 +383,11 @@ Rules, the same on both sides:
   the run-as person and keeps the remember setting.
 - **Disconnecting:** an agent that no longer exists is cleared by anyone
   admitted; a live one only by a team admin.
+- **An agent with its own bot:** once that bot is live (§4), neither way in
+  connects a channel to the agent through the shared app. The answer names the
+  bot's @handle and says to `/invite` it (TASK-1168). A pending bot changes
+  nothing, and disconnecting an old connection still works; `/ax disconnect`
+  then says the bot still answers wherever it's a member, and how to `/kick` it.
 - **Which install:** `/ax` acts on the install that signed the request.
 - **Admin › Slack › Disconnect** removes the shared install and its channel
   connections, so channels are connected again after Slack is. It leaves team
@@ -449,6 +454,14 @@ Mentioning the shared `@ax` there no longer reaches it, although other agents
 on the shared app in that channel carry on as before. So two bots can't both
 answer for one agent. The owner is told which channels changed, and that
 `/invite @ada` is needed in each one before `@ada` can hear anything there.
+
+**As built (TASK-1168).** The agent's settings list each of those channels
+under "These channels still need @ada: run /invite @ada in each one." A channel
+leaves the list once @ada has answered there: AX hears only mentions, and the
+first one binds the channel to the bot. The old shared connection stays,
+unused, and Disconnect still removes it. The bot's own channels aren't listed
+yet, so a channel that left the list doesn't come back if the bot is later
+removed from it.
 
 **Lifecycle (decided 2026-11-18).**
 - **Deleting the agent, or its team, deletes the bot** (`apps.manifest.delete`),
@@ -1084,4 +1097,7 @@ approving a second app never breaks the first).
   and approves it with their own token, the shared bot steps aside once it's
   live, and deleting the agent deletes it. Asking an admin to approve, rename,
   avatar change, Replace and Disconnect of a live bot are still to do.
+  TASK-1168 lists the already-connected channels that still need the new
+  handle, and refuses connecting the agent through the shared app once its bot
+  is live.
 - **9. Walk (walk).**

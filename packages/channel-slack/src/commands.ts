@@ -1,7 +1,7 @@
 import { makeAgentContext, type AgentContext } from '@ax/core';
 import { admitSender, findSenderUser, isTemporaryLookupFailure } from './admission.js';
 import type { ChannelBinding } from './channel-store.js';
-import { agentAccess, checkRights, connectChannel, type ChannelDeps, type ConnectOutcome } from './channels.js';
+import { agentAccess, checkRights, connectChannel, liveOwnBot, type ChannelDeps, type ConnectOutcome } from './channels.js';
 import { COPY } from './copy.js';
 import { decodeSlackEntities } from './format.js';
 import type { RouteHandler, RouteRequest, RouteResponse } from './http-types.js';
@@ -52,10 +52,18 @@ import type { InstallRow, InstallStore } from './store.js';
  *      its team (channels.ts; workspace-admin status never counts). The
  *      channel is the one the command was typed in, the install the one it
  *      was signed for, and connectChannel does the rest, the same core as
- *      the agent settings.
+ *      the agent settings. connectChannel refuses an agent whose own bot is
+ *      live (TASK-1168): the reply names that bot and says to /invite it.
+ *      Only after the rights, so someone who can't manage the agent learns
+ *      nothing about its bot.
  *   5. `disconnect` needs the same rights over the connected agent, except
  *      when that agent is gone: a binding nobody can manage any more is
- *      cleared for anyone who asks.
+ *      cleared for anyone who asks (and no bot is read for it). For an agent
+ *      whose own bot is live (TASK-1168) the shared binding goes but the bot
+ *      keeps answering wherever it is a member, so the reply says so and how
+ *      to remove it (/kick) instead of "won't answer anymore". The bot is read
+ *      after the rights and before the binding is removed: a store fault is
+ *      `slashFailed` with nothing removed.
  *
  * Replies are ephemeral (only the invoker sees them). Slack wants the HTTP
  * answer within 3 s, so the work runs tracked by the lifetime, and the
@@ -217,9 +225,15 @@ function teamAgentsOf(answer: unknown): Array<{ id: string; displayName: string 
   return [...agents.values()];
 }
 
-/** A refused connect, as `/ax` says it. */
-function connectRefusal(outcome: Extract<ConnectOutcome, { ok: false }>): string {
+/**
+ * A refused connect, as `/ax` says it. `agentName` is the agent the invoker
+ * manages: only the own-bot line names it.
+ */
+function connectRefusal(outcome: Extract<ConnectOutcome, { ok: false }>, agentName: string): string {
   switch (outcome.reason) {
+    case 'own-bot':
+      // Its own bot answers for it now (TASK-1168): which one to /invite instead.
+      return COPY.slashOwnBot(agentName, outcome.ownBot);
     case 'channel-taken':
       return COPY.slashChannelTaken;
     case 'archived':
@@ -479,7 +493,7 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
       actorUserId: userId,
       ctx,
     });
-    if (!outcome.ok) return connectRefusal(outcome);
+    if (!outcome.ok) return connectRefusal(outcome, chosen.agentName);
     return outcome.reconnected
       ? COPY.slashReconnected(chosen.agentName)
       : COPY.slashConnected(chosen.agentName, outcome.binding.channelName);
@@ -489,17 +503,22 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
     const binding = await d.channels.get(installId, c.channelId);
     if (binding === null) return declined(installId, 'nothing-connected', COPY.slashNothingConnected);
 
-    const remove = async (b: ChannelBinding, stale: boolean): Promise<string> => {
+    // `ownBot`: the agent's live own bot, read BEFORE the binding goes so a
+    // store fault removes nothing. It keeps answering wherever it is a member.
+    const remove = async (b: ChannelBinding, stale: boolean, ownBot: InstallRow | null): Promise<string> => {
       if (!(await d.channels.remove(b.installId, b.channelId, b.agentId))) return COPY.slashNothingConnected;
       log('info', 'slack_channel_disconnected', { installId, ...(stale ? { reason: 'agent-gone' } : {}) });
-      return COPY.slashDisconnected;
+      return ownBot === null
+        ? COPY.slashDisconnected
+        : COPY.slashDisconnectedOwnBot({ botName: ownBot.botName, handle: ownBot.botHandle });
     };
 
     // agentAccess, not checkRights: checkRights answers "not found" alike for
     // an agent that is gone and one the invoker can't see, and only a binding
     // to a gone agent may be cleared without rights (nobody can manage it).
     const access = await agentAccess(d.bus, ctx, binding.agentId, userId);
-    if (access === 'agent-gone') return remove(binding, true);
+    // A gone agent answers nowhere, so no bot is read for it.
+    if (access === 'agent-gone') return remove(binding, true, null);
     // 'no': the invoker is outside the agent's team. 'not-team' never happens
     // to a bound agent: only a team agent is ever connected (checkRights), and
     // @ax/agents never changes an agent's visibility once it is made (an
@@ -508,7 +527,7 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
     if (access !== 'yes') return declined(installId, 'not-manager', COPY.slashNotManager);
     const rights = await checkRights(d.bus, ctx, binding.agentId, userId, 'manage');
     if (!rights.ok) return declined(installId, 'not-manager', COPY.slashNotManager);
-    return remove(binding, false);
+    return remove(binding, false, await liveOwnBot(d.installs, binding.agentId));
   }
 
   return admittedHandler(d.lifetime, handle);
