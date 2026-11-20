@@ -787,7 +787,7 @@ describe('Replace the configuration token', () => {
     expect(within(dialog).queryByLabelText(/access token/i)).toBeNull();
   });
 
-  it('Replace sends the pasted refresh token, trimmed; the field is empty as the request goes out and the token is never on the page; then the dialog closes, the notice says the old one can be revoked, and the tab reads again', async () => {
+  it('Replace sends the pasted refresh token, trimmed; the field is empty as the request goes out and the token is never on the page; then the dialog closes, the notice says the token now serves every app that person made, and the tab reads again', async () => {
     let finish!: () => void;
     replace.mockReturnValueOnce(new Promise<void>((r) => (finish = r)));
     renderTab(CONNECTED, CONNECTED);
@@ -800,12 +800,11 @@ describe('Replace the configuration token', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const note = (await screen.findByText(/Token replaced\./)).closest('[role="alert"]') as HTMLElement;
     expect(note).toHaveTextContent(
-      "Token replaced. We use the new one from now on. To retire the old one, whoever generated it can click Revoke for it on Slack's app settings, under Your App Configuration Tokens. Don't revoke the token you just pasted: that's the one we use now.",
+      "Token replaced. We now use it for this Slack app and for every other Slack app the same person made through AX. Don't revoke the token you just pasted: that's the one we use now.",
     );
-    expect(within(note).getByRole('link', { name: "Slack's app settings" })).toHaveAttribute(
-      'href',
-      'https://api.slack.com/apps',
-    );
+    // Slack allows one token per person, so the old one was revoked before this
+    // one existed: nothing left to retire, and no link to send anyone off to.
+    expect(within(note).queryByRole('link')).toBeNull();
     await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
     expect(document.body.innerHTML).not.toContain(REFRESH);
   });
