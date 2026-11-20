@@ -611,6 +611,11 @@ function world(o: {
       }
       return installRows.get(installId) ?? null;
     },
+    /** store.ts `current`: the shared app's install, any status, never a bot. */
+    async current(): Promise<InstallRow | null> {
+      const shared = [...installRows.values()].find((r) => r.kind === 'shared');
+      return shared === undefined ? null : { ...shared };
+    },
     /** store.ts `botForAgent`: the agent's bot, any status, never the shared app. */
     async botForAgent(agentId: string): Promise<InstallRow | null> {
       botReads += 1;
@@ -2767,6 +2772,70 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.invokes).toHaveLength(2);
     expect(infoCalls(w)).toHaveLength(1);
     expect(w.lines.filter((l) => l.msg === 'slack_bot_channel_bound')).toHaveLength(1);
+  });
+
+  // TASK-1179: the memory switch a team set on the shared connection follows the
+  // channel to the agent's own bot. Before the fix the first mention bound it
+  // with the switch back on, and the agent learned from a channel the team had
+  // chosen not to have remembered.
+  it("a channel the team set not to be remembered on the shared app stays not remembered when the bot binds it", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: false, createdAt: expect.any(Date) }));
+    // The first turn there already runs with the switch off: its thread is never remembered.
+    expect(w.invokes).toHaveLength(1);
+    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, true]]);
+    // The shared app's binding keeps its own switch.
+    expect(w.channels.row(INSTALL_ID, SUPPORT)?.remember).toBe(false);
+  });
+
+  it('a channel the shared app never connected to the agent is bound with the switch on, as any new connection is', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: true, createdAt: expect.any(Date) }));
+    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, false]]);
+  });
+
+  it("another agent's switch on the shared app is that agent's: the bot's binding starts on", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+    await w.channels.store.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT,
+      agentId: OPS_AGENT.id,
+      connectedByUserId: 'usr_ada',
+      channelName: 'support',
+    });
+    await w.channels.store.setRemember(INSTALL_ID, SUPPORT, OPS_AGENT.id, false);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(true);
+  });
+
+  it("a shared binding that can't be read binds nothing and runs nothing: the switch is never guessed", async () => {
+    // Read 1 is the bot's own binding, read 2 the shared app's.
+    const w = world({ bindingReadFails: (n) => n === 2 });
+    w.putInstall(OWN_BOT);
+    await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+    expect(w.invokes).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+    expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([
+      { level: 'error', msg: 'slack_event_failed', fields: { installId: OWN_BOT_ID, stage: 'bind', code: 'store-unavailable' } },
+    ]);
   });
 
   it.each([
