@@ -90,8 +90,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        Allow (bot-callback.ts): signed in, its OAuth state bound to the
 //        approver (the proof a GET carries), under the one app lock
 //
-// It keeps one install row in its own `channel_slack_v1_installs` table, the
-// install's three secrets in the credentials vault and, there too, one
+// It keeps the shared install's row, and one row per team agent's own bot
+// (TASK-1167), in its own `channel_slack_v1_installs` table, each install's
+// three secrets in the credentials vault and, there too, one
 // configuration token per admin who made a Slack app through AX, shared by
 // every app of theirs (secrets.ts, TASK-1175), and one binding row per
 // connected channel in `channel_slack_v1_channels` (channel-store.ts), removed
