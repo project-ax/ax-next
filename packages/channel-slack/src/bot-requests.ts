@@ -191,10 +191,50 @@ function rightsRefused(reason: Extract<Rights, { ok: false }>['reason']): BotRep
   return NOT_FOUND;
 }
 
-/** The agent as one requester sees it. `teamId` is only ever used to find its team's name. */
-interface SeenAgent {
-  name: string;
+/**
+ * The agent as one requester sees it: its name, cleaned to one line, or null
+ * when it can't be named. `teamId` is only ever used to find its team's name.
+ */
+export interface SeenAgent {
+  name: string | null;
   teamId: string | null;
+}
+
+/**
+ * The agent as its requester sees it (Admin › Slack's list, and a bot
+ * request's DMs, bot-request-dms.ts): only an answer about this agent, as a
+ * team agent, names it. One they can't see (they left the team) or one
+ * that's gone has no name, quietly; nor does one whose name has nothing
+ * printable, or any other fault, which is handed to `onFault` first (each
+ * caller logs it its own way).
+ */
+export async function agentSeenBy(
+  bus: HookBus,
+  ctx: AgentContext,
+  r: Pick<BotRequest, 'agentId' | 'requestedByUserId'>,
+  onFault: (err: unknown) => void,
+): Promise<SeenAgent> {
+  const unnamed: SeenAgent = { name: null, teamId: null };
+  let out: unknown;
+  try {
+    out = await bus.call<{ agentId: string; userId: string }, unknown>('agents:resolve', ctx, {
+      agentId: r.agentId,
+      userId: r.requestedByUserId,
+    });
+  } catch (err) {
+    const code = err instanceof PluginError ? err.code : undefined;
+    if (code !== 'forbidden' && code !== 'not-found') onFault(err);
+    return unnamed;
+  }
+  const agent = isRecord(out) ? out['agent'] : undefined;
+  if (!isRecord(agent) || agent['id'] !== r.agentId || agent['visibility'] !== 'team') return unnamed;
+  const name = agent['displayName'];
+  const owner = agent['ownerId'];
+  return {
+    name: (typeof name === 'string' ? cleanLabel(name) : '') || null,
+    // A team agent's owner is its team (@ax/agents): only ever matched against the requester's teams.
+    teamId: typeof owner === 'string' && owner !== '' ? owner : null,
+  };
 }
 
 export function createBotRequests(d: BotRequestsDeps): BotRequests {
@@ -304,35 +344,6 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
   }
 
   /**
-   * The agent as its requester sees it: only an answer about this agent, as
-   * a team agent, names it. One they can't see (they left the team) or one
-   * that's gone reads as the fallback, quietly; any other fault too, logged.
-   */
-  async function agentSeenBy(ctx: AgentContext, r: BotRequest): Promise<SeenAgent> {
-    const fallback: SeenAgent = { name: AGENT_FALLBACK, teamId: null };
-    let out: unknown;
-    try {
-      out = await d.bus.call<{ agentId: string; userId: string }, unknown>('agents:resolve', ctx, {
-        agentId: r.agentId,
-        userId: r.requestedByUserId,
-      });
-    } catch (err) {
-      const code = err instanceof PluginError ? err.code : undefined;
-      if (code !== 'forbidden' && code !== 'not-found') failed('agent', err, r.requestId);
-      return fallback;
-    }
-    const agent = isRecord(out) ? out['agent'] : undefined;
-    if (!isRecord(agent) || agent['id'] !== r.agentId || agent['visibility'] !== 'team') return fallback;
-    const name = agent['displayName'];
-    const owner = agent['ownerId'];
-    return {
-      name: (typeof name === 'string' ? cleanLabel(name) : '') || AGENT_FALLBACK,
-      // A team agent's owner is its team (@ax/agents): only ever matched against the requester's teams.
-      teamId: typeof owner === 'string' && owner !== '' ? owner : null,
-    };
-  }
-
-  /**
    * The names of the teams `userId` is on, by team id, cleaned; an empty map
    * when the answer can't be read. A fault reads as no names, logged.
    */
@@ -381,7 +392,8 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     const requests: AdminBotRequest[] = [];
     for (const r of rows) {
       const requester = r.requestedByUserId;
-      const agent = await agentSeenBy(i.ctx, r);
+      // One they can't see, or one that's gone, reads as the fallback; a fault too, logged.
+      const agent = await agentSeenBy(d.bus, i.ctx, r, (err) => failed('agent', err, r.requestId));
       let teamName: string | null = null;
       if (hasTeams && agent.teamId !== null) {
         let teams = teamsOf.get(requester);
@@ -404,7 +416,7 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
       requests.push({
         requestId: r.requestId,
         botName: r.botName,
-        agentName: agent.name,
+        agentName: agent.name ?? AGENT_FALLBACK,
         teamName,
         requestedBy: await requestedBy,
         requestedAt: r.createdAt.toISOString(),
