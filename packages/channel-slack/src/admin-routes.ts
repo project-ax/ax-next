@@ -90,8 +90,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * Disconnect (and Cancel, the same route) deletes the Slack app with an
  * access token minted from the stored refresh token. When Slack won't (the
  * token is dead or revoked, or Slack doesn't answer), the install still
- * goes, and in the same statement its app's id and name move to the
- * leftover list (store.ts) instead of being forgotten. Connect's own undo
+ * goes, and in the same statement its app's id, name and person (whose
+ * token made it, TASK-1175) move to the leftover list (store.ts) instead of
+ * being forgotten. Connect's own undo
  * does the same when trying the pasted refresh token fails in any way and
  * Slack then won't delete the app Connect just made: no install row holds
  * that one yet, so it goes straight onto the list. The status names
@@ -496,10 +497,18 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   /**
    * Connect stopped right after Slack made the app, before anything was
    * stored: take the app back with the pasted access token. If Slack won't,
-   * the app goes onto the leftover list (no install row holds it), so the tab
-   * names it and the next Connect deletes it. Never throws.
+   * the app goes onto the leftover list (no install row holds it), naming
+   * `connectedByUserId`, the connecting admin whose token made it
+   * (TASK-1175), so the tab names it and the next Connect deletes it. Never
+   * throws.
    */
-  async function undoCreate(accessToken: string, appId: string, installId: string, botName: string): Promise<void> {
+  async function undoCreate(
+    accessToken: string,
+    appId: string,
+    installId: string,
+    botName: string,
+    connectedByUserId: string,
+  ): Promise<void> {
     try {
       await d.api.deleteApp(accessToken, appId);
       return;
@@ -509,7 +518,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       failed('undo-delete-app', err, installId);
     }
     try {
-      await d.store.rememberLeftoverApp({ installId, appId, botName });
+      await d.store.rememberLeftoverApp({ installId, appId, botName, connectedByUserId });
     } catch (err) {
       failed('remember-leftover-app', err, installId);
     }
@@ -582,7 +591,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       ({ refreshToken: mintedRefreshToken } = await d.api.rotateConfigToken(refreshToken));
     } catch (err) {
       failed('try-refresh-token', err, installId);
-      await undoCreate(accessToken, app.appId, installId, botName);
+      await undoCreate(accessToken, app.appId, installId, botName, actor.id);
       return json(502, { error: refreshTokenError(err) });
     }
 

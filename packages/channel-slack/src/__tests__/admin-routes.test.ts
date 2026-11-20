@@ -316,10 +316,17 @@ function memoryStore(clock: () => number, trail: string[]) {
     async remove(installId, o) {
       await enter('remove', [installId, o]);
       // One statement in the real store: the app is remembered only with its
-      // row's own delete, and an id already remembered keeps its first app.
+      // row's own delete, with the row's own person (TASK-1175), and an id
+      // already remembered keeps its first app.
       const r = rows.get(installId);
       if (r !== undefined && o?.appLeft === true && !leftovers.has(installId)) {
-        leftovers.set(installId, { installId, appId: r.appId, botName: r.botName, leftAt: new Date(clock()) });
+        leftovers.set(installId, {
+          installId,
+          appId: r.appId,
+          botName: r.botName,
+          leftAt: new Date(clock()),
+          connectedByUserId: r.connectedByUserId,
+        });
       }
       rows.delete(installId);
     },
@@ -329,9 +336,27 @@ function memoryStore(clock: () => number, trail: string[]) {
         installId: r.installId,
         appId: r.appId,
         teamId: r.teamId,
+        connectedByUserId: r.connectedByUserId,
       }));
       rows.clear();
       return removed;
+    },
+    async list() {
+      await enter('list', []);
+      return [...rows.values()]
+        .sort(
+          (a, b) =>
+            b.configTokenAddedAt.getTime() - a.configTokenAddedAt.getTime() ||
+            a.installId.localeCompare(b.installId),
+        )
+        .map(view);
+    },
+    async personHasApps(userId) {
+      await enter('personHasApps', [userId]);
+      return (
+        [...rows.values()].some((r) => r.connectedByUserId === userId) ||
+        [...leftovers.values()].some((l) => l.connectedByUserId === userId)
+      );
     },
     async leftoverApps() {
       await enter('leftoverApps', []);
@@ -348,6 +373,7 @@ function memoryStore(clock: () => number, trail: string[]) {
           appId: a.appId,
           botName: a.botName,
           leftAt: new Date(clock()),
+          connectedByUserId: a.connectedByUserId,
         });
       }
     },
@@ -653,14 +679,25 @@ function mintedInstallId(w: World): string {
 function slackMethods(w: World): string[] {
   return w.slack.calls.map((c) => c.method);
 }
-/** An app an earlier Disconnect couldn't delete, remembered as the store would have. */
+/**
+ * An app an earlier Disconnect couldn't delete, remembered as the store would
+ * have. `connectedByUserId` is whose token made it (TASK-1175); null, the
+ * default, is an app left before anyone was recorded.
+ */
 function leaveApp(
   w: World,
   l: { installId: string; appId: string },
   botName = 'Canopy Bot',
   leftAtMs = NOW_MS - 60_000,
+  connectedByUserId: string | null = null,
 ): void {
-  w.memory.leftovers.set(l.installId, { installId: l.installId, appId: l.appId, botName, leftAt: new Date(leftAtMs) });
+  w.memory.leftovers.set(l.installId, {
+    installId: l.installId,
+    appId: l.appId,
+    botName,
+    leftAt: new Date(leftAtMs),
+    connectedByUserId,
+  });
 }
 /** Every rotate throws `err`. A test that needs the strict default back saves `w.slack.on.rotateConfigToken` first. */
 function failRotate(w: World, err: unknown): void {
@@ -1368,8 +1405,15 @@ describe('Connect tries the pasted refresh token once (TASK-1159)', () => {
     expect(res.body).toStrictEqual({ error: 'slack-error' });
     expect(w.trail.slice(-2)).toEqual(['slack:deleteApp', 'store:rememberLeftoverApp']);
     const leftInstallId = mintedInstallId(w);
+    // Made with the token of the admin who connected (TASK-1175).
     expect([...w.memory.leftovers.values()]).toEqual([
-      { installId: leftInstallId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+      {
+        installId: leftInstallId,
+        appId: APP.appId,
+        botName: 'Canopy Bot',
+        leftAt: expect.any(Date),
+        connectedByUserId: ADA.id,
+      },
     ]);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vaultCalls).toEqual([]);
@@ -1862,9 +1906,9 @@ describe('POST /admin/slack/disconnect', () => {
         { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage, code } },
         { level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: false } },
       ]);
-      // The app may still be on Slack: its id and name outlive the row (TASK-1132).
+      // The app may still be on Slack: its id and name outlive the row (TASK-1132), with whose token made it (TASK-1175).
       expect([...w.memory.leftovers.values()], stage).toEqual([
-        { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+        { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
       ]);
       expect((await w.status()).body, stage).toMatchObject({
         state: 'not-connected',
@@ -1986,7 +2030,7 @@ describe('POST /admin/slack/disconnect', () => {
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: false } });
     expect(w.lines.filter((l) => l.msg === 'slack_disconnected')).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: false } }]);
     expect([...w.memory.leftovers.values()]).toEqual([
-      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
     ]);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
