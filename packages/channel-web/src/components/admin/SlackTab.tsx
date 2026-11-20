@@ -37,7 +37,7 @@
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -61,6 +61,7 @@ import {
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import {
@@ -83,7 +84,6 @@ import {
 } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
 
-const SLACK_APPS_URL = 'https://api.slack.com/apps';
 /** "I deleted it" failing: the route only edits our own list, so Slack isn't to blame. */
 const FORGET_FAILED = "We couldn't update that list just now. Try again in a minute.";
 
@@ -110,19 +110,6 @@ interface Actions {
 function shortDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
-
-function SlackAppsLink() {
-  return (
-    <a
-      href={SLACK_APPS_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="font-medium text-primary underline underline-offset-4"
-    >
-      Slack&apos;s app settings
-    </a>
-  );
 }
 
 /** A button's busy face: a spinner and what it's doing. */
@@ -304,50 +291,6 @@ function NeedsHttps() {
         the Helm values.
       </AlertDescription>
     </Alert>
-  );
-}
-
-/**
- * A write-only field for one pasted configuration token. It is a password
- * field so the token isn't shown, which also makes password managers offer to
- * save it: the `data-*ignore` attributes tell 1Password, LastPass and
- * Bitwarden to leave it alone (`autoComplete="off"` alone doesn't stop them).
- */
-function TokenField({
-  id,
-  label,
-  hint,
-  inputRef,
-  error,
-  disabled,
-}: {
-  id: string;
-  label: string;
-  hint: string;
-  inputRef: RefObject<HTMLInputElement | null>;
-  error: string | null;
-  disabled: boolean;
-}) {
-  const invalid = error !== null;
-  return (
-    <Field data-invalid={invalid || undefined}>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input
-        id={id}
-        ref={inputRef}
-        type="password"
-        autoComplete="off"
-        data-1p-ignore
-        data-lpignore="true"
-        data-bwignore
-        spellCheck={false}
-        disabled={disabled}
-        aria-invalid={invalid || undefined}
-        aria-describedby={invalid ? `${id}-hint ${id}-error` : `${id}-hint`}
-      />
-      <FieldDescription id={`${id}-hint`}>{hint}</FieldDescription>
-      {invalid && <FieldError id={`${id}-error`}>{error}</FieldError>}
-    </Field>
   );
 }
 
