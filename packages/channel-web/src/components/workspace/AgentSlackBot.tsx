@@ -18,7 +18,14 @@
  *            person who started it, and "Cancel request"; a cancel whose Slack
  *            app couldn't be deleted leaves a note saying where to find it
  *   live     everyone sees the @handle and how to invite it; a manager also
- *            sees who set it up
+ *            sees who set it up, and can disconnect it (TASK-1172): it leaves
+ *            its channels and its Slack app is deleted. The Disconnect names
+ *            the bot it showed by its install id, so a page drawn before the
+ *            bot was replaced can't take the new one (the server says
+ *            `no-bot`, and the page reads the status again); with no id (an
+ *            older server) there is no Disconnect. A disconnect whose Slack
+ *            app couldn't be deleted leaves the same kind of note a cancel
+ *            does
  *
  * Asking an AX admin sends the name and nothing else: no token, no picture
  * (the admin's browser draws it at Approve).
@@ -36,6 +43,14 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Field,
   FieldContent,
@@ -57,6 +72,7 @@ import {
   cancelSlackBot,
   cancelSlackBotRequest,
   continueSlackBot,
+  disconnectSlackBot,
   requestSlackBot,
   slackShortDate,
   type AgentSlackBot as Bot,
@@ -66,13 +82,16 @@ import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
 
 /**
- * What a successful cancel said, and about whom. `appDeleted` false: its Slack
+ * What a successful cancel (of a pending request) or disconnect (of a live
+ * bot) said, and about whom. `appDeleted` false: its Slack
  * app may still be on Slack, where only `approver` (whose token made it) can
  * delete it. `approverIsViewer` is the pending view's `canContinue`, which is
  * also false for the approver while Slack isn't connected; they then read the
  * line that names them, which is still true.
  */
 export interface BotCancelled {
+  /** Which way the bot went: a pending request taken back, or a live bot disconnected. */
+  how: 'cancelled' | 'disconnected';
   appDeleted: boolean;
   approverIsViewer: boolean;
   approver: string;
@@ -90,7 +109,15 @@ export interface AgentSlackBotProps {
    * goes with the old picture.
    */
   leftOver: BotCancelled | null;
-  /** The request was cancelled (the status is read again right after). */
+  /**
+   * The shared app is connected, so the shared bot answers again in any channel
+   * the agent was connected to through it once this bot goes (TASK-1172). Not
+   * the listed channels: TASK-1168 drops a channel from that list once this bot
+   * has answered there, but its shared binding stays. Only the Disconnect dialog
+   * says so.
+   */
+  sharedConnected?: boolean;
+  /** The request was cancelled or the bot disconnected (the status is read again right after). */
   onCancelled: (cancelled: BotCancelled) => void;
   /** A new bot is being asked for: whatever an old cancel left to say is moot. */
   onRequesting: () => void;
@@ -136,8 +163,8 @@ export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
   return (
     <Alert>
       <AlertDescription>
-        We cancelled the request, but we couldn&apos;t confirm its Slack app was deleted, so it may still be on
-        Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete.{' '}
+        {leftOver.how === 'disconnected' ? 'We disconnected the bot' : 'We cancelled the request'}, but we
+        couldn&apos;t confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete.{' '}
         {/* Slack's app page lists only your own apps, so the link is only any use to the one who made it. */}
         {leftOver.approverIsViewer ? (
           <>
@@ -156,6 +183,7 @@ export function AgentSlackBot({
   agentName,
   bot,
   canManage,
+  sharedConnected = false,
   leftOver,
   onCancelled,
   onRequesting,
@@ -180,7 +208,17 @@ export function AgentSlackBot({
         <Pending agentId={agentId} bot={bot} onCancelled={onCancelled} onChanged={onChanged} />
       ) : null;
     case 'live':
-      return <Live bot={bot} canManage={canManage} />;
+      return (
+        <Live
+          agentId={agentId}
+          agentName={agentName}
+          bot={bot}
+          canManage={canManage}
+          sharedConnected={sharedConnected}
+          onCancelled={onCancelled}
+          onChanged={onChanged}
+        />
+      );
   }
 }
 
@@ -437,7 +475,7 @@ function Pending({
         goToSlack(installUrl);
       } else {
         const { appDeleted } = await cancelSlackBot(agentId);
-        onCancelled({ appDeleted, approverIsViewer: bot.canContinue, approver: bot.approver });
+        onCancelled({ how: 'cancelled', appDeleted, approverIsViewer: bot.canContinue, approver: bot.approver });
         onChanged();
       }
     } catch (err) {
@@ -477,8 +515,27 @@ function Pending({
   );
 }
 
-function Live({ bot, canManage }: { bot: Extract<Bot, { state: 'live' }>; canManage: boolean }) {
+function Live({
+  agentId,
+  agentName,
+  bot,
+  canManage,
+  sharedConnected,
+  onCancelled,
+  onChanged,
+}: {
+  agentId: string;
+  agentName: string;
+  bot: Extract<Bot, { state: 'live' }>;
+  canManage: boolean;
+  sharedConnected: boolean;
+  onCancelled: (cancelled: BotCancelled) => void;
+  onChanged: () => void;
+}) {
   const handle = bot.handle;
+  const [asking, setAsking] = useState(false);
+  // The key the Disconnect takes: only a manager gets one, and with none there is nothing to name.
+  const installId = canManage ? bot.installId : null;
   return (
     <Section>
       <p className="text-sm">
@@ -492,6 +549,111 @@ function Live({ bot, canManage }: { bot: Extract<Bot, { state: 'live' }>; canMan
           {bot.botName} needs a team admin to claim it. Until then it answers team members only.
         </p>
       )}
+      {installId !== null && (
+        <div>
+          <Button variant="outline" onClick={() => setAsking(true)}>
+            Disconnect bot
+          </Button>
+          <DisconnectBotDialog
+            open={asking}
+            onClose={() => setAsking(false)}
+            agentId={agentId}
+            agentName={agentName}
+            bot={bot}
+            installId={installId}
+            sharedConnected={sharedConnected}
+            onCancelled={onCancelled}
+            onChanged={onChanged}
+          />
+        </div>
+      )}
     </Section>
+  );
+}
+
+/**
+ * Asks before taking a live bot away: it leaves its channels, and its Slack
+ * app is deleted. Confirming names the bot the dialog shows by `installId`.
+ */
+function DisconnectBotDialog({
+  open,
+  onClose,
+  agentId,
+  agentName,
+  bot,
+  installId,
+  sharedConnected,
+  onCancelled,
+  onChanged,
+}: {
+  open: boolean;
+  onClose: () => void;
+  agentId: string;
+  agentName: string;
+  bot: Extract<Bot, { state: 'live' }>;
+  /** The install id of `bot`, the one this dialog names. */
+  installId: string;
+  sharedConnected: boolean;
+  onCancelled: (cancelled: BotCancelled) => void;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const who = bot.handle !== null ? `@${bot.handle}` : bot.botName;
+
+  const close = (next: boolean) => {
+    if (busy || next) return;
+    setError(null);
+    onClose();
+  };
+
+  async function confirm() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { appDeleted } = await disconnectSlackBot(agentId, installId);
+      // The bot is gone: say how it went before the status is read again and this section goes with it.
+      onCancelled({ how: 'disconnected', appDeleted, approverIsViewer: false, approver: bot.approver });
+      onChanged();
+    } catch (err) {
+      logRequestFailure(err, 'agent-slack');
+      if (agentSlackBotStale(err)) {
+        setError(null);
+        onClose();
+        onChanged();
+      } else {
+        setError(agentSlackBotErrorCopy(err).message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{`Disconnect ${who}?`}</DialogTitle>
+          <DialogDescription>
+            {`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
+            {sharedConnected ? ` The shared bot answers for ${agentName} again in any channel it was connected to before.` : ''}
+          </DialogDescription>
+        </DialogHeader>
+        {error !== null && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
+            Keep it
+          </Button>
+          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
+            {busy ? <Busy>Disconnecting…</Busy> : 'Disconnect'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

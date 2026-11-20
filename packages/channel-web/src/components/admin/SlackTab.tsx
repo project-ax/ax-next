@@ -34,6 +34,11 @@
  * a Replace deletes it when Slack lets it, or the admin deletes it on Slack's page and clicks
  * "I deleted it" (TASK-1132).
  *
+ * Below all of that, outside the status switch, sits the "Team agents' own
+ * bots" card (TASK-1172, `SlackBotsCard`): every bot a team admin gave a team
+ * agent, with who set it up and a Disconnect. It reads its own list, so the
+ * status re-read a Disconnect asks for doesn't unmount it or its note.
+ *
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
  */
@@ -63,6 +68,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/c
 import { Input } from '@/components/ui/input';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { SlackBotRequests } from '@/components/admin/SlackBotRequests';
+import { SlackBotsCard } from './SlackBotsCard';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import {
@@ -1007,6 +1013,10 @@ export function SlackTab() {
           onForgotten={onForgotten}
         />
       )}
+      <SlackBotsCard
+        sharedConnected={load.kind === 'ready' && load.status.state === 'connected'}
+        onAppsChanged={() => void read()}
+      />
     </div>
   );
 }

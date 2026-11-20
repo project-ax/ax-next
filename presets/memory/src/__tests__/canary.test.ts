@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1172)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -873,11 +873,19 @@ describe('@ax/preset-memory canary', () => {
       json: { error: 'not-found' },
     });
 
-    // TASK-1167: a team agent's own bot routes are mounted too, and TASK-1169's
-    // ask for an AX admin's approval. Each POST keeps http-server's CSRF check;
-    // with the header, an agent nobody can see is the route's own 404 (an
-    // unmounted POST would get the router's 405).
-    for (const suffix of ['/bot', '/bot/install-url', '/bot/cancel', '/bot-request', '/bot-request/cancel']) {
+    // TASK-1167: a team agent's own bot routes are mounted too, its Disconnect
+    // (TASK-1172) with them, and TASK-1169's ask for an AX admin's approval.
+    // Each POST keeps http-server's CSRF check; with the header, an agent
+    // nobody can see is the route's own 404 (an unmounted POST would get the
+    // router's 405).
+    for (const suffix of [
+      '/bot',
+      '/bot/install-url',
+      '/bot/cancel',
+      '/bot/disconnect',
+      '/bot-request',
+      '/bot-request/cancel',
+    ]) {
       const botPath = `/settings/slack/no-such-agent${suffix}`;
       const noCsrfBot = await fetch(url(botPath), {
         method: 'POST',
@@ -890,6 +898,23 @@ describe('@ax/preset-memory canary', () => {
         json: { error: 'not-found' },
       });
     }
+    // TASK-1172: Admin › Slack's list of the team agents' own bots is mounted
+    // and admin-only (no bot here, so an empty list; unmounted, the
+    // static-files fallback would answer the GET with no JSON at all). Its
+    // Disconnect keeps the CSRF check; with the header, an install id no bot
+    // has is the route's own 409 (an unmounted POST would get the router's 405).
+    expect(await apiJson('GET', '/admin/slack/bots', CANARY_ADMIN)).toEqual({ status: 200, json: { bots: [] } });
+    expect((await apiJson('GET', '/admin/slack/bots', ALICE)).status).toBe(403);
+    expect((await apiJson('GET', '/admin/slack/bots', null)).status).toBe(401);
+    const noCsrfBotDisconnect = await fetch(url('/admin/slack/bots/disconnect'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+      body: JSON.stringify({ installId: 'A'.repeat(22) }),
+    });
+    expect(noCsrfBotDisconnect.status).toBe(403);
+    expect(
+      await apiJson('POST', '/admin/slack/bots/disconnect', CANARY_ADMIN, { installId: 'A'.repeat(22) }),
+    ).toEqual({ status: 409, json: { error: 'no-bot' } });
     // The bot's OAuth callback is mounted: signed out, it sends the browser back
     // to the app's root with one fixed word, never a JSON error.
     const botCallback = await fetch(url('/slack/bots/oauth/callback?state=x'), {
