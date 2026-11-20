@@ -93,7 +93,8 @@ const connectionReset = (): Error => Object.assign(new Error(`connection reset $
 
 /**
  * Everything one rename touches, in order, when Slack keeps the handle: the
- * bot, the names in use, Grace's token (read, rotated, its successor saved
+ * bot, the names in use (the shared bot, every bot, and every open request
+ * for one, TASK-1169), Grace's token (read, rotated, its successor saved
  * before the access token is used), the update, the row, then the handle
  * read again with the bot's own token.
  */
@@ -101,6 +102,7 @@ const ONE_RENAME = [
   'store:botForAgent',
   'store:current',
   'store:listBots',
+  'store:listBotRequests',
   'vault:get config-refresh-token',
   'slack:rotateConfigToken',
   'vault:set config-refresh-token',
@@ -109,8 +111,10 @@ const ONE_RENAME = [
   'vault:get bot-token',
   'slack:usersInfo',
 ];
+/** The names-in-use reads a rename makes before anything else: where a name clash stops it. */
+const NAME_CHECK = ONE_RENAME.slice(0, 4);
 /** How far into ONE_RENAME a rename gets before a step fails. */
-const STOPS_AFTER = { 'config-token': 4, rotate: 5, 'save-config-token': 6, 'update-app': 7 } as const;
+const STOPS_AFTER = { 'config-token': 5, rotate: 6, 'save-config-token': 7, 'update-app': 8 } as const;
 /** Everything one picture change touches, in order. */
 const ONE_PICTURE = [
   'store:botForAgent',
@@ -475,14 +479,34 @@ describe('rename', () => {
     }
   });
 
-  it("R3 refuses a name the shared bot, another bot, or another bot's handle has, by the 21-char key, before the vault or Slack; its own name in another case is fine", async () => {
+  it("R3 refuses a name the shared bot, another bot, another bot's handle, or an open bot request has, by the 21-char key, before the vault or Slack; its own name in another case is fine", async () => {
     // The shared bot's name; the sales bot's name, as typed two ways; the sales bot's HANDLE (`deskbot`).
     for (const name of ['Canopy Works', 'sales desk', 'Sales-Desk', 'Desk Bot']) {
       const w = await seeded();
 
       expect(await w.rename(name), name).toEqual({ status: 409, body: { error: 'bot-name-taken' } });
 
-      expect(w.trail, name).toEqual(['store:botForAgent', 'store:current', 'store:listBots']);
+      expect(w.trail, name).toEqual(NAME_CHECK);
+      expect(supportRow(w), name).toMatchObject({ botName: OLD_NAME, botHandle: OLD_HANDLE });
+      expect(w.lines, name).toEqual([]);
+    }
+
+    // A name another agent's open ask for an AX admin's approval holds (TASK-1169)
+    // is taken too, by the same key: approving that ask must not find it in use.
+    for (const name of ['Ops Helper', 'ops-helper']) {
+      const w = await seeded();
+      await w.memory.store.insertBotRequest({
+        requestId: 'UmVxdWVzdEZvck9wc0JvdDE',
+        agentId: 'agt_ops',
+        requestedByUserId: SAM,
+        botName: 'Ops Helper',
+      });
+      forget(w);
+
+      expect(await w.rename(name), name).toEqual({ status: 409, body: { error: 'bot-name-taken' } });
+
+      expect(w.trail, name).toEqual(NAME_CHECK);
+      expect(reached(w), name).toEqual([]);
       expect(supportRow(w), name).toMatchObject({ botName: OLD_NAME, botHandle: OLD_HANDLE });
       expect(w.lines, name).toEqual([]);
     }
