@@ -582,7 +582,29 @@ describe('live', () => {
     expect(screen.getByText('@quill_bot is live. Invite it to a channel with /invite @quill_bot.')).toBeInTheDocument();
     expect(screen.getByText('Set up by Ada Lovelace.')).toBeInTheDocument();
     expect(screen.queryByText(/needs a team admin to claim it/)).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'Rename',
+      'Change picture',
+      'Disconnect bot',
+    ]);
+  });
+
+  it("a manager sees the bot's name with Rename and Change picture, even when the handle doesn't match it", () => {
+    renderIt({ ...LIVE, handle: 'support_helper' });
+    expect(screen.getByText('Bot name')).toBeInTheDocument();
+    expect(screen.getByText('Quill Bot')).toBeInTheDocument();
+    expect(
+      screen.getByText('@support_helper is live. Invite it to a channel with /invite @support_helper.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Change picture' })).toBeEnabled();
+  });
+
+  it('a member sees neither Rename nor Change picture', () => {
+    renderIt({ ...LIVE, installId: null }, false);
+    expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Change picture' })).toBeNull();
+    expect(screen.queryByText('Bot name')).toBeNull();
   });
 
   it('a member sees the live line but not who set it up', () => {

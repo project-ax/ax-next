@@ -18,7 +18,9 @@
  *            person who started it, and "Cancel request"; a cancel whose Slack
  *            app couldn't be deleted leaves a note saying where to find it
  *   live     everyone sees the @handle and how to invite it; a manager also
- *            sees who set it up, and can disconnect it (TASK-1172): it leaves
+ *            sees who set it up, can rename it or change its picture
+ *            (TASK-1171, `AgentSlackBotChanges`), and can disconnect it
+ *            (TASK-1172): it leaves
  *            its channels and its Slack app is deleted. The Disconnect names
  *            the bot it showed by its install id, so a page drawn before the
  *            bot was replaced can't take the new one (the server says
@@ -65,6 +67,7 @@ import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Spinner } from '@/components/ui/spinner';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
+import { BotChanges } from './AgentSlackBotChanges';
 import {
   agentSlackBotErrorCopy,
   agentSlackBotStale,
@@ -549,6 +552,7 @@ function Live({
           {bot.botName} needs a team admin to claim it. Until then it answers team members only.
         </p>
       )}
+      {canManage && <BotChanges agentId={agentId} bot={bot} onChanged={onChanged} />}
       {installId !== null && (
         <div>
           <Button variant="outline" onClick={() => setAsking(true)}>
