@@ -168,6 +168,17 @@ describe('buildInstallUrl', () => {
     expect(url.hash).toBe('');
   });
 
+  it('asks for the scopes it is given, and the shared bot scopes when it is given none', () => {
+    const scopeOf = (scopes?: readonly string[]): string[] =>
+      new URL(
+        buildInstallUrl({ clientId: '1.2', redirectUrl: REDIRECT, state: 's', ...(scopes ? { scopes } : {}) }),
+      )
+        .searchParams.get('scope')!
+        .split(',');
+    expect(scopeOf(['chat:write', 'app_mentions:read'])).toStrictEqual(['chat:write', 'app_mentions:read']);
+    expect(scopeOf()).toStrictEqual([...BOT_SCOPES]);
+  });
+
   it('round-trips redirect_uri through URL unchanged', () => {
     const url = new URL(
       buildInstallUrl({ clientId: '123.456', redirectUrl: REDIRECT, state: 's' }),

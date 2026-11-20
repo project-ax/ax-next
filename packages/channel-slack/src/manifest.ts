@@ -115,12 +115,18 @@ export function buildAppManifest(botName: string, urls: SlackUrls): Record<strin
 
 /**
  * Slack's OAuth v2 authorize URL for this app. Every value goes through
- * URLSearchParams, so none can add or replace another parameter.
+ * URLSearchParams, so none can add or replace another parameter. `scopes`
+ * defaults to the shared bot's; it must match the app's manifest.
  */
-export function buildInstallUrl(i: { clientId: string; redirectUrl: string; state: string }): string {
+export function buildInstallUrl(i: {
+  clientId: string;
+  redirectUrl: string;
+  state: string;
+  scopes?: readonly string[];
+}): string {
   const params = new URLSearchParams({
     client_id: i.clientId,
-    scope: BOT_SCOPES.join(','),
+    scope: (i.scopes ?? BOT_SCOPES).join(','),
     redirect_uri: i.redirectUrl,
     state: i.state,
   });
