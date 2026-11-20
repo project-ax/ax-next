@@ -8,7 +8,7 @@ vi.mock('../slack-avatar-draw', async (importOriginal) => {
 });
 
 import { drawSlackAvatar, loadAvatarImage } from '../slack-avatar-draw';
-import { renderSlackAvatar, SLACK_AVATAR_TIMEOUT_MS, slackAvatarSource } from '../slack-avatar';
+import { drawPickedSlackAvatar, renderSlackAvatar, SLACK_AVATAR_TIMEOUT_MS, slackAvatarSource } from '../slack-avatar';
 
 const load = vi.mocked(loadAvatarImage);
 const draw = vi.mocked(drawSlackAvatar);
@@ -93,5 +93,36 @@ describe('renderSlackAvatar', () => {
     expect(result).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1);
     expect(result).toBeNull();
+  });
+});
+
+describe('drawPickedSlackAvatar', () => {
+  const create = vi.fn();
+  const revoke = vi.fn();
+  const FILE = new File(['x'], 'p.png', { type: 'image/png' });
+  beforeEach(() => {
+    create.mockReset().mockReturnValue('blob:picked');
+    revoke.mockReset();
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }));
+  });
+
+  it('draws the picked file and revokes its URL', async () => {
+    await expect(drawPickedSlackAvatar(FILE)).resolves.toBe('B64');
+    expect(create).toHaveBeenCalledWith(FILE);
+    expect(load).toHaveBeenCalledWith('blob:picked', 5_000);
+    expect(draw).toHaveBeenCalledWith(IMG);
+    expect(revoke).toHaveBeenCalledWith('blob:picked');
+  });
+
+  it('an image that will not load is null, and the URL is still revoked', async () => {
+    load.mockRejectedValue(new Error('decode'));
+    await expect(drawPickedSlackAvatar(FILE)).resolves.toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:picked');
+  });
+
+  it('a draw that gives nothing is null', async () => {
+    draw.mockReturnValue(null);
+    await expect(drawPickedSlackAvatar(FILE)).resolves.toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:picked');
   });
 });

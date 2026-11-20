@@ -14,6 +14,8 @@
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
  *   POST /settings/slack/:agentId/bot/disconnect  { installId } → { appDeleted }
  *        (TASK-1172: a live or pending bot, named by the install id the page showed; 409 no-bot for any other)
+ *   POST /settings/slack/:agentId/bot/rename  { botName } → { botName } (TASK-1171: the live bot; 409 not-live otherwise)
+ *   POST /settings/slack/:agentId/bot/icon    { iconPng } → {}
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}
  *
@@ -443,6 +445,22 @@ export async function disconnectSlackBot(agentId: string, installId: string): Pr
   return { appDeleted };
 }
 
+/**
+ * Rename the agent's live bot (its Slack app and the bot user). The answer is
+ * the name the server stored.
+ */
+export async function renameAgentSlackBot(agentId: string, botName: string): Promise<{ botName: string }> {
+  const answer = await post(agentId, '/bot/rename', { botName });
+  const stored = isRecord(answer.body) ? answer.body['botName'] : undefined;
+  if (typeof stored !== 'string' || stored === '') throw badResponse(answer.status);
+  return { botName: stored };
+}
+
+/** Change the agent's live bot's picture: `iconPng` is a base64 PNG (see `drawPickedSlackAvatar`). */
+export async function setAgentSlackBotPicture(agentId: string, iconPng: string): Promise<void> {
+  await post(agentId, '/bot/icon', { iconPng });
+}
+
 // ── What an error says ────────────────────────────────────────────────────
 
 export const AGENT_SLACK_COPY = Object.freeze({
@@ -570,8 +588,45 @@ export function agentSlackBotErrorCopy(err: unknown): {
   return { field: null, message: AGENT_SLACK_COPY.generic, revealToken: false };
 }
 
+export const AGENT_SLACK_BOT_CHANGE_COPY = Object.freeze({
+  tokenNeedsReplacing: (approver: string): string => `This bot's Slack token needs replacing by ${approver}.`,
+  appGone: "Slack no longer has this bot's app. It may have been deleted on api.slack.com/apps.",
+  badPicture: "We couldn't use that picture. Try another image.",
+  pictureChanged: 'Slack has the new picture.',
+});
+
+/** One sentence for a refused rename or picture change, and whether it belongs under the name field. */
+export function agentSlackBotChangeErrorCopy(
+  err: unknown,
+  approver: string,
+): { field: 'botName' | null; message: string } {
+  if (err instanceof AgentSlackError) {
+    switch (err.code) {
+      case 'invalid-bot-name': {
+        const known =
+          err.reason !== null && Object.hasOwn(BOT_NAME_COPY, err.reason) ? BOT_NAME_COPY[err.reason] : undefined;
+        return { field: 'botName', message: known ?? BOT_NAME_FALLBACK };
+      }
+      case 'bot-name-taken':
+      case 'slack-name':
+        return { field: 'botName', message: SLACK_TOKEN_COPY[err.code] };
+      case 'invalid-icon':
+        return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.badPicture };
+      case 'slack-config-token':
+        return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.tokenNeedsReplacing(approver) };
+      case 'slack-app-gone':
+        return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.appGone };
+      case 'public-origin-not-https':
+        return { field: null, message: SLACK_ERROR_COPY['public-origin-not-https'] };
+      case 'slack-error':
+        return { field: null, message: SLACK_ERROR_COPY.generic };
+    }
+  }
+  return { field: null, message: AGENT_SLACK_COPY.generic };
+}
+
 /**
- * A bot request, continue, cancel or disconnect that says what we drew is out of date:
+ * A bot request, continue, cancel, disconnect, rename or picture change that says what we drew is out of date:
  * the bot is already there, already asked for, no longer pending or requested, or no longer
  * there (409), or the agent can't be managed (403 `forbidden`) or seen (404) any more. Read
  * the status again.
@@ -587,6 +642,7 @@ export function agentSlackBotStale(err: unknown): boolean {
       err.code === 'bot-requested' ||
       err.code === 'not-requested' ||
       err.code === 'personal-agent' ||
-      err.code === 'no-bot')
+      err.code === 'no-bot' ||
+      err.code === 'not-live')
   );
 }

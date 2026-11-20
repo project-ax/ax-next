@@ -44,6 +44,24 @@ async function render(): Promise<string | null> {
   }
 }
 
+/**
+ * A picked image file as the PNG Slack gets (drawn by slack-avatar-draw.ts),
+ * or null when the browser can't draw it (HEIC, a renamed text file, an SVG
+ * that taints the canvas). Never rejects.
+ */
+export async function drawPickedSlackAvatar(file: File): Promise<string | null> {
+  let url: string | null = null;
+  try {
+    url = URL.createObjectURL(file);
+    const image = await loadAvatarImage(url, SLACK_AVATAR_TIMEOUT_MS);
+    return drawSlackAvatar(image);
+  } catch {
+    return null;
+  } finally {
+    if (url !== null) URL.revokeObjectURL(url);
+  }
+}
+
 /** Base64 PNG for Connect's `iconPng`, or null for "send no picture". Never rejects. */
 export function renderSlackAvatar(): Promise<string | null> {
   return new Promise((resolve) => {
