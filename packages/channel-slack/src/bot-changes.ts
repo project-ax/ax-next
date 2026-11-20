@@ -38,9 +38,15 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * Each method takes the one app lock (`lock`, which plugin.ts shares with
  * Admin › Slack and bots.ts) exactly once, and nothing it calls takes it
  * again: mutex.ts isn't re-entrant. A bootstrap reset removes rows without
- * that lock. So a bot whose row went while Slack was changing its app
- * answers `not-live`, and its approver's just-saved token goes, unless an
- * install or a leftover app still names them.
+ * that lock, and sweeps the secrets of what it removed. So once `changeApp`
+ * is done, whatever Slack said, the bot's row is checked: a rename's write
+ * finds it gone, and any other outcome (a picture Slack took, or a change
+ * Slack refused, perhaps after the rotated token was already saved) reads it
+ * again. A row gone answers `not-live`, not Slack's refusal (there is no bot
+ * left to fix), and the approver's token goes, unless an install or a
+ * leftover app still names them: the successor saved after the reset's sweep
+ * would otherwise outlive it. When nothing was saved, that release is the
+ * sweep's own outcome again. `release` takes no lock.
  *
  * Log lines are code-only: `slack_bot_failed { installId, stage, code }` for
  * a step that failed, and `slack_bot_renamed { installId }` or
@@ -71,14 +77,16 @@ export interface BotChanges {
    * 200 `{ botName }`; 409 `not-live` | `public-origin-not-https` |
    * `bot-name-taken`; 502 what `appChangeError` says (`AppChangeRefusal`);
    * 500 `internal` when the rotated token couldn't be saved. A vault or store
-   * fault throws: the route's 500.
+   * fault throws: the route's 500. A row a reset removed meanwhile is
+   * `not-live`, whatever Slack said.
    */
   rename(i: { agentId: string; botName: string }): Promise<BotReply>;
   /**
    * Give the agent's live bot a new picture: `png` already passed
    * `parseIconPng`. 200 `{}`; 409 `not-live`; 502 `slack-config-token` |
    * `slack-app-gone` | `slack-error`; 500 `internal` when the rotated token
-   * couldn't be saved. A vault or store fault throws: the route's 500.
+   * couldn't be saved. A vault or store fault throws: the route's 500. A row
+   * a reset removed meanwhile is `not-live`, whatever Slack said.
    */
   setPicture(i: { agentId: string; png: Buffer }): Promise<BotReply>;
 }
@@ -162,6 +170,18 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
     }
   }
 
+  /**
+   * After `changeApp`, whatever Slack said: true when the bot's row went
+   * meanwhile (a reset takes no lock), after taking back its approver's token
+   * unless something still names them. A store fault reading the row throws:
+   * the route's 500. The caller holds the app lock.
+   */
+  async function goneMeanwhile(bot: InstallRow): Promise<boolean> {
+    if ((await d.installs.get(bot.installId)) !== null) return false;
+    await steps.release(bot);
+    return true;
+  }
+
   async function rename(i: { agentId: string; botName: string }): Promise<BotReply> {
     return d.lock.run(async () => {
       const bot = await liveOwnBot(d.installs, i.agentId);
@@ -180,7 +200,8 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
       const refusal = await steps.changeApp(bot, 'update-app', (accessToken) =>
         d.api.updateApp(accessToken, bot.appId, manifest),
       );
-      if (refusal !== null) return refused(refusal);
+      // A refusal may come after the successor was saved: a reset meanwhile mustn't keep it.
+      if (refusal !== null) return (await goneMeanwhile(bot)) ? NOT_LIVE : refused(refusal);
 
       // Only now, so the row only ever shows a name Slack took. If this write
       // fails, Slack has the name already, and a retry sends the same manifest.
@@ -210,13 +231,10 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
       const refusal = await steps.changeApp(bot, 'icon', (accessToken) =>
         d.api.setAppIcon(accessToken, bot.appId, i.png),
       );
+      // No row write here to find the row gone, so read it, taken or refused:
+      // a reset during Slack's call would otherwise keep the token saved after its sweep.
+      if (await goneMeanwhile(bot)) return NOT_LIVE;
       if (refusal !== null) return refused(refusal);
-      // No row write here to find the row gone, so read it: a reset during
-      // Slack's call would otherwise keep the token saved after its sweep.
-      if ((await d.installs.get(bot.installId)) === null) {
-        await steps.release(bot);
-        return NOT_LIVE;
-      }
       log('info', 'slack_bot_picture_changed', { installId: bot.installId });
       return json(200, {});
     });

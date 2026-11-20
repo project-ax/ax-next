@@ -174,6 +174,8 @@ describe('Change picture', () => {
     const onChanged = renderIt();
     await pick('UE5H');
     expect(screen.getByRole('dialog')).toHaveTextContent("Change the bot's picture");
+    // The hidden file input is not a Tab stop; the visible button opens it.
+    expect(screen.getByLabelText('Image file')).toHaveAttribute('tabindex', '-1');
     expect(
       screen.getByText("Pick an image from your computer. We'll center it on a white square for Slack."),
     ).toBeInTheDocument();

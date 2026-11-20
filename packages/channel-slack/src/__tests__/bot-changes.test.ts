@@ -571,8 +571,9 @@ describe('rename', () => {
 
       expect(await w.rename(NEW_NAME), code).toEqual({ status: 502, body: { error: 'slack-config-token' } });
 
-      // Stopped at the step that failed: no store:setBotName, no handle read.
-      expect(w.trail, code).toEqual(ONE_RENAME.slice(0, STOPS_AFTER[stage]));
+      // Stopped at the step that failed: no store:setBotName, no handle read;
+      // only the row read again, to see a reset meanwhile.
+      expect(w.trail, code).toEqual([...ONE_RENAME.slice(0, STOPS_AFTER[stage]), 'store:get']);
       expect(supportRow(w), code).toMatchObject({ botName: OLD_NAME, botHandle: OLD_HANDLE });
       // Only Grace's token was named, as herself. Ada's was never read, rotated or written.
       const named = w.vaultAs.filter((v) => v.name === 'config-refresh-token');
@@ -599,7 +600,7 @@ describe('rename', () => {
 
       expect(await w.rename(NEW_NAME), code).toEqual({ status: 502, body: { error } });
 
-      expect(w.trail, code).toEqual(ONE_RENAME.slice(0, STOPS_AFTER['update-app']));
+      expect(w.trail, code).toEqual([...ONE_RENAME.slice(0, STOPS_AFTER['update-app']), 'store:get']);
       expect(supportRow(w), code).toMatchObject({ botName: OLD_NAME, botHandle: OLD_HANDLE });
       // Saved before the update, so the next try rotates it.
       expect(w.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
@@ -615,7 +616,7 @@ describe('rename', () => {
 
     expect(await w.rename(NEW_NAME)).toEqual({ status: 500, body: { error: 'internal' } });
 
-    expect(w.trail).toEqual(ONE_RENAME.slice(0, STOPS_AFTER['save-config-token']));
+    expect(w.trail).toEqual([...ONE_RENAME.slice(0, STOPS_AFTER['save-config-token']), 'store:get']);
     expect(methods(w)).toEqual(['rotateConfigToken']);
     expect(w.vault.get(configTokenRef(GRACE))).toBe(GRACE_STORED);
     expect(supportRow(w)).toMatchObject({ botName: OLD_NAME, botHandle: OLD_HANDLE });
@@ -727,6 +728,48 @@ describe('rename', () => {
     expect(await picturing).toEqual({ status: 200, body: {} });
     expect(waiting.trail).toEqual([...ONE_RENAME, ...ONE_PICTURE]);
   });
+
+  it("R10 the bot's row gone while Slack refused the update AFTER the successor was saved → 409 not-live; that token goes, unless something still names the approver", async () => {
+    for (const code of ['ratelimited', 'no_permission']) {
+      // A reset removes every row while Slack is renaming the bot, and then Slack refuses.
+      const w = await seeded();
+      w.slack.on.updateApp = async () => {
+        await w.memory.store.removeAll();
+        throw new SlackApiError('apps.manifest.update', code);
+      };
+
+      expect(await w.rename(NEW_NAME), code).toEqual({ status: 409, body: { error: 'not-live' } });
+
+      // The refusal re-read the row, found it gone, and asked whether anything still names Grace.
+      expect(w.trail.slice(-3), code).toEqual([
+        'store:get',
+        'store:personHasApps',
+        'vault:delete config-refresh-token',
+      ]);
+      // Nothing does, so the successor saved after the reset's sweep goes too.
+      expect(w.vault.has(configTokenRef(GRACE)), code).toBe(false);
+      expect(w.lines, code).toEqual([
+        { level: 'warn', msg: 'slack_bot_failed', fields: { installId: SUPPORT_BOT, stage: 'update-app', code } },
+      ]);
+
+      // An app of Grace's is left over: it names her, so her token stays, for it.
+      const kept = await seeded();
+      await kept.memory.store.rememberLeftoverApp({
+        installId: LEFTOVER,
+        appId: 'A07LEFTOVER1',
+        botName: 'Old Helper',
+        connectedByUserId: GRACE,
+      });
+      forget(kept);
+      kept.slack.on.updateApp = async () => {
+        await kept.memory.store.removeAll();
+        throw new SlackApiError('apps.manifest.update', code);
+      };
+      expect(await kept.rename(NEW_NAME), code).toEqual({ status: 409, body: { error: 'not-live' } });
+      expect(kept.trail.at(-1), code).toBe('store:personHasApps');
+      expect(kept.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
+    }
+  });
 });
 
 // ── setPicture ──────────────────────────────────────────────────────────────
@@ -769,7 +812,8 @@ describe('setPicture', () => {
 
       expect(await w.setPicture(), code).toEqual({ status: 502, body: { error } });
 
-      expect(w.trail, code).toEqual(ONE_PICTURE.slice(0, 5));
+      // The row read again (still there), to see a reset meanwhile.
+      expect(w.trail, code).toEqual(ONE_PICTURE);
       expect(supportRow(w), code).toEqual(before);
       expect(w.lines, code).toEqual([
         { level: 'warn', msg: 'slack_bot_failed', fields: { installId: SUPPORT_BOT, stage: 'icon', code } },
@@ -826,6 +870,45 @@ describe('setPicture', () => {
     };
     expect(await kept.setPicture()).toEqual({ status: 409, body: { error: 'not-live' } });
     expect(kept.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+  });
+
+  it('P4 setPicture: the row gone while Slack refused the picture AFTER the successor was saved → release, 409 not-live', async () => {
+    for (const code of ['ratelimited', 'no_permission']) {
+      // A reset removes the bot's row while Slack is taking its picture, and then Slack refuses.
+      const w = await seeded();
+      w.slack.on.setAppIcon = async () => {
+        w.memory.rows.delete(SUPPORT_BOT);
+        throw new SlackApiError('apps.icon.set', code);
+      };
+
+      expect(await w.setPicture(), code).toEqual({ status: 409, body: { error: 'not-live' } });
+
+      // Nothing else names Grace, so the token just saved goes.
+      expect(w.trail.slice(ONE_PICTURE.length - 1), code).toEqual([
+        'store:get',
+        'store:personHasApps',
+        'vault:delete config-refresh-token',
+      ]);
+      expect(w.vault.has(configTokenRef(GRACE)), code).toBe(false);
+      expect(w.lines, code).toEqual([
+        { level: 'warn', msg: 'slack_bot_failed', fields: { installId: SUPPORT_BOT, stage: 'icon', code } },
+      ]);
+
+      // A leftover app still names her: kept.
+      const kept = await seeded();
+      await kept.memory.store.rememberLeftoverApp({
+        installId: LEFTOVER,
+        appId: 'A07LEFTOVER1',
+        botName: 'Old Helper',
+        connectedByUserId: GRACE,
+      });
+      kept.slack.on.setAppIcon = async () => {
+        kept.memory.rows.delete(SUPPORT_BOT);
+        throw new SlackApiError('apps.icon.set', code);
+      };
+      expect(await kept.setPicture(), code).toEqual({ status: 409, body: { error: 'not-live' } });
+      expect(kept.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
+    }
   });
 });
 

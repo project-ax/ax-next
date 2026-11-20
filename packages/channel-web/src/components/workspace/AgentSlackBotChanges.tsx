@@ -380,6 +380,7 @@ function PictureForm({
           accept={ALLOWED_LOGO_TYPES.join(',')}
           aria-label="Image file"
           className="sr-only"
+          tabIndex={-1}
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file !== undefined) void choose(file);
