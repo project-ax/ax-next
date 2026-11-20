@@ -108,14 +108,14 @@ describe('the states', () => {
   });
 
   it('no workspace: one plain line, no button', async () => {
-    renderIt({ state: 'no-workspace', bot: NO_BOT });
+    renderIt({ state: 'no-workspace', canManage: false, bot: NO_BOT });
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.queryByText('Its own Slack bot')).toBeNull();
   });
 
   it("no workspace, but the agent's own bot is live: the live line still shows", async () => {
-    renderIt({ state: 'no-workspace', bot: LIVE_BOT });
+    renderIt({ state: 'no-workspace', canManage: false, bot: LIVE_BOT });
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
     expect(screen.getByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
   });
@@ -123,6 +123,7 @@ describe('the states', () => {
   it('no workspace, with a pending request: it can still be cancelled (only a manager is told of it)', async () => {
     renderIt({
       state: 'no-workspace',
+      canManage: true,
       bot: { state: 'pending', botName: 'Quill', approver: 'Ada Lovelace', canContinue: false },
     });
     expect(await screen.findByRole('button', { name: 'Cancel request' })).toBeInTheDocument();
@@ -146,7 +147,7 @@ describe('the states', () => {
 
   it('a failed read offers a retry', async () => {
     fetchStatus.mockRejectedValueOnce(new Error('boom'));
-    fetchStatus.mockResolvedValueOnce({ state: 'no-workspace', bot: NO_BOT });
+    fetchStatus.mockResolvedValueOnce({ state: 'no-workspace', canManage: false, bot: NO_BOT });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     render(<AgentSlack agentId="a1" agentName="Quill" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
@@ -254,8 +255,8 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
   it('no workspace: the bot section goes with the request, but the note still shows', async () => {
     // Without the shared install nobody can continue, so the status never says the viewer is the approver.
     await cancelThroughReRead(
-      { state: 'no-workspace', bot: { ...PENDING_BOT, canContinue: false } },
-      { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+      { state: 'no-workspace', canManage: true, bot: { ...PENDING_BOT, canContinue: false } },
+      { state: 'no-workspace', canManage: false, bot: { state: 'none', configTokenStored: false } },
     );
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
     expect(screen.getByText(LEFT_OVER)).toHaveTextContent('Ada Lovelace set it up and can also delete it');
@@ -271,8 +272,8 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
   it('no workspace: a cancel that deleted its Slack app leaves no note either', async () => {
     // The no-workspace view shows the note on its own, with no bot section to hide it a second time.
     await cancelThroughReRead(
-      { state: 'no-workspace', bot: { ...PENDING_BOT, canContinue: false } },
-      { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+      { state: 'no-workspace', canManage: true, bot: { ...PENDING_BOT, canContinue: false } },
+      { state: 'no-workspace', canManage: false, bot: { state: 'none', configTokenStored: false } },
       true,
     );
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();

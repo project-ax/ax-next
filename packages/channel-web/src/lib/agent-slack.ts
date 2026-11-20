@@ -12,6 +12,7 @@
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
+ *   POST /settings/slack/:agentId/bot/disconnect  → { appDeleted }   (TASK-1172: a live or pending bot)
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
@@ -45,7 +46,16 @@ export type AgentSlackBot =
   | { state: 'live'; botName: string; handle: string | null; approver: string; needsClaim: boolean };
 
 export type AgentSlackStatus =
-  | { state: 'no-workspace'; bot: AgentSlackBot }
+  | {
+      state: 'no-workspace';
+      /**
+       * Whether the viewer manages the agent. Slack may be gone while the
+       * agent's own bot stays (TASK-1172), and its manager can still take it
+       * away. An older host omits it; that reads as "a pending bot is theirs".
+       */
+      canManage: boolean;
+      bot: AgentSlackBot;
+    }
   | {
       state: 'personal-agent';
       botName: string;
@@ -165,7 +175,9 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
   switch (body['state']) {
     case 'no-workspace': {
       const bot = parseBot(body['bot']);
-      return bot === null ? null : { state: 'no-workspace', bot };
+      if (bot === null) return null;
+      const canManage = 'canManage' in body ? body['canManage'] : bot.state === 'pending';
+      return typeof canManage === 'boolean' ? { state: 'no-workspace', canManage, bot } : null;
     }
     case 'personal-agent': {
       const { botName, answersDms = true } = body;
@@ -345,6 +357,14 @@ export async function cancelSlackBot(agentId: string): Promise<{ appDeleted: boo
   return { appDeleted };
 }
 
+/** Take the agent's own bot away, pending or live. `appDeleted` is false when its Slack app may still be on Slack. */
+export async function disconnectSlackBot(agentId: string): Promise<{ appDeleted: boolean }> {
+  const answer = await post(agentId, '/bot/disconnect', {});
+  const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
+  if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
+  return { appDeleted };
+}
+
 // ── What an error says ────────────────────────────────────────────────────
 
 export const AGENT_SLACK_COPY = Object.freeze({
@@ -464,8 +484,8 @@ export function agentSlackBotErrorCopy(err: unknown): {
 }
 
 /**
- * A bot request, continue or cancel that says what we drew is out of date:
- * the bot is already there or no longer pending (409), or the agent can't be
+ * A bot request, continue, cancel or disconnect that says what we drew is out of date:
+ * the bot is already there, no longer pending or no longer there (409), or the agent can't be
  * managed (403 `forbidden`) or seen (404) any more. Read the status again.
  * (`not-approver` is a 403 too, but it is an answer about the person, shown as it is.)
  */
@@ -473,6 +493,10 @@ export function agentSlackBotStale(err: unknown): boolean {
   if (!(err instanceof AgentSlackError)) return false;
   if (err.status === 404 || (err.status === 403 && err.code === 'forbidden')) return true;
   return (
-    err.status === 409 && (err.code === 'bot-exists' || err.code === 'not-pending' || err.code === 'personal-agent')
+    err.status === 409 &&
+    (err.code === 'bot-exists' ||
+      err.code === 'not-pending' ||
+      err.code === 'personal-agent' ||
+      err.code === 'no-bot')
   );
 }
