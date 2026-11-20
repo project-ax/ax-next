@@ -105,8 +105,12 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     nothing else deletes it. Every boot fills it from the bindings, off when
  *     any of the agent's bindings of the channel is off, and never over a
  *     switch already kept: bindings written before the table (some switched
- *     off) get theirs, and so does any an older replica wrote since. It holds
- *     two opaque ids and a boolean.
+ *     off) get theirs, and so does any an older replica wrote since. Then,
+ *     where still none is kept, from the threads: off where a turn ran while
+ *     the switch was off. Thread rows outlive every Disconnect, so that is
+ *     how a channel switched off and disconnected before the table keeps its
+ *     off; one with no turn there while it was off left no trace, and its bot
+ *     starts there on. It holds two opaque ids and a boolean.
  *
  * No secret is here. They live in the credentials vault (secrets.ts): an
  * install's three under `slack:<install_id>:<name>`, and the configuration
@@ -430,6 +434,24 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
     SELECT agent_id, channel_id, bool_and(remember)
       FROM channel_slack_v1_channels
      GROUP BY agent_id, channel_id
+    ON CONFLICT (agent_id, channel_id) DO NOTHING
+  `.execute(db);
+  // Then, every boot, a channel the agent has no binding of any more:
+  // switched off and disconnected before this table existed, its off went
+  // with the binding. A thread a turn left there while the switch was off
+  // still says so (thread rows outlive every Disconnect), so its switch is
+  // kept off. Only ever off, and only where no switch is kept: after the
+  // bindings above, so a live binding that is on wins over an older thread
+  // kept out of memory. A channel switched off and disconnected with no turn
+  // there in between left no trace, and its bot starts on. In key order, so
+  // two boots at once wait on each other's rows in one order and can't
+  // deadlock.
+  await sql`
+    INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
+    SELECT DISTINCT agent_id, channel_id, false
+      FROM channel_slack_v1_threads
+     WHERE not_remembered
+     ORDER BY agent_id, channel_id
     ON CONFLICT (agent_id, channel_id) DO NOTHING
   `.execute(db);
 }

@@ -2856,6 +2856,52 @@ describe('@ax/channel-slack plugin', () => {
     expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
   });
 
+  // TASK-1180: before this deploy, a channel's switch lived on its binding
+  // alone. A channel switched off and disconnected then has no binding left
+  // to keep its switch from, only the thread a turn left there while it was
+  // off. The boot keeps it off from that thread. Before the fix nothing kept
+  // it, and the bot's first mention there bound it on.
+  it("a channel switched off and disconnected before this deploy stays off when the agent's own bot first answers there: the boot keeps it off from the thread kept out of memory there (TASK-1180)", async () => {
+    // The database and vault as this deploy finds them: the shared app and the agent's own bot, both live,
+    await runMigrations(probe);
+    const before = newServices();
+    await seedSupportBot(before);
+    const channels = createChannelStore(probe);
+    // #support's shared connection disconnected after a turn there was kept out of memory,
+    await keptOutThread('conv_kept_out');
+    expect(await channels.remove(INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
+    // and the bot not yet answered in #support. Nothing kept the channel's switch.
+    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
+    expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBeNull();
+
+    const slack = botChannelSlackFetch();
+    const { s, call, harness } = await boot(
+      { fetchImpl: slack.fetchImpl },
+      {
+        seed: (s) => {
+          for (const [ref, secret] of before.vault) s.vault.set(ref, secret);
+        },
+      },
+    );
+    const body = botMentionBody('Ev07ABCDEF60', '1763036000.000600', 'hello there');
+    const posted = await call(
+      'POST',
+      '/slack/events/:installId',
+      request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
+        params: { installId: BOT_INSTALL_ID },
+        body,
+        headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
+      }),
+    );
+    expect(posted.status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036000.000600`;
+    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: thread, userId: ADMIN.id });
+    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
+    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
+  });
+
   it("a bot channel's switch: only the agent's team admin flips it, the settings show it, and memory follows it (TASK-1180)", async () => {
     const slack = botChannelSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });

@@ -265,6 +265,47 @@ describe('runMigrations', () => {
     expect(await record(OTHER_CONV)).toBe('recorded');
     expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread());
   });
+
+  // TASK-1180. Phase 1 kept a channel's switch on its binding alone, and a
+  // Disconnect deletes the binding. A channel switched off and disconnected
+  // before the switches table existed has one trace left: the thread a turn
+  // left there while the switch was off (thread rows outlive every
+  // Disconnect). The boot keeps its switch off from that, so the agent's own
+  // bot doesn't start there on.
+  it("keeps a switch off for a channel with no binding left where a turn ran while it was off; a live binding that is on still wins; never over a switch already kept; a second run changes nothing", async () => {
+    // Switched off (on the binding alone, as phase 1 did), a turn kept out of memory, then disconnected.
+    await connect();
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${INSTALL} AND channel_id = ${SUPPORT}`.execute(db);
+    expect(await record(CONV)).toBe('recorded');
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    // Switched off, a turn kept out of memory, switched on again, and still connected.
+    await connect({ channelId: SALES });
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${INSTALL} AND channel_id = ${SALES}`.execute(db);
+    expect(await record(OTHER_CONV, { channelId: SALES })).toBe('recorded');
+    await sql`UPDATE channel_slack_v1_channels SET remember = true WHERE install_id = ${INSTALL} AND channel_id = ${SALES}`.execute(db);
+    // Every turn remembered, then disconnected: nothing says it was ever off.
+    await connect({ channelId: GENERAL });
+    expect(await record('conv_general_thread', { channelId: GENERAL })).toBe('recorded');
+    expect(await channels.remove(INSTALL, GENERAL, AGENT)).toBe(true);
+    // Since the table: off, a turn kept out of memory, on again (kept on), then disconnected.
+    await connect({ installId: OTHER_INSTALL, agentId: OTHER_AGENT });
+    await recordOff('conv_other_agent_thread', { installId: OTHER_INSTALL, agentId: OTHER_AGENT });
+    expect(await channels.remove(OTHER_INSTALL, SUPPORT, OTHER_AGENT)).toBe(true);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+    expect(await channels.keptRemember(OTHER_AGENT, SUPPORT)).toBe(true);
+
+    for (let run = 1; run <= 2; run += 1) {
+      await runMigrations(db);
+      expect(await channels.keptRemember(AGENT, SUPPORT), `run ${run}`).toBe(false);
+      expect(await channels.keptRemember(AGENT, SALES), `run ${run}`).toBe(true);
+      expect(await channels.keptRemember(AGENT, GENERAL), `run ${run}`).toBeNull();
+      expect(await channels.keptRemember(OTHER_AGENT, SUPPORT), `run ${run}`).toBe(true);
+    }
+    // The threads and the live binding are untouched.
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+    expect((await channels.get(INSTALL, SALES))?.remember).toBe(true);
+  });
 });
 
 describe('upsert: one agent per channel', () => {
