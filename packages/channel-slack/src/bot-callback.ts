@@ -5,7 +5,7 @@ import { logCode } from './log-code.js';
 import { BOT_OAUTH_CALLBACK_PATH, withoutTrailingSlashes } from './manifest.js';
 import type { Mutex } from './mutex.js';
 import { OAUTH_CODE_RE, STATE_RE, sha256Hex } from './slack-apps.js';
-import type { InstallStore } from './store.js';
+import type { InstallRow, InstallStore } from './store.js';
 import { checkUser } from './user-auth.js';
 
 /**
@@ -14,7 +14,7 @@ import { checkUser } from './user-auth.js';
  * docs/plans/2026-11-09-channel-slack-design.md §4):
  *
  *   GET /slack/bots/oauth/callback  ?code&state or ?error&state
- *       → 302 to `<publicOrigin>/?slack-bot=<connected|cancelled|failed>[&agentId=<id>]`
+ *       → 302 to `<publicOrigin>/?slack-bot=<connected|cancelled|failed>[&agentId=<id> | &from=admin]`
  *
  * It is the redirect_uri in every bot's manifest and install link (manifest.ts
  * `botUrls`), apart from Admin › Slack's own callback. It reads only a bot's
@@ -22,26 +22,30 @@ import { checkUser } from './user-auth.js';
  * (store.ts, kind-scoped).
  *
  * The person must be signed in, whatever their role. The state was minted for
- * one AX user, the bot's approver, when they asked for the bot or picked the
- * request back up (bots.ts), and only its sha256 is stored, with a 10-minute
+ * one AX user, the bot's approver, when the bot was made (a team admin's own
+ * request, or an AX admin's approve of one in Admin › Slack, TASK-1169) or
+ * picked back up (bots.ts), and only its sha256 is stored, with a 10-minute
  * expiry. The callback refuses a state it doesn't know, and one minted for
  * someone else WITHOUT spending it: whoever learns the link can neither use
  * it nor spoil it, and no browser can finish an install for another person
  * (login CSRF). Otherwise it spends the state in one UPDATE, so it works
  * once. That, and all `finish` does after it (bots.ts), runs under the one
- * app lock, so it never interleaves with a request, a cancel, an agent's
- * deletion or anything Admin › Slack does.
+ * app lock, so it never interleaves with a request, an approve, a cancel, an
+ * agent's deletion or anything Admin › Slack does.
  *
  * A browser lands here from Slack, so it never gets a JSON error. Whatever
  * happens (connected, cancelled, a refusal, a fault) it goes to the app's
  * root with `slack-bot=` and one fixed word. Once the state is known to be
- * the signed-in person's, and only then, the address also names the bot's
- * agent, read from the bot's row, so the web app can take them back to that
- * agent's settings: a browser the state wasn't minted for learns nothing
- * about the bot. Nothing in the request picks the address, so the callback
- * can't be used as an open redirect. It doesn't bypass http-server's CSRF
- * check, which lets any GET through: the state is what proves the visit came
- * from the person's own install link. It reads no body.
+ * the signed-in person's, and only then, the address also says where to take
+ * them, read from the bot's row: the bot's agent, so the web app can open
+ * that agent's settings; or, for a bot an AX admin approved (its approver
+ * isn't its requester), `from=admin` and no agent, since that admin may not
+ * be on the agent's team and can't open its settings, so the web app opens
+ * Admin › Slack instead. A browser the state wasn't minted for learns
+ * nothing about the bot. Nothing in the request picks the address, so the
+ * callback can't be used as an open redirect. It doesn't bypass http-server's
+ * CSRF check, which lets any GET through: the state is what proves the visit
+ * came from the person's own install link. It reads no body.
  *
  * Log lines are code-only: `slack_bot_install_refused { installId?, reason }`
  * for a visit that didn't finish (at info for a cancel, a stale or garbled
@@ -66,6 +70,12 @@ export interface BotCallbackDeps {
 
 type Outcome = 'connected' | 'cancelled' | 'failed';
 
+/**
+ * Where the browser is taken once the state is known to be the signed-in
+ * person's: the bot's agent, Admin › Slack (`admin`), or nowhere in particular.
+ */
+type Landing = { agentId: string } | 'admin' | null;
+
 const PLUGIN = '@ax/channel-slack';
 
 /** Refusals logged at info: the approver's own cancel, a stale or garbled link, a signed-out browser. */
@@ -78,6 +88,18 @@ const QUIET_REFUSALS: ReadonlySet<string> = new Set([
 
 /** `finish`'s failures whose step already logged its own code: the callback adds no second line. */
 const LOGGED_BY_STEP: ReadonlySet<BotFinishRefusal> = new Set(['oauth-access', 'store-grant']);
+
+/**
+ * Where the bot's row sends its approver. A bot an AX admin approved (its
+ * approver isn't its requester, TASK-1169) goes back to Admin › Slack, never
+ * to the agent: that admin may not be on the agent's team. Any other bot goes
+ * to its agent.
+ */
+function landingFor(install: InstallRow | null): Landing {
+  if (install === null) return null;
+  if (install.requestedByUserId !== null && install.requestedByUserId !== install.connectedByUserId) return 'admin';
+  return install.agentId !== null ? { agentId: install.agentId } : null;
+}
 
 /**
  * What Slack sent back: a code after Allow, an error after Cancel. Exactly
@@ -116,14 +138,15 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
   };
 
   /**
-   * Where the browser goes: the app's root and the outcome, and the bot's
-   * agent once the state is known to be the signed-in person's. Built from
-   * config and the bot's row alone, through URLSearchParams, so no value can
-   * add or replace another parameter.
+   * Where the browser goes: the app's root and the outcome, and its landing
+   * once the state is known to be the signed-in person's. Built from config
+   * and the bot's row alone, through URLSearchParams, so no value can add or
+   * replace another parameter.
    */
-  const back = (outcome: Outcome, agentId: string | null = null): string => {
+  const back = (outcome: Outcome, landing: Landing = null): string => {
     const params = new URLSearchParams({ 'slack-bot': outcome });
-    if (agentId !== null) params.set('agentId', agentId);
+    if (landing === 'admin') params.set('from', 'admin');
+    else if (landing !== null) params.set('agentId', landing.agentId);
     return `${appOrigin}/?${params.toString()}`;
   };
 
@@ -151,7 +174,7 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
 
     return d.lock.run(async () => {
       let installId: string | undefined;
-      let agentId: string | null = null;
+      let landing: Landing = null;
       try {
         // Peek first: a browser the state wasn't minted for is refused
         // WITHOUT spending it, and told nothing about the bot.
@@ -172,18 +195,18 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
           return back('failed');
         }
         // The visit is the state's own person's: from here on the address
-        // names the bot's agent, read from its row, never from the request.
+        // says where to take them, read from the bot's row, never from the request.
         const install = await d.installs.get(spent.installId);
-        agentId = install?.agentId ?? null;
+        landing = landingFor(install);
         if (spent.expiresAt.getTime() <= d.now()) {
           refused('expired', installId);
-          return back('failed', agentId);
+          return back('failed', landing);
         }
         if ('error' in slack) {
           // Only the code picks the outcome; Slack's text goes nowhere.
           const cancelled = slack.error === 'access_denied';
           refused(cancelled ? 'cancelled' : 'slack-error', installId);
-          return back(cancelled ? 'cancelled' : 'failed', agentId);
+          return back(cancelled ? 'cancelled' : 'failed', landing);
         }
         if (install === null) {
           refused('not-pending', installId);
@@ -192,17 +215,17 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
         const done = await d.bots.finish({ actorUserId, ctx, install, code: slack.code });
         if (done.outcome === 'failed') {
           if (!LOGGED_BY_STEP.has(done.reason)) refused(done.reason, installId);
-          return back('failed', agentId);
+          return back('failed', landing);
         }
         log('info', 'slack_bot_connected', { installId });
-        return back('connected', agentId);
+        return back('connected', landing);
       } catch (err) {
         log('error', 'slack_bot_failed', {
           ...(installId !== undefined ? { installId } : {}),
           stage: 'callback',
           code: logCode(err),
         });
-        return back('failed', agentId);
+        return back('failed', landing);
       }
     });
   }

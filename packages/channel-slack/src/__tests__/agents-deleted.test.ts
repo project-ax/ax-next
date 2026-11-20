@@ -74,10 +74,14 @@ beforeAll(async () => {
   installs = createInstallStore(db);
 }, 120_000);
 
-/** No binding, thread, install or leftover app: what every test, and each case of a table-driven one, starts from. */
+/**
+ * No binding, thread, install, leftover app or open bot request: what every
+ * test, and each case of a table-driven one, starts from.
+ */
 async function clearTables(): Promise<void> {
   await sql`
-    TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_installs, channel_slack_v1_leftover_apps
+    TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_installs,
+      channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests
   `.execute(db);
 }
 
@@ -411,6 +415,9 @@ const BOT_NAME = 'support-helper';
 /** Grace's bot for another team agent. */
 const SALES_BOT_INSTALL = 'U2FsZXNCb3RJbnN0YWxsMQ';
 const SALES_BOT_APP = 'A07BOTAPP002';
+/** Open requests for each agent's own bot, waiting for an AX admin (TASK-1169): our own 22-character ids. */
+const SUPPORT_REQUEST = 'U3VwcG9ydEJvdEFzazAwMQ';
+const SALES_REQUEST = 'U2FsZXNCb3RBc2swMDAwMg';
 /** Each person's own configuration token (TASK-1175), as their last use of it left it. */
 const ADA_STORED = fakeConfigRefreshToken('ADASTOREDSECRET');
 const GRACE_STORED = fakeConfigRefreshToken('GRACESTOREDSECRET');
@@ -915,6 +922,46 @@ describe("agents:deleted takes the deleted agent's own Slack bot with it (TASK-1
     }
 
     expectCodeOnly(lines);
+  });
+
+  it("deleting the agent deletes its open request waiting for an AX admin (TASK-1169), and no other agent's", async () => {
+    const w = botWorld();
+    await seedShared(w);
+    // Grace asked an AX admin for each agent's own bot; neither has been approved.
+    await installs.insertBotRequest({
+      requestId: SUPPORT_REQUEST,
+      agentId: AGENT,
+      requestedByUserId: GRACE,
+      botName: BOT_NAME,
+    });
+    await installs.insertBotRequest({
+      requestId: SALES_REQUEST,
+      agentId: OTHER_AGENT,
+      requestedByUserId: GRACE,
+      botName: 'sales-helper',
+    });
+    const before = new Map(w.vault);
+    const ctxLog = captureLogger();
+
+    expect((await fireDeleted(w.bus, deleted(AGENT), ctxLog.logger)).rejected).toBe(false);
+
+    expect(await installs.botRequestForAgent(AGENT)).toBeNull();
+    expect((await installs.listBotRequests()).map((r) => r.requestId)).toEqual([SALES_REQUEST]);
+    // A request holds no token and no Slack app: nothing else is touched.
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vault).toEqual(before);
+    // Named by our own random id alone.
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_agent_bot_request_removed', bindings: { requestId: SUPPORT_REQUEST } },
+    ]);
+    expectCodeOnly(w.lines);
+    expect(subscriberFailures(ctxLog.lines)).toEqual([]);
+
+    // A second delete event finds nothing, and says nothing.
+    w.lines.length = 0;
+    expect((await fireDeleted(w.bus, deleted(AGENT), captureLogger().logger)).rejected).toBe(false);
+    expect(w.lines).toEqual([]);
   });
 
   it("the bot still goes when the agent's bindings and threads won't delete", async () => {
