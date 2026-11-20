@@ -30,12 +30,19 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * And the memory switch the team last set for an agent in a channel, kept
  * apart from the bindings (TASK-1180), so a Disconnect never loses it. A flip
  * (`setRemember`) writes every binding of that agent in that channel, on any
- * install, and the kept switch, in ONE statement, so they can't disagree,
- * and a bot channel switched off is off on the shared binding too, which the
- * shared bot answers with again once the bot is gone. `keptRemember` reads
- * it for a team agent's own bot's first bind there (router.ts). An install's
- * removal and a disconnect keep it; only `removeForAgent` deletes it. Any
- * future writer of `remember` must keep that one-statement rule.
+ * install, and the kept switch, in ONE statement, so a flip leaves the kept
+ * switch agreeing with every binding it reached; and a bot channel switched
+ * off is off on the shared binding too, which the shared bot answers with
+ * again once the bot is gone. `keptRemember` reads it for a team agent's own
+ * bot's first bind there (router.ts). An install's removal and a disconnect
+ * keep it; only `removeForAgent` deletes it. Any future writer that flips a
+ * binding's `remember` must keep that one-statement rule. `upsert`'s insert
+ * is the one exception, on purpose: a new binding's starting switch is not
+ * a flip, so it keeps nothing (a fresh connect starts on beside whatever is
+ * kept, and the bot's first bind reads a live binding before the kept
+ * switch). The two can also differ after a flip by code from before the
+ * table (an older replica, or a rollback), which writes the binding alone;
+ * the next boot moves the kept switch toward off (migrations.ts).
  */
 export interface ChannelBinding {
   installId: string;
@@ -278,17 +285,17 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     },
 
     async setRemember(installId, channelId, agentId, remember) {
-      // One statement, so the bindings and the kept switch never disagree.
-      // Every row it flips is this agent's, in this channel, and only when the
-      // binding the caller named is this agent's (the EXISTS, read as the
-      // statement starts): a route that checked rights on one agent can't
-      // touch another's. The kept switch is written whenever any binding was
-      // flipped, so it goes with them even when a Disconnect deletes the
-      // named binding while the flip waits on its row: that row is skipped,
-      // and the agent's other bindings still flip. The answer is whether the
-      // named binding took it: false then, so the caller's page re-reads and
-      // finds it gone. A bare parameter in a SELECT list has no type, so each
-      // is cast.
+      // One statement, so the kept switch ends up agreeing with every binding
+      // the flip reached. Every row it flips is this agent's, in this channel,
+      // and only when the binding the caller named is this agent's (the
+      // EXISTS, read as the statement starts): a route that checked rights on
+      // one agent can't touch another's. The kept switch is written whenever
+      // any binding was flipped, so it goes with them even when a Disconnect
+      // deletes the named binding while the flip waits on its row: that row
+      // is skipped, and the agent's other bindings still flip. The answer is
+      // whether the named binding took it: false then, so the caller's page
+      // re-reads and finds it gone. A bare parameter in a SELECT list has no
+      // type, so each is cast.
       const r = await sql<{ changed: number }>`
         WITH flipped AS (
           UPDATE channel_slack_v1_channels

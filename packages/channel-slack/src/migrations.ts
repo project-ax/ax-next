@@ -96,25 +96,25 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     a Disconnect never loses it: a channel's Disconnect, Admin › Slack's
  *     and a bot's removal all delete bindings, never this. Keyed by agent and
  *     channel, with no install: Slack's channel ids are unique across
- *     workspaces. Its one writer is `setRemember` (channel-store.ts), which
- *     writes it in the same statement that flips the agent's bindings of the
- *     channel. Its one reader is a team agent's own bot's first bind there
- *     (router.ts), which starts from the agent's live shared binding, else
- *     from this, else on. It goes when its agent is deleted, with the agent's
- *     bindings and threads (agents-deleted.ts, on agents:deleted), and
- *     nothing else deletes it. Every boot fills it from the bindings, off when
- *     any of the agent's bindings of the channel is off, and moves a switch
- *     already kept only from on to off: an agent's channel with bindings and
- *     no switch kept gets one (phase 1's bindings, some switched off, and any
- *     an older replica connected since), and a kept on goes off where one of
- *     those bindings is off (code from before the table, an older replica's
- *     or a rollback's, flips the binding alone). Such code switching a
- *     binding back on leaves a kept off as it is. Then, where still none is
- *     kept, from the threads: off where a turn ran while the switch was off.
- *     Thread rows outlive every Disconnect, so that is how a channel switched
- *     off and disconnected before the table keeps its off; one with no turn
- *     there while it was off left no trace, and its bot starts there on. It
- *     holds two opaque ids and a boolean.
+ *     workspaces. Two things write it: `setRemember` (channel-store.ts), in
+ *     the same statement that flips the agent's bindings of the channel, and
+ *     every boot's backfill (below). Its one reader is a team agent's own
+ *     bot's first bind there (router.ts), which starts from the agent's live
+ *     shared binding, else from this, else on. It goes when its agent is
+ *     deleted, with the agent's bindings and threads (agents-deleted.ts, on
+ *     agents:deleted), and nothing else deletes it. Every boot fills it from
+ *     the bindings, off when any of the agent's bindings of the channel is
+ *     off, and moves a switch already kept only from on to off: an agent's
+ *     channel with bindings and no switch kept gets one (phase 1's bindings,
+ *     some switched off, and any an older replica connected since), and a
+ *     kept on goes off where one of those bindings is off (code from before
+ *     the table, an older replica's or a rollback's, flips the binding
+ *     alone). Such code switching a binding back on leaves a kept off as it
+ *     is. Then, where still none is kept, from the threads: off where a turn
+ *     ran while the switch was off. Thread rows outlive every Disconnect, so
+ *     that is how a channel switched off and disconnected before the table
+ *     keeps its off; one with no turn there while it was off left no trace,
+ *     and its bot starts there on. It holds two opaque ids and a boolean.
  *
  * No secret is here. They live in the credentials vault (secrets.ts): an
  * install's three under `slack:<install_id>:<name>`, and the configuration
@@ -221,7 +221,8 @@ export interface ChannelSlackBotRequestsTable {
 
 /**
  * TASK-1180. The switch the team last set for an agent in a channel, apart
- * from the bindings: `setRemember` writes it, `removeForAgent` deletes it.
+ * from the bindings: `setRemember` writes it, every boot's backfill
+ * (runMigrations) fills it in, `removeForAgent` deletes it.
  */
 export interface ChannelSlackMemorySwitchesTable {
   agent_id: string;
