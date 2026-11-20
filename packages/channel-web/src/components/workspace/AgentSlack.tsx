@@ -39,7 +39,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { logRequestFailure } from '@/lib/http';
-import { AgentSlackBot } from './AgentSlackBot';
+import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
 import {
   AGENT_SLACK_COPY,
   agentSlackErrorCopy,
@@ -77,6 +77,21 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   // Only the newest scope's answers land (switching agents quickly).
   const scope = useRef(0);
+  // What the last cancel of this agent's bot request said. Held here, not in the
+  // bot section: a cancel reads the status again, and the loading face replaces
+  // everything below this component until it lands.
+  const [leftOver, setLeftOver] = useState<BotCancelled | null>(null);
+  const [leftOverFor, setLeftOverFor] = useState(agentId);
+  if (leftOverFor !== agentId) {
+    // Another agent: the note was about the one before (reset while rendering, so it never flashes).
+    setLeftOverFor(agentId);
+    setLeftOver(null);
+  }
+  const botCallbacks = {
+    leftOver,
+    onCancelled: (cancelled: BotCancelled) => setLeftOver(cancelled.appDeleted ? null : cancelled),
+    onRequesting: () => setLeftOver(null),
+  };
 
   const read = useCallback(() => {
     const id = ++scope.current;
@@ -133,15 +148,19 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
           <p className="text-[13px] text-muted-foreground">
             Slack isn&apos;t connected to this workspace yet. An admin can connect it in Admin settings.
           </p>
-          {state.bot.state !== 'none' && (
+          {state.bot.state !== 'none' ? (
             <AgentSlackBot
               key={agentId}
               agentId={agentId}
               agentName={agentName}
               bot={state.bot}
               canManage={state.bot.state === 'pending'}
+              {...botCallbacks}
               onChanged={read}
             />
+          ) : (
+            // No form to sit above here: the note stands on its own.
+            leftOver !== null && <AppLeftOverNote />
           )}
         </div>
       );
@@ -160,6 +179,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
           agentId={agentId}
           agentName={agentName}
           ready={state}
+          botCallbacks={botCallbacks}
           onChange={(next) => setLoad({ status: 'ok', read: next })}
           onStale={read}
         />
@@ -171,12 +191,15 @@ function ReadySection({
   agentId,
   agentName,
   ready,
+  botCallbacks,
   onChange,
   onStale,
 }: {
   agentId: string;
   agentName: string;
   ready: Ready;
+  /** The bot section's cancel note and its setters, held by `AgentSlack` so they outlive a re-read. */
+  botCallbacks: Pick<AgentSlackBotProps, 'leftOver' | 'onCancelled' | 'onRequesting'>;
   onChange: (next: Ready) => void;
   /** A refusal that says the picture is out of date: read it again. */
   onStale: () => void;
@@ -299,7 +322,14 @@ function ReadySection({
           onClear={() => setNotice(null)}
         />
       )}
-      <AgentSlackBot agentId={agentId} agentName={agentName} bot={bot} canManage={canManage} onChanged={onStale} />
+      <AgentSlackBot
+        agentId={agentId}
+        agentName={agentName}
+        bot={bot}
+        canManage={canManage}
+        {...botCallbacks}
+        onChanged={onStale}
+      />
       <DisconnectDialog
         agentId={agentId}
         row={disconnecting}

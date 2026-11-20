@@ -43,12 +43,27 @@ import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
 
+/** What a successful cancel said. `appDeleted` false: its Slack app may still be on Slack. */
+export interface BotCancelled {
+  appDeleted: boolean;
+}
+
 export interface AgentSlackBotProps {
   agentId: string;
   agentName: string;
   bot: Bot;
   /** Whether the viewer is a team admin of the agent's team (they may ask for, continue and cancel a bot). */
   canManage: boolean;
+  /**
+   * A cancel that left its Slack app behind, to say so above the request form.
+   * Held by the caller: a cancel reads the status again, and this component
+   * goes with the old picture.
+   */
+  leftOver: BotCancelled | null;
+  /** The request was cancelled (the status is read again right after). */
+  onCancelled: (cancelled: BotCancelled) => void;
+  /** A new bot is being asked for: whatever an old cancel left to say is moot. */
+  onRequesting: () => void;
   /** The picture is out of date, or something changed: read the status again. */
   onChanged: () => void;
 }
@@ -81,8 +96,10 @@ function Section({ description, children }: { description?: ReactNode; children:
  * A cancelled request whose Slack app Slack wouldn't delete for us. The server
  * keeps it on Admin › Slack's list of leftover apps; the note says so, here,
  * because the pending view it came from is gone once the status is read again.
+ * Exported for the no-workspace view, which shows no bot section once there is
+ * no bot.
  */
-function AppLeftOverNote() {
+export function AppLeftOverNote() {
   return (
     <Alert>
       <AlertDescription>
@@ -94,9 +111,16 @@ function AppLeftOverNote() {
   );
 }
 
-export function AgentSlackBot({ agentId, agentName, bot, canManage, onChanged }: AgentSlackBotProps) {
-  // Held here, not in Pending: a successful cancel reads the status again, and Pending goes with it.
-  const [appLeftOver, setAppLeftOver] = useState(false);
+export function AgentSlackBot({
+  agentId,
+  agentName,
+  bot,
+  canManage,
+  leftOver,
+  onCancelled,
+  onRequesting,
+  onChanged,
+}: AgentSlackBotProps) {
   switch (bot.state) {
     case 'none':
       return canManage ? (
@@ -104,18 +128,14 @@ export function AgentSlackBot({ agentId, agentName, bot, canManage, onChanged }:
           agentId={agentId}
           agentName={agentName}
           configTokenStored={bot.configTokenStored}
-          notice={appLeftOver ? <AppLeftOverNote /> : null}
+          notice={leftOver !== null && !leftOver.appDeleted ? <AppLeftOverNote /> : null}
+          onRequesting={onRequesting}
           onChanged={onChanged}
         />
       ) : null;
     case 'pending':
       return canManage ? (
-        <Pending
-          agentId={agentId}
-          bot={bot}
-          onCancelled={(appDeleted) => setAppLeftOver(!appDeleted)}
-          onChanged={onChanged}
-        />
+        <Pending agentId={agentId} bot={bot} onCancelled={onCancelled} onChanged={onChanged} />
       ) : null;
     case 'live':
       return <Live bot={bot} canManage={canManage} />;
@@ -127,6 +147,7 @@ function RequestForm({
   agentName,
   configTokenStored,
   notice,
+  onRequesting,
   onChanged,
 }: {
   agentId: string;
@@ -134,6 +155,7 @@ function RequestForm({
   configTokenStored: boolean;
   /** Something to say before the form: what a cancel just left behind. */
   notice: ReactNode;
+  onRequesting: () => void;
   onChanged: () => void;
 }) {
   const tokenRef = useRef<HTMLInputElement>(null);
@@ -157,6 +179,7 @@ function RequestForm({
     if (tokenRef.current !== null) tokenRef.current.value = '';
     setBusy(true);
     setError(null);
+    onRequesting();
     try {
       // Best effort and never throws: no picture means the request goes on without one.
       const iconPng = await renderSlackAvatar();
@@ -253,8 +276,7 @@ function Pending({
 }: {
   agentId: string;
   bot: Extract<Bot, { state: 'pending' }>;
-  /** The request is gone; `appDeleted` false: its Slack app may still be on Slack. */
-  onCancelled: (appDeleted: boolean) => void;
+  onCancelled: (cancelled: BotCancelled) => void;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<'continue' | 'cancel' | null>(null);
@@ -271,7 +293,7 @@ function Pending({
         goToSlack(installUrl);
       } else {
         const { appDeleted } = await cancelSlackBot(agentId);
-        onCancelled(appDeleted);
+        onCancelled({ appDeleted });
         onChanged();
       }
     } catch (err) {

@@ -42,9 +42,11 @@ const NONE_NO_TOKEN: Bot = { state: 'none', configTokenStored: false };
 const NONE_STORED: Bot = { state: 'none', configTokenStored: true };
 const PENDING: Bot = { state: 'pending', botName: 'Quill Bot', approver: 'Ada Lovelace', canContinue: true };
 const LIVE: Bot = { state: 'live', botName: 'Quill Bot', handle: 'quill_bot', approver: 'Ada Lovelace', needsClaim: false };
+/** No cancel note, and nobody listening for one (the note's life across a re-read is `AgentSlack`'s, tested there). */
+const QUIET = { leftOver: null, onCancelled: () => {}, onRequesting: () => {} };
 
 function renderIt(bot: Bot, canManage = true, onChanged = vi.fn()) {
-  render(<AgentSlackBot agentId="a1" agentName="Quill" bot={bot} canManage={canManage} onChanged={onChanged} />);
+  render(<AgentSlackBot agentId="a1" agentName="Quill" bot={bot} canManage={canManage} {...QUIET} onChanged={onChanged} />);
   return onChanged;
 }
 
@@ -102,7 +104,7 @@ describe('none', () => {
 
   it('a member sees nothing', () => {
     const { container } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage={false} onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage={false} {...QUIET} onChanged={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -263,7 +265,7 @@ describe('pending', () => {
 
   it('a member never sees a pending request', () => {
     const { container } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage={false} onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage={false} {...QUIET} onChanged={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -300,35 +302,63 @@ describe('pending', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
   });
 
-  it("a cancel whose Slack app couldn't be deleted leaves a note, after the status is read again, saying where to find it", async () => {
-    cancel.mockResolvedValueOnce({ appDeleted: false });
-    const onChanged = vi.fn();
-    const { rerender } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage onChanged={onChanged} />,
+  // The note's life across the status re-read (the section unmounts while it loads) is tested in AgentSlack.test.tsx.
+  it.each([true, false])('a cancel hands what it said (appDeleted %s) up before reading the status again', async (appDeleted) => {
+    cancel.mockResolvedValueOnce({ appDeleted });
+    const order: string[] = [];
+    const onCancelled = vi.fn(() => order.push('cancelled'));
+    const onChanged = vi.fn(() => order.push('changed'));
+    render(
+      <AgentSlackBot
+        agentId="a1"
+        agentName="Quill"
+        bot={PENDING}
+        canManage
+        {...QUIET}
+        onCancelled={onCancelled}
+        onChanged={onChanged}
+      />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    // The re-read status has no bot: the form is back, and the note sits above it.
-    rerender(<AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_STORED} canManage onChanged={onChanged} />);
+    expect(onCancelled).toHaveBeenCalledWith({ appDeleted });
+    expect(order).toEqual(['cancelled', 'changed']);
+  });
+
+  it('a failed cancel hands nothing up', async () => {
+    cancel.mockRejectedValueOnce(refusal(500, 'internal'));
+    const onCancelled = vi.fn();
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage {...QUIET} onCancelled={onCancelled} onChanged={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(onCancelled).not.toHaveBeenCalled();
+  });
+
+  it("the form shows a left-over app's note above it, and asking for a new bot says so first", async () => {
+    const onRequesting = vi.fn();
+    render(
+      <AgentSlackBot
+        agentId="a1"
+        agentName="Quill"
+        bot={NONE_STORED}
+        canManage
+        {...QUIET}
+        leftOver={{ appDeleted: false }}
+        onRequesting={onRequesting}
+        onChanged={vi.fn()}
+      />,
+    );
     const note = screen.getByText(/couldn.t confirm its Slack app was deleted/);
     expect(note).toHaveTextContent(
       "We cancelled the request, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Or delete it yourself: open it in Slack's app settings and click Delete App at the bottom of the page.",
     );
     expect(screen.getByRole('link', { name: "Slack's app settings" })).toHaveAttribute('href', 'https://api.slack.com/apps');
-    expect(screen.getByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\bAX\b/);
-  });
-
-  it('a cancel that deleted its Slack app leaves no note', async () => {
-    const onChanged = vi.fn();
-    const { rerender } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage onChanged={onChanged} />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    rerender(<AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_STORED} canManage onChanged={onChanged} />);
-    expect(screen.queryByText(/couldn.t confirm/)).toBeNull();
-    expect(screen.queryByRole('link', { name: "Slack's app settings" })).toBeNull();
+    submit();
+    await waitFor(() => expect(go).toHaveBeenCalledWith(INSTALL_URL));
+    expect(onRequesting).toHaveBeenCalledTimes(1);
   });
 
   it('a cancel that failed says so and nothing is re-read', async () => {
@@ -364,12 +394,12 @@ describe('live', () => {
   it('a bot that needs claiming says so to everyone who sees it', () => {
     const line = 'Quill Bot needs a team admin to claim it. Until then it answers team members only.';
     const { unmount } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={{ ...LIVE, needsClaim: true }} canManage onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={{ ...LIVE, needsClaim: true }} canManage {...QUIET} onChanged={vi.fn()} />,
     );
     expect(screen.getByText(line)).toBeInTheDocument();
     unmount();
     render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={{ ...LIVE, needsClaim: true }} canManage={false} onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={{ ...LIVE, needsClaim: true }} canManage={false} {...QUIET} onChanged={vi.fn()} />,
     );
     expect(screen.getByText(line)).toBeInTheDocument();
   });
@@ -378,7 +408,7 @@ describe('live', () => {
 describe('words', () => {
   it('never writes the product name in a sentence', () => {
     const { container } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage {...QUIET} onChanged={vi.fn()} />,
     );
     expect(container.textContent).not.toMatch(/\bAX\b/);
   });
