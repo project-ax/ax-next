@@ -62,6 +62,7 @@ import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empt
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
+import { SlackBotRequests } from '@/components/admin/SlackBotRequests';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import {
@@ -916,6 +917,7 @@ function StatusView({
         <>
           <LeftoverAppsNote apps={status.leftoverApps} willRetry={false} onForgotten={onForgotten} />
           <ConnectedCard status={status} {...actions} />
+          <SlackBotRequests />
         </>
       );
   }
