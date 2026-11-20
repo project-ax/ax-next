@@ -45,8 +45,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * again. A row gone answers `not-live`, not Slack's refusal (there is no bot
  * left to fix), and the approver's token goes, unless an install or a
  * leftover app still names them: the successor saved after the reset's sweep
- * would otherwise outlive it. When nothing was saved after the sweep, there
- * is nothing left to delete, and nothing is: that release reads the token
+ * would otherwise outlive it. When nothing is stored any more (nothing was
+ * saved after the sweep, or the reset's wipe came after the save), there is
+ * nothing left to delete, and nothing is: both releases read the token
  * first, as the reset's own does, because the vault deletes by writing an
  * empty row and a reset leaves no credential rows behind. `release` takes no
  * lock.
@@ -176,9 +177,10 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
   /**
    * After `changeApp`, whatever Slack said: true when the bot's row went
    * meanwhile (a reset takes no lock), after taking back its approver's token
-   * unless something still names them. Only a token still stored is deleted:
-   * when the reset finished before anything was saved (say, Slack refused
-   * the rotate), the vault's delete would leave an empty row of its own. A
+   * unless something still names them. Only a token still stored is deleted
+   * (rename's write path does the same): when the reset's wipe came after
+   * anything was saved, or Slack refused the rotate so nothing was, the
+   * vault's delete would leave an empty row of its own. A
    * store fault reading the row throws: the route's 500. The caller holds
    * the app lock.
    */
@@ -217,8 +219,10 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
         if (err instanceof InstallStoreError) {
           // Gone meanwhile: a reset removes rows without the app lock, and
           // sweeps the secrets of what it removed. This takes back the token
-          // saved after that sweep, unless something still names its person.
-          await steps.release(bot);
+          // saved after that sweep, unless something still names its person;
+          // only one still stored, as in goneMeanwhile: the reset's wipe may
+          // have come after the save.
+          await steps.release(bot, { onlyIfStored: true });
           return NOT_LIVE;
         }
         throw err;

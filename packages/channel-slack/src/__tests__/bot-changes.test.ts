@@ -661,9 +661,13 @@ describe('rename', () => {
       { method: 'setBotName', args: [SUPPORT_BOT, NEW_NAME] },
       { method: 'personHasApps', args: [GRACE] },
     ]);
-    // Nothing does, so the token it just saved goes too: the reset's own sweep
-    // only catches one saved before the sweep ran.
-    expect(w.trail.slice(-2)).toEqual(['store:personHasApps', 'vault:delete config-refresh-token']);
+    // Nothing does, so the token it just saved, still stored, goes too: the
+    // reset's own sweep only catches one saved before the sweep ran.
+    expect(w.trail.slice(-3)).toEqual([
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+      'vault:delete config-refresh-token',
+    ]);
     expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
     // No handle is read for a bot that's gone.
     expect(methods(w)).not.toContain('usersInfo');
@@ -685,6 +689,20 @@ describe('rename', () => {
     expect(kept.trail.at(-1)).toBe('store:personHasApps');
     expect(kept.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
     expect(kept.lines).toEqual([]);
+
+    // The whole reset lands during the update, AFTER the successor was saved:
+    // its wipe already took that token, so nothing is deleted (the vault
+    // deletes by writing an empty row, and a reset leaves no rows behind).
+    const wiped = await seeded();
+    wiped.slack.on.updateApp = async () => {
+      wiped.vault.clear();
+      await wiped.memory.store.removeAll();
+    };
+    expect(await wiped.rename(NEW_NAME)).toEqual({ status: 409, body: { error: 'not-live' } });
+    expect(wiped.trail.slice(-3)).toEqual(['store:setBotName', 'store:personHasApps', 'vault:get config-refresh-token']);
+    expect(wiped.trail).not.toContain('vault:delete config-refresh-token');
+    expect(wiped.vault.size).toBe(0);
+    expect(wiped.lines).toEqual([]);
 
     // Our own store failing at the write is no reset: it rejects (the route's
     // 500), the row still names Grace, and her token stays.
