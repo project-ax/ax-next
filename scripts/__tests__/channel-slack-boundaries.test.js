@@ -13,8 +13,9 @@
 // dispatches into host tool plugins and those can call ANY hook. Nothing at
 // runtime stops that, so this scan does.
 //
-// RULE 2 — `slack:` strings. channel-slack keeps its four per-install secrets
-// in the credentials vault under `slack:<installId>:<name>`, and its DM
+// RULE 2 — `slack:` strings. channel-slack keeps three per-install secrets
+// in the credentials vault under `slack:<installId>:<name>`, one configuration
+// token per person under `slack:person:<userId>:config-refresh-token`, and its DM
 // conversations under externalKey `slack:<installId>:…`. The vault doesn't
 // restrict which plugin reads a ref, so "only channel-slack reads its secrets"
 // can only be held by keeping every other package from building such a name.
