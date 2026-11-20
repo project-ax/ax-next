@@ -10,16 +10,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * connector): who auth says they are NOW, since a row keeps the id and names
  * are auth's (invariant 4). Their display name, made fit to show on one line
  * (label.ts); else their email, but only where `allowEmail` says the readers
- * may see it; else `fallback`, which also stands in for an account that's
- * gone. A fault in auth is handed to `onFault` (each page logs it its own
- * way) and answered with `fallback`: a name never fails the page it's on.
+ * may see it; else `fallback`. A fault in auth is handed to `onFault` (each
+ * page logs it its own way) and answered with `fallback`: a name never fails
+ * the page it's on.
+ *
+ * `accountName` is for a page that must tell "gone" apart (TASK-1172: Admin ›
+ * Slack marks a bot's approver who has left): it answers null when auth says
+ * it has no such account, which only auth's own null answer means. A fault,
+ * or an answer that isn't an account, still reads as `fallback`: neither is
+ * proof that anyone left. `personName` is the same name with "gone" read as
+ * `fallback` too.
  */
-export async function personName(
+export async function accountName(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,
   o: { allowEmail: boolean; fallback: string; onFault: (err: unknown) => void },
-): Promise<string> {
+): Promise<string | null> {
   let user: unknown;
   try {
     user = await bus.call<{ userId: string }, unknown>('auth:get-user', ctx, { userId });
@@ -27,7 +34,17 @@ export async function personName(
     o.onFault(err);
     return o.fallback;
   }
+  if (user === null) return null;
   if (!isRecord(user)) return o.fallback;
   const label = (value: unknown): string => (typeof value === 'string' ? cleanLabel(value) : '');
   return label(user['displayName']) || (o.allowEmail ? label(user['email']) : '') || o.fallback;
+}
+
+export async function personName(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  o: { allowEmail: boolean; fallback: string; onFault: (err: unknown) => void },
+): Promise<string> {
+  return (await accountName(bus, ctx, userId, o)) ?? o.fallback;
 }
