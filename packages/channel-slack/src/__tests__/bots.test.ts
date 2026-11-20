@@ -1477,6 +1477,17 @@ describe('listForAdmin', () => {
     expect(none.authAsked).toEqual([]);
   });
 
+  it('listForAdmin: a store fault throws, never an empty list', async () => {
+    const w = world();
+    await seedShared(w);
+    await addBot(w, { handle: 'salesdesk' });
+    w.memory.failures.set('listBots', connectionReset());
+
+    // An offboarding admin reads "no bots" as "nothing to rebuild": a broken read must be the route's 500.
+    await expect(w.listForAdmin()).rejects.toMatchObject({ code: 'ECONNRESET' });
+    expect(w.authAsked).toEqual([]);
+  });
+
   it('listForAdmin: each item holds exactly the six fields, and no person id, token, app id or agent id', async () => {
     const w = world();
     await seedShared(w);
