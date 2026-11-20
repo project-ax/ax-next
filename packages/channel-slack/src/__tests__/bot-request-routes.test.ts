@@ -376,13 +376,17 @@ describe('POST /admin/slack/bot-requests/:requestId/approve', () => {
 });
 
 describe('POST /admin/slack/bot-requests/:requestId/decline', () => {
-  it('hands the domain the request in the path, and never reads a body', async () => {
+  it("hands the domain the request in the path and the admin's id, and never reads a body", async () => {
     const w = world();
     expect(await w.decline({ body: 'garbage' })).toEqual({ status: 200, body: {} });
-    expect(await w.decline({ body: { requestId: 'U2FsZXNCb3RBc2swMDAwMg' }, as: GRACE })).toEqual({ status: 200, body: {} });
+    // A body naming another request, or another person, changes nothing.
+    expect(
+      await w.decline({ body: { requestId: 'U2FsZXNCb3RBc2swMDAwMg', actorUserId: ADA.id }, as: GRACE }),
+    ).toEqual({ status: 200, body: {} });
+    // Who declined is the AX admin the gate let through: the DMs' redraw names her (bot-request-dms.ts).
     expect(w.domain.calls).toEqual([
-      { method: 'decline', input: { requestId: REQUEST } },
-      { method: 'decline', input: { requestId: REQUEST } },
+      { method: 'decline', input: { requestId: REQUEST, actorUserId: ADA.id } },
+      { method: 'decline', input: { requestId: REQUEST, actorUserId: GRACE.id } },
     ]);
   });
 });

@@ -1,6 +1,7 @@
 import { PluginError, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import { isAxAdmin } from './ax-admin.js';
 import { isBotNameTaken } from './bot-name.js';
+import type { BotRequestDms } from './bot-request-dms.js';
 import type { BotReply, Bots } from './bots.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
@@ -34,7 +35,8 @@ import { InstallStoreError, type BotRequest, type InstallStore } from './store.j
  *     request removed already (that removal takes the lock too), so a request
  *     let through would name an agent that's gone. `cancel` doesn't, as the
  *     pending bot's Cancel doesn't: it only takes something away.
- *   - `list`, `approve`, `decline`: an AX admin (Admin › Slack's gate). An
+ *   - `list`, `approve`, `decline`: an AX admin (Admin › Slack's gate, or
+ *     for a decline also the Slack DM's, bot-request-click.ts). An
  *     approve makes the bot through the one create path (bots.ts `create`),
  *     with the AX admin as its approver (her own configuration token, stored
  *     or pasted, makes the app, and she manages it from then on) and the
@@ -45,17 +47,33 @@ import { InstallStoreError, type BotRequest, type InstallStore } from './store.j
  *     team, asked inside the lock; the AX admin's own rights over the agent
  *     are never asked, since she needn't be on the team. The request goes
  *     only once the bot is made (`create` deletes it last), so an approve
- *     that makes nothing leaves it open.
+ *     that makes nothing leaves it open. A decline is told who declined
+ *     (the DMs' redraw names them), and isn't asked again inside the lock:
+ *     it only takes something away.
  *
  * The lock: `ask`, `cancel`, `approve` and `decline` each take the one app
  * lock (plugin.ts) once, and each reads the request inside it. So names stay
  * unique, a cancel or a decline waits for an approve in flight and then
  * finds its request gone, and of two approves of one request (two AX admins,
- * or a double click) the second finds it gone: one Slack app, then 404. It
- * isn't re-entrant (mutex.ts): none of them calls anything that takes it
+ * or a double click) the second finds it gone: one Slack app, then 404. So
+ * does the second of two declines (two admins in Slack, or a double click).
+ * It isn't re-entrant (mutex.ts): none of them calls anything that takes it
  * (`create` runs under the caller's). `list` takes none, never rotates a
  * token and never asks Slack anything: its one vault read is whether the
  * VIEWING admin's own token is stored.
+ *
+ * The request's Slack DMs (TASK-1170, bot-request-dms.ts). An ask that
+ * opened a request tells the AX admins (`opened`); an approve that made the
+ * bot, and a decline that took the request, close their DMs (`closed`), with
+ * whose request it was and its name, read under the lock (a decline reads
+ * the row before it deletes it), and who answered. A step that changed
+ * nothing tells nobody. Each notice goes only once the lock is free, and is
+ * never awaited: Slack calls under the lock would hold up every approve,
+ * connect and Allow, and a DM that fails or never answers must never change
+ * an answer. The notices never reject (bot-request-dms.ts catches its own),
+ * so there's nothing to catch here. Whom to DM, and whether the requester
+ * hears, is decided there, not here. A cancel tells nobody: an admin who
+ * clicks Decline on its DM is told it was already handled.
  *
  * Admin › Slack's list names each request as its requester sees it: the agent
  * and its team as `agents:resolve` and `teams:list-for-user` (optional) answer
@@ -110,6 +128,8 @@ export interface BotRequestsDeps {
   secrets: SecretStore;
   /** The one create path an approve makes the bot through. */
   bots: Pick<Bots, 'create'>;
+  /** The request's Slack DMs: told once the lock is free, never awaited, never under the lock. */
+  dms: Pick<BotRequestDms, 'opened' | 'closed'>;
   /** The one app lock, shared with Admin › Slack and the bots domain. Not re-entrant. */
   lock: Mutex;
   /** Only an https origin can make a bot, so nothing is asked over plain http. */
@@ -127,8 +147,9 @@ export interface BotRequests {
    * that couldn't be approved); 409 `bot-exists`, `bot-requested` (one per
    * agent, the unique index the last word) and `bot-name-taken` (every bot's,
    * the shared bot's and every open request's name). `botName` already passed
-   * `checkBotName`. 200 `{}`, logged `slack_bot_request_opened { requestId }`.
-   * A rights check that can't be answered, or a store fault, throws.
+   * `checkBotName`. 200 `{}`, logged `slack_bot_request_opened { requestId }`;
+   * once the lock is free, the AX admins' DMs are told (`dms.opened`). A
+   * rights check that can't be answered, or a store fault, throws.
    */
   ask(i: { ctx: AgentContext; actorUserId: string; agentId: string; botName: string }): Promise<BotReply>;
   /**
@@ -157,8 +178,10 @@ export interface BotRequests {
    * what it answers: 200 `{ installUrl, iconSet }`, or a refusal with the
    * request left open. `refreshToken` is a pasted one that passed the
    * route's shape check, or null for the one stored for her; `icon` is the
-   * picture as icon.ts read it, or null. A check that can't be answered, or
-   * a vault fault reading her token, throws.
+   * picture as icon.ts read it, or null. A 200 closes the request's DMs as
+   * approved by her once the lock is free (`dms.closed`); anything else
+   * closes nothing. A check that can't be answered, or a vault fault reading
+   * her token, throws.
    */
   approve(i: {
     ctx: AgentContext;
@@ -168,12 +191,16 @@ export interface BotRequests {
     icon: ParsedIcon | null;
   }): Promise<BotReply>;
   /**
-   * An AX admin declines one open request, by its id. Takes the app lock, so
-   * it waits for an approve in flight. 200 `{}`, logged
-   * `slack_bot_request_declined { requestId }`; 404 `not-found` when it is
-   * gone. No declined marker is kept: the team sees its form again.
+   * An AX admin, `actorUserId`, declines one open request, by its id, from
+   * Admin › Slack or from the Slack DM about it (each gate checked she is
+   * one). Takes the app lock, so it waits for an approve in flight, then
+   * reads the request (404 `not-found` when it is gone) and deletes it (404
+   * if nothing went). 200 `{}`, logged `slack_bot_request_declined
+   * { requestId }`; once the lock is free, the request's DMs close as
+   * declined by her (`dms.closed`). No declined marker is kept: the team sees
+   * its form again. A store fault throws.
    */
-  decline(i: { requestId: string }): Promise<BotReply>;
+  decline(i: { requestId: string; actorUserId: string }): Promise<BotReply>;
 }
 
 /** The agent's name when its requester can't see it, or nobody says. */
@@ -258,21 +285,22 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
   };
 
   async function ask(i: { ctx: AgentContext; actorUserId: string; agentId: string; botName: string }): Promise<BotReply> {
-    return d.lock.run(async () => {
+    const asked = await d.lock.run(async (): Promise<{ reply: BotReply; opened: string | null }> => {
+      const refused = (reply: BotReply) => ({ reply, opened: null });
       // The route checked before the lock. Asked again inside it: an agent
       // deleted while this waited has had its request removed already (that
       // removal takes this lock too), and a demoted admin is refused the same way.
       const rights = await checkRights(d.bus, i.ctx, i.agentId, i.actorUserId, 'manage');
-      if (!rights.ok) return rightsRefused(rights.reason);
+      if (!rights.ok) return refused(rightsRefused(rights.reason));
       // Nothing is asked that couldn't be approved: the self path's own conditions.
       const shared = await d.installs.current();
-      if (shared === null || shared.status !== 'active') return json(409, { error: 'no-workspace' });
-      if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      if (shared === null || shared.status !== 'active') return refused(json(409, { error: 'no-workspace' }));
+      if (!canConnect) return refused(json(409, { error: 'public-origin-not-https' }));
       // An open request or a bot, never both.
-      if ((await d.installs.botForAgent(i.agentId)) !== null) return json(409, { error: 'bot-exists' });
-      if ((await d.installs.botRequestForAgent(i.agentId)) !== null) return json(409, { error: 'bot-requested' });
+      if ((await d.installs.botForAgent(i.agentId)) !== null) return refused(json(409, { error: 'bot-exists' }));
+      if ((await d.installs.botRequestForAgent(i.agentId)) !== null) return refused(json(409, { error: 'bot-requested' }));
       // One name per bot: a request holds its name until it is approved or taken back.
-      if (isBotNameTaken(i.botName, await namesInUse(d.installs))) return json(409, { error: 'bot-name-taken' });
+      if (isBotNameTaken(i.botName, await namesInUse(d.installs))) return refused(json(409, { error: 'bot-name-taken' }));
       const requestId = d.randomBytes(INSTALL_ID_BYTES).toString('base64url');
       try {
         await d.installs.insertBotRequest({
@@ -284,13 +312,23 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
       } catch (err) {
         // Another request for the agent got in first (the unique index is the last word).
         if (err instanceof InstallStoreError && err.code === 'request-exists') {
-          return json(409, { error: 'bot-requested' });
+          return refused(json(409, { error: 'bot-requested' }));
         }
         throw err;
       }
       log('info', 'slack_bot_request_opened', { requestId });
-      return json(200, {});
+      return { reply: json(200, {}), opened: requestId };
     });
+    // Once the lock is free, never awaited: the AX admins hear of it.
+    if (asked.opened !== null) {
+      void d.dms.opened({
+        requestId: asked.opened,
+        agentId: i.agentId,
+        requesterUserId: i.actorUserId,
+        botName: i.botName,
+      });
+    }
+    return asked.reply;
   }
 
   async function cancel(i: { agentId: string }): Promise<BotReply> {
@@ -309,21 +347,22 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     refreshToken: string | null;
     icon: ParsedIcon | null;
   }): Promise<BotReply> {
-    return d.lock.run(async () => {
+    const approved = await d.lock.run(async (): Promise<{ reply: BotReply; made: BotRequest | null }> => {
+      const refused = (reply: BotReply) => ({ reply, made: null });
       // Still an AX admin, asked inside the lock: one demoted while this waited
       // makes nothing, as the approver's Allow asks (bots.ts `finish`). Before
       // the request is read, so a non-admin learns nothing about it.
-      if (!(await isAxAdmin(d.bus, i.ctx, i.actorUserId))) return json(403, { error: 'forbidden' });
+      if (!(await isAxAdmin(d.bus, i.ctx, i.actorUserId))) return refused(json(403, { error: 'forbidden' }));
       // Read under the lock: an approve, a decline or a cancel that got here first has taken it.
       const request = await d.installs.getBotRequest(i.requestId);
-      if (request === null) return NOT_FOUND;
+      if (request === null) return refused(NOT_FOUND);
       // Whom its outsiders will run as must still be a team admin of the
       // agent's team. The AX admin's own rights over the agent are never
       // asked: she needn't be on the team.
       const requester = await teamAdminAccess(d.bus, i.ctx, request.agentId, request.requestedByUserId);
-      if (requester === 'agent-gone') return json(409, { error: 'agent-gone' });
-      if (requester !== 'yes') return json(409, { error: 'requester-not-admin' });
-      return d.bots.create({
+      if (requester === 'agent-gone') return refused(json(409, { error: 'agent-gone' }));
+      if (requester !== 'yes') return refused(json(409, { error: 'requester-not-admin' }));
+      const reply = await d.bots.create({
         agentId: request.agentId,
         approverUserId: i.actorUserId,
         requesterUserId: request.requestedByUserId,
@@ -332,15 +371,41 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
         icon: i.icon,
         requestId: request.requestId,
       });
+      // Only a bot made took the request: any other answer left it open, its DMs' buttons with it.
+      return { reply, made: reply.status === 200 ? request : null };
     });
+    // Once the lock is free, never awaited: the AX admins' DMs say she approved it.
+    if (approved.made !== null) {
+      void d.dms.closed({
+        requestId: approved.made.requestId,
+        requesterUserId: approved.made.requestedByUserId,
+        botName: approved.made.botName,
+        outcome: 'approved',
+        byUserId: i.actorUserId,
+      });
+    }
+    return approved.reply;
   }
 
-  async function decline(i: { requestId: string }): Promise<BotReply> {
-    return d.lock.run(async () => {
-      if (!(await d.installs.removeBotRequest(i.requestId))) return NOT_FOUND;
+  async function decline(i: { requestId: string; actorUserId: string }): Promise<BotReply> {
+    const declined = await d.lock.run(async (): Promise<BotRequest | null> => {
+      // Read before the delete, under the lock: its DMs need whose request it was and its name.
+      const request = await d.installs.getBotRequest(i.requestId);
+      if (request === null || !(await d.installs.removeBotRequest(i.requestId))) return null;
       log('info', 'slack_bot_request_declined', { requestId: i.requestId });
-      return json(200, {});
+      return request;
     });
+    if (declined === null) return NOT_FOUND;
+    // Once the lock is free, never awaited: the AX admins' DMs say she declined
+    // it (whether its requester hears is bot-request-dms.ts's to decide).
+    void d.dms.closed({
+      requestId: declined.requestId,
+      requesterUserId: declined.requestedByUserId,
+      botName: declined.botName,
+      outcome: 'declined',
+      byUserId: i.actorUserId,
+    });
+    return json(200, {});
   }
 
   /**
