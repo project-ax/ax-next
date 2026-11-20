@@ -78,11 +78,15 @@ function authStub(): Plugin {
           return { user: { id, isAdmin: id === CANARY_ADMIN } };
         },
       );
+      // The same admins as `auth:require-user`, as real auth answers: Admin ›
+      // Slack's Approve asks this again inside its lock (TASK-1169), so a
+      // signed-in admin auth here calls a non-admin would be refused 403.
       bus.registerService<{ userId?: string }, unknown>(
         'auth:get-user',
         name,
         async (_ctx, input) => ({
-          id: input?.userId ?? 'unknown', isAdmin: input?.userId === ROUTINES_ADMIN,
+          id: input?.userId ?? 'unknown',
+          isAdmin: input?.userId === ROUTINES_ADMIN || input?.userId === CANARY_ADMIN,
         }),
       );
       // @ax/channel-slack maps a Slack sender's verified email with this
