@@ -5,16 +5,19 @@ import { createBotRequestDms } from '../bot-request-dms.js';
 import { agentSeenBy } from '../bot-requests.js';
 import { createLifetime } from '../lifetime.js';
 import {
+  BOT_LIVE_DM_CHANNELS_MAX,
   BOT_REQUEST_DMS_MAX,
   BOT_REQUEST_DM_RECORDS_MAX,
   BOT_REQUEST_DM_TTL_MS,
   BOT_REQUEST_FANOUTS_MAX,
   BOT_REQUEST_FANOUT_WINDOW_MS,
+  EMAIL_MAX,
 } from '../limits.js';
 import type { SecretName, SecretStore } from '../secrets.js';
 import { SlackApiError, type SlackApi } from '../slack-api.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
+import { memoryChannelStore } from './memory-channel-store.js';
 import { memoryStore } from './memory-install-store.js';
 
 /*
@@ -189,6 +192,19 @@ function answered(line: string, subject = SUBJECT) {
   };
 }
 
+/** The support agent's own bot, which Grace approved for Ada unless told otherwise; and its own token. */
+const BOT_INSTALL = 'Qm90SW5zdGFsbFN1cHBvcnQ';
+const OWN_BOT_TOKEN = fakeBotToken('OWNBOTSECRET');
+/** What Ada hears when it goes live, its handle kept at the Allow. */
+const LIVE = '@supporthelper is live. Invite it to a channel with /invite @supporthelper.';
+const DECLINED_FOR_OWNER =
+  "An admin declined your request for @Support Helper. You can ask again from the agent's Slack settings in the web app.";
+
+const ownerSent = (notice: 'live' | 'declined', key: Record<string, string>) => ({
+  level: 'info',
+  msg: 'slack_bot_request_owner_dm_sent',
+  fields: { ...key, notice },
+});
 const sentLine = (sent: number, skipped: number, requestId = REQUEST) => ({
   level: 'info',
   msg: 'slack_bot_request_dms_sent',
@@ -446,6 +462,11 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
       });
     }
   }
+  // The bindings: a channel's agent, on the shared app or on a team agent's own bot.
+  const channels = memoryChannelStore();
+  /** While set, every channel read throws it. */
+  const faults: { channels?: unknown } = {};
+
   /** Each install's bot token in the vault: a token, none (null), or a fault. */
   const tokens = new Map<string, string | null | Error>([[SHARED_INSTALL, SHARED_TOKEN]]);
   const vaultReads: Array<{ installId: string; name: SecretName }> = [];
@@ -463,6 +484,12 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
     bus,
     api: slack.api,
     installs: memory.store,
+    channels: {
+      async listForAgent(installId, agentId) {
+        if (faults.channels !== undefined) throw faults.channels;
+        return channels.store.listForAgent(installId, agentId);
+      },
+    },
     secrets,
     lifetime,
     publicOrigin: ORIGIN,
@@ -477,6 +504,8 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
     slack,
     clock,
     memory,
+    channels,
+    faults,
     tokens,
     vaultReads,
     lifetime,
@@ -517,6 +546,39 @@ function forget(w: World): void {
   w.lines.length = 0;
 }
 
+/** The support agent's own bot: approved by Grace for Ada, live with its handle, unless told otherwise. */
+async function seedBot(
+  w: World,
+  o: { approver?: string; requester?: string; handle?: string | null; live?: boolean } = {},
+): Promise<string> {
+  await w.memory.store.insertPendingBot({
+    installId: BOT_INSTALL,
+    appId: 'A07SUPPORTBT',
+    clientId: '7512345678901.7522222222222',
+    botName: BOT_NAME,
+    connectedByUserId: o.approver ?? GRACE.id,
+    agentId: SUPPORT.id,
+    requestedByUserId: o.requester ?? ADA.id,
+  });
+  if (o.live !== false) {
+    await w.memory.store.activate(BOT_INSTALL, {
+      teamId: TEAM_ID,
+      teamName: 'Canopy Works',
+      botUserId: 'U07SUPPORTB',
+      installedAt: new Date(NOW_MS),
+    });
+    const handle = o.handle === undefined ? 'supporthelper' : o.handle;
+    if (handle !== null) await w.memory.store.setBotHandle(BOT_INSTALL, handle);
+  }
+  w.tokens.set(BOT_INSTALL, OWN_BOT_TOKEN);
+  return BOT_INSTALL;
+}
+
+/** A channel connected to `agentId` (the support agent unless told) on `installId`. */
+async function bind(w: World, installId: string, channelId: string, channelName: string, agentId = SUPPORT.id) {
+  await w.channels.store.upsert({ installId, channelId, agentId, connectedByUserId: ADA.id, channelName });
+}
+
 /** Every redraw Slack was asked for, in order. */
 const updates = (w: World) => w.slack.of('updateMessage').map((c) => c.args);
 /** Whom each DM went to, in order. */
@@ -532,10 +594,13 @@ function subjectOf(w: World, n = 0): unknown {
 function expectNoLeak(lines: readonly Line[], people: readonly Person[]): void {
   const words = [
     SHARED_TOKEN,
+    OWN_BOT_TOKEN,
     TEAM_ID,
     SUPPORT.id,
     SUPPORT.displayName,
     BOT_NAME,
+    'supporthelper',
+    'C07CHAN',
     '1763640000',
     FAILURE_CANARY,
     ...people.flatMap((p) => [p.id, p.email, p.displayName ?? p.id, p.slackId, dmOf(p.slackId)]),
@@ -724,6 +789,32 @@ describe('opened', () => {
     expectNoLeak(w.lines, [GRACE, LIN, MAX, NED, KAY]);
   });
 
+  it("skips an entry auth can't name: not an object, no id, no email, or an email past EMAIL_MAX", async () => {
+    const w = await world();
+    const tooLong = `${'a'.repeat(EMAIL_MAX)}@canopyworks.example`;
+    // Slack would find someone by the long address: it must never be asked.
+    w.slack.byEmail.set(tooLong, GRACE.slackId);
+    w.auth.listAnswer = {
+      admins: [
+        null,
+        GRACE.id,
+        { userId: '', email: GRACE.email },
+        { userId: 42, email: GRACE.email },
+        { userId: GRACE.id },
+        { userId: GRACE.id, email: '' },
+        { userId: GRACE.id, email: tooLong },
+        { email: KAY.email },
+        { userId: KAY.id, email: KAY.email },
+      ],
+    };
+
+    await w.open();
+
+    expect(lookedUp(w)).toEqual([KAY.email]);
+    expect(dmedSlackIds(w)).toEqual([KAY.slackId]);
+    expect(w.lines).toEqual([sentLine(1, 0)]);
+  });
+
   it(`DMs at most BOT_REQUEST_DMS_MAX (${BOT_REQUEST_DMS_MAX}) admins, in the order auth listed them`, async () => {
     const w = await world();
     const many = Array.from({ length: BOT_REQUEST_DMS_MAX + 5 }, (_, n) =>
@@ -870,7 +961,8 @@ describe('closed', () => {
     expect(updates(down)).toEqual([
       { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('An admin declined this.') },
     ]);
-    expect(down.lines).toEqual([failedLine('closed-by', 'ECONNRESET')]);
+    // Kay isn't the requester: Ada hears of the decline too.
+    expect(down.lines).toEqual([failedLine('closed-by', 'ECONNRESET'), ownerSent('declined', { requestId: REQUEST })]);
   });
 
   it('a close during the fan-out: no DM goes out once it is known, and nobody else is looked up', async () => {
@@ -1016,6 +1108,264 @@ describe('closed', () => {
   });
 });
 
+// ── The requester's DMs ─────────────────────────────────────────────────────
+
+describe('live', () => {
+  it('an admin-approved bot: one DM to its requester from the shared bot with its @handle and /invite', async () => {
+    const w = await world();
+    const bot = await seedBot(w);
+    forget(w);
+
+    await w.dms.live({ installId: bot });
+
+    expect(w.slack.calls).toStrictEqual([
+      { method: 'usersLookupByEmail', token: SHARED_TOKEN, args: { email: ADA.email } },
+      { method: 'usersInfo', token: SHARED_TOKEN, args: { user: ADA.slackId } },
+      { method: 'postDirect', token: SHARED_TOKEN, args: { user: ADA.slackId, text: LIVE } },
+    ]);
+    // Her address as auth has it, proved by the email Slack confirmed mapping back to her.
+    expect(w.auth.asked).toEqual([`auth:get-user ${ADA.id}`, `auth:find-user-by-email ${ADA.email}`]);
+    // The shared bot's token, never the new bot's own.
+    expect(w.vaultReads).toEqual([{ installId: SHARED_INSTALL, name: 'bot-token' }]);
+    expect(w.lines).toEqual([ownerSent('live', { installId: bot })]);
+  });
+
+  it(`names the channels the agent had through the shared bot, at most BOT_LIVE_DM_CHANNELS_MAX (${BOT_LIVE_DM_CHANNELS_MAX}), then "and N more"; a channel the bot already answers in isn't named`, async () => {
+    const names = [
+      'support',
+      'billing',
+      'returns',
+      'orders',
+      'shipping',
+      'refunds',
+      'vip',
+      'escalations',
+      'feedback',
+      'onboarding',
+      'churn',
+      'partners',
+    ];
+    const channelOf = (n: number): string => `C07CHAN${String(n).padStart(4, '0')}`;
+    const w = await world();
+    const bot = await seedBot(w);
+    for (const [n, name] of names.entries()) await bind(w, SHARED_INSTALL, channelOf(n), name);
+    // Another agent's channel on the shared app is none of this bot's business.
+    await bind(w, SHARED_INSTALL, 'C07RANDOM01', 'random', 'agt_sales');
+    // The bot already answers in #billing: a binding on its own install.
+    await bind(w, bot, channelOf(1), 'billing');
+    forget(w);
+
+    await w.dms.live({ installId: bot });
+
+    expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([
+      `${LIVE} These channels still need it: #support, #returns, #orders, #shipping, #refunds, #vip, ` +
+        '#escalations, #feedback, #onboarding, #churn and 1 more. Run /invite in each one.',
+    ]);
+
+    // Exactly as many as it names: every one named, and no count.
+    const ten = await world();
+    const tenBot = await seedBot(ten);
+    for (const [n, name] of names.slice(0, BOT_LIVE_DM_CHANNELS_MAX).entries()) {
+      await bind(ten, SHARED_INSTALL, channelOf(n), name);
+    }
+    forget(ten);
+    await ten.dms.live({ installId: tenBot });
+    expect(ten.slack.of('postDirect').map((c) => c.args['text'])).toEqual([
+      `${LIVE} These channels still need it: #support, #billing, #returns, #orders, #shipping, #refunds, #vip, ` +
+        '#escalations, #feedback and #onboarding. Run /invite in each one.',
+    ]);
+  });
+
+  it('with no handle kept, names the bot', async () => {
+    const w = await world();
+    const bot = await seedBot(w, { handle: null });
+    forget(w);
+
+    await w.dms.live({ installId: bot });
+
+    expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([
+      'Support Helper is live. Invite it to a channel with /invite.',
+    ]);
+  });
+
+  it("a fault reading the agent's channels: the DM still says it's live, without the list, logged", async () => {
+    const w = await world();
+    const bot = await seedBot(w);
+    await bind(w, SHARED_INSTALL, 'C07CHAN0000', 'support');
+    forget(w);
+    w.faults.channels = connectionReset();
+
+    await w.dms.live({ installId: bot });
+
+    expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([LIVE]);
+    expect(w.lines).toEqual([
+      failedLine('channels', 'ECONNRESET', { installId: bot }),
+      ownerSent('live', { installId: bot }),
+    ]);
+  });
+
+  it('a self-approved bot (approver is the requester), a pending bot, a shared install, or an unknown id: nothing', async () => {
+    const cases: Array<{ name: string; set: (w: World) => Promise<string> }> = [
+      // The self path: her own browser saw it go live.
+      { name: 'self-approved', set: (w) => seedBot(w, { approver: ADA.id, requester: ADA.id }) },
+      { name: 'pending', set: (w) => seedBot(w, { live: false }) },
+      { name: 'the shared install', set: async () => SHARED_INSTALL },
+      { name: 'an unknown id', set: async () => 'Wd3sQ8nLz1Kc6Vb0Xp4TrA' },
+      {
+        name: 'no requester on its row',
+        set: async (w) => {
+          const id = await seedBot(w);
+          w.memory.rows.get(id)!.requestedByUserId = null;
+          return id;
+        },
+      },
+      {
+        name: 'no agent on its row',
+        set: async (w) => {
+          const id = await seedBot(w);
+          w.memory.rows.get(id)!.agentId = null;
+          return id;
+        },
+      },
+    ];
+    for (const c of cases) {
+      const w = await world();
+      const installId = await c.set(w);
+      forget(w);
+
+      await expect(w.dms.live({ installId }), c.name).resolves.toBeUndefined();
+
+      expect(w.slack.calls, c.name).toEqual([]);
+      expect(w.auth.asked, c.name).toEqual([]);
+      expect(w.lines, c.name).toEqual([]);
+    }
+  });
+
+  it('a requester with no account or email, not in Slack, a guest, or whose Slack email maps elsewhere: nothing, logged code-only', async () => {
+    const key = { installId: BOT_INSTALL };
+    const cases: Array<{ name: string; set: (w: World) => unknown; line: Line; tried?: true }> = [
+      { name: 'no account', set: (w) => w.auth.users.delete(ADA.id), line: failedLine('owner-email', 'no-account', key) },
+      {
+        name: 'no email',
+        set: (w) => {
+          w.auth.users.get(ADA.id)!.email = null;
+        },
+        line: failedLine('owner-email', 'no-email', key),
+      },
+      {
+        name: 'auth failing',
+        set: (w) => w.auth.faults.set(`auth:get-user ${ADA.id}`, authDown()),
+        line: failedLine('owner-email', 'store-unavailable', key),
+      },
+      {
+        name: 'auth answering about someone else',
+        set: (w) => w.auth.users.set(ADA.id, { id: GRACE.id, email: GRACE.email, displayName: null, isAdmin: true }),
+        line: failedLine('owner-email', 'bad-answer', key),
+      },
+      { name: 'not in Slack', set: (w) => w.slack.byEmail.delete(ADA.email), line: failedLine('lookup', 'users_not_found', key) },
+      { name: 'a guest', set: (w) => w.slack.add(ADA, { is_restricted: true }), line: failedLine('admission', 'guest', key) },
+      {
+        name: 'her Slack email is someone else in AX',
+        set: (w) => {
+          w.slack.add(ADA, {}, 'ada.personal@canopyworks.example');
+          w.auth.accounts.set('ada.personal@canopyworks.example', 'usr_someone_else');
+        },
+        line: failedLine('find-user', 'not-mapped', key),
+      },
+      { name: 'no shared app', set: (w) => w.memory.store.remove(SHARED_INSTALL), line: failedLine('workspace', 'missing', key) },
+      {
+        name: 'Slack refusing the DM',
+        set: (w) => w.slack.postFailures.set(ADA.slackId, new SlackApiError('chat.postMessage', 'channel_not_found')),
+        line: failedLine('post', 'channel_not_found', key),
+        tried: true,
+      },
+      {
+        name: 'the store failing',
+        set: (w) => w.memory.failures.set('get', connectionReset()),
+        line: failedLine('live', 'ECONNRESET', key),
+      },
+    ];
+    for (const c of cases) {
+      const w = await world();
+      const bot = await seedBot(w);
+      forget(w);
+      await c.set(w);
+
+      await expect(w.dms.live({ installId: bot }), c.name).resolves.toBeUndefined();
+
+      expect(dmedSlackIds(w), c.name).toEqual(c.tried === true ? [ADA.slackId] : []);
+      expect(w.lines, c.name).toEqual([c.line]);
+      expectNoLeak(w.lines, EVERYONE);
+    }
+  });
+});
+
+describe('closed: the requester', () => {
+  it("declined by an admin who isn't the requester: one DM to the requester naming the bot; with no record too", async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY);
+    await w.open();
+    forget(w);
+
+    await w.close({ outcome: 'declined', byUserId: KAY.id });
+
+    // The admins' DMs are redrawn first; then she hears, from the shared bot.
+    expect(w.slack.calls.map((c) => c.method)).toEqual([
+      'updateMessage',
+      'updateMessage',
+      'usersLookupByEmail',
+      'usersInfo',
+      'postDirect',
+    ]);
+    expect(w.slack.of('postDirect')).toStrictEqual([
+      { method: 'postDirect', token: SHARED_TOKEN, args: { user: ADA.slackId, text: DECLINED_FOR_OWNER } },
+    ]);
+    expect(w.lines).toEqual([ownerSent('declined', { requestId: REQUEST })]);
+
+    // Nothing kept for it (a restart forgot it, or nobody was DMed): she still hears.
+    const forgotten = await world();
+    await forgotten.close({ outcome: 'declined', byUserId: KAY.id });
+    expect(forgotten.slack.calls.map((c) => c.method)).toEqual(['usersLookupByEmail', 'usersInfo', 'postDirect']);
+    expect(forgotten.slack.of('postDirect').map((c) => c.args)).toStrictEqual([
+      { user: ADA.slackId, text: DECLINED_FOR_OWNER },
+    ]);
+  });
+
+  it('declined by the requester themselves: no owner DM', async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY);
+    await w.open();
+    forget(w);
+
+    await w.close({ outcome: 'declined', byUserId: ADA.id });
+
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['updateMessage', 'updateMessage']);
+    expect(w.lines).toEqual([]);
+
+    const forgotten = await world();
+    await forgotten.close({ outcome: 'declined', byUserId: ADA.id });
+    expect(forgotten.slack.calls).toEqual([]);
+    expect(forgotten.lines).toEqual([]);
+  });
+
+  it('approved: no owner DM (they hear when the bot goes live)', async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE);
+    await w.open();
+    forget(w);
+
+    await w.close({ outcome: 'approved', byUserId: GRACE.id });
+
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['updateMessage']);
+    expect(w.lines).toEqual([]);
+
+    const forgotten = await world();
+    await forgotten.close({ outcome: 'approved', byUserId: GRACE.id });
+    expect(forgotten.slack.calls).toEqual([]);
+    expect(forgotten.auth.asked).toEqual([]);
+  });
+});
+
 // ── The pieces it shares ────────────────────────────────────────────────────
 
 describe('agentSeenBy', () => {
@@ -1106,8 +1456,24 @@ describe('logs', () => {
 
     await w.open();
     await w.close({ outcome: 'declined', byUserId: KAY.id });
+    // Asked again, approved by Grace, and live: Ada hears, with a channel named.
+    const bot = await seedBot(w);
+    await bind(w, SHARED_INSTALL, 'C07CHAN0000', 'support');
+    w.auth.faults.delete(`auth:get-user ${ADA.id}`);
+    await w.dms.live({ installId: bot });
 
-    expect(w.lines.length).toBeGreaterThan(0);
+    expect(w.lines.map((l) => l.msg)).toEqual([
+      // The fan-out: Ada's name, Eli's address nobody has, Kay's DM refused, the summary.
+      'slack_bot_request_dm_failed',
+      'slack_sender_not_mapped',
+      'slack_bot_request_dm_failed',
+      'slack_bot_request_dms_sent',
+      // The decline: Grace's redraw, then Ada's address.
+      'slack_bot_request_dm_failed',
+      'slack_bot_request_dm_failed',
+      // Live.
+      'slack_bot_request_owner_dm_sent',
+    ]);
     expectNoLeak(w.lines, [ADA, SAM, GUS, ELI, GRACE, KAY, LIN]);
   });
 });

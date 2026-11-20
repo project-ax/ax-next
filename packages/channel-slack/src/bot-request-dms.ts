@@ -2,9 +2,11 @@ import { makeAgentContext, type AgentContext, type HookBus, type Logger } from '
 import { admitSender, findSenderUser, isTemporaryLookupFailure, isTemporarySlackCode } from './admission.js';
 import { botRequestBlocks, botRequestOutcomeBlocks } from './blocks.js';
 import { agentSeenBy } from './bot-requests.js';
+import type { ChannelStore } from './channel-store.js';
 import { COPY } from './copy.js';
 import type { Lifetime } from './lifetime.js';
 import {
+  BOT_LIVE_DM_CHANNELS_MAX,
   BOT_REQUEST_DMS_MAX,
   BOT_REQUEST_DM_RECORDS_MAX,
   BOT_REQUEST_DM_TTL_MS,
@@ -31,6 +33,14 @@ import type { InstallRow, InstallStore } from './store.js';
  * made) or declined, each of those DMs is redrawn with who did it where the
  * buttons were (`closed`).
  *
+ * The requester hears from the shared bot only when someone else answered
+ * (D9; the self path's own browser saw how it went): that their request was
+ * declined (`closed`), or, at the approver's Allow (bot-callback.ts →
+ * `live`), that the bot is live, how to invite it, and which of the agent's
+ * shared-app channels now need it (at most BOT_LIVE_DM_CHANNELS_MAX named).
+ * An approve itself tells them nothing yet. The rule lives here only: the
+ * callers call unconditionally.
+ *
  * Who gets a DM (design decision D2). The Decline click's own identity rule,
  * so everyone DMed can also Decline: `users.lookupByEmail` with the address
  * auth verified (`auth:list-admins`) gives a Slack id and nothing else;
@@ -39,7 +49,9 @@ import type { InstallRow, InstallStore } from './store.js';
  * on THAT confirmed email must answer the same AX account. Anyone else gets
  * nothing: an admin Slack doesn't know, a guest, a deactivated or unconfirmed
  * account, or one whose Slack email is another AX account's or nobody's. The
- * requester is never asked about their own request.
+ * requester is never asked about their own request. Their own notices take
+ * the same path from the email `auth:get-user` has for them, which nothing
+ * says a provider verified: the map-back is what proves it.
  *
  * Bounds (D3, D4). At most BOT_REQUEST_DMS_MAX admins per request, in the
  * order auth lists them, and at most BOT_REQUEST_FANOUTS_MAX fan-outs per
@@ -68,13 +80,15 @@ import type { InstallRow, InstallStore } from './store.js';
  *
  * What the bot says is COPY's. Outside names (the requester's display name,
  * never their email; the bot's and the agent's names) reach Slack only as the
- * DM's plain_text subject (blocks.ts). A notification names nobody.
+ * admin DM's plain_text subject (blocks.ts), or through COPY's `shown` in the
+ * requester's notices. A notification names nobody.
  *
  * Log lines are code-only: `slack_bot_request_dms_sent { requestId, sent,
  * skipped }` once per fan-out, `slack_bot_request_dms_skipped { requestId,
- * reason }`, and `slack_bot_request_dm_failed { requestId, stage, code }`
- * (plus admission.ts's own `slack_sender_not_mapped { installId }` for a
- * confirmed Slack email no AX account has). Never an email, a name, a
+ * reason }`, `slack_bot_request_owner_dm_sent { requestId | installId,
+ * notice }`, and `slack_bot_request_dm_failed { requestId | installId, stage,
+ * code }` (plus admission.ts's own `slack_sender_not_mapped { installId }` for
+ * a confirmed Slack email no AX account has). Never an email, a name, a
  * person's or an agent's id, a Slack user or channel id, a ts, or a token.
  */
 
@@ -83,6 +97,8 @@ export interface BotRequestDmsDeps {
   /** The shared bot's calls: find a person by email, admit them (users.info), DM them, redraw a DM. */
   api: SlackApi;
   installs: Pick<InstallStore, 'current' | 'get'>;
+  /** For `live`: the agent's channels on the shared app, and the ones its own bot has. */
+  channels: Pick<ChannelStore, 'listForAgent'>;
   secrets: Pick<SecretStore, 'get'>;
   /** Every DM runs tracked: shutdown drains it. */
   lifetime: Pick<Lifetime, 'track'>;
@@ -101,8 +117,9 @@ export interface BotRequestDms {
   opened(i: { requestId: string; agentId: string; requesterUserId: string; botName: string }): Promise<void>;
   /**
    * A request was approved (a bot made) or declined, by `byUserId`: redraw
-   * the admins' DMs. Call it after the app lock is free, and never await it
-   * on a request path. Never rejects.
+   * the admins' DMs, and tell the requester of a decline that isn't their
+   * own. Call it after the app lock is free, and never await it on a request
+   * path. Never rejects.
    */
   closed(i: {
     requestId: string;
@@ -111,6 +128,12 @@ export interface BotRequestDms {
     outcome: 'approved' | 'declined';
     byUserId: string;
   }): Promise<void>;
+  /**
+   * A team agent's own bot just went live (its approver's Allow): when an AX
+   * admin approved it for someone else, its requester hears. Call it after
+   * the app lock is free, for every connected Allow. Never rejects.
+   */
+  live(i: { installId: string }): Promise<void>;
 }
 
 /** The requester in an admin's DM when auth has no display name: never their email (Slack keeps a copy). */
@@ -123,8 +146,8 @@ const ADMIN_SLACK_LINK = '/?admin=slack';
 const USERS_NOT_FOUND = 'users_not_found';
 const SESSION = 'channel-slack';
 
-/** What a failure's log line is about: the request. */
-type LogKey = { requestId: string };
+/** What a log line is about: the request, or (once it went live) the bot's install. */
+type LogKey = { requestId: string } | { installId: string };
 
 /** The shared bot, as one piece of work needs it. The token never outlives that work. */
 interface Workspace {
@@ -367,9 +390,8 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     log('info', 'slack_bot_request_dms_sent', { requestId: i.requestId, sent, skipped: admins.length - sent });
   }
 
-  async function close(i: Closed, record: DmRecord | undefined): Promise<void> {
-    if (record === undefined) return;
-    const key = { requestId: i.requestId };
+  /** Every admin DM `record` kept, redrawn with who approved or declined it. */
+  async function redrawAll(key: LogKey, i: Closed, record: DmRecord): Promise<void> {
     // Who did it, by display name only.
     const name = await personName(d.bus, ctxOf(''), i.byUserId, {
       allowEmail: false,
@@ -387,6 +409,101 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     const ws = await liveInstall(key, () => d.installs.get(installId));
     if (ws === null) return;
     for (const dm of posted) await redraw(key, ws.token, subject, dm, line);
+  }
+
+  /**
+   * One DM from the shared bot to the requester, `text` and no blocks, if
+   * they can be found (D2, from the email auth has for them). Whatever stops
+   * it is logged, and nothing is retried.
+   */
+  async function notifyOwner(
+    key: LogKey,
+    ws: Workspace,
+    requesterUserId: string,
+    notice: 'live' | 'declined',
+    text: string,
+  ): Promise<void> {
+    let user: unknown;
+    try {
+      user = await d.bus.call<{ userId: string }, unknown>('auth:get-user', ctxOf(''), { userId: requesterUserId });
+    } catch (err) {
+      failed(key, 'owner-email', logCode(err));
+      return;
+    }
+    if (user === null) {
+      failed(key, 'owner-email', 'no-account');
+      return;
+    }
+    // Only an answer about this very person.
+    if (!isRecord(user) || user['id'] !== requesterUserId) {
+      failed(key, 'owner-email', 'bad-answer');
+      return;
+    }
+    const email = user['email'];
+    if (typeof email !== 'string' || email === '' || email.length > EMAIL_MAX) {
+      failed(key, 'owner-email', 'no-email');
+      return;
+    }
+    // auth doesn't say a provider verified this address: Slack's confirmed email mapping back is the proof.
+    const reach = await memberFor(ws, { userId: requesterUserId, email });
+    if (!reach.ok) {
+      failed(key, reach.stage, reach.code);
+      return;
+    }
+    try {
+      await d.api.postDirect(ws.token, { user: reach.slackUserId, text });
+    } catch (err) {
+      failed(key, 'post', logCode(err));
+      return;
+    }
+    log('info', 'slack_bot_request_owner_dm_sent', { ...key, notice });
+  }
+
+  async function close(i: Closed, record: DmRecord | undefined): Promise<void> {
+    const key = { requestId: i.requestId };
+    if (record !== undefined) await redrawAll(key, i, record);
+    // The requester hears of a decline unless it was their own. An approve
+    // tells them nothing yet: they hear when the bot goes live.
+    if (i.outcome !== 'declined' || i.byUserId === i.requesterUserId) return;
+    const ws = await liveInstall(key, () => d.installs.current());
+    if (ws === null) return;
+    await notifyOwner(key, ws, i.requesterUserId, 'declined', COPY.botDeclinedForOwner(i.botName));
+  }
+
+  /**
+   * The agent's channels on the shared app that its own bot doesn't answer in
+   * yet, by their stored names, oldest first. A fault reads as none, logged:
+   * the bot being live is the news.
+   */
+  async function stillWaiting(key: LogKey, sharedInstallId: string, bot: InstallRow, agentId: string): Promise<string[]> {
+    try {
+      const answered = new Set((await d.channels.listForAgent(bot.installId, agentId)).map((b) => b.channelId));
+      const shared = await d.channels.listForAgent(sharedInstallId, agentId);
+      return shared.filter((b) => !answered.has(b.channelId)).map((b) => b.channelName);
+    } catch (err) {
+      failed(key, 'channels', logCode(err));
+      return [];
+    }
+  }
+
+  async function announce(installId: string): Promise<void> {
+    const key = { installId };
+    const bot = await d.installs.get(installId);
+    if (bot === null || bot.kind !== 'bot' || bot.status !== 'active' || bot.agentId === null) return;
+    // Only one an AX admin approved for someone else: on the self path, the
+    // requester's own browser saw it go live.
+    const requester = bot.requestedByUserId;
+    if (requester === null || requester === bot.connectedByUserId) return;
+    const ws = await liveInstall(key, () => d.installs.current());
+    if (ws === null) return;
+    const waiting = await stillWaiting(key, ws.installId, bot, bot.agentId);
+    const named = waiting.slice(0, BOT_LIVE_DM_CHANNELS_MAX);
+    const text = COPY.botLiveForOwner(
+      { botName: bot.botName, handle: bot.botHandle },
+      named,
+      waiting.length - named.length,
+    );
+    await notifyOwner(key, ws, requester, 'live', text);
   }
 
   return {
@@ -424,6 +541,14 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
         await d.lifetime.track(() => close(i, record));
       } catch (err) {
         failed({ requestId: i.requestId }, 'close', logCode(err));
+      }
+    },
+
+    async live(i) {
+      try {
+        await d.lifetime.track(() => announce(i.installId));
+      } catch (err) {
+        failed({ installId: i.installId }, 'live', logCode(err));
       }
     },
   };
