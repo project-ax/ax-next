@@ -136,10 +136,6 @@ export interface BotRequestDms {
   live(i: { installId: string }): Promise<void>;
 }
 
-/** The requester in an admin's DM when auth has no display name: never their email (Slack keeps a copy). */
-const REQUESTER_FALLBACK = 'A team admin';
-/** Who approved or declined, when auth has no display name for them. */
-const ACTOR_FALLBACK = 'An admin';
 /** channel-web's link into Admin › Slack (its lib/slack-admin-link.ts): keep the two in step. */
 const ADMIN_SLACK_LINK = '/?admin=slack';
 /** users.lookupByEmail's own "nobody here has that address": a miss, not a failure. */
@@ -346,12 +342,12 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     if (admins === null) return;
     let sent = 0;
     if (admins.length > 0) {
-      // Who asked, by display name only, and the agent as they see it.
+      // Who asked, by display name only (never their email: Slack keeps a copy), and the agent as they see it.
       const asRequester = ctxOf(i.requesterUserId);
       const [requester, agent] = await Promise.all([
         personName(d.bus, asRequester, i.requesterUserId, {
           allowEmail: false,
-          fallback: REQUESTER_FALLBACK,
+          fallback: COPY.botRequestRequesterFallback,
           onFault: (err) => failed(key, 'requester', logCode(err)),
         }),
         agentSeenBy(d.bus, asRequester, { agentId: i.agentId, requestedByUserId: i.requesterUserId }, (err) =>
@@ -395,7 +391,7 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     // Who did it, by display name only.
     const name = await personName(d.bus, ctxOf(''), i.byUserId, {
       allowEmail: false,
-      fallback: ACTOR_FALLBACK,
+      fallback: COPY.botRequestAdminFallback,
       onFault: (err) => failed(key, 'closed-by', logCode(err)),
     });
     const line = i.outcome === 'approved' ? COPY.botRequestApproved(name) : COPY.botRequestDeclined(name);

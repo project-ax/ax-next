@@ -181,6 +181,8 @@ describe('COPY: everything the bot says in Slack', () => {
         'botRequestDeclined',
         'botRequestOnlyAdmin',
         'botRequestHandled',
+        'botRequestRequesterFallback',
+        'botRequestAdminFallback',
         'botLiveForOwner',
         'botDeclinedForOwner',
       ].sort(),
@@ -608,5 +610,15 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
       'A team admin wants to add @Support Bot for a team agent.',
     );
     expect(COPY.botRequestAsked).toBe('A team asked for its own Slack bot.');
+  });
+
+  it('a person with no display name is named by their role, never an email, and the role names no product (TASK-1170)', () => {
+    // The requester in an admin's DM subject, and who approved or declined in its redraw.
+    expect(COPY.botRequestRequesterFallback).toBe('A team admin');
+    expect(COPY.botRequestAdminFallback).toBe('An admin');
+    expect(COPY.botRequestDeclined(COPY.botRequestAdminFallback)).toBe('An admin declined this.');
+    expect(COPY.botRequestSubject({ requester: COPY.botRequestRequesterFallback, botName: 'B', agentName: null })).toBe(
+      'A team admin wants to add @B for a team agent.',
+    );
   });
 });

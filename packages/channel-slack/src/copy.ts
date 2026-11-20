@@ -338,6 +338,13 @@ export const COPY = {
   botRequestOnlyAdmin: 'Only an admin can answer this.',
   botRequestHandled: 'This request was already handled.',
   /*
+    Who someone is when auth has no display name for them: the requester in
+    the subject, and who approved or declined in the redraw. Never their
+    email: Slack keeps a copy of what the bot says.
+  */
+  botRequestRequesterFallback: 'A team admin',
+  botRequestAdminFallback: 'An admin',
+  /*
     To the agent's owner when someone else approved the bot: it is live, how to
     invite it, and the channels the shared app served that now need it
     (`channels` is already capped by the caller; `more` is how many it left
