@@ -1,6 +1,15 @@
 /**
- * The Slack app AX creates for a workspace: its manifest, the URLs Slack
- * calls back on, and the install link an admin follows to Allow it.
+ * The Slack apps AX creates: the shared one for a workspace, and a team
+ * agent's own channel-only bot (TASK-1167). For each: its manifest, the URLs
+ * Slack calls back on, and the install link an admin follows to Allow it.
+ *
+ * The dedicated bot is the smaller of the two (invariant 5): six scopes, one
+ * event (`app_mention`), no slash command, no DMs (the App Home messages tab
+ * is off, no `im:history`) and no `channels:join` (it only answers in
+ * channels it was invited to). Its OAuth callback is its own,
+ * `BOT_OAUTH_CALLBACK_PATH`, apart from Admin › Slack's.
+ *
+ * Everything below up to the dedicated bot section describes the shared app.
  *
  * The grant is as small as DMs and connected channels need (invariant 5):
  * nine bot scopes, two events, one slash command, and
@@ -40,8 +49,28 @@ export const SLASH_COMMAND = '/ax';
 
 export const BOT_EVENTS = Object.freeze(['app_mention', 'message.im'] as const);
 
+/**
+ * The dedicated bot's grant: hear @mentions, reply, react, resolve a sender's
+ * email, and look up a public channel. Nothing that reads DMs, joins channels,
+ * takes commands or reads channel history.
+ */
+export const DEDICATED_BOT_SCOPES = Object.freeze([
+  'app_mentions:read',
+  'chat:write',
+  'reactions:write',
+  'users:read',
+  'users:read.email',
+  'channels:read',
+] as const);
+
+export const DEDICATED_BOT_EVENTS = Object.freeze(['app_mention'] as const);
+
+/** Where Slack sends the person who started a bot request after Allow. */
+export const BOT_OAUTH_CALLBACK_PATH = '/slack/bots/oauth/callback';
+
 const SLACK_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
 const APP_DESCRIPTION = 'Talk to your AX agent.';
+const DEDICATED_BOT_DESCRIPTION = 'Talk to your team agent.';
 
 export interface SlackUrls {
   /** Where Slack delivers events for this install. */
@@ -113,14 +142,68 @@ export function buildAppManifest(botName: string, urls: SlackUrls): Record<strin
   };
 }
 
+export interface BotUrls {
+  /** Where Slack delivers events for this bot. */
+  eventsUrl: string;
+  /** Where Slack sends the requester back after Allow. */
+  redirectUrl: string;
+  /** Where Slack sends button clicks for this bot. */
+  interactionsUrl: string;
+}
+
+export function botUrls(publicOrigin: string, installId: string): BotUrls {
+  const origin = withoutTrailingSlashes(publicOrigin);
+  return {
+    eventsUrl: `${origin}/slack/events/${encodeURIComponent(installId)}`,
+    redirectUrl: `${origin}${BOT_OAUTH_CALLBACK_PATH}`,
+    interactionsUrl: `${origin}/slack/interactions/${encodeURIComponent(installId)}`,
+  };
+}
+
+/**
+ * The manifest for a team agent's own bot: channel-only, @mentions only, no
+ * slash command. `botName` must already have passed `checkBotName`. A new
+ * object each call: the lists are copies.
+ */
+export function buildBotManifest(botName: string, urls: BotUrls): Record<string, unknown> {
+  return {
+    display_information: { name: botName, description: DEDICATED_BOT_DESCRIPTION },
+    features: {
+      app_home: {
+        home_tab_enabled: false,
+        messages_tab_enabled: false,
+        messages_tab_read_only_enabled: false,
+      },
+      bot_user: { display_name: botName, always_online: true },
+    },
+    oauth_config: {
+      redirect_urls: [urls.redirectUrl],
+      scopes: { bot: [...DEDICATED_BOT_SCOPES] },
+    },
+    settings: {
+      event_subscriptions: { request_url: urls.eventsUrl, bot_events: [...DEDICATED_BOT_EVENTS] },
+      interactivity: { is_enabled: true, request_url: urls.interactionsUrl },
+      org_deploy_enabled: false,
+      socket_mode_enabled: false,
+      token_rotation_enabled: false,
+    },
+  };
+}
+
 /**
  * Slack's OAuth v2 authorize URL for this app. Every value goes through
- * URLSearchParams, so none can add or replace another parameter.
+ * URLSearchParams, so none can add or replace another parameter. `scopes`
+ * defaults to the shared bot's; it must match the app's manifest.
  */
-export function buildInstallUrl(i: { clientId: string; redirectUrl: string; state: string }): string {
+export function buildInstallUrl(i: {
+  clientId: string;
+  redirectUrl: string;
+  state: string;
+  scopes?: readonly string[];
+}): string {
   const params = new URLSearchParams({
     client_id: i.clientId,
-    scope: BOT_SCOPES.join(','),
+    scope: (i.scopes ?? BOT_SCOPES).join(','),
     redirect_uri: i.redirectUrl,
     state: i.state,
   });

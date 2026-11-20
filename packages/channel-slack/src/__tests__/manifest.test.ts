@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   BOT_EVENTS,
+  BOT_OAUTH_CALLBACK_PATH,
   BOT_SCOPES,
+  DEDICATED_BOT_EVENTS,
+  DEDICATED_BOT_SCOPES,
   SLASH_COMMAND,
+  botUrls,
   buildAppManifest,
+  buildBotManifest,
   buildInstallUrl,
   slackUrls,
 } from '../manifest.js';
@@ -168,6 +173,17 @@ describe('buildInstallUrl', () => {
     expect(url.hash).toBe('');
   });
 
+  it('asks for the scopes it is given, and the shared bot scopes when it is given none', () => {
+    const scopeOf = (scopes?: readonly string[]): string[] =>
+      new URL(
+        buildInstallUrl({ clientId: '1.2', redirectUrl: REDIRECT, state: 's', ...(scopes ? { scopes } : {}) }),
+      )
+        .searchParams.get('scope')!
+        .split(',');
+    expect(scopeOf(['chat:write', 'app_mentions:read'])).toStrictEqual(['chat:write', 'app_mentions:read']);
+    expect(scopeOf()).toStrictEqual([...BOT_SCOPES]);
+  });
+
   it('round-trips redirect_uri through URL unchanged', () => {
     const url = new URL(
       buildInstallUrl({ clientId: '123.456', redirectUrl: REDIRECT, state: 's' }),
@@ -190,5 +206,102 @@ describe('buildInstallUrl', () => {
     expect(url.searchParams.get('client_id')).toBe('1&scope=admin');
     expect(url.searchParams.get('state')).toBe('x#frag&redirect_uri=https://evil.example');
     expect(url.hash).toBe('');
+  });
+});
+
+describe('the dedicated bot manifest', () => {
+  it('the bot manifest is the smallest a channel-only bot needs', () => {
+    expect(buildBotManifest('Ada Bot', botUrls(ORIGIN, INSTALL_ID))).toStrictEqual({
+      display_information: { name: 'Ada Bot', description: 'Talk to your team agent.' },
+      features: {
+        app_home: {
+          home_tab_enabled: false,
+          messages_tab_enabled: false,
+          messages_tab_read_only_enabled: false,
+        },
+        bot_user: { display_name: 'Ada Bot', always_online: true },
+      },
+      oauth_config: {
+        redirect_urls: ['https://ax.example/slack/bots/oauth/callback'],
+        scopes: {
+          bot: [
+            'app_mentions:read',
+            'chat:write',
+            'reactions:write',
+            'users:read',
+            'users:read.email',
+            'channels:read',
+          ],
+        },
+      },
+      settings: {
+        event_subscriptions: {
+          request_url: 'https://ax.example/slack/events/AAAAAAAAAAAAAAAAAAAAAA',
+          bot_events: ['app_mention'],
+        },
+        interactivity: {
+          is_enabled: true,
+          request_url: 'https://ax.example/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA',
+        },
+        org_deploy_enabled: false,
+        socket_mode_enabled: false,
+        token_rotation_enabled: false,
+      },
+    });
+    expect(
+      (buildBotManifest('x', botUrls(ORIGIN, INSTALL_ID)).features as Record<string, unknown>)[
+        'slash_commands'
+      ],
+    ).toBeUndefined();
+    expect([...DEDICATED_BOT_EVENTS]).toStrictEqual(['app_mention']);
+    expect(Object.isFrozen(DEDICATED_BOT_SCOPES)).toBe(true);
+    expect(Object.isFrozen(DEDICATED_BOT_EVENTS)).toBe(true);
+  });
+
+  it("a dedicated bot can't read DMs, join channels or take commands", () => {
+    expect(DEDICATED_BOT_SCOPES).toHaveLength(6);
+    for (const banned of ['im:history', 'channels:join', 'commands', 'channels:history', 'chat:write.public', 'chat:write.customize']) {
+      expect(DEDICATED_BOT_SCOPES).not.toContain(banned);
+    }
+    for (const scope of DEDICATED_BOT_SCOPES) {
+      expect(scope).not.toMatch(/^(groups|mpim|im):/);
+    }
+  });
+
+  it('never shares its scope or event lists with the caller', () => {
+    const manifest = buildBotManifest('x', botUrls(ORIGIN, INSTALL_ID)) as {
+      oauth_config: { scopes: { bot: string[] } };
+      settings: { event_subscriptions: { bot_events: string[] } };
+    };
+    manifest.oauth_config.scopes.bot.push('channels:history');
+    manifest.settings.event_subscriptions.bot_events.push('message.channels');
+    expect(DEDICATED_BOT_SCOPES).toHaveLength(6);
+    expect(DEDICATED_BOT_EVENTS).toHaveLength(1);
+  });
+
+  it('botUrls drops trailing slashes and encodes the id', () => {
+    expect(BOT_OAUTH_CALLBACK_PATH).toBe('/slack/bots/oauth/callback');
+    expect(botUrls('https://ax.example//', 'a/b')).toStrictEqual({
+      eventsUrl: 'https://ax.example/slack/events/a%2Fb',
+      redirectUrl: 'https://ax.example/slack/bots/oauth/callback',
+      interactionsUrl: 'https://ax.example/slack/interactions/a%2Fb',
+    });
+  });
+
+  it('an install link for a bot asks for the six scopes; the shared link is unchanged', () => {
+    const scopeOf = (scopes?: readonly string[]): string[] =>
+      new URL(
+        buildInstallUrl({
+          clientId: '1.2',
+          redirectUrl: botUrls(ORIGIN, INSTALL_ID).redirectUrl,
+          state: 's',
+          ...(scopes ? { scopes } : {}),
+        }),
+      )
+        .searchParams.get('scope')!
+        .split(',');
+    expect(scopeOf(DEDICATED_BOT_SCOPES)).toStrictEqual([...DEDICATED_BOT_SCOPES]);
+    expect(scopeOf(DEDICATED_BOT_SCOPES)).toHaveLength(6);
+    expect(scopeOf()).toStrictEqual([...BOT_SCOPES]);
   });
 });

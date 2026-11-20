@@ -9,6 +9,9 @@
  *   POST /settings/slack/:agentId/connect     { channelId } → { channel, reconnected }
  *   POST /settings/slack/:agentId/disconnect  { channelId } → { removed }
  *   POST /settings/slack/:agentId/remember    { channelId, remember } → {}
+ *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
+ *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
+ *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
@@ -17,6 +20,8 @@
  * half-drawn row.
  */
 import { HttpError, httpFetch } from './http';
+import { SLACK_ERROR_COPY } from './slack-admin';
+import { BOT_NAME_COPY, BOT_NAME_FALLBACK, SLACK_TOKEN_COPY } from './slack-token-copy';
 
 export interface SlackChannelRow {
   channelId: string;
@@ -26,8 +31,21 @@ export interface SlackChannelRow {
   needsReconnect: boolean;
 }
 
+/**
+ * The agent's own Slack bot, as this viewer may see it (mirrors
+ * @ax/channel-slack's `AgentSlackBot` by shape). `pending` reaches only the
+ * people who manage the agent. `approver` is a display name, never an email.
+ */
+export type AgentSlackBot =
+  /** `configTokenStored`: whether the server holds the viewer's OWN configuration token, so the form can skip the paste. */
+  | { state: 'none'; configTokenStored: boolean }
+  /** `canContinue`: the viewer is the approver and Slack is connected, so "Continue in Slack" can finish it. */
+  | { state: 'pending'; botName: string; approver: string; canContinue: boolean }
+  /** `handle`: the bot's @handle, or null when Slack never said. `needsClaim`: no team admin stands behind it now. */
+  | { state: 'live'; botName: string; handle: string | null; approver: string; needsClaim: boolean };
+
 export type AgentSlackStatus =
-  | { state: 'no-workspace' }
+  | { state: 'no-workspace'; bot: AgentSlackBot }
   | {
       state: 'personal-agent';
       botName: string;
@@ -43,6 +61,7 @@ export type AgentSlackStatus =
       workspaceName: string;
       canManage: boolean;
       channels: SlackChannelRow[];
+      bot: AgentSlackBot;
     };
 
 /** `unavailable`: this server doesn't run the Slack plugin (or can't show us the agent). */
@@ -114,11 +133,40 @@ function parseRow(value: unknown): SlackChannelRow | null {
   return { channelId, name, remember, connectedBy, needsReconnect };
 }
 
+function parseBot(value: unknown): AgentSlackBot | null {
+  if (!isRecord(value)) return null;
+  switch (value['state']) {
+    case 'none': {
+      const { configTokenStored } = value;
+      return typeof configTokenStored === 'boolean' ? { state: 'none', configTokenStored } : null;
+    }
+    case 'pending': {
+      const { botName, approver, canContinue } = value;
+      return typeof botName === 'string' && typeof approver === 'string' && typeof canContinue === 'boolean'
+        ? { state: 'pending', botName, approver, canContinue }
+        : null;
+    }
+    case 'live': {
+      const { botName, handle, approver, needsClaim } = value;
+      return typeof botName === 'string' &&
+        (handle === null || typeof handle === 'string') &&
+        typeof approver === 'string' &&
+        typeof needsClaim === 'boolean'
+        ? { state: 'live', botName, handle, approver, needsClaim }
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
 function parseStatus(body: unknown): AgentSlackStatus | null {
   if (!isRecord(body)) return null;
   switch (body['state']) {
-    case 'no-workspace':
-      return { state: 'no-workspace' };
+    case 'no-workspace': {
+      const bot = parseBot(body['bot']);
+      return bot === null ? null : { state: 'no-workspace', bot };
+    }
     case 'personal-agent': {
       const { botName, answersDms = true } = body;
       return typeof botName === 'string' && typeof answersDms === 'boolean'
@@ -135,13 +183,15 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       ) {
         return null;
       }
+      const bot = parseBot(body['bot']);
+      if (bot === null) return null;
       const rows: SlackChannelRow[] = [];
       for (const c of channels) {
         const row = parseRow(c);
         if (row === null) return null;
         rows.push(row);
       }
-      return { state: 'ready', botName, workspaceName, canManage, channels: rows };
+      return { state: 'ready', botName, workspaceName, canManage, channels: rows, bot };
     }
     default:
       return null;
@@ -256,6 +306,45 @@ export async function setSlackChannelRemember(
   await post(agentId, '/remember', { channelId, remember });
 }
 
+/**
+ * Ask for the agent's own Slack bot. `refreshToken` is sent only when the
+ * person pasted one (the server uses the one it holds otherwise); `iconPng`
+ * only when there is a picture. The answer is where to send the person to
+ * click Allow.
+ */
+export async function requestSlackBot(
+  agentId: string,
+  i: { botName: string; refreshToken?: string; iconPng?: string },
+): Promise<{ installUrl: string; iconSet: boolean }> {
+  const answer = await post(agentId, '/bot', {
+    botName: i.botName,
+    ...(i.refreshToken !== undefined ? { refreshToken: i.refreshToken } : {}),
+    ...(i.iconPng !== undefined ? { iconPng: i.iconPng } : {}),
+  });
+  const fields = isRecord(answer.body) ? answer.body : {};
+  const { installUrl, iconSet } = fields;
+  if (typeof installUrl !== 'string' || installUrl === '' || typeof iconSet !== 'boolean') {
+    throw badResponse(answer.status);
+  }
+  return { installUrl, iconSet };
+}
+
+/** A fresh install link for the pending bot (its approver only). */
+export async function continueSlackBot(agentId: string): Promise<{ installUrl: string }> {
+  const answer = await post(agentId, '/bot/install-url', {});
+  const installUrl = isRecord(answer.body) ? answer.body['installUrl'] : undefined;
+  if (typeof installUrl !== 'string' || installUrl === '') throw badResponse(answer.status);
+  return { installUrl };
+}
+
+/** Take back the pending request. `appDeleted` is false when the Slack app is left for its owner to delete. */
+export async function cancelSlackBot(agentId: string): Promise<{ appDeleted: boolean }> {
+  const answer = await post(agentId, '/bot/cancel', {});
+  const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
+  if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
+  return { appDeleted };
+}
+
 // ── What an error says ────────────────────────────────────────────────────
 
 export const AGENT_SLACK_COPY = Object.freeze({
@@ -319,4 +408,71 @@ export function agentSlackStateChanged(err: unknown): boolean {
  */
 export function agentSlackWriteStale(err: unknown): boolean {
   return err instanceof AgentSlackError && (err.status === 403 || err.status === 404 || err.status === 409);
+}
+
+export const AGENT_SLACK_BOT_COPY = Object.freeze({
+  'slack-config-token':
+    "The configuration token we kept for you stopped working. Generate a new one on Slack's app settings and paste it below.",
+  'config-token-needed': 'Paste a configuration token to continue.',
+  'slack-token': "Slack didn't accept the configuration token. Generate a new one and paste it below.",
+  'no-workspace': "Slack isn't connected yet. An admin connects it first.",
+  'not-approver': 'Only the person who set this up can continue it in Slack.',
+});
+
+/**
+ * The sentence a refused bot request, continue or cancel becomes, and where it
+ * goes. `revealToken`: the refusal means "paste a configuration token", so the
+ * form shows its token field (and the message sits under it). Never a raw code.
+ */
+export function agentSlackBotErrorCopy(err: unknown): {
+  field: 'botName' | 'refreshToken' | null;
+  message: string;
+  revealToken: boolean;
+} {
+  if (err instanceof AgentSlackError) {
+    switch (err.code) {
+      case 'invalid-bot-name': {
+        const known =
+          err.reason !== null && Object.hasOwn(BOT_NAME_COPY, err.reason) ? BOT_NAME_COPY[err.reason] : undefined;
+        return { field: 'botName', message: known ?? BOT_NAME_FALLBACK, revealToken: false };
+      }
+      case 'bot-name-taken':
+        return { field: 'botName', message: SLACK_TOKEN_COPY['bot-name-taken'], revealToken: false };
+      case 'slack-name':
+        return { field: 'botName', message: SLACK_TOKEN_COPY['slack-name'], revealToken: false };
+      case 'invalid-refresh-token':
+        return { field: 'refreshToken', message: SLACK_TOKEN_COPY['invalid-refresh-token'], revealToken: false };
+      case 'slack-refresh-token':
+        return { field: 'refreshToken', message: SLACK_TOKEN_COPY['slack-refresh-token'], revealToken: false };
+      case 'slack-config-token':
+      case 'config-token-needed':
+      case 'slack-token':
+        return { field: 'refreshToken', message: AGENT_SLACK_BOT_COPY[err.code], revealToken: true };
+      case 'no-workspace':
+      case 'not-approver':
+        return { field: null, message: AGENT_SLACK_BOT_COPY[err.code], revealToken: false };
+      case 'public-origin-not-https':
+        return { field: null, message: SLACK_ERROR_COPY['public-origin-not-https'], revealToken: false };
+      case 'slack-unconfirmed':
+        return { field: null, message: SLACK_TOKEN_COPY['slack-unconfirmed'], revealToken: false };
+      case 'slack-error':
+        return { field: null, message: SLACK_ERROR_COPY.generic, revealToken: false };
+    }
+  }
+  // Our own failure (`internal`), or a dropped connection: nothing to blame Slack for.
+  return { field: null, message: AGENT_SLACK_COPY.generic, revealToken: false };
+}
+
+/**
+ * A bot request, continue or cancel that says what we drew is out of date:
+ * the bot is already there or no longer pending (409), or the agent can't be
+ * managed (403 `forbidden`) or seen (404) any more. Read the status again.
+ * (`not-approver` is a 403 too, but it is an answer about the person, shown as it is.)
+ */
+export function agentSlackBotStale(err: unknown): boolean {
+  if (!(err instanceof AgentSlackError)) return false;
+  if (err.status === 404 || (err.status === 403 && err.code === 'forbidden')) return true;
+  return (
+    err.status === 409 && (err.code === 'bot-exists' || err.code === 'not-pending' || err.code === 'personal-agent')
+  );
 }

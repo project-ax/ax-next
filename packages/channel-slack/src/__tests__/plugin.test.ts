@@ -84,6 +84,9 @@ const GRACE = 'usr_grace';
 const GRACE_INSTALL_ID = 'Gr4c3InstallIdNotReal1';
 /** A Slack app an earlier Disconnect couldn't delete: its removed install's id. */
 const LEFTOVER_ID = 'L3ftoverInstallId0001A';
+/** A team agent's own bot (TASK-1167), Grace's: she asked for it and approved it. */
+const BOT_INSTALL_ID = 'B0tInstallIdNotReal001';
+const BOT_APP_ID = 'A07BOTAPP001';
 const BOT_TOKEN = fakeBotToken('PLUGINTESTSECRET');
 const ALICE = 'U07ALICE001';
 /** Ada's Slack user: she connected #support, and is a team admin of its agent. */
@@ -329,14 +332,20 @@ function fakeResponse(): { res: RouteResponse; answer: Answer } {
 function request(
   method: 'GET' | 'POST',
   path: string,
-  o: { as?: string; body?: Buffer; params?: Record<string, string>; headers?: Record<string, string> } = {},
+  o: {
+    as?: string;
+    body?: Buffer;
+    params?: Record<string, string>;
+    query?: Record<string, string>;
+    headers?: Record<string, string>;
+  } = {},
 ): RouteRequest {
   return {
     method,
     path,
     rawPath: path,
     params: o.params ?? {},
-    query: {},
+    query: o.query ?? {},
     headers: { ...(o.as !== undefined ? { 'x-test-user': o.as } : {}), ...o.headers },
     body: o.body ?? Buffer.alloc(0),
   };
@@ -662,7 +671,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the sixteen routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the twenty routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -703,6 +712,17 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/settings/slack/:agentId/remember', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // A team agent's own bot (TASK-1167): its request can carry the bot's picture, as Connect's can.
+      { method: 'POST', path: '/settings/slack/:agentId/bot', bypassCsrf: false, maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/install-url',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      { method: 'POST', path: '/settings/slack/:agentId/bot/cancel', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // Where Slack sends a bot's approver back after Allow: signed in, its OAuth state the proof.
+      { method: 'GET', path: '/slack/bots/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
     ]);
     // Nothing is written to the vault just by booting.
     expect(s.credentialSets).toBe(0);
@@ -1320,7 +1340,7 @@ describe('@ax/channel-slack plugin', () => {
 
     // The stored refresh token is dead: Disconnect can't delete the app.
     const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
-    expect(off).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect(off).toMatchObject({ status: 200, body: { appDeleted: false, tokenKept: true } });
     expect(await installCount()).toBe(0);
     const left = await sql<{ install_id: string; app_id: string; bot_name: string }>`
       SELECT install_id, app_id, bot_name FROM channel_slack_v1_leftover_apps`.execute(probe);
@@ -1608,18 +1628,89 @@ describe('@ax/channel-slack plugin', () => {
       level: 'warn',
       appId: APP_ID,
       teamId: TEAM_ID,
+      kind: 'shared',
       hint: expect.stringContaining('api.slack.com/apps'),
     });
-    expect(byId.get(UNKNOWN_ID)).toMatchObject({ appId: 'A07PENDING01', teamId: null });
+    expect(byId.get(UNKNOWN_ID)).toMatchObject({ appId: 'A07PENDING01', teamId: null, kind: 'shared' });
     for (const l of removed) {
       expect(String(l['hint'])).toContain('configuration token');
       expect(Object.keys(l).sort()).toEqual(
-        ['appId', 'hint', 'installId', 'level', 'msg', 'reqId', 'teamId', 'ts'],
+        ['appId', 'hint', 'installId', 'kind', 'level', 'msg', 'reqId', 'teamId', 'ts'],
       );
     }
     const all = JSON.stringify(logs);
     expect(all).not.toContain(SIGNING_SECRET);
     expect(all).not.toContain('7512345678901'); // client ids stay out too
+  });
+
+  /*
+    A reset wipes every credential and TRUNCATEs every agent without
+    announcing a delete, so a team agent's bot (TASK-1167) goes with the
+    shared install: a row left behind would name a deleted agent and hold no
+    secret. Its line says which kind it was, and its approver's token goes
+    once nothing names them.
+  */
+  it("a reset removes bot installs too, logs their kind, deletes their leftover secrets and releases their approver's token", async () => {
+    const { harness, s } = await boot();
+    const store = createInstallStore(probe);
+    // Ada's shared install, and Grace's bot for the team agent, live.
+    await insertActiveInstall();
+    await store.insertPendingBot({
+      installId: BOT_INSTALL_ID,
+      appId: BOT_APP_ID,
+      clientId: '7512345678901.7522222222222',
+      botName: 'support-helper',
+      connectedByUserId: GRACE,
+      agentId: TEAM_AGENT.id,
+      requestedByUserId: GRACE,
+    });
+    await store.activate(BOT_INSTALL_ID, {
+      teamId: TEAM_ID,
+      teamName: 'Canopy Works',
+      botUserId: 'U07HELPERBOT',
+      installedAt: new Date(NOW_MS),
+    });
+    // All stored after the vault wipe, as a racing route or callback would.
+    const adaRef = configTokenRef(ADMIN.id);
+    const graceRef = configTokenRef(GRACE);
+    const adas = fakeConfigRefreshToken('RESETBOTADASECRET');
+    const graces = fakeConfigRefreshToken('RESETBOTGRACESECRET');
+    const botToken = fakeBotToken('RESETBOTTOKENSECRET');
+    s.vault.set(adaRef, adas);
+    s.vault.set(graceRef, graces);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), botToken);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-01');
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-01');
+    const logs = captureLogs();
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+
+    const removed = logs.filter((l) => l['msg'] === 'slack_install_removed_by_reset');
+    expect(removed.map((l) => `${String(l['installId'])}:${String(l['kind'])}`).sort()).toEqual(
+      [`${INSTALL_ID}:shared`, `${BOT_INSTALL_ID}:bot`].sort(),
+    );
+    expect(removed.find((l) => l['installId'] === BOT_INSTALL_ID)).toMatchObject({
+      level: 'warn',
+      appId: BOT_APP_ID,
+      teamId: TEAM_ID,
+      kind: 'bot',
+      hint: expect.stringContaining('api.slack.com/apps'),
+    });
+    for (const l of removed) {
+      expect(Object.keys(l).sort()).toEqual(
+        ['appId', 'hint', 'installId', 'kind', 'level', 'msg', 'reqId', 'teamId', 'ts'],
+      );
+    }
+    // The bot's secrets go, and so does each person's token: nothing names Ada or Grace any more.
+    expect([...s.vault.keys()]).toEqual([]);
+    expect(s.credentialDeletes).toEqual(expect.arrayContaining([adaRef, graceRef, secretRef(BOT_INSTALL_ID, 'bot-token')]));
+    // Code-only: no agent, no person, no secret.
+    const all = JSON.stringify(logs);
+    for (const text of [TEAM_AGENT.id, GRACE, ADMIN.id, adas, graces, botToken, 'test-bot-signing-secret-01', 'test-bot-client-secret-01']) {
+      expect(all).not.toContain(text);
+    }
   });
 
   it('a reset whose delete fails says nothing was removed, logs by code only, and does not fail the reset', async () => {
@@ -1992,7 +2083,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(16);
+    expect(s.routes).toHaveLength(20);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2014,7 +2105,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(16);
+    expect(s.routes).toHaveLength(20);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2043,7 +2134,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(16);
+    expect(s.routes).toHaveLength(20);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2087,12 +2178,28 @@ describe('@ax/channel-slack plugin', () => {
     expect(await get('usr_bob')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
     expect(await get(ADMIN.id, 'agt_nobody')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
     // No workspace is connected yet.
-    expect(await get(ADMIN.id)).toEqual({ status: 200, body: { state: 'no-workspace' }, done: true });
+    expect(await get(ADMIN.id)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+      done: true,
+    });
     await insertActiveInstall();
     expect(await get(ADMIN.id)).toMatchObject({
       status: 200,
       body: { state: 'ready', canManage: true, channels: [] },
     });
+  });
+
+  it('the bot callback is mounted: signed out it redirects to /?slack-bot=failed', async () => {
+    const { call, s } = await boot();
+    const path = '/slack/bots/oauth/callback';
+    expect(await call('GET', path, request('GET', path, { query: { state: 'x' } }))).toEqual({
+      status: 302,
+      body: 'https://ax.example/?slack-bot=failed',
+      done: true,
+    });
+    // Turned away before anything is read.
+    expect(s.credentialGets).toEqual([]);
   });
 
   it('deleting an agent removes its channel bindings, through the real store on Postgres', async () => {
@@ -2110,6 +2217,98 @@ describe('@ax/channel-slack plugin', () => {
     });
 
     expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual(['C07OTHER002']);
+  });
+
+  it("deleting a team agent deletes its own Slack bot through the wiring, after the Admin › Slack step that holds the one app lock (TASK-1167)", async () => {
+    const adas = fakeConfigRefreshToken('ONELOCKADASECRET');
+    const graces = fakeConfigRefreshToken('ONELOCKGRACESECRET');
+    const calls: Array<{ method: string; auth: string | null; body: Record<string, string> }> = [];
+    let rotates = 0;
+    let releaseSharedDelete!: () => void;
+    const sharedDelete = new Promise<void>((resolve) => {
+      releaseSharedDelete = resolve;
+    });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = String(input).replace('https://slack.com/api/', '');
+      const body = Object.fromEntries(new URLSearchParams(typeof init?.body === 'string' ? init.body : ''));
+      calls.push({ method, auth: new Headers(init?.headers).get('authorization'), body });
+      let answer: Record<string, unknown> = { ok: true };
+      if (method === 'tooling.tokens.rotate') {
+        rotates += 1;
+        answer = {
+          ok: true,
+          token: fakeConfigAccessToken(`ONELOCKACCESS${rotates}`),
+          refresh_token: fakeConfigRefreshToken(`ONELOCKREFRESH${rotates}`),
+          exp: 4_102_444_800,
+        };
+      }
+      // Slack is slow to delete the shared app, so Ada's Disconnect holds the app lock until the test lets it go.
+      if (method === 'apps.manifest.delete' && body['app_id'] === APP_ID) await sharedDelete;
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { s, call, harness } = await boot({ fetchImpl });
+    // Ada's shared app, and Grace's bot for the team agent, both live, each made with its person's own token.
+    await insertActiveInstall();
+    const store = createInstallStore(probe);
+    await store.insertPendingBot({
+      installId: BOT_INSTALL_ID,
+      appId: BOT_APP_ID,
+      clientId: '7512345678901.7522222222222',
+      botName: 'support-helper',
+      connectedByUserId: GRACE,
+      agentId: TEAM_AGENT.id,
+      requestedByUserId: GRACE,
+    });
+    await store.activate(BOT_INSTALL_ID, {
+      teamId: TEAM_ID,
+      teamName: 'Canopy Works',
+      botUserId: 'U07HELPERBOT',
+      installedAt: new Date(NOW_MS),
+    });
+    s.vault.set(configTokenRef(ADMIN.id), adas);
+    s.vault.set(configTokenRef(GRACE), graces);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), fakeBotToken('ONELOCKBOTSECRET'));
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-02');
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-02');
+    // A channel of the agent's on the shared app: it goes as soon as the agent's cleanup starts.
+    const channels = createChannelStore(probe);
+    await channels.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: ADMIN.id,
+      channelName: 'support',
+    });
+
+    const disconnecting = call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
+    await vi.waitFor(() => expect(calls.map((c) => c.method)).toContain('apps.manifest.delete'));
+    const deleting = harness.bus.fire('agents:deleted', harness.ctx(), {
+      agentId: TEAM_AGENT.id,
+      ownerId: 'team_support',
+      ownerType: 'team',
+    });
+    // The agent's channel goes at once; its bot waits for the lock. The pause
+    // only gives a removal that didn't wait time to show it: with the one
+    // lock, nothing below depends on how long it is.
+    await vi.waitFor(async () => expect(await channels.listAll(INSTALL_ID)).toEqual([]));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(s.credentialGets).not.toContain(configTokenRef(GRACE));
+    expect(calls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
+
+    releaseSharedDelete();
+    expect(await disconnecting).toMatchObject({ status: 200, body: { appDeleted: true, tokenKept: false } });
+    expect((await deleting).rejected).toBe(false);
+    // Then Grace's own token is rotated, and the access token minted with it deletes the bot's app.
+    expect(calls.map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
+      ['tooling.tokens.rotate', adas],
+      ['apps.manifest.delete', APP_ID],
+      ['tooling.tokens.rotate', graces],
+      ['apps.manifest.delete', BOT_APP_ID],
+    ]);
+    expect(calls[3]!.auth).toBe(`Bearer ${fakeConfigAccessToken('ONELOCKACCESS2')}`);
+    // Both apps' rows, the bot's secrets and both people's tokens are gone.
+    expect(await installCount()).toBe(0);
+    expect([...s.vault.keys()]).toEqual([]);
   });
 
   it('the memory switch through the wiring: a turn while it is off keeps its thread out of memory for good; a new thread is remembered', async () => {
@@ -2221,7 +2420,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(16);
+    expect(s.routes).toHaveLength(20);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

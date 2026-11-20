@@ -49,8 +49,10 @@ const APP_ID = 'A07QF9ZK2MN';
 const TEAM_ID = 'T07ABCDEF12';
 const STAMP = new Date('2026-10-01T00:00:00.000Z');
 
+/** The shared app's install, as the store reads one back (store.ts `toRow`). */
 const ACTIVE: InstallRow = {
   installId: INSTALL_ID,
+  kind: 'shared',
   status: 'active',
   appId: APP_ID,
   clientId: '7512345678901.7598765432109',
@@ -59,6 +61,9 @@ const ACTIVE: InstallRow = {
   teamName: 'Canopy Works',
   botUserId: 'U07BOTUSER1',
   connectedByUserId: 'usr_installer',
+  agentId: null,
+  requestedByUserId: null,
+  botHandle: null,
   createdAt: new Date('2026-11-13T11:00:00.000Z'),
   configTokenAddedAt: new Date('2026-11-13T11:00:00.000Z'),
   installedAt: new Date('2026-11-13T11:05:00.000Z'),
@@ -84,6 +89,24 @@ const OLDER: InstallRow = {
   createdAt: new Date('2026-11-12T11:00:00.000Z'),
   configTokenAddedAt: new Date('2026-11-12T11:00:00.000Z'),
   installedAt: new Date('2026-11-12T11:05:00.000Z'),
+};
+/**
+ * A team agent's own bot (TASK-1167), live in the same workspace: Ada asked
+ * for it for the Support agent. Its manifest has no `/ax`, but its approver
+ * could add one by hand on api.slack.com.
+ */
+const OWN_BOT_ID = 'Tq2Lw8vNc5Xr1Bm7Kd4JsA';
+const OWN_BOT: InstallRow = {
+  ...ACTIVE,
+  installId: OWN_BOT_ID,
+  kind: 'bot',
+  appId: 'A07OWNBOT01',
+  botName: 'Support Bot',
+  botUserId: 'U07OWNBOT01',
+  connectedByUserId: 'usr_ada',
+  agentId: 'agt_support',
+  requestedByUserId: 'usr_ada',
+  botHandle: 'supportbot',
 };
 
 /** Someone in the install's Slack workspace, and their AX account (null: none). */
@@ -456,7 +479,7 @@ function world(
   };
   const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
 
-  const installs = new Map([ACTIVE, PENDING, NO_SECRET, OLDER].map((i) => [i.installId, i]));
+  const installs = new Map([ACTIVE, PENDING, NO_SECRET, OLDER, OWN_BOT].map((i) => [i.installId, i]));
   const state = {
     botToken: BOT_TOKEN as string | null,
     vaultFault: undefined as unknown,
@@ -743,6 +766,25 @@ describe('the form', () => {
     }
     expect(w.slack.calls).toEqual([]);
     expect(w.axCalls()).toEqual([]);
+  });
+
+  it("a signed /ax for a team agent's own bot is ignored: an empty 200, and nothing is asked (TASK-1167)", async () => {
+    const w = world();
+    // Everything else about it is right: its own app, its workspace, `/ax`, a team admin, a real subcommand.
+    for (const text of ['connect Sales', 'disconnect', '']) {
+      const req = slash({ appId: OWN_BOT.appId, text }, { installId: OWN_BOT_ID });
+      expect(await w.send(req), text).toStrictEqual(SILENT);
+      expect(w.lines.at(-1), text).toEqual({
+        level: 'info',
+        msg: 'slack_command_ignored',
+        fields: { installId: OWN_BOT_ID, reason: 'kind' },
+      });
+    }
+    expect(w.slack.calls).toEqual([]);
+    expect(w.axCalls()).toEqual([]);
+    // Only the signature's secret was read: never the bot token.
+    expect(w.secretReads).toEqual(['signing-secret', 'signing-secret', 'signing-secret']);
+    expect(w.memory.calls).toEqual([]);
   });
 });
 

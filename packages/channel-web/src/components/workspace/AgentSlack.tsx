@@ -39,6 +39,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { logRequestFailure } from '@/lib/http';
+import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
 import {
   AGENT_SLACK_COPY,
   agentSlackErrorCopy,
@@ -76,6 +77,21 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   // Only the newest scope's answers land (switching agents quickly).
   const scope = useRef(0);
+  // What the last cancel of this agent's bot request said. Held here, not in the
+  // bot section: a cancel reads the status again, and the loading face replaces
+  // everything below this component until it lands.
+  const [leftOver, setLeftOver] = useState<BotCancelled | null>(null);
+  const [leftOverFor, setLeftOverFor] = useState(agentId);
+  if (leftOverFor !== agentId) {
+    // Another agent: the note was about the one before (reset while rendering, so it never flashes).
+    setLeftOverFor(agentId);
+    setLeftOver(null);
+  }
+  const botCallbacks = {
+    leftOver,
+    onCancelled: (cancelled: BotCancelled) => setLeftOver(cancelled.appDeleted ? null : cancelled),
+    onRequesting: () => setLeftOver(null),
+  };
 
   const read = useCallback(() => {
     const id = ++scope.current;
@@ -125,10 +141,28 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
     case 'unavailable':
       return <p className="text-[13px] text-muted-foreground">Slack isn&apos;t available here.</p>;
     case 'no-workspace':
+      // A live bot outlives the shared install, and a pending one still has to be
+      // cancellable (only a manager is told of it). Nothing can be asked for here.
       return (
-        <p className="text-[13px] text-muted-foreground">
-          Slack isn&apos;t connected to this workspace yet. An admin can connect it in Admin settings.
-        </p>
+        <div className="flex flex-col gap-5">
+          <p className="text-[13px] text-muted-foreground">
+            Slack isn&apos;t connected to this workspace yet. An admin can connect it in Admin settings.
+          </p>
+          {state.bot.state !== 'none' ? (
+            <AgentSlackBot
+              key={agentId}
+              agentId={agentId}
+              agentName={agentName}
+              bot={state.bot}
+              canManage={state.bot.state === 'pending'}
+              {...botCallbacks}
+              onChanged={read}
+            />
+          ) : (
+            // No form to sit above here: the note stands on its own.
+            leftOver !== null && <AppLeftOverNote leftOver={leftOver} />
+          )}
+        </div>
       );
     case 'personal-agent':
       return (
@@ -145,6 +179,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
           agentId={agentId}
           agentName={agentName}
           ready={state}
+          botCallbacks={botCallbacks}
           onChange={(next) => setLoad({ status: 'ok', read: next })}
           onStale={read}
         />
@@ -156,17 +191,20 @@ function ReadySection({
   agentId,
   agentName,
   ready,
+  botCallbacks,
   onChange,
   onStale,
 }: {
   agentId: string;
   agentName: string;
   ready: Ready;
+  /** The bot section's cancel note and its setters, held by `AgentSlack` so they outlive a re-read. */
+  botCallbacks: Pick<AgentSlackBotProps, 'leftOver' | 'onCancelled' | 'onRequesting'>;
   onChange: (next: Ready) => void;
   /** A refusal that says the picture is out of date: read it again. */
   onStale: () => void;
 }) {
-  const { channels, canManage } = ready;
+  const { channels, canManage, bot } = ready;
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
   const [notice, setNotice] = useState<string | null>(null);
@@ -243,6 +281,13 @@ function ReadySection({
             : `${agentName} isn't connected to any Slack channels yet.`}
         </p>
       ) : (
+        <>
+        {bot.state === 'live' && (
+          <p className="text-[13px] text-muted-foreground">
+            Mentioning the shared bot in these channels no longer reaches {agentName}. Invite{' '}
+            {bot.handle !== null ? `@${bot.handle}` : bot.botName} to each one.
+          </p>
+        )}
         <Card className="overflow-hidden p-0 shadow-none">
           <CardContent className="p-0">
             <ul aria-label="Connected channels" className="m-0 list-none divide-y divide-border p-0">
@@ -262,8 +307,10 @@ function ReadySection({
             </ul>
           </CardContent>
         </Card>
+        </>
       )}
-      {canManage && (
+      {/* While the agent's own bot is live, the shared bot no longer reaches it: connecting a channel to it would do nothing. */}
+      {canManage && bot.state !== 'live' && (
         <ChannelPicker
           agentId={agentId}
           agentName={agentName}
@@ -275,6 +322,14 @@ function ReadySection({
           onClear={() => setNotice(null)}
         />
       )}
+      <AgentSlackBot
+        agentId={agentId}
+        agentName={agentName}
+        bot={bot}
+        canManage={canManage}
+        {...botCallbacks}
+        onChanged={onStale}
+      />
       <DisconnectDialog
         agentId={agentId}
         row={disconnecting}

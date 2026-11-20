@@ -8,8 +8,9 @@
  * reserved; the app name holds at most 35 characters, and the @handle Slack
  * derives from it is lowercased, loses its hyphens (`ax-spike-a` became
  * `axspikea`) and is cut to 21. Slack accepts duplicate names
- * silently, so uniqueness would be ours to enforce; one install per AX
- * instance has nothing to collide with yet.
+ * silently, so uniqueness is ours to enforce, and is (TASK-1167): one name per
+ * bot across the shared bot and every team agent's bot, compared by
+ * `botNameKey`, so a name that would collide on Slack's handle is refused too.
  */
 import { BOT_HANDLE_MAX, BOT_NAME_MAX } from './limits.js';
 
@@ -49,6 +50,25 @@ const HANDLE_DROPPED = /[-._ ]/g;
  */
 function handleKey(name: string): string {
   return name.toLowerCase().replace(HANDLE_DROPPED, '');
+}
+
+/**
+ * How Slack's handle collides: the name lowercased and cut to its ASCII
+ * letters and digits (so `Ada Bot`, `ada-bot` and `ADA_BOT` match), then cut
+ * to the handle's 21 characters. Only for comparing names.
+ */
+export function botNameKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, BOT_HANDLE_MAX);
+}
+
+/**
+ * Whether `name` collides with a name or stored handle in `taken`. A name
+ * with no letter or digit has an empty key, and an empty key never matches.
+ */
+export function isBotNameTaken(name: string, taken: readonly (string | null)[]): boolean {
+  const key = botNameKey(name);
+  if (key === '') return false;
+  return taken.some((t) => t !== null && botNameKey(t) === key);
 }
 
 /**

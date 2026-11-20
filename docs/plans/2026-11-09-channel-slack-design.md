@@ -301,8 +301,11 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 - Admin settings shows whose token it is and when it was last added (an AX admin; configuration tokens
   belong to one person). The token AX holds changes with every rotate whose new token it manages to save (step 5), and with **Replace** (above), which changes when it was added but never whose it is.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
-  tells whoever generated the token to click **Revoke** on Slack's configuration-tokens page. AX
-  can't do that last step itself. That Revoke also ends the refresh
+  tells whoever generated the token to click **Revoke** on Slack's configuration-tokens page,
+  but only when nothing else needs the token. While a team bot or a leftover
+  app still names that person, AX keeps the token and the notice says not to
+  revoke it (TASK-1167). AX
+  can't do the Revoke itself. That Revoke also ends the refresh
   tokens rotates have minted since (**measured, TASK-1163 check 4**): the
   token AX held, rotated from the revoked one, failed at `rotate` with
   `invalid_refresh_token`. Disconnect keeps the person's token while a
@@ -381,8 +384,11 @@ Rules, the same on both sides:
 - **Disconnecting:** an agent that no longer exists is cleared by anyone
   admitted; a live one only by a team admin.
 - **Which install:** `/ax` acts on the install that signed the request.
-- **Admin › Slack › Disconnect** (and a reset) removes every channel
-  connection with the install, so channels are connected again after Slack is.
+- **Admin › Slack › Disconnect** removes the shared install and its channel
+  connections, so channels are connected again after Slack is. It leaves team
+  bots alone. A bootstrap reset (`ax admin reset-bootstrap`) wipes every agent
+  and secret, so it removes every install, team bots included, and logs each
+  app id with its kind (TASK-1167).
 
 ## 4. Dedicated bots (phase 2)
 
@@ -486,6 +492,31 @@ answer for one agent. The owner is told which channels changed, and that
 
 Personal agents stay on the shared app. Fifty personal bots cluttering the
 workspace would buy nothing: a personal agent only talks to one person, in a DM.
+
+**As built (TASK-1167).** The first slice is the self path only. Asking an
+admin to approve is a later card. Here the approver is the requester.
+
+- A team admin of the agent's team asks from agent settings. An approver whose
+  configuration token we already hold pastes nothing. One whose stored token
+  Slack refuses is asked again, and a first-timer pastes one once. The paste is
+  never stored: it's rotated at once and only the successor is kept.
+- The request waits in Slack for the approver's Allow. They can pick it back
+  up (**Continue in Slack**) or **Cancel** it while it's pending. A live bot
+  isn't cancelled that way, because its channels would go with it.
+- Names are unique across the shared bot and every team bot, by a key of 21
+  letters and digits (lowercased, everything else dropped), which is how far
+  Slack's handle goes. `Ada Bot` and `ada-bot` are the same name to us.
+- A channel binding is written on the bot's first mention there, after the
+  channel check (public, live, not Slack Connect). It's bound only to the bot's
+  own agent.
+- Outsiders in a bot's channels run as the requester, while the requester is
+  still a team admin. Otherwise they get a polite line and the bot shows
+  "needs a team admin to claim it".
+- The shared bot steps aside for that agent only once its own bot is live. A
+  pending bot answers nobody, so until then the shared bot still does.
+- Deleting the agent deletes its bot and its app.
+- Disconnecting the shared bot leaves team bots alone and keeps the approver's
+  token while a bot still uses it (`tokenKept`).
 
 ## 5. How a turn runs
 
@@ -780,6 +811,13 @@ TASK-1095 adds none). TASK-1095 adds one more public route,
 `POST /slack/interactions/<installId>`, signed like the events and `/ax`
 routes (the signature, the install and the admission check run before the body
 is read), and decisions' attendance now covers origin `'slack'`.
+TASK-1167 adds four more routes and no hooks: `POST /settings/slack/:agentId/bot`
+(ask for the agent's own bot), `…/bot/install-url` (pick a pending one back up
+in Slack), `…/bot/cancel` (take a pending one back), all from agent settings
+and CSRF-checked, and `GET /slack/bots/oauth/callback`, where Slack sends the
+approver after Allow. It lands on `/?slack-bot=connected`, `cancelled` or
+`failed`, plus `agentId` when it knows one. Slack's deliveries to a bot reach
+the same three signed routes, by the bot's own install id.
 `@ax/channel-slack` uses existing hooks, like channel-web and routines do. It
 registers routes, subscribes to chat events, and adds one block to the system
 prompt through the existing `system-prompt:augment:optional:*` family (`…:slack`,
@@ -1042,4 +1080,8 @@ approving a second app never breaks the first).
   moving already-connected channels to the new handle, rename and avatar change,
   and deleting the bot when its agent or team is deleted or it's disconnected.
   Too big for one PR: decompose with `auto-ship --design`.
+  *Progress:* TASK-1167 built the self path: a team admin requests the bot
+  and approves it with their own token, the shared bot steps aside once it's
+  live, and deleting the agent deletes it. Asking an admin to approve, rename,
+  avatar change, Replace and Disconnect of a live bot are still to do.
 - **9. Walk (walk).**

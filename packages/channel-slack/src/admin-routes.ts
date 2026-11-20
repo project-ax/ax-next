@@ -1,31 +1,39 @@
-import { createHash } from 'node:crypto';
 import { makeAgentContext, type HookBus, type Logger } from '@ax/core';
 import { checkAdmin, type AdminActor } from './admin-auth.js';
-import { checkBotName, defaultBotName } from './bot-name.js';
-import { releaseConfigToken } from './config-tokens.js';
+import { checkBotName, defaultBotName, isBotNameTaken } from './bot-name.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
 import {
   ADMIN_BODY_MAX_BYTES,
   ADMIN_CONNECT_BODY_MAX_BYTES,
   INSTALL_ID_BYTES,
-  OAUTH_STATE_BYTES,
-  OAUTH_STATE_TTL_MS,
   SLACK_ID_RE,
-  SLACK_TOKEN_MAX,
 } from './limits.js';
-import { logCode } from './log-code.js';
-import { buildAppManifest, buildInstallUrl, slackUrls, withoutTrailingSlashes } from './manifest.js';
+import { BOT_SCOPES, buildAppManifest, slackUrls, withoutTrailingSlashes } from './manifest.js';
 import type { Mutex } from './mutex.js';
 import { personName } from './person-name.js';
 import { configTokenRef, type SecretOwner, type SecretStore } from './secrets.js';
 import {
-  SlackApiError,
-  type CreatedApp,
-  type OAuthInstall,
-  type RotatedConfigToken,
-  type SlackApi,
-} from './slack-api.js';
+  ACCESS_TOKEN_PREFIX,
+  OAUTH_CODE_RE,
+  REFRESH_TOKEN_PREFIX,
+  REFRESH_TOKEN_REFUSED,
+  STATE_RE,
+  TOKEN_ERRORS,
+  UNCONFIRMED_CODES,
+  HTTP_5XX,
+  bodyObject,
+  configToken,
+  createAppError,
+  createAppSteps,
+  isHttps,
+  namesInUse,
+  isRecord,
+  refreshTokenError,
+  sha256Hex,
+  type InstallLink,
+} from './slack-apps.js';
+import { SlackApiError, type CreatedApp, type RotatedConfigToken, type SlackApi } from './slack-api.js';
 import { InstallStoreError, type InstallRow, type InstallStore } from './store.js';
 
 /**
@@ -39,7 +47,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
  *   POST /admin/slack/replace-token   { refreshToken } → {}, only once the install is active
- *   POST /admin/slack/disconnect      → { appDeleted }
+ *   POST /admin/slack/disconnect      → { appDeleted, tokenKept }
  *   POST /admin/slack/forget-leftover-app  { appId } → {}, once the admin has deleted that app by hand
  *   GET  /admin/slack/oauth/callback  ?code&state or ?error&state → 302 to `<publicOrigin>/?slack=<outcome>`
  *
@@ -210,30 +218,6 @@ type RenameRefusal = 'slack-config-token' | 'slack-app-gone' | 'slack-name' | 's
 type Reply = { status: number; body: unknown } | { location: string };
 
 const PLUGIN = '@ax/channel-slack';
-const ACCESS_TOKEN_PREFIX = 'xoxe.xoxp-';
-const REFRESH_TOKEN_PREFIX = 'xoxe-';
-/** A pasted configuration token's characters (`xoxe.xoxp-1-…`, `xoxe-1-…`). */
-const CONFIG_TOKEN_CHARS = /^[A-Za-z0-9._-]+$/;
-const STATE_RE = new RegExp(`^[0-9a-f]{${OAUTH_STATE_BYTES * 2}}$`);
-/**
- * Slack's OAuth code (digits, dots and hex today). Any printable ASCII is let
- * through, bounded: it only ever travels form-encoded, to Slack.
- */
-const OAUTH_CODE_RE = new RegExp(`^[\\x21-\\x7e]{1,${SLACK_TOKEN_MAX}}$`);
-/** What Slack's `apps.manifest.*` methods say when a configuration access token is no good. */
-const TOKEN_ERRORS: ReadonlySet<string> = new Set([
-  'invalid_auth',
-  'not_authed',
-  'token_expired',
-  'token_revoked',
-  'account_inactive',
-]);
-/**
- * Slack refusing a configuration refresh token itself at rotate, which no
- * retry fixes: TOKEN_ERRORS, or `invalid_refresh_token` (revoked on Slack's
- * page, or retired by Slack after a rotate whose new token wasn't kept).
- */
-const REFRESH_TOKEN_REFUSED: ReadonlySet<string> = new Set([...TOKEN_ERRORS, 'invalid_refresh_token']);
 /**
  * Slack refusing a rename over the STORED configuration token itself, which
  * no retry fixes. Either it is dead (REFRESH_TOKEN_REFUSED), or it works but
@@ -260,14 +244,6 @@ const NOT_APP_MANAGER: ReadonlySet<string> = new Set([
   'app_not_owned_by_manager_app',
   'app_not_found',
 ]);
-/**
- * `apps.manifest.create` failures where Slack may have made the app anyway:
- * we never got its answer (`timeout`, `network`, a 5xx from its edge), or
- * couldn't read the one we got (`bad-response`, `too-large`). slack-api.ts
- * names these codes.
- */
-const UNCONFIRMED_CODES: ReadonlySet<string> = new Set(['timeout', 'network', 'bad-response', 'too-large']);
-const HTTP_5XX = /^http-5\d\d$/;
 /**
  * A failure in the leftover pass that is about Slack itself, not one app or
  * one token: no answer in time, one we couldn't read, a 5xx from its edge, or
@@ -297,69 +273,8 @@ const QUIET_REFUSALS: ReadonlySet<string> = new Set([
   'forbidden',
 ]);
 
-const utf8 = new TextDecoder('utf-8', { fatal: true });
 const json = (status: number, body: unknown): Reply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function sha256Hex(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
-}
-
-function isHttps(origin: string): boolean {
-  try {
-    return new URL(origin).protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/** The body as a JSON object, or null when it is anything else. */
-function bodyObject(body: Buffer): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(utf8.decode(body));
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-/** A pasted configuration token of the kind `prefix` names, or null. */
-function configToken(value: unknown, prefix: string): string | null {
-  return typeof value === 'string' &&
-    value.length > prefix.length &&
-    value.length <= SLACK_TOKEN_MAX &&
-    value.startsWith(prefix) &&
-    CONFIG_TOKEN_CHARS.test(value)
-    ? value
-    : null;
-}
-
-/**
- * What an `apps.manifest.create` failure tells the admin. `slack-unconfirmed`
- * means an app may exist on Slack's side that we never heard about (no app id,
- * so nothing here can delete it): the admin is told to check Slack's app list
- * before retrying, or a retry leaves a second app behind.
- */
-function createAppError(err: unknown): 'slack-token' | 'slack-name' | 'slack-unconfirmed' | 'slack-error' {
-  if (!(err instanceof SlackApiError)) return 'slack-error';
-  if (TOKEN_ERRORS.has(err.code)) return 'slack-token';
-  if (err.code === 'invalid_manifest') return 'slack-name';
-  return UNCONFIRMED_CODES.has(err.code) || HTTP_5XX.test(err.code) ? 'slack-unconfirmed' : 'slack-error';
-}
-
-/**
- * What a failed try of the pasted refresh token at Connect tells the admin.
- * `slack-refresh-token`: Slack refused the token itself, so only a new pair
- * helps. Anything else is `slack-error`: Slack may or may not have spent the
- * token, and a retry soon after works while Slack still honours it.
- */
-function refreshTokenError(err: unknown): 'slack-refresh-token' | 'slack-error' {
-  return err instanceof SlackApiError && REFRESH_TOKEN_REFUSED.has(err.code) ? 'slack-refresh-token' : 'slack-error';
-}
 
 /**
  * What a rename's failed Slack step tells the admin. Only the update carries
@@ -399,6 +314,22 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   });
   const appOrigin = withoutTrailingSlashes(d.publicOrigin);
   const canConnect = isHttps(d.publicOrigin);
+  // Every Slack-app step Admin › Slack shares with the team agents' bots (slack-apps.ts).
+  const steps = createAppSteps({
+    store: d.store,
+    secrets: d.secrets,
+    api: d.api,
+    logger: d.logger,
+    now: d.now,
+    randomBytes: d.randomBytes,
+    logPrefix: 'slack_admin',
+  });
+  const { failed, release, saveRotatedToken, deleteSlackApp, undoConnect, setIcon } = steps;
+  /** Admin › Slack's install link: the shared bot's callback and scopes. */
+  const linkFor = (installId: string): InstallLink => ({
+    redirectUrl: slackUrls(d.publicOrigin, installId).redirectUrl,
+    scopes: BOT_SCOPES,
+  });
 
   // ── Logs: code-only, and a log line never changes an answer ──────────────
 
@@ -408,19 +339,6 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     } catch {
       // Nothing left to report it with.
     }
-  };
-  /** A failed step. Slack refusing is a warning; our own store or vault failing is an error. */
-  const failed = (
-    stage: string,
-    err: unknown,
-    installId?: string,
-    level: 'warn' | 'error' = err instanceof SlackApiError ? 'warn' : 'error',
-  ): void => {
-    log(level, 'slack_admin_failed', {
-      ...(installId !== undefined ? { installId } : {}),
-      stage,
-      code: logCode(err),
-    });
   };
   /**
    * A callback that didn't finish an install, and why, with the install when
@@ -453,118 +371,6 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       failed('branding', err, undefined, 'warn');
       return defaultBotName(null);
     }
-  }
-
-  /**
-   * A fresh OAuth state for a pending install, bound to `adminId`, and the
-   * Slack link that carries it. Any earlier state for the install stops
-   * matching. Throws InstallStoreError when the install isn't pending.
-   */
-  async function mintInstallUrl(installId: string, clientId: string, adminId: string): Promise<string> {
-    const state = d.randomBytes(OAUTH_STATE_BYTES).toString('hex');
-    await d.store.setOAuthState(installId, {
-      stateHash: sha256Hex(state),
-      userId: adminId,
-      expiresAt: new Date(d.now() + OAUTH_STATE_TTL_MS),
-    });
-    return buildInstallUrl({
-      clientId,
-      redirectUrl: slackUrls(d.publicOrigin, installId).redirectUrl,
-      state,
-    });
-  }
-
-  /**
-   * The bot's picture, best-effort: true only when Slack took it. None sent
-   * (`null`: the browser had none to draw): Slack isn't asked and nothing is
-   * logged. One icon.ts refused: never sent, one warning naming why. Slack
-   * refusing it, or not answering: one warning with its code. Never throws,
-   * so it never fails a Connect.
-   */
-  async function setIcon(
-    accessToken: string,
-    appId: string,
-    installId: string,
-    icon: ParsedIcon | null,
-  ): Promise<boolean> {
-    if (icon === null) return false;
-    if (!icon.ok) {
-      log('warn', 'slack_admin_failed', { installId, stage: 'icon', code: icon.code });
-      return false;
-    }
-    try {
-      await d.api.setAppIcon(accessToken, appId, icon.png);
-      return true;
-    } catch (err) {
-      failed('icon', err, installId);
-      return false;
-    }
-  }
-
-  /**
-   * A person's configuration token goes once no install and no leftover app
-   * names them (config-tokens.ts, TASK-1175). Every caller holds the admin
-   * lock. A check that fails keeps the token, and is logged here, code-only.
-   * Never throws: the secret store logs a delete that fails.
-   */
-  function release(app: SecretOwner): Promise<void> {
-    return releaseConfigToken({ store: d.store, secrets: d.secrets }, app, {
-      onFault: (err) => failed('release-config-token', err, app.installId),
-    });
-  }
-
-  /**
-   * Connect failed after Slack made the app: take all of it back, so nothing
-   * is left half-made. Each step is best-effort and logged. Deleting the app
-   * needs a configuration access token, and the pasted one is still in hand.
-   * If Slack won't delete it, the app goes onto the leftover list naming the
-   * connecting admin, so the tab names it and the next Connect or Replace
-   * deletes it. The row's delete always runs and moves the app with it, as
-   * Disconnect does: an insert can commit and still answer with an error, so
-   * "insertPending threw" is no proof there is no row. Only when the insert
-   * never returned (`rowStored` false) is the app also remembered directly,
-   * as `undoCreate` does; an id the delete just moved keeps its first entry
-   * (ON CONFLICT DO NOTHING). Once the row surely exists, a delete that fails
-   * remembers nothing: the row still names the app, so it is never in both
-   * tables. Last, the connecting admin's token goes too, unless an install or
-   * a leftover app (that one included) still names them.
-   */
-  async function undoConnect(
-    accessToken: string,
-    appId: string,
-    owner: SecretOwner,
-    botName: string,
-    rowStored: boolean,
-  ): Promise<void> {
-    let appLeft = false;
-    try {
-      await d.api.deleteApp(accessToken, appId);
-    } catch (err) {
-      // Already gone on Slack's side is what the undo wanted.
-      if (!(err instanceof SlackApiError && err.code === 'app_not_found')) {
-        appLeft = true;
-        failed('undo-delete-app', err, owner.installId);
-      }
-    }
-    try {
-      await d.store.remove(owner.installId, { appLeft });
-    } catch (err) {
-      failed('undo-remove', err, owner.installId);
-    }
-    if (appLeft && !rowStored) {
-      try {
-        await d.store.rememberLeftoverApp({
-          installId: owner.installId,
-          appId,
-          botName,
-          connectedByUserId: owner.connectedByUserId,
-        });
-      } catch (err) {
-        failed('remember-leftover-app', err, owner.installId);
-      }
-    }
-    await d.secrets.removeAll(owner);
-    await release(owner);
   }
 
   /**
@@ -768,7 +574,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       });
       rowStored = true;
       const iconSet = await setIcon(accessToken, app.appId, installId, icon);
-      const installUrl = await mintInstallUrl(installId, app.clientId, actor.id);
+      const installUrl = await steps.mintInstallUrl(installId, app.clientId, actor.id, linkFor(installId));
       return json(200, { installUrl, iconSet });
     } catch (err) {
       failed('connect', err, installId);
@@ -790,107 +596,15 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       refused('not-pending', installId);
       return backToApp('failed');
     }
-    const clientSecret = await d.secrets.get(install, 'client-secret');
-    if (clientSecret === null) {
-      refused('no-client-secret', installId);
+    const exchanged = await steps.exchangeCode(install, code, slackUrls(d.publicOrigin, installId).redirectUrl);
+    if (!exchanged.ok) {
+      // `oauth-access` was logged by the step; the other refusals are ours to name.
+      if (exchanged.reason !== 'oauth-access') refused(exchanged.reason, installId);
       return backToApp('failed');
     }
-
-    let granted: OAuthInstall;
-    try {
-      granted = await d.api.oauthAccess({
-        clientId: install.clientId,
-        clientSecret,
-        code,
-        // Exactly the one in the manifest and the install link, or Slack refuses.
-        redirectUri: slackUrls(d.publicOrigin, installId).redirectUrl,
-      });
-    } catch (err) {
-      failed('oauth-access', err, installId);
-      return backToApp('failed');
-    }
-    // The code came back to OUR callback with OUR state, so it must be our
-    // app. Anything else, or an org-wide install, and the token isn't one we
-    // should hold.
-    if (granted.appId !== install.appId) {
-      refused('app-mismatch', installId);
-      return backToApp('failed');
-    }
-    if (granted.enterpriseInstall) {
-      refused('enterprise-install', installId);
-      return backToApp('failed');
-    }
-
-    // The token first: an active install must always have one.
-    let stage = 'bot-token';
-    try {
-      await d.secrets.put(install, 'bot-token', granted.botToken);
-      stage = 'activate';
-      await d.store.activate(installId, {
-        teamId: granted.teamId,
-        teamName: granted.teamName,
-        botUserId: granted.botUserId,
-        installedAt: new Date(d.now()),
-      });
-    } catch (err) {
-      failed(stage, err, installId);
-      await d.secrets.remove(install, 'bot-token');
-      return backToApp('failed');
-    }
+    if (!(await steps.storeGrant(install, exchanged.granted))) return backToApp('failed');
     log('info', 'slack_connected', { installId });
     return backToApp('connected');
-  }
-
-  /**
-   * Keep the refresh token a rotate just minted as `app.connectedByUserId`'s
-   * token, in place of the one it was minted from (TASK-1175: that one slot
-   * serves every app of theirs). Slack retires a rotated refresh token within
-   * minutes to hours (slack-api.ts), so without this the person's
-   * configuration token dies after its first use. True when stored. A
-   * failure is logged here, code-only, and the stored token then works only
-   * until Slack retires it.
-   */
-  async function saveRotatedToken(app: SecretOwner, refreshToken: string): Promise<boolean> {
-    try {
-      await d.secrets.putConfigToken(app, refreshToken);
-      return true;
-    } catch (err) {
-      failed('save-config-token', err, app.installId);
-      return false;
-    }
-  }
-
-  /**
-   * Delete the Slack app with an access token minted from its person's
-   * stored refresh token. The minted token is used once. True when the app
-   * is gone: deleted now, or already deleted on Slack's side
-   * (`app_not_found`, say from api.slack.com/apps), which is what Disconnect
-   * wanted anyway.
-   *
-   * The new refresh token is stored first, for the retry `disconnect()` keeps
-   * the token for when the row won't delete. If that store fails, the app is
-   * still deleted with the token in hand.
-   */
-  async function deleteSlackApp(install: InstallRow): Promise<boolean> {
-    let stage = 'config-token';
-    try {
-      const refreshToken = await d.secrets.getConfigToken(install);
-      if (refreshToken === null) {
-        log('warn', 'slack_admin_failed', { installId: install.installId, stage, code: 'missing' });
-        return false;
-      }
-      stage = 'rotate';
-      const minted = await d.api.rotateConfigToken(refreshToken);
-      // Whether it was stored doesn't change what happens next: it is logged.
-      await saveRotatedToken(install, minted.refreshToken);
-      stage = 'delete-app';
-      await d.api.deleteApp(minted.accessToken, install.appId);
-      return true;
-    } catch (err) {
-      if (stage === 'delete-app' && err instanceof SlackApiError && err.code === 'app_not_found') return true;
-      failed(stage, err, install.installId);
-      return false;
-    }
   }
 
   /**
@@ -1004,6 +718,8 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         failed('connect', err);
         return INTERNAL;
       }
+      // One name per bot, before Slack is asked anything (Slack takes duplicates silently).
+      if (isBotNameTaken(name.name, await namesInUse(d.store))) return json(409, { error: 'bot-name-taken' });
       // The pasted access token is the connecting admin's own.
       await deleteLeftoverApps({ userId: actor.id, accessToken });
       return createInstall(actor, accessToken, refreshToken, name.name, icon);
@@ -1015,7 +731,9 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       const install = await d.store.current();
       if (install === null || install.status !== 'pending') return json(409, { error: 'not-pending' });
       try {
-        return json(200, { installUrl: await mintInstallUrl(install.installId, install.clientId, actor.id) });
+        return json(200, {
+          installUrl: await steps.mintInstallUrl(install.installId, install.clientId, actor.id, linkFor(install.installId)),
+        });
       } catch (err) {
         if (err instanceof InstallStoreError) return json(409, { error: 'not-pending' });
         throw err;
@@ -1039,6 +757,10 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       if (install === null || install.status !== 'active') return json(409, { error: 'not-connected' });
       // The manifest carries the URLs Slack calls back on: https only, as at Connect.
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+      // Not another bot's name, nor a variant of one; its own name stays free to vary.
+      if (isBotNameTaken(name.name, await namesInUse(d.store, { except: install.installId }))) {
+        return json(409, { error: 'bot-name-taken' });
+      }
       const refusal = await updateSlackApp(install, name.name);
       if (refusal === 'token-not-kept') return INTERNAL;
       if (refusal !== null) return json(502, { error: refusal });
@@ -1171,11 +893,13 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     const stateHash = sha256Hex(state);
 
     return d.lock.run(async () => {
-      // Peek first: another admin is refused WITHOUT spending the state.
-      const peeked = await d.store.peekOAuthState(stateHash);
+      // Peek first: another admin is refused WITHOUT spending the state. Only
+      // the shared app's: a team bot's state is for its own callback
+      // (TASK-1167), and reads here as unknown, unspent.
+      const peeked = await d.store.peekOAuthState(stateHash, 'shared');
       if (peeked === null) return refuse('invalid-state');
       if (peeked.userId !== actor.id) return refuse('state-user-mismatch', peeked.installId);
-      const spent = await d.store.consumeOAuthState(stateHash);
+      const spent = await d.store.consumeOAuthState(stateHash, 'shared');
       if (spent === null) return refuse('invalid-state');
 
       const { installId } = spent;
@@ -1214,10 +938,13 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       await d.store.remove(install.installId, { appLeft: !appDeleted });
       await d.secrets.removeAll(install);
       // Last, the person's token (TASK-1175), unless an install or a leftover
-      // app still names them: this one, when Slack didn't delete it, needs it.
-      await release(install);
+      // app still names them: this one, when Slack didn't delete it, needs it,
+      // and so does a team agent's own bot they approved (TASK-1167). The
+      // answer says which, so the admin is only told to revoke it when that
+      // is safe. The log line keeps to `appDeleted`.
+      const tokenKept = (await release(install)) === 'kept';
       log('info', 'slack_disconnected', { installId: install.installId, appDeleted });
-      return json(200, { appDeleted });
+      return json(200, { appDeleted, tokenKept });
     });
   }
 

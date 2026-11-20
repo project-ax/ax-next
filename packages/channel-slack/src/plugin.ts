@@ -15,6 +15,8 @@ import { createAdminRoutes } from './admin-routes.js';
 import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
 import { createClickHandler } from './answers.js';
+import { createBotCallbackRoute } from './bot-callback.js';
+import { createBots } from './bots.js';
 import { subscribeCaptureVeto } from './capture-veto.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import type { ChannelDeps } from './channels.js';
@@ -81,9 +83,16 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
+//   POST /settings/slack/:agentId/bot{,/install-url,/cancel}  — the agent's own
+//        Slack bot (TASK-1167, bots.ts): a team admin of its team asks for it,
+//        picks it back up in Slack, or cancels it; CSRF-checked
+//   GET  /slack/bots/oauth/callback  — where Slack sends a bot's approver after
+//        Allow (bot-callback.ts): signed in, its OAuth state bound to the
+//        approver (the proof a GET carries), under the one app lock
 //
-// It keeps one install row in its own `channel_slack_v1_installs` table, the
-// install's three secrets in the credentials vault and, there too, one
+// It keeps the shared install's row, and one row per team agent's own bot
+// (TASK-1167), in its own `channel_slack_v1_installs` table, each install's
+// three secrets in the credentials vault and, there too, one
 // configuration token per admin who made a Slack app through AX, shared by
 // every app of theirs (secrets.ts, TASK-1175), and one binding row per
 // connected channel in `channel_slack_v1_channels` (channel-store.ts), removed
@@ -312,9 +321,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const store = createInstallStore(db);
         const channelStore = createChannelStore(db);
         channelsReady(channelStore);
-        // One store for both the events route and the admin routes, so every
-        // change the admin routes make to an install's secrets (a disconnect, a
-        // failed connect's undo) drops the signing secret the events route keeps.
+        // One store for the events route, the admin routes and the team
+        // agents' bots, so every change the others make to an install's
+        // secrets (a disconnect, a failed connect's undo, a bot's removal)
+        // drops the signing secret the events route keeps.
         const secrets = cacheSigningSecrets(createSecretStore(bus, { logger }), {
           ttlMs: SIGNING_SECRET_CACHE_TTL_MS,
           max: SIGNING_SECRET_CACHE_MAX,
@@ -347,13 +357,35 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // post prompts into, and stream replies to, the same registries.
         const turnDeps: TurnDeps = { bus, api, registry, prompts, publicOrigin, logger, clock: systemClock };
 
+        // The one app lock: every Slack app's create, change and delete, and
+        // every use of a person's configuration token, by Admin › Slack and
+        // by the team agents' own bots alike. Bot names are unique across
+        // both, and one person's token serves every app they made, so nothing
+        // narrower would do. It isn't re-entrant (mutex.ts): code that runs
+        // under it never takes it again.
+        const appLock = createMutex();
+        // A team agent's own Slack bot (TASK-1167), on the same cached secret
+        // store as the events route, so removing a bot drops the signing
+        // secret that route keeps for it.
+        const bots = createBots({
+          bus,
+          installs: store,
+          secrets,
+          api,
+          lock: appLock,
+          publicOrigin,
+          logger,
+          now,
+          randomBytes,
+        });
+
         const routes: RouteSpec[] = [
           ...createAdminRoutes({
             bus,
             store,
             secrets,
             api,
-            lock: createMutex(),
+            lock: appLock,
             publicOrigin,
             logger,
             now,
@@ -432,7 +464,11 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             }),
           },
           // These keep http-server's CSRF check: the caller is a signed-in browser.
-          ...createAgentSlackRoutes(channelDeps),
+          // The bot routes reach the same `bots` as agents:deleted, under the one app lock.
+          ...createAgentSlackRoutes(channelDeps, bots),
+          // Where Slack sends a bot's approver back after Allow: signed in, the
+          // OAuth state bound to them, and the bot finished under the same lock.
+          createBotCallbackRoute({ bus, installs: store, lock: appLock, bots, publicOrigin, logger, now }),
         ];
 
         for (const route of routes) {
@@ -447,7 +483,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         undos.push(() => {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
-        undos.push(subscribeAgentsDeleted(bus, channelStore, logger));
+        undos.push(subscribeAgentsDeleted(bus, { channels: channelStore, bots }, logger));
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
         // Undone first: turns not yet started are dropped from both lanes,
         // and each install's count is logged once (those senders never get a
@@ -506,9 +542,12 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
  * `ax admin reset-bootstrap` wipes every credential, so an install row left
  * behind would read as "connected" with no secrets. Remove them all, logging
  * each deleted one's app id (the row was the only record of it, and the app
- * stays live in Slack). The lines come from the delete's own RETURNING, so
- * they name exactly what is gone: never a row a racing connect added between
- * a read and the delete, and nothing at all when the delete fails. A failure
+ * stays live in Slack). Every kind: the reset deletes every agent too,
+ * without announcing it, so a team agent's bot (TASK-1167) left behind would
+ * name an agent that is gone. Each line says its install's kind. The lines
+ * come from the delete's own RETURNING, so they name exactly what is gone:
+ * never a row a racing connect added between a read and the delete, and
+ * nothing at all when the delete fails. A failure
  * is logged code-only and doesn't fail the reset (the bus never lets a
  * subscriber's throw do that either); re-running the reset retries it.
  *
@@ -553,6 +592,7 @@ function subscribeResetCleanup(
           installId: install.installId,
           appId: install.appId,
           teamId: install.teamId,
+          kind: install.kind,
           hint: RESET_LEFT_APP_HINT,
         });
       }

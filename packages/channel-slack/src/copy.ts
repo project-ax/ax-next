@@ -15,7 +15,8 @@ import type { SkillReach } from './turn-registry.js';
  * from outside included (copy.test.ts).
  *
  * The `slash*` lines answer `/ax` (commands.ts), the `channel*` lines (with
- * `queueFull` and `turnFailed`) can reach a channel mention's sender
+ * `queueFull`, `turnFailed`, and TASK-1167's `botUnavailable` and
+ * `answersAsOwnBot`) can reach a channel mention's sender
  * privately before its turn starts (router.ts), and the `prompt*` and
  * `decision*` lines surround an approval prompt (blocks.ts). All three go
  * out as mrkdwn, not Markdown (but for the prompt's two button labels, which
@@ -31,13 +32,16 @@ import type { SkillReach } from './turn-registry.js';
  */
 
 /**
- * A name from outside (an agent's, a channel's) or the configured origin, as
- * mrkdwn text: neutralized like any other outgoing text, then escaped, so it
- * can't open a link, a mention or a broadcast. In that order: escaped first,
- * mrkdwn's own `&lt;` would reach the neutralizer as the start of an entity,
- * and its mark would make Slack show `&lt;` where the name has a `<`.
+ * A name from outside (an agent's, a channel's, a bot's @handle) or the
+ * configured origin, as mrkdwn text: neutralized like any other outgoing
+ * text, then escaped, so it can't open a link, a mention or a broadcast. In
+ * that order: escaped first, mrkdwn's own `&lt;` would reach the neutralizer
+ * as the start of an entity, and its mark would make Slack show `&lt;` where
+ * the name has a `<`. `before` is what the line puts right before the name:
+ * after a line's own `@`, a handle `here` would finish a broadcast, so it is
+ * marked as one (format.ts `neutralizeSlackControls`).
  */
-const shown = (text: string): string => mrkdwnEscape(neutralizeSlackControls(text));
+const shown = (text: string, before = ''): string => mrkdwnEscape(neutralizeSlackControls(text, before));
 
 /**
  * Why a channel can't have an agent: channels.ts's refusals that are about
@@ -213,6 +217,25 @@ export const COPY = {
   */
   channelUnavailable: "I can't answer here right now. A team admin needs to connect me to this channel again.",
   channelBusy: "I'm busy with other questions in this channel. Try again in a minute.",
+  /*
+    A team agent's own bot (TASK-1167) whose requester can't vouch for its
+    channels' outsiders anymore: they are no longer a team admin of the
+    agent's team, or are gone. An outsider's turn would run as them, so none
+    runs until a team admin claims the bot in the web app; members are still
+    answered. Only an outsider ever reads it.
+  */
+  botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
+  /*
+    The shared bot stepping aside for an agent that has its own bot now
+    (TASK-1167), so two bots never answer for one agent. It names that bot by
+    its own name and, once its Allow read one, its @handle, both through
+    `shown` (the handle after the line's own `@`), and never the agent: the
+    sender may not be able to see it.
+  */
+  answersAsOwnBot: (botName: string, handle: string | null) =>
+    handle === null
+      ? `${shown(botName)} has its own Slack bot now. Invite it to this channel to keep talking to it here.`
+      : `${shown(botName)} answers as @${shown(handle, '@')} now. Invite it with /invite @${shown(handle, '@')}.`,
 
   // ── /ax replies (mrkdwn, shown only to whoever typed the command) ─────────
   slashUsage:

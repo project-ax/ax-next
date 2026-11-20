@@ -7,15 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGENT_SLACK_COPY,
   AgentSlackError,
+  agentSlackBotErrorCopy,
+  agentSlackBotStale,
   agentSlackErrorCopy,
   agentSlackStateChanged,
   agentSlackWriteStale,
+  cancelSlackBot,
   connectSlackChannel,
+  continueSlackBot,
+  requestSlackBot,
   disconnectSlackChannel,
   fetchAgentSlack,
   fetchAvailableChannels,
   setSlackChannelRemember,
 } from '../agent-slack';
+import { fakeConfigRefreshToken } from '../../test-utils/fake-slack-tokens';
 
 interface Call {
   url: string;
@@ -31,6 +37,10 @@ let answer: (call: Call) => Response;
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
+
+const NO_BOT = { state: 'none', configTokenStored: true };
+const PENDING_BOT = { state: 'pending', botName: 'Quill', approver: 'Ada', canContinue: true };
+const LIVE_BOT = { state: 'live', botName: 'Quill', handle: 'quill', approver: 'Ada', needsClaim: false };
 
 const ROW = { channelId: 'C1', name: 'support', remember: false, connectedBy: 'Ada', needsReconnect: false };
 
@@ -60,18 +70,19 @@ afterEach(() => {
 
 describe('fetchAgentSlack', () => {
   it('GETs /settings/slack/:agentId with the session cookie and reads each state', async () => {
-    answer = () => json(200, { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [ROW], extra: 1 });
+    answer = () => json(200, { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [ROW], bot: NO_BOT, extra: 1 });
     await expect(fetchAgentSlack('a/1')).resolves.toEqual({
       state: 'ready',
       botName: 'canopy',
       workspaceName: 'Acme',
       canManage: true,
       channels: [ROW],
+      bot: NO_BOT,
     });
     expect(calls[0]).toMatchObject({ url: '/settings/slack/a%2F1', method: 'GET', credentials: 'include' });
 
-    answer = () => json(200, { state: 'no-workspace' });
-    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace' });
+    answer = () => json(200, { state: 'no-workspace', bot: NO_BOT });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', bot: NO_BOT });
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: false });
     await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: false });
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: true });
@@ -95,10 +106,41 @@ describe('fetchAgentSlack', () => {
   it('any other failure, or an answer of the wrong shape, throws', async () => {
     answer = () => json(500, { error: 'internal' });
     await expect(fetchAgentSlack('a1')).rejects.toThrow();
-    answer = () => json(200, { state: 'ready', botName: 'x', workspaceName: 'y', canManage: 'yes', channels: [] });
+    answer = () => json(200, { state: 'ready', botName: 'x', workspaceName: 'y', canManage: 'yes', channels: [], bot: NO_BOT });
     await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
-    answer = () => json(200, { state: 'ready', botName: 'x', workspaceName: 'y', canManage: true, channels: [{ channelId: 'C1' }] });
+    answer = () => json(200, { state: 'ready', botName: 'x', workspaceName: 'y', canManage: true, channels: [{ channelId: 'C1' }], bot: NO_BOT });
     await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+  });
+
+  it("reads the agent's own bot on both states: none, pending and live (a null handle stays null)", async () => {
+    const ready = { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [] };
+    for (const bot of [NO_BOT, PENDING_BOT, LIVE_BOT, { ...LIVE_BOT, handle: null, needsClaim: true }]) {
+      answer = () => json(200, { ...ready, bot });
+      await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ state: 'ready', bot });
+      answer = () => json(200, { state: 'no-workspace', bot });
+      await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', bot });
+    }
+  });
+
+  it('a missing or malformed bot is a bad response, never a half-drawn section', async () => {
+    const ready = { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [] };
+    const bad: unknown[] = [
+      undefined,
+      null,
+      'live',
+      { state: 'weird' },
+      { state: 'none' },
+      { state: 'none', configTokenStored: 'yes' },
+      { state: 'pending', botName: 'Quill', approver: 'Ada' },
+      { state: 'live', botName: 'Quill', handle: 7, approver: 'Ada', needsClaim: false },
+      { state: 'live', botName: 'Quill', handle: null, approver: 'Ada' },
+    ];
+    for (const bot of bad) {
+      answer = () => json(200, { ...ready, bot });
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+      answer = () => json(200, { state: 'no-workspace', bot });
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+    }
   });
 });
 
@@ -155,6 +197,126 @@ describe('writes', () => {
     await expect(connectSlackChannel('a1', 'C1')).rejects.toMatchObject({ code: 'unknown', reason: null });
     answer = () => json(200, { channel: { channelId: 'C1' }, reconnected: false });
     await expect(connectSlackChannel('a1', 'C1')).rejects.toMatchObject({ code: 'bad-response' });
+  });
+});
+
+describe("the agent's own bot", () => {
+  it('request POSTs {botName} with the CSRF header, and only the token and picture that are given', async () => {
+    answer = () => json(200, { installUrl: 'https://slack.com/oauth/v2/authorize?x=1', iconSet: true });
+    await expect(requestSlackBot('a/1', { botName: 'Quill' })).resolves.toEqual({
+      installUrl: 'https://slack.com/oauth/v2/authorize?x=1',
+      iconSet: true,
+    });
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%2F1/bot',
+      method: 'POST',
+      credentials: 'include',
+      body: { botName: 'Quill' },
+    });
+    expect(Object.keys(calls[0]?.body as object)).toEqual(['botName']);
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+
+    await requestSlackBot('a1', { botName: 'Quill', refreshToken: fakeConfigRefreshToken(), iconPng: 'AAAA' });
+    expect(calls[1]?.body).toEqual({ botName: 'Quill', refreshToken: fakeConfigRefreshToken(), iconPng: 'AAAA' });
+  });
+
+  it('request, continue and cancel read their answers field by field', async () => {
+    answer = () => json(200, { installUrl: '', iconSet: true });
+    await expect(requestSlackBot('a1', { botName: 'Q' })).rejects.toMatchObject({ code: 'bad-response' });
+    answer = () => json(200, { installUrl: 'https://slack.com/x' });
+    await expect(requestSlackBot('a1', { botName: 'Q' })).rejects.toMatchObject({ code: 'bad-response' });
+
+    answer = () => json(200, { installUrl: 'https://slack.com/oauth/v2/authorize?x=2' });
+    await expect(continueSlackBot('a1')).resolves.toEqual({ installUrl: 'https://slack.com/oauth/v2/authorize?x=2' });
+    expect(calls.at(-1)).toMatchObject({ url: '/settings/slack/a1/bot/install-url', method: 'POST' });
+    expect(calls.at(-1)?.headers['x-requested-with']).toBe('ax-admin');
+    answer = () => json(200, {});
+    await expect(continueSlackBot('a1')).rejects.toMatchObject({ code: 'bad-response' });
+
+    answer = () => json(200, { appDeleted: false });
+    await expect(cancelSlackBot('a1')).resolves.toEqual({ appDeleted: false });
+    expect(calls.at(-1)).toMatchObject({ url: '/settings/slack/a1/bot/cancel', method: 'POST' });
+    expect(calls.at(-1)?.headers['x-requested-with']).toBe('ax-admin');
+    answer = () => json(200, { appDeleted: 'yes' });
+    await expect(cancelSlackBot('a1')).rejects.toMatchObject({ code: 'bad-response' });
+  });
+
+  it('a refusal on the bot routes keeps its status, code and reason', async () => {
+    answer = () => json(400, { error: 'invalid-bot-name', reason: 'too-long' });
+    await expect(requestSlackBot('a1', { botName: 'Q' })).rejects.toMatchObject({
+      status: 400,
+      code: 'invalid-bot-name',
+      reason: 'too-long',
+    });
+  });
+
+  it('each refusal lands where the pinned copy says, and only a token refusal asks for the token', () => {
+    const e = (code: string, reason: string | null = null) => new AgentSlackError(400, code, reason);
+    expect(agentSlackBotErrorCopy(e('bot-name-taken'))).toEqual({
+      field: 'botName',
+      message: 'Another Slack bot here already uses that name. Pick another.',
+      revealToken: false,
+    });
+    expect(agentSlackBotErrorCopy(e('invalid-bot-name', 'empty'))).toEqual({
+      field: 'botName',
+      message: 'Give the bot a name.',
+      revealToken: false,
+    });
+    expect(agentSlackBotErrorCopy(e('invalid-bot-name', 'weird')).message).toBe("Slack can't use that name. Try another.");
+    expect(agentSlackBotErrorCopy(e('slack-name'))).toMatchObject({ field: 'botName', revealToken: false });
+    expect(agentSlackBotErrorCopy(e('invalid-refresh-token'))).toEqual({
+      field: 'refreshToken',
+      message: "That doesn't look like a refresh token. It starts with xoxe-.",
+      revealToken: false,
+    });
+    expect(agentSlackBotErrorCopy(e('slack-refresh-token'))).toMatchObject({ field: 'refreshToken', revealToken: false });
+
+    for (const code of ['slack-config-token', 'config-token-needed', 'slack-token']) {
+      expect(agentSlackBotErrorCopy(e(code))).toMatchObject({ field: 'refreshToken', revealToken: true });
+    }
+    expect(agentSlackBotErrorCopy(e('slack-config-token')).message).toBe(
+      "The configuration token we kept for you stopped working. Generate a new one on Slack's app settings and paste it below.",
+    );
+    expect(agentSlackBotErrorCopy(e('config-token-needed')).message).toBe('Paste a configuration token to continue.');
+    expect(agentSlackBotErrorCopy(e('slack-token')).message).toBe(
+      "Slack didn't accept the configuration token. Generate a new one and paste it below.",
+    );
+
+    expect(agentSlackBotErrorCopy(e('no-workspace'))).toEqual({
+      field: null,
+      message: "Slack isn't connected yet. An admin connects it first.",
+      revealToken: false,
+    });
+    expect(agentSlackBotErrorCopy(e('not-approver')).message).toBe(
+      'Only the person who set this up can continue it in Slack.',
+    );
+    for (const code of ['public-origin-not-https', 'slack-unconfirmed', 'slack-error', 'internal']) {
+      const copy = agentSlackBotErrorCopy(e(code));
+      expect(copy).toMatchObject({ field: null, revealToken: false });
+      expect(copy.message).not.toBe('');
+      expect(copy.message).not.toContain(code);
+    }
+    // Only Slack's own failure blames Slack; ours, or a dropped connection, is the plain line.
+    expect(agentSlackBotErrorCopy(e('slack-error')).message).toBe(
+      'Something went wrong talking to Slack. Try again in a minute.',
+    );
+    expect(agentSlackBotErrorCopy(new AgentSlackError(500, 'internal')).message).toBe(
+      'Something went wrong. Try again in a minute.',
+    );
+    expect(agentSlackBotErrorCopy(new Error('boom')).message).toBe('Something went wrong. Try again in a minute.');
+  });
+
+  it('bot-exists, not-pending, a lost agent or no longer managing it mean the picture is stale; not-approver does not', () => {
+    expect(agentSlackBotStale(new AgentSlackError(409, 'bot-exists'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(409, 'not-pending'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(409, 'personal-agent'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(403, 'forbidden'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(404, 'not-found'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(403, 'not-approver'))).toBe(false);
+    expect(agentSlackBotStale(new AgentSlackError(409, 'bot-name-taken'))).toBe(false);
+    expect(agentSlackBotStale(new AgentSlackError(409, 'no-workspace'))).toBe(false);
+    expect(agentSlackBotStale(new Error('x'))).toBe(false);
   });
 });
 

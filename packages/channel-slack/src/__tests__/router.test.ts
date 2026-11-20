@@ -18,7 +18,7 @@ import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { createEventRouter } from '../router.js';
 import type { SecretName } from '../secrets.js';
-import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
+import { SlackApiError, type SlackApi, type SlackChannel, type StreamChunkOut } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
 import { createKeyedQueue, type KeyedQueue } from '../turn-queue.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
@@ -36,8 +36,10 @@ const TEAM_ID = 'T07ABCDEF12';
 const BOT_USER_ID = 'U07BOTUSER1';
 const BOT_TOKEN = fakeBotToken('ROUTERTESTSECRET');
 
+/** The shared app's install, as the store reads one back (store.ts `toRow`). */
 const INSTALL: InstallRow = {
   installId: INSTALL_ID,
+  kind: 'shared',
   status: 'active',
   appId: 'A07QF9ZK2MN',
   clientId: '7512345678901.7598765432109',
@@ -46,6 +48,9 @@ const INSTALL: InstallRow = {
   teamName: 'Canopy Works',
   botUserId: BOT_USER_ID,
   connectedByUserId: 'usr_admin',
+  agentId: null,
+  requestedByUserId: null,
+  botHandle: null,
   createdAt: new Date('2026-11-13T10:00:00Z'),
   configTokenAddedAt: new Date('2026-11-13T10:00:00Z'),
   installedAt: new Date('2026-11-13T10:05:00Z'),
@@ -125,6 +130,74 @@ const SUPPORT_AGENT: FakeAgent = {
 /** A mention's own ts, at the top level of #support. */
 const MENTION_TS = '1763035300.000300';
 
+/**
+ * The support agent's own Slack bot (TASK-1167), live in the same
+ * workspace: Ada, a team admin of the agent's team, asked for it, so its
+ * channels' outsiders run as her. Not in any test's install store until the
+ * test puts it there (`putInstall`).
+ */
+const OWN_BOT_ID = 'Tq2Lw8vNc5Xr1Bm7Kd4JsA';
+const OWN_BOT_USER_ID = 'U07OWNBOT01';
+const OWN_BOT_TOKEN = fakeBotToken('ROUTEROWNBOTSECRET');
+const OWN_BOT: InstallRow = {
+  ...INSTALL,
+  installId: OWN_BOT_ID,
+  kind: 'bot',
+  appId: 'A07OWNBOT01',
+  clientId: '7512345678901.7598765432110',
+  botName: 'Support Bot',
+  botUserId: OWN_BOT_USER_ID,
+  connectedByUserId: 'usr_ada',
+  agentId: SUPPORT_AGENT.id,
+  requestedByUserId: 'usr_ada',
+  botHandle: 'supportbot',
+  createdAt: new Date('2026-11-19T10:00:00Z'),
+  configTokenAddedAt: new Date('2026-11-19T10:00:00Z'),
+  installedAt: new Date('2026-11-19T10:05:00Z'),
+};
+/** OWN_BOT before its approver's Allow. */
+const PENDING_BOT: InstallRow = {
+  ...OWN_BOT,
+  status: 'pending',
+  teamId: null,
+  teamName: null,
+  botUserId: null,
+  botHandle: null,
+  installedAt: null,
+};
+
+/** #ops, connected to another team's agent through the shared app. Alice is on that team too. */
+const OPS = 'C07OPSROOM1';
+const OPS_TEAM = 'team_ops';
+const OPS_AGENT: FakeAgent = {
+  id: 'agt_ops',
+  displayName: 'Ops',
+  visibility: 'team',
+  ownerType: 'team',
+  ownerId: OPS_TEAM,
+};
+
+/** A public, live channel of this workspace, as conversations.info answers once slack-api.ts narrows it. */
+function slackChannel(id: string, name: string, over: Partial<SlackChannel> = {}): SlackChannel {
+  return {
+    id,
+    name,
+    isChannel: true,
+    isPrivate: false,
+    isArchived: false,
+    isExtShared: false,
+    isPendingExtShared: false,
+    isMember: true,
+    ...over,
+  };
+}
+
+/** What conversations.info says about each channel. Any other id: `channel_not_found`. */
+const CHANNEL_INFO: Record<string, SlackChannel> = {
+  [SUPPORT]: slackChannel(SUPPORT, 'support'),
+  [OPS]: slackChannel(OPS, 'ops'),
+};
+
 function agent(id: string, ownerId: string, createdAt: string, team = false) {
   return {
     id,
@@ -175,7 +248,15 @@ function deferred() {
 
 // ── The fake Slack ──────────────────────────────────────────────────────────
 
-type Method = 'usersInfo' | 'postMessage' | 'postBlocks' | 'postEphemeral' | 'startStream' | 'appendStream' | 'stopStream';
+type Method =
+  | 'usersInfo'
+  | 'conversationsInfo'
+  | 'postMessage'
+  | 'postBlocks'
+  | 'postEphemeral'
+  | 'startStream'
+  | 'appendStream'
+  | 'stopStream';
 interface SlackCall {
   method: Method;
   token: string;
@@ -183,7 +264,15 @@ interface SlackCall {
   ts?: string;
 }
 
-function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
+function fakeSlack(
+  o: {
+    fail?: (method: Method) => Error | undefined;
+    /** conversations.info's answer for a channel; an Error is thrown. Default: CHANNEL_INFO. */
+    info?: (channel: string) => SlackChannel | Error;
+  } = {},
+) {
+  const info =
+    o.info ?? ((channel: string) => CHANNEL_INFO[channel] ?? new SlackApiError('conversations.info', 'channel_not_found'));
   const calls: SlackCall[] = [];
   /**
    * 👀 on and off the owner's message. Kept apart from `calls` (it isn't part
@@ -215,6 +304,12 @@ function fakeSlack(o: { fail?: (method: Method) => Error | undefined } = {}) {
       if (user instanceof Error) throw user;
       if (user === undefined) throw new SlackApiError('users.info', 'user_not_found');
       return user;
+    },
+    async conversationsInfo(token, channel) {
+      record('conversationsInfo', token, { channel });
+      const answer = info(channel);
+      if (answer instanceof Error) throw answer;
+      return { ...answer };
     },
     async postMessage(token, a) {
       record('postMessage', token, { ...a });
@@ -281,6 +376,10 @@ function world(o: {
   beforeThreadWrite?: (store: ChannelStore) => Promise<void>;
   /** agents:resolve fails for this user (an outage, not a refusal). */
   resolveFails?: (userId: string) => boolean;
+  /** conversations.info's answer for a channel (TASK-1167); an Error is thrown. Default: CHANNEL_INFO. */
+  channelInfo?: (channel: string) => SlackChannel | Error;
+  /** The install store fails the n-th read of an agent's own bot (1-based) when this says so. */
+  botReadFails?: (n: number) => boolean;
   /** auth:is-approved-email fails. */
   approvedFails?: boolean;
   /**
@@ -336,10 +435,11 @@ function world(o: {
     return { approved: typeof email === 'string' && email.toLowerCase().endsWith('@canopyworks.com') };
   });
   /*
-    agents:resolve over a model of the team agent #support is connected to,
-    answered the way @ax/agents answers it (fake-agents.ts), on a bus of its
-    own: this world answers agents:list-for-user itself, for DMs. Ada and Ben
-    are team admins of the agent's team, Alice a member; Bob is outside it.
+    agents:resolve and agents:can-set-shared-credential over a model of the
+    team agent #support is connected to, answered the way @ax/agents answers
+    them (fake-agents.ts), on a bus of its own: this world answers
+    agents:list-for-user itself, for DMs. Ada and Ben are team admins of the
+    agent's team, Alice a member; Bob is outside it.
   */
   const agentsBus = new HookBus();
   const agents = fakeAgents(agentsBus);
@@ -354,6 +454,10 @@ function world(o: {
     }
     return agentsBus.call('agents:resolve', ctx, input);
   });
+  // Whether a bot's requester is still a team admin of its agent's team (TASK-1167).
+  bus.registerService('agents:can-set-shared-credential', 'fake-agents', async (ctx, input) =>
+    agentsBus.call('agents:can-set-shared-credential', ctx, input),
+  );
   bus.registerService('agents:list-for-user', 'fake-agents', async (ctx, input) => {
     listed.push({ ctx, input });
     if (o.listFails === true) throw new PluginError({ code: 'store-unavailable', plugin: 'fake-agents', message: 'down' });
@@ -415,7 +519,10 @@ function world(o: {
     });
   }
 
-  const slack = fakeSlack(o.slackFail !== undefined ? { fail: o.slackFail } : {});
+  const slack = fakeSlack({
+    ...(o.slackFail !== undefined ? { fail: o.slackFail } : {}),
+    ...(o.channelInfo !== undefined ? { info: o.channelInfo } : {}),
+  });
   const registry = createTurnRegistry({ logger });
   let minted = 0;
   // The open approval prompts (TASK-1095), as the plugin keeps them.
@@ -487,9 +594,16 @@ function world(o: {
       if (outcome === 'recorded' && stored !== undefined) write.notRemembered = stored.notRemembered;
       return outcome;
     },
+    // A team agent's own bot binds a channel at its first mention there (TASK-1167).
+    upsert: (b: Parameters<ChannelStore['upsert']>[0]) => channels.store.upsert(b),
   };
-  /** The install rows, as the store would answer a re-read. `disconnect()` removes ours. */
+  /**
+   * The install rows, as the store would answer a re-read. `disconnect()`
+   * removes ours; `putInstall` adds or replaces one (a team agent's own bot,
+   * pending or live).
+   */
   const installRows = new Map<string, InstallRow>([[INSTALL_ID, INSTALL]]);
+  let botReads = 0;
   const installs = {
     async get(installId: string): Promise<InstallRow | null> {
       if (o.installReadFails === true) {
@@ -497,12 +611,26 @@ function world(o: {
       }
       return installRows.get(installId) ?? null;
     },
+    /** store.ts `botForAgent`: the agent's bot, any status, never the shared app. */
+    async botForAgent(agentId: string): Promise<InstallRow | null> {
+      botReads += 1;
+      if (o.botReadFails?.(botReads) === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: `db down: ${agentId}` });
+      }
+      const bot = [...installRows.values()].find((r) => r.kind === 'bot' && r.agentId === agentId);
+      return bot === undefined ? null : { ...bot };
+    },
+  };
+  const putInstall = (row: InstallRow): void => {
+    installRows.set(row.installId, row);
   };
   const secretReads: SecretName[] = [];
   const secrets = {
-    async get(_install: unknown, name: SecretName) {
+    async get(install: Pick<InstallRow, 'installId'>, name: SecretName) {
       secretReads.push(name);
-      const token = o.botToken === undefined ? BOT_TOKEN : o.botToken;
+      // Each install has its own bot token.
+      const own = install.installId === OWN_BOT_ID ? OWN_BOT_TOKEN : BOT_TOKEN;
+      const token = o.botToken === undefined ? own : o.botToken;
       if (token instanceof Error) throw token;
       return name === 'bot-token' ? token : null;
     },
@@ -552,6 +680,7 @@ function world(o: {
     idle,
     jobs,
     disconnect,
+    putInstall,
     registry,
     queue,
     externalQueue,
@@ -579,6 +708,28 @@ function mention(over: Partial<SlackInnerEvent> = {}, ext = false): SlackEnvelop
     { type: 'app_mention', user: ALICE, channel: SUPPORT, ts: MENTION_TS, text: `<@${BOT_USER_ID}> what is open?`, ...over },
     ext,
   );
+}
+
+/** An event for the support agent's own bot (TASK-1167): its own app, the same workspace. */
+function ownBotEnvelope(event: Partial<SlackInnerEvent> & { type: string }): SlackEnvelope {
+  return { teamId: TEAM_ID, apiAppId: OWN_BOT.appId, eventId: 'Ev07OWNBOT01', isExtSharedChannel: false, event };
+}
+
+/** An @mention of the support agent's own bot in #support, from Alice, at the top level. */
+function botMention(over: Partial<SlackInnerEvent> = {}): SlackEnvelope {
+  return ownBotEnvelope({
+    type: 'app_mention',
+    user: ALICE,
+    channel: SUPPORT,
+    ts: MENTION_TS,
+    text: `<@${OWN_BOT_USER_ID}> what is open?`,
+    ...over,
+  });
+}
+
+/** A DM to the support agent's own bot, from Alice. */
+function botDm(over: Partial<SlackInnerEvent> = {}): SlackEnvelope {
+  return ownBotEnvelope({ type: 'message', channelType: 'im', user: ALICE, channel: DM_ALICE, ts: TS, text: 'Hello there', ...over });
 }
 
 /** What each sender was told privately (chat.postEphemeral), in order. */
@@ -2333,6 +2484,8 @@ describe('createEventRouter: a mention in a connected channel', () => {
     // The turn's own checks, when its time comes.
     ['install', { installReadFails: true }, ALICE, 'store-unavailable'],
     ['binding', { bindingReadFails: (n: number) => n === 2 }, BOB, 'store-unavailable'],
+    // Whether the agent's own bot went live while the shared turn waited (TASK-1167): no answer, no shared turn.
+    ['own-bot', { botReadFails: (n: number) => n === 2 }, CAROL, 'store-unavailable'],
     // The thread's record for the memory switch, made before the agent runs.
     ['thread', { threadWriteFails: true }, ALICE, 'store-unavailable'],
   ] as const)('a failing %s lookup tells the sender privately, logged by code only, and runs no turn', async (stage, o, user, code) => {
@@ -2542,5 +2695,507 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     expect(w.invokes).toHaveLength(1);
     expect(w.threadWrites).toEqual([]);
     expect(w.channels.threads.size).toBe(0);
+  });
+});
+
+// ── A team agent's own bot (TASK-1167) ──────────────────────────────────────
+
+describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
+  /** A conversation key on the bot's install: the bot's id, never the shared app's. */
+  const botKey = (threadTs: string) => `slack:${OWN_BOT_ID}:${SUPPORT}:${threadTs}`;
+  const infoCalls = (w: ReturnType<typeof world>) => w.slack.calls.filter((c) => c.method === 'conversationsInfo');
+  /** A binding of #support on the bot's install, as a first mention writes it. */
+  const ownBinding = (over: Partial<ChannelBinding> = {}): ChannelBinding => ({
+    installId: OWN_BOT_ID,
+    channelId: SUPPORT,
+    agentId: SUPPORT_AGENT.id,
+    connectedByUserId: 'usr_ada',
+    channelName: 'support',
+    remember: true,
+    createdAt: new Date('2026-11-19T11:00:00Z'),
+    ...over,
+  });
+
+  it("a member's mention of a bot in a public channel binds the channel to the bot's agent and runs an attended turn there", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Two tickets.' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    // Slack is asked about the channel once, with the bot's own token.
+    expect(infoCalls(w).map((c) => [c.token, c.args])).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT }]]);
+    // Bound on the bot's install, to the bot's agent, connected by its requester (whom outsiders run as), remembered.
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual({
+      installId: OWN_BOT_ID,
+      channelId: SUPPORT,
+      agentId: SUPPORT_AGENT.id,
+      connectedByUserId: 'usr_ada',
+      channelName: 'support',
+      remember: true,
+      createdAt: expect.any(Date),
+    });
+    // The shared app's binding of the same channel is its own, untouched.
+    expect(w.channels.row(INSTALL_ID, SUPPORT)?.connectedByUserId).toBe('usr_ada');
+    // Alice, a member of the agent's team, runs attended, as herself, in her conversation for the thread.
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId, i.ctx.source, i.ctx.conversationId])).toEqual([
+      ['usr_alice', SUPPORT_AGENT.id, 'user', `conv:${botKey(MENTION_TS)}`],
+    ]);
+    expect(w.conversations.map((c) => [c.ctx.userId, c.input])).toEqual([
+      ['usr_alice', { userId: 'usr_alice', agentId: SUPPORT_AGENT.id, externalKey: botKey(MENTION_TS), fallback: { origin: 'slack' } }],
+    ]);
+    expect(w.threadWrites.map((t) => [t.installId, t.channelId, t.agentId, t.mode])).toEqual([
+      [OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, 'attended'],
+    ]);
+    // Only her own access was asked: a member never depends on the requester.
+    expect(w.agents.inputs('agents:resolve')).toEqual([{ agentId: SUPPORT_AGENT.id, userId: 'usr_alice' }]);
+    expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([]);
+    // The reply goes out with the bot's token, in a thread under her mention.
+    expect(w.slack.calls.find((c) => c.method === 'startStream')).toMatchObject({
+      token: OWN_BOT_TOKEN,
+      args: { channel: SUPPORT, threadTs: MENTION_TS, recipientUserId: ALICE },
+    });
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe('Two tickets.');
+    expect(w.lanes).toEqual([{ lane: 'conversation', key: `conv:${botKey(MENTION_TS)}`, group: OWN_BOT_ID }]);
+    expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([
+      { level: 'info', msg: 'slack_bot_channel_bound', fields: { installId: OWN_BOT_ID } },
+    ]);
+
+    // A second mention there reads the binding: Slack isn't asked about the channel again.
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301', text: `<@${OWN_BOT_USER_ID}> and now?` }));
+    await w.idle();
+    expect(w.invokes).toHaveLength(2);
+    expect(infoCalls(w)).toHaveLength(1);
+    expect(w.lines.filter((l) => l.msg === 'slack_bot_channel_bound')).toHaveLength(1);
+  });
+
+  it.each([
+    ['a private channel', slackChannel(SUPPORT, 'support', { isChannel: false, isPrivate: true }), {}],
+    ['an archived channel', slackChannel(SUPPORT, 'support', { isArchived: true }), {}],
+    ['a Slack Connect channel', slackChannel(SUPPORT, 'support', { isExtShared: true }), {}],
+    ['a channel about to be shared with another company', slackChannel(SUPPORT, 'support', { isPendingExtShared: true }), {}],
+    ['an answer about another channel', slackChannel('C07GENERAL1', 'general'), { code: 'id-mismatch' }],
+    [
+      "a channel Slack won't describe to the bot (a private one needs a scope it hasn't got)",
+      new SlackApiError('conversations.info', 'channel_not_found'),
+      { code: 'channel_not_found' },
+    ],
+    [
+      'a group DM or a private channel, by its missing scope',
+      new SlackApiError('conversations.info', 'missing_scope'),
+      { code: 'missing_scope' },
+    ],
+  ] as const)('%s: no binding, no turn, no line', async (_name, info, code) => {
+    const w = world({ channelInfo: () => info });
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035301.000301' }));
+    await w.idle();
+
+    // Asked each time: nothing was bound, so nothing was learned.
+    expect(infoCalls(w)).toHaveLength(2);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+    expect(w.channels.calls).toEqual(['get', 'get']);
+    expect(w.findUser).toEqual([]);
+    expect(w.invokes).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+    expect(w.slack.reactions).toEqual([]);
+    const ignored = {
+      level: 'info',
+      msg: 'slack_event_ignored',
+      fields: { installId: OWN_BOT_ID, reason: 'channel-not-allowed', ...code },
+    };
+    expect(w.lines).toEqual([ignored, ignored]);
+  });
+
+  it('a conversations.info that fails tells the admitted sender privately to try again, binds nothing and runs nothing', async () => {
+    const w = world({ channelInfo: () => new SlackApiError('conversations.info', 'ratelimited') });
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botMention({ threadTs: '1763035100.000050' }));
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+    expect(w.invokes).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([
+      { channel: SUPPORT, user: ALICE, text: COPY.turnFailed, threadTs: '1763035100.000050' },
+    ]);
+    expect(w.slack.calls.find((c) => c.method === 'postEphemeral')!.token).toBe(OWN_BOT_TOKEN);
+    expect(w.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_event_failed',
+        fields: { installId: OWN_BOT_ID, stage: 'channel-info', code: 'ratelimited' },
+      },
+    ]);
+  });
+
+  it.each([
+    ['a guest', GUEST, 'guest'],
+    ['someone from another workspace', STRANGER, 'other-workspace'],
+  ])('a refused sender (%s) costs no conversations.info and binds nothing', async (_name, user, reason) => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botMention({ user }));
+    await w.idle();
+
+    expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+    expect(w.channels.calls).toEqual([]);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+    expect(w.findUser).toEqual([]);
+    expect(w.invokes).toEqual([]);
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_sender_refused', fields: { installId: OWN_BOT_ID, reason } }]);
+  });
+
+  it('a bare @bot binds nothing and runs nothing', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}|support-bot>` }));
+    await w.idle();
+
+    expect(methods(w.slack.calls)).toEqual(['usersInfo']);
+    expect(w.channels.calls).toEqual([]);
+    expect(w.invokes).toEqual([]);
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_event_ignored', fields: { installId: OWN_BOT_ID, reason: 'empty' } }]);
+  });
+
+  it('a binding on a bot install naming another agent runs nothing, for anyone', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    w.channels.rows.set(`${OWN_BOT_ID}/${SUPPORT}`, ownBinding({ agentId: OPS_AGENT.id }));
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE }));
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035301.000301' }));
+    await w.idle();
+
+    expect(infoCalls(w)).toEqual([]);
+    expect(w.channels.calls).toEqual(['get', 'get']);
+    expect(w.findUser).toEqual([]);
+    expect(w.agents.calls).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    expect(w.invokes).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+    const ignored = { level: 'info', msg: 'slack_event_ignored', fields: { installId: OWN_BOT_ID, reason: 'binding-agent' } };
+    expect(w.lines).toEqual([ignored, ignored]);
+  });
+
+  it('a DM to a bot does nothing: no Slack call, no vault read, no lookup', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botDm());
+    await w.dispatch(OWN_BOT, botDm({ subtype: 'file_share', ts: '1763035201.000200' }));
+    await w.idle();
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.slack.reactions).toEqual([]);
+    expect(w.secretReads).toEqual([]);
+    expect(w.channels.calls).toEqual([]);
+    expect(w.findUser).toEqual([]);
+    expect(w.listed).toEqual([]);
+    expect(w.invokes).toEqual([]);
+    const ignored = { level: 'info', msg: 'slack_event_ignored', fields: { installId: OWN_BOT_ID, reason: 'bot-dm' } };
+    expect(w.lines).toEqual([ignored, ignored]);
+  });
+
+  it("an outsider's mention runs external as the requester while they are a team admin", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, text: 'can you help?' }));
+    await w.idle();
+
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId, i.ctx.source, i.ctx.conversationId])).toEqual([
+      ['usr_ada', SUPPORT_AGENT.id, 'external', `conv:${botKey(MENTION_TS)}:external`],
+    ]);
+    // Who wrote is content, never identity.
+    expect(contentOf(w.invokes[0]!)).toBe(`[Slack · #support · Bob Jones (${BOB})]: can you help?`);
+    expect(w.conversations.map((c) => [c.ctx.userId, c.input])).toEqual([
+      [
+        'usr_ada',
+        { userId: 'usr_ada', agentId: SUPPORT_AGENT.id, externalKey: `${botKey(MENTION_TS)}:external`, fallback: { origin: 'slack' } },
+      ],
+    ]);
+    expect(w.threadWrites.map((t) => [t.installId, t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([
+      [OWN_BOT_ID, 'external', 'usr_ada'],
+    ]);
+    // His own access first (none), then whether the requester is still a team admin, asked as a
+    // non-admin: at the mention, and again when the turn's time comes.
+    expect(w.agents.inputs('agents:resolve')).toEqual([
+      { agentId: SUPPORT_AGENT.id, userId: 'usr_bob' },
+      { agentId: SUPPORT_AGENT.id, userId: 'usr_ada' },
+      { agentId: SUPPORT_AGENT.id, userId: 'usr_ada' },
+    ]);
+    expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT_AGENT.id, actor: { userId: 'usr_ada', isAdmin: false } },
+      { agentId: SUPPORT_AGENT.id, actor: { userId: 'usr_ada', isAdmin: false } },
+    ]);
+    // One lane for every outsider in the bot's channel.
+    expect(w.lanes).toEqual([{ lane: 'channel', key: `${OWN_BOT_ID}:${SUPPORT}`, group: OWN_BOT_ID }]);
+    expect(w.slack.calls.find((c) => c.method === 'startStream')).toMatchObject({
+      token: OWN_BOT_TOKEN,
+      args: { channel: SUPPORT, threadTs: MENTION_TS, recipientUserId: BOB },
+    });
+  });
+
+  it.each([
+    ['only a member now', 'member'],
+    ['gone from the team', null],
+  ] as const)(
+    "once the requester is %s, an outsider gets the polite line and no turn; a member's mention there still runs attended",
+    async (_name, role) => {
+      const w = world();
+      w.putInstall(OWN_BOT);
+      w.agents.setRole(SUPPORT_TEAM, 'usr_ada', role);
+      const threaded = '1763035100.000050';
+      await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035301.000301', threadTs: threaded }));
+      await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: '1763035302.000302' }));
+      await w.idle();
+
+      expect(w.invokes).toEqual([]);
+      expect(w.conversations).toEqual([]);
+      // Privately, in the mention's thread when it was in one, with the bot's own token.
+      expect(ephemerals(w.slack.calls)).toEqual([
+        { channel: SUPPORT, user: BOB, text: COPY.botUnavailable, threadTs: threaded },
+        { channel: SUPPORT, user: CAROL, text: COPY.botUnavailable },
+      ]);
+      expect(w.slack.calls.filter((c) => c.method === 'postEphemeral').map((c) => c.token)).toEqual([
+        OWN_BOT_TOKEN,
+        OWN_BOT_TOKEN,
+      ]);
+      const unavailable = {
+        level: 'warn',
+        msg: 'slack_channel_unavailable',
+        fields: { installId: OWN_BOT_ID, reason: 'connector-no-access' },
+      };
+      expect(w.lines.filter((l) => l.msg === 'slack_channel_unavailable')).toEqual([unavailable, unavailable]);
+
+      // Alice can still use the agent: her turn runs, as her.
+      await w.dispatch(OWN_BOT, botMention({ user: ALICE, ts: '1763035303.000303' }));
+      await w.idle();
+      expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.agentId])).toEqual([
+        ['usr_alice', 'user', SUPPORT_AGENT.id],
+      ]);
+    },
+  );
+
+  it.each([
+    ['agents:resolve', { resolveFails: (u: string) => u === 'usr_ada' }],
+    ['agents:can-set-shared-credential', {}],
+  ] as const)('a requester check that fails (%s) tells the outsider privately to try again, logged by code only', async (hook, o) => {
+    const w = world(o);
+    w.putInstall(OWN_BOT);
+    if (hook === 'agents:can-set-shared-credential') {
+      w.agents.faults.set(hook, new PluginError({ code: 'store-unavailable', plugin: 'fake-agents', message: 'down for usr_ada' }));
+    }
+    await w.dispatch(OWN_BOT, botMention({ user: BOB }));
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: BOB, text: COPY.turnFailed }]);
+    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_event_failed',
+        fields: { installId: OWN_BOT_ID, stage: 'connector-access', code: 'store-unavailable' },
+      },
+    ]);
+  });
+
+  it.each([
+    ['its handle', 'supportbot'],
+    ['no handle on record', null],
+  ] as const)(
+    "the shared bot in a channel whose agent's bot is live: no turn; an admitted sender is told about the bot (%s); anyone else, silence",
+    async (_name, handle) => {
+      const w = world();
+      w.putInstall({ ...OWN_BOT, botHandle: handle });
+      await w.dispatch(INSTALL, mention({ user: ALICE }));
+      await w.dispatch(INSTALL, mention({ user: BOB, ts: '1763035301.000301', threadTs: MENTION_TS }));
+      await w.dispatch(INSTALL, mention({ user: GUEST, ts: '1763035302.000302' }));
+      await w.idle();
+
+      expect(w.invokes).toEqual([]);
+      expect(w.conversations).toEqual([]);
+      expect(w.threadWrites).toEqual([]);
+      expect(w.slack.reactions).toEqual([]);
+      // Nobody is mapped or asked about the agent: the shared bot isn't answering for it here.
+      expect(w.findUser).toEqual([]);
+      expect(w.agents.calls).toEqual([]);
+      // The line names the bot, said by the shared bot that was mentioned, to each admitted sender alone.
+      const line = COPY.answersAsOwnBot('Support Bot', handle);
+      expect(ephemerals(w.slack.calls)).toEqual([
+        { channel: SUPPORT, user: ALICE, text: line },
+        { channel: SUPPORT, user: BOB, text: line, threadTs: MENTION_TS },
+      ]);
+      expect(w.slack.calls.filter((c) => c.method === 'postEphemeral').map((c) => c.token)).toEqual([BOT_TOKEN, BOT_TOKEN]);
+      const ownBot = { level: 'info', msg: 'slack_event_ignored', fields: { installId: INSTALL_ID, reason: 'own-bot' } };
+      expect(w.lines).toEqual([
+        ownBot,
+        ownBot,
+        ownBot,
+        { level: 'info', msg: 'slack_sender_refused', fields: { installId: INSTALL_ID, reason: 'guest' } },
+      ]);
+    },
+  );
+
+  it("the shared bot can't tell whether the agent's own bot is live: no turn; a member is told to try again, a guest gets silence", async () => {
+    const w = world({ botReadFails: () => true });
+    await w.dispatch(INSTALL, mention({ user: ALICE }));
+    await w.dispatch(INSTALL, mention({ user: GUEST }));
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(w.findUser).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+    const failed = {
+      level: 'error',
+      msg: 'slack_event_failed',
+      fields: { installId: INSTALL_ID, stage: 'own-bot', code: 'store-unavailable' },
+    };
+    expect(w.lines).toEqual([
+      failed,
+      failed,
+      { level: 'info', msg: 'slack_sender_refused', fields: { installId: INSTALL_ID, reason: 'guest' } },
+    ]);
+  });
+
+  it("the shared bot answers as today while the agent's bot is pending, and in another agent's channel while it is live", async () => {
+    const w = world();
+    w.putInstall(PENDING_BOT);
+    await w.dispatch(INSTALL, mention());
+    await w.idle();
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId, i.ctx.conversationId])).toEqual([
+      ['usr_alice', SUPPORT_AGENT.id, `conv:slack:${INSTALL_ID}:${SUPPORT}:${MENTION_TS}`],
+    ]);
+
+    // Live now; #ops is connected to another agent through the shared app, and is still answered there.
+    w.putInstall(OWN_BOT);
+    w.agents.addAgent(OPS_AGENT);
+    w.agents.setRole(OPS_TEAM, 'usr_alice', 'member');
+    w.channels.rows.set(`${INSTALL_ID}/${OPS}`, ownBinding({ installId: INSTALL_ID, channelId: OPS, agentId: OPS_AGENT.id, channelName: 'ops' }));
+    await w.dispatch(INSTALL, mention({ channel: OPS, ts: '1763035301.000301' }));
+    await w.idle();
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId])).toEqual([
+      ['usr_alice', SUPPORT_AGENT.id],
+      ['usr_alice', OPS_AGENT.id],
+    ]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+    expect(infoCalls(w)).toEqual([]);
+    expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
+  });
+
+  it("a shared turn still waiting when the agent's own bot goes live is dropped, silently", async () => {
+    const w = world();
+    w.putInstall(PENDING_BOT);
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    await w.dispatch(INSTALL, mention({ text: 'first' }));
+    await w.dispatch(INSTALL, mention({ ts: '1763035301.000301', threadTs: MENTION_TS, text: 'second' }));
+    await w.dispatch(INSTALL, mention({ user: BOB, ts: '1763035302.000302', text: 'outsider' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(2);
+
+    // The approver clicks Allow while the member's first turn runs and her second waits.
+    w.putInstall(OWN_BOT);
+    first.release();
+    await w.idle();
+
+    // The turns that had started finish; the waiting one never starts, records nothing and says nothing.
+    expect(w.invokes.map((i) => contentOf(i).replace(/^\[[^\]]*\]: /, ''))).toEqual(['first', 'outsider']);
+    expect(w.threadWrites.map((t) => t.conversationId)).toEqual([
+      `conv:slack:${INSTALL_ID}:${SUPPORT}:${MENTION_TS}`,
+      `conv:slack:${INSTALL_ID}:${SUPPORT}:1763035302.000302:external`,
+    ]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'own-bot', count: 1 } },
+    ]);
+  });
+
+  it("an outsider's turn still waiting when the requester stops being a team admin is dropped with the polite line; a member's waiting turn still runs", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    const bobs = deferred();
+    const alices = deferred();
+    w.scripts.push({ gate: bobs.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    w.scripts.push({ gate: alices.promise, chunks: [{ kind: 'text', text: 'two' }], end: 'turn-end' });
+    const carolTs = '1763035302.000302';
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, text: 'outsider first' }));
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE, ts: '1763035301.000301', text: 'member first' }));
+    // Planned while Ada is still a team admin: Carol waits behind Bob in the channel's one lane,
+    // Alice's second behind her first in her conversation.
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: carolTs, threadTs: MENTION_TS, text: 'outsider second' }));
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE, ts: '1763035303.000303', threadTs: '1763035301.000301', text: 'member second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(2);
+
+    // Ada is demoted to member while both wait.
+    w.agents.setRole(SUPPORT_TEAM, 'usr_ada', 'member');
+    bobs.release();
+    alices.release();
+    await w.idle();
+
+    // Carol's turn never runs as Ada, records nothing; Alice's runs as her.
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, contentOf(i).replace(/^\[[^\]]*\]: /, '')])).toEqual([
+      ['usr_ada', 'external', 'outsider first'],
+      ['usr_alice', 'user', 'member first'],
+      ['usr_alice', 'user', 'member second'],
+    ]);
+    expect(w.threadWrites.map((t) => [t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([
+      ['external', 'usr_ada'],
+      ['attended', null],
+      ['attended', null],
+    ]);
+    expect(ephemerals(w.slack.calls)).toEqual([
+      { channel: SUPPORT, user: CAROL, text: COPY.botUnavailable, threadTs: MENTION_TS },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: OWN_BOT_ID, reason: 'requester', count: 1 } },
+    ]);
+  });
+
+  it("an outsider's waiting turn whose requester check fails at its turn is dropped, told to try again, logged by code only", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, text: 'first' }));
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: '1763035302.000302', text: 'second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(1);
+
+    w.agents.faults.set(
+      'agents:can-set-shared-credential',
+      new PluginError({ code: 'store-unavailable', plugin: 'fake-agents', message: 'down for usr_ada' }),
+    );
+    first.release();
+    await w.idle();
+
+    expect(w.invokes.map((i) => contentOf(i).replace(/^\[[^\]]*\]: /, ''))).toEqual(['first']);
+    expect(w.threadWrites).toHaveLength(1);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: CAROL, text: COPY.turnFailed }]);
+    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_event_failed',
+        fields: { installId: OWN_BOT_ID, stage: 'requester', code: 'store-unavailable' },
+      },
+    ]);
+  });
+
+  it('logs on a bot never name a person, a channel, an agent, the bot or what anyone wrote', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    for (const user of [ALICE, BOB, CAROL, MALLORY, GUEST]) {
+      await w.dispatch(OWN_BOT, botMention({ user, text: `secret words from ${user}` }));
+    }
+    await w.dispatch(OWN_BOT, botDm({ text: 'secret words in a DM' }));
+    w.agents.setRole(SUPPORT_TEAM, 'usr_ada', 'member');
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, text: 'secret words after' }));
+    await w.dispatch(INSTALL, mention({ user: ALICE, text: 'secret words to the shared bot' }));
+    await w.idle();
+    expect(w.lines.length).toBeGreaterThan(0);
+    const all = JSON.stringify(w.lines);
+    for (const leak of ['@', 'usr_', 'agt_', 'U07', 'C07', 'D07', 'support', 'Support', 'secret', 'Alice', 'Carol', 'canopyworks']) {
+      expect(all, leak).not.toContain(leak);
+    }
   });
 });

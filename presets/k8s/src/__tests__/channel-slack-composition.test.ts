@@ -92,12 +92,22 @@ const SIGNING_SECRET = 'composition-signing-secret-not-real';
 const CLIENT_SECRET = 'composition-client-secret-not-real';
 const OAUTH_CODE = '7000000001.7000000003.abcdef';
 
+// A team agent's own bot (TASK-1167) is a second Slack app: its own ids, secrets and bot user.
+const OWN_BOT_NAME = 'Support Helper';
+const OWN_APP_ID = 'A07COMPOSE2';
+const OWN_CLIENT_ID = '7000000001.7000000009';
+const OWN_BOT_USER_ID = 'U07OWNBOT001';
+const OWN_BOT_HANDLE = 'support-helper';
+const OWN_SIGNING_SECRET = 'composition-own-signing-secret-not-real';
+const OWN_CLIENT_SECRET = 'composition-own-client-secret-not-real';
+
 // Slack-shaped fixture tokens, built from pieces so no token-shaped literal
 // sits in source (GitHub push protection flags even fake ones). Same
 // construction as packages/channel-slack/src/__tests__/fake-slack-tokens.ts,
 // which a preset test can't import.
 const join = (...parts: string[]): string => parts.join('');
 const BOT_TOKEN = join('xo', 'xb-', '1111-2222-', 'COMPOSITIONBOT');
+const OWN_BOT_TOKEN = join('xo', 'xb-', '3333-4444-', 'COMPOSITIONOWNBOT');
 const CONFIG_ACCESS_TOKEN = join('xo', 'xe.', 'xo', 'xp-', '1-', 'COMPOSITIONACCESS');
 const CONFIG_REFRESH_TOKEN = join('xo', 'xe-', '1-', 'COMPOSITIONREFRESH');
 const SECOND_CONFIG_REFRESH_TOKEN = join('xo', 'xe-', '1-', 'COMPOSITIONSECONDREFRESH');
@@ -323,24 +333,38 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
   let answer: Record<string, unknown>;
   switch (method) {
     case 'apps.manifest.create':
-      answer = {
-        ok: true,
-        app_id: APP_ID,
-        credentials: { client_id: CLIENT_ID, client_secret: CLIENT_SECRET, signing_secret: SIGNING_SECRET },
-      };
+      // A team agent's own bot's manifest sends Slack back to its own callback.
+      answer = String(body['manifest'] ?? '').includes('/slack/bots/oauth/callback')
+        ? {
+            ok: true,
+            app_id: OWN_APP_ID,
+            credentials: { client_id: OWN_CLIENT_ID, client_secret: OWN_CLIENT_SECRET, signing_secret: OWN_SIGNING_SECRET },
+          }
+        : {
+            ok: true,
+            app_id: APP_ID,
+            credentials: { client_id: CLIENT_ID, client_secret: CLIENT_SECRET, signing_secret: SIGNING_SECRET },
+          };
       break;
-    case 'oauth.v2.access':
+    case 'oauth.v2.access': {
+      // The app authenticates with HTTP Basic: its client id says which app's Allow this is.
+      const own = Buffer.from((call.auth ?? '').replace(/^Basic /, ''), 'base64').toString().startsWith(`${OWN_CLIENT_ID}:`);
       answer = {
         ok: true,
         token_type: 'bot',
-        access_token: BOT_TOKEN,
-        bot_user_id: BOT_USER_ID,
-        app_id: APP_ID,
+        access_token: own ? OWN_BOT_TOKEN : BOT_TOKEN,
+        bot_user_id: own ? OWN_BOT_USER_ID : BOT_USER_ID,
+        app_id: own ? OWN_APP_ID : APP_ID,
         team: { id: TEAM_ID, name: 'Canopy Works' },
         is_enterprise_install: false,
       };
       break;
+    }
     case 'users.info': {
+      if (body['user'] === OWN_BOT_USER_ID) {
+        answer = { ok: true, user: { id: OWN_BOT_USER_ID, team_id: TEAM_ID, name: OWN_BOT_HANDLE, is_bot: true } };
+        break;
+      }
       const person = PEOPLE.find((p) => p.slackId === body['user']);
       answer = person !== undefined ? { ok: true, user: slackUser(person) } : { ok: false, error: 'user_not_found' };
       break;
@@ -492,9 +516,9 @@ function nextTs(): string {
   return `1763035200.${String(tsSeq).padStart(6, '0')}`;
 }
 
-function signedHeaders(body: Buffer): Record<string, string> {
+function signedHeaders(body: Buffer, secret: string = SIGNING_SECRET): Record<string, string> {
   const ts = String(Math.floor(Date.now() / 1000));
-  const digest = createHmac('sha256', SIGNING_SECRET).update(`v0:${ts}:`).update(body).digest('hex');
+  const digest = createHmac('sha256', secret).update(`v0:${ts}:`).update(body).digest('hex');
   return {
     'content-type': 'application/json',
     'x-slack-request-timestamp': ts,
@@ -515,6 +539,24 @@ async function deliver(installId: string, event: Record<string, unknown>): Promi
     params: { installId },
     rawPath: `/slack/events/${installId}`,
     headers: signedHeaders(body),
+    body,
+  });
+}
+
+/** A signed delivery to a team agent's own bot: its own app id, its own signing secret, on its own install's route. */
+async function deliverToOwnBot(installId: string, event: Record<string, unknown>): Promise<Captured> {
+  eventSeq += 1;
+  const body = jsonBody({
+    type: 'event_callback',
+    team_id: TEAM_ID,
+    api_app_id: OWN_APP_ID,
+    event_id: `Ev07COMPOSE${String(eventSeq).padStart(4, '0')}`,
+    event,
+  });
+  return callRoute('POST', '/slack/events/:installId', {
+    params: { installId },
+    rawPath: `/slack/events/${installId}`,
+    headers: signedHeaders(body, OWN_SIGNING_SECRET),
     body,
   });
 }
@@ -1054,7 +1096,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     actor = { id: ADMIN, isAdmin: true };
     mark = slackCalls.length;
     const disconnect = await callRoute('POST', '/admin/slack/disconnect', { body: jsonBody({}) });
-    expect(disconnect).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(disconnect).toMatchObject({ status: 200, body: { appDeleted: true, tokenKept: false } });
     expect(slackCalls.slice(mark).map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
     expect(slackCalls.slice(mark)[0]!.body).toEqual({ refresh_token: kept });
     expect(slackCalls.slice(mark)[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
@@ -1918,5 +1960,171 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
     actor = null;
     await dropAgent(agentId);
+  });
+  // Last on purpose: the raw SQL above assumes one install row. This test ends with none (it
+  // disconnects the shared workspace itself, and the agent's deletion takes the bot).
+  it("a team agent's own bot: requested, allowed, mentioned, the shared bot steps aside, Disconnect leaves it and keeps its approver's token, deleting the agent deletes it (TASK-1167)", async () => {
+    const { installId: sharedId, agentId } = await supportChannel();
+    invokes.length = 0;
+    const sharedToken = await readConfigToken(ADMIN);
+    const sharedRefs = {
+      bot: await readSecret(sharedId, 'bot-token'),
+      signing: await readSecret(sharedId, 'signing-secret'),
+    };
+    expect(sharedRefs).toEqual({ bot: BOT_TOKEN, signing: SIGNING_SECRET });
+    expect(sharedToken).toMatch(/^xoxe-/);
+    const adaToken = await readConfigToken('usr_ada');
+    expect(adaToken).toMatch(/^error:/);
+
+    // 1. Ada, a team admin with no stored token, asks for the agent's own bot and pastes one.
+    actor = { id: 'usr_ada', isAdmin: false };
+    const requestMark = slackCalls.length;
+    const requested = await callRoute('POST', '/settings/slack/:agentId/bot', {
+      params: { agentId },
+      rawPath: `/settings/slack/${agentId}/bot`,
+      body: jsonBody({ botName: OWN_BOT_NAME, refreshToken: CONFIG_REFRESH_TOKEN, iconPng: ICON_PNG.toString('base64') }),
+    });
+    expect(requested).toMatchObject({ status: 200, body: { iconSet: true } });
+    const requestCalls = slackCalls.slice(requestMark);
+    expect(requestCalls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.create', 'apps.icon.set']);
+    expect(requestCalls[0]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
+    expect(requestCalls[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
+    expect(requestCalls[2]!.body['app_id']).toBe(OWN_APP_ID);
+    const adaSuccessor = rotatedRefreshToken(rotateSeq);
+
+    // 2. Allow comes back to the bot's own callback, for the person who asked.
+    const installUrl = new URL((requested.body as { installUrl: string }).installUrl);
+    expect(installUrl.searchParams.get('client_id')).toBe(OWN_CLIENT_ID);
+    expect(installUrl.searchParams.get('redirect_uri')).toBe(`${PUBLIC_ORIGIN}/slack/bots/oauth/callback`);
+    const callbackMark = slackCalls.length;
+    const callback = await callRoute('GET', '/slack/bots/oauth/callback', {
+      query: { code: OAUTH_CODE, state: installUrl.searchParams.get('state')! },
+    });
+    expect(callback).toMatchObject({
+      status: 302,
+      location: `${PUBLIC_ORIGIN}/?slack-bot=connected&agentId=${agentId}`,
+    });
+    actor = null;
+    expect(slackCalls.slice(callbackMark).map((c) => c.method)).toEqual(['oauth.v2.access', 'users.info']);
+
+    // 3. The vault and the row.
+    const botRows = await query("SELECT * FROM channel_slack_v1_installs WHERE kind = 'bot'");
+    expect(botRows).toHaveLength(1);
+    const ownId = botRows[0]!['install_id'] as string;
+    expect(ownId).not.toBe(sharedId);
+    expect(botRows[0]).toMatchObject({
+      status: 'active',
+      agent_id: agentId,
+      requested_by_user_id: 'usr_ada',
+      connected_by_user_id: 'usr_ada',
+      bot_user_id: OWN_BOT_USER_ID,
+      bot_handle: OWN_BOT_HANDLE,
+      bot_name: OWN_BOT_NAME,
+      app_id: OWN_APP_ID,
+    });
+    expect(await readSecret(ownId, 'bot-token')).toBe(OWN_BOT_TOKEN);
+    expect(await readSecret(ownId, 'signing-secret')).toBe(OWN_SIGNING_SECRET);
+    expect(await readSecret(ownId, 'client-secret')).toBe(OWN_CLIENT_SECRET);
+    // A bot has no configuration token of its own: its approver's is the person's one.
+    expect(await readSecret(ownId, 'config-refresh-token')).toMatch(/^error:/);
+    expect(await readConfigToken('usr_ada')).toBe(adaSuccessor);
+    expect(adaSuccessor).not.toBe(CONFIG_REFRESH_TOKEN);
+    // The shared install's refs and its person's token did not move.
+    expect(await readSecret(sharedId, 'bot-token')).toBe(sharedRefs.bot);
+    expect(await readSecret(sharedId, 'signing-secret')).toBe(sharedRefs.signing);
+    expect(await readConfigToken(ADMIN)).toBe(sharedToken);
+    expect(await query("SELECT install_id FROM channel_slack_v1_installs WHERE kind = 'shared'")).toEqual([
+      { install_id: sharedId },
+    ]);
+
+    // 4. A member mentions the bot: its first mention in the channel writes the binding, and the
+    // turn is the agent's, as Mel, under a key that names the bot's install.
+    const ownMention = (from: SlackPerson, ts: string, text: string): Record<string, unknown> => ({
+      type: 'app_mention',
+      user: from.slackId,
+      channel: SUPPORT_CHANNEL,
+      ts,
+      text: `<@${OWN_BOT_USER_ID}> ${text}`,
+    });
+    const melTs = nextTs();
+    let mark = slackCalls.length;
+    expect((await deliverToOwnBot(ownId, ownMention(MEL, melTs, 'who owns this bot?'))).status).toBe(200);
+    const melTurn = await invokedTurn(1);
+    expect(melTurn.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
+    expect(await conversationRow(melTurn.ctx.conversationId!)).toEqual({
+      owner: 'usr_mel',
+      key: `slack:${ownId}:${SUPPORT_CHANNEL}:${melTs}`,
+    });
+    const calls = await channelTurnCalls(mark);
+    expect(callOf(calls, 'chat.startStream').auth).toBe(`Bearer ${OWN_BOT_TOKEN}`);
+    expect(
+      await query('SELECT agent_id, connected_by_user_id FROM channel_slack_v1_channels WHERE install_id = $1 AND channel_id = $2', [
+        ownId,
+        SUPPORT_CHANNEL,
+      ]),
+    ).toEqual([{ agent_id: agentId, connected_by_user_id: 'usr_ada' }]);
+
+    // An outsider on the same bot runs as its requester, Ada, who is still a team admin.
+    const bobTs = nextTs();
+    mark = slackCalls.length;
+    expect((await deliverToOwnBot(ownId, ownMention(BOB, bobTs, 'can you help me?'))).status).toBe(200);
+    const bobTurn = await invokedTurn(2);
+    expect(bobTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
+    expect((await conversationRow(bobTurn.ctx.conversationId!)).key).toBe(
+      `slack:${ownId}:${SUPPORT_CHANNEL}:${bobTs}:external`,
+    );
+    await channelTurnCalls(mark);
+
+    // 5. The shared bot, mentioned in the same channel, steps aside: no turn, one private line
+    // that names the bot to mention instead.
+    mark = slackCalls.length;
+    expect((await deliver(sharedId, mention(MEL, nextTs(), 'hello shared bot'))).status).toBe(200);
+    const aside = await slackCallsUntil(mark, 'chat.postEphemeral');
+    const ephemerals = aside.filter((c) => c.method === 'chat.postEphemeral');
+    expect(ephemerals).toHaveLength(1);
+    expect(ephemerals[0]!.body).toMatchObject({ channel: SUPPORT_CHANNEL, user: MEL.slackId });
+    const line = String(ephemerals[0]!.body['text']);
+    expect(line).toContain(OWN_BOT_NAME);
+    expect(line).toContain(`@${OWN_BOT_HANDLE}`);
+    expect(aside.map((c) => c.method)).not.toContain('chat.startStream');
+    expect(invokes).toHaveLength(2);
+
+    // 6. Admin > Slack's Disconnect takes the shared app and leaves the bot, its refs and Ada's
+    // token. The shared install's person (ADMIN) approved no bot, so their token goes.
+    actor = { id: ADMIN, isAdmin: true };
+    const disconnectMark = slackCalls.length;
+    expect(await callRoute('POST', '/admin/slack/disconnect')).toEqual({
+      status: 200,
+      body: { appDeleted: true, tokenKept: false },
+    });
+    actor = null;
+    expect(slackCalls.slice(disconnectMark).map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
+    expect(slackCalls[disconnectMark + 1]!.body['app_id']).toBe(APP_ID);
+    expect(await readConfigToken(ADMIN)).toMatch(/^error:/);
+    expect(await readSecret(sharedId, 'bot-token')).toMatch(/^error:/);
+    const stillThere = await query('SELECT install_id, status FROM channel_slack_v1_installs');
+    expect(stillThere).toEqual([{ install_id: ownId, status: 'active' }]);
+    expect(await readSecret(ownId, 'bot-token')).toBe(OWN_BOT_TOKEN);
+    expect(await readSecret(ownId, 'signing-secret')).toBe(OWN_SIGNING_SECRET);
+    expect(await readSecret(ownId, 'client-secret')).toBe(OWN_CLIENT_SECRET);
+    expect(await readConfigToken('usr_ada')).toBe(adaSuccessor);
+
+    // 7. Deleting the agent deletes its bot: the app, the row, the three refs, then Ada's token.
+    const dropMark = slackCalls.length;
+    await dropAgent(agentId);
+    await vi.waitFor(
+      async () => expect(await query('SELECT install_id FROM channel_slack_v1_installs')).toEqual([]),
+      { timeout: 10_000 },
+    );
+    const dropCalls = slackCalls.slice(dropMark).filter((c) => c.method === 'tooling.tokens.rotate' || c.method === 'apps.manifest.delete');
+    expect(dropCalls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
+    expect(dropCalls[0]!.body).toEqual({ refresh_token: adaSuccessor });
+    expect(dropCalls[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
+    expect(dropCalls[1]!.body['app_id']).toBe(OWN_APP_ID);
+    for (const name of ['bot-token', 'signing-secret', 'client-secret']) {
+      expect(await readSecret(ownId, name)).toMatch(/^error:/);
+    }
+    expect(await readConfigToken('usr_ada')).toMatch(/^error:/);
+    expect(await query('SELECT channel_id FROM channel_slack_v1_channels')).toEqual([]);
   });
 });

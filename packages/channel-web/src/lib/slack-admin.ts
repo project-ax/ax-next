@@ -8,7 +8,7 @@
  *   POST /admin/slack/install-url  → { installUrl }, while an install is unfinished
  *   POST /admin/slack/rename       { botName } → { botName }
  *   POST /admin/slack/replace-token  { refreshToken } → {}
- *   POST /admin/slack/disconnect   → { appDeleted }
+ *   POST /admin/slack/disconnect   → { appDeleted, tokenKept }
  *   POST /admin/slack/forget-leftover-app  { appId } → {}
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
@@ -29,6 +29,7 @@
  * Allow page.
  */
 import { HttpError, httpFetch } from './http';
+import { BOT_NAME_COPY, BOT_NAME_FALLBACK, SLACK_TOKEN_COPY } from './slack-token-copy';
 
 /** A Slack app an earlier Disconnect couldn't delete (TASK-1132). */
 export interface LeftoverSlackApp {
@@ -252,12 +253,18 @@ export async function resumeSlackInstall(): Promise<{ installUrl: string }> {
   return installUrlFrom(await post(INSTALL_URL_PATH, {}));
 }
 
-/** Disconnect. `appDeleted` is false when Slack wouldn't delete the app for us. */
-export async function disconnectSlack(): Promise<{ appDeleted: boolean }> {
+/**
+ * Disconnect. `appDeleted` is false when Slack wouldn't delete the app for us.
+ * `tokenKept` is true when the admin's configuration token stayed, because
+ * another Slack app (a team agent's own bot) still needs it: revoking it on
+ * Slack's page would strand that app. An answer missing either fact is refused.
+ */
+export async function disconnectSlack(): Promise<{ appDeleted: boolean; tokenKept: boolean }> {
   const answer = await post(DISCONNECT_PATH, {});
   const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
-  if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
-  return { appDeleted };
+  const tokenKept = isRecord(answer.body) ? answer.body['tokenKept'] : undefined;
+  if (typeof appDeleted !== 'boolean' || typeof tokenKept !== 'boolean') throw badResponse(answer.status);
+  return { appDeleted, tokenKept };
 }
 
 /**
@@ -295,17 +302,12 @@ export function goToSlack(installUrl: string): void {
 // ── What an error says ────────────────────────────────────────────────────
 
 export const SLACK_ERROR_COPY = Object.freeze({
+  // The token and name lines an agent's own-bot form shows too live in slack-token-copy.ts.
+  ...SLACK_TOKEN_COPY,
   'invalid-access-token': "That doesn't look like an access token. It starts with xoxe.xoxp-.",
-  'invalid-refresh-token': "That doesn't look like a refresh token. It starts with xoxe-.",
-  'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
-  // Connect tried the pasted refresh token once and Slack refused it; the app we made was deleted
-  // again, or (when Slack wouldn't) is listed as left over.
-  // Shared by Connect and Replace: the same advice fits both, since either can be turned away on its refresh token.
-  'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new token and try again.",
   // Replace: the token works, but its owner can't manage this app (or is in another workspace).
   'slack-not-app-manager':
     "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.",
-  'slack-name': "Slack didn't accept that bot name. Try another.",
   'slack-config-token':
     "We can't use the configuration token we have for this Slack app, so we couldn't rename the bot. Replace the token with one from someone who can manage this Slack app, then try again.",
   // A 409 the Rename form shows itself: a connected card has no https view for the re-read to land on.
@@ -313,20 +315,8 @@ export const SLACK_ERROR_COPY = Object.freeze({
     "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that.",
   'slack-app-gone':
     'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',
-  // Connect never heard back from Slack, so the app may exist with no way for us to delete it.
-  'slack-unconfirmed':
-    "Slack didn't give us a clear answer, so a Slack app may have been created anyway. Check api.slack.com/apps and delete it before you try again.",
   generic: 'Something went wrong talking to Slack. Try again in a minute.',
 });
-
-/** `invalid-bot-name`'s reasons (@ax/channel-slack's `checkBotName`). */
-const BOT_NAME_COPY: Readonly<Record<string, string>> = Object.freeze({
-  empty: 'Give the bot a name.',
-  'too-long': 'Keep the name to 35 characters or fewer.',
-  'bad-characters': 'Use letters, numbers, spaces, dots, dashes or underscores.',
-  reserved: 'Slack keeps that name for itself. Pick another.',
-});
-const BOT_NAME_FALLBACK = "Slack can't use that name. Try another.";
 
 /** Which Connect field an error is about, or null for the form as a whole. */
 export type SlackErrorField = 'accessToken' | 'refreshToken' | 'botName' | null;
@@ -358,6 +348,8 @@ export function slackErrorCopy(err: unknown): { field: SlackErrorField; message:
         return { field: null, message: SLACK_ERROR_COPY['slack-app-gone'] };
       case 'slack-name':
         return { field: 'botName', message: SLACK_ERROR_COPY['slack-name'] };
+      case 'bot-name-taken':
+        return { field: 'botName', message: SLACK_ERROR_COPY['bot-name-taken'] };
       case 'slack-unconfirmed':
         return { field: null, message: SLACK_ERROR_COPY['slack-unconfirmed'] };
     }
