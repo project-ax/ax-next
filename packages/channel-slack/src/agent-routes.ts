@@ -6,6 +6,7 @@ import {
   checkRights,
   connectChannel,
   listAvailableChannels,
+  liveOwnBot,
   type AgentAccess,
   type ChannelDeps,
   type Rights,
@@ -20,10 +21,15 @@ import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
 import { checkUser } from './user-auth.js';
 
 /**
- * The Slack section of a team agent's settings (TASK-1094): the channels it
- * answers in, and connecting, disconnecting and remembering them. And the
- * agent's own Slack bot (TASK-1167, bots.ts): asking for it, picking the
- * request back up in Slack, and cancelling it.
+ * The Slack section of a team agent's settings (TASK-1094): the channels
+ * connected to it through the shared app, and connecting, disconnecting and
+ * remembering them. With its own bot live (TASK-1168) those are the ones still
+ * waiting for the bot: each is `needsInvite` until the bot has answered there
+ * (a binding on the bot's install), then it leaves the list. The bot's own
+ * channels aren't listed, and `POST …/connect` refuses that agent with
+ * `409 own-bot` (channels.ts). And the agent's own Slack bot (TASK-1167,
+ * bots.ts): asking for it, picking the request back up in Slack, and
+ * cancelling it.
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
@@ -73,6 +79,13 @@ export type AgentSlackStatus =
         remember: boolean;
         connectedBy: string;
         needsReconnect: boolean;
+        /**
+         * The agent's own bot is live and hasn't answered in this channel yet,
+         * so the shared bot steps aside here and nobody reaches the agent in it
+         * until someone runs `/invite` for the bot. Only ever true when `bot`
+         * is live in the same answer.
+         */
+        needsInvite: boolean;
       }>;
       bot: AgentSlackBot;
     };
@@ -249,15 +262,26 @@ export function createAgentSlackRoutes(
     const nameOf = once((userId) => connectorName(a.ctx, userId));
     const accessOf = once((userId): Promise<AgentAccess> => agentAccess(d.bus, a.ctx, a.agentId, userId));
     const channels: Extract<AgentSlackStatus, { state: 'ready' }>['channels'] = [];
+    // The channels the agent's own bot has answered in (a binding on its install), read only while
+    // `bot` says live: bots.status read its own, and a row must never need a bot this answer doesn't show.
+    const own = bot.state === 'live' ? await liveOwnBot(d.installs, a.agentId) : null;
+    const answered =
+      own === null ? null : new Set((await d.channels.listForAgent(own.installId, a.agentId)).map((c) => c.channelId));
     for (const b of await d.channels.listForAgent(install.installId, a.agentId)) {
+      // Its own bot answers here now: off the list. The shared binding stays, unused.
+      if (answered?.has(b.channelId) === true) continue;
+      const needsInvite = answered !== null;
       channels.push({
         channelId: b.channelId,
         name: b.channelName,
         remember: b.remember,
         connectedBy: await nameOf(b.connectedByUserId),
         // Outsiders' turns run as the connector, so a connector who lost the
-        // agent breaks the channel until a team admin connects it again.
-        needsReconnect: (await accessOf(b.connectedByUserId)) !== 'yes',
+        // agent breaks the channel until a team admin connects it again. While
+        // the agent's own bot is live the shared bot steps aside for it, so
+        // no outsider runs as the connector here.
+        needsReconnect: !needsInvite && (await accessOf(b.connectedByUserId)) !== 'yes',
+        needsInvite,
       });
     }
     const out: AgentSlackStatus = {
@@ -301,6 +325,7 @@ export function createAgentSlackRoutes(
           remember: b.remember,
           connectedBy: await connectorName(a.ctx, b.connectedByUserId),
           needsReconnect: false,
+          needsInvite: false,
         },
         reconnected: out.reconnected,
       });
