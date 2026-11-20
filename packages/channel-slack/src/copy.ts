@@ -259,10 +259,36 @@ export const COPY = {
     `*${shown(agent)}* was already connected here. From now on, when someone who can't use it talks to it here, ` +
     'it works with your access, and anything that needs approval waits for you in Today.',
   slashDisconnected: "Disconnected. The agent won't answer in this channel anymore.",
+  /*
+    `/ax disconnect` for an agent whose own bot is live (TASK-1168): the shared
+    binding is gone, but its own bot keeps answering wherever it is a member, and
+    we can't tell from here whether it is one in this channel. Says so, and how to
+    remove it. The bot is named like slashOwnBot names it.
+  */
+  slashDisconnectedOwnBot: (bot: { botName: string; handle: string | null }) =>
+    bot.handle === null
+      ? `Disconnected. If ${shown(bot.botName)} is in this channel, it still answers here: remove it with /kick.`
+      : `Disconnected. If @${shown(bot.handle, '@')} is in this channel, it still answers here: ` +
+        `remove it with /kick @${shown(bot.handle, '@')}.`,
   slashNothingConnected: 'No agent is connected to this channel.',
   slashChannelTaken:
     'Another agent is already connected to this channel. ' +
     `A team admin of that agent's team can disconnect it with ${DISCONNECT}.`,
+  /*
+    `/ax connect` for an agent whose own bot is live (TASK-1168): the shared
+    app connects nothing for it any more, so the line says which bot to
+    /invite instead. Only someone who manages the agent ever reads it (the
+    rights come first, commands.ts), so the agent is named. The bot is named
+    by its @handle, through `shown(handle, '@')` after the line's own `@`, or
+    by its name when it has none (the Allow kept no handle: bots.ts
+    `keepHandle`).
+  */
+  slashOwnBot: (agent: string, bot: { botName: string; handle: string | null }) =>
+    bot.handle === null
+      ? `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
+        `Invite ${shown(bot.botName)} to this channel with /invite instead.`
+      : `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
+        `Invite it to this channel with /invite @${shown(bot.handle, '@')} instead.`,
   slashChannelNotAllowed: (reason: ChannelNotAllowed) =>
     reason === 'archived'
       ? "This channel is archived, so I can't connect an agent to it."
