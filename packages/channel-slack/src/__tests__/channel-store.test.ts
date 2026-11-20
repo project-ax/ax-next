@@ -3,7 +3,7 @@ import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { channelCaptureVeto } from '../capture-veto.js';
 import { createChannelStore, type ChannelBinding, type ChannelStore, type ChannelThread } from '../channel-store.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
@@ -86,6 +86,14 @@ async function rawRow(installId: string, channelId: string) {
      WHERE install_id = ${installId} AND channel_id = ${channelId}
   `.execute(db);
   return r.rows[0];
+}
+
+/** How many database sessions are waiting on a lock the session `pid` holds. */
+async function sessionsWaitingOn(pid: number): Promise<number> {
+  const r = await sql<{ n: number }>`
+    SELECT count(*)::int AS n FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))
+  `.execute(db);
+  return r.rows[0]!.n;
 }
 
 /** Pin a binding's age, so "oldest first" never hangs on the clock's resolution. */
@@ -507,6 +515,37 @@ describe('the switch kept for the agent and channel (TASK-1180)', () => {
     expect(await rawRow(INSTALL, SUPPORT)).toEqual(before);
     expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
     expect(await channels.keptRemember(OTHER_AGENT, SUPPORT)).toBeNull();
+  });
+
+  it("a Disconnect that deletes the named binding while a flip waits on it: the agent's other binding and the kept switch take the flip together, and the caller hears false", async () => {
+    await connect();
+    await connect({ installId: OTHER_INSTALL });
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+
+    // The Disconnect's delete, not yet committed: the flip still reads the named binding as the
+    // agent's as it starts, then waits on that row.
+    const disconnect = await pool.connect();
+    let flip: Promise<boolean> | undefined;
+    try {
+      await disconnect.query('BEGIN');
+      await disconnect.query(
+        'DELETE FROM channel_slack_v1_channels WHERE install_id = $1 AND channel_id = $2 AND agent_id = $3',
+        [INSTALL, SUPPORT, AGENT],
+      );
+      const holder = (await disconnect.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      flip = channels.setRemember(INSTALL, SUPPORT, AGENT, false);
+      await vi.waitFor(async () => expect(await sessionsWaitingOn(holder)).toBe(1), { timeout: 10_000 });
+      await disconnect.query('COMMIT');
+    } finally {
+      // Never left open: a failed wait rolls the delete back (after the COMMIT, a no-op).
+      await disconnect.query('ROLLBACK').catch(() => {});
+      disconnect.release();
+    }
+
+    expect(await flip).toBe(false);
+    expect(await channels.get(INSTALL, SUPPORT)).toBeNull();
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
   });
 
   it("the kept switch outlives its install's removal (Admin › Slack's Disconnect, a bot's removal)", async () => {

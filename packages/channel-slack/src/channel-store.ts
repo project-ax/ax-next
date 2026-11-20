@@ -122,7 +122,10 @@ export interface ChannelStore {
    * any install (its shared binding while its own bot answers there, and the
    * bot's), takes it, and so does the switch kept apart from the bindings
    * (keptRemember). Another agent's rows and other channels are never
-   * touched.
+   * touched. True when the named binding took it. A Disconnect can delete
+   * the named binding while the flip waits on it: then false, though the
+   * agent's other bindings of the channel and the kept switch took it,
+   * together.
    */
   setRemember(installId: string, channelId: string, agentId: string, remember: boolean): Promise<boolean>;
   /**
@@ -277,10 +280,15 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     async setRemember(installId, channelId, agentId, remember) {
       // One statement, so the bindings and the kept switch never disagree.
       // Every row it flips is this agent's, in this channel, and only when the
-      // binding the caller named is this agent's (the EXISTS): a route that
-      // checked rights on one agent can't touch another's. The kept switch is
-      // written only when that named binding was flipped. A bare parameter in
-      // a SELECT list has no type, so each is cast.
+      // binding the caller named is this agent's (the EXISTS, read as the
+      // statement starts): a route that checked rights on one agent can't
+      // touch another's. The kept switch is written whenever any binding was
+      // flipped, so it goes with them even when a Disconnect deletes the
+      // named binding while the flip waits on its row: that row is skipped,
+      // and the agent's other bindings still flip. The answer is whether the
+      // named binding took it: false then, so the caller's page re-reads and
+      // finds it gone. A bare parameter in a SELECT list has no type, so each
+      // is cast.
       const r = await sql<{ changed: number }>`
         WITH flipped AS (
           UPDATE channel_slack_v1_channels
@@ -295,7 +303,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         ), kept AS (
           INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
           SELECT CAST(${agentId} AS text), CAST(${channelId} AS text), CAST(${remember} AS boolean)
-           WHERE EXISTS (SELECT 1 FROM flipped WHERE install_id = ${installId})
+           WHERE EXISTS (SELECT 1 FROM flipped)
           ON CONFLICT (agent_id, channel_id) DO UPDATE SET remember = EXCLUDED.remember, updated_at = now()
         )
         SELECT (SELECT count(*) FROM flipped WHERE install_id = ${installId})::int AS changed
