@@ -28,6 +28,7 @@ import { checkUser } from './user-auth.js';
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
  *   POST /settings/slack/:agentId/connect     { channelId } → { channel, reconnected }
+ *                                             · 409 own-bot while its own bot is live
  *   POST /settings/slack/:agentId/disconnect  { channelId } → { removed }
  *   POST /settings/slack/:agentId/remember    { channelId, remember } → {}
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -314,6 +315,11 @@ export function createAgentSlackRoutes(
       case 'agent-gone':
         // Deleted while this connect ran: the binding was taken back.
         return NOT_FOUND;
+      case 'own-bot':
+        // The agent's own bot went live since the page that offered this was
+        // drawn (it hides the picker and Reconnect while one is live). The code
+        // alone: reading the section again shows the bot and how to invite it.
+        return json(409, { error: 'own-bot' });
       case 'slack-error':
         return json(502, { error: 'slack-error' });
       default:

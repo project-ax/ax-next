@@ -52,7 +52,10 @@ import type { InstallRow, InstallStore } from './store.js';
  *      its team (channels.ts; workspace-admin status never counts). The
  *      channel is the one the command was typed in, the install the one it
  *      was signed for, and connectChannel does the rest, the same core as
- *      the agent settings.
+ *      the agent settings. connectChannel refuses an agent whose own bot is
+ *      live (TASK-1168): the reply names that bot and says to /invite it.
+ *      Only after the rights, so someone who can't manage the agent learns
+ *      nothing about its bot.
  *   5. `disconnect` needs the same rights over the connected agent, except
  *      when that agent is gone: a binding nobody can manage any more is
  *      cleared for anyone who asks.
@@ -217,9 +220,15 @@ function teamAgentsOf(answer: unknown): Array<{ id: string; displayName: string 
   return [...agents.values()];
 }
 
-/** A refused connect, as `/ax` says it. */
-function connectRefusal(outcome: Extract<ConnectOutcome, { ok: false }>): string {
+/**
+ * A refused connect, as `/ax` says it. `agentName` is the agent the invoker
+ * manages: only the own-bot line names it.
+ */
+function connectRefusal(outcome: Extract<ConnectOutcome, { ok: false }>, agentName: string): string {
   switch (outcome.reason) {
+    case 'own-bot':
+      // Its own bot answers for it now (TASK-1168): which one to /invite instead.
+      return COPY.slashOwnBot(agentName, outcome.ownBot);
     case 'channel-taken':
       return COPY.slashChannelTaken;
     case 'archived':
@@ -479,7 +488,7 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
       actorUserId: userId,
       ctx,
     });
-    if (!outcome.ok) return connectRefusal(outcome);
+    if (!outcome.ok) return connectRefusal(outcome, chosen.agentName);
     return outcome.reconnected
       ? COPY.slashReconnected(chosen.agentName)
       : COPY.slashConnected(chosen.agentName, outcome.binding.channelName);

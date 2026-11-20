@@ -48,6 +48,29 @@ const INSTALL: InstallRow = {
   configTokenAddedAt: new Date('2026-11-13T10:00:00Z'),
   installedAt: new Date('2026-11-13T10:05:00Z'),
 };
+/** The Support agent's own bot (TASK-1167), live: Grace asked for it and allowed it. */
+const OWN_BOT: InstallRow = {
+  ...INSTALL,
+  installId: 'Hb7Kq2Lw8vNc5Xr1Bm7KdA',
+  kind: 'bot',
+  appId: 'A07HELPER01',
+  botName: 'Support Helper',
+  botUserId: 'U07HELPER01',
+  connectedByUserId: 'usr_grace',
+  agentId: 'agt_support',
+  requestedByUserId: 'usr_grace',
+  botHandle: 'supporthelper',
+};
+/** The same bot before its Allow. */
+const PENDING_BOT: InstallRow = {
+  ...OWN_BOT,
+  status: 'pending',
+  teamId: null,
+  teamName: null,
+  botUserId: null,
+  installedAt: null,
+  botHandle: null,
+};
 
 const SUPPORT_TEAM = 'team_support';
 const SALES_TEAM = 'team_sales';
@@ -361,10 +384,24 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
   slack.channels.set(PENDING_CH, rawChannel(PENDING_CH, { is_pending_ext_shared: true }));
 
   const memory = memoryChannelStore();
-  const state = { install: { ...INSTALL } as InstallRow | null };
+  const state = {
+    install: { ...INSTALL } as InstallRow | null,
+    /** The agent's own bot (store.ts `botForAgent`, any status): none unless a test sets one. */
+    bot: null as InstallRow | null,
+    botFault: undefined as unknown,
+  };
+  /** The agents `botForAgent` was asked about, in order. */
+  const botLookups: string[] = [];
   const deps: ChannelDeps = {
     bus,
-    installs: { current: async () => (state.install === null ? null : { ...state.install }) },
+    installs: {
+      current: async () => (state.install === null ? null : { ...state.install }),
+      botForAgent: async (agentId) => {
+        botLookups.push(agentId);
+        if (state.botFault !== undefined) throw state.botFault;
+        return state.bot !== null && state.bot.agentId === agentId ? { ...state.bot } : null;
+      },
+    },
     channels: memory.store,
     secrets: { get: async (_owner, name) => (name === 'bot-token' ? BOT_TOKEN : null) },
     api: createSlackApi({ fetchImpl: slack.fetchImpl }),
@@ -419,6 +456,7 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
     slack,
     memory,
     state,
+    botLookups,
     lines,
     routes,
     bots,
@@ -931,6 +969,19 @@ describe('connect', () => {
     expect(w.slack.sent).toEqual([]);
   });
 
+  it("answers 409 own-bot while the agent's own bot is live: Slack is asked nothing and nothing is bound; a pending bot connects as before (TASK-1168)", async () => {
+    const w = world();
+    w.state.bot = OWN_BOT;
+    // The code alone: the page that offered the connect is stale, and reading the section again shows the bot.
+    expect(await w.connect(SUPPORT.id, SALES_CH, ADA)).toEqual({ status: 409, body: { error: 'own-bot' } });
+    expect(w.slack.sent).toEqual([]);
+    expect(w.memory.row(INSTALL_ID, SALES_CH)).toBeUndefined();
+
+    w.state.bot = PENDING_BOT;
+    expect(await w.connect(SUPPORT.id, SALES_CH, ADA)).toMatchObject({ status: 200 });
+    expect(w.memory.row(INSTALL_ID, SALES_CH)).toMatchObject({ agentId: SUPPORT.id, connectedByUserId: ADA.id });
+  });
+
   it('answers 502 slack-error when Slack fails, and binds nothing', async () => {
     const w = world();
     w.slack.overrides.set('conversations.join', () => new Response('', { status: 503 }));
@@ -1217,6 +1268,17 @@ describe('disconnect and remember', () => {
     expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: true } });
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
     expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: false } });
+  });
+
+  it('disconnect still removes a shared channel of an agent whose own bot is live', async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    w.state.bot = OWN_BOT;
+    const lookups = w.botLookups.length;
+    expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: true } });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
+    // Disconnect never asks about the bot.
+    expect(w.botLookups).toHaveLength(lookups);
   });
 
   it("remember flips this agent's switch, and answers 404 not-connected for any other channel", async () => {

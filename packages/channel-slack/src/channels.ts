@@ -29,13 +29,24 @@ import type { InstallRow, InstallStore } from './store.js';
  * other channel is refused, and the binding is written last: a refused or
  * failed step binds nothing.
  *
+ * An agent whose own bot is live (liveOwnBot) takes no channel through the
+ * shared app (TASK-1168): its bot answers for it, and the shared bot steps
+ * aside for it (router.ts). Both ways in are refused here, before Slack is
+ * asked anything, and the refusal names that bot, so the person can /invite
+ * it instead. A pending bot changes nothing. It is a plain store read, not
+ * taken under the app lock: a connect racing the bot's Allow can leave one
+ * shared binding, which the router already ignores for that agent and the
+ * agent's settings list as waiting for the bot (`needsInvite`,
+ * agent-routes.ts).
+ *
  * Log lines carry the install, a reason, a step and a code: never a channel's
- * id or name, a person or an agent.
+ * id or name, a person, an agent, or a bot's name or @handle.
  */
 
 export interface ChannelDeps {
   bus: HookBus;
-  installs: Pick<InstallStore, 'current'>;
+  /** `botForAgent`: an agent whose own bot is live takes no channel through the shared app. */
+  installs: Pick<InstallStore, 'current' | 'botForAgent'>;
   channels: ChannelStore;
   secrets: Pick<SecretStore, 'get'>;
   api: SlackApi;
@@ -62,15 +73,24 @@ export type ConnectRefusal =
   | 'agent-gone'
   | 'slack-error';
 
+/** The agent's own bot as a refused connect names it. */
+export interface OwnBot {
+  botName: string;
+  /** Its @handle as Slack named it at the Allow, or null when Slack never said one. */
+  handle: string | null;
+}
+
 /**
  * `code` is Slack's own code, and comes with the reasons a caller may need
  * it to tell apart: `slack-error` (or `id-mismatch`), `needs-reconnect`
  * (`missing_scope` is a scope, the rest a bot token Slack no longer takes)
- * and `not-allowed`.
+ * and `not-allowed`. `own-bot` (TASK-1168) is its own member, never a
+ * ConnectRefusal, so a switch on the reason narrows to the bot it names.
  */
 export type ConnectOutcome =
   | { ok: true; binding: ChannelBinding; reconnected: boolean }
-  | { ok: false; reason: ConnectRefusal; code?: string };
+  | { ok: false; reason: ConnectRefusal; code?: string }
+  | { ok: false; reason: 'own-bot'; ownBot: OwnBot };
 
 export interface AvailableChannel {
   channelId: string;
@@ -250,6 +270,22 @@ export async function checkRights(
   return { ok: true, agentId, agentName: seen.agentName };
 }
 
+// ── The agent's own bot ─────────────────────────────────────────────────────
+
+/**
+ * The agent's own bot (TASK-1167) once its Allow is done (status `active`),
+ * else null: none, or one still pending, is not live. A store failure
+ * propagates, so a caller that can't tell fails closed instead of reading
+ * it as "no bot".
+ */
+export async function liveOwnBot(
+  installs: Pick<InstallStore, 'botForAgent'>,
+  agentId: string,
+): Promise<InstallRow | null> {
+  const bot = await installs.botForAgent(agentId);
+  return bot !== null && bot.status === 'active' ? bot : null;
+}
+
 // ── Slack ───────────────────────────────────────────────────────────────────
 
 /**
@@ -272,12 +308,13 @@ function noWorkspace(d: ChannelDeps): { ok: false; reason: 'no-workspace' } {
 
 /**
  * Connect a channel to an agent the caller already checked `manage` rights
- * on, in `install`: it is active → its bot token → `conversations.info` →
- * the answer is about this channel → public, live, not Slack Connect → not
- * another agent's → the bot joins (unless Slack says it's in) → the binding
- * → the agent still exists. Each step's failure is the named reason and no
- * step after it runs. The requested `channelId` is the one joined and bound.
- * A store, vault or non-Slack failure propagates.
+ * on, in `install`: it is active → its bot token → the agent has no live bot
+ * of its own → `conversations.info` → the answer is about this channel →
+ * public, live, not Slack Connect → not another agent's → the bot joins
+ * (unless Slack says it's in) → the binding → the agent still exists. Each
+ * step's failure is the named reason and no step after it runs. The
+ * requested `channelId` is the one joined and bound. A store, vault or
+ * non-Slack failure propagates.
  *
  * The install is the caller's to choose, never a default: the agent settings
  * work in `installs.current()`; `/ax` in the install its request was signed
@@ -314,6 +351,17 @@ export async function connectChannel(
     if (!(err instanceof SlackApiError)) throw err;
     return refuse(known.get(err.code) ?? 'slack-error', stage, err.code);
   };
+
+  // The agent's own bot answers for it once live (TASK-1168): the shared app
+  // takes no channel for it, so the connect stops here, before Slack is asked
+  // anything, and names the bot to invite instead. Logged by code alone: never
+  // the bot's name or handle. A store failure propagates: a connect we can't
+  // vouch for isn't made.
+  const own = await liveOwnBot(d.installs, i.agentId);
+  if (own !== null) {
+    quietly(d.logger, 'info', 'slack_channel_refused', { installId, reason: 'own-bot', stage: 'own-bot' });
+    return { ok: false, reason: 'own-bot', ownBot: { botName: own.botName, handle: own.botHandle } };
+  }
 
   let info: SlackChannel;
   try {
