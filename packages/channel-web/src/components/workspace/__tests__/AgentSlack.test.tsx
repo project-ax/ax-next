@@ -17,9 +17,11 @@ import {
   fetchAgentSlack,
   fetchAvailableChannels,
   requestSlackBot,
+  setSlackBotChannelRemember,
   setSlackChannelRemember,
   type AgentSlackBot,
   type AgentSlackRead,
+  type BotChannelRow,
   type SlackChannelRow,
 } from '@/lib/agent-slack';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
@@ -31,6 +33,7 @@ vi.mock('@/lib/agent-slack', async (original) => ({
   connectSlackChannel: vi.fn(),
   disconnectSlackChannel: vi.fn(),
   setSlackChannelRemember: vi.fn(),
+  setSlackBotChannelRemember: vi.fn(),
   cancelSlackBot: vi.fn(),
   cancelSlackBotRequest: vi.fn(),
   disconnectSlackBot: vi.fn(),
@@ -44,6 +47,7 @@ const fetchAvailable = vi.mocked(fetchAvailableChannels);
 const connect = vi.mocked(connectSlackChannel);
 const disconnect = vi.mocked(disconnectSlackChannel);
 const remember = vi.mocked(setSlackChannelRemember);
+const rememberBot = vi.mocked(setSlackBotChannelRemember);
 const cancel = vi.mocked(cancelSlackBot);
 const disconnectBot = vi.mocked(disconnectSlackBot);
 const request = vi.mocked(requestSlackBot);
@@ -200,14 +204,16 @@ describe("the agent's own bot, around the channel list", () => {
     expect(screen.queryByRole('combobox', { name: 'Connect a channel' })).toBeNull();
   });
 
-  it('a channel it still needs has no memory switch, no "Connected by" and no Reconnect: only the hint and, for a manager, Disconnect', async () => {
+  it('a channel it still needs has its memory switch, but no "Connected by" and no Reconnect: its hint and, for a manager, Disconnect', async () => {
     renderIt(ready([{ ...OPS, needsInvite: true }], true, LIVE_BOT));
     await screen.findByText('Run /invite @quill here.');
-    expect(screen.queryByRole('switch')).toBeNull();
+    // The switch is the value the bot will start from once it answers here (TASK-1180).
+    expect(screen.getByRole('switch', { name: 'Let Quill remember this channel' })).toHaveAccessibleDescription(
+      'When this is on, Quill remembers what people with access to it say here. It never remembers what anyone else says.',
+    );
     expect(screen.queryByText(/Connected by/)).toBeNull();
     expect(screen.queryByText('Needs reconnecting')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
-    expect(screen.queryByText(/remembers what people with access/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
   });
 
@@ -726,5 +732,134 @@ describe('needs reconnecting', () => {
     expect(await screen.findByText('Needs reconnecting')).toBeInTheDocument();
     expect(screen.getByText(/until a team admin reconnects it/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+  });
+});
+
+describe("the agent's own bot's channels (TASK-1180)", () => {
+  const BOT_SUPPORT: BotChannelRow = { channelId: 'C0BOTSUP01', name: 'help', remember: true };
+  const BOT_OPS: BotChannelRow = { channelId: 'C0BOTOPS01', name: 'ops-desk', remember: false };
+  const withBotChannels = (read: AgentSlackRead, botChannels: BotChannelRow[]) =>
+    ({ ...read, botChannels }) as AgentSlackRead;
+  const botList = () => screen.findByRole('list', { name: 'Channels its own bot has answered in' });
+  const NOTE =
+    'When this is on, Quill remembers what people with access to it say here. It never remembers what anyone else says.';
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('live: the channels its own bot has answered in are listed under one line, each with the same memory switch a shared channel has', async () => {
+    renderIt(withBotChannels(ready([SUPPORT], true, LIVE_BOT), [BOT_SUPPORT, BOT_OPS]));
+    expect(await screen.findByText('@quill has answered in these channels.')).toBeInTheDocument();
+    const list = await botList();
+    expect(within(list).getByText('help')).toBeInTheDocument();
+    expect(within(list).getByText('ops-desk')).toBeInTheDocument();
+    const [first, second] = within(list).getAllByRole('switch', { name: 'Let Quill remember this channel' });
+    expect(first).toBeChecked();
+    expect(second).not.toBeChecked();
+    expect(first).toHaveAccessibleDescription(NOTE);
+    // No Disconnect and no "Connected by" on these rows.
+    expect(within(list).queryByRole('button')).toBeNull();
+    expect(within(list).queryByText(/Connected by/)).toBeNull();
+    // The shared list is still its own list, with its own switch.
+    const shared = screen.getByRole('list', { name: 'Connected channels' });
+    expect(within(shared).getByRole('switch', { name: 'Let Quill remember this channel' })).toHaveAccessibleDescription(NOTE);
+  });
+
+  it('a manager flips one: the switch holds its old place while the write is out, then lands', async () => {
+    const write = deferred<void>();
+    rememberBot.mockImplementationOnce(() => write.promise);
+    renderIt(withBotChannels(ready([], true, LIVE_BOT), [BOT_SUPPORT]));
+    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(rememberBot).toHaveBeenCalledWith('a1', 'C0BOTSUP01', false));
+    expect(remember).not.toHaveBeenCalled();
+    expect(toggle).toBeDisabled();
+    expect(toggle).toBeChecked();
+    write.resolve();
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(toggle).not.toBeDisabled();
+  });
+
+  it('a failed flip leaves the switch where it was and says nothing changed', async () => {
+    rememberBot.mockRejectedValueOnce(new AgentSlackError(500, 'internal'));
+    renderIt(withBotChannels(ready([], true, LIVE_BOT), [BOT_SUPPORT]));
+    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
+    fireEvent.click(toggle);
+    expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't change that, so nothing is different. Try again.");
+    expect(toggle).toBeChecked();
+    expect(toggle).not.toBeDisabled();
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [403, 'forbidden'],
+    [404, 'not-connected'],
+    [409, 'personal-agent'],
+  ])('a refusal that says the page is stale (%i) reads the status again', async (status, code) => {
+    rememberBot.mockRejectedValueOnce(new AgentSlackError(status, code));
+    renderIt(withBotChannels(ready([], true, LIVE_BOT), [BOT_SUPPORT]));
+    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
+    fetchStatus.mockResolvedValueOnce(ready([], false, LIVE_BOT));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Channels its own bot has answered in' })).toBeNull());
+    expect(screen.queryByText(/nothing is different/)).toBeNull();
+  });
+
+  it('a member sees each channel, and the note only where memory is on; no switch', async () => {
+    renderIt(withBotChannels(ready([], false, LIVE_BOT), [BOT_SUPPORT, BOT_OPS]));
+    const list = await botList();
+    expect(within(list).getByText('help')).toBeInTheDocument();
+    expect(within(list).getByText('ops-desk')).toBeInTheDocument();
+    expect(within(list).queryByRole('switch')).toBeNull();
+    expect(
+      within(list).getAllByText(
+        'Quill remembers what people with access to it say here. It never remembers what anyone else says.',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("with Slack not connected, a live bot's channels are still listed, and a manager can flip them", async () => {
+    rememberBot.mockResolvedValueOnce();
+    renderIt(withBotChannels({ state: 'no-workspace', canManage: true, bot: LIVE_BOT }, [BOT_OPS]));
+    expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
+    expect(screen.getByText('@quill has answered in these channels.')).toBeInTheDocument();
+    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(rememberBot).toHaveBeenCalledWith('a1', 'C0BOTOPS01', true));
+    await waitFor(() => expect(toggle).toBeChecked());
+  });
+
+  it('no botChannels (an older host, or no live bot): no list', async () => {
+    renderIt(ready([SUPPORT], true, LIVE_BOT));
+    await screen.findByRole('list', { name: 'Connected channels' });
+    expect(screen.queryByText(/has answered in these channels/)).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Channels its own bot has answered in' })).toBeNull();
+  });
+
+  it('an empty botChannels draws nothing either', async () => {
+    renderIt(withBotChannels(ready([], true, LIVE_BOT), []));
+    await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.');
+    expect(screen.queryByText(/has answered in these channels/)).toBeNull();
+  });
+
+  it('with no handle, the line names the bot', async () => {
+    renderIt(withBotChannels(ready([], true, { ...LIVE_BOT, handle: null }), [BOT_SUPPORT]));
+    expect(await screen.findByText('Quill has answered in these channels.')).toBeInTheDocument();
+  });
+
+  it("a moved channel's switch is the bot's starting value: a manager flips it through the shared route, and a 409 own-bot reads the status again", async () => {
+    remember.mockRejectedValueOnce(new AgentSlackError(409, 'own-bot'));
+    renderIt(ready([MOVED], true, LIVE_BOT));
+    const toggle = await screen.findByRole('switch', { name: 'Let Quill remember this channel' });
+    expect(toggle).not.toBeChecked();
+    fetchStatus.mockResolvedValueOnce(withBotChannels(ready([], true, LIVE_BOT), [BOT_SUPPORT]));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(remember).toHaveBeenCalledWith('a1', 'C0SUPPORT1', true));
+    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('@quill has answered in these channels.')).toBeInTheDocument();
+    expect(screen.queryByText(/nothing is different/)).toBeNull();
   });
 });
