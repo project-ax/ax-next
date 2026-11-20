@@ -1825,6 +1825,7 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
       const a = await w.call('POST', '/bot/remember', agentId, as, { channelId: SUPPORT_CH, remember: false });
       return { status: a.status, body: a.body };
     };
+    const lookups = w.botLookups.length;
 
     expect((await flip(SUPPORT.id, null)).status).toBe(401);
     // Outside the team, a workspace admin outside it, another team's admin, a missing agent: one 404.
@@ -1837,6 +1838,8 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
     expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
     expect(w.memory.calls).not.toContain('setRemember');
+    // Nothing is read for anyone refused, not even the agent's bot.
+    expect(w.botLookups).toHaveLength(lookups);
 
     expect(await flip(SUPPORT.id, ADA)).toEqual({ status: 200, body: {} });
     expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
@@ -2036,7 +2039,9 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
       body: { state: 'no-workspace', canManage: false, bot: LIVE, botChannels },
     });
 
-    // A pending bot, no bot, or a live answer whose bot is gone by the route's own read: no list.
+    // A pending bot, no bot, a live answer whose bot is gone by the route's own read, or a bot that
+    // went live after the bot domain answered pending: no list. A row never needs a bot the answer
+    // doesn't show (TASK-1168's rule).
     const pending: AgentSlackBot = {
       state: 'pending',
       botName: 'Support Helper',
@@ -2049,6 +2054,7 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
         [PENDING_BOT, pending],
         [null, NO_BOT],
         [null, LIVE],
+        [OWN_BOT, pending],
       ] as const) {
         w.state.install = install;
         w.state.bot = bot;
