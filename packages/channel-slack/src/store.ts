@@ -55,7 +55,10 @@ export interface InstallRow {
   /**
    * When the configuration token this install uses was added. At Connect
    * that is the same instant as `createdAt`; after a Replace it is the latest
-   * replace (TASK-1128).
+   * replace (TASK-1128). A bot's row keeps the time it was asked for instead:
+   * one person's token serves all their apps (TASK-1175) and has no date of its
+   * own, so a Replace or a paste through another of their apps changes the
+   * token without moving this date.
    */
   configTokenAddedAt: Date;
   installedAt: Date | null;

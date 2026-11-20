@@ -20,9 +20,10 @@ import { memoryChannelStore } from './memory-channel-store.js';
   admin of the agent's team manages; workspace-admin status never counts;
   a personal agent is refused before Slack is asked anything.
 
-  The agent's own bot (TASK-1167) sits behind the same gate: its routes are
-  checked here for who gets through and what the domain is handed, with a
-  stub domain (bots.test.ts tests the domain itself).
+  The agent's own bot (TASK-1167), and its Disconnect (TASK-1172), sit
+  behind the same gate: its routes are checked here for who gets through and
+  what the domain is handed, with a stub domain (bots.test.ts tests the
+  domain itself).
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -271,7 +272,8 @@ type Suffix =
   | '/remember'
   | '/bot'
   | '/bot/install-url'
-  | '/bot/cancel';
+  | '/bot/cancel'
+  | '/bot/disconnect';
 
 /** Every route, with a body each write would accept. */
 const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknown }> = [
@@ -283,6 +285,7 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   { method: 'POST', suffix: '/bot', body: { botName: 'Support Helper' } },
   { method: 'POST', suffix: '/bot/install-url' },
   { method: 'POST', suffix: '/bot/cancel' },
+  { method: 'POST', suffix: '/bot/disconnect', body: { installId: OWN_BOT.installId } },
 ];
 const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '');
 
@@ -300,11 +303,21 @@ const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
  * throw. The routes' own job is who gets through, and what they hand on.
  */
 function stubBots() {
-  const calls: Array<{ method: 'request' | 'installUrl' | 'cancel' | 'status'; input: Record<string, unknown> }> = [];
-  const answers: { request: BotReply; installUrl: BotReply; cancel: BotReply; status: AgentSlackBot } = {
+  const calls: Array<{
+    method: 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status';
+    input: Record<string, unknown>;
+  }> = [];
+  const answers: {
+    request: BotReply;
+    installUrl: BotReply;
+    cancel: BotReply;
+    disconnect: BotReply;
+    status: AgentSlackBot;
+  } = {
     request: { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=first', iconSet: true } },
     installUrl: { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=again' } },
     cancel: { status: 200, body: { appDeleted: true } },
+    disconnect: { status: 200, body: { appDeleted: true } },
     status: NO_BOT,
   };
   const state: { fail: unknown } = { fail: undefined };
@@ -313,7 +326,7 @@ function stubBots() {
     calls.push({ method, input: ctx === undefined ? rest : { ctxUserId: ctx.userId, ...rest } });
     if (state.fail !== undefined) throw state.fail;
   };
-  const bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'status'> = {
+  const bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status'> = {
     request: async (i) => {
       enter('request', i);
       return answers.request;
@@ -325,6 +338,10 @@ function stubBots() {
     cancel: async (i) => {
       enter('cancel', i);
       return answers.cancel;
+    },
+    disconnect: async (i) => {
+      enter('disconnect', i);
+      return answers.disconnect;
     },
     status: async (i) => {
       enter('status', i);
@@ -524,6 +541,13 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
+      // Disconnect the agent's own bot, pending or live (TASK-1172): its body is the install id the page showed.
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/disconnect',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
     ]);
     for (const r of w.routes) expect(r).not.toHaveProperty('bypassCsrf');
   });
@@ -629,7 +653,7 @@ describe('rights', () => {
     const oversized = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
     const arrayBody = JSON.stringify([SUPPORT_CH]);
     const extraKey = JSON.stringify({ channelId: SUPPORT_CH, agentId: SALES.id });
-    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot'] as const) {
+    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot', '/bot/disconnect'] as const) {
       for (const body of [garbage, oversized, arrayBody, extraKey]) {
         const label = `${suffix} ${typeof body === 'string' ? body : 'oversized'}`;
         // Not a member of the team (or a workspace admin outside it): as unknown as a missing agent.
@@ -747,19 +771,75 @@ describe('the section', () => {
     for (const install of [null, { ...INSTALL, status: 'pending' as const, teamId: null, teamName: null }]) {
       const w = world();
       w.state.install = install;
-      for (const [agentId, as] of [
-        [SUPPORT.id, ADA],
-        [SUPPORT.id, MEL],
-        [PATS.id, PAT],
+      for (const [agentId, as, canManage] of [
+        [SUPPORT.id, ADA, true],
+        [SUPPORT.id, MEL, false],
+        [PATS.id, PAT, false],
       ] as const) {
         expect(await w.status(agentId, as)).toEqual({
           status: 200,
-          body: { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+          body: { state: 'no-workspace', canManage, bot: { state: 'none', configTokenStored: false } },
         });
       }
       // Still nothing for someone who can't see it.
       expect(await w.status(SUPPORT.id, OTTO)).toEqual(NOT_FOUND);
     }
+  });
+
+  it('no-workspace says whether the person reading manages the agent: a team admin true, a member false, a personal agent false', async () => {
+    const noWorkspace = (canManage: boolean) => ({ status: 200, body: { state: 'no-workspace', canManage, bot: NO_BOT } });
+    // Even under an agents rule that WOULD let a workspace admin through.
+    const w = world({ workspaceAdminsMayManage: true });
+    w.state.install = null;
+    expect(await w.status(SUPPORT.id, ADA)).toEqual(noWorkspace(true));
+    expect(await w.status(SUPPORT.id, GRACE)).toEqual(noWorkspace(true));
+    expect(await w.status(SUPPORT.id, MEL)).toEqual(noWorkspace(false));
+    // A workspace admin who is a plain member of the team is a member here too.
+    expect(await w.status(SUPPORT.id, WILL)).toEqual(noWorkspace(false));
+    expect(await w.status(PATS.id, PAT)).toEqual(noWorkspace(false));
+    // The manage question the writes ask, as a non-admin.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toContainEqual({
+      agentId: SUPPORT.id,
+      actor: { userId: WILL.id, isAdmin: false },
+    });
+
+    // A manage answer that isn't one reads as not managing, never as a manager.
+    const junk = world();
+    junk.state.install = null;
+    junk.people.answers.set('agents:can-set-shared-credential', { allowed: 'true' });
+    expect(await junk.status(SUPPORT.id, ADA)).toEqual(noWorkspace(false));
+  });
+
+  it('no-workspace with a live bot: a team admin reads canManage true, so the bot can still be disconnected after Slack is', async () => {
+    const w = world();
+    // As the domain answers a manager: with the install id its Disconnect takes. A member gets null.
+    const live: AgentSlackBot = {
+      state: 'live',
+      botName: 'Support Helper',
+      handle: 'supporthelper',
+      approver: 'Grace Hopper',
+      needsClaim: false,
+      installId: OWN_BOT.installId,
+    };
+    w.bots.answers.status = live;
+    // Admin › Slack disconnected the shared app; the agent's own bot stayed.
+    w.state.install = null;
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: true, bot: live },
+    });
+    w.bots.answers.status = { ...live, installId: null };
+    expect(await w.status(SUPPORT.id, MEL)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: false, bot: { ...live, installId: null } },
+    });
+    // ...and the Disconnect that offers needs no shared app: it reaches the domain.
+    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, { installId: OWN_BOT.installId });
+    expect({ status: a.status, body: a.body }).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(w.bots.calls.at(-1)).toEqual({
+      method: 'disconnect',
+      input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id, installId: OWN_BOT.installId },
+    });
   });
 
   it("lists the agent's channels, oldest first, with who connected each and its memory switch", async () => {
@@ -835,12 +915,14 @@ describe('the section', () => {
   });
 
   describe("with the agent's own bot (TASK-1168)", () => {
+    /** As a member reads it: no install id (only those who manage the agent get one, for its Disconnect). */
     const LIVE: AgentSlackBot = {
       state: 'live',
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
       needsClaim: false,
+      installId: null,
     };
     const channelIds = async (w: ReturnType<typeof world>): Promise<string[]> => {
       const got = await w.status(SUPPORT.id, MEL);
@@ -885,7 +967,16 @@ describe('the section', () => {
 
     it('a pending bot, no bot, or a live answer whose bot is gone by the route\'s own read: every row needsInvite false', async () => {
       const pairs: Array<[InstallRow | null, AgentSlackBot]> = [
-        [PENDING_BOT, { state: 'pending', botName: 'Support Helper', approver: 'Grace Hopper', canContinue: false }],
+        [
+          PENDING_BOT,
+          {
+            state: 'pending',
+            botName: 'Support Helper',
+            approver: 'Grace Hopper',
+            canContinue: false,
+            installId: PENDING_BOT.installId,
+          },
+        ],
         [null, { state: 'none', configTokenStored: false }],
         [null, LIVE],
       ];
@@ -1233,6 +1324,24 @@ describe('the bot routes', () => {
       status: 409,
       body: { error: 'not-pending' },
     });
+    // A bot that isn't the one the page showed (gone, or replaced since).
+    const shown = { installId: OWN_BOT.installId };
+    w.bots.answers.disconnect = { status: 409, body: { error: 'no-bot' } };
+    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
+      status: 409,
+      body: { error: 'no-bot' },
+    });
+    // The rights the domain asked again inside the lock, and an app Slack wouldn't delete.
+    w.bots.answers.disconnect = { status: 403, body: { error: 'forbidden' } };
+    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
+      status: 403,
+      body: { error: 'forbidden' },
+    });
+    w.bots.answers.disconnect = { status: 200, body: { appDeleted: false } };
+    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
+      status: 200,
+      body: { appDeleted: false },
+    });
   });
 
   it('install-url and cancel reach the domain for a team admin of the agent, and never read a body', async () => {
@@ -1251,40 +1360,105 @@ describe('the bot routes', () => {
     ]);
   });
 
+  it('disconnect hands the domain the install id the page showed, for the agent in the path, as the person asking', async () => {
+    const w = world();
+    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, { installId: OWN_BOT.installId });
+    expect({ status: a.status, body: a.body }).toEqual({ status: 200, body: { appDeleted: true } });
+    // The id as sent, even one the agent's bot doesn't have: whether it names the agent's bot is the domain's to say.
+    const g = await w.call('POST', '/bot/disconnect', SUPPORT.id, GRACE, { installId: INSTALL_ID });
+    expect({ status: g.status, body: g.body }).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(w.bots.calls).toEqual([
+      {
+        method: 'disconnect',
+        input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id, installId: OWN_BOT.installId },
+      },
+      {
+        method: 'disconnect',
+        input: { ctxUserId: GRACE.id, actorUserId: GRACE.id, agentId: SUPPORT.id, installId: INSTALL_ID },
+      },
+    ]);
+  });
+
+  it('disconnect takes { installId } and nothing else: an unknown key, a missing, non-string or malformed id is a 400 before the domain; past the cap a 413', async () => {
+    const w = world();
+    const id = OWN_BOT.installId;
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['no body at all (an older page)', Buffer.alloc(0), { error: 'invalid-body' }],
+      ['an unknown key', { installId: 'x', extra: 1 }, { error: 'invalid-body' }],
+      ['an unknown key beside a good id, even one naming another agent', { installId: id, agentId: SALES.id }, { error: 'invalid-body' }],
+      ['not JSON', 'garbage', { error: 'invalid-body' }],
+      ['an array', '[]', { error: 'invalid-body' }],
+      ['null', 'null', { error: 'invalid-body' }],
+      ['bytes that are not UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), { error: 'invalid-body' }],
+      ['no installId', {}, { error: 'invalid-install-id' }],
+      ['a number', { installId: 42 }, { error: 'invalid-install-id' }],
+      ['null for the id', { installId: null }, { error: 'invalid-install-id' }],
+      ['an id too short', { installId: 'short' }, { error: 'invalid-install-id' }],
+      ['an id one too long', { installId: `${id}A` }, { error: 'invalid-install-id' }],
+      ['an id with a character no install id has', { installId: `${'A'.repeat(21)}/` }, { error: 'invalid-install-id' }],
+      ['an id with a space around it', { installId: ` ${id}` }, { error: 'invalid-install-id' }],
+    ];
+    for (const [what, body, error] of cases) {
+      const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, body);
+      expect({ status: a.status, body: a.body }, what).toEqual({ status: 400, body: error });
+    }
+    // http-server's maxBodyBytes refuses it first; the route's own check is the backstop.
+    const big = Buffer.from(JSON.stringify({ installId: id, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
+    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, big);
+    expect({ status: a.status, body: a.body }).toEqual({ status: 413, body: { error: 'body-too-large' } });
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
   it('a fault in the domain is a 500, logged by its code and the route alone', async () => {
     const w = world();
     w.bots.state.fail = Object.assign(new Error(`vault down holding ${REFRESH}`), { code: 'ECONNRESET' });
-    for (const suffix of ['/bot', '/bot/install-url', '/bot/cancel'] as const) {
-      const a = await w.call('POST', suffix, SUPPORT.id, ADA, suffix === '/bot' ? { botName: 'Support Helper' } : undefined);
+    const bodies: Partial<Record<Suffix, unknown>> = {
+      '/bot': { botName: 'Support Helper' },
+      '/bot/disconnect': { installId: OWN_BOT.installId },
+    };
+    for (const suffix of ['/bot', '/bot/install-url', '/bot/cancel', '/bot/disconnect'] as const) {
+      const a = await w.call('POST', suffix, SUPPORT.id, ADA, bodies[suffix]);
       expect({ status: a.status, body: a.body }, suffix).toEqual({ status: 500, body: { error: 'internal' } });
     }
     expect(w.lines).toEqual([
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot', code: 'ECONNRESET' } },
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-install-url', code: 'ECONNRESET' } },
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-cancel', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-disconnect', code: 'ECONNRESET' } },
     ]);
     expect(JSON.stringify(w.lines)).not.toContain(REFRESH);
   });
 
   it('the section asks the bot domain as the person reading, says whether they manage and whether the shared bot is live, and shows its answer', async () => {
     const w = world();
+    // As the domain answers a manager; a member, who can't disconnect it, gets no install id.
     const live: AgentSlackBot = {
       state: 'live',
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
       needsClaim: false,
+      installId: OWN_BOT.installId,
     };
-    w.bots.answers.status = live;
+    w.bots.answers.status = { ...live, installId: null };
     expect(await w.status(SUPPORT.id, MEL)).toMatchObject({
       status: 200,
-      body: { state: 'ready', canManage: false, bot: live },
+      body: { state: 'ready', canManage: false, bot: { ...live, installId: null } },
     });
+    w.bots.answers.status = live;
     // A live bot outlives the shared install: no workspace still shows it.
     w.state.install = null;
-    expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 200, body: { state: 'no-workspace', bot: live } });
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: true, bot: live },
+    });
     w.state.install = { ...INSTALL, status: 'pending', teamId: null, teamName: null };
-    expect(await w.status(SUPPORT.id, GRACE)).toEqual({ status: 200, body: { state: 'no-workspace', bot: live } });
+    expect(await w.status(SUPPORT.id, GRACE)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: true, bot: live },
+    });
     expect(w.bots.calls).toEqual([
       {
         method: 'status',
@@ -1301,7 +1475,10 @@ describe('the bot routes', () => {
     ]);
 
     // A personal agent has no bot of its own: its section reads none, and the domain isn't asked.
-    expect(await w.status(PATS.id, PAT)).toEqual({ status: 200, body: { state: 'no-workspace', bot: NO_BOT } });
+    expect(await w.status(PATS.id, PAT)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: false, bot: NO_BOT },
+    });
     expect(w.bots.calls).toHaveLength(3);
   });
 });

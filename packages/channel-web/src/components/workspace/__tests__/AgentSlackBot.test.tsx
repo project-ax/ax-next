@@ -6,12 +6,13 @@
  * because jsdom has neither a canvas nor a page to leave.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentSlackBot } from '../AgentSlackBot';
 import {
   AgentSlackError,
   cancelSlackBot,
   continueSlackBot,
+  disconnectSlackBot,
   requestSlackBot,
   type AgentSlackBot as Bot,
 } from '@/lib/agent-slack';
@@ -24,6 +25,7 @@ vi.mock('@/lib/agent-slack', async (original) => ({
   requestSlackBot: vi.fn(),
   continueSlackBot: vi.fn(),
   cancelSlackBot: vi.fn(),
+  disconnectSlackBot: vi.fn(),
 }));
 vi.mock('@/lib/slack-avatar', () => ({ renderSlackAvatar: vi.fn() }));
 vi.mock('@/lib/slack-admin', async (original) => ({
@@ -34,14 +36,24 @@ vi.mock('@/lib/slack-admin', async (original) => ({
 const request = vi.mocked(requestSlackBot);
 const continueIt = vi.mocked(continueSlackBot);
 const cancel = vi.mocked(cancelSlackBot);
+const disconnect = vi.mocked(disconnectSlackBot);
 const go = vi.mocked(goToSlack);
 const avatar = vi.mocked(renderSlackAvatar);
 
 const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1';
 const NONE_NO_TOKEN: Bot = { state: 'none', configTokenStored: false };
 const NONE_STORED: Bot = { state: 'none', configTokenStored: true };
-const PENDING: Bot = { state: 'pending', botName: 'Quill Bot', approver: 'Ada Lovelace', canContinue: true };
-const LIVE: Bot = { state: 'live', botName: 'Quill Bot', handle: 'quill_bot', approver: 'Ada Lovelace', needsClaim: false };
+/** The bot's install id, as a manager's status carries it: the key its Disconnect takes. */
+const BOT_ID = 'Hb7Kq2Lw8vNc5Xr1Bm7KdA';
+const PENDING: Bot = { state: 'pending', botName: 'Quill Bot', approver: 'Ada Lovelace', canContinue: true, installId: BOT_ID };
+const LIVE: Bot = {
+  state: 'live',
+  botName: 'Quill Bot',
+  handle: 'quill_bot',
+  approver: 'Ada Lovelace',
+  needsClaim: false,
+  installId: BOT_ID,
+};
 /** No cancel note, and nobody listening for one (the note's life across a re-read is `AgentSlack`'s, tested there). */
 const QUIET = { leftOver: null, onCancelled: () => {}, onRequesting: () => {} };
 
@@ -64,6 +76,7 @@ beforeEach(() => {
   request.mockResolvedValue({ installUrl: INSTALL_URL, iconSet: true });
   continueIt.mockResolvedValue({ installUrl: INSTALL_URL });
   cancel.mockResolvedValue({ appDeleted: true });
+  disconnect.mockResolvedValue({ appDeleted: true });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -327,7 +340,12 @@ describe('pending', () => {
       );
       fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
       await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-      expect(onCancelled).toHaveBeenCalledWith({ appDeleted, approverIsViewer: canContinue, approver: 'Ada Lovelace' });
+      expect(onCancelled).toHaveBeenCalledWith({
+        how: 'cancelled',
+        appDeleted,
+        approverIsViewer: canContinue,
+        approver: 'Ada Lovelace',
+      });
       expect(order).toEqual(['cancelled', 'changed']);
     },
   );
@@ -352,7 +370,7 @@ describe('pending', () => {
         bot={NONE_STORED}
         canManage
         {...QUIET}
-        leftOver={{ appDeleted: false, approverIsViewer: true, approver: 'Ada Lovelace' }}
+        leftOver={{ how: 'cancelled', appDeleted: false, approverIsViewer: true, approver: 'Ada Lovelace' }}
         onRequesting={onRequesting}
         onChanged={vi.fn()}
       />,
@@ -376,7 +394,7 @@ describe('pending', () => {
         bot={NONE_STORED}
         canManage
         {...QUIET}
-        leftOver={{ appDeleted: false, approverIsViewer: false, approver: 'Ada Lovelace' }}
+        leftOver={{ how: 'cancelled', appDeleted: false, approverIsViewer: false, approver: 'Ada Lovelace' }}
         onChanged={vi.fn()}
       />,
     );
@@ -407,11 +425,12 @@ describe('live', () => {
     expect(screen.getByText('@quill_bot is live. Invite it to a channel with /invite @quill_bot.')).toBeInTheDocument();
     expect(screen.getByText('Set up by Ada Lovelace.')).toBeInTheDocument();
     expect(screen.queryByText(/needs a team admin to claim it/)).toBeNull();
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
   it('a member sees the live line but not who set it up', () => {
-    renderIt(LIVE, false);
+    // As the server answers a member: no install id.
+    renderIt({ ...LIVE, installId: null }, false);
     expect(screen.getByText('@quill_bot is live. Invite it to a channel with /invite @quill_bot.')).toBeInTheDocument();
     expect(screen.queryByText(/Set up by/)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
@@ -434,6 +453,121 @@ describe('live', () => {
     );
     expect(screen.getByText(line)).toBeInTheDocument();
   });
+
+  it('a manager sees Disconnect bot; a member does not', () => {
+    const { unmount } = render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage {...QUIET} onChanged={vi.fn()} />,
+    );
+    expect(screen.getByRole('button', { name: 'Disconnect bot' })).toBeEnabled();
+    unmount();
+    render(
+      <AgentSlackBot
+        agentId="a1"
+        agentName="Quill"
+        bot={{ ...LIVE, installId: null }}
+        canManage={false}
+        {...QUIET}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Disconnect bot' })).toBeNull();
+  });
+
+  it('a live bot with no install id to name (an older server) offers no Disconnect bot, even to a manager', () => {
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={{ ...LIVE, installId: null }} canManage {...QUIET} onChanged={vi.fn()} />,
+    );
+    expect(screen.getByText('@quill_bot is live. Invite it to a channel with /invite @quill_bot.')).toBeInTheDocument();
+    expect(screen.getByText('Set up by Ada Lovelace.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disconnect bot' })).toBeNull();
+  });
+
+  it('Disconnect bot asks first: the dialog says the bot leaves every channel, @handle stops working, its Slack app is deleted, and the shared bot answers again; Keep it sends nothing', async () => {
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Disconnect @quill_bot?' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "Quill Bot leaves every Slack channel it's in, and @quill_bot stops working. We'll delete its Slack app. The shared bot answers for Quill again in any channel it was connected to before.",
+      ),
+    ).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/\bAX\b/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  it('with no handle the dialog names the bot and says mentioning it stops working; without the shared app connected it promises nothing about the shared bot', async () => {
+    renderIt({ ...LIVE, handle: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Disconnect Quill Bot?' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Quill Bot leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app."),
+    ).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/shared bot/);
+  });
+
+  it("confirming disconnects the bot the dialog showed, by its install id, hands up { how: 'disconnected', appDeleted, approverIsViewer: false, approver } and reads the status again", async () => {
+    disconnect.mockResolvedValueOnce({ appDeleted: false });
+    const order: string[] = [];
+    const onCancelled = vi.fn(() => order.push('cancelled'));
+    const onChanged = vi.fn(() => order.push('changed'));
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage {...QUIET} onCancelled={onCancelled} onChanged={onChanged} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(disconnect).toHaveBeenCalledWith('a1', BOT_ID);
+    expect(onCancelled).toHaveBeenCalledWith({
+      how: 'disconnected',
+      appDeleted: false,
+      approverIsViewer: false,
+      approver: 'Ada Lovelace',
+    });
+    expect(order).toEqual(['cancelled', 'changed']);
+  });
+
+  it('no-bot (someone got there first) closes the dialog and reads the status again; a failure says so in the dialog and keeps the bot', async () => {
+    disconnect.mockRejectedValueOnce(refusal(409, 'no-bot'));
+    const onChanged = renderIt(LIVE);
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    disconnect.mockRejectedValueOnce(refusal(500, 'internal'));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Something went wrong. Try again in a minute.');
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(within(dialog).getByRole('button', { name: 'Disconnect' })).toBeEnabled();
+  });
+
+  it("a disconnect whose Slack app couldn't be deleted says so in its own words", () => {
+    render(
+      <AgentSlackBot
+        agentId="a1"
+        agentName="Quill"
+        bot={NONE_STORED}
+        canManage
+        {...QUIET}
+        leftOver={{ how: 'disconnected', appDeleted: false, approverIsViewer: false, approver: 'Ada Lovelace' }}
+        onChanged={vi.fn()}
+      />,
+    );
+    const note = screen.getByText(/couldn.t confirm its Slack app was deleted/);
+    expect(note).toHaveTextContent(
+      "We disconnected the bot, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Ada Lovelace set it up and can also delete it in Slack's app settings.",
+    );
+    expect(note).not.toHaveTextContent(/cancelled/);
+  });
 });
 
 describe('words', () => {
@@ -442,5 +576,14 @@ describe('words', () => {
       <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage {...QUIET} onChanged={vi.fn()} />,
     );
     expect(container.textContent).not.toMatch(/\bAX\b/);
+  });
+
+  it('never writes the product name in a sentence, the open Disconnect dialog included', async () => {
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    await screen.findByRole('dialog');
+    expect(document.body.textContent).not.toMatch(/\bAX\b/);
   });
 });

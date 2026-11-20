@@ -36,6 +36,12 @@ vi.mock('../lib/slack-admin', async (importOriginal) => {
   return { ...actual, fetchSlackStatus: vi.fn() };
 });
 
+// Admin › Slack's team bots card (TASK-1172) reads its own route: none, here.
+vi.mock('../lib/slack-bots-admin', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/slack-bots-admin')>();
+  return { ...actual, fetchSlackBots: vi.fn(async () => ({ state: 'ready', bots: [] })) };
+});
+
 vi.mock('../lib/workspace-api', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {

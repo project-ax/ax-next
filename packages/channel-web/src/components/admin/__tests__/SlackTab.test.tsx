@@ -20,6 +20,7 @@ import {
   SLACK_ERROR_COPY,
   type SlackStatusRead,
 } from '@/lib/slack-admin';
+import { disconnectTeamBot, fetchSlackBots } from '@/lib/slack-bots-admin';
 import { CONFIG_ACCESS_PREFIX, CONFIG_REFRESH_PREFIX, fakeConfigAccessToken, fakeConfigRefreshToken } from '@/test-utils/fake-slack-tokens';
 
 vi.mock('@/lib/slack-admin', async (original) => ({
@@ -35,6 +36,13 @@ vi.mock('@/lib/slack-admin', async (original) => ({
 }));
 
 vi.mock('@/lib/slack-avatar', () => ({ renderSlackAvatar: vi.fn() }));
+
+// The team bots card (TASK-1172) reads its own list; its own tests are in SlackBotsCard.test.tsx.
+vi.mock('@/lib/slack-bots-admin', async (original) => ({
+  ...(await original<typeof import('@/lib/slack-bots-admin')>()),
+  fetchSlackBots: vi.fn(),
+  disconnectTeamBot: vi.fn(),
+}));
 
 const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1.2&state=ab';
 // Distinctive, so a leak into the page is easy to spot.
@@ -93,6 +101,7 @@ async function leftoverNote(several = false): Promise<HTMLElement> {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(renderSlackAvatar).mockResolvedValue('AVATARB64');
+  vi.mocked(fetchSlackBots).mockResolvedValue({ state: 'ready', bots: [] });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -940,5 +949,48 @@ describe('Replace the configuration token', () => {
     expect(replace).not.toHaveBeenCalled();
     dialog = await openDialog();
     expect(tokenInput(dialog).value).toBe('');
+  });
+});
+
+describe("Team agents' own bots", () => {
+  const BOT = {
+    installId: 'U2FsZXNCb3RJbnN0YWxsMQ',
+    botName: 'Sales Desk',
+    handle: 'salesdesk',
+    approver: 'Sam Sales',
+    state: 'live' as const,
+    addedAt: CONNECTED_AT,
+  };
+
+  it('the team bots card sits below the status, outlives the status re-read its disconnect asks for, and keeps its note', async () => {
+    let reRead!: (s: SlackStatusRead) => void;
+    status.mockResolvedValueOnce(CONNECTED).mockReturnValueOnce(new Promise<SlackStatusRead>((r) => (reRead = r)));
+    vi.mocked(fetchSlackBots)
+      .mockReset()
+      .mockResolvedValueOnce({ state: 'ready', bots: [BOT] })
+      .mockResolvedValueOnce({ state: 'ready', bots: [] });
+    vi.mocked(disconnectTeamBot).mockResolvedValueOnce({ appDeleted: false });
+    render(<SlackTab />);
+
+    const connected = await screen.findByText('Connected to Canopy Works');
+    const cardTitle = await screen.findByRole('heading', { level: 2, name: "Team agents' own bots" });
+    expect(connected.compareDocumentPosition(cardTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Slack is connected, so the dialog says the shared bot answers again.
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('The shared bot answers for its agent again');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+
+    // The tab reads its status again; the card is outside that and keeps its note.
+    expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
+    const note = await screen.findByText(
+      "Sales Desk is disconnected, but we couldn't confirm its Slack app was deleted. It's listed above, with the Slack apps we couldn't delete.",
+    );
+    expect(vi.mocked(disconnectTeamBot)).toHaveBeenCalledWith(BOT.installId);
+    reRead(CONNECTED);
+    expect(await screen.findByText('Connected to Canopy Works')).toBeInTheDocument();
+    expect(note).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 2, name: "Team agents' own bots" })).toBeNull();
   });
 });
