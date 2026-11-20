@@ -297,9 +297,14 @@ describe("the agent's own bot", () => {
       expect(copy.message).not.toBe('');
       expect(copy.message).not.toContain(code);
     }
-    expect(agentSlackBotErrorCopy(new Error('boom')).message).toBe(
+    // Only Slack's own failure blames Slack; ours, or a dropped connection, is the plain line.
+    expect(agentSlackBotErrorCopy(e('slack-error')).message).toBe(
       'Something went wrong talking to Slack. Try again in a minute.',
     );
+    expect(agentSlackBotErrorCopy(new AgentSlackError(500, 'internal')).message).toBe(
+      'Something went wrong. Try again in a minute.',
+    );
+    expect(agentSlackBotErrorCopy(new Error('boom')).message).toBe('Something went wrong. Try again in a minute.');
   });
 
   it('bot-exists, not-pending, a lost agent or no longer managing it mean the picture is stale; not-approver does not', () => {

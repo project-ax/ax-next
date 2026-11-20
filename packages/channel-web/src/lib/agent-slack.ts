@@ -455,9 +455,12 @@ export function agentSlackBotErrorCopy(err: unknown): {
         return { field: null, message: SLACK_ERROR_COPY['public-origin-not-https'], revealToken: false };
       case 'slack-unconfirmed':
         return { field: null, message: SLACK_TOKEN_COPY['slack-unconfirmed'], revealToken: false };
+      case 'slack-error':
+        return { field: null, message: SLACK_ERROR_COPY.generic, revealToken: false };
     }
   }
-  return { field: null, message: SLACK_ERROR_COPY.generic, revealToken: false };
+  // Our own failure (`internal`), or a dropped connection: nothing to blame Slack for.
+  return { field: null, message: AGENT_SLACK_COPY.generic, revealToken: false };
 }
 
 /**

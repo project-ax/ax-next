@@ -393,7 +393,10 @@ describe('pending', () => {
     cancel.mockRejectedValueOnce(refusal(500, 'internal'));
     const onChanged = renderIt(PENDING);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong talking to Slack.');
+    // Our own failure, not Slack's: the plain line, which doesn't blame Slack.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Something went wrong. Try again in a minute.');
+    expect(alert).not.toHaveTextContent(/Slack/);
     expect(onChanged).not.toHaveBeenCalled();
   });
 });
