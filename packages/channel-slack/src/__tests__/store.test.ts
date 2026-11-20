@@ -165,7 +165,7 @@ describe('runMigrations', () => {
 
     await store.activate(installId, { ...TEAM, installedAt: new Date('2026-11-01T00:05:00.000Z') });
     const replacedAt = new Date('2026-11-19T09:00:00.000Z');
-    await store.setConfigTokenOwner(installId, { userId: 'usr_admin2', addedAt: replacedAt });
+    await store.setConfigTokenAddedAt(installId, replacedAt);
     await runMigrations(db);
     // The backfill fills only NULLs: a later boot never undoes a replace.
     expect((await store.get(installId))?.configTokenAddedAt).toEqual(replacedAt);
@@ -395,7 +395,7 @@ describe('install rows', () => {
     expect((missing as InstallStoreError).code).toBe('install-not-active');
   });
 
-  it('setConfigTokenOwner changes who added the token and when on an active install, and nothing else: not its other columns, not another install, not its channel bindings', async () => {
+  it('setConfigTokenAddedAt changes when the token was added on an active install, and nothing else: not its person (TASK-1175), not its other columns, not another install, not its channel bindings', async () => {
     const a = await pending();
     await store.activate(a, { ...TEAM, installedAt: new Date('2026-11-13T12:00:00.000Z') });
     const b = await pending();
@@ -412,25 +412,26 @@ describe('install rows', () => {
     expect(bindingsBefore).toHaveLength(2);
 
     const addedAt = new Date('2026-11-19T09:00:00.000Z');
-    await store.setConfigTokenOwner(a, { userId: 'usr_admin2', addedAt });
+    await store.setConfigTokenAddedAt(a, addedAt);
 
     // createdAt included: it keeps meaning "row made", and keeps ordering current().
-    expect(await store.get(a)).toEqual({ ...snapshotA, connectedByUserId: 'usr_admin2', configTokenAddedAt: addedAt });
+    // connectedByUserId stays as inserted: a Replace never moves an app to another person.
+    expect(await store.get(a)).toEqual({ ...snapshotA, configTokenAddedAt: addedAt });
     expect(await store.get(b)).toEqual(snapshotB);
     expect(await allBindings()).toEqual(bindingsBefore);
   });
 
-  it('setConfigTokenOwner refuses an install that is missing or still pending, and changes nothing', async () => {
+  it('setConfigTokenAddedAt refuses an install that is missing or still pending, and changes nothing', async () => {
     const installId = await pending();
     const before = await store.get(installId);
-    const owner = { userId: 'usr_admin2', addedAt: new Date('2026-11-19T09:00:00.000Z') };
+    const addedAt = new Date('2026-11-19T09:00:00.000Z');
 
-    const err = await store.setConfigTokenOwner(installId, owner).catch((e: unknown) => e);
+    const err = await store.setConfigTokenAddedAt(installId, addedAt).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InstallStoreError);
     expect((err as InstallStoreError).code).toBe('install-not-active');
     expect(await store.get(installId)).toEqual(before);
 
-    const missing = await store.setConfigTokenOwner(newInstallId(), owner).catch((e: unknown) => e);
+    const missing = await store.setConfigTokenAddedAt(newInstallId(), addedAt).catch((e: unknown) => e);
     expect(missing).toBeInstanceOf(InstallStoreError);
     expect((missing as InstallStoreError).code).toBe('install-not-active');
   });

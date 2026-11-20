@@ -18,15 +18,17 @@ export interface InstallRow {
   teamName: string | null;
   botUserId: string | null;
   /**
-   * The admin who added the configuration token the install holds (at
-   * Connect, or the latest Replace); vault reads name them. Their name is
-   * auth's, read when shown.
+   * The admin who connected the install: whose configuration token made the
+   * app, and so whose token (one per person, TASK-1175) every change to it
+   * uses. Vault reads name them. Set once, at Connect: a Replace stores the
+   * pasted token as theirs and never moves the app to another person. Their
+   * name is auth's, read when shown.
    */
   connectedByUserId: string;
   /** When the row was made, by Connect. Orders `current()`. */
   createdAt: Date;
   /**
-   * When the configuration token this install holds was added. At Connect
+   * When the configuration token this install uses was added. At Connect
    * that is the same instant as `createdAt`; after a Replace it is the latest
    * replace (TASK-1128).
    */
@@ -118,12 +120,14 @@ export interface InstallStore {
    */
   setBotName(installId: string, botName: string): Promise<void>;
   /**
-   * Record who added the configuration token an ACTIVE install holds, and
-   * when (a Replace, TASK-1128): one UPDATE of those two columns and nothing
-   * else, so the channel bindings (another table) stay as they are. Throws
+   * Record when the configuration token an ACTIVE install uses was added (a
+   * Replace, TASK-1128): one UPDATE of that column and nothing else, so the
+   * install's person and the channel bindings (another table) stay as they
+   * are. A Replace never moves an app to another person (TASK-1175): only
+   * `insertPending` writes `connected_by_user_id`. Throws
    * `install-not-active` when the install is missing or still pending.
    */
-  setConfigTokenOwner(installId: string, o: { userId: string; addedAt: Date }): Promise<void>;
+  setConfigTokenAddedAt(installId: string, addedAt: Date): Promise<void>;
   /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
@@ -354,10 +358,10 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
     },
 
-    async setConfigTokenOwner(installId, o) {
+    async setConfigTokenAddedAt(installId, addedAt) {
       const r = await db
         .updateTable(INSTALLS)
-        .set({ connected_by_user_id: o.userId, config_token_added_at: o.addedAt })
+        .set({ config_token_added_at: addedAt })
         .where('install_id', '=', installId)
         .where('status', '=', 'active')
         .executeTakeFirst();

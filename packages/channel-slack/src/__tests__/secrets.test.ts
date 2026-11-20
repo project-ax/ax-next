@@ -131,6 +131,7 @@ describe('createSecretStore', () => {
   it('put writes global api-key under slack:<id>:<name>', async () => {
     const vault = fakeVault();
     const secrets = createSecretStore(vault.bus, { logger: recordingLogger().logger });
+    // @ts-expect-error — put's type no longer takes the configuration token's name (TASK-1175); at runtime it still writes one, as a build from before it did
     for (const name of SECRET_NAMES) await secrets.put(INSTALL, name, VALUES[name]);
 
     const sets = vault.calls.filter((c) => c.hook === 'credentials:set');
@@ -330,6 +331,7 @@ describe('createSecretStore', () => {
     });
     const { logger, lines } = recordingLogger();
     const secrets = createSecretStore(vault.bus, { logger });
+    // @ts-expect-error — put's type no longer takes the configuration token's name (TASK-1175); this plants the old per-install row a build from before it left
     for (const name of SECRET_NAMES) await secrets.put(INSTALL, name, VALUES[name]);
     for (const name of SECRET_NAMES) await secrets.get(INSTALL, name);
     await secrets.removeAll(INSTALL);

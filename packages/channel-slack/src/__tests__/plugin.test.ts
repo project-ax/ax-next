@@ -38,7 +38,7 @@ import {
   createChannelSlackPlugin,
   type ChannelSlackConfig,
 } from '../plugin.js';
-import { secretRef } from '../secrets.js';
+import { configTokenRef, secretRef } from '../secrets.js';
 import { createInstallStore } from '../store.js';
 import { slackTurnNote } from '../turn-note.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
@@ -1301,11 +1301,12 @@ describe('@ax/channel-slack plugin', () => {
 
     expect((await connect()).status).toBe(200);
     expect(await installCount()).toBe(1);
-    // Connect tried the pasted refresh token and kept the one Slack minted (TASK-1159).
+    // Connect tried the pasted refresh token and kept the one Slack minted
+    // (TASK-1159), as the connecting admin's own token (TASK-1175).
     const installs = await sql<{ install_id: string }>`
       SELECT install_id FROM channel_slack_v1_installs`.execute(probe);
     expect(installs.rows).toHaveLength(1);
-    expect(s.vault.get(secretRef(installs.rows[0]!.install_id, 'config-refresh-token'))).toBe(minted);
+    expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(minted);
 
     // The stored refresh token is dead: Disconnect can't delete the app.
     const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
@@ -1437,7 +1438,7 @@ describe('@ax/channel-slack plugin', () => {
     const installs = await sql<{ install_id: string }>`
       SELECT install_id FROM channel_slack_v1_installs`.execute(probe);
     expect(installs.rows).toHaveLength(1);
-    expect(s.vault.get(secretRef(installs.rows[0]!.install_id, 'config-refresh-token'))).toBe(minted);
+    expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(minted);
     expect([...live]).toEqual(['A07THIRDAPP3']);
   });
 
@@ -1672,7 +1673,8 @@ describe('@ax/channel-slack plugin', () => {
     and still find its row for setBotName (TASK-1129 review, F1).
   */
   it('a rename that stores its new configuration token after the reset wiped the vault, but before the install row went, leaves no token behind (TASK-1129)', async () => {
-    const ref = secretRef(INSTALL_ID, 'config-refresh-token');
+    // The person's own token (TASK-1175): the install's admin's.
+    const ref = configTokenRef(ADMIN.id);
     const minted = fakeConfigRefreshToken('RESETRACEMINTEDSECRET');
     // Slack: the rotate waits for the test, then mints `minted`; the update is taken.
     const rotating = deferred();

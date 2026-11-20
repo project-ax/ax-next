@@ -54,7 +54,8 @@ import { logCode } from './log-code.js';
  *
  * `SECRET_NAMES` still lists `config-refresh-token`, because before TASK-1175
  * an install kept the token under its own ref. At boot an old row moves to
- * its person, and `removeAll` still deletes one.
+ * its person, and `removeAll` still deletes one. `put` no longer takes that
+ * name, so nothing can store one there again.
  *
  * Nothing in the vault limits which plugin reads a ref, so "only channel-slack
  * reads these" is held by a repo-scan guard on `slack:` strings
@@ -119,8 +120,16 @@ export interface SecretOwner {
   connectedByUserId: string;
 }
 
+/**
+ * An install's own three secrets: every name but the configuration token's,
+ * which is a person's (`putConfigToken`) and is never stored under an
+ * install again.
+ */
+type InstallSecretName = Exclude<SecretName, 'config-refresh-token'>;
+
 export interface SecretStore {
-  put(install: SecretOwner, name: SecretName, value: string): Promise<void>;
+  /** Stores one of an install's own three secrets (`InstallSecretName`). */
+  put(install: SecretOwner, name: InstallSecretName, value: string): Promise<void>;
   /** The value, or null when none is stored. Any other vault failure rejects. */
   get(install: SecretOwner, name: SecretName): Promise<string | null>;
   /** Deletes one. Logs a failure code-only, never throws. */

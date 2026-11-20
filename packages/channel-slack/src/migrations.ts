@@ -9,10 +9,13 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     from Connect until the admin clicks Allow, then `active`. At most one
  *     shared-app install per AX instance today (admin operations run one at a
  *     time); later cards add per-agent installs here.
- *     `connected_by_user_id` is the admin who added the configuration token
- *     the install holds (at Connect, or the latest Replace, TASK-1128), and
- *     vault reads name them. `config_token_added_at` is when they added it.
- *     `created_at` is still when the row was made, and it orders `current()`.
+ *     `connected_by_user_id` is the admin who connected it: whose
+ *     configuration token made the app, and so whose token (one per person,
+ *     TASK-1175) every change to it uses. Vault reads name them. Only
+ *     Connect sets it: a Replace (TASK-1128) stores the pasted token as
+ *     theirs and moves only `config_token_added_at`, when the token was last
+ *     added. `created_at` is still when the row was made, and it orders
+ *     `current()`.
  *
  *   channel_slack_v1_channels — the bindings (TASK-1094): which team agent a
  *     public channel of an install is connected to. The primary key makes it
@@ -63,10 +66,11 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     (design §8 Q5). NULL for an app left before the column, never
  *     backfilled.
  *
- * The install's four secrets are NOT here: they live in the credentials vault
- * under `slack:<install_id>:<name>` (secrets.ts). The vault keys those global
- * rows by ref alone, so changing whom `connected_by_user_id` names (a Replace)
- * never changes which row a read finds. Nor is any AX account's
+ * No secret is here. They live in the credentials vault (secrets.ts): an
+ * install's three under `slack:<install_id>:<name>`, and the configuration
+ * refresh token once per person (TASK-1175), under
+ * `slack:person:<connected_by_user_id>:config-refresh-token`, shared by every
+ * app of theirs. Nor is any AX account's
  * name: `connected_by_user_id` is an id in the installs, channels and
  * leftover apps tables, and that person's name is read from auth when it is
  * shown (invariant 4).
