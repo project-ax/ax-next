@@ -19,9 +19,10 @@ function quietly(log: () => void): void {
 
 /**
  * When an agent is deleted, delete what channel-slack keeps for it. First its
- * channel bindings and the memory switch's thread rows (TASK-1094), on every
- * install, in one transaction. Then its own Slack bot (TASK-1167), pending or
- * live, if it has one.
+ * channel bindings, the memory switch's thread rows (TASK-1094) and the
+ * switches kept for its channels (TASK-1180), on every install, in one
+ * transaction. Then its own Slack bot (TASK-1167), pending or live, if it has
+ * one.
  *
  * `@ax/agents` fires `agents:deleted { agentId, ownerId, ownerType }` after
  * the agent's row is gone. A binding has no foreign key to it (no plugin
@@ -31,8 +32,8 @@ function quietly(log: () => void): void {
  * install's removal keep them on purpose (channel-store.ts). Its bot would
  * stay live in Slack, for an agent that is gone, and keep its approver's
  * configuration token alive. The repo guard
- * scripts/__tests__/agent-keyed-tables-are-cleaned.test.js requires all
- * three tables cleaned: each has an `agent_id`.
+ * scripts/__tests__/agent-keyed-tables-are-cleaned.test.js requires every
+ * one of these tables cleaned: each has an `agent_id`.
  *
  * The bot goes as bots.ts's `removeForAgent` takes it: its Slack app deleted
  * with an access token minted from its approver's token, then its row, its
@@ -66,7 +67,10 @@ export function subscribeAgentsDeleted(
   };
 }
 
-/** The agent's bindings and threads, in one transaction. Never throws: a failure is logged by code alone. */
+/**
+ * The agent's bindings, threads and kept switches, in one transaction. Never
+ * throws: a failure is logged by code alone.
+ */
 async function removeChannels(
   channels: Pick<ChannelStore, 'removeForAgent'>,
   agentId: string,

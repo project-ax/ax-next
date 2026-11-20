@@ -28,7 +28,10 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests`.execute(db);
+  await sql`
+    TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_leftover_apps,
+      channel_slack_v1_bot_requests, channel_slack_v1_memory_switches
+  `.execute(db);
 });
 
 afterAll(async () => {

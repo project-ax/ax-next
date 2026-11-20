@@ -434,7 +434,10 @@ afterEach(async () => {
   vi.restoreAllMocks();
   while (booted.length > 0) await booted.pop()!.close({ onError: () => {} });
   try {
-    await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_leftover_apps`.execute(probe);
+    await sql`
+      TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_threads,
+        channel_slack_v1_leftover_apps, channel_slack_v1_memory_switches
+    `.execute(probe);
   } catch {
     // Not created yet.
   }
