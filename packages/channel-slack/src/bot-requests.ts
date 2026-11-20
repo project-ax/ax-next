@@ -316,8 +316,8 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     const owner = agent['ownerId'];
     return {
       name: (typeof name === 'string' ? cleanLabel(name) : '') || AGENT_FALLBACK,
-      // A team agent's owner is its team (@ax/agents).
-      teamId: agent['ownerType'] === 'team' && typeof owner === 'string' && owner !== '' ? owner : null,
+      // A team agent's owner is its team (@ax/agents): only ever matched against the requester's teams.
+      teamId: typeof owner === 'string' && owner !== '' ? owner : null,
     };
   }
 

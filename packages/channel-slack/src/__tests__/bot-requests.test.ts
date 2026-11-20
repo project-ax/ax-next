@@ -494,6 +494,12 @@ describe('ask', () => {
         arrange: (w) => seedRequest(w, { botName: 'Care Desk' }),
         want: { status: 409, body: { error: 'bot-requested' } },
       },
+      {
+        // Told it already asked, not that its own name is taken.
+        what: 'a second ask under the same name',
+        arrange: (w) => seedRequest(w),
+        want: { status: 409, body: { error: 'bot-requested' } },
+      },
       { what: "the shared bot's name", botName: 'Canopy Works', want: taken },
       { what: "another agent's bot's name", arrange: (w) => addBot(w), botName: 'sales-desk', want: taken },
       { what: "another agent's bot's handle", arrange: (w) => addBot(w, { handle: 'deals' }), botName: 'Deals', want: taken },
