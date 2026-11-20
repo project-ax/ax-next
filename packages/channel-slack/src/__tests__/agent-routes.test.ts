@@ -1,6 +1,7 @@
 import { HookBus, PluginError, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { createAgentSlackRoutes } from '../agent-routes.js';
+import type { BotRequests } from '../bot-requests.js';
 import type { AgentSlackBot, BotReply, Bots } from '../bots.js';
 import type { ChannelDeps } from '../channels.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
@@ -23,7 +24,8 @@ import { memoryChannelStore } from './memory-channel-store.js';
   The agent's own bot (TASK-1167), and its Disconnect (TASK-1172), sit
   behind the same gate: its routes are checked here for who gets through and
   what the domain is handed, with a stub domain (bots.test.ts tests the
-  domain itself).
+  domain itself). So does asking an AX admin for it (TASK-1169), with its own
+  stub (bot-requests.test.ts tests that domain).
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -273,7 +275,9 @@ type Suffix =
   | '/bot'
   | '/bot/install-url'
   | '/bot/cancel'
-  | '/bot/disconnect';
+  | '/bot/disconnect'
+  | '/bot-request'
+  | '/bot-request/cancel';
 
 /** Every route, with a body each write would accept. */
 const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknown }> = [
@@ -286,6 +290,9 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   { method: 'POST', suffix: '/bot/install-url' },
   { method: 'POST', suffix: '/bot/cancel' },
   { method: 'POST', suffix: '/bot/disconnect', body: { installId: OWN_BOT.installId } },
+  // Asking an AX admin for the bot instead (TASK-1169).
+  { method: 'POST', suffix: '/bot-request', body: { botName: 'Ada Bot' } },
+  { method: 'POST', suffix: '/bot-request/cancel', body: {} },
 ];
 const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '');
 
@@ -349,6 +356,36 @@ function stubBots() {
     },
   };
   return { bots, calls, answers, state };
+}
+
+/**
+ * bot-requests.ts behind the routes (TASK-1169), as a stub in the same shape:
+ * each call recorded, answering what the test set, and `fail` makes every call
+ * throw.
+ */
+function stubRequests() {
+  const calls: Array<{ method: 'ask' | 'cancel'; input: Record<string, unknown> }> = [];
+  const answers: { ask: BotReply; cancel: BotReply } = {
+    ask: { status: 200, body: {} },
+    cancel: { status: 200, body: {} },
+  };
+  const state: { fail: unknown } = { fail: undefined };
+  const enter = (method: (typeof calls)[number]['method'], input: object): void => {
+    const { ctx, ...rest } = input as { ctx?: { userId: string } } & Record<string, unknown>;
+    calls.push({ method, input: ctx === undefined ? rest : { ctxUserId: ctx.userId, ...rest } });
+    if (state.fail !== undefined) throw state.fail;
+  };
+  const requests: Pick<BotRequests, 'ask' | 'cancel'> = {
+    ask: async (i) => {
+      enter('ask', i);
+      return answers.ask;
+    },
+    cancel: async (i) => {
+      enter('cancel', i);
+      return answers.cancel;
+    },
+  };
+  return { requests, calls, answers, state };
 }
 
 // ── The routes' surroundings ────────────────────────────────────────────────
@@ -425,7 +462,8 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
     logger,
   };
   const bots = stubBots();
-  const routes = createAgentSlackRoutes(deps, bots.bots);
+  const requests = stubRequests();
+  const routes = createAgentSlackRoutes(deps, bots.bots, requests.requests);
 
   async function call(
     method: 'GET' | 'POST',
@@ -477,6 +515,7 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
     lines,
     routes,
     bots,
+    requests,
     call,
     status: (agentId: string, as: TestUser | null = ADA) => reply(call('GET', '', agentId, as)),
     available: (agentId: string, as: TestUser | null = ADA) => reply(call('GET', '/available', agentId, as)),
@@ -488,6 +527,8 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
       reply(call('POST', '/remember', agentId, as, { channelId, remember })),
     requestBot: (agentId: string, body: unknown, as: TestUser | null = ADA) =>
       reply(call('POST', '/bot', agentId, as, body)),
+    askForBot: (agentId: string, body: unknown, as: TestUser | null = ADA) =>
+      reply(call('POST', '/bot-request', agentId, as, body)),
   };
 }
 
@@ -548,6 +589,19 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
+      // Asking an AX admin for it (TASK-1169): a name and nothing else, so the plain cap.
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot-request',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot-request/cancel',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
     ]);
     for (const r of w.routes) expect(r).not.toHaveProperty('bypassCsrf');
   });
@@ -569,6 +623,7 @@ describe('rights', () => {
     expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -608,6 +663,7 @@ describe('rights', () => {
     expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
   });
 
   it('lets a team member read the section without the manage controls, and refuses every write with 403', async () => {
@@ -625,6 +681,7 @@ describe('rights', () => {
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(before);
     // The section read the bot as a non-manager; no write reached the bot domain.
     expect(w.bots.calls.map((c) => c.method)).toEqual(['status']);
+    expect(w.requests.calls).toEqual([]);
   });
 
   it.each([
@@ -643,6 +700,7 @@ describe('rights', () => {
     expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
     // The section itself still reads, without the manage controls.
     expect(await w.status(SUPPORT.id, ADA)).toMatchObject({ status: 200, body: { state: 'ready', canManage: false } });
   });
@@ -653,7 +711,7 @@ describe('rights', () => {
     const oversized = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
     const arrayBody = JSON.stringify([SUPPORT_CH]);
     const extraKey = JSON.stringify({ channelId: SUPPORT_CH, agentId: SALES.id });
-    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot', '/bot/disconnect'] as const) {
+    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot', '/bot/disconnect', '/bot-request'] as const) {
       for (const body of [garbage, oversized, arrayBody, extraKey]) {
         const label = `${suffix} ${typeof body === 'string' ? body : 'oversized'}`;
         // Not a member of the team (or a workspace admin outside it): as unknown as a missing agent.
@@ -675,6 +733,7 @@ describe('rights', () => {
     expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
   });
 
   it('treats a workspace admin who is a plain member of the team as a member: asked as a non-admin, 403 on writes', async () => {
@@ -690,6 +749,7 @@ describe('rights', () => {
     for (const input of asked) expect(input).toEqual({ agentId: SUPPORT.id, actor: { userId: WILL.id, isAdmin: false } });
     expect(w.slack.sent).toEqual([]);
     expect(w.bots.calls.map((c) => c.method)).toEqual(['status']);
+    expect(w.requests.calls).toEqual([]);
   });
 
   it("lets a team admin of the agent's team manage it", async () => {
@@ -714,8 +774,9 @@ describe('rights', () => {
     expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
-    // A personal agent has no bot of its own: none is asked about.
+    // A personal agent has no bot of its own: none is asked about, or asked for.
     expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
     // Someone else's personal agent is as unknown as a missing one.
     expect(await w.status(PATS.id, ADA)).toEqual(NOT_FOUND);
   });
@@ -1221,7 +1282,8 @@ describe('connect', () => {
   it('refuses a body past the cap with 413 (the route cap is the first line; this is the backstop)', async () => {
     const w = world();
     const big = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
-    for (const suffix of ['/connect', '/disconnect', '/remember'] as const) {
+    // Asking an AX admin (TASK-1169) carries a name and nothing else: the plain cap.
+    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot-request'] as const) {
       const a = await w.call('POST', suffix, SUPPORT.id, ADA, big);
       expect({ status: a.status, body: a.body }, suffix).toEqual({ status: 413, body: { error: 'body-too-large' } });
     }
@@ -1233,6 +1295,7 @@ describe('connect', () => {
     expect({ status: a.status, body: a.body }).toEqual({ status: 413, body: { error: 'body-too-large' } });
     expect(w.slack.sent).toEqual([]);
     expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
   });
 });
 
@@ -1413,12 +1476,22 @@ describe('the bot routes', () => {
 
   it('a fault in the domain is a 500, logged by its code and the route alone', async () => {
     const w = world();
-    w.bots.state.fail = Object.assign(new Error(`vault down holding ${REFRESH}`), { code: 'ECONNRESET' });
+    const fault = Object.assign(new Error(`vault down holding ${REFRESH}`), { code: 'ECONNRESET' });
+    w.bots.state.fail = fault;
+    w.requests.state.fail = fault;
     const bodies: Partial<Record<Suffix, unknown>> = {
       '/bot': { botName: 'Support Helper' },
       '/bot/disconnect': { installId: OWN_BOT.installId },
+      '/bot-request': { botName: 'Support Helper' },
     };
-    for (const suffix of ['/bot', '/bot/install-url', '/bot/cancel', '/bot/disconnect'] as const) {
+    for (const suffix of [
+      '/bot',
+      '/bot/install-url',
+      '/bot/cancel',
+      '/bot/disconnect',
+      '/bot-request',
+      '/bot-request/cancel',
+    ] as const) {
       const a = await w.call('POST', suffix, SUPPORT.id, ADA, bodies[suffix]);
       expect({ status: a.status, body: a.body }, suffix).toEqual({ status: 500, body: { error: 'internal' } });
     }
@@ -1427,6 +1500,8 @@ describe('the bot routes', () => {
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-install-url', code: 'ECONNRESET' } },
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-cancel', code: 'ECONNRESET' } },
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-disconnect', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-request', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-request-cancel', code: 'ECONNRESET' } },
     ]);
     expect(JSON.stringify(w.lines)).not.toContain(REFRESH);
   });
@@ -1480,6 +1555,78 @@ describe('the bot routes', () => {
       body: { state: 'no-workspace', canManage: false, bot: NO_BOT },
     });
     expect(w.bots.calls).toHaveLength(3);
+  });
+});
+
+// ── Asking an AX admin for the bot (TASK-1169) ──────────────────────────────
+
+describe('the bot request routes', () => {
+  it('POST /bot-request: anything but an object with a name is a 400 before the domain; it never takes a token or a picture', async () => {
+    const w = world();
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['not JSON', 'a bot please', { error: 'invalid-body' }],
+      ['an array', JSON.stringify(['Ada Bot']), { error: 'invalid-body' }],
+      ['null', 'null', { error: 'invalid-body' }],
+      ['an empty body', Buffer.alloc(0), { error: 'invalid-body' }],
+      ['an unknown key, even one naming another agent', { botName: 'Ada Bot', agentId: SALES.id }, { error: 'invalid-body' }],
+      ['a refresh token: an AX admin brings their own', { botName: 'Ada Bot', refreshToken: REFRESH }, { error: 'invalid-body' }],
+      ['a picture: the approving admin draws it', { botName: 'Ada Bot', iconPng: pngBase64(512, 512) }, { error: 'invalid-body' }],
+      ['no name', {}, { error: 'invalid-bot-name', reason: 'empty' }],
+      ['a null name', { botName: null }, { error: 'invalid-bot-name', reason: 'empty' }],
+      ['a blank name', { botName: '   ' }, { error: 'invalid-bot-name', reason: 'empty' }],
+      ['a name that is not text', { botName: 7 }, { error: 'invalid-bot-name', reason: 'bad-characters' }],
+      ['a name Slack refuses', { botName: 'Café Bot' }, { error: 'invalid-bot-name', reason: 'bad-characters' }],
+      ['a reserved name', { botName: 'Slack-Bot' }, { error: 'invalid-bot-name', reason: 'reserved' }],
+      ['a name past 35 characters', { botName: 'x'.repeat(36) }, { error: 'invalid-bot-name', reason: 'too-long' }],
+    ];
+    for (const [what, body, error] of cases) {
+      const raw = Buffer.isBuffer(body) || typeof body === 'string' ? body : JSON.stringify(body);
+      const a = await w.call('POST', '/bot-request', SUPPORT.id, ADA, raw);
+      expect({ status: a.status, body: a.body }, what).toEqual({ status: 400, body: error });
+    }
+    expect(w.requests.calls).toEqual([]);
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+  });
+
+  it('POST /bot-request hands the domain the name as checkBotName tidied it, the person asking, and the agent in the path', async () => {
+    const w = world();
+    expect(await w.askForBot(SUPPORT.id, { botName: '  Ada   Bot ' }, GRACE)).toEqual({ status: 200, body: {} });
+    expect(w.requests.calls).toEqual([
+      { method: 'ask', input: { ctxUserId: GRACE.id, actorUserId: GRACE.id, agentId: SUPPORT.id, botName: 'Ada Bot' } },
+    ]);
+    // Asking is not making: the bot domain isn't asked anything.
+    expect(w.bots.calls).toEqual([]);
+  });
+
+  it("answers exactly what the domain answers: its refusals, the cancel's included", async () => {
+    const w = world();
+    w.requests.answers.ask = { status: 409, body: { error: 'bot-requested' } };
+    expect(await w.askForBot(SUPPORT.id, { botName: 'Ada Bot' })).toEqual({ status: 409, body: { error: 'bot-requested' } });
+    w.requests.answers.ask = { status: 409, body: { error: 'bot-name-taken' } };
+    expect(await w.askForBot(SUPPORT.id, { botName: 'Ada Bot' })).toEqual({ status: 409, body: { error: 'bot-name-taken' } });
+    w.requests.answers.cancel = { status: 409, body: { error: 'not-requested' } };
+    expect(await w.call('POST', '/bot-request/cancel', SUPPORT.id, ADA)).toMatchObject({
+      status: 409,
+      body: { error: 'not-requested' },
+    });
+  });
+
+  it('POST /bot-request/cancel reaches the domain for a team admin of the agent, and never reads a body', async () => {
+    const w = world();
+    expect(await w.call('POST', '/bot-request/cancel', SUPPORT.id, GRACE, 'garbage')).toMatchObject({
+      status: 200,
+      body: {},
+    });
+    expect(await w.call('POST', '/bot-request/cancel', SUPPORT.id, ADA, JSON.stringify({ agentId: SALES.id }))).toMatchObject({
+      status: 200,
+      body: {},
+    });
+    // Only the agent in the path, whoever cancels it.
+    expect(w.requests.calls).toEqual([
+      { method: 'cancel', input: { agentId: SUPPORT.id } },
+      { method: 'cancel', input: { agentId: SUPPORT.id } },
+    ]);
   });
 });
 

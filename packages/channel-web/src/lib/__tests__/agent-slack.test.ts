@@ -9,6 +9,8 @@ import {
   AgentSlackError,
   agentSlackBotErrorCopy,
   agentSlackBotStale,
+  askSlackBotApproval,
+  cancelSlackBotRequest,
   agentSlackErrorCopy,
   agentSlackStateChanged,
   agentSlackWriteStale,
@@ -133,6 +135,26 @@ describe('fetchAgentSlack', () => {
       await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ state: 'ready', bot });
       answer = () => json(200, { state: 'no-workspace', canManage: true, bot });
       await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', canManage: true, bot });
+    }
+  });
+
+  it('parses a requested bot', async () => {
+    const bot = { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' };
+    // A request reaches only those who manage the agent, so the server says they do (TASK-1172's `canManage`).
+    answer = () => json(200, { state: 'no-workspace', canManage: true, bot });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', canManage: true, bot });
+    answer = () => json(200, { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [], bot });
+    await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ state: 'ready', bot });
+  });
+
+  it('a requested bot without requestedAt is a bad response', async () => {
+    for (const bot of [
+      { state: 'requested', botName: 'Quill Bot' },
+      { state: 'requested', botName: 'Quill Bot', requestedAt: 7 },
+      { state: 'requested', requestedAt: '2026-11-20T10:00:00.000Z' },
+    ]) {
+      answer = () => json(200, { state: 'no-workspace', bot });
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
     }
   });
 
@@ -306,6 +328,27 @@ describe("the agent's own bot", () => {
     await expect(cancelSlackBot('a1')).rejects.toMatchObject({ code: 'bad-response' });
   });
 
+  it('askSlackBotApproval posts { botName } to /bot-request with the write headers', async () => {
+    answer = () => json(200, {});
+    await expect(askSlackBotApproval('a/1', { botName: 'Quill' })).resolves.toBeUndefined();
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%2F1/bot-request',
+      method: 'POST',
+      credentials: 'include',
+      body: { botName: 'Quill' },
+    });
+    expect(Object.keys(calls[0]?.body as object)).toEqual(['botName']);
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+  });
+
+  it('cancelSlackBotRequest posts {} to /bot-request/cancel', async () => {
+    answer = () => json(200, {});
+    await expect(cancelSlackBotRequest('a1')).resolves.toBeUndefined();
+    expect(calls[0]).toMatchObject({ url: '/settings/slack/a1/bot-request/cancel', method: 'POST', body: {} });
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+  });
+
   it('disconnectSlackBot POSTs /settings/slack/:agentId/bot/disconnect with the write headers and the install id of the bot the page showed, and reads appDeleted', async () => {
     answer = () => json(200, { appDeleted: false });
     await expect(disconnectSlackBot('a/1', BOT_ID)).resolves.toEqual({ appDeleted: false });
@@ -413,6 +456,11 @@ describe("the agent's own bot", () => {
     expect(agentSlackBotStale(new AgentSlackError(409, 'bot-name-taken'))).toBe(false);
     expect(agentSlackBotStale(new AgentSlackError(409, 'no-workspace'))).toBe(false);
     expect(agentSlackBotStale(new Error('x'))).toBe(false);
+  });
+
+  it('bot-requested and not-requested are stale', () => {
+    expect(agentSlackBotStale(new AgentSlackError(409, 'bot-requested'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(409, 'not-requested'))).toBe(true);
   });
 });
 

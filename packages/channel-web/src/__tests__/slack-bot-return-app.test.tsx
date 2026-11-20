@@ -16,6 +16,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
+import { fetchSlackStatus } from '../lib/slack-admin';
 import { toastActions } from '../lib/toast-store';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
 
@@ -26,6 +27,11 @@ vi.mock('../lib/bootstrap-status', () => ({
 vi.mock('../lib/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/auth')>();
   return { ...actual, getSession: vi.fn(async () => null) };
+});
+
+vi.mock('../lib/slack-admin', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/slack-admin')>();
+  return { ...actual, fetchSlackStatus: vi.fn() };
 });
 
 vi.mock('../lib/workspace-api', async (importOriginal) => {
@@ -52,6 +58,7 @@ vi.mock('../lib/workspace-api', async (importOriginal) => {
 const ALICE: AuthSession = {
   user: { id: 'u2', email: 'alice@local', name: 'Alice', role: 'user' },
 };
+const ALICE_ADMIN: AuthSession = { user: { ...ALICE.user, role: 'admin' } };
 
 function installShellFetch(): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -83,6 +90,15 @@ beforeEach(() => {
   vi.mocked(getSession).mockReset();
   vi.mocked(fetchBootstrapStatus).mockReset();
   vi.mocked(fetchBootstrapStatus).mockResolvedValue('completed');
+  vi.mocked(fetchSlackStatus).mockReset();
+  vi.mocked(fetchSlackStatus).mockResolvedValue({
+    state: 'connected',
+    botName: 'canopy',
+    workspaceName: 'Canopy Works',
+    connectedBy: 'Alice',
+    connectedAt: '2026-11-13T12:00:00.000Z',
+    leftoverApps: [],
+  });
   installShellFetch();
   replaceState = vi.spyOn(window.history, 'replaceState');
 });
@@ -152,5 +168,67 @@ describe('back from Slack for an agent\'s own bot (TASK-1167)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Alice/ })).toBeInTheDocument());
     expect(screen.queryByText('Slack is connected.')).toBeNull();
     expect(screen.queryByText(/Slack bot is live/)).toBeNull();
+  });
+});
+
+describe("back from Slack after approving a team's bot request (TASK-1169)", () => {
+  it('an admin back from approving lands in Admin › Slack with one toast, and the address ends /', async () => {
+    vi.mocked(getSession).mockResolvedValue(ALICE_ADMIN);
+    arriveAt('?slack-bot=connected&from=admin');
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
+    expect(await screen.findByText('Connected to Canopy Works')).toBeInTheDocument();
+    const message = 'The Slack bot is live. Its team can add it to a channel with /invite.';
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(movedTo()).toBe('/');
+  });
+
+  it('ignores an agentId that rides along: that admin may not be able to open the agent', async () => {
+    vi.mocked(getSession).mockResolvedValue(ALICE_ADMIN);
+    arriveAt('?slack-bot=connected&from=admin&agentId=a1');
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
+    expect(movedTo()).toBe('/');
+  });
+
+  it.each([
+    [
+      'cancelled',
+      "Slack install was cancelled, so the bot isn't added yet. Its team can cancel the request in the agent's Slack settings and ask again.",
+    ],
+    [
+      'failed',
+      "We couldn't finish adding the Slack bot. Its team can cancel the request in the agent's Slack settings and ask again.",
+    ],
+  ])('%s: the toast says so, once', async (outcome, message) => {
+    vi.mocked(getSession).mockResolvedValue(ALICE_ADMIN);
+    arriveAt(`?slack-bot=${outcome}&from=admin`);
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.getAllByText(message)).toHaveLength(1);
+  });
+
+  it('a non-admin with from=admin gets nothing, and the address is still cleaned', async () => {
+    vi.mocked(getSession).mockResolvedValue(ALICE);
+    arriveAt('?slack-bot=connected&from=admin');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Alice/ })).toBeInTheDocument());
+    expect(screen.queryByRole('heading', { level: 1, name: 'Slack' })).toBeNull();
+    expect(screen.queryByText(/Slack bot is live/)).toBeNull();
+    expect(fetchSlackStatus).not.toHaveBeenCalled();
+    expect(movedTo()).toBe('/');
+  });
+
+  it('without from=admin an admin still lands on the agent, not in Admin › Slack', async () => {
+    vi.mocked(getSession).mockResolvedValue(ALICE_ADMIN);
+    arriveAt('?slack-bot=connected&agentId=a1');
+    render(<App />);
+    expect(await screen.findByText('The Slack bot is live. Invite it to a channel with /invite.')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 1, name: 'Slack' })).toBeNull();
+    expect(movedTo()).toBe('/workspace/agents/a1/settings/slack');
   });
 });

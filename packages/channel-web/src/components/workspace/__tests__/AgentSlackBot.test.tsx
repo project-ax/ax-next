@@ -10,7 +10,9 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { AgentSlackBot } from '../AgentSlackBot';
 import {
   AgentSlackError,
+  askSlackBotApproval,
   cancelSlackBot,
+  cancelSlackBotRequest,
   continueSlackBot,
   disconnectSlackBot,
   requestSlackBot,
@@ -23,6 +25,8 @@ import { fakeConfigRefreshToken } from '@/test-utils/fake-slack-tokens';
 vi.mock('@/lib/agent-slack', async (original) => ({
   ...(await original<typeof import('@/lib/agent-slack')>()),
   requestSlackBot: vi.fn(),
+  askSlackBotApproval: vi.fn(),
+  cancelSlackBotRequest: vi.fn(),
   continueSlackBot: vi.fn(),
   cancelSlackBot: vi.fn(),
   disconnectSlackBot: vi.fn(),
@@ -36,6 +40,8 @@ vi.mock('@/lib/slack-admin', async (original) => ({
 const request = vi.mocked(requestSlackBot);
 const continueIt = vi.mocked(continueSlackBot);
 const cancel = vi.mocked(cancelSlackBot);
+const ask = vi.mocked(askSlackBotApproval);
+const cancelAsk = vi.mocked(cancelSlackBotRequest);
 const disconnect = vi.mocked(disconnectSlackBot);
 const go = vi.mocked(goToSlack);
 const avatar = vi.mocked(renderSlackAvatar);
@@ -43,6 +49,7 @@ const avatar = vi.mocked(renderSlackAvatar);
 const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1';
 const NONE_NO_TOKEN: Bot = { state: 'none', configTokenStored: false };
 const NONE_STORED: Bot = { state: 'none', configTokenStored: true };
+const REQUESTED: Bot = { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' };
 /** The bot's install id, as a manager's status carries it: the key its Disconnect takes. */
 const BOT_ID = 'Hb7Kq2Lw8vNc5Xr1Bm7KdA';
 const PENDING: Bot = { state: 'pending', botName: 'Quill Bot', approver: 'Ada Lovelace', canContinue: true, installId: BOT_ID };
@@ -64,6 +71,11 @@ function renderIt(bot: Bot, canManage = true, onChanged = vi.fn()) {
 
 const refusal = (status: number, code: string, reason: string | null = null) => new AgentSlackError(status, code, reason);
 
+/** The form opens on "Ask an AX admin" when no token is stored: the self path starts here. */
+function chooseSelf() {
+  fireEvent.click(screen.getByRole('radio', { name: /I can install apps in Slack/ }));
+}
+
 /** Fill the form the way a person does and press the button. */
 function submit(botName?: string, token?: string) {
   if (botName !== undefined) fireEvent.change(screen.getByLabelText('Bot name'), { target: { value: botName } });
@@ -76,6 +88,8 @@ beforeEach(() => {
   request.mockResolvedValue({ installUrl: INSTALL_URL, iconSet: true });
   continueIt.mockResolvedValue({ installUrl: INSTALL_URL });
   cancel.mockResolvedValue({ appDeleted: true });
+  ask.mockResolvedValue(undefined);
+  cancelAsk.mockResolvedValue(undefined);
   disconnect.mockResolvedValue({ appDeleted: true });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -91,9 +105,10 @@ describe('none', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'Its own Slack bot' })).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Give Quill its own name in Slack. People mention it directly, and you add it to a channel with /invite. When someone outside the team mentions it, it answers them with your access. You need to be able to install apps in Slack.',
+        'Give Quill its own name in Slack. People mention it directly, and you add it to a channel with /invite. When someone outside the team mentions it, it answers them with your access.',
       ),
     ).toBeInTheDocument();
+    chooseSelf();
     expect(screen.getByRole('link', { name: "Slack's app settings" })).toHaveAttribute('href', 'https://api.slack.com/apps');
     expect(
       screen.getByText(/Paste the refresh token below\. We keep it for every Slack app you set up here, so you only do this once\./),
@@ -115,6 +130,87 @@ describe('none', () => {
     expect(screen.getByLabelText('Bot name')).toBeInTheDocument();
   });
 
+  it('defaults to Ask an AX admin when no token is stored, and to self when one is', () => {
+    const { unmount } = render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage {...QUIET} onChanged={vi.fn()} />,
+    );
+    expect(screen.getByText('Who sets it up in Slack?')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Ask an AX admin/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /I can install apps in Slack/ })).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "We'll ask your AX admins. One of them approves it and finishes it in Slack, so you don't need a token.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('You set it up with your own Slack configuration token, then click Allow in Slack.'),
+    ).toBeInTheDocument();
+    unmount();
+    renderIt(NONE_STORED);
+    expect(screen.getByRole('radio', { name: /I can install apps in Slack/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Ask an AX admin/ })).not.toBeChecked();
+  });
+
+  it('Ask an AX admin shows no token field and never sends one', async () => {
+    const onChanged = renderIt(NONE_NO_TOKEN);
+    expect(screen.queryByLabelText('Refresh token')).toBeNull();
+    expect(screen.queryByRole('link', { name: "Slack's app settings" })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Bot name'), { target: { value: 'Quill Bot' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an AX admin' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith('a1', { botName: 'Quill Bot' });
+    expect(Object.keys(ask.mock.calls[0]?.[1] ?? {})).toEqual(['botName']);
+    expect(request).not.toHaveBeenCalled();
+    expect(avatar).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it('a person with a stored token can still choose to ask an admin, and nothing is sent but the name', async () => {
+    const onChanged = renderIt(NONE_STORED);
+    fireEvent.click(screen.getByRole('radio', { name: /Ask an AX admin/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an AX admin' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(ask).toHaveBeenCalledWith('a1', { botName: 'Quill' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('says Slack has the final say either way', () => {
+    renderIt(NONE_NO_TOKEN);
+    const line =
+      'Either way, Slack has the final say: only someone allowed to install apps in your Slack workspace can add it.';
+    expect(screen.getByText(line)).toBeInTheDocument();
+    chooseSelf();
+    expect(screen.getByText(line)).toBeInTheDocument();
+  });
+
+  it('switching to self shows the token steps when none is stored, and the button follows the choice', () => {
+    renderIt(NONE_NO_TOKEN);
+    expect(screen.getByRole('button', { name: 'Ask an AX admin' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create the Slack bot' })).toBeNull();
+    chooseSelf();
+    expect(screen.getByLabelText('Refresh token')).toBeRequired();
+    expect(screen.getByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Ask an AX admin' })).toBeNull();
+  });
+
+  it('a refused ask shows its line under the name field', async () => {
+    ask.mockRejectedValueOnce(refusal(409, 'bot-name-taken'));
+    renderIt(NONE_NO_TOKEN);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an AX admin' }));
+    expect(await screen.findByText('Another Slack bot here already uses that name. Pick another.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Bot name')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Ask an AX admin' })).toBeEnabled();
+  });
+
+  it('a stale ask re-reads the status and says nothing', async () => {
+    ask.mockRejectedValueOnce(refusal(409, 'bot-requested'));
+    const onChanged = renderIt(NONE_NO_TOKEN);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an AX admin' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('a member sees nothing', () => {
     const { container } = render(
       <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage={false} {...QUIET} onChanged={vi.fn()} />,
@@ -133,6 +229,7 @@ describe('none', () => {
 
   it('without one the paste is trimmed, sent as refreshToken, and cleared as the request goes out', async () => {
     renderIt(NONE_NO_TOKEN);
+    chooseSelf();
     submit('Quill Bot', `  ${fakeConfigRefreshToken()}  `);
     const field = screen.getByLabelText('Refresh token') as HTMLInputElement;
     expect(field.value).toBe('');
@@ -220,6 +317,7 @@ describe('none', () => {
   ])('%s shows its line under the token field', async (code, status, line) => {
     request.mockRejectedValueOnce(refusal(status, code));
     renderIt(NONE_NO_TOKEN);
+    chooseSelf();
     submit('Quill Bot', fakeConfigRefreshToken());
     expect(await screen.findByText(line)).toBeInTheDocument();
     expect(screen.getByLabelText('Refresh token')).toHaveAttribute('aria-invalid', 'true');
@@ -380,7 +478,7 @@ describe('pending', () => {
       "We cancelled the request, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Or delete it yourself: open it in Slack's app settings and click Delete App at the bottom of the page.",
     );
     expect(screen.getByRole('link', { name: "Slack's app settings" })).toHaveAttribute('href', 'https://api.slack.com/apps');
-    expect(document.body.textContent).not.toMatch(/\bAX\b/);
+    expect(note.textContent).not.toMatch(/\bAX\b/);
     submit();
     await waitFor(() => expect(go).toHaveBeenCalledWith(INSTALL_URL));
     expect(onRequesting).toHaveBeenCalledTimes(1);
@@ -416,6 +514,65 @@ describe('pending', () => {
     expect(alert).toHaveTextContent('Something went wrong. Try again in a minute.');
     expect(alert).not.toHaveTextContent(/Slack/);
     expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe('requested', () => {
+  it('a manager sees the waiting line, when it was asked, and Cancel request', () => {
+    renderIt(REQUESTED);
+    expect(screen.getByText('Waiting for an AX admin to approve Quill Bot.')).toBeInTheDocument();
+    const date = new Date('2026-11-20T10:00:00.000Z').toLocaleDateString(undefined, { dateStyle: 'medium' });
+    expect(screen.getByText(`Asked on ${date}.`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel request' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue in Slack' })).toBeNull();
+  });
+
+  it('a date we cannot read shows as it came', () => {
+    renderIt({ ...REQUESTED, requestedAt: 'last week' });
+    expect(screen.getByText('Asked on last week.')).toBeInTheDocument();
+  });
+
+  it('nothing to anyone else', () => {
+    const { container } = render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={REQUESTED} canManage={false} {...QUIET} onChanged={vi.fn()} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('Cancel request cancels, then re-reads', async () => {
+    const onChanged = renderIt(REQUESTED);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    expect(await screen.findByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(cancelAsk).toHaveBeenCalledWith('a1');
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('a cancel leaves no left-over note: no Slack app exists', async () => {
+    const onCancelled = vi.fn();
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={REQUESTED} canManage {...QUIET} onCancelled={onCancelled} onChanged={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    await waitFor(() => expect(cancelAsk).toHaveBeenCalled());
+    expect(onCancelled).not.toHaveBeenCalled();
+  });
+
+  it('a stale cancel re-reads', async () => {
+    cancelAsk.mockRejectedValueOnce(refusal(409, 'not-requested'));
+    const onChanged = renderIt(REQUESTED);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a failed cancel says so, re-reads nothing, and can be tried again', async () => {
+    cancelAsk.mockRejectedValueOnce(refusal(500, 'internal'));
+    const onChanged = renderIt(REQUESTED);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Try again in a minute.');
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Cancel request' })).toBeEnabled();
   });
 });
 
@@ -571,11 +728,21 @@ describe('live', () => {
 });
 
 describe('words', () => {
-  it('never writes the product name in a sentence', () => {
-    const { container } = render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_NO_TOKEN} canManage {...QUIET} onChanged={vi.fn()} />,
-    );
-    expect(container.textContent).not.toMatch(/\bAX\b/);
+  it('names AX only as "AX admin(s)": the people to ask, never the product in a sentence of its own', () => {
+    for (const bot of [NONE_NO_TOKEN, NONE_STORED, REQUESTED]) {
+      const view = render(
+        <AgentSlackBot agentId="a1" agentName="Quill" bot={bot} canManage {...QUIET} onChanged={vi.fn()} />,
+      );
+      for (const hit of view.container.textContent?.match(/\bAX\b.{0,6}/g) ?? []) expect(hit).toMatch(/^AX admin/);
+      view.unmount();
+    }
+    for (const bot of [PENDING, LIVE]) {
+      const view = render(
+        <AgentSlackBot agentId="a1" agentName="Quill" bot={bot} canManage {...QUIET} onChanged={vi.fn()} />,
+      );
+      expect(view.container.textContent).not.toMatch(/\bAX\b/);
+      view.unmount();
+    }
   });
 
   it('never writes the product name in a sentence, the open Disconnect dialog included', async () => {

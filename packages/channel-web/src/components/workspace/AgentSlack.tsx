@@ -144,9 +144,10 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
     case 'unavailable':
       return <p className="text-[13px] text-muted-foreground">Slack isn&apos;t available here.</p>;
     case 'no-workspace':
-      // A live bot outlives the shared install, and a pending one still has to be
-      // cancellable (only a manager is told of it); its managers can disconnect a
-      // live one too (the server says who they are). Nothing can be asked for here.
+      // A live bot outlives the shared install, and a pending or requested one still
+      // has to be cancellable (only a manager is told of either); its managers can
+      // disconnect a live one too (the server says who they are). Nothing can be
+      // asked for here.
       return (
         <div className="flex flex-col gap-5">
           <p className="text-[13px] text-muted-foreground">

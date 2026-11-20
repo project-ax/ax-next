@@ -17,6 +17,8 @@ import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
 import { createClickHandler } from './answers.js';
 import { createBotCallbackRoute } from './bot-callback.js';
+import { createBotRequestAdminRoutes } from './bot-request-routes.js';
+import { createBotRequests } from './bot-requests.js';
 import { createBots } from './bots.js';
 import { subscribeCaptureVeto } from './capture-veto.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
@@ -78,6 +80,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        list of the team agents' own bots and its Disconnect for one
 //        (TASK-1172): admin only, CSRF-checked (admin-bot-routes.ts), the only
 //        callers of the two bots.ts methods that ask no one's rights
+//   GET  /admin/slack/bot-requests, POST /admin/slack/bot-requests/:requestId/
+//        {approve,decline}  — the team admins' asks for their agents' own bots,
+//        which an AX admin approves with their own configuration token or
+//        declines (TASK-1169, bot-request-routes.ts): admin only, CSRF-checked
 //   POST /slack/events/:installId     — Slack's deliveries,
 //   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts), and
 //   POST /slack/interactions/:installId — a click on an approval prompt's
@@ -92,13 +98,18 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        agent's own Slack bot (TASK-1167, bots.ts): a team admin of its team
 //        asks for it, picks it back up in Slack, cancels it, or disconnects it
 //        (TASK-1172); CSRF-checked
+//   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
+//        to approve it, without a token, and takes that ask back (TASK-1169,
+//        bot-requests.ts); CSRF-checked
 //   GET  /slack/bots/oauth/callback  — where Slack sends a bot's approver after
 //        Allow (bot-callback.ts): signed in, its OAuth state bound to the
 //        approver (the proof a GET carries), under the one app lock
 //
 // It keeps the shared install's row, and one row per team agent's own bot
-// (TASK-1167), in its own `channel_slack_v1_installs` table, each install's
-// three secrets in the credentials vault and, there too, one
+// (TASK-1167), in its own `channel_slack_v1_installs` table, each open ask for
+// an AX admin's approval of one in `channel_slack_v1_bot_requests` (TASK-1169;
+// no secret, removed with its agent too), each install's three secrets in the
+// credentials vault and, there too, one
 // configuration token per admin who made a Slack app through AX, shared by
 // every app of theirs (secrets.ts, TASK-1175), and one binding row per
 // connected channel in `channel_slack_v1_channels` (channel-store.ts), removed
@@ -384,6 +395,18 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           now,
           randomBytes,
         });
+        // Asking an AX admin to approve such a bot (TASK-1169): its approve
+        // makes the bot through `bots`' one create path, under the same lock.
+        const botRequests = createBotRequests({
+          bus,
+          installs: store,
+          secrets,
+          bots,
+          lock: appLock,
+          publicOrigin,
+          logger,
+          randomBytes,
+        });
 
         const routes: RouteSpec[] = [
           ...createAdminRoutes({
@@ -401,6 +424,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           // (TASK-1172): behind the same admin gate, on the same `bots`, which
           // takes the one app lock itself.
           ...createAdminBotRoutes({ bus, bots, logger }),
+          // Admin › Slack's bot requests: the same admin gate and CSRF check.
+          ...createBotRequestAdminRoutes({ bus, requests: botRequests, logger }),
           {
             method: 'POST',
             path: EVENTS_ROUTE_PATH,
@@ -474,8 +499,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             }),
           },
           // These keep http-server's CSRF check: the caller is a signed-in browser.
-          // The bot routes reach the same `bots` as agents:deleted, under the one app lock.
-          ...createAgentSlackRoutes(channelDeps, bots),
+          // The bot routes reach the same `bots` as agents:deleted, under the one app lock,
+          // and the ask routes the same `botRequests` as Admin › Slack.
+          ...createAgentSlackRoutes(channelDeps, bots, botRequests),
           // Where Slack sends a bot's approver back after Allow: signed in, the
           // OAuth state bound to them, and the bot finished under the same lock.
           createBotCallbackRoute({ bus, installs: store, lock: appLock, bots, publicOrigin, logger, now }),

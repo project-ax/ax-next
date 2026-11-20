@@ -1,6 +1,7 @@
 import { LEFTOVER_APPS_MAX } from '../limits.js';
 import {
   InstallStoreError,
+  type BotRequest,
   type InstallKind,
   type InstallRow,
   type InstallStore,
@@ -20,6 +21,8 @@ export function memoryStore(clock: () => number, trail: string[]) {
   const rows = new Map<string, Row>();
   /** The Slack apps Disconnect couldn't delete, by the removed install's id. */
   const leftovers = new Map<string, LeftoverApp>();
+  /** Open bot requests waiting for an AX admin (TASK-1169), by request id. */
+  const requests = new Map<string, BotRequest>();
   const calls: Array<{ method: StoreMethod; args: unknown[] }> = [];
   /** A method listed here throws this, every time, until it is deleted. */
   const failures = new Map<StoreMethod, unknown>();
@@ -122,6 +125,48 @@ export function memoryStore(clock: () => number, trail: string[]) {
       }
       r.botHandle = handle;
     },
+    async insertBotRequest(r) {
+      await enter('insertBotRequest', [r]);
+      if (requests.has(r.requestId)) throw new Error('duplicate key value violates unique constraint');
+      // The real store's unique index: one open request per agent.
+      if ([...requests.values()].some((x) => x.agentId === r.agentId)) {
+        throw new InstallStoreError('request-exists');
+      }
+      requests.set(r.requestId, {
+        requestId: r.requestId,
+        agentId: r.agentId,
+        requestedByUserId: r.requestedByUserId,
+        botName: r.botName,
+        createdAt: new Date(clock()),
+      });
+    },
+    async getBotRequest(requestId) {
+      await enter('getBotRequest', [requestId]);
+      const r = requests.get(requestId);
+      return r === undefined ? null : { ...r };
+    },
+    async botRequestForAgent(agentId) {
+      await enter('botRequestForAgent', [agentId]);
+      const r = [...requests.values()].find((x) => x.agentId === agentId);
+      return r === undefined ? null : { ...r };
+    },
+    async listBotRequests() {
+      await enter('listBotRequests', []);
+      return [...requests.values()]
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.requestId.localeCompare(b.requestId))
+        .map((r) => ({ ...r }));
+    },
+    async removeBotRequest(requestId) {
+      await enter('removeBotRequest', [requestId]);
+      return requests.delete(requestId);
+    },
+    async removeBotRequestForAgent(agentId) {
+      await enter('removeBotRequestForAgent', [agentId]);
+      const r = [...requests.values()].find((x) => x.agentId === agentId);
+      if (r === undefined) return null;
+      requests.delete(r.requestId);
+      return r.requestId;
+    },
     async setOAuthState(installId, s) {
       await enter('setOAuthState', [installId, s]);
       const r = rows.get(installId);
@@ -188,7 +233,8 @@ export function memoryStore(clock: () => number, trail: string[]) {
     },
     async removeAll() {
       await enter('removeAll', []);
-      // Every kind, as the real one: its one caller is the bootstrap reset.
+      // Every kind, and every open request, as the real one: its one caller
+      // is the bootstrap reset.
       const removed = [...rows.values()].map((r) => ({
         installId: r.installId,
         appId: r.appId,
@@ -197,6 +243,7 @@ export function memoryStore(clock: () => number, trail: string[]) {
         kind: r.kind,
       }));
       rows.clear();
+      requests.clear();
       return removed;
     },
     async list() {
@@ -240,5 +287,5 @@ export function memoryStore(clock: () => number, trail: string[]) {
       leftovers.delete(installId);
     },
   };
-  return { store, rows, leftovers, calls, failures };
+  return { store, rows, leftovers, requests, calls, failures };
 }

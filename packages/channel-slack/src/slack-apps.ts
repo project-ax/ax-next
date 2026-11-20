@@ -233,11 +233,15 @@ export interface AppSteps {
 
 /**
  * Every bot name already spoken for: the shared install's name, then each
- * team bot's name and stored handle. `except` leaves one install out, so a
- * rename can keep or vary its own name.
+ * team bot's name and stored handle, then each open bot request's name
+ * (TASK-1169: a request holds its name until it is approved or taken back,
+ * so the approve can't lose it to a later bot). `except` leaves out one
+ * install or one open request, by its id (both are 22 random base64url
+ * characters, so the two never collide): a rename can keep or vary its own
+ * name, and an approve its own request's.
  */
 export async function namesInUse(
-  store: Pick<InstallStore, 'current' | 'listBots'>,
+  store: Pick<InstallStore, 'current' | 'listBots' | 'listBotRequests'>,
   o: { except?: string } = {},
 ): Promise<string[]> {
   const out: string[] = [];
@@ -247,6 +251,9 @@ export async function namesInUse(
     if (bot.installId === o.except) continue;
     out.push(bot.botName);
     if (bot.botHandle !== null) out.push(bot.botHandle);
+  }
+  for (const request of await store.listBotRequests()) {
+    if (request.requestId !== o.except) out.push(request.botName);
   }
   return out;
 }

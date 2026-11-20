@@ -28,7 +28,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_leftover_apps`.execute(db);
+  await sql`TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests`.execute(db);
 });
 
 afterAll(async () => {
@@ -1224,5 +1224,182 @@ describe('OAuth state', () => {
     expect(await store.peekOAuthState(sharedHash, 'shared')).toEqual(sharedState);
     expect(await store.consumeOAuthState(sharedHash, 'shared')).toEqual(sharedState);
     expect(await store.consumeOAuthState(sharedHash, 'shared')).toBeNull();
+  });
+});
+
+/*
+  A team admin's open ask for their agent's own bot, waiting for an AX admin
+  (TASK-1169). One per agent, decided by the database. It holds no secret and
+  no picture, and names the person who asked, never an approver, so no
+  configuration token hangs on it.
+*/
+describe('bot requests waiting for an AX admin (TASK-1169)', () => {
+  /** An open request; its id is shaped like a real one (16 random bytes, base64url). */
+  async function openRequest(
+    o: { requestId?: string; agentId?: string; requestedByUserId?: string; botName?: string } = {},
+  ): Promise<string> {
+    const requestId = o.requestId ?? newInstallId();
+    await store.insertBotRequest({
+      requestId,
+      agentId: o.agentId ?? 'agt_support',
+      requestedByUserId: o.requestedByUserId ?? 'usr_ada',
+      botName: o.botName ?? 'Ada Bot',
+    });
+    return requestId;
+  }
+
+  async function askedAt(requestId: string, iso: string): Promise<void> {
+    await sql`UPDATE channel_slack_v1_bot_requests SET created_at = ${new Date(iso)}
+              WHERE request_id = ${requestId}`.execute(db);
+  }
+
+  it('stores a request and reads it by id, by agent and in the list: oldest first, then by request id', async () => {
+    expect(await store.listBotRequests()).toEqual([]);
+
+    // Shaped like real ids, and in a known order, so a tie is listed by id.
+    const tieFirst = `A${newInstallId().slice(1)}`;
+    const tieSecond = `B${newInstallId().slice(1)}`;
+    const oldest = newInstallId();
+    // Asked in an order that is neither the listed one nor its reverse, and
+    // no other column sorts them that way either: the order can only come
+    // from created_at, then request_id.
+    await openRequest({ requestId: tieSecond, agentId: 'agt_sales', requestedByUserId: 'usr_grace', botName: 'Sales Bot' });
+    await openRequest({ requestId: oldest, agentId: 'agt_billing', requestedByUserId: 'usr_hopper', botName: 'Billing Bot' });
+    await openRequest({ requestId: tieFirst });
+    // The database dates a request as it is written.
+    expect((await store.getBotRequest(tieFirst))?.createdAt).toBeInstanceOf(Date);
+    // The tie's second id is written, and dated, before its first: a list
+    // that lost its tie-break would show the rows as stored, second first.
+    await askedAt(oldest, '2026-11-20T09:00:00.000Z');
+    await askedAt(tieSecond, '2026-11-20T10:00:00.000Z');
+    await askedAt(tieFirst, '2026-11-20T10:00:00.000Z');
+
+    const ada = await store.getBotRequest(tieFirst);
+    // Exactly these fields: no secret, no picture, no approver.
+    expect(ada).toEqual({
+      requestId: tieFirst,
+      agentId: 'agt_support',
+      requestedByUserId: 'usr_ada',
+      botName: 'Ada Bot',
+      createdAt: new Date('2026-11-20T10:00:00.000Z'),
+    });
+    expect(await store.botRequestForAgent('agt_support')).toEqual(ada);
+    expect(await store.botRequestForAgent('agt_sales')).toEqual(await store.getBotRequest(tieSecond));
+    // Whole requests, as get reads them.
+    expect(await store.listBotRequests()).toEqual([
+      await store.getBotRequest(oldest),
+      ada,
+      await store.getBotRequest(tieSecond),
+    ]);
+
+    expect(await store.getBotRequest(newInstallId())).toBeNull();
+    expect(await store.botRequestForAgent('agt_marketing')).toBeNull();
+  });
+
+  it('allows one open request per agent: a second is request-exists, and a reused id is refused the way Postgres refuses it', async () => {
+    const first = await openRequest();
+
+    const twice = await openRequest({ requestedByUserId: 'usr_grace', botName: 'Ada Bot Two' }).catch((e: unknown) => e);
+    expect(twice).toBeInstanceOf(InstallStoreError);
+    expect((twice as InstallStoreError).code).toBe('request-exists');
+
+    // An id already taken says nothing about the agent.
+    const reused = await openRequest({ requestId: first, agentId: 'agt_billing' }).catch((e: unknown) => e);
+    expect(reused).not.toBeInstanceOf(InstallStoreError);
+    expect((reused as { code?: unknown }).code).toBe('23505');
+
+    // Neither refusal wrote or changed anything.
+    expect(await store.botRequestForAgent('agt_billing')).toBeNull();
+    expect((await store.listBotRequests()).map((r) => r.requestId)).toEqual([first]);
+    expect(await store.getBotRequest(first)).toMatchObject({
+      agentId: 'agt_support',
+      requestedByUserId: 'usr_ada',
+      botName: 'Ada Bot',
+    });
+
+    // Another agent's request is its own.
+    const sales = await openRequest({ agentId: 'agt_sales' });
+    expect((await store.listBotRequests()).map((r) => r.requestId).sort()).toEqual([first, sales].sort());
+  });
+
+  it('removes by id and by agent, saying what went, and nothing else', async () => {
+    const support = await openRequest();
+    const sales = await openRequest({ agentId: 'agt_sales' });
+    const billing = await openRequest({ agentId: 'agt_billing' });
+
+    expect(await store.removeBotRequest(support)).toBe(true);
+    expect(await store.removeBotRequest(support)).toBe(false);
+    expect(await store.getBotRequest(support)).toBeNull();
+
+    expect(await store.removeBotRequestForAgent('agt_sales')).toBe(sales);
+    expect(await store.removeBotRequestForAgent('agt_sales')).toBeNull();
+    expect(await store.botRequestForAgent('agt_sales')).toBeNull();
+
+    // Neither delete reached past the request it named.
+    expect((await store.listBotRequests()).map((r) => r.requestId)).toEqual([billing]);
+    // An agent whose request went can ask again.
+    const again = await openRequest({ agentId: 'agt_sales' });
+    expect(await store.botRequestForAgent('agt_sales')).toMatchObject({ requestId: again });
+  });
+
+  it('removeAll takes every request with the installs, in its one statement, and still returns only the installs', async () => {
+    const shared = await pending();
+    const support = await openRequest();
+    const sales = await openRequest({ agentId: 'agt_sales' });
+
+    // A reset whose install delete fails deletes no request either.
+    await withInstallDeleteTrigger(`RAISE EXCEPTION 'refused in test'; RETURN OLD;`, async () => {
+      await expect(store.removeAll()).rejects.toThrow(/refused in test/);
+    });
+    expect((await store.listBotRequests()).map((r) => r.requestId).sort()).toEqual([support, sales].sort());
+
+    expect((await store.removeAll()).map((r) => r.installId)).toEqual([shared]);
+    expect(await store.listBotRequests()).toEqual([]);
+    expect(await store.current()).toBeNull();
+
+    // With no install left to delete, a reset still takes every request.
+    await openRequest({ agentId: 'agt_billing' });
+    expect(await store.removeAll()).toEqual([]);
+    expect(await store.listBotRequests()).toEqual([]);
+  });
+
+  it("a request never names anyone's token: personHasApps doesn't read it", async () => {
+    await openRequest({ requestedByUserId: 'usr_ada' });
+    expect(await store.personHasApps('usr_ada')).toBe(false);
+  });
+
+  it('the one-per-agent index is unique, by name; the table holds no secret, picture or approver; the migrations run twice and keep the rows', async () => {
+    const support = await openRequest();
+    await runMigrations(db);
+    await runMigrations(db);
+    expect(await store.getBotRequest(support)).toMatchObject({ requestId: support, agentId: 'agt_support' });
+
+    const indexes = await sql<{ indexname: string; indexdef: string }>`
+      SELECT indexname, indexdef FROM pg_indexes
+       WHERE tablename = 'channel_slack_v1_bot_requests'
+       ORDER BY indexname
+    `.execute(db);
+    // The primary key and the agent's index, never a second copy of either.
+    expect(indexes.rows.map((r) => r.indexname)).toEqual([
+      'channel_slack_v1_bot_requests_agent',
+      'channel_slack_v1_bot_requests_pkey',
+    ]);
+    // Every row, not a partial index: no WHERE after the column.
+    expect(indexes.rows[0]!.indexdef).toMatch(
+      /^CREATE UNIQUE INDEX channel_slack_v1_bot_requests_agent ON \S+ USING btree \(agent_id\)$/,
+    );
+
+    const columns = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'channel_slack_v1_bot_requests'
+       ORDER BY column_name
+    `.execute(db);
+    expect(columns.rows.map((r) => r.column_name)).toEqual([
+      'agent_id',
+      'bot_name',
+      'created_at',
+      'request_id',
+      'requested_by_user_id',
+    ]);
   });
 });
