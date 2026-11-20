@@ -98,6 +98,10 @@ function emptyResponse(url: string): Response {
   if (/\/admin\/slack(\?|$)/.test(url)) {
     return json({ state: 'not-connected', defaultBotName: 'canopy', canConnect: true });
   }
+  // Its team bots card (TASK-1172) reads its own list: none.
+  if (/\/admin\/slack\/bots(\?|$)/.test(url)) {
+    return json({ bots: [] });
+  }
   if (url.startsWith('/admin/models/policy')) return json({ source: 'builtin', version: 0, allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' });
   if (url.startsWith('/admin/models/catalog')) return json({ providers: [] });
   return json({ providers: [], agents: [], teams: [], connectors: [] });
