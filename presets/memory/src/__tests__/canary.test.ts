@@ -735,7 +735,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -848,6 +848,30 @@ describe('@ax/preset-memory canary', () => {
       status: 404,
       json: { error: 'not-found' },
     });
+
+    // TASK-1167: a team agent's own bot routes are mounted too. Each POST keeps
+    // http-server's CSRF check; with the header, an agent nobody can see is the
+    // route's own 404 (an unmounted POST would get the router's 405).
+    for (const suffix of ['/bot', '/bot/install-url', '/bot/cancel']) {
+      const botPath = `/settings/slack/no-such-agent${suffix}`;
+      const noCsrfBot = await fetch(url(botPath), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+        body: '{}',
+      });
+      expect(noCsrfBot.status).toBe(403);
+      expect(await apiJson('POST', botPath, CANARY_ADMIN, {})).toEqual({
+        status: 404,
+        json: { error: 'not-found' },
+      });
+    }
+    // The bot's OAuth callback is mounted: signed out, it sends the browser back
+    // to the app's root with one fixed word, never a JSON error.
+    const botCallback = await fetch(url('/slack/bots/oauth/callback?state=x'), {
+      redirect: 'manual',
+    });
+    expect(botCallback.status).toBe(302);
+    expect(botCallback.headers.get('location') ?? '').toMatch(/\/\?slack-bot=failed$/);
 
     // TASK-1131: the provider that tells a Slack turn's agent who is writing is on the
     // bus, and a web chat (a spawn channel-slack never started) gets nothing from it. The
