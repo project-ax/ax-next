@@ -582,6 +582,24 @@ async function routeMention(
       await droppedReconnected();
       return;
     }
+    // On a team agent's own bot an outsider runs as its requester only while
+    // they are a team admin of the agent's team (TASK-1167). Asked at the
+    // mention, and again now: demoted while the turn waited, it never runs as
+    // them. Not knowing is no turn either. Members run as themselves.
+    if (external && install.kind !== 'shared') {
+      let still: AgentAccess;
+      try {
+        still = await teamAdminAccess(d.bus, lookupCtx(runAs), agentId, runAs);
+      } catch (err) {
+        await failed('requester', err);
+        return;
+      }
+      if (still !== 'yes') {
+        log('info', 'slack_turns_dropped', { reason: 'requester', count: 1 });
+        await tell(COPY.botUnavailable);
+        return;
+      }
+    }
     // 9. The memory switch, before anything is said in the conversation. The
     // store reads the switch in the same statement that records the thread,
     // so it is the switch as it is at that write: not as it was when the

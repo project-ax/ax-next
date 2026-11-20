@@ -2916,12 +2916,15 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.threadWrites.map((t) => [t.installId, t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([
       [OWN_BOT_ID, 'external', 'usr_ada'],
     ]);
-    // His own access first (none), then whether the requester is still a team admin, asked as a non-admin.
+    // His own access first (none), then whether the requester is still a team admin, asked as a
+    // non-admin: at the mention, and again when the turn's time comes.
     expect(w.agents.inputs('agents:resolve')).toEqual([
       { agentId: SUPPORT_AGENT.id, userId: 'usr_bob' },
       { agentId: SUPPORT_AGENT.id, userId: 'usr_ada' },
+      { agentId: SUPPORT_AGENT.id, userId: 'usr_ada' },
     ]);
     expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT_AGENT.id, actor: { userId: 'usr_ada', isAdmin: false } },
       { agentId: SUPPORT_AGENT.id, actor: { userId: 'usr_ada', isAdmin: false } },
     ]);
     // One lane for every outsider in the bot's channel.
@@ -3104,6 +3107,77 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(ephemerals(w.slack.calls)).toEqual([]);
     expect(w.lines).toEqual([
       { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'own-bot', count: 1 } },
+    ]);
+  });
+
+  it("an outsider's turn still waiting when the requester stops being a team admin is dropped with the polite line; a member's waiting turn still runs", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    const bobs = deferred();
+    const alices = deferred();
+    w.scripts.push({ gate: bobs.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    w.scripts.push({ gate: alices.promise, chunks: [{ kind: 'text', text: 'two' }], end: 'turn-end' });
+    const carolTs = '1763035302.000302';
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, text: 'outsider first' }));
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE, ts: '1763035301.000301', text: 'member first' }));
+    // Planned while Ada is still a team admin: Carol waits behind Bob in the channel's one lane,
+    // Alice's second behind her first in her conversation.
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: carolTs, threadTs: MENTION_TS, text: 'outsider second' }));
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE, ts: '1763035303.000303', threadTs: '1763035301.000301', text: 'member second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(2);
+
+    // Ada is demoted to member while both wait.
+    w.agents.setRole(SUPPORT_TEAM, 'usr_ada', 'member');
+    bobs.release();
+    alices.release();
+    await w.idle();
+
+    // Carol's turn never runs as Ada, records nothing; Alice's runs as her.
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, contentOf(i).replace(/^\[[^\]]*\]: /, '')])).toEqual([
+      ['usr_ada', 'external', 'outsider first'],
+      ['usr_alice', 'user', 'member first'],
+      ['usr_alice', 'user', 'member second'],
+    ]);
+    expect(w.threadWrites.map((t) => [t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([
+      ['external', 'usr_ada'],
+      ['attended', null],
+      ['attended', null],
+    ]);
+    expect(ephemerals(w.slack.calls)).toEqual([
+      { channel: SUPPORT, user: CAROL, text: COPY.botUnavailable, threadTs: MENTION_TS },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: OWN_BOT_ID, reason: 'requester', count: 1 } },
+    ]);
+  });
+
+  it("an outsider's waiting turn whose requester check fails at its turn is dropped, told to try again, logged by code only", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, text: 'first' }));
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: '1763035302.000302', text: 'second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(1);
+
+    w.agents.faults.set(
+      'agents:can-set-shared-credential',
+      new PluginError({ code: 'store-unavailable', plugin: 'fake-agents', message: 'down for usr_ada' }),
+    );
+    first.release();
+    await w.idle();
+
+    expect(w.invokes.map((i) => contentOf(i).replace(/^\[[^\]]*\]: /, ''))).toEqual(['first']);
+    expect(w.threadWrites).toHaveLength(1);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: CAROL, text: COPY.turnFailed }]);
+    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_event_failed',
+        fields: { installId: OWN_BOT_ID, stage: 'requester', code: 'store-unavailable' },
+      },
     ]);
   });
 
