@@ -6,16 +6,24 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * every query against them lives in store.ts or channel-store.ts.
  *
  *   channel_slack_v1_installs — one row per Slack app AX created: `pending`
- *     from Connect until the admin clicks Allow, then `active`. At most one
- *     shared-app install per AX instance today (admin operations run one at a
- *     time); later cards add per-agent installs here.
- *     `connected_by_user_id` is the admin who connected it: whose
- *     configuration token made the app, and so whose token (one per person,
- *     TASK-1175) every change to it uses. Vault reads name them. Only
- *     Connect sets it: a Replace (TASK-1128) stores the pasted token as
- *     theirs and moves only `config_token_added_at`, when the token was last
- *     added. `created_at` is still when the row was made, and it orders
- *     `current()`.
+ *     until its Allow, then `active`. `kind` says which app it is. `shared`
+ *     is the one Admin › Slack connects: at most one per AX instance (admin
+ *     operations run one at a time). `bot` is a team agent's own bot
+ *     (TASK-1167): at most one per agent, pending included (a partial unique
+ *     index). A bot row names its `agent_id`, the one agent its mentions run,
+ *     and its `requested_by_user_id`, the team admin who asked for it, whom
+ *     its channels' outsiders run as (each of its bindings copies it at the
+ *     first mention there). `bot_handle` is the @handle Slack gave its bot
+ *     user, read once at its Allow. The shared row has none of these three,
+ *     and a CHECK pairs `agent_id` and `requested_by_user_id` with the kind,
+ *     so neither kind can pass for the other.
+ *     `connected_by_user_id` is whose configuration token made the app: the
+ *     admin who connected the shared app, or a bot's approver (in TASK-1167
+ *     always its requester). Every change to the app uses that person's token
+ *     (one per person, TASK-1175), and vault reads name them. Only the insert
+ *     sets it: a Replace (TASK-1128) stores the pasted token as theirs and
+ *     moves only `config_token_added_at`, when the token was last added.
+ *     `created_at` is still when the row was made, and it orders `current()`.
  *
  *   channel_slack_v1_channels — the bindings (TASK-1094): which team agent a
  *     public channel of an install is connected to. The primary key makes it
@@ -80,8 +88,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * members' Slack display names and ids as their sender labels showed them,
  * untrusted profile text for memory to compare against, never shown, logged
  * or used for identity. The OAuth `state` is kept only as
- * a sha256, beside the admin it was minted for and its expiry, so it survives
- * a restart between Connect and Allow and can be spent exactly once.
+ * a sha256, beside the person it was minted for and its expiry, so it survives
+ * a restart between Connect and Allow and can be spent exactly once, and only
+ * by its own kind's callback (store.ts, TASK-1167).
  *
  * No foreign keys, between these tables or to any other plugin's: tests
  * TRUNCATE and DROP the installs table on its own, and an agent's row is the
@@ -96,7 +105,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * one as the subscription, and a comment is not one.
  *
  * `status` has no CHECK on purpose: store.ts reads any value other than
- * `active` as `pending`, which fails closed (events are ignored).
+ * `active` as `pending`, which fails closed (events are ignored). `kind` has
+ * one, beside the CHECK that pairs it with the bot columns: an unknown kind
+ * is refused outright, and store.ts still reads anything but `shared` as a
+ * bot, the kind that can do less.
  *
  * Additive-only and idempotent: every boot runs it.
  */
@@ -116,6 +128,11 @@ export interface ChannelSlackInstallsTable {
   oauth_state_hash: string | null;
   oauth_state_user_id: string | null;
   oauth_state_expires_at: Date | null;
+  // TASK-1167. An install's kind and its bot's agent never change.
+  kind: ColumnType<string, string, never>;
+  agent_id: ColumnType<string | null, string | null, never>;
+  requested_by_user_id: string | null;
+  bot_handle: string | null;
 }
 
 export interface ChannelSlackChannelsTable {
@@ -271,5 +288,48 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     ALTER TABLE channel_slack_v1_leftover_apps
       ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT NULL
+  `.execute(db);
+  // A team agent's own bot (TASK-1167) is a second kind of install. Every
+  // row from before is the shared app: the default says so, and none of them
+  // has an agent, a requester or a handle.
+  await sql`
+    ALTER TABLE channel_slack_v1_installs
+      ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'shared' CHECK (kind IN ('shared', 'bot')),
+      ADD COLUMN IF NOT EXISTS agent_id TEXT NULL,
+      ADD COLUMN IF NOT EXISTS requested_by_user_id TEXT NULL,
+      ADD COLUMN IF NOT EXISTS bot_handle TEXT NULL
+  `.execute(db);
+  // Fail closed in the database: a bot always names its agent and its
+  // requester, and the shared app names neither, so a bot row can never lose
+  // its agent and still be read. Added once, by name, by the recipe of
+  // `conversations_v1_events_event_kind_check` (@ax/conversations): two
+  // replicas booting at once (or the CLI reset's own process) take the
+  // advisory lock in turn, and the second finds the constraint there. Every
+  // row from before is `shared` with neither column, so the ADD's check of
+  // them can't fail.
+  await sql`
+    DO $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('channel_slack_v1_installs_kind_fields'));
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'channel_slack_v1_installs'::regclass
+           AND conname = 'channel_slack_v1_installs_kind_fields'
+      ) THEN
+        ALTER TABLE channel_slack_v1_installs
+          ADD CONSTRAINT channel_slack_v1_installs_kind_fields CHECK (
+            (kind = 'shared' AND agent_id IS NULL AND requested_by_user_id IS NULL)
+            OR (kind = 'bot' AND agent_id IS NOT NULL AND requested_by_user_id IS NOT NULL)
+          );
+      END IF;
+    END $$
+  `.execute(db);
+  // One bot per agent, pending or active: of two requests for one agent,
+  // the database lets exactly one in (store.ts answers the other
+  // `bot-exists`).
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS channel_slack_v1_installs_bot_agent
+      ON channel_slack_v1_installs (agent_id)
+      WHERE kind = 'bot'
   `.execute(db);
 }

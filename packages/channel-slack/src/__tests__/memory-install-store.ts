@@ -1,5 +1,11 @@
 import { LEFTOVER_APPS_MAX } from '../limits.js';
-import { InstallStoreError, type InstallRow, type InstallStore, type LeftoverApp } from '../store.js';
+import {
+  InstallStoreError,
+  type InstallKind,
+  type InstallRow,
+  type InstallStore,
+  type LeftoverApp,
+} from '../store.js';
 
 // ── An in-memory InstallStore, with the real one's rules ────────────────────
 
@@ -27,6 +33,7 @@ export function memoryStore(clock: () => number, trail: string[]) {
   function view(r: Row): InstallRow {
     return {
       installId: r.installId,
+      kind: r.kind,
       status: r.status,
       appId: r.appId,
       clientId: r.clientId,
@@ -35,23 +42,48 @@ export function memoryStore(clock: () => number, trail: string[]) {
       teamName: r.teamName,
       botUserId: r.botUserId,
       connectedByUserId: r.connectedByUserId,
+      agentId: r.agentId,
+      requestedByUserId: r.requestedByUserId,
+      botHandle: r.botHandle,
       createdAt: r.createdAt,
       configTokenAddedAt: r.configTokenAddedAt,
       installedAt: r.installedAt,
     };
   }
-  function holding(stateHash: string): Row | undefined {
-    for (const r of rows.values()) if (r.stateHash === stateHash) return r;
+  /** The install of this kind holding the state: another kind's never matches (TASK-1167). */
+  function holding(stateHash: string, kind: InstallKind): Row | undefined {
+    for (const r of rows.values()) if (r.stateHash === stateHash && r.kind === kind) return r;
     return undefined;
+  }
+  const oldestFirst = (a: Row, b: Row): number =>
+    a.createdAt.getTime() - b.createdAt.getTime() || a.installId.localeCompare(b.installId);
+  /** A new pending row, as the real store's one INSERT writes it: both dates are its now(). */
+  function pendingRow(
+    r: Pick<InstallRow, 'installId' | 'appId' | 'clientId' | 'botName' | 'connectedByUserId' | 'kind'> &
+      Pick<InstallRow, 'agentId' | 'requestedByUserId'>,
+  ): Row {
+    const at = clock();
+    return {
+      ...r,
+      status: 'pending',
+      teamId: null,
+      teamName: null,
+      botUserId: null,
+      botHandle: null,
+      createdAt: new Date(at),
+      configTokenAddedAt: new Date(at),
+      installedAt: null,
+      stateHash: null,
+      stateUserId: null,
+      stateExpiresAt: null,
+    };
   }
 
   const store: InstallStore = {
     async current() {
       await enter('current', []);
-      const oldest = [...rows.values()].sort(
-        (a, b) =>
-          a.createdAt.getTime() - b.createdAt.getTime() || a.installId.localeCompare(b.installId),
-      )[0];
+      // The shared app only: never a team agent's bot.
+      const oldest = [...rows.values()].filter((r) => r.kind === 'shared').sort(oldestFirst)[0];
       return oldest === undefined ? null : view(oldest);
     },
     async get(installId) {
@@ -62,21 +94,33 @@ export function memoryStore(clock: () => number, trail: string[]) {
     async insertPending(r) {
       await enter('insertPending', [r]);
       if (rows.has(r.installId)) throw new Error('duplicate key value violates unique constraint');
-      // One INSERT in the real store: both dates are its now().
-      const at = clock();
-      rows.set(r.installId, {
-        ...r,
-        status: 'pending',
-        teamId: null,
-        teamName: null,
-        botUserId: null,
-        createdAt: new Date(at),
-        configTokenAddedAt: new Date(at),
-        installedAt: null,
-        stateHash: null,
-        stateUserId: null,
-        stateExpiresAt: null,
-      });
+      rows.set(r.installId, pendingRow({ ...r, kind: 'shared', agentId: null, requestedByUserId: null }));
+    },
+    async insertPendingBot(r) {
+      await enter('insertPendingBot', [r]);
+      if (rows.has(r.installId)) throw new Error('duplicate key value violates unique constraint');
+      // The real store's unique index: one bot per agent, pending or active.
+      if ([...rows.values()].some((x) => x.kind === 'bot' && x.agentId === r.agentId)) {
+        throw new InstallStoreError('bot-exists');
+      }
+      rows.set(r.installId, pendingRow({ ...r, kind: 'bot' }));
+    },
+    async botForAgent(agentId) {
+      await enter('botForAgent', [agentId]);
+      const r = [...rows.values()].find((x) => x.kind === 'bot' && x.agentId === agentId);
+      return r === undefined ? null : view(r);
+    },
+    async listBots() {
+      await enter('listBots', []);
+      return [...rows.values()].filter((r) => r.kind === 'bot').sort(oldestFirst).map(view);
+    },
+    async setBotHandle(installId, handle) {
+      await enter('setBotHandle', [installId, handle]);
+      const r = rows.get(installId);
+      if (r === undefined || r.kind !== 'bot' || r.status !== 'active') {
+        throw new InstallStoreError('install-not-active');
+      }
+      r.botHandle = handle;
     },
     async setOAuthState(installId, s) {
       await enter('setOAuthState', [installId, s]);
@@ -86,15 +130,15 @@ export function memoryStore(clock: () => number, trail: string[]) {
       r.stateUserId = s.userId;
       r.stateExpiresAt = s.expiresAt;
     },
-    async peekOAuthState(stateHash) {
-      await enter('peekOAuthState', [stateHash]);
-      const r = holding(stateHash);
+    async peekOAuthState(stateHash, kind) {
+      await enter('peekOAuthState', [stateHash, kind]);
+      const r = holding(stateHash, kind);
       if (r === undefined || r.stateUserId === null || r.stateExpiresAt === null) return null;
       return { installId: r.installId, userId: r.stateUserId, expiresAt: r.stateExpiresAt };
     },
-    async consumeOAuthState(stateHash) {
-      await enter('consumeOAuthState', [stateHash]);
-      const r = holding(stateHash);
+    async consumeOAuthState(stateHash, kind) {
+      await enter('consumeOAuthState', [stateHash, kind]);
+      const r = holding(stateHash, kind);
       if (r === undefined || r.stateUserId === null || r.stateExpiresAt === null) return null;
       const spent = { installId: r.installId, userId: r.stateUserId, expiresAt: r.stateExpiresAt };
       r.stateHash = null;
@@ -144,11 +188,13 @@ export function memoryStore(clock: () => number, trail: string[]) {
     },
     async removeAll() {
       await enter('removeAll', []);
+      // Every kind, as the real one: its one caller is the bootstrap reset.
       const removed = [...rows.values()].map((r) => ({
         installId: r.installId,
         appId: r.appId,
         teamId: r.teamId,
         connectedByUserId: r.connectedByUserId,
+        kind: r.kind,
       }));
       rows.clear();
       return removed;

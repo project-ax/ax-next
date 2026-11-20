@@ -84,6 +84,9 @@ const GRACE = 'usr_grace';
 const GRACE_INSTALL_ID = 'Gr4c3InstallIdNotReal1';
 /** A Slack app an earlier Disconnect couldn't delete: its removed install's id. */
 const LEFTOVER_ID = 'L3ftoverInstallId0001A';
+/** A team agent's own bot (TASK-1167), Grace's: she asked for it and approved it. */
+const BOT_INSTALL_ID = 'B0tInstallIdNotReal001';
+const BOT_APP_ID = 'A07BOTAPP001';
 const BOT_TOKEN = fakeBotToken('PLUGINTESTSECRET');
 const ALICE = 'U07ALICE001';
 /** Ada's Slack user: she connected #support, and is a team admin of its agent. */
@@ -1608,18 +1611,89 @@ describe('@ax/channel-slack plugin', () => {
       level: 'warn',
       appId: APP_ID,
       teamId: TEAM_ID,
+      kind: 'shared',
       hint: expect.stringContaining('api.slack.com/apps'),
     });
-    expect(byId.get(UNKNOWN_ID)).toMatchObject({ appId: 'A07PENDING01', teamId: null });
+    expect(byId.get(UNKNOWN_ID)).toMatchObject({ appId: 'A07PENDING01', teamId: null, kind: 'shared' });
     for (const l of removed) {
       expect(String(l['hint'])).toContain('configuration token');
       expect(Object.keys(l).sort()).toEqual(
-        ['appId', 'hint', 'installId', 'level', 'msg', 'reqId', 'teamId', 'ts'],
+        ['appId', 'hint', 'installId', 'kind', 'level', 'msg', 'reqId', 'teamId', 'ts'],
       );
     }
     const all = JSON.stringify(logs);
     expect(all).not.toContain(SIGNING_SECRET);
     expect(all).not.toContain('7512345678901'); // client ids stay out too
+  });
+
+  /*
+    A reset wipes every credential and TRUNCATEs every agent without
+    announcing a delete, so a team agent's bot (TASK-1167) goes with the
+    shared install: a row left behind would name a deleted agent and hold no
+    secret. Its line says which kind it was, and its approver's token goes
+    once nothing names them.
+  */
+  it("a reset removes bot installs too, logs their kind, deletes their leftover secrets and releases their approver's token", async () => {
+    const { harness, s } = await boot();
+    const store = createInstallStore(probe);
+    // Ada's shared install, and Grace's bot for the team agent, live.
+    await insertActiveInstall();
+    await store.insertPendingBot({
+      installId: BOT_INSTALL_ID,
+      appId: BOT_APP_ID,
+      clientId: '7512345678901.7522222222222',
+      botName: 'support-helper',
+      connectedByUserId: GRACE,
+      agentId: TEAM_AGENT.id,
+      requestedByUserId: GRACE,
+    });
+    await store.activate(BOT_INSTALL_ID, {
+      teamId: TEAM_ID,
+      teamName: 'Canopy Works',
+      botUserId: 'U07HELPERBOT',
+      installedAt: new Date(NOW_MS),
+    });
+    // All stored after the vault wipe, as a racing route or callback would.
+    const adaRef = configTokenRef(ADMIN.id);
+    const graceRef = configTokenRef(GRACE);
+    const adas = fakeConfigRefreshToken('RESETBOTADASECRET');
+    const graces = fakeConfigRefreshToken('RESETBOTGRACESECRET');
+    const botToken = fakeBotToken('RESETBOTTOKENSECRET');
+    s.vault.set(adaRef, adas);
+    s.vault.set(graceRef, graces);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), botToken);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-01');
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-01');
+    const logs = captureLogs();
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+
+    const removed = logs.filter((l) => l['msg'] === 'slack_install_removed_by_reset');
+    expect(removed.map((l) => `${String(l['installId'])}:${String(l['kind'])}`).sort()).toEqual(
+      [`${INSTALL_ID}:shared`, `${BOT_INSTALL_ID}:bot`].sort(),
+    );
+    expect(removed.find((l) => l['installId'] === BOT_INSTALL_ID)).toMatchObject({
+      level: 'warn',
+      appId: BOT_APP_ID,
+      teamId: TEAM_ID,
+      kind: 'bot',
+      hint: expect.stringContaining('api.slack.com/apps'),
+    });
+    for (const l of removed) {
+      expect(Object.keys(l).sort()).toEqual(
+        ['appId', 'hint', 'installId', 'kind', 'level', 'msg', 'reqId', 'teamId', 'ts'],
+      );
+    }
+    // The bot's secrets go, and so does each person's token: nothing names Ada or Grace any more.
+    expect([...s.vault.keys()]).toEqual([]);
+    expect(s.credentialDeletes).toEqual(expect.arrayContaining([adaRef, graceRef, secretRef(BOT_INSTALL_ID, 'bot-token')]));
+    // Code-only: no agent, no person, no secret.
+    const all = JSON.stringify(logs);
+    for (const text of [TEAM_AGENT.id, GRACE, ADMIN.id, adas, graces, botToken, 'test-bot-signing-secret-01', 'test-bot-client-secret-01']) {
+      expect(all).not.toContain(text);
+    }
   });
 
   it('a reset whose delete fails says nothing was removed, logs by code only, and does not fail the reset', async () => {

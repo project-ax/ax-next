@@ -506,9 +506,12 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
  * `ax admin reset-bootstrap` wipes every credential, so an install row left
  * behind would read as "connected" with no secrets. Remove them all, logging
  * each deleted one's app id (the row was the only record of it, and the app
- * stays live in Slack). The lines come from the delete's own RETURNING, so
- * they name exactly what is gone: never a row a racing connect added between
- * a read and the delete, and nothing at all when the delete fails. A failure
+ * stays live in Slack). Every kind: the reset deletes every agent too,
+ * without announcing it, so a team agent's bot (TASK-1167) left behind would
+ * name an agent that is gone. Each line says its install's kind. The lines
+ * come from the delete's own RETURNING, so they name exactly what is gone:
+ * never a row a racing connect added between a read and the delete, and
+ * nothing at all when the delete fails. A failure
  * is logged code-only and doesn't fail the reset (the bus never lets a
  * subscriber's throw do that either); re-running the reset retries it.
  *
@@ -553,6 +556,7 @@ function subscribeResetCleanup(
           installId: install.installId,
           appId: install.appId,
           teamId: install.teamId,
+          kind: install.kind,
           hint: RESET_LEFT_APP_HINT,
         });
       }

@@ -6,6 +6,7 @@ import type { RouteRequest, RouteResponse } from '../http-types.js';
 import {
   ADMIN_BODY_MAX_BYTES,
   ADMIN_CONNECT_BODY_MAX_BYTES,
+  OAUTH_STATE_BYTES,
   OAUTH_STATE_TTL_MS,
   SLACK_ICON_MAX_BYTES,
   SLACK_TOKEN_MAX,
@@ -1369,14 +1370,49 @@ describe('GET /admin/slack/oauth/callback', () => {
     });
   });
 
+  it("the admin callback refuses a bot install's state without spending it", async () => {
+    const w = world();
+    const sharedState = stateOf(await w.connect());
+    // A team agent's own bot (TASK-1167), waiting for its Allow, its state
+    // minted for Ada herself: only its kind tells it apart.
+    const botId = 'B0tInstallIdNotReal001';
+    await w.memory.store.insertPendingBot({
+      installId: botId,
+      appId: 'A07BOTAPP001',
+      clientId: '7512345678901.7522222222222',
+      botName: 'support-helper',
+      connectedByUserId: ADA.id,
+      agentId: 'agt_support',
+      requestedByUserId: ADA.id,
+    });
+    const botState = randomBytes(OAUTH_STATE_BYTES).toString('hex');
+    const expiresAt = new Date(NOW_MS + OAUTH_STATE_TTL_MS);
+    await w.memory.store.setOAuthState(botId, { stateHash: sha256(botState), userId: ADA.id, expiresAt });
+
+    expect(await w.callback({ code: CODE, state: botState })).toStrictEqual(FAILED);
+    // Refused as a state the admin callback doesn't know: no install named, Slack never asked.
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_install_refused', fields: { reason: 'invalid-state' } }]);
+    expect(slackMethods(w)).not.toContain('oauthAccess');
+    // Still there, unspent, for the bot's own callback.
+    expect(await w.memory.store.peekOAuthState(sha256(botState), 'bot')).toEqual({
+      installId: botId,
+      userId: ADA.id,
+      expiresAt,
+    });
+    expect(w.memory.rows.get(botId)).toMatchObject({ status: 'pending', stateHash: sha256(botState) });
+
+    // The shared install's own state still finishes it.
+    expect((await w.callback({ code: CODE, state: sharedState })).location).toBe(back('connected'));
+  });
+
   it('a state another callback spent in between → failed', async () => {
     const w = world();
     const state = stateOf(await w.connect());
     // The peek finds it, then a concurrent callback spends it before this one can.
     const consume = w.memory.store.consumeOAuthState.bind(w.memory.store);
-    w.memory.store.consumeOAuthState = async (hash) => {
-      await consume(hash);
-      return consume(hash);
+    w.memory.store.consumeOAuthState = async (hash, kind) => {
+      await consume(hash, kind);
+      return consume(hash, kind);
     };
     expect(await w.callback({ code: CODE, state })).toStrictEqual(FAILED);
     expect(slackMethods(w)).not.toContain('oauthAccess');
@@ -2423,6 +2459,10 @@ describe('POST /admin/slack/rename', () => {
       createdAt: new Date(NOW_MS),
       configTokenAddedAt: new Date(NOW_MS),
       installedAt: new Date(NOW_MS),
+      kind: 'shared',
+      agentId: null,
+      requestedByUserId: null,
+      botHandle: null,
       stateHash: null,
       stateUserId: null,
       stateExpiresAt: null,
@@ -2885,6 +2925,10 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       createdAt: new Date(NOW_MS),
       configTokenAddedAt: new Date(NOW_MS),
       installedAt: new Date(NOW_MS),
+      kind: 'shared',
+      agentId: null,
+      requestedByUserId: null,
+      botHandle: null,
       stateHash: null,
       stateUserId: null,
       stateExpiresAt: null,

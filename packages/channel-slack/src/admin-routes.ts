@@ -886,11 +886,13 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     const stateHash = sha256Hex(state);
 
     return d.lock.run(async () => {
-      // Peek first: another admin is refused WITHOUT spending the state.
-      const peeked = await d.store.peekOAuthState(stateHash);
+      // Peek first: another admin is refused WITHOUT spending the state. Only
+      // the shared app's: a team bot's state is for its own callback
+      // (TASK-1167), and reads here as unknown, unspent.
+      const peeked = await d.store.peekOAuthState(stateHash, 'shared');
       if (peeked === null) return refuse('invalid-state');
       if (peeked.userId !== actor.id) return refuse('state-user-mismatch', peeked.installId);
-      const spent = await d.store.consumeOAuthState(stateHash);
+      const spent = await d.store.consumeOAuthState(stateHash, 'shared');
       if (spent === null) return refuse('invalid-state');
 
       const { installId } = spent;

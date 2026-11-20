@@ -4,28 +4,53 @@ import { LEFTOVER_APPS_MAX } from './limits.js';
 import type { ChannelSlackDatabase, ChannelSlackInstallsTable } from './migrations.js';
 
 /**
+ * Which Slack app an install is: `shared`, the one Admin › Slack connects, or
+ * `bot`, a team agent's own bot (TASK-1167).
+ */
+export type InstallKind = 'shared' | 'bot';
+
+/**
  * One Slack app AX created. Never carries its OAuth state or a secret: the
  * state stays inside this file, the secrets in the vault (secrets.ts).
  */
 export interface InstallRow {
   installId: string;
+  /**
+   * Read as `shared` only when the column says exactly that. Anything else
+   * reads as `bot`, the kind that can do less: it answers for one agent only.
+   */
+  kind: InstallKind;
   status: 'pending' | 'active';
   appId: string;
   clientId: string;
   botName: string;
-  /** Null until the admin clicks Allow. */
+  /** Null until the Allow. */
   teamId: string | null;
   teamName: string | null;
   botUserId: string | null;
   /**
-   * The admin who connected the install: whose configuration token made the
-   * app, and so whose token (one per person, TASK-1175) every change to it
-   * uses. Vault reads name them. Set once, at Connect: a Replace stores the
+   * Whose configuration token made the app: the admin who connected the
+   * shared app, or a bot's approver (in TASK-1167 always its requester). So
+   * every change to the app uses their token (one per person, TASK-1175).
+   * Vault reads name them. Set once, by the insert: a Replace stores the
    * pasted token as theirs and never moves the app to another person. Their
    * name is auth's, read when shown.
    */
   connectedByUserId: string;
-  /** When the row was made, by Connect. Orders `current()`. */
+  /** A bot's agent, the one team agent its mentions run. Null for the shared app. */
+  agentId: string | null;
+  /**
+   * The team admin who asked for a bot, whom its channels' outsiders run as.
+   * Each of its bindings copies it at the first mention there. Null for the
+   * shared app.
+   */
+  requestedByUserId: string | null;
+  /**
+   * A live bot's @handle, as Slack named its bot user, read once at its
+   * Allow. Null before that, when that read failed, and for the shared app.
+   */
+  botHandle: string | null;
+  /** When the row was made, by Connect or a bot's request. Orders `current()` and `listBots()`. */
   createdAt: Date;
   /**
    * When the configuration token this install uses was added. At Connect
@@ -37,11 +62,11 @@ export interface InstallRow {
 }
 
 /**
- * What a reset needs about an install it deleted: the ids its log line
- * names, and the person whose configuration token the install used
+ * What a reset needs about an install it deleted: the ids and the kind its
+ * log line names, and the person whose configuration token the install used
  * (TASK-1175), which no log line carries. Never a secret or the client id.
  */
-export type RemovedInstall = Pick<InstallRow, 'installId' | 'appId' | 'teamId' | 'connectedByUserId'>;
+export type RemovedInstall = Pick<InstallRow, 'installId' | 'appId' | 'teamId' | 'connectedByUserId' | 'kind'>;
 
 export interface OAuthState {
   installId: string;
@@ -73,12 +98,17 @@ export interface LeftoverApp {
 }
 
 export interface InstallStore {
-  /** The one shared-app install, any status: the oldest row, if there are several. */
+  /**
+   * The one shared-app install, any status: the oldest `shared` row, if
+   * there are several. Never a team agent's bot (TASK-1167).
+   */
   current(): Promise<InstallRow | null>;
+  /** Any kind. */
   get(installId: string): Promise<InstallRow | null>;
   /**
    * Every install, any status: the most recently added configuration token
    * first (`config_token_added_at`), then by install id.
+   * Any kind: a team bot's row names its approver.
    */
   list(): Promise<InstallRow[]>;
   /**
@@ -87,11 +117,38 @@ export interface InstallStore {
    * tables are read at one moment. A leftover from before TASK-1175 names
    * no one, and a channel binding's person never counts: a binding names
    * whom its outsiders run as, not whose token made an app.
+   * Any kind: a team bot's row names its approver.
    */
   personHasApps(userId: string): Promise<boolean>;
+  /** The shared app's row, pending until its Allow. */
   insertPending(
     r: Pick<InstallRow, 'installId' | 'appId' | 'clientId' | 'botName' | 'connectedByUserId'>,
   ): Promise<void>;
+  /**
+   * A team agent's own bot (TASK-1167), pending until its approver's Allow.
+   * `connectedByUserId` is the approver, whose configuration token made the
+   * app. One bot per agent, pending or active: the database's unique index
+   * decides, so of two inserts for one agent exactly one gets in, and the
+   * other throws `bot-exists`. An install id already taken throws as
+   * `insertPending` does.
+   */
+  insertPendingBot(
+    r: Pick<InstallRow, 'installId' | 'appId' | 'clientId' | 'botName' | 'connectedByUserId'> & {
+      agentId: string;
+      requestedByUserId: string;
+    },
+  ): Promise<void>;
+  /** The agent's bot, any status, or null. Never the shared app. */
+  botForAgent(agentId: string): Promise<InstallRow | null>;
+  /** Every bot, any status, oldest first (by `created_at`, then install id). */
+  listBots(): Promise<InstallRow[]>;
+  /**
+   * Record an ACTIVE bot's @handle: one UPDATE of that column, nothing else.
+   * Throws `install-not-active` when the install is missing, still pending,
+   * or the shared app. `handle` must already have passed the callback's
+   * check; nothing is cleaned here.
+   */
+  setBotHandle(installId: string, handle: string): Promise<void>;
   /**
    * Replace a PENDING install's OAuth state, so any earlier one stops
    * matching. Throws when the install is missing or already active.
@@ -100,14 +157,19 @@ export interface InstallStore {
     installId: string,
     s: { stateHash: string; userId: string; expiresAt: Date },
   ): Promise<void>;
-  /** Read a state without spending it. Expiry is the caller's to judge. */
-  peekOAuthState(stateHash: string): Promise<OAuthState | null>;
   /**
-   * Spend a state: one UPDATE that clears it and returns what it held. Of any
-   * number of concurrent consumes, exactly one gets it. Expiry is the caller's
-   * to judge.
+   * Read a state of this kind's install without spending it. Expiry is the
+   * caller's to judge. Each kind's callback reads only its own (TASK-1167):
+   * another kind's state reads as none.
    */
-  consumeOAuthState(stateHash: string): Promise<OAuthState | null>;
+  peekOAuthState(stateHash: string, kind: InstallKind): Promise<OAuthState | null>;
+  /**
+   * Spend a state of this kind's install: one UPDATE that clears it and
+   * returns what it held. Of any number of concurrent consumes, exactly one
+   * gets it. Expiry is the caller's to judge. Another kind's state is
+   * neither returned nor spent.
+   */
+  consumeOAuthState(stateHash: string, kind: InstallKind): Promise<OAuthState | null>;
   /** `pending` → `active`. Throws when the install is missing or not pending. */
   activate(
     installId: string,
@@ -137,11 +199,13 @@ export interface InstallStore {
    */
   remove(installId: string, o?: { appLeft?: boolean }): Promise<void>;
   /**
-   * Delete every install, any status, and their channel bindings, in ONE
-   * statement, and return exactly the installs that statement deleted, in no
-   * particular order. A row inserted meanwhile is either deleted and returned
-   * or kept; a delete that fails deletes and returns nothing. A binding goes
-   * only with an install this delete removed.
+   * Delete every install, any status and any kind, and their channel
+   * bindings, in ONE statement, and return exactly the installs that
+   * statement deleted, in no particular order. A row inserted meanwhile is
+   * either deleted and returned or kept; a delete that fails deletes and
+   * returns nothing. A binding goes only with an install this delete removed.
+   * Bots too: its one caller is the bootstrap reset, which also wipes every
+   * credential and every agent (TASK-1167).
    */
   removeAll(): Promise<RemovedInstall[]>;
   /**
@@ -164,10 +228,13 @@ export interface InstallStore {
 
 const INSTALLS = 'channel_slack_v1_installs';
 const LEFTOVER_APPS = 'channel_slack_v1_leftover_apps';
+/** The partial unique index that allows one bot per agent (migrations.ts). */
+const BOT_AGENT_INDEX = 'channel_slack_v1_installs_bot_agent';
 
 /** Every column but the OAuth state, which never leaves this file in a row. */
 const ROW_COLUMNS = [
   'install_id',
+  'kind',
   'status',
   'app_id',
   'client_id',
@@ -176,6 +243,9 @@ const ROW_COLUMNS = [
   'team_name',
   'bot_user_id',
   'connected_by_user_id',
+  'agent_id',
+  'requested_by_user_id',
+  'bot_handle',
   'created_at',
   'config_token_added_at',
   'installed_at',
@@ -183,9 +253,15 @@ const ROW_COLUMNS = [
 
 type SelectedRow = Pick<Selectable<ChannelSlackInstallsTable>, (typeof ROW_COLUMNS)[number]>;
 
+/** Fails closed: only exactly `shared` is the shared app. */
+function toKind(kind: string): InstallKind {
+  return kind === 'shared' ? 'shared' : 'bot';
+}
+
 function toRow(r: SelectedRow): InstallRow {
   return {
     installId: r.install_id,
+    kind: toKind(r.kind),
     // No CHECK on the column: anything but `active` fails closed.
     status: r.status === 'active' ? 'active' : 'pending',
     appId: r.app_id,
@@ -195,16 +271,29 @@ function toRow(r: SelectedRow): InstallRow {
     teamName: r.team_name,
     botUserId: r.bot_user_id,
     connectedByUserId: r.connected_by_user_id,
+    agentId: r.agent_id,
+    requestedByUserId: r.requested_by_user_id,
+    botHandle: r.bot_handle,
     createdAt: r.created_at,
     configTokenAddedAt: r.config_token_added_at,
     installedAt: r.installed_at,
   };
 }
 
-/** A store call that found nothing to change. Carries no data, so it is safe to log. */
+/** Postgres refusing a second bot for one agent: a unique violation on its index, and no other. */
+function isBotAgentConflict(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: unknown; constraint?: unknown };
+  return e.code === '23505' && e.constraint === BOT_AGENT_INDEX;
+}
+
+/**
+ * A store call that found nothing to change, or (`bot-exists`) an agent that
+ * already has its bot. Carries no data, so it is safe to log.
+ */
 export class InstallStoreError extends Error {
-  readonly code: 'install-not-pending' | 'install-not-active';
-  constructor(code: 'install-not-pending' | 'install-not-active') {
+  readonly code: 'install-not-pending' | 'install-not-active' | 'bot-exists';
+  constructor(code: 'install-not-pending' | 'install-not-active' | 'bot-exists') {
     super(`channel-slack install store: ${code}`);
     this.name = 'InstallStoreError';
     this.code = code;
@@ -217,6 +306,7 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       const row = await db
         .selectFrom(INSTALLS)
         .select(ROW_COLUMNS)
+        .where('kind', '=', 'shared')
         .orderBy('created_at', 'asc')
         .orderBy('install_id', 'asc')
         .limit(1)
@@ -257,6 +347,7 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         .insertInto(INSTALLS)
         .values({
           install_id: r.installId,
+          kind: 'shared',
           status: 'pending',
           app_id: r.appId,
           client_id: r.clientId,
@@ -265,12 +356,78 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
           team_name: null,
           bot_user_id: null,
           connected_by_user_id: r.connectedByUserId,
+          agent_id: null,
+          requested_by_user_id: null,
+          bot_handle: null,
           installed_at: null,
           oauth_state_hash: null,
           oauth_state_user_id: null,
           oauth_state_expires_at: null,
         })
         .execute();
+    },
+
+    async insertPendingBot(r) {
+      try {
+        await db
+          .insertInto(INSTALLS)
+          .values({
+            install_id: r.installId,
+            kind: 'bot',
+            status: 'pending',
+            app_id: r.appId,
+            client_id: r.clientId,
+            bot_name: r.botName,
+            team_id: null,
+            team_name: null,
+            bot_user_id: null,
+            connected_by_user_id: r.connectedByUserId,
+            agent_id: r.agentId,
+            requested_by_user_id: r.requestedByUserId,
+            bot_handle: null,
+            installed_at: null,
+            oauth_state_hash: null,
+            oauth_state_user_id: null,
+            oauth_state_expires_at: null,
+          })
+          .execute();
+      } catch (err) {
+        if (isBotAgentConflict(err)) throw new InstallStoreError('bot-exists');
+        throw err;
+      }
+    },
+
+    async botForAgent(agentId) {
+      // The unique index allows one at most.
+      const row = await db
+        .selectFrom(INSTALLS)
+        .select(ROW_COLUMNS)
+        .where('kind', '=', 'bot')
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return row === undefined ? null : toRow(row);
+    },
+
+    async listBots() {
+      const rows = await db
+        .selectFrom(INSTALLS)
+        .select(ROW_COLUMNS)
+        .where('kind', '=', 'bot')
+        .orderBy('created_at', 'asc')
+        .orderBy('install_id', 'asc')
+        .execute();
+      return rows.map(toRow);
+    },
+
+    async setBotHandle(installId, handle) {
+      const r = await db
+        .updateTable(INSTALLS)
+        .set({ bot_handle: handle })
+        .where('install_id', '=', installId)
+        .where('kind', '=', 'bot')
+        .where('status', '=', 'active')
+        .executeTakeFirst();
+      if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
     },
 
     async setOAuthState(installId, s) {
@@ -287,11 +444,12 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-pending');
     },
 
-    async peekOAuthState(stateHash) {
+    async peekOAuthState(stateHash, kind) {
       const row = await db
         .selectFrom(INSTALLS)
         .select(['install_id', 'oauth_state_user_id', 'oauth_state_expires_at'])
         .where('oauth_state_hash', '=', stateHash)
+        .where('kind', '=', kind)
         .executeTakeFirst();
       if (
         row === undefined ||
@@ -307,12 +465,14 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       };
     },
 
-    async consumeOAuthState(stateHash) {
+    async consumeOAuthState(stateHash, kind) {
       // RETURNING sees the row AFTER the update (state cleared), so the
       // values come from the pre-update copy in `old`. The outer
       // `i.oauth_state_hash = …` is what makes it single-use: a concurrent
       // consume blocks on the row lock, then re-checks that condition against
       // the committed row (NULL by then) and updates, and returns, nothing.
+      // `old` holds only this kind's row, so another kind's state is never
+      // cleared (an install's kind never changes).
       const r = await sql<{ install_id: string; user_id: string | null; expires_at: Date | null }>`
         UPDATE channel_slack_v1_installs AS i
            SET oauth_state_hash = NULL,
@@ -320,7 +480,8 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
                oauth_state_expires_at = NULL
           FROM (SELECT install_id, oauth_state_user_id, oauth_state_expires_at
                   FROM channel_slack_v1_installs
-                 WHERE oauth_state_hash = ${stateHash}) AS old
+                 WHERE oauth_state_hash = ${stateHash}
+                   AND kind = ${kind}) AS old
          WHERE i.install_id = old.install_id
            AND i.oauth_state_hash = ${stateHash}
         RETURNING old.install_id AS install_id,
@@ -414,21 +575,23 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         app_id: string;
         team_id: string | null;
         connected_by_user_id: string;
+        kind: string;
       }>`
         WITH removed AS (
           DELETE FROM channel_slack_v1_installs
-          RETURNING install_id, app_id, team_id, connected_by_user_id
+          RETURNING install_id, app_id, team_id, connected_by_user_id, kind
         ), unbound AS (
           DELETE FROM channel_slack_v1_channels
            WHERE install_id IN (SELECT install_id FROM removed)
         )
-        SELECT install_id, app_id, team_id, connected_by_user_id FROM removed
+        SELECT install_id, app_id, team_id, connected_by_user_id, kind FROM removed
       `.execute(db);
       return r.rows.map((row) => ({
         installId: row.install_id,
         appId: row.app_id,
         teamId: row.team_id,
         connectedByUserId: row.connected_by_user_id,
+        kind: toKind(row.kind),
       }));
     },
 

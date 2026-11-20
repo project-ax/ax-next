@@ -53,9 +53,37 @@ const TEAM = {
   botUserId: 'U07BOTUSER1',
 } as const;
 
+/**
+ * A team agent's own bot (TASK-1167). Grace asked for it and approved it, so
+ * her configuration token made the app: she is both its requester and the
+ * person on its row (`connectedByUserId`).
+ */
+const BOT = {
+  appId: 'A07BOTAPP001',
+  clientId: '7512345678901.7522222222222',
+  botName: 'support-helper',
+  connectedByUserId: 'usr_grace',
+  agentId: 'agt_support',
+  requestedByUserId: 'usr_grace',
+} as const;
+
 async function pending(installId = newInstallId()): Promise<string> {
   await store.insertPending({ installId, ...PENDING });
   return installId;
+}
+
+async function pendingBot(o: { agentId?: string; connectedByUserId?: string; requestedByUserId?: string } = {}): Promise<string> {
+  const installId = newInstallId();
+  await store.insertPendingBot({ installId, ...BOT, ...o });
+  return installId;
+}
+
+/** What a failed statement's Postgres error code was (`undefined` when it didn't fail). */
+async function pgCode(run: Promise<unknown>): Promise<unknown> {
+  return run.then(
+    () => undefined,
+    (err: unknown) => (err as { code?: unknown }).code,
+  );
 }
 
 async function rawRow(installId: string) {
@@ -223,6 +251,117 @@ describe('runMigrations', () => {
     ]);
   });
 
+  it('a row from before TASK-1167 reads as shared, with null bot fields', async () => {
+    // The table as it was before TASK-1167: none of the four columns, the
+    // rule pairing them or the bot index.
+    await sql`DROP INDEX IF EXISTS channel_slack_v1_installs_bot_agent`.execute(db);
+    await sql`
+      ALTER TABLE channel_slack_v1_installs
+        DROP CONSTRAINT IF EXISTS channel_slack_v1_installs_kind_fields,
+        DROP COLUMN IF EXISTS kind,
+        DROP COLUMN IF EXISTS agent_id,
+        DROP COLUMN IF EXISTS requested_by_user_id,
+        DROP COLUMN IF EXISTS bot_handle
+    `.execute(db);
+    const old = newInstallId();
+    await sql`
+      INSERT INTO channel_slack_v1_installs (install_id, status, app_id, client_id, bot_name, connected_by_user_id)
+      VALUES (${old}, 'active', ${PENDING.appId}, ${PENDING.clientId}, ${PENDING.botName}, 'usr_admin1')
+    `.execute(db);
+
+    await runMigrations(db);
+    // And one written after, the way the CLI reset's test still writes it:
+    // naming none of the new columns.
+    const later = newInstallId();
+    await sql`
+      INSERT INTO channel_slack_v1_installs (install_id, status, app_id, client_id, bot_name, connected_by_user_id)
+      VALUES (${later}, 'pending', ${PENDING.appId}, ${PENDING.clientId}, ${PENDING.botName}, 'usr_admin1')
+    `.execute(db);
+
+    for (const installId of [old, later]) {
+      expect(await store.get(installId), installId).toMatchObject({
+        installId,
+        kind: 'shared',
+        agentId: null,
+        requestedByUserId: null,
+        botHandle: null,
+      });
+    }
+    expect(await store.listBots()).toEqual([]);
+  });
+
+  it('the database refuses a bot without its agent or requester, a shared row with an agent, and an unknown kind', async () => {
+    const insert = (kind: string, agentId: string | null, requestedBy: string | null) =>
+      sql`
+        INSERT INTO channel_slack_v1_installs
+          (install_id, status, app_id, client_id, bot_name, connected_by_user_id, kind, agent_id, requested_by_user_id)
+        VALUES (${newInstallId()}, 'pending', ${BOT.appId}, ${BOT.clientId}, ${BOT.botName}, 'usr_grace',
+                ${kind}, ${agentId}, ${requestedBy})
+      `.execute(db);
+
+    // check_violation, each one: a bot row that lost its agent can never read as anyone's.
+    expect(await pgCode(insert('bot', null, 'usr_grace'))).toBe('23514');
+    expect(await pgCode(insert('bot', 'agt_support', null))).toBe('23514');
+    expect(await pgCode(insert('shared', 'agt_support', null))).toBe('23514');
+    expect(await pgCode(insert('shared', null, 'usr_grace'))).toBe('23514');
+    expect(await pgCode(insert('agent', 'agt_support', 'usr_grace'))).toBe('23514');
+    expect(await pgCode(insert('Shared', null, null))).toBe('23514');
+    expect(await store.list()).toEqual([]);
+
+    // The same statement, with each kind's fields right, goes in.
+    expect(await pgCode(insert('bot', 'agt_support', 'usr_grace'))).toBeUndefined();
+    expect(await pgCode(insert('shared', null, null))).toBeUndefined();
+    expect((await store.list()).map((r) => r.kind).sort()).toEqual(['bot', 'shared']);
+  });
+
+  it('the migrations run twice cleanly, and again after the installs table alone is dropped', async () => {
+    const checks = async (): Promise<string[]> =>
+      (
+        await sql<{ conname: string }>`
+          SELECT conname FROM pg_constraint
+           WHERE conrelid = 'channel_slack_v1_installs'::regclass AND contype = 'c'
+           ORDER BY conname
+        `.execute(db)
+      ).rows.map((r) => r.conname);
+    const botIndexes = async (): Promise<string[]> =>
+      (
+        await sql<{ indexdef: string }>`
+          SELECT indexdef FROM pg_indexes
+           WHERE tablename = 'channel_slack_v1_installs' AND indexdef LIKE '%(agent_id)%'
+        `.execute(db)
+      ).rows.map((r) => r.indexdef);
+    const expectRules = async (): Promise<void> => {
+      // One of each, however many runs: never a second copy of a rule.
+      expect(await checks()).toEqual(['channel_slack_v1_installs_kind_check', 'channel_slack_v1_installs_kind_fields']);
+      const indexes = await botIndexes();
+      expect(indexes).toHaveLength(1);
+      expect(indexes[0]).toMatch(/^CREATE UNIQUE INDEX channel_slack_v1_installs_bot_agent /);
+      expect(indexes[0]).toMatch(/WHERE \(kind = 'bot'::text\)/);
+    };
+
+    const bot = await pendingBot();
+    await runMigrations(db);
+    await runMigrations(db);
+    expect((await store.get(bot))?.kind).toBe('bot');
+    await expectRules();
+
+    // The CLI reset's test drops this one table between its tests, and its
+    // next boot migrates again.
+    await sql`DROP TABLE channel_slack_v1_installs`.execute(db);
+    await runMigrations(db);
+    await expectRules();
+    // And they hold: a bot needs its agent, and an agent gets one bot.
+    const noAgent = sql`
+      INSERT INTO channel_slack_v1_installs
+        (install_id, status, app_id, client_id, bot_name, connected_by_user_id, kind, requested_by_user_id)
+      VALUES (${newInstallId()}, 'pending', ${BOT.appId}, ${BOT.clientId}, ${BOT.botName}, 'usr_grace', 'bot', 'usr_grace')
+    `.execute(db);
+    expect(await pgCode(noAgent)).toBe('23514');
+    await pendingBot();
+    const second = await pendingBot().catch((e: unknown) => e);
+    expect((second as InstallStoreError).code).toBe('bot-exists');
+  });
+
   it('two installs can never hold the same state hash', async () => {
     const a = await pending();
     const b = await pending();
@@ -249,6 +388,11 @@ describe('install rows', () => {
       teamName: null,
       botUserId: null,
       installedAt: null,
+      // The shared app: no agent, no requester, no handle (TASK-1167).
+      kind: 'shared',
+      agentId: null,
+      requestedByUserId: null,
+      botHandle: null,
     };
     expect(row).toMatchObject(expected);
     expect(row?.createdAt).toBeInstanceOf(Date);
@@ -268,6 +412,120 @@ describe('install rows', () => {
               WHERE install_id = ${first}`.execute(db);
     await pending();
     expect((await store.current())?.installId).toBe(first);
+  });
+
+  it('current() never returns a bot', async () => {
+    // A bot older than any shared install, and live: still not the shared app.
+    const bot = await pendingBot();
+    await store.activate(bot, { ...TEAM, installedAt: new Date('2026-11-20T09:00:00.000Z') });
+    await sql`UPDATE channel_slack_v1_installs SET created_at = now() - interval '1 hour'
+              WHERE install_id = ${bot}`.execute(db);
+    await pendingBot({ agentId: 'agt_sales' });
+    expect(await store.current()).toBeNull();
+
+    const shared = await pending();
+    expect(await store.current()).toEqual(await store.get(shared));
+  });
+
+  it('one bot per agent, pending or active', async () => {
+    const first = await pendingBot();
+    const pendingTwice = await store
+      .insertPendingBot({ installId: newInstallId(), ...BOT, botName: 'support-again' })
+      .catch((e: unknown) => e);
+    expect(pendingTwice).toBeInstanceOf(InstallStoreError);
+    expect((pendingTwice as InstallStoreError).code).toBe('bot-exists');
+
+    await store.activate(first, { ...TEAM, installedAt: new Date('2026-11-20T09:00:00.000Z') });
+    const activeTwice = await store
+      .insertPendingBot({ installId: newInstallId(), ...BOT, connectedByUserId: 'usr_ada', requestedByUserId: 'usr_ada' })
+      .catch((e: unknown) => e);
+    expect(activeTwice).toBeInstanceOf(InstallStoreError);
+    expect((activeTwice as InstallStoreError).code).toBe('bot-exists');
+
+    // Another agent's bot is its own, and shared installs (no agent) never count.
+    const sales = await pendingBot({ agentId: 'agt_sales' });
+    await pending();
+    await pending();
+    expect((await store.listBots()).map((r) => r.installId).sort()).toEqual([first, sales].sort());
+
+    // An install id already taken is refused the way insertPending refuses
+    // one: it says nothing about the agent.
+    const reused = await store
+      .insertPendingBot({ installId: first, ...BOT, agentId: 'agt_billing' })
+      .catch((e: unknown) => e);
+    expect(reused).not.toBeInstanceOf(InstallStoreError);
+    expect((reused as { code?: unknown }).code).toBe('23505');
+    expect(await store.botForAgent('agt_billing')).toBeNull();
+  });
+
+  it('botForAgent and listBots see bots only, any status; listBots oldest first', async () => {
+    await pending();
+    expect(await store.listBots()).toEqual([]);
+    expect(await store.botForAgent('agt_support')).toBeNull();
+
+    const support = await pendingBot();
+    const sales = await pendingBot({ agentId: 'agt_sales', connectedByUserId: 'usr_ada', requestedByUserId: 'usr_ada' });
+    await store.activate(sales, { ...TEAM, installedAt: new Date('2026-11-20T09:05:00.000Z') });
+    // Made support first, but sales is the older: the order can only come from created_at.
+    await sql`UPDATE channel_slack_v1_installs SET created_at = '2026-11-20T10:00:00Z' WHERE install_id = ${support}`.execute(db);
+    await sql`UPDATE channel_slack_v1_installs SET created_at = '2026-11-20T09:00:00Z' WHERE install_id = ${sales}`.execute(db);
+
+    const supportRow = await store.botForAgent('agt_support');
+    expect(supportRow).toEqual({
+      installId: support,
+      kind: 'bot',
+      status: 'pending',
+      appId: BOT.appId,
+      clientId: BOT.clientId,
+      botName: BOT.botName,
+      agentId: 'agt_support',
+      requestedByUserId: 'usr_grace',
+      connectedByUserId: 'usr_grace',
+      botHandle: null,
+      teamId: null,
+      teamName: null,
+      botUserId: null,
+      createdAt: new Date('2026-11-20T10:00:00Z'),
+      configTokenAddedAt: expect.any(Date),
+      installedAt: null,
+    });
+    expect(supportRow).toEqual(await store.get(support));
+    expect(await store.botForAgent('agt_sales')).toEqual(await store.get(sales));
+    expect((await store.botForAgent('agt_sales'))?.status).toBe('active');
+    expect(await store.botForAgent('agt_billing')).toBeNull();
+    expect(await store.listBots()).toEqual([await store.get(sales), await store.get(support)]);
+  });
+
+  it('setBotHandle writes only an active bot', async () => {
+    const bot = await pendingBot();
+    const notActive = async (installId: string): Promise<void> => {
+      const err = await store.setBotHandle(installId, 'support-helper').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(InstallStoreError);
+      expect((err as InstallStoreError).code).toBe('install-not-active');
+    };
+
+    // Still pending: Slack has no bot user to name yet.
+    await notActive(bot);
+    expect((await store.get(bot))?.botHandle).toBeNull();
+    // The shared app, live: it has no handle of its own here.
+    const shared = await pending();
+    await store.activate(shared, { ...TEAM, installedAt: new Date('2026-11-20T09:00:00.000Z') });
+    await notActive(shared);
+    expect((await rawRow(shared))?.bot_handle).toBeNull();
+    await notActive(newInstallId());
+
+    await store.activate(bot, { ...TEAM, installedAt: new Date('2026-11-20T09:05:00.000Z') });
+    // Another live bot, so a write that lost its install_id filter would show.
+    const other = await pendingBot({ agentId: 'agt_sales' });
+    await store.activate(other, { ...TEAM, installedAt: new Date('2026-11-20T09:10:00.000Z') });
+    const before = await store.get(bot);
+    const otherBefore = await store.get(other);
+    const sharedBefore = await store.get(shared);
+
+    await store.setBotHandle(bot, 'support-helper');
+    expect(await store.get(bot)).toEqual({ ...before, botHandle: 'support-helper' });
+    expect(await store.get(other)).toEqual(otherBefore);
+    expect(await store.get(shared)).toEqual(sharedBefore);
   });
 
   it('list returns every install, any status, newest config_token_added_at first, then by install id; [] when there are none', async () => {
@@ -460,13 +718,38 @@ describe('install rows', () => {
     const removed = await store.removeAll();
     expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
       [
-        { installId: pendingId, appId: PENDING.appId, teamId: null, connectedByUserId: 'usr_ada' },
-        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: 'usr_grace' },
+        { installId: pendingId, appId: PENDING.appId, teamId: null, connectedByUserId: 'usr_ada', kind: 'shared' },
+        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: 'usr_grace', kind: 'shared' },
       ].sort((x, y) => x.installId.localeCompare(y.installId)),
     );
     expect(await store.current()).toBeNull();
     // Nothing left: the next one removes, and says, nothing.
     expect(await store.removeAll()).toEqual([]);
+  });
+
+  it('removeAll removes bots too, returns their kind and approver, and takes their bindings', async () => {
+    // A reset wipes every credential and every agent, so a bot row it left
+    // would name a deleted agent and hold no secret.
+    const shared = newInstallId();
+    await store.insertPending({ installId: shared, ...PENDING, connectedByUserId: 'usr_ada' });
+    await store.activate(shared, { ...TEAM, installedAt: new Date('2026-11-20T09:00:00.000Z') });
+    const live = await pendingBot();
+    await store.activate(live, { ...TEAM, installedAt: new Date('2026-11-20T09:05:00.000Z') });
+    // Asked for by Hopper, approved by Ada: whose token made the app is Ada's.
+    const waiting = await pendingBot({ agentId: 'agt_sales', connectedByUserId: 'usr_ada', requestedByUserId: 'usr_hopper' });
+    await bind(shared, 'C07SUPPORT1');
+    await bind(live, 'C07HELPDESK', 'agt_support');
+
+    const removed = await store.removeAll();
+    expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
+      [
+        { installId: shared, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: 'usr_ada', kind: 'shared' },
+        { installId: live, appId: BOT.appId, teamId: TEAM.teamId, connectedByUserId: 'usr_grace', kind: 'bot' },
+        { installId: waiting, appId: BOT.appId, teamId: null, connectedByUserId: 'usr_ada', kind: 'bot' },
+      ].sort((x, y) => x.installId.localeCompare(y.installId)),
+    );
+    expect(await store.list()).toEqual([]);
+    expect(await bindings()).toEqual([]);
   });
 });
 
@@ -500,8 +783,8 @@ describe("an install's channel bindings go with it", () => {
     const removed = await store.removeAll();
     expect(removed.sort((x, y) => x.installId.localeCompare(y.installId))).toEqual(
       [
-        { installId: pendingId, appId: PENDING.appId, teamId: null, connectedByUserId: PENDING.connectedByUserId },
-        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: PENDING.connectedByUserId },
+        { installId: pendingId, appId: PENDING.appId, teamId: null, connectedByUserId: PENDING.connectedByUserId, kind: 'shared' },
+        { installId: activeId, appId: PENDING.appId, teamId: TEAM.teamId, connectedByUserId: PENDING.connectedByUserId, kind: 'shared' },
       ].sort((x, y) => x.installId.localeCompare(y.installId)),
     );
     expect(await bindings()).toEqual([]);
@@ -801,6 +1084,29 @@ describe('whether anyone still names a person (TASK-1175)', () => {
     await store.forgetLeftoverApp(a);
     expect(await store.personHasApps('usr_ada')).toBe(false);
   });
+
+  it('personHasApps counts a pending bot and an active bot that name the person as approver, and stops once the bot is removed', async () => {
+    // Grace only approved a bot (Hopper asked for it): no shared install and
+    // no leftover names her.
+    const bot = await pendingBot({ connectedByUserId: 'usr_grace', requestedByUserId: 'usr_hopper' });
+    expect(await store.personHasApps('usr_grace')).toBe(true);
+    // Asking for a bot holds no token: only the approver's made the app.
+    expect(await store.personHasApps('usr_hopper')).toBe(false);
+
+    await store.activate(bot, { ...TEAM, installedAt: new Date('2026-11-20T09:00:00.000Z') });
+    expect(await store.personHasApps('usr_grace')).toBe(true);
+
+    await store.remove(bot);
+    expect(await store.personHasApps('usr_grace')).toBe(false);
+
+    // A bot whose app Slack wouldn't delete: the leftover names her.
+    const left = await pendingBot({ connectedByUserId: 'usr_grace' });
+    await store.remove(left, { appLeft: true });
+    expect(await store.leftoverApps()).toEqual([
+      { installId: left, appId: BOT.appId, botName: BOT.botName, leftAt: expect.any(Date), connectedByUserId: 'usr_grace' },
+    ]);
+    expect(await store.personHasApps('usr_grace')).toBe(true);
+  });
 });
 
 describe('OAuth state', () => {
@@ -812,10 +1118,10 @@ describe('OAuth state', () => {
     await store.setOAuthState(installId, { stateHash: hash, userId: 'usr_admin1', expiresAt });
 
     const want = { installId, userId: 'usr_admin1', expiresAt };
-    expect(await store.peekOAuthState(hash)).toEqual(want);
-    expect(await store.peekOAuthState(hash)).toEqual(want);
-    expect(await store.consumeOAuthState(hash)).toEqual(want);
-    expect(await store.peekOAuthState(stateHash('never-minted'))).toBeNull();
+    expect(await store.peekOAuthState(hash, 'shared')).toEqual(want);
+    expect(await store.peekOAuthState(hash, 'shared')).toEqual(want);
+    expect(await store.consumeOAuthState(hash, 'shared')).toEqual(want);
+    expect(await store.peekOAuthState(stateHash('never-minted'), 'shared')).toBeNull();
   });
 
   it('consumeOAuthState is single-use', async () => {
@@ -823,13 +1129,13 @@ describe('OAuth state', () => {
     const hash = stateHash('single-use');
     await store.setOAuthState(installId, { stateHash: hash, userId: 'usr_admin1', expiresAt });
 
-    expect(await store.consumeOAuthState(hash)).toEqual({
+    expect(await store.consumeOAuthState(hash, 'shared')).toEqual({
       installId,
       userId: 'usr_admin1',
       expiresAt,
     });
-    expect(await store.consumeOAuthState(hash)).toBeNull();
-    expect(await store.peekOAuthState(hash)).toBeNull();
+    expect(await store.consumeOAuthState(hash, 'shared')).toBeNull();
+    expect(await store.peekOAuthState(hash, 'shared')).toBeNull();
     // Consuming clears the state and nothing else.
     const row = await rawRow(installId);
     expect(row).toMatchObject({
@@ -846,7 +1152,7 @@ describe('OAuth state', () => {
       const hash = stateHash(`race-${round}`);
       await store.setOAuthState(installId, { stateHash: hash, userId: 'usr_admin1', expiresAt });
       const results = await Promise.all(
-        Array.from({ length: 8 }, () => store.consumeOAuthState(hash)),
+        Array.from({ length: 8 }, () => store.consumeOAuthState(hash, 'shared')),
       );
       expect(results.filter((r) => r !== null)).toEqual([
         { installId, userId: 'usr_admin1', expiresAt },
@@ -861,8 +1167,8 @@ describe('OAuth state', () => {
     await store.setOAuthState(installId, { stateHash: old, userId: 'usr_admin1', expiresAt });
     await store.setOAuthState(installId, { stateHash: fresh, userId: 'usr_admin2', expiresAt });
 
-    expect(await store.consumeOAuthState(old)).toBeNull();
-    expect(await store.consumeOAuthState(fresh)).toEqual({
+    expect(await store.consumeOAuthState(old, 'shared')).toBeNull();
+    expect(await store.consumeOAuthState(fresh, 'shared')).toEqual({
       installId,
       userId: 'usr_admin2',
       expiresAt,
@@ -876,7 +1182,7 @@ describe('OAuth state', () => {
     const installId = await pending();
     await store.activate(installId, { ...TEAM, installedAt: new Date() });
     await expect(store.setOAuthState(installId, state)).rejects.toThrow();
-    expect(await store.peekOAuthState(state.stateHash)).toBeNull();
+    expect(await store.peekOAuthState(state.stateHash, 'shared')).toBeNull();
   });
 
   it('the state is stored only as the hash the caller passes', async () => {
@@ -886,5 +1192,37 @@ describe('OAuth state', () => {
     const row = await rawRow(installId);
     expect(row?.oauth_state_hash).toBe(hash);
     expect(JSON.stringify(row)).not.toContain('raw-state-value');
+  });
+
+  /*
+    Each Allow has its own callback (TASK-1167): the admin's finishes the
+    shared app, the bot's a team agent's bot. A state reaches only its own
+    kind's callback, so neither flow's finish step ever sees the other's.
+  */
+  it('a bot state is invisible to the shared peek and consume, and the reverse', async () => {
+    const shared = await pending();
+    const bot = await pendingBot();
+    const sharedHash = stateHash('shared-state');
+    const botHash = stateHash('bot-state');
+    await store.setOAuthState(shared, { stateHash: sharedHash, userId: 'usr_admin1', expiresAt });
+    await store.setOAuthState(bot, { stateHash: botHash, userId: 'usr_grace', expiresAt });
+
+    expect(await store.peekOAuthState(botHash, 'shared')).toBeNull();
+    expect(await store.consumeOAuthState(botHash, 'shared')).toBeNull();
+    expect(await store.peekOAuthState(sharedHash, 'bot')).toBeNull();
+    expect(await store.consumeOAuthState(sharedHash, 'bot')).toBeNull();
+    // Neither was spent by the other kind's consume.
+    expect((await rawRow(bot))?.oauth_state_hash).toBe(botHash);
+    expect((await rawRow(shared))?.oauth_state_hash).toBe(sharedHash);
+
+    // Each kind spends its own, exactly once.
+    const botState = { installId: bot, userId: 'usr_grace', expiresAt };
+    expect(await store.peekOAuthState(botHash, 'bot')).toEqual(botState);
+    expect(await store.consumeOAuthState(botHash, 'bot')).toEqual(botState);
+    expect(await store.consumeOAuthState(botHash, 'bot')).toBeNull();
+    const sharedState = { installId: shared, userId: 'usr_admin1', expiresAt };
+    expect(await store.peekOAuthState(sharedHash, 'shared')).toEqual(sharedState);
+    expect(await store.consumeOAuthState(sharedHash, 'shared')).toEqual(sharedState);
+    expect(await store.consumeOAuthState(sharedHash, 'shared')).toBeNull();
   });
 });
