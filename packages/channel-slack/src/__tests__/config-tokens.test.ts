@@ -580,7 +580,7 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     w.vault.rows.set(personRef(GRACE), TOKEN.grace);
     const faults: unknown[] = [];
 
-    await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) })).resolves.toBeUndefined();
+    await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) })).resolves.toBe('released');
 
     expect(w.asked).toEqual([ADA]);
     expect(w.vault.calls).toEqual([{ hook: 'credentials:delete', ref: personRef(ADA), userId: ADA }]);
@@ -599,7 +599,7 @@ describe('releaseConfigToken: a person keeps their token while anything still na
       w.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
       const faults: unknown[] = [];
 
-      await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) }), label).resolves.toBeUndefined();
+      await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) }), label).resolves.toBe('kept');
 
       expect(w.asked, label).toEqual([ADA]);
       expect(w.vault.calls, label).toEqual([]);
@@ -615,7 +615,7 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     w.storeFaults.check = fault;
     const faults: unknown[][] = [];
 
-    await expect(w.release(ADA_APP, { onFault: (err, step) => faults.push([err, step]) })).resolves.toBeUndefined();
+    await expect(w.release(ADA_APP, { onFault: (err, step) => faults.push([err, step]) })).resolves.toBe('kept');
 
     expect(faults).toHaveLength(1);
     expect(faults[0]![0]).toBe(fault);
@@ -627,8 +627,8 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     const throwing = (): void => {
       throw new Error('log sink down');
     };
-    await expect(w.release(ADA_APP, { onFault: throwing })).resolves.toBeUndefined();
-    await expect(w.release(ADA_APP, { onFault: throwing, onlyIfStored: true })).resolves.toBeUndefined();
+    await expect(w.release(ADA_APP, { onFault: throwing })).resolves.toBe('kept');
+    await expect(w.release(ADA_APP, { onFault: throwing, onlyIfStored: true })).resolves.toBe('kept');
     expect(w.vault.calls).toEqual([]);
   });
 
@@ -638,7 +638,7 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     w.vault.faults.set(`credentials:delete ${personRef(ADA)}`, vaultFault('timeout', TOKEN.adaPerson));
     const faults: unknown[] = [];
 
-    await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) })).resolves.toBeUndefined();
+    await expect(w.release(ADA_APP, { onFault: (err) => faults.push(err) })).resolves.toBe('released');
 
     expect(w.lines).toEqual([
       {
@@ -658,12 +658,12 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     };
 
     const nothing = world();
-    await expect(nothing.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBeUndefined();
+    await expect(nothing.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBe('released');
     expect(nothing.vault.calls).toEqual([{ hook: 'credentials:get', ref: personRef(ADA), userId: ADA }]);
 
     const stored = world();
     stored.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
-    await expect(stored.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBeUndefined();
+    await expect(stored.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBe('released');
     expect(stored.vault.calls.map((c) => c.hook)).toEqual(['credentials:get', 'credentials:delete']);
     expect(stored.vault.rows.size).toBe(0);
 
@@ -673,7 +673,7 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     unreadable.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
     const readFault = vaultFault('invalid-envelope');
     unreadable.vault.faults.set(`credentials:get ${personRef(ADA)}`, readFault);
-    await expect(unreadable.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBeUndefined();
+    await expect(unreadable.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBe('released');
     expect(unreadable.vault.calls.map((c) => c.hook)).toEqual(['credentials:get', 'credentials:delete']);
     expect(unreadable.vault.rows.size).toBe(0);
     expect(unreadable.lines).toEqual([]);
@@ -689,16 +689,35 @@ describe('releaseConfigToken: a person keeps their token while anything still na
     const throwing = (): void => {
       throw new Error('log sink down');
     };
-    await expect(throwingSink.release(ADA_APP, { onFault: throwing, onlyIfStored: true })).resolves.toBeUndefined();
+    await expect(throwingSink.release(ADA_APP, { onFault: throwing, onlyIfStored: true })).resolves.toBe('released');
     expect(throwingSink.vault.rows.size).toBe(0);
 
     // Still kept while something names the person: nothing is even read.
     const named = world({ leftovers: [ADA] });
     named.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
-    await expect(named.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBeUndefined();
+    await expect(named.release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBe('kept');
     expect(named.vault.calls).toEqual([]);
     expect(named.vault.rows).toEqual(new Map([[personRef(ADA), TOKEN.adaPerson]]));
 
     expect(faults).toEqual([]);
+  });
+
+  it('X6 says whether the token was kept: named, or a check fault, is kept; unnamed, or nothing stored with onlyIfStored, is released', async () => {
+    const onFault = (): void => {};
+
+    const named = world({ installs: [ADA_OLDER] });
+    named.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
+    await expect(named.release(ADA_APP, { onFault })).resolves.toBe('kept');
+
+    const faulting = world();
+    faulting.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
+    faulting.storeFaults.check = dbFault('57P01');
+    await expect(faulting.release(ADA_APP, { onFault })).resolves.toBe('kept');
+
+    const unnamed = world();
+    unnamed.vault.rows.set(personRef(ADA), TOKEN.adaPerson);
+    await expect(unnamed.release(ADA_APP, { onFault })).resolves.toBe('released');
+
+    await expect(world().release(ADA_APP, { onFault, onlyIfStored: true })).resolves.toBe('released');
   });
 });

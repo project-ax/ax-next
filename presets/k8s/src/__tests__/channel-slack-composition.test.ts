@@ -1054,7 +1054,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     actor = { id: ADMIN, isAdmin: true };
     mark = slackCalls.length;
     const disconnect = await callRoute('POST', '/admin/slack/disconnect', { body: jsonBody({}) });
-    expect(disconnect).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(disconnect).toMatchObject({ status: 200, body: { appDeleted: true, tokenKept: false } });
     expect(slackCalls.slice(mark).map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
     expect(slackCalls.slice(mark)[0]!.body).toEqual({ refresh_token: kept });
     expect(slackCalls.slice(mark)[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);

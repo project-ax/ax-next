@@ -8,7 +8,7 @@
  *   POST /admin/slack/install-url  → { installUrl }, while an install is unfinished
  *   POST /admin/slack/rename       { botName } → { botName }
  *   POST /admin/slack/replace-token  { refreshToken } → {}
- *   POST /admin/slack/disconnect   → { appDeleted }
+ *   POST /admin/slack/disconnect   → { appDeleted, tokenKept }
  *   POST /admin/slack/forget-leftover-app  { appId } → {}
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
@@ -252,12 +252,18 @@ export async function resumeSlackInstall(): Promise<{ installUrl: string }> {
   return installUrlFrom(await post(INSTALL_URL_PATH, {}));
 }
 
-/** Disconnect. `appDeleted` is false when Slack wouldn't delete the app for us. */
-export async function disconnectSlack(): Promise<{ appDeleted: boolean }> {
+/**
+ * Disconnect. `appDeleted` is false when Slack wouldn't delete the app for us.
+ * `tokenKept` is true when the admin's configuration token stayed, because
+ * another Slack app (a team agent's own bot) still needs it: revoking it on
+ * Slack's page would strand that app. An answer missing either fact is refused.
+ */
+export async function disconnectSlack(): Promise<{ appDeleted: boolean; tokenKept: boolean }> {
   const answer = await post(DISCONNECT_PATH, {});
   const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
-  if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
-  return { appDeleted };
+  const tokenKept = isRecord(answer.body) ? answer.body['tokenKept'] : undefined;
+  if (typeof appDeleted !== 'boolean' || typeof tokenKept !== 'boolean') throw badResponse(answer.status);
+  return { appDeleted, tokenKept };
 }
 
 /**

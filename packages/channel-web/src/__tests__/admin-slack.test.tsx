@@ -214,9 +214,9 @@ describe('the writes', () => {
 
   it('resumeSlackInstall and disconnectSlack POST with the CSRF header and read their answers', async () => {
     answer = (c) =>
-      c.url === '/admin/slack/install-url' ? json(200, { installUrl: INSTALL_URL }) : json(200, { appDeleted: false });
+      c.url === '/admin/slack/install-url' ? json(200, { installUrl: INSTALL_URL }) : json(200, { appDeleted: false, tokenKept: true });
     expect(await resumeSlackInstall()).toEqual({ installUrl: INSTALL_URL });
-    expect(await disconnectSlack()).toEqual({ appDeleted: false });
+    expect(await disconnectSlack()).toEqual({ appDeleted: false, tokenKept: true });
     expect(calls.map((c) => [c.url, c.method, c.credentials, c.headers['x-requested-with']])).toEqual([
       ['/admin/slack/install-url', 'POST', 'include', 'ax-admin'],
       ['/admin/slack/disconnect', 'POST', 'include', 'ax-admin'],
@@ -312,9 +312,16 @@ describe('the writes', () => {
     }
   });
 
-  it('a disconnect answer without a yes/no is refused', async () => {
-    answer = () => json(200, { appDeleted: 'true' });
-    await expect(disconnectSlack()).rejects.toMatchObject({ code: 'bad-response' });
+  it('a disconnect answer without a yes/no for both facts is refused', async () => {
+    for (const body of [
+      { appDeleted: 'true', tokenKept: false },
+      { appDeleted: true },
+      { appDeleted: true, tokenKept: 'false' },
+      { tokenKept: true },
+    ]) {
+      answer = () => json(200, body);
+      await expect(disconnectSlack(), JSON.stringify(body)).rejects.toMatchObject({ code: 'bad-response' });
+    }
   });
 
   it('a refusal carries the status, the server’s code and its reason, and nothing else from the body', async () => {

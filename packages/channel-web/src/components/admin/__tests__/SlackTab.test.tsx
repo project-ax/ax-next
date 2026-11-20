@@ -507,7 +507,7 @@ describe('Pending', () => {
   });
 
   it('Cancel asks first, in words about an unfinished install, then removes it and says what is left to do', async () => {
-    disconnect.mockResolvedValueOnce({ appDeleted: true });
+    disconnect.mockResolvedValueOnce({ appDeleted: true, tokenKept: false });
     renderTab(PENDING, NOT_CONNECTED);
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
     const dialog = await screen.findByRole('dialog', { name: 'Stop connecting Slack?' });
@@ -536,7 +536,7 @@ describe('Disconnect', () => {
   });
 
   it('then tells the admin to Revoke the token on Slack’s page, and shows the form again', async () => {
-    disconnect.mockResolvedValueOnce({ appDeleted: true });
+    disconnect.mockResolvedValueOnce({ appDeleted: true, tokenKept: false });
     renderTab(CONNECTED, NOT_CONNECTED);
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
@@ -555,8 +555,27 @@ describe('Disconnect', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('when a team agent’s own bot still needs the token, the note says not to revoke it', async () => {
+    disconnect.mockResolvedValueOnce({ appDeleted: true, tokenKept: true });
+    renderTab(CONNECTED, NOT_CONNECTED);
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+
+    const note = await screen.findByText(/Don't revoke the configuration token/);
+    const alert = note.closest('[role="alert"]') as HTMLElement;
+    expect(alert).toHaveTextContent(
+      "Slack is disconnected. Don't revoke the configuration token on Slack's app settings yet: other Slack apps made with it still use it, like a team agent's own bot.",
+    );
+    expect(within(alert).getByRole('link', { name: "Slack's app settings" })).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps',
+    );
+    expect(alert).not.toHaveTextContent('clicks Revoke');
+    expect(screen.queryByText(/One more step that Slack doesn't let us do/)).toBeNull();
+  });
+
   it('if the Slack app could not be deleted, the re-read names it with its own link, and the Revoke note says nothing more', async () => {
-    disconnect.mockResolvedValueOnce({ appDeleted: false });
+    disconnect.mockResolvedValueOnce({ appDeleted: false, tokenKept: false });
     renderTab(CONNECTED, { ...NOT_CONNECTED, leftoverApps: [LEFT] });
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));

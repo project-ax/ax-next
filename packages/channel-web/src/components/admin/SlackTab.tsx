@@ -91,14 +91,14 @@ type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; status: S
 
 /** A note above the tab that outlives the re-read after it. */
 type Notice =
-  | { kind: 'disconnected' }
+  | { kind: 'disconnected'; tokenKept: boolean }
   | { kind: 'renamed'; botName: string }
   | { kind: 'replaced' }
   | { kind: 'changed' };
 
 interface Actions {
-  /** A disconnect went through: say what's left to do, then read again. */
-  onDisconnected: () => void;
+  /** A disconnect went through: say what's left to do (and whether the token is still needed), then read again. */
+  onDisconnected: (tokenKept: boolean) => void;
   /** A rename went through: say what Slack shows now, then read again. */
   onRenamed: (botName: string) => void;
   /** A token replace went through: say it serves every app of that person, then read again. */
@@ -161,14 +161,22 @@ function ReadError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function DisconnectedNotice() {
+/** `tokenKept`: a team agent's own bot still needs the configuration token, so the admin must not revoke it. */
+function DisconnectedNotice({ tokenKept }: { tokenKept: boolean }) {
   return (
     <Alert>
       <AlertDescription className="flex flex-col gap-2">
-        <p>
-          Slack is disconnected. One more step that Slack doesn&apos;t let us do: on <SlackAppsLink />, under{' '}
-          <strong>Your App Configuration Tokens</strong>, whoever generated the token clicks <strong>Revoke</strong>.
-        </p>
+        {tokenKept ? (
+          <p>
+            Slack is disconnected. Don&apos;t revoke the configuration token on <SlackAppsLink /> yet: other Slack apps
+            made with it still use it, like a team agent&apos;s own bot.
+          </p>
+        ) : (
+          <p>
+            Slack is disconnected. One more step that Slack doesn&apos;t let us do: on <SlackAppsLink />, under{' '}
+            <strong>Your App Configuration Tokens</strong>, whoever generated the token clicks <strong>Revoke</strong>.
+          </p>
+        )}
       </AlertDescription>
     </Alert>
   );
@@ -506,8 +514,8 @@ function DisconnectDialog({
     setBusy(true);
     setError(null);
     try {
-      await disconnectSlack();
-      onDisconnected();
+      const { tokenKept } = await disconnectSlack();
+      onDisconnected(tokenKept);
     } catch (err) {
       setBusy(false);
       if (slackStateChanged(err)) {
@@ -994,10 +1002,13 @@ export function SlackTab() {
     };
   }, [read]);
 
-  const onDisconnected = useCallback(() => {
-    setNotice({ kind: 'disconnected' });
-    void read();
-  }, [read]);
+  const onDisconnected = useCallback(
+    (tokenKept: boolean) => {
+      setNotice({ kind: 'disconnected', tokenKept });
+      void read();
+    },
+    [read],
+  );
   const onRenamed = useCallback(
     (botName: string) => {
       setNotice({ kind: 'renamed', botName });
@@ -1020,7 +1031,7 @@ export function SlackTab() {
 
   return (
     <div className="flex flex-col gap-6 font-sans">
-      {notice?.kind === 'disconnected' && <DisconnectedNotice />}
+      {notice?.kind === 'disconnected' && <DisconnectedNotice tokenKept={notice.tokenKept} />}
       {notice?.kind === 'renamed' && (
         <Alert>
           <AlertDescription>Renamed. People in Slack now see the bot as {notice.botName}.</AlertDescription>

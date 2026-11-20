@@ -47,7 +47,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   POST /admin/slack/install-url     → { installUrl }, only while the install is pending
  *   POST /admin/slack/rename          { botName } → { botName }, only once the install is active
  *   POST /admin/slack/replace-token   { refreshToken } → {}, only once the install is active
- *   POST /admin/slack/disconnect      → { appDeleted }
+ *   POST /admin/slack/disconnect      → { appDeleted, tokenKept }
  *   POST /admin/slack/forget-leftover-app  { appId } → {}, once the admin has deleted that app by hand
  *   GET  /admin/slack/oauth/callback  ?code&state or ?error&state → 302 to `<publicOrigin>/?slack=<outcome>`
  *
@@ -938,10 +938,13 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       await d.store.remove(install.installId, { appLeft: !appDeleted });
       await d.secrets.removeAll(install);
       // Last, the person's token (TASK-1175), unless an install or a leftover
-      // app still names them: this one, when Slack didn't delete it, needs it.
-      await release(install);
+      // app still names them: this one, when Slack didn't delete it, needs it,
+      // and so does a team agent's own bot they approved (TASK-1167). The
+      // answer says which, so the admin is only told to revoke it when that
+      // is safe. The log line keeps to `appDeleted`.
+      const tokenKept = (await release(install)) === 'kept';
       log('info', 'slack_disconnected', { installId: install.installId, appDeleted });
-      return json(200, { appDeleted });
+      return json(200, { appDeleted, tokenKept });
     });
   }
 

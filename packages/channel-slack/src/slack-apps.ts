@@ -161,9 +161,11 @@ export interface AppSteps {
    * A person's configuration token goes once no install and no leftover app
    * names them (config-tokens.ts, TASK-1175). The caller holds the app lock.
    * A check that fails keeps the token, and is logged here, code-only. Never
-   * throws: the secret store logs a delete that fails.
+   * throws: the secret store logs a delete that fails. Answers `'kept'` when
+   * the token stayed (something still names the person, or the check failed)
+   * and `'released'` when it went (or none was stored).
    */
-  release(app: SecretOwner): Promise<void>;
+  release(app: SecretOwner): Promise<'kept' | 'released'>;
   /**
    * Keep the refresh token a rotate just minted as `app.connectedByUserId`'s
    * token, in place of the one it was minted from (TASK-1175: that one slot
@@ -308,7 +310,7 @@ export function createAppSteps(d: AppStepsDeps): AppSteps {
     }
   }
 
-  function release(app: SecretOwner): Promise<void> {
+  function release(app: SecretOwner): Promise<'kept' | 'released'> {
     return releaseConfigToken({ store: d.store, secrets: d.secrets }, app, {
       onFault: (err) => failed('release-config-token', err, app.installId),
     });

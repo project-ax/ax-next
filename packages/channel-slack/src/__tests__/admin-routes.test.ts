@@ -392,16 +392,21 @@ async function connectedWorld(o: Parameters<typeof world>[0] = {}) {
 }
 
 /** A team agent's bot, as the store holds one (TASK-1167): pending, named `botName`, live with its own handle if given. */
-async function addBot(w: World, botName: string, o: { handle?: string; installId?: string } = {}): Promise<string> {
+async function addBot(
+  w: World,
+  botName: string,
+  o: { handle?: string; installId?: string; approver?: TestUser } = {},
+): Promise<string> {
   const installId = o.installId ?? 'inst_bot_1';
+  const approver = o.approver ?? GRACE;
   await w.memory.store.insertPendingBot({
     installId,
     appId: 'A07BOTAPP001',
     clientId: '1.2',
     botName,
-    connectedByUserId: GRACE.id,
+    connectedByUserId: approver.id,
     agentId: 'agt_team',
-    requestedByUserId: GRACE.id,
+    requestedByUserId: approver.id,
   });
   if (o.handle !== undefined) {
     await w.memory.store.activate(installId, {
@@ -1677,7 +1682,8 @@ describe('POST /admin/slack/disconnect', () => {
     const mark = w.trail.length;
     const res = await w.disconnect(GRACE);
     expect(res).toMatchObject({ status: 200, body: { appDeleted: true } });
-    expect(Object.keys(res.body as object)).toEqual(['appDeleted']);
+    expect(Object.keys(res.body as object)).toEqual(['appDeleted', 'tokenKept']);
+    expect(res.body).toEqual({ appDeleted: true, tokenKept: false });
     // The refresh token Slack minted is stored before the app is deleted. Last,
     // nothing names Ada any more, so her token goes too (TASK-1175).
     expect(w.trail.slice(mark)).toEqual([
@@ -2166,6 +2172,48 @@ describe("a Slack app Disconnect couldn't delete: remembered, and the next Conne
     expect(w.lines.filter((l) => l.msg === 'slack_leftover_app_deleted')).toEqual([
       { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId, reason: 'already-gone' } },
     ]);
+  });
+});
+
+describe("Disconnect and \"I deleted it\" keep a token a team bot still names (TASK-1167)", () => {
+  it("Disconnect keeps the person's token while their team bot names them, and answers tokenKept", async () => {
+    // A pending bot, then a live one, each approved by Ada: the shared install's person.
+    for (const handle of [undefined, 'ada_helper']) {
+      const { w, installId } = await connectedWorld();
+      await addBot(w, 'Ada Helper', { approver: ADA, ...(handle === undefined ? {} : { handle }) });
+      const mark = w.trail.length;
+      const res = await w.disconnect(GRACE);
+      expect(res.body, String(handle)).toEqual({ appDeleted: true, tokenKept: true });
+      // The shared install and its secrets go; the bot row stays, and with it Ada's token.
+      expect(w.trail.slice(mark), String(handle)).toEqual([
+        'store:current',
+        'vault:get config-refresh-token',
+        'slack:rotateConfigToken',
+        'vault:set config-refresh-token',
+        'slack:deleteApp',
+        'store:remove',
+        ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+        'store:personHasApps',
+      ]);
+      expect(w.vault.has(configTokenRef(ADA.id)), String(handle)).toBe(true);
+      expect([...w.memory.rows.keys()], String(handle)).toEqual(['inst_bot_1']);
+      expect(w.lines, String(handle)).toEqual([
+        { level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } },
+      ]);
+    }
+  });
+
+  it('"I deleted it" keeps a maker\'s token while their bot names them', async () => {
+    // Ada's leftover app is forgotten, but her team bot still names her.
+    const w = world();
+    w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    await addBot(w, 'Ada Helper', { approver: ADA });
+    const mark = w.trail.length;
+    expect(await w.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 200, body: {} });
+    expect(w.trail.slice(mark)).toEqual(['store:leftoverApps', 'store:forgetLeftoverApp', 'store:personHasApps']);
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(ADA_STORED);
+    expect([...w.memory.leftovers.keys()]).toEqual([]);
   });
 });
 
@@ -3343,7 +3391,7 @@ describe('every configuration-token use goes through its person (TASK-1175)', ()
     expect((await w.rename()).status).toBe(200);
     expect((await w.replace({ refreshToken: SECOND_REFRESH }, GRACE)).status).toBe(200);
     expect((await w.rename({ botName: 'Grace Helper' }, GRACE)).status).toBe(200);
-    expect((await w.disconnect(GRACE)).body).toEqual({ appDeleted: true });
+    expect((await w.disconnect(GRACE)).body).toEqual({ appDeleted: true, tokenKept: false });
 
     const personal = w.vaultCalls.flatMap((c, i) =>
       c.ref.startsWith('slack:person:') ? [{ ...c, as: w.vaultAs[i]!.userId }] : [],

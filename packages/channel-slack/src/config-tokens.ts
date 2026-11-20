@@ -159,6 +159,12 @@ async function movePerson(
  * vault deletes by writing an empty row, and a reset leaves no rows behind. A
  * read that fails is handed to `onFault` with step `read`, and the delete goes
  * ahead.
+ *
+ * Says what became of the token (TASK-1167): `'kept'` when an install (a team
+ * agent's own bot counts) or a leftover names the person, or the check
+ * failed; `'released'` when `removeConfigToken` ran, or, with `onlyIfStored`,
+ * when nothing was stored. Disconnect uses it to tell the admin whether
+ * revoking the token on Slack's page is still safe.
  */
 export async function releaseConfigToken(
   d: {
@@ -167,7 +173,7 @@ export async function releaseConfigToken(
   },
   app: SecretOwner,
   o: { onFault: (err: unknown, step: 'check' | 'read') => void; onlyIfStored?: boolean },
-): Promise<void> {
+): Promise<'kept' | 'released'> {
   const report = (err: unknown, step: 'check' | 'read'): void => {
     try {
       o.onFault(err, step);
@@ -176,11 +182,11 @@ export async function releaseConfigToken(
     }
   };
   try {
-    if (await d.store.personHasApps(app.connectedByUserId)) return;
+    if (await d.store.personHasApps(app.connectedByUserId)) return 'kept';
   } catch (err) {
     // The token is kept.
     report(err, 'check');
-    return;
+    return 'kept';
   }
   if (o.onlyIfStored === true) {
     let stored = true;
@@ -190,7 +196,8 @@ export async function releaseConfigToken(
       // A read that fails is no proof it is gone: delete it.
       report(err, 'read');
     }
-    if (!stored) return;
+    if (!stored) return 'released';
   }
   await d.secrets.removeConfigToken(app);
+  return 'released';
 }

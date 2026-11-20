@@ -1323,7 +1323,7 @@ describe('@ax/channel-slack plugin', () => {
 
     // The stored refresh token is dead: Disconnect can't delete the app.
     const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
-    expect(off).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect(off).toMatchObject({ status: 200, body: { appDeleted: false, tokenKept: true } });
     expect(await installCount()).toBe(0);
     const left = await sql<{ install_id: string; app_id: string; bot_name: string }>`
       SELECT install_id, app_id, bot_name FROM channel_slack_v1_leftover_apps`.execute(probe);
@@ -2263,7 +2263,7 @@ describe('@ax/channel-slack plugin', () => {
     expect(calls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
 
     releaseSharedDelete();
-    expect(await disconnecting).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(await disconnecting).toMatchObject({ status: 200, body: { appDeleted: true, tokenKept: false } });
     expect((await deleting).rejected).toBe(false);
     // Then Grace's own token is rotated, and the access token minted with it deletes the bot's app.
     expect(calls.map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
