@@ -35,7 +35,11 @@ export interface ChannelBinding {
   connectedByUserId: string;
   /** Slack's name for the channel when it was connected, cleaned (label.ts). */
   channelName: string;
-  /** The channel's memory switch. On for a new binding; a reconnect keeps it. */
+  /**
+   * The channel's memory switch. On for a new binding unless its writer says
+   * otherwise (a team agent's own bot carries the agent's shared-app switch,
+   * TASK-1179); a reconnect keeps it.
+   */
   remember: boolean;
   createdAt: Date;
 }

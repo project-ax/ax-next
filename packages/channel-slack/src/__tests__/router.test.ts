@@ -365,6 +365,8 @@ function world(o: {
   findOrCreateFails?: boolean;
   /** The install store fails when a queued turn re-reads its install. */
   installReadFails?: boolean;
+  /** The install store fails to read the shared app's install (a bot's first bind, TASK-1179). */
+  sharedReadFails?: boolean;
   /** The channel store fails the n-th binding read (1-based) when this says so. */
   bindingReadFails?: (n: number) => boolean;
   /** The channel store fails to record a thread. */
@@ -613,6 +615,9 @@ function world(o: {
     },
     /** store.ts `current`: the shared app's install, any status, never a bot. */
     async current(): Promise<InstallRow | null> {
+      if (o.sharedReadFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: shared install' });
+      }
       const shared = [...installRows.values()].find((r) => r.kind === 'shared');
       return shared === undefined ? null : { ...shared };
     },
@@ -2804,6 +2809,16 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, false]]);
   });
 
+  it('with no shared app installed the bot binds a channel with the switch on', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    w.disconnect();
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(true);
+  });
+
   it("another agent's switch on the shared app is that agent's: the bot's binding starts on", async () => {
     const w = world();
     w.putInstall(OWN_BOT);
@@ -2822,9 +2837,12 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(true);
   });
 
-  it("a shared binding that can't be read binds nothing and runs nothing: the switch is never guessed", async () => {
-    // Read 1 is the bot's own binding, read 2 the shared app's.
-    const w = world({ bindingReadFails: (n) => n === 2 });
+  it.each([
+    ['binding', { bindingReadFails: (n: number) => n === 2 }],
+    ['install', { sharedReadFails: true }],
+  ] as const)("a shared %s that can't be read binds nothing and runs nothing: the switch is never guessed", async (_what, fails) => {
+    // Binding read 1 is the bot's own binding, read 2 the shared app's.
+    const w = world(fails);
     w.putInstall(OWN_BOT);
     await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false);
     await w.dispatch(OWN_BOT, botMention());

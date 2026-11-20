@@ -862,7 +862,8 @@ type BindOutcome =
  * remembered stays that way (TASK-1179); otherwise on, as any new connection
  * is. It's written by the insert itself, so no turn ever reads it on.
  * The bot never joins a channel: it is in this one because someone invited
- * it. A store failure throws, before anything is written when it's a read.
+ * it. A store failure throws; a failed read of the shared app's install or
+ * binding throws before anything is written.
  */
 async function bindBotChannel(
   d: RouterDeps,
