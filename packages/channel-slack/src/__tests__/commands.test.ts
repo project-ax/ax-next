@@ -1308,13 +1308,74 @@ describe('/ax disconnect', () => {
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
   });
 
-  it('a shared binding of an agent whose own bot is live still disconnects', async () => {
+  it('a shared binding of an agent whose own bot is live disconnects, and the line says the bot still answers (TASK-1168)', async () => {
     const w = world();
     await connected(w);
     w.state.bot = OWN_BOT;
+    expect(await w.send(slash({ user: GRACE.slack, text: 'disconnect' }))).toStrictEqual(
+      said(COPY.slashDisconnectedOwnBot({ botName: 'Support Bot', handle: 'supportbot' })),
+    );
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
+    expect(w.botLookups).toEqual([SUPPORT.id]);
+    expect(msgs(w.lines, 'slack_channel_disconnected')).toEqual([{ installId: INSTALL_ID }]);
+    const logged = JSON.stringify(w.lines);
+    expect(logged).not.toContain('Support Bot');
+    expect(logged).not.toContain('supportbot');
+  });
+
+  it('… a live bot with no handle → the line names the bot', async () => {
+    const w = world();
+    await connected(w);
+    w.state.bot = { ...OWN_BOT, botHandle: null };
+    expect(await w.send(slash({ user: GRACE.slack, text: 'disconnect' }))).toStrictEqual(
+      said(COPY.slashDisconnectedOwnBot({ botName: 'Support Bot', handle: null })),
+    );
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
+  });
+
+  it('… a pending bot, or none → the plain slashDisconnected', async () => {
+    const w = world();
+    await connected(w);
+    w.state.bot = {
+      ...OWN_BOT,
+      status: 'pending',
+      teamId: null,
+      teamName: null,
+      botUserId: null,
+      installedAt: null,
+      botHandle: null,
+    };
     expect(await w.send(slash({ user: GRACE.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashDisconnected));
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
-    // Disconnect never asks about the bot.
+    expect(w.botLookups).toEqual([SUPPORT.id]);
+
+    const none = world();
+    await connected(none);
+    expect(await none.send(slash({ user: GRACE.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashDisconnected));
+  });
+
+  it("… someone who can't manage the agent → slashNotManager, and the bot is never looked up", async () => {
+    const w = world();
+    await connected(w);
+    w.state.bot = OWN_BOT;
+    expect(await w.send(slash({ user: MEL.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashNotManager));
+    expect(w.botLookups).toEqual([]);
+  });
+
+  it('… a fault reading the bot → slashFailed, nothing removed, logged by code alone', async () => {
+    const w = world();
+    await connected(w);
+    w.state.botFault = Object.assign(new Error('relation gone'), { code: '42P01' });
+    expect(await w.send(slash({ user: GRACE.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashFailed));
+    expect(msgs(w.lines, 'slack_command_failed')).toEqual([{ installId: INSTALL_ID, stage: 'disconnect', code: '42P01' }]);
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SUPPORT.id });
+    expect(msgs(w.lines, 'slack_channel_disconnected')).toEqual([]);
+  });
+
+  it('a binding whose agent is gone is cleared without reading any bot (a gone agent answers nowhere)', async () => {
+    const w = world();
+    await connected(w, 'agt_deleted');
+    expect(await w.send(slash({ user: OTTO.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashDisconnected));
     expect(w.botLookups).toEqual([]);
   });
 });

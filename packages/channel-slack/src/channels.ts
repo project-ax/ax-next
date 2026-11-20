@@ -34,7 +34,7 @@ import type { InstallRow, InstallStore } from './store.js';
  * aside for it (router.ts). Both ways in are refused here, before Slack is
  * asked anything, and the refusal names that bot, so the person can /invite
  * it instead. A pending bot changes nothing. It is a plain store read, not
- * taken under the app lock: a connect racing the bot's Allow can leave one
+ * taken under the app lock: a connect racing the bot's Allow can leave a
  * shared binding, which the router already ignores for that agent and the
  * agent's settings list as waiting for the bot (`needsInvite`,
  * agent-routes.ts).

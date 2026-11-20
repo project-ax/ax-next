@@ -60,6 +60,16 @@ const ARGS: Record<string, unknown[][]> = {
     ['Ops', 'everyone'],
   ],
   // `/ax connect` for an agent whose own bot is live (TASK-1168): the agent, then the bot's @handle or its name.
+  // `/ax disconnect` for an agent whose own bot is live (TASK-1168): the bot's @handle or its name.
+  slashDisconnectedOwnBot: [
+    [{ botName: 'Support Bot', handle: 'supportbot' }],
+    [{ botName: 'Support Bot', handle: null }],
+    [{ botName: HOSTILE, handle: HOSTILE }],
+    [{ botName: HOSTILE, handle: null }],
+    [{ botName: 'Ops', handle: 'here' }],
+    [{ botName: 'Ops', handle: 'channel' }],
+    [{ botName: 'Ops', handle: 'everyone' }],
+  ],
   slashOwnBot: [
     ['Support', { botName: 'Support Bot', handle: 'supportbot' }],
     ['Support', { botName: 'Support Bot', handle: null }],
@@ -134,6 +144,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'slashConnected',
         'slashReconnected',
         'slashDisconnected',
+        'slashDisconnectedOwnBot',
         'slashNothingConnected',
         'slashChannelTaken',
         'slashOwnBot',
@@ -488,6 +499,20 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
     expect(COPY.slashOwnBot('Ops', { botName: 'Ops', handle: 'here' })).toContain(`/invite @${ZWSP}here instead.`);
     const hostile = COPY.slashOwnBot(HOSTILE, { botName: HOSTILE, handle: HOSTILE }).split(ZWSP).join('');
     expect(hostile).toContain('*&lt;!channel&gt; &amp; &lt;@U1&gt; @here* has its own Slack bot now');
+  });
+
+  it('disconnecting an agent whose own bot is live: says the bot still answers where it is, and how to remove it (TASK-1168)', () => {
+    expect(COPY.slashDisconnectedOwnBot({ botName: 'Support Bot', handle: 'supportbot' })).toBe(
+      'Disconnected. If @supportbot is in this channel, it still answers here: remove it with /kick @supportbot.',
+    );
+    expect(COPY.slashDisconnectedOwnBot({ botName: 'Support Bot', handle: null })).toBe(
+      'Disconnected. If Support Bot is in this channel, it still answers here: remove it with /kick.',
+    );
+    // After the line's own `@`, a broadcast word gets its mark.
+    expect(COPY.slashDisconnectedOwnBot({ botName: 'Ops', handle: 'here' })).toContain(`If @${ZWSP}here is in`);
+    expect(COPY.slashDisconnectedOwnBot({ botName: 'Ops', handle: 'here' })).toContain(`/kick @${ZWSP}here.`);
+    const hostile = COPY.slashDisconnectedOwnBot({ botName: HOSTILE, handle: null }).split(ZWSP).join('');
+    expect(hostile).toContain('If &lt;!channel&gt; &amp; &lt;@U1&gt; @here is in this channel');
   });
 
   it('"working on it" promises no follow-up: the late private reply fails where the bot is not a member', () => {

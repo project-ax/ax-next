@@ -917,11 +917,32 @@ describe('the section', () => {
       expect(w.people.inputs('agents:resolve').slice(before)).not.toContainEqual({ agentId: SUPPORT.id, userId: ADA.id });
     });
 
-    it("a store fault reading the bot's channels is the route's 500, logged by code alone", async () => {
+    it("a store fault reading the agent's own bot (botForAgent) is the route's 500, logged by code alone", async () => {
       const w = world();
       w.state.bot = OWN_BOT;
       w.bots.answers.status = LIVE;
       w.state.botFault = Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
+      expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
+      expect(w.lines).toContainEqual({
+        level: 'error',
+        msg: 'slack_channel_route_failed',
+        fields: { stage: 'status', code: '42P01' },
+      });
+      expect(JSON.stringify(w.lines)).not.toContain(SUPPORT_CH);
+    });
+
+    it("a store fault reading the bot's channels (listForAgent on its install) is the route's 500, logged by code alone", async () => {
+      const w = world();
+      w.state.bot = OWN_BOT;
+      w.bots.answers.status = LIVE;
+      // Only the bot's install faults: the shared install's read, and the bot lookup itself, work.
+      const listForAgent = w.memory.store.listForAgent.bind(w.memory.store);
+      w.memory.store.listForAgent = async (installId, agentId) => {
+        if (installId === OWN_BOT.installId) {
+          throw Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
+        }
+        return listForAgent(installId, agentId);
+      };
       expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
       expect(w.lines).toContainEqual({
         level: 'error',
