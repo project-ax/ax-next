@@ -55,6 +55,7 @@ function authStub(): Plugin {
         'auth:get-user',
         'auth:find-user-by-email',
         'auth:is-approved-email',
+        'auth:list-admins',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -95,6 +96,9 @@ function authStub(): Plugin {
       // ...and asks this about a channel mention's sender with no account
       // (TASK-1094). No domain is approved here, so nobody gets in that way.
       bus.registerService('auth:is-approved-email', name, async () => ({ approved: false }));
+      // ...and asks this whom to DM about a bot request (TASK-1170). No canary
+      // admin has a verified email, so nobody is DMed.
+      bus.registerService('auth:list-admins', name, async () => ({ admins: [] }));
       bus.registerService('auth:create-bootstrap-user', name, async () => ({
         user: { id: 'bootstrap', isAdmin: true },
       }));

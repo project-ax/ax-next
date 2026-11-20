@@ -562,6 +562,9 @@ function world(
     onClick: async () => {
       throw new Error('the ingress cases never reach a click');
     },
+    onBotRequestClick: async () => {
+      throw new Error('the ingress cases never reach a click');
+    },
   });
 
   async function send(req: RouteRequest, via = handler): Promise<Answered> {

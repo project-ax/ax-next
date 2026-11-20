@@ -206,8 +206,14 @@ describe('only auth-better and channel-slack name auth:find-user-by-email, auth:
     const read = (f) =>
       findMentions(f, readFileSync(join(REPO_ROOT, f), 'utf8')).map((h) => h.hook ?? h.rule);
     expect(read('packages/channel-slack/src/secrets.ts')).toContain('slack-prefix');
-    expect(read('packages/channel-slack/src/plugin.ts')).toContain('auth:find-user-by-email');
-    expect(read('presets/memory/src/__tests__/canary.test.ts')).toContain('auth:find-user-by-email');
+    // channel-slack's manifest names all three, and its bot request DMs call the third (TASK-1170).
+    expect(read('packages/channel-slack/src/plugin.ts')).toEqual(
+      expect.arrayContaining(['auth:find-user-by-email', 'auth:is-approved-email', 'auth:list-admins']),
+    );
+    expect(read('packages/channel-slack/src/bot-request-dms.ts')).toContain('auth:list-admins');
+    expect(read('presets/memory/src/__tests__/canary.test.ts')).toEqual(
+      expect.arrayContaining(['auth:find-user-by-email', 'auth:list-admins']),
+    );
     // auth-better registers all three rule-1 hooks, so each name is seen in real code.
     expect(read('packages/auth-better/src/plugin.ts')).toEqual(
       expect.arrayContaining(['auth:find-user-by-email', 'auth:is-approved-email', 'auth:list-admins']),
