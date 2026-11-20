@@ -1314,24 +1314,48 @@ describe('POST /admin/slack/connect', () => {
     });
   });
 
-  it('undo after an insert that committed but answered with an error still removes the row, and the app goes onto the list once', async () => {
-    const w = world();
-    const insert = w.memory.store.insertPending.bind(w.memory.store);
-    w.memory.store.insertPending = async (r) => {
-      await insert(r);
-      throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });
-    };
-    w.slack.on.deleteApp = async () => {
-      throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
-    };
-    expect((await w.connect()).status).toBe(500);
-    const installId = mintedInstallId(w);
-    expect(w.memory.rows.size).toBe(0);
-    expect([...w.memory.leftovers.values()]).toEqual([
-      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
-    ]);
-    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
-    expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
+  it('undo after an insert that committed but answered with an error still removes the row, whatever Slack said to the delete', async () => {
+    const outcomes: Array<[string, (() => Promise<void>) | null, boolean]> = [
+      ['Slack deleted the app', null, false],
+      [
+        'Slack says the app is already gone',
+        async () => {
+          throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+        },
+        false,
+      ],
+      [
+        "Slack won't delete it",
+        async () => {
+          throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+        },
+        true,
+      ],
+    ];
+    for (const [label, deleteApp, appLeft] of outcomes) {
+      const w = world();
+      const insert = w.memory.store.insertPending.bind(w.memory.store);
+      w.memory.store.insertPending = async (r) => {
+        await insert(r);
+        throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });
+      };
+      if (deleteApp !== null) w.slack.on.deleteApp = deleteApp;
+      expect((await w.connect()).status, label).toBe(500);
+      const installId = mintedInstallId(w);
+      expect(w.memory.rows.size, label).toBe(0);
+      expect((await w.status()).body, label).toMatchObject({ state: 'not-connected' });
+      if (appLeft) {
+        expect([...w.memory.leftovers.values()], label).toEqual([
+          { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+        ]);
+        // The app still on Slack names Ada, so her token stays.
+        expect(w.vault, label).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+      } else {
+        // Nothing names Ada any more: no row, no leftover, so her token goes too.
+        expect(w.memory.leftovers.size, label).toBe(0);
+        expect(w.vault.size, label).toBe(0);
+      }
+    }
   });
 
   it("undo doesn't list an app Slack says is already gone", async () => {
