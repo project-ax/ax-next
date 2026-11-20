@@ -1295,6 +1295,8 @@ describe('/ax disconnect', () => {
     expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: 'agt_deleted', userId: 'usr_otto' }]);
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
     expect(msgs(w.lines, 'slack_channel_disconnected')).toEqual([{ installId: INSTALL_ID, reason: 'agent-gone' }]);
+    // A gone agent answers nowhere, so no bot is read for it (TASK-1168).
+    expect(w.botLookups).toEqual([]);
   });
 
   it('an answer that does not call the bound agent a team agent never clears the binding → slashNotManager', async () => {
@@ -1365,18 +1367,12 @@ describe('/ax disconnect', () => {
   it('… a fault reading the bot → slashFailed, nothing removed, logged by code alone', async () => {
     const w = world();
     await connected(w);
-    w.state.botFault = Object.assign(new Error('relation gone'), { code: '42P01' });
+    w.state.botFault = Object.assign(new Error(`relation gone near ${SUPPORT_CH}`), { code: '42P01' });
     expect(await w.send(slash({ user: GRACE.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashFailed));
     expect(msgs(w.lines, 'slack_command_failed')).toEqual([{ installId: INSTALL_ID, stage: 'disconnect', code: '42P01' }]);
+    expect(JSON.stringify(w.lines)).not.toContain(SUPPORT_CH);
     expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SUPPORT.id });
     expect(msgs(w.lines, 'slack_channel_disconnected')).toEqual([]);
-  });
-
-  it('a binding whose agent is gone is cleared without reading any bot (a gone agent answers nowhere)', async () => {
-    const w = world();
-    await connected(w, 'agt_deleted');
-    expect(await w.send(slash({ user: OTTO.slack, text: 'disconnect' }))).toStrictEqual(said(COPY.slashDisconnected));
-    expect(w.botLookups).toEqual([]);
   });
 });
 

@@ -386,7 +386,8 @@ Rules, the same on both sides:
 - **An agent with its own bot:** once that bot is live (§4), neither way in
   connects a channel to the agent through the shared app. The answer names the
   bot's @handle and says to `/invite` it (TASK-1168). A pending bot changes
-  nothing, and disconnecting an old connection still works.
+  nothing, and disconnecting an old connection still works; `/ax disconnect`
+  then says the bot still answers wherever it's a member, and how to `/kick` it.
 - **Which install:** `/ax` acts on the install that signed the request.
 - **Admin › Slack › Disconnect** removes the shared install and its channel
   connections, so channels are connected again after Slack is. It leaves team

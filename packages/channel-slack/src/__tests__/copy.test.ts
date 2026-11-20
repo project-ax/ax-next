@@ -59,7 +59,6 @@ const ARGS: Record<string, unknown[][]> = {
     ['Ops', 'channel'],
     ['Ops', 'everyone'],
   ],
-  // `/ax connect` for an agent whose own bot is live (TASK-1168): the agent, then the bot's @handle or its name.
   // `/ax disconnect` for an agent whose own bot is live (TASK-1168): the bot's @handle or its name.
   slashDisconnectedOwnBot: [
     [{ botName: 'Support Bot', handle: 'supportbot' }],
@@ -70,6 +69,7 @@ const ARGS: Record<string, unknown[][]> = {
     [{ botName: 'Ops', handle: 'channel' }],
     [{ botName: 'Ops', handle: 'everyone' }],
   ],
+  // `/ax connect` for an agent whose own bot is live (TASK-1168): the agent, then the bot's @handle or its name.
   slashOwnBot: [
     ['Support', { botName: 'Support Bot', handle: 'supportbot' }],
     ['Support', { botName: 'Support Bot', handle: null }],
