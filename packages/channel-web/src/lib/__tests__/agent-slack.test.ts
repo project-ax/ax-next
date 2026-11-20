@@ -125,7 +125,8 @@ describe('fetchAgentSlack', () => {
       answer = () => json(200, make({ botChannels: [] }));
       await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ botChannels: [] });
       answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, extra: 1 }] }));
-      await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ botChannels: [BOT_ROW] });
+      // toEqual, not toMatchObject: an unknown key must be stripped, not carried through.
+      expect(((await fetchAgentSlack('a1')) as { botChannels?: unknown }).botChannels).toEqual([BOT_ROW]);
       answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, remember: 'yes' }] }));
       await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
       answer = () => json(200, make({ botChannels: [{ channelId: 'C1', remember: true }] }));

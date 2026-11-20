@@ -590,6 +590,29 @@ describe('remember', () => {
     expect(toggle).not.toBeDisabled();
   });
 
+  it('a flip on a row still waiting for the bot re-reads, so a bind that landed meanwhile shows where the switch really is', async () => {
+    remember.mockResolvedValueOnce(undefined);
+    renderIt(ready([MOVED], true, LIVE_BOT));
+    const toggle = await screen.findByRole('switch', { name: 'Let Quill remember this channel' });
+    // The bot bound the channel while the write was in flight: the re-read has it ON, on the bot's list.
+    fetchStatus.mockResolvedValueOnce({
+      ...ready([], true, LIVE_BOT),
+      botChannels: [{ channelId: 'C0SUPPORT1', name: 'support', remember: true }],
+    } as AgentSlackRead);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(remember).toHaveBeenCalledWith('a1', 'C0SUPPORT1', true));
+    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it('a flip on a shared row that is not moved updates in place and does not re-read', async () => {
+    remember.mockResolvedValueOnce(undefined);
+    renderIt(ready([SUPPORT], true, LIVE_BOT));
+    const toggle = await screen.findByRole('switch', { name: 'Let Quill remember this channel' });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed write leaves the switch where it was and says nothing changed', async () => {
     remember.mockRejectedValueOnce(new AgentSlackError(500, 'internal'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});

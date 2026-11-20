@@ -269,6 +269,13 @@ function ReadySection({
     setRowErrors(({ [row.channelId]: _gone, ...rest }) => rest);
     try {
       await setSlackChannelRemember(agentId, row.channelId, on);
+      // A moved row is still waiting for the agent's own bot, and the bot may have bound the channel
+      // while this write was in flight, so the stored value is no longer this row's to show: read
+      // where the switch really is. A shared row nobody else can move updates in place.
+      if (isMoved(row)) {
+        onStale();
+        return;
+      }
       withRows(
         latest.current.channels.map((c) => (c.channelId === row.channelId ? { ...c, remember: on } : c)),
       );
