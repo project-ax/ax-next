@@ -283,7 +283,7 @@ function DisconnectBotDialog({
               ? "We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."
               : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
                   sharedConnected
-                    ? ' The shared bot answers for its agent again in the channels it was connected to before.'
+                    ? ' The shared bot answers for its agent again in any channel it was connected to before.'
                     : ''
                 }`}
           </DialogDescription>

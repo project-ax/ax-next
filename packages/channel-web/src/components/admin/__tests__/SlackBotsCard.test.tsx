@@ -160,7 +160,7 @@ describe('Disconnect', () => {
   });
 
   it('the shared-bot sentence shows only while Slack is connected', async () => {
-    const sentence = 'The shared bot answers for its agent again in the channels it was connected to before.';
+    const sentence = 'The shared bot answers for its agent again in any channel it was connected to before.';
     renderCard(ready(LIVE), true);
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));

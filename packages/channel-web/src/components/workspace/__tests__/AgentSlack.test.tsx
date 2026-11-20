@@ -378,16 +378,28 @@ describe("a team agent's own live bot", () => {
     expect(disconnectBot).toHaveBeenCalledWith('a1');
   });
 
-  it("ready: a disconnect that deleted the Slack app leaves no note, and the dialog mentions the shared bot only when the agent has channels", async () => {
+  it("ready: a disconnect that deleted the Slack app leaves no note, and the dialog says the shared bot answers again", async () => {
     disconnectBot.mockResolvedValueOnce({ appDeleted: true });
     fetchStatus.mockResolvedValueOnce(ready([SUPPORT], true, LIVE_BOT)).mockResolvedValueOnce(ready([SUPPORT], true, NONE_STORED));
     render(<AgentSlack agentId="a1" agentName="Quill" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Disconnect bot' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent('The shared bot answers for Quill again in the channels it was connected to before.');
+    expect(dialog).toHaveTextContent('The shared bot answers for Quill again in any channel it was connected to before.');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
     expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
+  });
+
+  it('ready: with every shared channel already answered by the bot (so none is listed), the dialog still says the shared bot answers again', async () => {
+    // TASK-1168 drops a shared channel from the list once the agent's own bot has
+    // answered there, but its shared binding stays: after a disconnect the shared
+    // bot answers in it again. An empty list must not hide that.
+    fetchStatus.mockResolvedValueOnce(ready([], true, LIVE_BOT));
+    render(<AgentSlack agentId="a1" agentName="Quill" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect bot' }));
+    expect(await screen.findByRole('dialog')).toHaveTextContent(
+      'The shared bot answers for Quill again in any channel it was connected to before.',
+    );
   });
 
   it('no workspace: a manager can disconnect a live bot (canManage from the server); a member sees no Disconnect bot', async () => {

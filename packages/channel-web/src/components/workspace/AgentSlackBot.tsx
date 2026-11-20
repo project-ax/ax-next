@@ -84,10 +84,13 @@ export interface AgentSlackBotProps {
    */
   leftOver: BotCancelled | null;
   /**
-   * The agent has channels on the shared bot, which answers there again once
-   * this bot goes (TASK-1172). Only the Disconnect dialog says so.
+   * The shared app is connected, so the shared bot answers again in any channel
+   * the agent was connected to through it once this bot goes (TASK-1172). Not
+   * the listed channels: TASK-1168 drops a channel from that list once this bot
+   * has answered there, but its shared binding stays. Only the Disconnect dialog
+   * says so.
    */
-  sharedChannels?: boolean;
+  sharedConnected?: boolean;
   /** The request was cancelled or the bot disconnected (the status is read again right after). */
   onCancelled: (cancelled: BotCancelled) => void;
   /** A new bot is being asked for: whatever an old cancel left to say is moot. */
@@ -151,7 +154,7 @@ export function AgentSlackBot({
   agentName,
   bot,
   canManage,
-  sharedChannels = false,
+  sharedConnected = false,
   leftOver,
   onCancelled,
   onRequesting,
@@ -180,7 +183,7 @@ export function AgentSlackBot({
           agentName={agentName}
           bot={bot}
           canManage={canManage}
-          sharedChannels={sharedChannels}
+          sharedConnected={sharedConnected}
           onCancelled={onCancelled}
           onChanged={onChanged}
         />
@@ -384,7 +387,7 @@ function Live({
   agentName,
   bot,
   canManage,
-  sharedChannels,
+  sharedConnected,
   onCancelled,
   onChanged,
 }: {
@@ -392,7 +395,7 @@ function Live({
   agentName: string;
   bot: Extract<Bot, { state: 'live' }>;
   canManage: boolean;
-  sharedChannels: boolean;
+  sharedConnected: boolean;
   onCancelled: (cancelled: BotCancelled) => void;
   onChanged: () => void;
 }) {
@@ -422,7 +425,7 @@ function Live({
             agentId={agentId}
             agentName={agentName}
             bot={bot}
-            sharedChannels={sharedChannels}
+            sharedConnected={sharedConnected}
             onCancelled={onCancelled}
             onChanged={onChanged}
           />
@@ -439,7 +442,7 @@ function DisconnectBotDialog({
   agentId,
   agentName,
   bot,
-  sharedChannels,
+  sharedConnected,
   onCancelled,
   onChanged,
 }: {
@@ -448,7 +451,7 @@ function DisconnectBotDialog({
   agentId: string;
   agentName: string;
   bot: Extract<Bot, { state: 'live' }>;
-  sharedChannels: boolean;
+  sharedConnected: boolean;
   onCancelled: (cancelled: BotCancelled) => void;
   onChanged: () => void;
 }) {
@@ -492,7 +495,7 @@ function DisconnectBotDialog({
           <DialogTitle>{`Disconnect ${who}?`}</DialogTitle>
           <DialogDescription>
             {`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
-            {sharedChannels ? ` The shared bot answers for ${agentName} again in the channels it was connected to before.` : ''}
+            {sharedConnected ? ` The shared bot answers for ${agentName} again in any channel it was connected to before.` : ''}
           </DialogDescription>
         </DialogHeader>
         {error !== null && (

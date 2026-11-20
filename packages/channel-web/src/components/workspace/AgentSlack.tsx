@@ -337,7 +337,7 @@ function ReadySection({
         agentName={agentName}
         bot={bot}
         canManage={canManage}
-        sharedChannels={channels.length > 0}
+        sharedConnected
         {...botCallbacks}
         onChanged={onStale}
       />

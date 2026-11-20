@@ -456,14 +456,14 @@ describe('live', () => {
 
   it('Disconnect bot asks first: the dialog says the bot leaves every channel, @handle stops working, its Slack app is deleted, and the shared bot answers again; Keep it sends nothing', async () => {
     render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedChannels {...QUIET} onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByRole('heading', { name: 'Disconnect @quill_bot?' })).toBeInTheDocument();
     expect(
       within(dialog).getByText(
-        "Quill Bot leaves every Slack channel it's in, and @quill_bot stops working. We'll delete its Slack app. The shared bot answers for Quill again in the channels it was connected to before.",
+        "Quill Bot leaves every Slack channel it's in, and @quill_bot stops working. We'll delete its Slack app. The shared bot answers for Quill again in any channel it was connected to before.",
       ),
     ).toBeInTheDocument();
     expect(dialog.textContent).not.toMatch(/\bAX\b/);
@@ -472,7 +472,7 @@ describe('live', () => {
     expect(disconnect).not.toHaveBeenCalled();
   });
 
-  it('with no handle the dialog names the bot and says mentioning it stops working; without shared channels it promises nothing about the shared bot', async () => {
+  it('with no handle the dialog names the bot and says mentioning it stops working; without the shared app connected it promises nothing about the shared bot', async () => {
     renderIt({ ...LIVE, handle: null });
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
     const dialog = await screen.findByRole('dialog');
@@ -551,7 +551,7 @@ describe('words', () => {
 
   it('never writes the product name in a sentence, the open Disconnect dialog included', async () => {
     render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedChannels {...QUIET} onChanged={vi.fn()} />,
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
     await screen.findByRole('dialog');
