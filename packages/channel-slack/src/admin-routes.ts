@@ -519,12 +519,15 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * needs a configuration access token, and the pasted one is still in hand.
    * If Slack won't delete it, the app goes onto the leftover list naming the
    * connecting admin, so the tab names it and the next Connect or Replace
-   * deletes it: once the pending row exists (`rowStored`), in the statement
-   * that deletes the row, as Disconnect does, so the id is never in both
-   * tables (a row that won't go keeps naming the app, and nothing is
-   * remembered); before it, directly, as `undoCreate` does. Last, the
-   * connecting admin's token goes too, unless an install or a leftover app
-   * (that one included) still names them.
+   * deletes it. The row's delete always runs and moves the app with it, as
+   * Disconnect does: an insert can commit and still answer with an error, so
+   * "insertPending threw" is no proof there is no row. Only when the insert
+   * never returned (`rowStored` false) is the app also remembered directly,
+   * as `undoCreate` does; an id the delete just moved keeps its first entry
+   * (ON CONFLICT DO NOTHING). Once the row surely exists, a delete that fails
+   * remembers nothing: the row still names the app, so it is never in both
+   * tables. Last, the connecting admin's token goes too, unless an install or
+   * a leftover app (that one included) still names them.
    */
   async function undoConnect(
     accessToken: string,
@@ -543,13 +546,12 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         failed('undo-delete-app', err, owner.installId);
       }
     }
-    if (rowStored) {
-      try {
-        await d.store.remove(owner.installId, { appLeft });
-      } catch (err) {
-        failed('undo-remove', err, owner.installId);
-      }
-    } else if (appLeft) {
+    try {
+      await d.store.remove(owner.installId, { appLeft });
+    } catch (err) {
+      failed('undo-remove', err, owner.installId);
+    }
+    if (appLeft && !rowStored) {
       try {
         await d.store.rememberLeftoverApp({
           installId: owner.installId,

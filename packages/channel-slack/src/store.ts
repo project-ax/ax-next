@@ -51,8 +51,8 @@ export interface OAuthState {
 }
 
 /**
- * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own after trying
- * the pasted refresh token failed), so it may still be on Slack. No secret.
+ * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own
+ * undo's), so it may still be on Slack. No secret.
  */
 export interface LeftoverApp {
   /**
@@ -131,8 +131,8 @@ export interface InstallStore {
   /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
-   * With `appLeft`, the install's Slack app is still on Slack (Disconnect
-   * couldn't delete it): its id, name and person move to the leftover list
+   * With `appLeft`, the install's Slack app is still on Slack (Disconnect,
+   * or Connect's undo, couldn't delete it): its id, name and person move to the leftover list
    * in the same statement, so a later Connect can delete it.
    */
   remove(installId: string, o?: { appLeft?: boolean }): Promise<void>;

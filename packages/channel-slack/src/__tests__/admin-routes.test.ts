@@ -1277,6 +1277,8 @@ describe('POST /admin/slack/connect', () => {
   it("undo after the pending row was stored moves the app Slack won't delete to the leftover list with the row, as Disconnect does (TASK-1175)", async () => {
     const w = world();
     w.memory.failures.set('setOAuthState', new Error('connection reset'));
+    // Only the row's own delete can remember it: a separate remember would fail here.
+    w.memory.failures.set('rememberLeftoverApp', new Error('connection reset'));
     w.slack.on.deleteApp = async () => {
       throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
     };
@@ -1310,6 +1312,26 @@ describe('POST /admin/slack/connect', () => {
       msg: 'slack_admin_failed',
       fields: { installId, stage: 'undo-remove', code: expect.any(String) },
     });
+  });
+
+  it('undo after an insert that committed but answered with an error still removes the row, and the app goes onto the list once', async () => {
+    const w = world();
+    const insert = w.memory.store.insertPending.bind(w.memory.store);
+    w.memory.store.insertPending = async (r) => {
+      await insert(r);
+      throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });
+    };
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+    };
+    expect((await w.connect()).status).toBe(500);
+    const installId = mintedInstallId(w);
+    expect(w.memory.rows.size).toBe(0);
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+    ]);
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+    expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
   });
 
   it("undo doesn't list an app Slack says is already gone", async () => {
