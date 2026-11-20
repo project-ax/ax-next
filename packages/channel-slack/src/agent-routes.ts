@@ -1,4 +1,5 @@
 import { makeAgentContext, type AgentContext } from '@ax/core';
+import type { BotChanges } from './bot-changes.js';
 import { checkBotName } from './bot-name.js';
 import type { AgentSlackBot, Bots } from './bots.js';
 import {
@@ -29,7 +30,8 @@ import { checkUser } from './user-auth.js';
  * channels aren't listed, and `POST …/connect` refuses that agent with
  * `409 own-bot` (channels.ts). And the agent's own Slack bot (TASK-1167,
  * bots.ts): asking for it, picking the request back up in Slack, and
- * cancelling it.
+ * cancelling it; once it's live, renaming it or changing its picture
+ * (TASK-1171, bot-changes.ts).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
@@ -40,6 +42,8 @@ import { checkUser } from './user-auth.js';
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }, its approver only, while pending
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }, while pending
+ *   POST /settings/slack/:agentId/bot/rename  { botName } → { botName }, a live bot only (the approver's token, TASK-1171)
+ *   POST /settings/slack/:agentId/bot/icon    { iconPng } → {}, a live bot only (the approver's token, TASK-1171)
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
@@ -49,10 +53,16 @@ import { checkUser } from './user-auth.js';
  * is read or Slack is asked anything. The POSTs keep http-server's CSRF
  * check and cap their bodies; an unknown body key is a 400, so nothing in a
  * body can name another agent. The bot's request body can carry its picture,
- * so it has Admin › Slack's Connect cap. Its `refreshToken` is optional (the
- * one stored for the person is used without it), but one that is there must
- * look like a configuration refresh token, so an access token pasted into
- * that box never reaches Slack. The other two bot routes read no body.
+ * and a new picture's body is one, so both have Admin › Slack's Connect cap.
+ * The request's `refreshToken` is optional (the one stored for the person is
+ * used without it), but one that is there must look like a configuration
+ * refresh token, so an access token pasted into that box never reaches Slack.
+ * A rename's name must pass checkBotName (400 `invalid-bot-name` {reason}),
+ * and a new picture parseIconPng (400 `invalid-icon` {reason}: here the
+ * picture is the whole ask, so a bad one is refused, never skipped), both
+ * before the domain takes the app lock. Neither hands the domain who asked:
+ * it uses the bot's approver's token, whoever that is. Install-url and
+ * cancel read no body.
  *
  * Team members who aren't admins read the section, so "connected by" and a
  * bot's approver are a display name or "A teammate", never an email.
@@ -98,6 +108,10 @@ type Reply = { status: number; body: unknown };
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 /** What a bot request's body may hold. */
 const BOT_KEYS: readonly string[] = ['botName', 'refreshToken', 'iconPng'];
+/** What a live bot's rename body may hold: the name alone. */
+const RENAME_KEYS: readonly string[] = ['botName'];
+/** What a live bot's new picture body may hold: the picture alone. */
+const PICTURE_KEYS: readonly string[] = ['iconPng'];
 
 const PLUGIN = '@ax/channel-slack';
 /** "Connected by" when auth has no name, no account or no answer. Never the email: members read this page. */
@@ -182,6 +196,53 @@ function readBotBody(req: RouteRequest): BotBody {
   return { ok: true, botName: name.name, refreshToken, icon };
 }
 
+type RenameBody = { ok: true; botName: string } | { ok: false; reply: Reply };
+
+/**
+ * A live bot's rename body (TASK-1171): an object holding `botName` alone.
+ * 413 past ADMIN_BODY_MAX_BYTES (http-server's `maxBodyBytes` refused it
+ * first; this is the backstop), else 400. The name is read as the request
+ * reads it: a missing one is `empty`, one that isn't text `bad-characters`,
+ * then checkBotName, whose tidy form is what the domain gets.
+ */
+function readRenameBody(req: RouteRequest): RenameBody {
+  if (req.body.length > ADMIN_BODY_MAX_BYTES) return { ok: false, reply: json(413, { error: 'body-too-large' }) };
+  const fields = bodyObject(req.body);
+  if (fields === null || Object.keys(fields).some((k) => !RENAME_KEYS.includes(k))) {
+    return { ok: false, reply: INVALID_BODY };
+  }
+  const rawName = fields['botName'] ?? '';
+  if (typeof rawName !== 'string') {
+    return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: 'bad-characters' }) };
+  }
+  const name = checkBotName(rawName);
+  if (!name.ok) return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: name.reason }) };
+  return { ok: true, botName: name.name };
+}
+
+type PictureBody = { ok: true; png: Buffer } | { ok: false; reply: Reply };
+
+/**
+ * A live bot's new picture body (TASK-1171): an object holding `iconPng`
+ * alone. 413 past Connect's cap (http-server's `maxBodyBytes` refused it
+ * first; this is the backstop), 400 `invalid-body` for anything but such an
+ * object, and 400 `invalid-icon` with icon.ts's reason for a picture that
+ * won't do (a missing one included). Unlike the request's, it is never
+ * skipped: here the picture is the whole ask.
+ */
+function readPictureBody(req: RouteRequest): PictureBody {
+  if (req.body.length > ADMIN_CONNECT_BODY_MAX_BYTES) {
+    return { ok: false, reply: json(413, { error: 'body-too-large' }) };
+  }
+  const fields = bodyObject(req.body);
+  if (fields === null || Object.keys(fields).some((k) => !PICTURE_KEYS.includes(k))) {
+    return { ok: false, reply: INVALID_BODY };
+  }
+  const icon = parseIconPng(fields['iconPng']);
+  if (!icon.ok) return { ok: false, reply: json(400, { error: 'invalid-icon', reason: icon.code }) };
+  return { ok: true, png: icon.png };
+}
+
 /** One lookup per key per request, however many channels share it. */
 function once<T>(look: (key: string) => Promise<T>): (key: string) => Promise<T> {
   const seen = new Map<string, Promise<T>>();
@@ -206,6 +267,7 @@ interface Asked {
 export function createAgentSlackRoutes(
   d: ChannelDeps,
   bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'status'>,
+  changes: BotChanges,
 ): RouteSpec[] {
   const authCtx = makeAgentContext({
     sessionId: 'channel-slack',
@@ -409,6 +471,27 @@ export function createAgentSlackRoutes(
   }
 
   /**
+   * Rename the live bot: any team admin who manages the agent may. Who asked
+   * isn't handed on: the domain uses the bot's approver's token.
+   */
+  async function renameBot(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    const body = readRenameBody(a.req);
+    if (!body.ok) return body.reply;
+    return changes.rename({ agentId: a.agentId, botName: body.botName });
+  }
+
+  /** Give the live bot a new picture: as a rename, the approver's token, whoever asked. */
+  async function setBotPicture(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    const body = readPictureBody(a.req);
+    if (!body.ok) return body.reply;
+    return changes.setPicture({ agentId: a.agentId, png: body.png });
+  }
+
+  /**
    * One route: the person, then the agent id's shape, then `run`, then
    * exactly one answer. A throw `run` didn't handle is a 500, logged
    * code-only with the route's stage. A POST's body is capped at
@@ -461,5 +544,8 @@ export function createAgentSlackRoutes(
     route('POST', '/bot', 'bot', requestBot, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
     route('POST', '/bot/install-url', 'bot-install-url', botInstallUrl),
     route('POST', '/bot/cancel', 'bot-cancel', cancelBot),
+    route('POST', '/bot/rename', 'bot-rename', renameBot),
+    // Its body is the bot's new picture: Connect's cap.
+    route('POST', '/bot/icon', 'bot-icon', setBotPicture, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
   ];
 }
