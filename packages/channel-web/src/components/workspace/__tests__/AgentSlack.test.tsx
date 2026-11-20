@@ -143,8 +143,10 @@ describe('the states', () => {
   it('no workspace, with a request waiting for an AX admin: a manager can still cancel it', async () => {
     const cancelAsk = vi.mocked(cancelSlackBotRequest);
     cancelAsk.mockResolvedValue(undefined);
+    // A request reaches only those who manage the agent, so the server says they do (TASK-1172's `canManage`).
     renderIt({
       state: 'no-workspace',
+      canManage: true,
       bot: { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' },
     });
     expect(await screen.findByText('Waiting for an AX admin to approve Quill Bot.')).toBeInTheDocument();
