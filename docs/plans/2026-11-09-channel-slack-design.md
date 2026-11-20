@@ -282,7 +282,7 @@ see, and @mention, the bot by its new name: on the TASK-1097 walk,
 `@ax` became `@ax-walk`. If the stored
 token can't be used (Slack refuses it, or its owner can't manage the app), the tab says so and the fix is **Replace** (below), which keeps every channel connected. If the Slack app was deleted on Slack's side, the fix is Disconnect, then Connect again.
 
-**Replacing the token:** Admin › Slack → **Replace**, next to who added the configuration token (TASK-1128), once Slack is connected. The admin pastes one value, a refresh token, from someone who can manage this Slack app. AX tries it once (`tooling.tokens.rotate`) and sends the app's whole manifest with the access token that rotate minted (`apps.manifest.update`, as Rename does). Slack taking it shows that the token's owner can manage this app. Only then does AX store the minted refresh token in place of the old one and record who added it and when. The install, its channels, the bot token and the other secrets stay as they are, and if any step before the store fails, the old token stays. AX never reads or rotates the old token here, so it keeps working on Slack until whoever generated it revokes it, and the tab says so. Like Rename, Replace sends this build's manifest, so it also syncs the app to it: a hand edit on api.slack.com is overwritten, and a scope a later build adds would make Slack ask for the app to be reinstalled. A replace also tries again to delete any Slack apps listed as left over. **Measured (§8 Q5): only the app creator's own token passes the check.** Another person's token is refused even when they are a collaborator on the app, so "someone who can manage this Slack app" in practice means the person who created it, with a newer token of theirs.
+**Replacing the token:** Admin › Slack → **Replace**, next to who added the configuration token (TASK-1128), once Slack is connected. The admin pastes one value, a refresh token, from someone who can manage this Slack app. AX tries it once (`tooling.tokens.rotate`) and sends the app's whole manifest with the access token that rotate minted (`apps.manifest.update`, as Rename does). Slack taking it shows that the token's owner can manage this app. Only then does AX store the minted refresh token as the token of **the person whose app it is** (the install's, whoever pastes it), in place of their old one, and record when. Since TASK-1175 that one token also serves every other Slack app that person made through AX, so a Replace fixes all of them at once. The install, its channels, the bot token and the other secrets stay as they are, and if any step before the store fails, the old token stays. AX never reads or rotates the old token here. There's nothing left to retire: Slack allows one configuration token per person per workspace (§8 Q5), so the old one was revoked before the new one could be generated. Like Rename, Replace sends this build's manifest, so it also syncs the app to it: a hand edit on api.slack.com is overwritten, and a scope a later build adds would make Slack ask for the app to be reinstalled. A replace also tries again to delete any Slack apps listed as left over. **Measured (§8 Q5): only the app creator's own token passes the check.** Another person's token is refused even when they are a collaborator on the app, so "someone who can manage this Slack app" in practice means the person who created it, with a newer token of theirs.
 
 **The secrets:** bot token, signing secret, client secret, and the
 configuration **refresh token**. All live in the credentials store, readable
@@ -293,24 +293,32 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 (§7, configuration tokens), so AX can't retire it through the API. Hence:
 
 - It's admin-only to set, and nobody can ever read it back.
-- Admin settings shows who added the token and when (an AX admin; configuration tokens
-  belong to one person). The token AX holds changes with every rotate whose new token it manages to save (step 5), and with **Replace** (above), which also changes who added it and when.
+- AX keeps it **once per person** (TASK-1175), under
+  `slack:person:<userId>:config-refresh-token`, shared by every Slack app that
+  person made through AX: each app row records whose token manages it
+  (`connected_by_user_id`). Every rotate, through any of those apps, saves the
+  new token back to that one place, so the others keep working.
+- Admin settings shows whose token it is and when it was last added (an AX admin; configuration tokens
+  belong to one person). The token AX holds changes with every rotate whose new token it manages to save (step 5), and with **Replace** (above), which changes when it was added but never whose it is.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells whoever generated the token to click **Revoke** on Slack's configuration-tokens page. AX
-  can't do that last step itself. Whether that Revoke also ends the refresh
-  tokens rotates have minted since (the one AX holds, from Connect or the latest Replace on) is
-  unmeasured: the TASK-1134 walk revoked right after a reconnect, before any
-  rename, so the token it revoked was most likely the pasted one.
+  can't do that last step itself. That Revoke also ends the refresh
+  tokens rotates have minted since (**measured, TASK-1163 check 4**): the
+  token AX held, rotated from the revoked one, failed at `rotate` with
+  `invalid_refresh_token`. Disconnect keeps the person's token while a
+  leftover app (below) still names them, and drops it once nothing does.
   Deleting the app needs the stored token, so a dead or revoked one (or
   Slack not answering) leaves the app on Slack. Disconnect still removes the
   install, but keeps the app's id and name (TASK-1132): the Slack tab names
   it in every state, linked to its own settings page, and the next Connect or Replace
-  tries to delete it with a fresh access token (the one pasted at Connect, or the one Replace's rotate minted). Connect keeps one
+  tries to delete it. Leftover apps record whose token made them (TASK-1175),
+  and each is deleted with that person's token: the one in hand when it is
+  theirs, else their stored one, rotated once per pass with its successor saved. Connect keeps one
   the same way when it can't take back the app it just made (step 3). The name stays
   until a Connect or Replace deletes it or the admin clicks **I deleted it** after
   deleting it by hand. Cancelling an unfinished install is the same
-  Disconnect. Whether a new token can delete an app an earlier token of the
-  same person made is unmeasured.
+  Disconnect. A new token can delete an app an earlier token of the same
+  person made (**measured, TASK-1163 check 1**).
 
 ### Scopes (smallest set)
 
@@ -947,7 +955,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 | 5 | Duplicate names | **Allowed.** A second app with the same bot name installed fine and quietly got `axspikea2` as its `name` field. In the test, the person DMing picked the wrong one. So AX enforces unique names itself. | Tested |
 | 6 | Streaming | `chat.startStream` / `appendStream` / `stopStream`: `chat:write`, Tier 2. Works in channel threads with `recipient_user_id` + `recipient_team_id`. A stream lasts at most 10 minutes. `chat.update` is Tier 3. Decision: streaming API; past 10 minutes or 12,000 characters, a new stream in the same thread (§5). | Docs |
 | 7 | Socket Mode / kind | The create response holds `client_id`, `client_secret`, `signing_secret` and `verification_token`, but **no app-level token**; that's generated only in Slack's UI. Since Q1 says HTTP events need no manual step, we don't use Socket Mode. On kind: a `cloudflared` quick tunnel works, but its URL changes on every restart, so the walk updates the app's URLs with `apps.manifest.update` (no challenge, no reinstall). | Tested + docs |
-| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead about 6 minutes after the first rotate on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The walk report names no confound for the 3 hours. The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). Whether that Revoke also ends the refresh tokens rotates have minted since (the one AX holds from Connect on) is unmeasured: the TASK-1134 walk revoked right after a reconnect, before any rename. | Tested (spike; corrected by the TASK-1097 walk) |
+| — | Configuration tokens | Access tokens expire after 12 hours (we hit `token_expired`). `tooling.tokens.rotate` returns a new pair. **The old refresh token keeps working for a while, then Slack refuses it** (`invalid_refresh_token`), so AX stores the new one on every rotate (TASK-1129). How long "a while" is isn't pinned down. The TASK-1097 walk saw it work four times over 18 s, then found it dead about 6 minutes after the first rotate on one install and within 3 hours on the other. The 6 minutes has a confound: the admin also saved an Interactivity change on api.slack.com in that gap, which may be what retired it. The walk report names no confound for the 3 hours. The spike reused the old one before Slack refused it, and read that as "keeps working". Earlier access tokens kept working in the spike, which also checked within minutes. `auth.revoke` kills an access token, but **its refresh token still mints new ones afterwards**. Only Revoke on Slack's configuration-tokens page ends it (§3). That Revoke also ends the refresh tokens rotates have minted since (measured, TASK-1163 check 4: the token AX held failed at `rotate` with `invalid_refresh_token`). | Tested (spike; corrected by the TASK-1097 and TASK-1163 walks) |
 | — | Plan limits | Free Slack: at most 10 custom or third-party apps (§4). | Docs |
 
 ## 8. Open questions
@@ -986,7 +994,9 @@ and the configuration token revoked. "Tested" means we watched it happen;
    no other token can delete those apps. If each bot is created with its
    approver's token, management follows whoever approved it. Handing a bot to
    someone else is never a token swap: it means making a new app. Decide before
-   decomposing phase 2.
+   decomposing phase 2. **Stored once per person** (decided 2026-11-20, Vinay;
+   TASK-1175): one rotating token per approver, used for every Slack app they
+   made through AX.
 
 ## 9. Delivery
 
@@ -1023,7 +1033,9 @@ and TASK-1139 (Disconnect logs whether the app was deleted). Also one
 measurement on a real workspace: can a newer configuration token delete an app
 an older one made? **All done 2026-11-19** (deployed rev 90; walk TASK-1163:
 yes for the creator's own newer token, no for anyone else's, §8 Q5). §8 Q6
-decided 2026-11-19: the approver's own token.
+decided 2026-11-19: the approver's own token. Also a prerequisite: TASK-1175,
+one configuration token per person, shared by every app they made (so
+approving a second app never breaks the first).
 
 - **8.** Request a bot (name and avatar), approval by the owner or an AX admin,
   creating and installing the app, its own events URL and signing secret,

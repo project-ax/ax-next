@@ -1,6 +1,6 @@
 import { PluginError } from '@ax/core';
 import { describe, expect, it } from 'vitest';
-import { fakeBotToken } from './fake-slack-tokens.js';
+import { fakeBotToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { cacheSigningSecrets } from '../secret-cache.js';
 import type { SecretName, SecretOwner, SecretStore } from '../secrets.js';
 
@@ -19,6 +19,10 @@ function countingStore() {
   const gates = new Map<string, Promise<void>>();
   /** The next `get` of this key throws this. */
   const failures = new Map<string, unknown>();
+  /** Each person's configuration token, by AX user id. */
+  const configTokens = new Map<string, string>();
+  /** Every person-token call, in order, with what it was handed. */
+  const configTokenCalls: Array<[string, SecretOwner, string?]> = [];
   const store: SecretStore = {
     async put(install, name, value) {
       values.set(at(install.installId, name), value);
@@ -40,8 +44,20 @@ function countingStore() {
     async removeAll(install) {
       for (const key of [...values.keys()]) if (key.startsWith(`${install.installId}:`)) values.delete(key);
     },
+    async getConfigToken(app) {
+      configTokenCalls.push(['getConfigToken', app]);
+      return configTokens.get(app.connectedByUserId) ?? null;
+    },
+    async putConfigToken(app, value) {
+      configTokenCalls.push(['putConfigToken', app, value]);
+      configTokens.set(app.connectedByUserId, value);
+    },
+    async removeConfigToken(app) {
+      configTokenCalls.push(['removeConfigToken', app]);
+      configTokens.delete(app.connectedByUserId);
+    },
   };
-  return { store, values, reads, gates, failures, at };
+  return { store, values, reads, gates, failures, at, configTokens, configTokenCalls };
 }
 
 function setup(o: { max?: number } = {}) {
@@ -162,6 +178,32 @@ describe('cacheSigningSecrets', () => {
     write.resolve();
     await putting;
     expect(await t.cached.get(A, 'signing-secret')).toBe('new-a');
+  });
+
+  it('person-token calls pass through and leave the cached signing secret alone', async () => {
+    const t = setup();
+    await t.inner.store.put(A, 'signing-secret', 'secret-a');
+    expect(await t.cached.get(A, 'signing-secret')).toBe('secret-a');
+
+    // A, B and C are all Ada's: one token serves them all.
+    const token = fakeConfigRefreshToken('PERSONREFRESHSECRET');
+    await t.cached.putConfigToken(A, token);
+    expect(await t.cached.getConfigToken(B)).toBe(token);
+    // Never answered from memory: each read reaches the store.
+    expect(await t.cached.getConfigToken(B)).toBe(token);
+    await t.cached.removeConfigToken(C);
+    expect(await t.cached.getConfigToken(A)).toBeNull();
+    expect(t.inner.configTokenCalls).toEqual([
+      ['putConfigToken', A, token],
+      ['getConfigToken', B],
+      ['getConfigToken', B],
+      ['removeConfigToken', C],
+      ['getConfigToken', A],
+    ]);
+
+    // The signing secret didn't change, so its entry stays: no second vault read.
+    expect(await t.cached.get(A, 'signing-secret')).toBe('secret-a');
+    expect(t.vaultReads(A)).toBe(1);
   });
 
   it('holds at most max installs, forgetting the oldest first', async () => {

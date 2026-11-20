@@ -22,7 +22,7 @@ import {
   fakeConfigRefreshToken,
 } from './fake-slack-tokens.js';
 import { createMutex } from '../mutex.js';
-import { SECRET_NAMES, createSecretStore, secretRef } from '../secrets.js';
+import { SECRET_NAMES, configTokenRef, createSecretStore, secretRef } from '../secrets.js';
 import {
   SlackApiError,
   type CreatedApp,
@@ -53,6 +53,9 @@ const MINTED_ACCESS = fakeConfigAccessToken('MINTEDACCESSSECRET');
 const mintedRefresh = (n: number): string => fakeConfigRefreshToken(`MINTEDREFRESH${n}SECRET`);
 const SECOND_ACCESS = fakeConfigAccessToken('SECONDACCESSSECRET');
 const SECOND_REFRESH = fakeConfigRefreshToken('SECONDREFRESHSECRET');
+/** A person's own configuration token (TASK-1175), kept in their slot since an earlier Connect of theirs. */
+const ADA_STORED = fakeConfigRefreshToken('ADASTOREDSECRET');
+const EVE_STORED = fakeConfigRefreshToken('EVESTOREDSECRET');
 const CLIENT_SECRET = 'CLIENTSECRET0123456789abcdef';
 const SIGNING_SECRET = 'SIGNINGSECRET3f1c2b9a8e7d6c5b';
 const BOT_TOKEN = fakeBotToken();
@@ -64,6 +67,8 @@ const SECRETS = [
   MINTED_ACCESS,
   mintedRefresh(1),
   mintedRefresh(2),
+  ADA_STORED,
+  EVE_STORED,
   CLIENT_SECRET,
   SIGNING_SECRET,
   BOT_TOKEN,
@@ -97,6 +102,7 @@ const SECOND_APP_ID = 'A07SECONDAPP';
 /** Slack apps an earlier Disconnect couldn't delete, by the removed install's id (TASK-1132). */
 const LEFT_1 = { installId: 'inst_left_1', appId: 'A07LEFTAPP01' } as const;
 const LEFT_2 = { installId: 'inst_left_2', appId: 'A07LEFTAPP02' } as const;
+const LEFT_3 = { installId: 'inst_left_3', appId: 'A07LEFTAPP03' } as const;
 
 interface TestUser {
   id: string;
@@ -306,20 +312,27 @@ function memoryStore(clock: () => number, trail: string[]) {
       if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
       r.botName = botName;
     },
-    async setConfigTokenOwner(installId, o) {
-      await enter('setConfigTokenOwner', [installId, o]);
+    async setConfigTokenAddedAt(installId, addedAt) {
+      await enter('setConfigTokenAddedAt', [installId, addedAt]);
       const r = rows.get(installId);
       if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
-      r.connectedByUserId = o.userId;
-      r.configTokenAddedAt = new Date(o.addedAt.getTime());
+      // Only the date: the row's person never moves (TASK-1175).
+      r.configTokenAddedAt = new Date(addedAt.getTime());
     },
     async remove(installId, o) {
       await enter('remove', [installId, o]);
       // One statement in the real store: the app is remembered only with its
-      // row's own delete, and an id already remembered keeps its first app.
+      // row's own delete, with the row's own person (TASK-1175), and an id
+      // already remembered keeps its first app.
       const r = rows.get(installId);
       if (r !== undefined && o?.appLeft === true && !leftovers.has(installId)) {
-        leftovers.set(installId, { installId, appId: r.appId, botName: r.botName, leftAt: new Date(clock()) });
+        leftovers.set(installId, {
+          installId,
+          appId: r.appId,
+          botName: r.botName,
+          leftAt: new Date(clock()),
+          connectedByUserId: r.connectedByUserId,
+        });
       }
       rows.delete(installId);
     },
@@ -329,9 +342,27 @@ function memoryStore(clock: () => number, trail: string[]) {
         installId: r.installId,
         appId: r.appId,
         teamId: r.teamId,
+        connectedByUserId: r.connectedByUserId,
       }));
       rows.clear();
       return removed;
+    },
+    async list() {
+      await enter('list', []);
+      return [...rows.values()]
+        .sort(
+          (a, b) =>
+            b.configTokenAddedAt.getTime() - a.configTokenAddedAt.getTime() ||
+            a.installId.localeCompare(b.installId),
+        )
+        .map(view);
+    },
+    async personHasApps(userId) {
+      await enter('personHasApps', [userId]);
+      return (
+        [...rows.values()].some((r) => r.connectedByUserId === userId) ||
+        [...leftovers.values()].some((l) => l.connectedByUserId === userId)
+      );
     },
     async leftoverApps() {
       await enter('leftoverApps', []);
@@ -348,6 +379,7 @@ function memoryStore(clock: () => number, trail: string[]) {
           appId: a.appId,
           botName: a.botName,
           leftAt: new Date(clock()),
+          connectedByUserId: a.connectedByUserId,
         });
       }
     },
@@ -505,7 +537,11 @@ function world(
    * delete's ctx user. Apart from vaultCalls, whose entries tests compare whole.
    */
   const vaultAs: Array<{ hook: string; name: string; userId: string }> = [];
-  /** `<hook> <secret name>` → what that call throws. */
+  /**
+   * `<hook> <secret name>` → what that call throws. `<hook> <ref>` names one
+   * ref only, so one person's configuration token can fail while another's
+   * doesn't (both end in `config-refresh-token`); it wins over the name.
+   */
   const vaultFailures = new Map<string, unknown>();
   const nameOf = (ref: string): string => ref.slice(ref.lastIndexOf(':') + 1);
   const vaultHook = (hook: string, run: (input: Record<string, unknown>) => unknown): void => {
@@ -519,7 +555,7 @@ function world(
         userId: hook === 'credentials:get' ? String(input['userId']) : ctx.userId,
       });
       trail.push(`vault:${hook.slice('credentials:'.length)} ${nameOf(ref)}`);
-      const failure = vaultFailures.get(`${hook} ${nameOf(ref)}`);
+      const failure = vaultFailures.get(`${hook} ${ref}`) ?? vaultFailures.get(`${hook} ${nameOf(ref)}`);
       if (failure !== undefined) throw failure;
       return run(input);
     });
@@ -653,19 +689,38 @@ function mintedInstallId(w: World): string {
 function slackMethods(w: World): string[] {
   return w.slack.calls.map((c) => c.method);
 }
-/** An app an earlier Disconnect couldn't delete, remembered as the store would have. */
+/**
+ * An app an earlier Disconnect couldn't delete, remembered as the store would
+ * have. `connectedByUserId` is whose token made it (TASK-1175); null, the
+ * default, is an app left before anyone was recorded.
+ */
 function leaveApp(
   w: World,
   l: { installId: string; appId: string },
   botName = 'Canopy Bot',
   leftAtMs = NOW_MS - 60_000,
+  connectedByUserId: string | null = null,
 ): void {
-  w.memory.leftovers.set(l.installId, { installId: l.installId, appId: l.appId, botName, leftAt: new Date(leftAtMs) });
+  w.memory.leftovers.set(l.installId, {
+    installId: l.installId,
+    appId: l.appId,
+    botName,
+    leftAt: new Date(leftAtMs),
+    connectedByUserId,
+  });
 }
 /** Every rotate throws `err`. A test that needs the strict default back saves `w.slack.on.rotateConfigToken` first. */
 function failRotate(w: World, err: unknown): void {
   w.slack.on.rotateConfigToken = async () => {
     throw err;
+  };
+}
+/** A rotate of `refreshToken` alone throws `err`; every other rotate goes on as it did. */
+function failRotateOf(w: World, refreshToken: string, err: unknown): void {
+  const rotateAsBefore = w.slack.on.rotateConfigToken;
+  w.slack.on.rotateConfigToken = async (sent) => {
+    if (sent === refreshToken) throw err;
+    return rotateAsBefore(sent);
   };
 }
 /** A database fault, as pg throws one: an errno code (logged) and a message (never logged). */
@@ -978,7 +1033,7 @@ describe('POST /admin/slack/connect', () => {
     expect(Buffer.from(icon.args[2] as Uint8Array).equals(ICON)).toBe(true);
   });
 
-  it('stores client-secret, signing-secret and the refresh token Slack minted from the pasted one, then a pending row', async () => {
+  it('stores the refresh token Slack minted from the pasted one first, then client-secret and signing-secret, then a pending row', async () => {
     const w = world();
     await w.connect();
     const installId = onlyRow(w).installId;
@@ -986,7 +1041,8 @@ describe('POST /admin/slack/connect', () => {
       new Map([
         [secretRef(installId, 'client-secret'), CLIENT_SECRET],
         [secretRef(installId, 'signing-secret'), SIGNING_SECRET],
-        [secretRef(installId, 'config-refresh-token'), mintedRefresh(1)],
+        // The connecting admin's own configuration token (TASK-1175).
+        [configTokenRef(ADA.id), mintedRefresh(1)],
       ]),
     );
     // The pasted refresh token is tried once, right after Slack makes the app and before anything is stored.
@@ -995,15 +1051,15 @@ describe('POST /admin/slack/connect', () => {
       'store:leftoverApps',
       'slack:createApp',
       'slack:rotateConfigToken',
-      'vault:set client-secret',
+      'vault:set config-refresh-token',
     ]);
     expect(w.slack.calls.filter((c) => c.args.includes(REFRESH)).map((c) => c.method)).toEqual(['rotateConfigToken']);
     // The access token that rotate minted is never used.
     expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS))).toEqual([]);
     expect(w.trail.filter((t) => t.startsWith('vault:') || t === 'store:insertPending')).toEqual([
+      'vault:set config-refresh-token',
       'vault:set client-secret',
       'vault:set signing-secret',
-      'vault:set config-refresh-token',
       'store:insertPending',
     ]);
     expect(onlyRow(w)).toMatchObject({
@@ -1182,10 +1238,11 @@ describe('POST /admin/slack/connect', () => {
       ]);
       expect(w.memory.rows.size, label).toBe(0);
       expect(w.vault.size, label).toBe(0);
+      // Then Ada's own token, once nothing names her (TASK-1175).
       expect(
         w.vaultCalls.filter((c) => c.hook === 'credentials:delete').map((c) => c.ref),
         label,
-      ).toEqual(SECRET_NAMES.map((name) => secretRef(installId, name)));
+      ).toEqual([...SECRET_NAMES.map((name) => secretRef(installId, name)), configTokenRef(ADA.id)]);
       expect(w.lines[0], label).toMatchObject({
         level: 'error',
         msg: 'slack_admin_failed',
@@ -1195,7 +1252,7 @@ describe('POST /admin/slack/connect', () => {
     }
   });
 
-  it('undo keeps going when deleting the app fails, and says so code-only', async () => {
+  it('undo keeps going when deleting the app fails, says so code-only, and lists the app as left over, so its maker keeps the token that can delete it (TASK-1175)', async () => {
     const w = world();
     w.memory.failures.set('insertPending', new Error('insert failed'));
     w.slack.on.deleteApp = async () => {
@@ -1203,12 +1260,114 @@ describe('POST /admin/slack/connect', () => {
     };
     expect((await w.connect()).status).toBe(500);
     const installId = mintedInstallId(w);
-    expect(w.vault.size).toBe(0);
     expect(w.lines).toContainEqual({
       level: 'warn',
       msg: 'slack_admin_failed',
       fields: { installId, stage: 'undo-delete-app', code: 'ratelimited' },
     });
+    // The app is still live on Slack: the tab names it, and the next Connect or Replace deletes it.
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+    ]);
+    expect(w.memory.rows.size).toBe(0);
+    // The install's own secrets go; Ada's token stays, because the leftover still names her.
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+  });
+
+  it("undo after the pending row was stored moves the app Slack won't delete to the leftover list with the row, as Disconnect does (TASK-1175)", async () => {
+    const w = world();
+    w.memory.failures.set('setOAuthState', new Error('connection reset'));
+    // Only the row's own delete can remember it: a separate remember would fail here.
+    w.memory.failures.set('rememberLeftoverApp', new Error('connection reset'));
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+    };
+    expect((await w.connect()).status).toBe(500);
+    const installId = mintedInstallId(w);
+    expect(w.memory.rows.size).toBe(0);
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+    ]);
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+    expect((await w.status()).body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'Canopy Bot', appId: APP.appId }],
+    });
+  });
+
+  it("undo whose pending row won't go remembers nothing: the row still names the app, never both tables, and Ada keeps her token", async () => {
+    const w = world();
+    w.memory.failures.set('setOAuthState', new Error('connection reset'));
+    w.memory.failures.set('remove', new Error('connection reset'));
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+    };
+    expect((await w.connect()).status).toBe(500);
+    const installId = mintedInstallId(w);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(onlyRow(w)).toMatchObject({ installId, appId: APP.appId, connectedByUserId: ADA.id });
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(1));
+    expect(w.lines).toContainEqual({
+      level: 'error',
+      msg: 'slack_admin_failed',
+      fields: { installId, stage: 'undo-remove', code: expect.any(String) },
+    });
+  });
+
+  it('undo after an insert that committed but answered with an error still removes the row, whatever Slack said to the delete', async () => {
+    const outcomes: Array<[string, (() => Promise<void>) | null, boolean]> = [
+      ['Slack deleted the app', null, false],
+      [
+        'Slack says the app is already gone',
+        async () => {
+          throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+        },
+        false,
+      ],
+      [
+        "Slack won't delete it",
+        async () => {
+          throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+        },
+        true,
+      ],
+    ];
+    for (const [label, deleteApp, appLeft] of outcomes) {
+      const w = world();
+      const insert = w.memory.store.insertPending.bind(w.memory.store);
+      w.memory.store.insertPending = async (r) => {
+        await insert(r);
+        throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });
+      };
+      if (deleteApp !== null) w.slack.on.deleteApp = deleteApp;
+      expect((await w.connect()).status, label).toBe(500);
+      const installId = mintedInstallId(w);
+      expect(w.memory.rows.size, label).toBe(0);
+      expect((await w.status()).body, label).toMatchObject({ state: 'not-connected' });
+      if (appLeft) {
+        expect([...w.memory.leftovers.values()], label).toEqual([
+          { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+        ]);
+        // The app still on Slack names Ada, so her token stays.
+        expect(w.vault, label).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+      } else {
+        // Nothing names Ada any more: no row, no leftover, so her token goes too.
+        expect(w.memory.leftovers.size, label).toBe(0);
+        expect(w.vault.size, label).toBe(0);
+      }
+    }
+  });
+
+  it("undo doesn't list an app Slack says is already gone", async () => {
+    const w = world();
+    w.memory.failures.set('insertPending', new Error('insert failed'));
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+    };
+    expect((await w.connect()).status).toBe(500);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+    expect(w.lines.filter((l) => (l.fields as { stage?: string } | undefined)?.stage === 'undo-delete-app')).toEqual([]);
   });
 
   it('the picture is best-effort: Slack refusing it, none sent, or an unusable one never fails Connect', async () => {
@@ -1368,8 +1527,15 @@ describe('Connect tries the pasted refresh token once (TASK-1159)', () => {
     expect(res.body).toStrictEqual({ error: 'slack-error' });
     expect(w.trail.slice(-2)).toEqual(['slack:deleteApp', 'store:rememberLeftoverApp']);
     const leftInstallId = mintedInstallId(w);
+    // Made with the token of the admin who connected (TASK-1175).
     expect([...w.memory.leftovers.values()]).toEqual([
-      { installId: leftInstallId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+      {
+        installId: leftInstallId,
+        appId: APP.appId,
+        botName: 'Canopy Bot',
+        leftAt: expect.any(Date),
+        connectedByUserId: ADA.id,
+      },
     ]);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vaultCalls).toEqual([]);
@@ -1413,8 +1579,7 @@ describe('Connect tries the pasted refresh token once (TASK-1159)', () => {
     ]);
     expect(w.memory.leftovers.size).toBe(0);
     expect([...w.slack.live]).toEqual([SECOND_APP_ID]);
-    // mintedInstallId reads the FIRST create: it names the leftover, not this install.
-    expect(w.vault.get(secretRef(onlyRow(w).installId, 'config-refresh-token'))).toBe(mintedRefresh(1));
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(1));
   });
 
   it('remembering it failing too is logged code-only, and the answer is the same', async () => {
@@ -1467,9 +1632,7 @@ describe('Connect tries the pasted refresh token once (TASK-1159)', () => {
     honoured.memory.failures.delete('insertPending');
     honoured.slack.rotatedStillWork = true;
     expect((await honoured.connect()).status).toBe(200);
-    expect(honoured.vault.get(secretRef(onlyRow(honoured).installId, 'config-refresh-token'))).toBe(
-      mintedRefresh(2),
-    );
+    expect(honoured.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
 
     // Once Slack has retired it: the strict fake does at once.
     const retired = world();
@@ -1715,7 +1878,11 @@ describe('GET /admin/slack/oauth/callback', () => {
     expect(w.vault.has(secretRef(installId, 'bot-token'))).toBe(false);
     // The other three stay, so the admin can still Continue in Slack.
     expect([...w.vault.keys()].sort()).toEqual(
-      (['client-secret', 'config-refresh-token', 'signing-secret'] as const).map((n) => secretRef(installId, n)),
+      [
+        secretRef(installId, 'client-secret'),
+        secretRef(installId, 'signing-secret'),
+        configTokenRef(ADA.id),
+      ].sort(),
     );
     expect(w.lines).toContainEqual({
       level: 'error',
@@ -1794,7 +1961,8 @@ describe('POST /admin/slack/disconnect', () => {
     const res = await w.disconnect(GRACE);
     expect(res).toMatchObject({ status: 200, body: { appDeleted: true } });
     expect(Object.keys(res.body as object)).toEqual(['appDeleted']);
-    // The refresh token Slack minted is stored before the app is deleted.
+    // The refresh token Slack minted is stored before the app is deleted. Last,
+    // nothing names Ada any more, so her token goes too (TASK-1175).
     expect(w.trail.slice(mark)).toEqual([
       'store:current',
       'vault:get config-refresh-token',
@@ -1803,6 +1971,8 @@ describe('POST /admin/slack/disconnect', () => {
       'slack:deleteApp',
       'store:remove',
       ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
     ]);
     expect(
       w.slack.calls
@@ -1815,9 +1985,10 @@ describe('POST /admin/slack/disconnect', () => {
     ]);
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
-    expect(w.vaultCalls.filter((c) => c.hook === 'credentials:delete').map((c) => c.ref)).toEqual(
-      SECRET_NAMES.map((name) => secretRef(installId, name)),
-    );
+    expect(w.vaultCalls.filter((c) => c.hook === 'credentials:delete').map((c) => c.ref)).toEqual([
+      ...SECRET_NAMES.map((name) => secretRef(installId, name)),
+      configTokenRef(ADA.id),
+    ]);
     // Slack deleted it: nothing to remember.
     expect(w.memory.leftovers.size).toBe(0);
     expect((await w.status()).body).toMatchObject({ state: 'not-connected' });
@@ -1825,7 +1996,9 @@ describe('POST /admin/slack/disconnect', () => {
   });
 
   it('rotate fails, deleteApp fails or the token is gone → { appDeleted: false }, row and secrets still removed, and the app remembered', async () => {
-    const breakers: Array<[string, string, (w: World, installId: string) => void]> = [
+    // The last value is Ada's token as Disconnect leaves it: the app left over
+    // names her, so it stays for it (TASK-1175), as whatever was last stored.
+    const breakers: Array<[string, string, (w: World) => void, string | null]> = [
       [
         'rotate',
         'invalid_refresh_token',
@@ -1834,6 +2007,7 @@ describe('POST /admin/slack/disconnect', () => {
             throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
           };
         },
+        mintedRefresh(1),
       ],
       [
         'delete-app',
@@ -1843,28 +2017,32 @@ describe('POST /admin/slack/disconnect', () => {
             throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
           };
         },
+        // The rotate's successor, stored before the delete failed.
+        mintedRefresh(2),
       ],
       [
         'config-token',
         'missing',
-        (w, installId) => {
-          w.vault.delete(secretRef(installId, 'config-refresh-token'));
+        (w) => {
+          w.vault.delete(configTokenRef(ADA.id));
         },
+        // Already gone: nothing to keep.
+        null,
       ],
     ];
-    for (const [stage, code, breakIt] of breakers) {
+    for (const [stage, code, breakIt, kept] of breakers) {
       const { w, installId } = await connectedWorld();
-      breakIt(w, installId);
+      breakIt(w);
       expect(await w.disconnect(), stage).toMatchObject({ status: 200, body: { appDeleted: false } });
       expect(w.memory.rows.size, stage).toBe(0);
-      expect(w.vault.size, stage).toBe(0);
+      expect(w.vault, stage).toEqual(kept === null ? new Map() : new Map([[configTokenRef(ADA.id), kept]]));
       expect(w.lines, stage).toEqual([
         { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage, code } },
         { level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: false } },
       ]);
-      // The app may still be on Slack: its id and name outlive the row (TASK-1132).
+      // The app may still be on Slack: its id and name outlive the row (TASK-1132), with whose token made it (TASK-1175).
       expect([...w.memory.leftovers.values()], stage).toEqual([
-        { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+        { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
       ]);
       expect((await w.status()).body, stage).toMatchObject({
         state: 'not-connected',
@@ -1909,7 +2087,7 @@ describe('POST /admin/slack/disconnect', () => {
   });
 
   it('writes only the refresh token Slack minted, before deleting the app; the minted access token goes nowhere but deleteApp', async () => {
-    const { w, installId } = await connectedWorld();
+    const { w } = await connectedWorld();
     const before = w.vaultCalls.length;
     await w.disconnect();
     expect(w.vaultCalls.slice(before).map((c) => c.hook)).toEqual([
@@ -1919,9 +2097,11 @@ describe('POST /admin/slack/disconnect', () => {
       'credentials:delete',
       'credentials:delete',
       'credentials:delete',
+      // Ada's own token, once nothing names her (TASK-1175).
+      'credentials:delete',
     ]);
     expect(w.vaultCalls.slice(before).filter((c) => c.hook === 'credentials:set')).toEqual([
-      { hook: 'credentials:set', ref: secretRef(installId, 'config-refresh-token') },
+      { hook: 'credentials:set', ref: configTokenRef(ADA.id) },
     ]);
     expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS)).map((c) => c.method)).toEqual([
       'deleteApp',
@@ -1958,7 +2138,7 @@ describe('POST /admin/slack/disconnect', () => {
     expect(w.lines.map((l) => l.msg)).not.toContain('slack_disconnected');
     expect(w.vault.has(secretRef(installId, 'bot-token'))).toBe(true);
     // The token the retry needs: the one Slack minted, not the one it retired.
-    expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(2));
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
     expect(w.memory.leftovers.size).toBe(0);
     w.memory.failures.delete('remove');
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
@@ -1980,16 +2160,17 @@ describe('POST /admin/slack/disconnect', () => {
     // One statement: the row stayed, so the app was not remembered, and the secrets stay too.
     expect(w.memory.rows.has(installId)).toBe(true);
     expect(w.memory.leftovers.size).toBe(0);
-    expect(w.vault.has(secretRef(installId, 'config-refresh-token'))).toBe(true);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(true);
 
     w.memory.failures.delete('remove');
     expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: false } });
     expect(w.lines.filter((l) => l.msg === 'slack_disconnected')).toEqual([{ level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: false } }]);
     expect([...w.memory.leftovers.values()]).toEqual([
-      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date) },
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
     ]);
     expect(w.memory.rows.size).toBe(0);
-    expect(w.vault.size).toBe(0);
+    // The app left over names Ada, so her token stays for it (TASK-1175): the one stored at Connect, as both rotates failed.
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
   });
 });
 
@@ -2466,7 +2647,7 @@ describe('POST /admin/slack/rename', () => {
     expect(onlyRow(w).botName).toBe('Ada Helper');
     expect((await w.status()).body).toMatchObject({ state: 'connected', botName: 'Ada Helper' });
     // The refresh token the rotate minted replaced the one Connect stored.
-    expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(2));
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
     expect(w.lines).toEqual([]);
   });
 
@@ -2494,7 +2675,7 @@ describe('POST /admin/slack/rename', () => {
       throw new SlackApiError('apps.manifest.update', 'ratelimited', 60_000);
     };
     expect(await w.rename()).toMatchObject({ status: 502, body: { error: 'slack-error' } });
-    expect(w.vault.get(secretRef(installId, 'config-refresh-token'))).toBe(mintedRefresh(2));
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
     expect(w.lines).toEqual([
       { level: 'warn', msg: 'slack_admin_failed', fields: { installId, stage: 'update-app', code: 'ratelimited' } },
     ]);
@@ -2510,7 +2691,7 @@ describe('POST /admin/slack/rename', () => {
 
   it('storing the new refresh token failing → 500; Slack is never asked to update and the old token stays; a retry while Slack still honours it lands', async () => {
     const { w, installId } = await connectedWorld();
-    const ref = secretRef(installId, 'config-refresh-token');
+    const ref = configTokenRef(ADA.id);
     w.vaultFailures.set(
       'credentials:set config-refresh-token',
       Object.assign(new Error(`vault down ${REFRESH}`), { code: 'ECONNRESET' }),
@@ -2600,7 +2781,7 @@ describe('POST /admin/slack/rename', () => {
       stateUserId: null,
       stateExpiresAt: null,
     });
-    http.vault.set(secretRef(installId, 'config-refresh-token'), REFRESH);
+    http.vault.set(configTokenRef(ADA.id), REFRESH);
     expect(await http.rename()).toMatchObject({ status: 409, body: { error: 'public-origin-not-https' } });
     expect(http.slack.calls).toEqual([]);
     expect(http.vaultCalls).toEqual([]);
@@ -2623,12 +2804,12 @@ describe('POST /admin/slack/rename', () => {
           throw new SlackApiError('apps.manifest.update', code);
         };
       };
-    const cases: Array<[keyof typeof STOPS_AFTER, string, (w: World, installId: string) => void]> = [
+    const cases: Array<[keyof typeof STOPS_AFTER, string, (w: World) => void]> = [
       [
         'config-token',
         'missing',
-        (w, installId) => {
-          w.vault.delete(secretRef(installId, 'config-refresh-token'));
+        (w) => {
+          w.vault.delete(configTokenRef(ADA.id));
         },
       ],
       // What rotate says once the token was revoked on Slack's page (MEASURED, TASK-1093).
@@ -2644,7 +2825,7 @@ describe('POST /admin/slack/rename', () => {
     ];
     for (const [stage, code, breakIt] of cases) {
       const { w, installId } = await connectedWorld();
-      breakIt(w, installId);
+      breakIt(w);
       const mark = w.trail.length;
       const res = await w.rename();
       expect(res, code).toMatchObject({ status: 502 });
@@ -2747,20 +2928,35 @@ describe('POST /admin/slack/rename', () => {
     expect(onlyRow(w).botName).toBe('Ada Helper');
   });
 
-  it('the install removed while Slack was renaming it (a reset takes no admin lock) → 409 not-connected', async () => {
+  it('R7 the install removed while Slack was renaming it (a reset takes no admin lock) → 409 not-connected; the token it just stored goes, unless a leftover app still names the person', async () => {
     const { w, installId } = await connectedWorld();
     w.slack.on.updateApp = async () => {
       await w.memory.store.removeAll();
     };
     expect(await w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
-    expect(w.memory.calls.at(-1)).toEqual({ method: 'setBotName', args: [installId, 'Ada Helper'] });
+    // setBotName found the row gone; then the rename asked whether anything still names Ada.
+    expect(w.memory.calls.slice(-2)).toEqual([
+      { method: 'setBotName', args: [installId, 'Ada Helper'] },
+      { method: 'personHasApps', args: [ADA.id] },
+    ]);
     expect(w.memory.rows.size).toBe(0);
-    // The token it had just stored goes too. The rename takes it back itself:
-    // a reset's own sweep of leftover secrets (plugin.ts) only catches one
-    // stored before the sweep ran.
-    expect(w.vault.has(secretRef(installId, 'config-refresh-token'))).toBe(false);
-    expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token');
+    // Nothing does, so the token it had just stored goes too. The rename takes
+    // it back itself: a reset's own sweep (plugin.ts) only catches one stored
+    // before the sweep ran.
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(w.trail.slice(-2)).toEqual(['store:personHasApps', 'vault:delete config-refresh-token']);
     expect(w.lines).toEqual([]);
+
+    // An app Ada made is still left over: it names her, so her token stays, for it.
+    const kept = await connectedWorld();
+    leaveApp(kept.w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    kept.w.slack.on.updateApp = async () => {
+      await kept.w.memory.store.removeAll();
+    };
+    expect(await kept.w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(kept.w.trail.at(-1)).toBe('store:personHasApps');
+    expect(kept.w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    expect(kept.w.lines).toEqual([]);
   });
 
   it('a rename and a disconnect never interleave', async () => {
@@ -2852,8 +3048,8 @@ describe('POST /admin/slack/rename', () => {
   });
 
   it('writes the vault once, with the refresh token Slack minted; the minted access token goes nowhere but updateApp, the refresh token it minted nowhere but the vault', async () => {
-    const { w, installId } = await connectedWorld();
-    const ref = secretRef(installId, 'config-refresh-token');
+    const { w } = await connectedWorld();
+    const ref = configTokenRef(ADA.id);
     const before = w.vaultCalls.length;
     await w.rename();
     // Two vault calls: reading the refresh token, then replacing it with the one Slack minted.
@@ -2873,29 +3069,32 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
   /**
    * Everything one replace touches, in order: the row, a rotate of the pasted
    * token, the check (the app's whole manifest, sent with the access token
-   * that rotate minted), the vault (the refresh token it minted), the row's
-   * owner and date, and last the leftover list. The stored token is never read.
+   * that rotate minted), the vault (the refresh token it minted, stored as the
+   * install's person's), the row's date, and last the leftover list. The
+   * stored token is never read.
    */
   const ONE_REPLACE = [
     'store:current',
     'slack:rotateConfigToken',
     'slack:updateApp',
     'vault:set config-refresh-token',
-    'store:setConfigTokenOwner',
+    'store:setConfigTokenAddedAt',
     'store:leftoverApps',
   ];
   /** How far into ONE_REPLACE a replace gets before the step its log line names fails. */
-  const STOPS_AFTER = { 'try-refresh-token': 2, 'check-app': 3, 'save-config-token': 4, 'save-owner': 5 } as const;
+  const STOPS_AFTER = { 'try-refresh-token': 2, 'check-app': 3, 'save-config-token': 4, 'save-added-at': 5 } as const;
   /** A day after Connect, when Grace replaces the token. */
   const REPLACED_AT = NOW_MS + 86_400_000;
-  const configRef = (installId: string): string => secretRef(installId, 'config-refresh-token');
   const rotatedTokens = (w: World): unknown[] =>
     w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0]);
   const otherSecrets = (w: World, installId: string): Array<string | undefined> =>
     (['bot-token', 'signing-secret', 'client-secret'] as const).map((n) => w.vault.get(secretRef(installId, n)));
 
-  it("Grace replaces the token Ada added: the pasted token is tried once, Slack gets the app's whole manifest with the token it minted, then the minted refresh token is stored and the row moves; the install, its id and its other secrets stay", async () => {
+  it("R1 Grace pastes the token Ada generated: it is stored as Ada's, the row keeps Ada and only the date moves; Grace's own token is untouched", async () => {
     const { w, installId } = await connectedWorld();
+    // Grace made Slack apps of her own through AX, so she has a token of her own.
+    const graceOwn = fakeConfigRefreshToken('GRACEOWNSECRET');
+    w.vault.set(configTokenRef(GRACE.id), graceOwn);
     const before = { ...onlyRow(w) };
     expect(otherSecrets(w, installId)).toEqual([BOT_TOKEN, SIGNING_SECRET, CLIENT_SECRET]);
     w.advance(86_400_000);
@@ -2918,44 +3117,58 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     const created = w.slack.calls.find((c) => c.method === 'createApp')!.args[1];
     expect(w.slack.calls[slackMark + 1]!.args[2]).toEqual(created);
 
-    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
+    // Stored as the token of the person whose app it is (Slack took it for her
+    // app, so it is her chain), whoever pasted it.
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    expect(w.vault.get(configTokenRef(GRACE.id))).toBe(graceOwn);
     expect(otherSecrets(w, installId)).toEqual([BOT_TOKEN, SIGNING_SECRET, CLIENT_SECRET]);
-    expect(w.vault.size).toBe(4);
-    expect(onlyRow(w)).toEqual({ ...before, connectedByUserId: GRACE.id, configTokenAddedAt: new Date(REPLACED_AT) });
-    expect(onlyRow(w)).toMatchObject({ installId, status: 'active', botName: 'Canopy Bot', createdAt: new Date(NOW_MS) });
+    expect(w.vault.size).toBe(5);
+    // Only the date moves: the app stays Ada's.
+    expect(onlyRow(w)).toEqual({ ...before, configTokenAddedAt: new Date(REPLACED_AT) });
+    expect(onlyRow(w)).toMatchObject({
+      installId,
+      status: 'active',
+      botName: 'Canopy Bot',
+      connectedByUserId: ADA.id,
+      createdAt: new Date(NOW_MS),
+    });
     expect(w.lines).toEqual([{ level: 'info', msg: 'slack_config_token_replaced', fields: { installId } }]);
   });
 
-  it('after a replace, the vault is read and written as the admin who replaced it, and Rename then Disconnect use the replaced token', async () => {
+  it('R2 after a replace by another admin, every token read and write still names Ada, and Rename then Disconnect use the replaced token', async () => {
     const { w } = await connectedWorld();
     // Until now, every vault call named Ada, who connected.
     expect(new Set(w.vaultAs.map((v) => v.userId))).toEqual(new Set([ADA.id]));
     w.advance(86_400_000);
     let mark = w.vaultAs.length;
     expect(await w.replace({ refreshToken: SECOND_REFRESH }, GRACE)).toMatchObject({ status: 200, body: {} });
-    expect(w.vaultAs.slice(mark)).toEqual([{ hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE.id }]);
-    // Added by Grace, on the day she replaced it.
+    expect(w.vaultAs.slice(mark)).toEqual([{ hook: 'credentials:set', name: 'config-refresh-token', userId: ADA.id }]);
+    // Still Ada's token: "Added by" keeps her, with the day of the replace.
     expect((await w.status()).body).toMatchObject({
       state: 'connected',
-      connectedBy: 'Grace Hopper',
+      connectedBy: 'Ada Admin',
       connectedAt: new Date(REPLACED_AT).toISOString(),
     });
 
-    // Ada renames: the rotate spends the token Grace's replace stored, read and kept as Grace.
+    // Grace renames: the rotate spends the token her replace stored, read and kept as Ada's.
     mark = w.vaultAs.length;
-    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(await w.rename(undefined, GRACE)).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
     expect(rotatedTokens(w)).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(2)]);
     expect(w.vaultAs.slice(mark)).toEqual([
-      { hook: 'credentials:get', name: 'config-refresh-token', userId: GRACE.id },
-      { hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE.id },
+      { hook: 'credentials:get', name: 'config-refresh-token', userId: ADA.id },
+      { hook: 'credentials:set', name: 'config-refresh-token', userId: ADA.id },
     ]);
 
     mark = w.vaultAs.length;
-    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE)).toMatchObject({ status: 200, body: { appDeleted: true } });
     expect(rotatedTokens(w)).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(2), mintedRefresh(3)]);
+    // Nothing names Ada after it, so her token goes too, deleted as her.
+    expect(w.vaultAs.slice(mark).filter((v) => v.hook === 'credentials:delete' && v.userId !== 'system')).toEqual([
+      { hook: 'credentials:delete', name: 'config-refresh-token', userId: ADA.id },
+    ]);
     expect(w.vaultAs.slice(mark).filter((v) => v.hook !== 'credentials:delete')).toEqual([
-      { hook: 'credentials:get', name: 'config-refresh-token', userId: GRACE.id },
-      { hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE.id },
+      { hook: 'credentials:get', name: 'config-refresh-token', userId: ADA.id },
+      { hook: 'credentials:set', name: 'config-refresh-token', userId: ADA.id },
     ]);
     expect(w.vault.size).toBe(0);
     expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
@@ -3030,7 +3243,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       stateUserId: null,
       stateExpiresAt: null,
     });
-    http.vault.set(configRef(installId), REFRESH);
+    http.vault.set(configTokenRef(ADA.id), REFRESH);
     expect(await http.replace(undefined, GRACE)).toMatchObject({
       status: 409,
       body: { error: 'public-origin-not-https' },
@@ -3066,7 +3279,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       expect(res.status, label).toBe(502);
       expect(res.body, label).toStrictEqual({ error });
       expect(w.trail.slice(mark), label).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['try-refresh-token']));
-      expect(w.vault.get(configRef(installId)), label).toBe(mintedRefresh(1));
+      expect(w.vault.get(configTokenRef(ADA.id)), label).toBe(mintedRefresh(1));
       expect(onlyRow(w), label).toEqual(before);
       expect(w.lines, label).toEqual([
         {
@@ -3111,7 +3324,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       expect(res.body, label).toStrictEqual({ error });
       expect(w.trail.slice(mark), label).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['check-app']));
       // Slack refused the new token for this app, so the one Ada added stays.
-      expect(w.vault.get(configRef(installId)), label).toBe(mintedRefresh(1));
+      expect(w.vault.get(configTokenRef(ADA.id)), label).toBe(mintedRefresh(1));
       expect(onlyRow(w), label).toEqual(before);
       expect(w.lines, label).toEqual([
         {
@@ -3124,7 +3337,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       w.slack.on.updateApp = async () => {};
       expect(await w.rename(), label).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
       expect(rotatedTokens(w), label).toEqual([REFRESH, SECOND_REFRESH, mintedRefresh(1)]);
-      expect(w.vault.get(configRef(installId)), label).toBe(mintedRefresh(3));
+      expect(w.vault.get(configTokenRef(ADA.id)), label).toBe(mintedRefresh(3));
     }
   });
 
@@ -3135,7 +3348,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     const mark = w.trail.length;
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 500, body: { error: 'internal' } });
     expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['save-config-token']));
-    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(1));
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(1));
     expect(onlyRow(w)).toEqual(before);
     expect(w.lines).toEqual([
       { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-config-token', code: 'ECONNRESET' } },
@@ -3146,56 +3359,80 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     w.slack.rotatedStillWork = true;
     w.advance(60_000);
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
-    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(3));
-    expect(onlyRow(w)).toMatchObject({ connectedByUserId: GRACE.id, configTokenAddedAt: new Date(NOW_MS + 60_000) });
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(3));
+    // Still Ada's app (TASK-1175): only the date moves.
+    expect(onlyRow(w)).toMatchObject({ connectedByUserId: ADA.id, configTokenAddedAt: new Date(NOW_MS + 60_000) });
   });
 
   it('the row write failing after the store → 500 internal; the vault holds the new token (Slack took it for this app) and the row still names Ada', async () => {
     const { w, installId } = await connectedWorld();
     const before = { ...onlyRow(w) };
-    w.memory.failures.set('setConfigTokenOwner', connectionReset());
+    w.memory.failures.set('setConfigTokenAddedAt', connectionReset());
     const mark = w.trail.length;
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 500, body: { error: 'internal' } });
     // Not taken back: Slack just accepted it for this app, and the token it was minted from is spent.
-    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['save-owner']));
-    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
+    expect(w.trail.slice(mark)).toEqual(ONE_REPLACE.slice(0, STOPS_AFTER['save-added-at']));
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
     expect(onlyRow(w)).toEqual(before);
     expect(w.lines).toEqual([
-      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-owner', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'save-added-at', code: 'ECONNRESET' } },
     ]);
 
-    // The install keeps a working token: only "Added by" is stale.
-    w.memory.failures.delete('setConfigTokenOwner');
+    // The install keeps a working token: only the date "Added by" shows is stale.
+    w.memory.failures.delete('setConfigTokenAddedAt');
     expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
     expect(rotatedTokens(w).at(-1)).toBe(mintedRefresh(2));
   });
 
-  it('the install removed meanwhile (a reset) → the token just stored is deleted again → 409 not-connected', async () => {
+  it('R7 the install removed meanwhile (a reset takes no admin lock) → 409 not-connected; the token just stored goes, unless a leftover app still names the person', async () => {
+    // Removed just before the date is written.
     const { w, installId } = await connectedWorld();
-    w.memory.failures.set('setConfigTokenOwner', new InstallStoreError('install-not-active'));
+    const setAddedAt = w.memory.store.setConfigTokenAddedAt.bind(w.memory.store);
+    w.memory.store.setConfigTokenAddedAt = async (id, addedAt) => {
+      w.memory.rows.clear();
+      return setAddedAt(id, addedAt);
+    };
     const mark = w.trail.length;
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    // Nothing names Ada any more: her token goes.
     expect(w.trail.slice(mark)).toEqual([
-      ...ONE_REPLACE.slice(0, STOPS_AFTER['save-owner']),
+      ...ONE_REPLACE.slice(0, STOPS_AFTER['save-added-at']),
+      'store:personHasApps',
       'vault:delete config-refresh-token',
     ]);
-    expect(w.trail.at(-1)).toBe('vault:delete config-refresh-token');
-    expect(w.vault.has(configRef(installId))).toBe(false);
+    expect(w.memory.calls.slice(-2)).toEqual([
+      { method: 'setConfigTokenAddedAt', args: [installId, new Date(NOW_MS)] },
+      { method: 'personHasApps', args: [ADA.id] },
+    ]);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
     expect(w.lines).toEqual([]);
 
-    // The same race for real: a reset (which takes no admin lock) removes the install while Slack checks the token.
+    // The same race for real: a reset removes the install while Slack checks the token.
     const { w: raced, installId: racedId } = await connectedWorld();
     raced.slack.on.updateApp = async () => {
       await raced.memory.store.removeAll();
     };
     expect(await raced.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
-    expect(raced.memory.calls.at(-1)).toEqual({
-      method: 'setConfigTokenOwner',
-      args: [racedId, { userId: GRACE.id, addedAt: new Date(NOW_MS) }],
-    });
+    expect(raced.memory.calls.slice(-2)).toEqual([
+      { method: 'setConfigTokenAddedAt', args: [racedId, new Date(NOW_MS)] },
+      { method: 'personHasApps', args: [ADA.id] },
+    ]);
     expect(raced.trail.at(-1)).toBe('vault:delete config-refresh-token');
-    expect(raced.vault.has(configRef(racedId))).toBe(false);
+    expect(raced.vault.has(configTokenRef(ADA.id))).toBe(false);
     expect(raced.lines).toEqual([]);
+
+    // An app Ada made is still left over: it names her, so her token stays, for it.
+    const kept = await connectedWorld();
+    leaveApp(kept.w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    kept.w.slack.on.updateApp = async () => {
+      await kept.w.memory.store.removeAll();
+    };
+    expect(await kept.w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(kept.w.trail.at(-1)).toBe('store:personHasApps');
+    expect(kept.w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    // The 409 comes before the leftover pass: the app is still listed.
+    expect([...kept.w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    expect(kept.w.lines).toEqual([]);
   });
 
   it('leftover apps go with the minted access token after the replace, and are forgotten; a refusal keeps one and a list fault is logged, and neither changes the 200', async () => {
@@ -3232,8 +3469,8 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     };
     expect(await refused.w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
     expect([...refused.w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
-    expect(refused.w.vault.get(configRef(refused.installId))).toBe(mintedRefresh(2));
-    expect(onlyRow(refused.w).connectedByUserId).toBe(GRACE.id);
+    expect(refused.w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    expect(onlyRow(refused.w).connectedByUserId).toBe(ADA.id);
     expect(refused.w.lines).toEqual([
       { level: 'info', msg: 'slack_config_token_replaced', fields: { installId: refused.installId } },
       {
@@ -3250,8 +3487,8 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     listFault.w.memory.failures.set('leftoverApps', connectionReset());
     expect(await listFault.w.replace(undefined, GRACE)).toMatchObject({ status: 200, body: {} });
     expect(slackMethods(listFault.w)).not.toContain('deleteApp');
-    expect(listFault.w.vault.get(configRef(listFault.installId))).toBe(mintedRefresh(2));
-    expect(onlyRow(listFault.w)).toMatchObject({ connectedByUserId: GRACE.id, configTokenAddedAt: new Date(NOW_MS) });
+    expect(listFault.w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    expect(onlyRow(listFault.w)).toMatchObject({ connectedByUserId: ADA.id, configTokenAddedAt: new Date(NOW_MS) });
     expect(listFault.w.lines).toEqual([
       { level: 'info', msg: 'slack_config_token_replaced', fields: { installId: listFault.installId } },
       {
@@ -3277,8 +3514,8 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     expect(await two).toMatchObject({ status: 502, body: { error: 'slack-refresh-token' } });
     // One at a time: the second read the row only once the first was done, then Slack refused the spent token.
     expect(w.trail.slice(mark)).toEqual([...ONE_REPLACE, 'store:current', 'slack:rotateConfigToken']);
-    expect(w.vault.get(configRef(installId))).toBe(mintedRefresh(2));
-    expect(onlyRow(w).connectedByUserId).toBe(GRACE.id);
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    expect(onlyRow(w).connectedByUserId).toBe(ADA.id);
     expect(w.lines).toEqual([
       { level: 'info', msg: 'slack_config_token_replaced', fields: { installId } },
       {
@@ -3311,6 +3548,8 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       'slack:deleteApp',
       'store:remove',
       ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
       'store:current',
     ]);
     expect(rotatedTokens(w)).not.toContain(SECOND_REFRESH);
@@ -3318,6 +3557,632 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     expect(w.memory.rows.size).toBe(0);
     expect(w.vault.size).toBe(0);
     expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+  });
+});
+
+describe('every configuration-token use goes through its person (TASK-1175)', () => {
+  it("R3 every configuration-token vault call names the person in its ref, and none goes to an install's own ref", async () => {
+    // Ada's Connect and Allow, her Rename, Grace's Replace, Grace's Rename, Grace's Disconnect.
+    const { w, installId } = await connectedWorld();
+    expect((await w.rename()).status).toBe(200);
+    expect((await w.replace({ refreshToken: SECOND_REFRESH }, GRACE)).status).toBe(200);
+    expect((await w.rename({ botName: 'Grace Helper' }, GRACE)).status).toBe(200);
+    expect((await w.disconnect(GRACE)).body).toEqual({ appDeleted: true });
+
+    const personal = w.vaultCalls.flatMap((c, i) =>
+      c.ref.startsWith('slack:person:') ? [{ ...c, as: w.vaultAs[i]!.userId }] : [],
+    );
+    // Every kind of use, so the check below can't pass by finding none.
+    expect(personal.map((c) => c.hook)).toEqual([
+      'credentials:set', // Connect
+      'credentials:get', // Ada's Rename
+      'credentials:set',
+      'credentials:set', // Grace's Replace
+      'credentials:get', // Grace's Rename
+      'credentials:set',
+      'credentials:get', // Disconnect
+      'credentials:set',
+      'credentials:delete', // nothing names Ada any more
+    ]);
+    for (const c of personal) {
+      const named = c.ref.slice('slack:person:'.length, c.ref.length - ':config-refresh-token'.length);
+      expect(c.as, `${c.hook} ${c.ref}`).toBe(named);
+    }
+    // All of it Ada's: her app, whoever acted.
+    expect(new Set(personal.map((c) => c.ref))).toEqual(new Set(['slack:person:usr_ada:config-refresh-token']));
+    // The install's own ref is never read or written: only Disconnect's sweep deletes it (an old row's).
+    const own = secretRef(installId, 'config-refresh-token');
+    expect(w.vaultCalls.filter((c) => c.ref === own)).toEqual([{ hook: 'credentials:delete', ref: own }]);
+  });
+
+  it("R4 Disconnect keeps the person's token while a leftover or another install names them, and drops it when nothing does", async () => {
+    // A dead stored token: Slack can't delete the app, so it is left over,
+    // naming Ada, whoever disconnects. Her token stays, for it.
+    const { w: dead, installId: deadId } = await connectedWorld();
+    failRotate(dead, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
+    expect(await dead.disconnect(GRACE)).toMatchObject({ status: 200, body: { appDeleted: false } });
+    expect([...dead.memory.leftovers.values()]).toEqual([
+      { installId: deadId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+    ]);
+    expect(dead.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+
+    // Another install of Ada's (a second, unfinished one) names her: her token stays.
+    const { w: two } = await connectedWorld();
+    const otherId = 'BBBBBBBBBBBBBBBBBBBBBB';
+    two.memory.rows.set(otherId, {
+      ...onlyRow(two),
+      installId: otherId,
+      status: 'pending',
+      appId: SECOND_APP_ID,
+      teamId: null,
+      teamName: null,
+      botUserId: null,
+      installedAt: null,
+      createdAt: new Date(NOW_MS + 60_000),
+      configTokenAddedAt: new Date(NOW_MS + 60_000),
+    });
+    let mark = two.trail.length;
+    expect(await two.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    // The check, and no delete after it.
+    expect(two.trail.slice(mark)).toEqual([
+      'store:current',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:remove',
+      ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+      'store:personHasApps',
+    ]);
+    expect([...two.memory.rows.keys()]).toEqual([otherId]);
+    // The successor of the token Disconnect rotated.
+    expect(two.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(2)]]));
+
+    // Nothing names Ada any more (a leftover from before TASK-1175 names no
+    // one): her token goes, after the row and the install's own secrets.
+    const { w: last } = await connectedWorld();
+    leaveApp(last, LEFT_1);
+    mark = last.trail.length;
+    expect(await last.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(last.trail.slice(mark)).toEqual([
+      'store:current',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:remove',
+      ...SECRET_NAMES.map((n) => `vault:delete ${n}`),
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
+    ]);
+    expect(last.vault.size).toBe(0);
+  });
+
+  it("R4 a check that fails keeps the person's token: Disconnect still answers, and says so in one line, code-only", async () => {
+    const { w, installId } = await connectedWorld();
+    w.memory.failures.set('personHasApps', Object.assign(new Error(`relation gone ${REFRESH}`), { code: '42P01' }));
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    // Unknown whether anything still needs it, so it stays.
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(2)]]));
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { installId, stage: 'release-config-token', code: '42P01' } },
+      { level: 'info', msg: 'slack_disconnected', fields: { installId, appDeleted: true } },
+    ]);
+  });
+
+  it('R5 Connect by an admin whose id cannot name a secret: 500 before Slack is asked anything, so no app is made and the pasted pair is never spent', async () => {
+    const w = world();
+    // `@` is fine in a vault user id but not in a ref. No AX id looks like this; only a hand-made one could.
+    const odd: TestUser = { id: 'ada@example.com', displayName: 'Ada', email: 'ada@example.com', isAdmin: true };
+    w.users.set(odd.id, { ...odd });
+    // An app of theirs left over: not even it is tried with their pasted token.
+    leaveApp(w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, odd.id);
+    expect(await w.connect(CONNECT_BODY, odd)).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.trail).toEqual(['store:current']);
+    expect(w.memory.rows.size).toBe(0);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    // Code-only, and never the id: there is no install to name yet.
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'connect', code: 'invalid-person-id' } },
+    ]);
+    // Anyone else can still connect.
+    expect((await w.connect(CONNECT_BODY, GRACE)).status).toBe(200);
+  });
+
+  it("R6 Connect's undo after the token was stored drops it when nothing else names the person, keeps it when a leftover does", async () => {
+    // Nothing else names Ada: her token goes with the rest.
+    const drops = world();
+    drops.memory.failures.set('setOAuthState', connectionReset());
+    expect(await drops.connect()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(drops.trail.slice(-2)).toEqual(['store:personHasApps', 'vault:delete config-refresh-token']);
+    expect(drops.memory.rows.size).toBe(0);
+    expect(drops.vault.size).toBe(0);
+
+    // An app Ada made earlier is still left over (Slack wouldn't delete it at
+    // this Connect's pass): it names her, so her token stays, for it.
+    const keeps = world();
+    leaveApp(keeps, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    keeps.slack.on.deleteApp = async (_token, appId) => {
+      if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'no_permission');
+    };
+    keeps.memory.failures.set('setOAuthState', connectionReset());
+    expect(await keeps.connect()).toMatchObject({ status: 500, body: { error: 'internal' } });
+    // The new app was still taken back.
+    expect(keeps.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args)).toEqual([
+      [ACCESS, LEFT_1.appId],
+      [ACCESS, APP.appId],
+    ]);
+    expect([...keeps.slack.live]).toEqual([]);
+    expect(keeps.memory.rows.size).toBe(0);
+    expect(keeps.trail.at(-1)).toBe('store:personHasApps');
+    expect(keeps.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+    expect([...keeps.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+  });
+
+  it("R7 Connect stores the person's token straight after the rotate: a client or signing secret that won't store never strands it", async () => {
+    for (const name of ['client-secret', 'signing-secret'] as const) {
+      // A leftover of Ada's still names her (Slack wouldn't delete it at this
+      // Connect's pass), and her slot holds the token the rotate's paste
+      // replaced: the minted one is now her only live token, so it must be there.
+      const keeps = world();
+      keeps.vault.set(configTokenRef(ADA.id), ADA_STORED);
+      leaveApp(keeps, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+      keeps.slack.on.deleteApp = async (_token, appId) => {
+        if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'no_permission');
+      };
+      keeps.vaultFailures.set(`credentials:set ${name}`, connectionReset());
+      expect(await keeps.connect(), name).toMatchObject({ status: 500, body: { error: 'internal' } });
+      const at = keeps.trail.indexOf('slack:rotateConfigToken');
+      expect(keeps.trail.slice(at, at + 2), name).toEqual(['slack:rotateConfigToken', 'vault:set config-refresh-token']);
+      expect(keeps.vault.get(configTokenRef(ADA.id)), name).toBe(mintedRefresh(1));
+      // The new app was still taken back; her leftover still names her.
+      expect([...keeps.slack.live], name).toEqual([]);
+      expect([...keeps.memory.leftovers.keys()], name).toEqual([LEFT_1.installId]);
+      expect(keeps.memory.rows.size, name).toBe(0);
+
+      // Nothing else names her: the undo's release drops it, as it does for any later failure.
+      const drops = world();
+      drops.vaultFailures.set(`credentials:set ${name}`, connectionReset());
+      expect(await drops.connect(), name).toMatchObject({ status: 500, body: { error: 'internal' } });
+      expect(drops.trail.slice(-2), name).toEqual(['store:personHasApps', 'vault:delete config-refresh-token']);
+      expect(drops.vault.size, name).toBe(0);
+    }
+  });
+});
+
+describe('leftover apps go with the token of whoever made them (TASK-1175)', () => {
+  const rotatedTokens = (w: World): unknown[] =>
+    w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0]);
+  const deletes = (w: World): unknown[][] => w.slack.calls.filter((c) => c.method === 'deleteApp').map((c) => c.args);
+  /** Whom each release asked about, in order: one `personHasApps` each. */
+  const releaseChecks = (w: World): unknown[][] =>
+    w.memory.calls.filter((c) => c.method === 'personHasApps').map((c) => c.args);
+  /** Eve, a third admin with apps of her own. */
+  const EVE = EMAIL_ONLY;
+
+  it("L1 Grace's Connect deletes Ada's leftover with Ada's stored token: one rotate, the successor stored before the delete, then Ada's token goes", async () => {
+    const w = world();
+    w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    let adaAtDelete: string | undefined;
+    w.slack.on.deleteApp = async () => {
+      adaAtDelete = w.vault.get(configTokenRef(ADA.id));
+    };
+    expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(w.trail.slice(0, 10)).toEqual([
+      'store:current',
+      'store:leftoverApps',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
+      'slack:createApp',
+    ]);
+    // Ada's token, rotated once; then the refresh token Grace pasted, tried by her own Connect.
+    expect(rotatedTokens(w)).toEqual([ADA_STORED, SECOND_REFRESH]);
+    expect(deletes(w)).toEqual([[MINTED_ACCESS, LEFT_1.appId]]);
+    // The rotate retired the one it was sent: its successor was already in Ada's slot when the delete went.
+    expect(adaAtDelete).toBe(mintedRefresh(1));
+    // Every call on her token was in her own slot, as her: the read, the successor, then
+    // (nothing names her any more) the delete.
+    expect(w.vaultCalls.slice(0, 3)).toEqual([
+      { hook: 'credentials:get', ref: configTokenRef(ADA.id) },
+      { hook: 'credentials:set', ref: configTokenRef(ADA.id) },
+      { hook: 'credentials:delete', ref: configTokenRef(ADA.id) },
+    ]);
+    expect(w.vaultAs.slice(0, 3).map((v) => v.userId)).toEqual([ADA.id, ADA.id, ADA.id]);
+    expect(releaseChecks(w)).toEqual([[ADA.id]]);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    // Grace's own slot holds what her Connect minted from her paste.
+    expect(w.vault.get(configTokenRef(GRACE.id))).toBe(mintedRefresh(2));
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId } },
+    ]);
+  });
+
+  it("L2 two of Ada's leftovers share one rotate", async () => {
+    const w = world();
+    w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 120_000, ADA.id);
+    leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 60_000, ADA.id);
+    expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(w.trail.slice(0, 12)).toEqual([
+      'store:current',
+      'store:leftoverApps',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      // Released once, after both.
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
+      'slack:createApp',
+    ]);
+    expect(rotatedTokens(w)).toEqual([ADA_STORED, SECOND_REFRESH]);
+    expect(deletes(w)).toEqual([
+      [MINTED_ACCESS, LEFT_1.appId],
+      [MINTED_ACCESS, LEFT_2.appId],
+    ]);
+    expect(releaseChecks(w)).toEqual([[ADA.id]]);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId } },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+  });
+
+  it("L3 an app left before TASK-1175 names no one: the token in hand tries it, as before; Ada's in the same pass gets Ada's, and Grace's own gets the one she pasted", async () => {
+    const w = world();
+    w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    // Grace's slot holds the token her new paste ended (one per person): never read or rotated.
+    w.vault.set(configTokenRef(GRACE.id), fakeConfigRefreshToken('GRACEOLDSECRET'));
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 180_000);
+    leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 120_000, ADA.id);
+    leaveApp(w, LEFT_3, 'Third Bot', NOW_MS - 60_000, GRACE.id);
+    expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(deletes(w)).toEqual([
+      [SECOND_ACCESS, LEFT_1.appId],
+      [MINTED_ACCESS, LEFT_2.appId],
+      [SECOND_ACCESS, LEFT_3.appId],
+    ]);
+    // Only Ada's token was read, and only it and Grace's paste were rotated.
+    expect(w.vaultCalls.filter((c) => c.hook === 'credentials:get')).toEqual([
+      { hook: 'credentials:get', ref: configTokenRef(ADA.id) },
+    ]);
+    expect(rotatedTokens(w)).toEqual([ADA_STORED, SECOND_REFRESH]);
+    // Only Ada is released: the first app names no one, and Grace's slot is her Connect's to overwrite.
+    expect(releaseChecks(w)).toEqual([[ADA.id]]);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(w.vault.get(configTokenRef(GRACE.id))).toBe(mintedRefresh(2));
+    expect(w.memory.leftovers.size).toBe(0);
+  });
+
+  it("L4 another person's token missing or unreadable: their apps are skipped and logged, the rest still go", async () => {
+    // Missing: one read for Ada and one line, not one per app of hers.
+    const missing = world();
+    leaveApp(missing, LEFT_1, 'First Bot', NOW_MS - 180_000, ADA.id);
+    leaveApp(missing, LEFT_2, 'Second Bot', NOW_MS - 120_000);
+    leaveApp(missing, LEFT_3, 'Third Bot', NOW_MS - 60_000, ADA.id);
+    expect((await missing.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(deletes(missing)).toEqual([[SECOND_ACCESS, LEFT_2.appId]]);
+    expect(rotatedTokens(missing)).toEqual([SECOND_REFRESH]);
+    expect(missing.vaultCalls.filter((c) => c.hook === 'credentials:get')).toEqual([
+      { hook: 'credentials:get', ref: configTokenRef(ADA.id) },
+    ]);
+    expect([...missing.memory.leftovers.keys()]).toEqual([LEFT_1.installId, LEFT_3.installId]);
+    // Nothing of hers went, so nothing is released.
+    expect(releaseChecks(missing)).toEqual([]);
+    expect(missing.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'leftover-config-token', code: 'missing' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+
+    // Unreadable: the vault faulting. Her token stays as it was, unrotated.
+    const fault = world();
+    fault.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(fault, LEFT_1, 'First Bot', NOW_MS - 120_000, ADA.id);
+    leaveApp(fault, LEFT_2, 'Second Bot', NOW_MS - 60_000);
+    fault.vaultFailures.set('credentials:get config-refresh-token', connectionReset());
+    expect((await fault.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(deletes(fault)).toEqual([[SECOND_ACCESS, LEFT_2.appId]]);
+    expect(rotatedTokens(fault)).toEqual([SECOND_REFRESH]);
+    expect(fault.vault.get(configTokenRef(ADA.id))).toBe(ADA_STORED);
+    expect([...fault.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    expect(fault.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'leftover-config-token', code: 'ECONNRESET' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+
+    // A person id that can't name a ref (no AX id looks like this; only a
+    // hand-made row could): refused before the vault is asked anything.
+    const odd = world();
+    leaveApp(odd, LEFT_1, 'First Bot', NOW_MS - 120_000, 'ada@example.com');
+    leaveApp(odd, LEFT_2, 'Second Bot', NOW_MS - 60_000);
+    expect((await odd.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(deletes(odd)).toEqual([[SECOND_ACCESS, LEFT_2.appId]]);
+    // Not one vault call before Grace's own Connect stores her secrets.
+    const beforeCreate = odd.trail.slice(0, odd.trail.indexOf('slack:createApp'));
+    expect(beforeCreate.filter((t) => t.startsWith('vault:'))).toEqual([]);
+    expect([...odd.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+    expect(odd.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'leftover-config-token', code: 'invalid-person-id' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+  });
+
+  it("L5 another person's token refused at the rotate skips only their apps; Slack not answering (timeout) ends the pass, and Connect still creates its app", async () => {
+    // Refused (say Ada revoked it on Slack's page): tried once, her apps stay, the rest still go.
+    const refused = world();
+    refused.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(refused, LEFT_1, 'First Bot', NOW_MS - 180_000, ADA.id);
+    leaveApp(refused, LEFT_2, 'Second Bot', NOW_MS - 120_000);
+    leaveApp(refused, LEFT_3, 'Third Bot', NOW_MS - 60_000, ADA.id);
+    failRotateOf(refused, ADA_STORED, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
+    expect((await refused.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(rotatedTokens(refused)).toEqual([ADA_STORED, SECOND_REFRESH]);
+    expect(deletes(refused)).toEqual([[SECOND_ACCESS, LEFT_2.appId]]);
+    expect([...refused.memory.leftovers.keys()]).toEqual([LEFT_1.installId, LEFT_3.installId]);
+    // Nothing replaced it and her apps still name her: her slot is as it was.
+    expect(refused.vault.get(configTokenRef(ADA.id))).toBe(ADA_STORED);
+    expect(releaseChecks(refused)).toEqual([]);
+    expect(refused.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'leftover-rotate', code: 'invalid_refresh_token' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+
+    // Slack not answering: every later call would wait out the same deadline
+    // under the admin lock, so the pass ends there. Ada's app, already gone,
+    // still releases her token; Eve's stays, for hers.
+    const slow = world();
+    slow.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    slow.vault.set(configTokenRef(EVE.id), EVE_STORED);
+    leaveApp(slow, LEFT_1, 'First Bot', NOW_MS - 180_000, ADA.id);
+    leaveApp(slow, LEFT_2, 'Second Bot', NOW_MS - 120_000, EVE.id);
+    leaveApp(slow, LEFT_3, 'Third Bot', NOW_MS - 60_000);
+    failRotateOf(slow, EVE_STORED, new SlackApiError('tooling.tokens.rotate', 'timeout'));
+    expect((await slow.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(slow.trail.slice(0, 12)).toEqual([
+      'store:current',
+      'store:leftoverApps',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:deleteApp',
+      'store:forgetLeftoverApp',
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
+      'slack:createApp',
+    ]);
+    // The app that names no one was never tried.
+    expect(deletes(slow)).toEqual([[MINTED_ACCESS, LEFT_1.appId]]);
+    expect(slackMethods(slow).filter((m) => m === 'createApp')).toHaveLength(1);
+    expect([...slow.memory.leftovers.keys()]).toEqual([LEFT_2.installId, LEFT_3.installId]);
+    expect(releaseChecks(slow)).toEqual([[ADA.id]]);
+    expect(slow.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(slow.vault.get(configTokenRef(EVE.id))).toBe(EVE_STORED);
+    expect(slow.lines).toEqual([
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId } },
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_2.installId, stage: 'leftover-rotate', code: 'timeout' },
+      },
+    ]);
+  });
+
+  it("L6 the token in hand refused (invalid_auth) skips only its own apps; another person's still go; and the other way round", async () => {
+    const w = world();
+    w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(w, LEFT_1, 'First Bot', NOW_MS - 180_000);
+    leaveApp(w, LEFT_2, 'Second Bot', NOW_MS - 120_000, ADA.id);
+    leaveApp(w, LEFT_3, 'Third Bot', NOW_MS - 60_000);
+    w.slack.on.deleteApp = async (token) => {
+      if (token === SECOND_ACCESS) throw new SlackApiError('apps.manifest.delete', 'invalid_auth');
+    };
+    expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    // The pasted token is refused at its first app, so its other one isn't tried. Ada's goes with hers.
+    expect(deletes(w)).toEqual([
+      [SECOND_ACCESS, LEFT_1.appId],
+      [MINTED_ACCESS, LEFT_2.appId],
+    ]);
+    expect([...w.memory.leftovers.keys()]).toEqual([LEFT_1.installId, LEFT_3.installId]);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(w.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code: 'invalid_auth' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+
+    // The access token minted from Ada's refused at her first app: her second
+    // isn't tried, and the one that names no one still goes with the token in hand.
+    const theirs = world();
+    theirs.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(theirs, LEFT_1, 'First Bot', NOW_MS - 180_000, ADA.id);
+    leaveApp(theirs, LEFT_2, 'Second Bot', NOW_MS - 120_000);
+    leaveApp(theirs, LEFT_3, 'Third Bot', NOW_MS - 60_000, ADA.id);
+    theirs.slack.on.deleteApp = async (token) => {
+      if (token === MINTED_ACCESS) throw new SlackApiError('apps.manifest.delete', 'token_revoked');
+    };
+    expect((await theirs.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(deletes(theirs)).toEqual([
+      [MINTED_ACCESS, LEFT_1.appId],
+      [SECOND_ACCESS, LEFT_2.appId],
+    ]);
+    expect(rotatedTokens(theirs)).toEqual([ADA_STORED, SECOND_REFRESH]);
+    expect([...theirs.memory.leftovers.keys()]).toEqual([LEFT_1.installId, LEFT_3.installId]);
+    // Her apps still name her: the successor stays in her slot.
+    expect(theirs.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(1));
+    expect(releaseChecks(theirs)).toEqual([]);
+    expect(theirs.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'delete-leftover-app', code: 'token_revoked' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_2.installId } },
+    ]);
+  });
+
+  it("L7 saving another person's successor failing still deletes with the minted token: one error line, and no throw", async () => {
+    const w = world();
+    w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    // Ada's slot only: Grace's own Connect still stores hers.
+    w.vaultFailures.set(`credentials:set ${configTokenRef(ADA.id)}`, connectionReset());
+    expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    expect(deletes(w)).toEqual([[MINTED_ACCESS, LEFT_1.appId]]);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_admin_failed',
+        fields: { installId: LEFT_1.installId, stage: 'save-config-token', code: 'ECONNRESET' },
+      },
+      { level: 'info', msg: 'slack_leftover_app_deleted', fields: { installId: LEFT_1.installId } },
+    ]);
+    // Nothing names Ada any more: what her slot still held (the token the rotate retired) goes too.
+    expect(releaseChecks(w)).toEqual([[ADA.id]]);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(w.vault.get(configTokenRef(GRACE.id))).toBe(mintedRefresh(2));
+    expect(onlyRow(w)).toMatchObject({ status: 'pending', connectedByUserId: GRACE.id });
+  });
+
+  it('L8 "I deleted it" drops the maker\'s token once nothing names them; keeps it while their install or another leftover does', async () => {
+    // Nothing else names Ada: her token goes, deleted as her, whoever says so.
+    const gone = world();
+    gone.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(gone, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+    expect(await gone.forget({ appId: LEFT_1.appId }, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(gone.trail).toEqual([
+      'store:leftoverApps',
+      'store:forgetLeftoverApp',
+      'store:personHasApps',
+      'vault:delete config-refresh-token',
+    ]);
+    expect(gone.vaultAs).toEqual([{ hook: 'credentials:delete', name: 'config-refresh-token', userId: ADA.id }]);
+    expect(gone.vault.size).toBe(0);
+    expect(gone.slack.calls).toEqual([]);
+    expect(gone.lines).toEqual([]);
+
+    // Her install still names her: kept.
+    const { w: installed } = await connectedWorld();
+    leaveApp(installed, LEFT_1, 'Old Bot', NOW_MS - 60_000, ADA.id);
+    const mark = installed.trail.length;
+    expect(await installed.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 200, body: {} });
+    expect(installed.trail.slice(mark)).toEqual([
+      'store:leftoverApps',
+      'store:forgetLeftoverApp',
+      'store:personHasApps',
+    ]);
+    expect(installed.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(1));
+
+    // Another leftover still names her: kept, until that one goes too.
+    const two = world();
+    two.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    leaveApp(two, LEFT_1, 'First Bot', NOW_MS - 120_000, ADA.id);
+    leaveApp(two, LEFT_2, 'Second Bot', NOW_MS - 60_000, ADA.id);
+    expect(await two.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 200, body: {} });
+    expect(two.vault.get(configTokenRef(ADA.id))).toBe(ADA_STORED);
+    expect(await two.forget({ appId: LEFT_2.appId })).toMatchObject({ status: 200, body: {} });
+    expect(releaseChecks(two)).toEqual([[ADA.id], [ADA.id]]);
+    expect(two.vault.size).toBe(0);
+
+    // A forget failing after an earlier one went (two entries can name one
+    // app): the 500 still releases the maker whose entry went, and no one else.
+    const broken = world();
+    broken.vault.set(configTokenRef(ADA.id), ADA_STORED);
+    broken.vault.set(configTokenRef(EVE.id), EVE_STORED);
+    leaveApp(broken, LEFT_1, 'First Bot', NOW_MS - 120_000, ADA.id);
+    leaveApp(broken, { installId: 'inst_left_again', appId: LEFT_1.appId }, 'First Bot', NOW_MS - 60_000, EVE.id);
+    const forgetAsBefore = broken.memory.store.forgetLeftoverApp.bind(broken.memory.store);
+    broken.memory.store.forgetLeftoverApp = async (installId) => {
+      if (installId === 'inst_left_again') throw connectionReset();
+      return forgetAsBefore(installId);
+    };
+    expect(await broken.forget({ appId: LEFT_1.appId })).toMatchObject({ status: 500, body: { error: 'internal' } });
+    expect(releaseChecks(broken)).toEqual([[ADA.id]]);
+    expect(broken.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(broken.vault.get(configTokenRef(EVE.id))).toBe(EVE_STORED);
+    expect([...broken.memory.leftovers.keys()]).toEqual(['inst_left_again']);
+    expect(broken.lines).toEqual([
+      { level: 'error', msg: 'slack_admin_failed', fields: { stage: 'forget-leftover-app', code: 'ECONNRESET' } },
+    ]);
+  });
+
+  it("L9 one token, two apps (the card's acceptance): Ada's Rename and Disconnect keep her token alive for the app Slack wouldn't delete, and Grace's Connect deletes it with that token", async () => {
+    // Ada connects; an app she made earlier is still left over.
+    const { w } = await connectedWorld();
+    leaveApp(w, LEFT_1, 'Old Bot', NOW_MS - 60_000, ADA.id);
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    // Disconnect deletes her install's app; the leftover still names her, so her token stays, as its successor.
+    expect(await w.disconnect()).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(3)]]));
+
+    const mark = w.slack.calls.length;
+    expect((await w.connect(SECOND_PAIR, GRACE)).status).toBe(200);
+    // Each use read the token the one before it saved, so the pass rotates exactly the one Disconnect kept.
+    expect(rotatedTokens(w)).toEqual([REFRESH, mintedRefresh(1), mintedRefresh(2), mintedRefresh(3), SECOND_REFRESH]);
+    expect(
+      w.slack.calls
+        .slice(mark)
+        .filter((c) => c.method === 'deleteApp')
+        .map((c) => c.args),
+    ).toEqual([[MINTED_ACCESS, LEFT_1.appId]]);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
+    expect(w.vault.get(configTokenRef(GRACE.id))).toBe(mintedRefresh(5));
+    expect(w.lines.filter((l) => l.msg === 'slack_admin_failed')).toEqual([]);
+  });
+
+  it('L10 Replace fixes both: a token Slack refuses, replaced, renames the install again and has already deleted the app it made earlier', async () => {
+    const { w } = await connectedWorld();
+    leaveApp(w, LEFT_1, 'Old Bot', NOW_MS - 60_000, ADA.id);
+    // Slack now refuses the token AX holds for Ada.
+    failRotateOf(w, mintedRefresh(1), new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
+    expect(await w.rename()).toMatchObject({ status: 502, body: { error: 'slack-config-token' } });
+
+    // Grace pastes the new token Ada generated (a hand-off): the token in hand is still Ada's.
+    expect(await w.replace({ refreshToken: SECOND_REFRESH }, GRACE)).toMatchObject({ status: 200, body: {} });
+    expect(deletes(w)).toEqual([[MINTED_ACCESS, LEFT_1.appId]]);
+    expect(w.memory.leftovers.size).toBe(0);
+    // The pass neither read nor rotated what the replace had just stored in her slot.
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(2));
+    expect(releaseChecks(w)).toEqual([]);
+
+    expect(await w.rename()).toMatchObject({ status: 200, body: { botName: 'Ada Helper' } });
+    expect(rotatedTokens(w)).toEqual([REFRESH, mintedRefresh(1), SECOND_REFRESH, mintedRefresh(2)]);
   });
 });
 
@@ -3467,7 +4332,7 @@ describe('secrets never leave', () => {
     replaceSave.vaultFailures.set('credentials:set config-refresh-token', leak('vault'));
     await replaceSave.replace();
     const replaceRow = track((await connectedWorld()).w);
-    replaceRow.memory.failures.set('setConfigTokenOwner', leak('setConfigTokenOwner'));
+    replaceRow.memory.failures.set('setConfigTokenAddedAt', leak('setConfigTokenAddedAt'));
     await replaceRow.replace();
     const replaceLeftover = track((await connectedWorld()).w);
     leaveApp(replaceLeftover, LEFT_1);
@@ -3475,6 +4340,30 @@ describe('secrets never leave', () => {
       throw leak('deleteApp');
     };
     await replaceLeftover.replace();
+
+    // The pass deleting Ada's leftover with her stored token, at Grace's
+    // Connect (TASK-1175): all of it; then reading her token failing, the
+    // rotate failing, and saving its successor failing. Last, "I deleted it"
+    // whose release check fails.
+    const adaLeftWorld = (): World => {
+      const w = track(world());
+      w.vault.set(configTokenRef(ADA.id), ADA_STORED);
+      leaveApp(w, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+      return w;
+    };
+    await adaLeftWorld().connect(SECOND_PAIR, GRACE);
+    const passRead = adaLeftWorld();
+    passRead.vaultFailures.set('credentials:get config-refresh-token', leak('vault'));
+    await passRead.connect(SECOND_PAIR, GRACE);
+    const passRotate = adaLeftWorld();
+    failRotateOf(passRotate, ADA_STORED, leak('rotate'));
+    await passRotate.connect(SECOND_PAIR, GRACE);
+    const passSave = adaLeftWorld();
+    passSave.vaultFailures.set(`credentials:set ${configTokenRef(ADA.id)}`, leak('vault'));
+    await passSave.connect(SECOND_PAIR, GRACE);
+    const forgetRelease = adaLeftWorld();
+    forgetRelease.memory.failures.set('personHasApps', leak('personHasApps'));
+    await forgetRelease.forget();
 
     // Auth and branding faults.
     await track(world({ authFault: leak('auth') })).status();
@@ -3504,5 +4393,7 @@ describe('secrets never leave', () => {
     }
     // Every refresh token the fake Slack minted, whichever rotate minted it.
     expect(seen).not.toContain('MINTEDREFRESH');
+    // Nor whose token anything is (TASK-1175): a person's id never leaves either.
+    for (const user of USERS) expect(seen).not.toContain(user.id);
   });
 });

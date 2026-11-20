@@ -200,7 +200,10 @@ export async function runAdminResetBootstrapCommand(
         // (credentials-store-db); its own subscriber removes the install
         // rows, which would otherwise still read as "connected". Its routes
         // land on the no-op stub above, so publicOrigin only has to parse.
-        createChannelSlackPlugin({ publicOrigin: baseUrl }),
+        // Its boot move of configuration tokens (TASK-1175) stays the
+        // host's: a CLI newer than the host would otherwise empty rows that
+        // host still reads.
+        createChannelSlackPlugin({ publicOrigin: baseUrl, moveConfigTokens: false }),
         // Silent writers: onboarding's first-boot init prints a token +
         // writes a token file when the row is missing. We're about to
         // OVERWRITE that token via bootstrap:reset, so suppress the

@@ -18,15 +18,17 @@ export interface InstallRow {
   teamName: string | null;
   botUserId: string | null;
   /**
-   * The admin who added the configuration token the install holds (at
-   * Connect, or the latest Replace); vault reads name them. Their name is
-   * auth's, read when shown.
+   * The admin who connected the install: whose configuration token made the
+   * app, and so whose token (one per person, TASK-1175) every change to it
+   * uses. Vault reads name them. Set once, at Connect: a Replace stores the
+   * pasted token as theirs and never moves the app to another person. Their
+   * name is auth's, read when shown.
    */
   connectedByUserId: string;
   /** When the row was made, by Connect. Orders `current()`. */
   createdAt: Date;
   /**
-   * When the configuration token this install holds was added. At Connect
+   * When the configuration token this install uses was added. At Connect
    * that is the same instant as `createdAt`; after a Replace it is the latest
    * replace (TASK-1128).
    */
@@ -34,8 +36,12 @@ export interface InstallRow {
   installedAt: Date | null;
 }
 
-/** What a reset needs to say about an install it deleted. Never a secret or the client id. */
-export type RemovedInstall = Pick<InstallRow, 'installId' | 'appId' | 'teamId'>;
+/**
+ * What a reset needs about an install it deleted: the ids its log line
+ * names, and the person whose configuration token the install used
+ * (TASK-1175), which no log line carries. Never a secret or the client id.
+ */
+export type RemovedInstall = Pick<InstallRow, 'installId' | 'appId' | 'teamId' | 'connectedByUserId'>;
 
 export interface OAuthState {
   installId: string;
@@ -45,8 +51,8 @@ export interface OAuthState {
 }
 
 /**
- * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own after trying
- * the pasted refresh token failed), so it may still be on Slack. No secret.
+ * A Slack app AX made and couldn't delete (Disconnect's, or Connect's own
+ * undo's), so it may still be on Slack. No secret.
  */
 export interface LeftoverApp {
   /**
@@ -57,12 +63,32 @@ export interface LeftoverApp {
   appId: string;
   botName: string;
   leftAt: Date;
+  /**
+   * Whose configuration token made the app (TASK-1175): the removed
+   * install's person, or the admin whose Connect made it. On Slack, only
+   * that person's token can manage it (design §8 Q5). Null for an app left
+   * before TASK-1175. An id, never a name, and never logged.
+   */
+  connectedByUserId: string | null;
 }
 
 export interface InstallStore {
   /** The one shared-app install, any status: the oldest row, if there are several. */
   current(): Promise<InstallRow | null>;
   get(installId: string): Promise<InstallRow | null>;
+  /**
+   * Every install, any status: the most recently added configuration token
+   * first (`config_token_added_at`), then by install id.
+   */
+  list(): Promise<InstallRow[]>;
+  /**
+   * Whether any install (any status) or any leftover app still names this
+   * person as its `connectedByUserId` (TASK-1175). One statement, so both
+   * tables are read at one moment. A leftover from before TASK-1175 names
+   * no one, and a channel binding's person never counts: a binding names
+   * whom its outsiders run as, not whose token made an app.
+   */
+  personHasApps(userId: string): Promise<boolean>;
   insertPending(
     r: Pick<InstallRow, 'installId' | 'appId' | 'clientId' | 'botName' | 'connectedByUserId'>,
   ): Promise<void>;
@@ -94,18 +120,20 @@ export interface InstallStore {
    */
   setBotName(installId: string, botName: string): Promise<void>;
   /**
-   * Record who added the configuration token an ACTIVE install holds, and
-   * when (a Replace, TASK-1128): one UPDATE of those two columns and nothing
-   * else, so the channel bindings (another table) stay as they are. Throws
+   * Record when the configuration token an ACTIVE install uses was added (a
+   * Replace, TASK-1128): one UPDATE of that column and nothing else, so the
+   * install's person and the channel bindings (another table) stay as they
+   * are. A Replace never moves an app to another person (TASK-1175): only
+   * `insertPending` writes `connected_by_user_id`. Throws
    * `install-not-active` when the install is missing or still pending.
    */
-  setConfigTokenOwner(installId: string, o: { userId: string; addedAt: Date }): Promise<void>;
+  setConfigTokenAddedAt(installId: string, addedAt: Date): Promise<void>;
   /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
-   * With `appLeft`, the install's Slack app is still on Slack (Disconnect
-   * couldn't delete it): its id and name move to the leftover list in the
-   * same statement, so a later Connect can delete it.
+   * With `appLeft`, the install's Slack app is still on Slack (Disconnect,
+   * or Connect's undo, couldn't delete it): its id, name and person move to the leftover list
+   * in the same statement, so a later Connect can delete it.
    */
   remove(installId: string, o?: { appLeft?: boolean }): Promise<void>;
   /**
@@ -122,10 +150,14 @@ export interface InstallStore {
    */
   leftoverApps(): Promise<LeftoverApp[]>;
   /**
-   * Remember a Slack app Connect made and couldn't take back (TASK-1159): no
-   * install row ever held it. An id already on the list keeps its first app.
+   * Remember a Slack app Connect made and couldn't take back (TASK-1159),
+   * before any install row held it. `connectedByUserId` is the connecting admin,
+   * whose token made it. An id already on the list keeps its first app, and
+   * that app's person.
    */
-  rememberLeftoverApp(app: Pick<LeftoverApp, 'installId' | 'appId' | 'botName'>): Promise<void>;
+  rememberLeftoverApp(
+    app: Pick<LeftoverApp, 'installId' | 'appId' | 'botName'> & { connectedByUserId: string },
+  ): Promise<void>;
   /** Forget one leftover app, by its removed install's id. A missing one is not an error. */
   forgetLeftoverApp(installId: string): Promise<void>;
 }
@@ -199,6 +231,25 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         .where('install_id', '=', installId)
         .executeTakeFirst();
       return row === undefined ? null : toRow(row);
+    },
+
+    async list() {
+      const rows = await db
+        .selectFrom(INSTALLS)
+        .select(ROW_COLUMNS)
+        .orderBy('config_token_added_at', 'desc')
+        .orderBy('install_id', 'asc')
+        .execute();
+      return rows.map(toRow);
+    },
+
+    async personHasApps(userId) {
+      const r = await sql<{ named: boolean }>`
+        SELECT EXISTS (SELECT 1 FROM channel_slack_v1_installs WHERE connected_by_user_id = ${userId})
+            OR EXISTS (SELECT 1 FROM channel_slack_v1_leftover_apps WHERE connected_by_user_id = ${userId})
+            AS named
+      `.execute(db);
+      return r.rows[0]?.named === true;
     },
 
     async insertPending(r) {
@@ -307,10 +358,10 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
     },
 
-    async setConfigTokenOwner(installId, o) {
+    async setConfigTokenAddedAt(installId, addedAt) {
       const r = await db
         .updateTable(INSTALLS)
-        .set({ connected_by_user_id: o.userId, config_token_added_at: o.addedAt })
+        .set({ config_token_added_at: addedAt })
         .where('install_id', '=', installId)
         .where('status', '=', 'active')
         .executeTakeFirst();
@@ -326,18 +377,19 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
     // With `appLeft`, the app moves to the leftover list from that same
     // RETURNING (Postgres runs a data-modifying CTE to completion even though
     // nothing reads it): it is never in both tables, and an insert that fails
-    // keeps the install and its bindings. `ON CONFLICT` keeps the first app
-    // an id left, which only tests can hit (they re-use install ids).
+    // keeps the install and its bindings. The person goes with it, read from
+    // the row the delete removed (TASK-1175). `ON CONFLICT` keeps the first
+    // app an id left, which only tests can hit (they re-use install ids).
     async remove(installId, o) {
       if (o?.appLeft === true) {
         await sql`
           WITH removed AS (
             DELETE FROM channel_slack_v1_installs
              WHERE install_id = ${installId}
-            RETURNING install_id, app_id, bot_name
+            RETURNING install_id, app_id, bot_name, connected_by_user_id
           ), kept AS (
-            INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
-            SELECT install_id, app_id, bot_name FROM removed
+            INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name, connected_by_user_id)
+            SELECT install_id, app_id, bot_name, connected_by_user_id FROM removed
             ON CONFLICT (install_id) DO NOTHING
           )
           DELETE FROM channel_slack_v1_channels
@@ -357,23 +409,33 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
     },
 
     async removeAll() {
-      const r = await sql<{ install_id: string; app_id: string; team_id: string | null }>`
+      const r = await sql<{
+        install_id: string;
+        app_id: string;
+        team_id: string | null;
+        connected_by_user_id: string;
+      }>`
         WITH removed AS (
           DELETE FROM channel_slack_v1_installs
-          RETURNING install_id, app_id, team_id
+          RETURNING install_id, app_id, team_id, connected_by_user_id
         ), unbound AS (
           DELETE FROM channel_slack_v1_channels
            WHERE install_id IN (SELECT install_id FROM removed)
         )
-        SELECT install_id, app_id, team_id FROM removed
+        SELECT install_id, app_id, team_id, connected_by_user_id FROM removed
       `.execute(db);
-      return r.rows.map((row) => ({ installId: row.install_id, appId: row.app_id, teamId: row.team_id }));
+      return r.rows.map((row) => ({
+        installId: row.install_id,
+        appId: row.app_id,
+        teamId: row.team_id,
+        connectedByUserId: row.connected_by_user_id,
+      }));
     },
 
     async leftoverApps() {
       const rows = await db
         .selectFrom(LEFTOVER_APPS)
-        .select(['install_id', 'app_id', 'bot_name', 'left_at'])
+        .select(['install_id', 'app_id', 'bot_name', 'left_at', 'connected_by_user_id'])
         .orderBy('left_at', 'asc')
         .orderBy('install_id', 'asc')
         .limit(LEFTOVER_APPS_MAX)
@@ -383,13 +445,14 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         appId: r.app_id,
         botName: r.bot_name,
         leftAt: r.left_at,
+        connectedByUserId: r.connected_by_user_id,
       }));
     },
 
     async rememberLeftoverApp(app) {
       await sql`
-        INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name)
-        VALUES (${app.installId}, ${app.appId}, ${app.botName})
+        INSERT INTO channel_slack_v1_leftover_apps (install_id, app_id, bot_name, connected_by_user_id)
+        VALUES (${app.installId}, ${app.appId}, ${app.botName}, ${app.connectedByUserId})
         ON CONFLICT (install_id) DO NOTHING
       `.execute(db);
     },
