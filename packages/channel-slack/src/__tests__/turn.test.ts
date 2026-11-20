@@ -95,6 +95,8 @@ function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean 
     setAppIcon: notHere,
     oauthAccess: notHere,
     usersInfo: notHere,
+    usersLookupByEmail: notHere,
+    postDirect: notHere,
     postEphemeral: notHere,
     async postBlocks(token, a) {
       record('postBlocks', a, token);

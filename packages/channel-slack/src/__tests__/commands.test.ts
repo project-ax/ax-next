@@ -268,6 +268,8 @@ function fakeSlack() {
     oauthAccess: notHere,
     postMessage: notHere,
     postBlocks: notHere,
+    postDirect: notHere,
+    usersLookupByEmail: notHere,
     updateMessage: notHere,
     startStream: notHere,
     appendStream: notHere,
