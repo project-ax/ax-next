@@ -524,6 +524,18 @@ the requester.
 - A channel binding is written on the bot's first mention there, after the
   channel check (public, live, not Slack Connect). It's bound only to the bot's
   own agent.
+- That binding's remember switch is the one the same agent had for the channel
+  on the shared app, so a channel the team set not to be remembered stays that
+  way (TASK-1179). With no such binding it starts on, like any new connection.
+  If the switch can't be read, nothing is bound and nothing runs. Two known
+  gaps remain. A bot's channels have no switch in settings yet, so whatever a
+  bot channel starts with is stuck: "on by default" is currently "on, with no
+  way to turn it off", and a carried "off" can't be turned back on. (A moved
+  channel's row hides the shared switch too.) And the switch is
+  read at the first mention, so if the shared binding is gone by then (Admin ›
+  Slack Disconnect, Disconnect on a moved channel, or a rebuilt bot after
+  either), the team's "off" is lost and the bot binds the channel with
+  remember on.
 - Outsiders in a bot's channels run as the requester, while the requester is
   still a team admin. Otherwise they get a polite line and the bot shows
   "needs a team admin to claim it".
