@@ -11,6 +11,7 @@ import {
   type SystemPromptAugmentOutput,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
+import { createAdminBotRoutes } from './admin-bot-routes.js';
 import { createAdminRoutes } from './admin-routes.js';
 import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
@@ -73,6 +74,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /admin/slack, POST /admin/slack/{connect,install-url,rename,
 //        replace-token,disconnect,forget-leftover-app},
 //   GET  /admin/slack/oauth/callback  — admin only, CSRF-checked (admin-routes.ts)
+//   GET  /admin/slack/bots, POST /admin/slack/bots/disconnect  — Admin › Slack's
+//        list of the team agents' own bots and its Disconnect for one
+//        (TASK-1172): admin only, CSRF-checked (admin-bot-routes.ts), the only
+//        callers of the two bots.ts methods that ask no one's rights
 //   POST /slack/events/:installId     — Slack's deliveries,
 //   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts), and
 //   POST /slack/interactions/:installId — a click on an approval prompt's
@@ -392,6 +397,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             now,
             randomBytes,
           }),
+          // Admin › Slack's list of the team agents' own bots and its Disconnect
+          // (TASK-1172): behind the same admin gate, on the same `bots`, which
+          // takes the one app lock itself.
+          ...createAdminBotRoutes({ bus, bots, logger }),
           {
             method: 'POST',
             path: EVENTS_ROUTE_PATH,
