@@ -285,7 +285,7 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   { method: 'POST', suffix: '/bot', body: { botName: 'Support Helper' } },
   { method: 'POST', suffix: '/bot/install-url' },
   { method: 'POST', suffix: '/bot/cancel' },
-  { method: 'POST', suffix: '/bot/disconnect' },
+  { method: 'POST', suffix: '/bot/disconnect', body: { installId: OWN_BOT.installId } },
 ];
 const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '');
 
@@ -541,7 +541,7 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
-      // Disconnect the agent's own bot, pending or live (TASK-1172): it reads no body.
+      // Disconnect the agent's own bot, pending or live (TASK-1172): its body is the install id the page showed.
       {
         method: 'POST',
         path: '/settings/slack/:agentId/bot/disconnect',
@@ -812,12 +812,14 @@ describe('the section', () => {
 
   it('no-workspace with a live bot: a team admin reads canManage true, so the bot can still be disconnected after Slack is', async () => {
     const w = world();
+    // As the domain answers a manager: with the install id its Disconnect takes. A member gets null.
     const live: AgentSlackBot = {
       state: 'live',
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
       needsClaim: false,
+      installId: OWN_BOT.installId,
     };
     w.bots.answers.status = live;
     // Admin › Slack disconnected the shared app; the agent's own bot stayed.
@@ -826,16 +828,17 @@ describe('the section', () => {
       status: 200,
       body: { state: 'no-workspace', canManage: true, bot: live },
     });
+    w.bots.answers.status = { ...live, installId: null };
     expect(await w.status(SUPPORT.id, MEL)).toEqual({
       status: 200,
-      body: { state: 'no-workspace', canManage: false, bot: live },
+      body: { state: 'no-workspace', canManage: false, bot: { ...live, installId: null } },
     });
     // ...and the Disconnect that offers needs no shared app: it reaches the domain.
-    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA);
+    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, { installId: OWN_BOT.installId });
     expect({ status: a.status, body: a.body }).toEqual({ status: 200, body: { appDeleted: true } });
     expect(w.bots.calls.at(-1)).toEqual({
       method: 'disconnect',
-      input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id },
+      input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id, installId: OWN_BOT.installId },
     });
   });
 
@@ -912,12 +915,14 @@ describe('the section', () => {
   });
 
   describe("with the agent's own bot (TASK-1168)", () => {
+    /** As a member reads it: no install id (only those who manage the agent get one, for its Disconnect). */
     const LIVE: AgentSlackBot = {
       state: 'live',
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
       needsClaim: false,
+      installId: null,
     };
     const channelIds = async (w: ReturnType<typeof world>): Promise<string[]> => {
       const got = await w.status(SUPPORT.id, MEL);
@@ -962,7 +967,16 @@ describe('the section', () => {
 
     it('a pending bot, no bot, or a live answer whose bot is gone by the route\'s own read: every row needsInvite false', async () => {
       const pairs: Array<[InstallRow | null, AgentSlackBot]> = [
-        [PENDING_BOT, { state: 'pending', botName: 'Support Helper', approver: 'Grace Hopper', canContinue: false }],
+        [
+          PENDING_BOT,
+          {
+            state: 'pending',
+            botName: 'Support Helper',
+            approver: 'Grace Hopper',
+            canContinue: false,
+            installId: PENDING_BOT.installId,
+          },
+        ],
         [null, { state: 'none', configTokenStored: false }],
         [null, LIVE],
       ];
@@ -1310,19 +1324,21 @@ describe('the bot routes', () => {
       status: 409,
       body: { error: 'not-pending' },
     });
+    // A bot that isn't the one the page showed (gone, or replaced since).
+    const shown = { installId: OWN_BOT.installId };
     w.bots.answers.disconnect = { status: 409, body: { error: 'no-bot' } };
-    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA)).toMatchObject({
+    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
       status: 409,
       body: { error: 'no-bot' },
     });
     // The rights the domain asked again inside the lock, and an app Slack wouldn't delete.
     w.bots.answers.disconnect = { status: 403, body: { error: 'forbidden' } };
-    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA)).toMatchObject({
+    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
       status: 403,
       body: { error: 'forbidden' },
     });
     w.bots.answers.disconnect = { status: 200, body: { appDeleted: false } };
-    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA)).toMatchObject({
+    expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
       status: 200,
       body: { appDeleted: false },
     });
@@ -1344,24 +1360,66 @@ describe('the bot routes', () => {
     ]);
   });
 
-  it('disconnect reaches the domain for a team admin of the agent, as the person asking, and never reads a body', async () => {
+  it('disconnect hands the domain the install id the page showed, for the agent in the path, as the person asking', async () => {
     const w = world();
-    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, 'garbage');
+    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, { installId: OWN_BOT.installId });
     expect({ status: a.status, body: a.body }).toEqual({ status: 200, body: { appDeleted: true } });
-    // A body naming another agent changes nothing: the agent is the path's.
-    const g = await w.call('POST', '/bot/disconnect', SUPPORT.id, GRACE, JSON.stringify({ agentId: SALES.id }));
+    // The id as sent, even one the agent's bot doesn't have: whether it names the agent's bot is the domain's to say.
+    const g = await w.call('POST', '/bot/disconnect', SUPPORT.id, GRACE, { installId: INSTALL_ID });
     expect({ status: g.status, body: g.body }).toEqual({ status: 200, body: { appDeleted: true } });
     expect(w.bots.calls).toEqual([
-      { method: 'disconnect', input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id } },
-      { method: 'disconnect', input: { ctxUserId: GRACE.id, actorUserId: GRACE.id, agentId: SUPPORT.id } },
+      {
+        method: 'disconnect',
+        input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id, installId: OWN_BOT.installId },
+      },
+      {
+        method: 'disconnect',
+        input: { ctxUserId: GRACE.id, actorUserId: GRACE.id, agentId: SUPPORT.id, installId: INSTALL_ID },
+      },
     ]);
+  });
+
+  it('disconnect takes { installId } and nothing else: an unknown key, a missing, non-string or malformed id is a 400 before the domain; past the cap a 413', async () => {
+    const w = world();
+    const id = OWN_BOT.installId;
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['no body at all (an older page)', Buffer.alloc(0), { error: 'invalid-body' }],
+      ['an unknown key', { installId: 'x', extra: 1 }, { error: 'invalid-body' }],
+      ['an unknown key beside a good id, even one naming another agent', { installId: id, agentId: SALES.id }, { error: 'invalid-body' }],
+      ['not JSON', 'garbage', { error: 'invalid-body' }],
+      ['an array', '[]', { error: 'invalid-body' }],
+      ['null', 'null', { error: 'invalid-body' }],
+      ['bytes that are not UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), { error: 'invalid-body' }],
+      ['no installId', {}, { error: 'invalid-install-id' }],
+      ['a number', { installId: 42 }, { error: 'invalid-install-id' }],
+      ['null for the id', { installId: null }, { error: 'invalid-install-id' }],
+      ['an id too short', { installId: 'short' }, { error: 'invalid-install-id' }],
+      ['an id one too long', { installId: `${id}A` }, { error: 'invalid-install-id' }],
+      ['an id with a character no install id has', { installId: `${'A'.repeat(21)}/` }, { error: 'invalid-install-id' }],
+      ['an id with a space around it', { installId: ` ${id}` }, { error: 'invalid-install-id' }],
+    ];
+    for (const [what, body, error] of cases) {
+      const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, body);
+      expect({ status: a.status, body: a.body }, what).toEqual({ status: 400, body: error });
+    }
+    // http-server's maxBodyBytes refuses it first; the route's own check is the backstop.
+    const big = Buffer.from(JSON.stringify({ installId: id, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
+    const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, big);
+    expect({ status: a.status, body: a.body }).toEqual({ status: 413, body: { error: 'body-too-large' } });
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
   });
 
   it('a fault in the domain is a 500, logged by its code and the route alone', async () => {
     const w = world();
     w.bots.state.fail = Object.assign(new Error(`vault down holding ${REFRESH}`), { code: 'ECONNRESET' });
+    const bodies: Partial<Record<Suffix, unknown>> = {
+      '/bot': { botName: 'Support Helper' },
+      '/bot/disconnect': { installId: OWN_BOT.installId },
+    };
     for (const suffix of ['/bot', '/bot/install-url', '/bot/cancel', '/bot/disconnect'] as const) {
-      const a = await w.call('POST', suffix, SUPPORT.id, ADA, suffix === '/bot' ? { botName: 'Support Helper' } : undefined);
+      const a = await w.call('POST', suffix, SUPPORT.id, ADA, bodies[suffix]);
       expect({ status: a.status, body: a.body }, suffix).toEqual({ status: 500, body: { error: 'internal' } });
     }
     expect(w.lines).toEqual([
@@ -1375,18 +1433,21 @@ describe('the bot routes', () => {
 
   it('the section asks the bot domain as the person reading, says whether they manage and whether the shared bot is live, and shows its answer', async () => {
     const w = world();
+    // As the domain answers a manager; a member, who can't disconnect it, gets no install id.
     const live: AgentSlackBot = {
       state: 'live',
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
       needsClaim: false,
+      installId: OWN_BOT.installId,
     };
-    w.bots.answers.status = live;
+    w.bots.answers.status = { ...live, installId: null };
     expect(await w.status(SUPPORT.id, MEL)).toMatchObject({
       status: 200,
-      body: { state: 'ready', canManage: false, bot: live },
+      body: { state: 'ready', canManage: false, bot: { ...live, installId: null } },
     });
+    w.bots.answers.status = live;
     // A live bot outlives the shared install: no workspace still shows it.
     w.state.install = null;
     expect(await w.status(SUPPORT.id, ADA)).toEqual({

@@ -13,6 +13,7 @@ import {
 } from './channels.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
+import { INSTALL_ID_RE } from './ingress.js';
 import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX, SLACK_ID_RE } from './limits.js';
 import { logCode } from './log-code.js';
 import { personName } from './person-name.js';
@@ -40,8 +41,10 @@ import { checkUser } from './user-auth.js';
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }, its approver only, while pending
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }, while pending
- *   POST /settings/slack/:agentId/bot/disconnect  → { appDeleted }, pending or live, with or without
- *                                               the shared app (the domain asks the rights again)
+ *   POST /settings/slack/:agentId/bot/disconnect  { installId } → { appDeleted }, pending or live, with
+ *                                               or without the shared app (the domain asks the rights
+ *                                               again, and answers 409 no-bot unless `installId` is
+ *                                               the agent's bot)
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
@@ -54,10 +57,15 @@ import { checkUser } from './user-auth.js';
  * so it has Admin › Slack's Connect cap. Its `refreshToken` is optional (the
  * one stored for the person is used without it), but one that is there must
  * look like a configuration refresh token, so an access token pasted into
- * that box never reaches Slack. The other bot routes read no body.
+ * that box never reaches Slack. The bot's Disconnect takes only the install
+ * id of the bot the page showed (INSTALL_ID_RE, as Admin › Slack's
+ * Disconnect does), so a page drawn before the bot was disconnected, and
+ * asked for again, can't take the new one. Install-url and Cancel read no
+ * body.
  *
  * Team members who aren't admins read the section, so "connected by" and a
- * bot's approver are a display name or "A teammate", never an email.
+ * bot's approver are a display name or "A teammate", never an email, and a
+ * live bot's install id reaches only those who manage the agent (bots.ts).
  * Failures log code-only.
  */
 
@@ -104,6 +112,8 @@ type Reply = { status: number; body: unknown };
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 /** What a bot request's body may hold. */
 const BOT_KEYS: readonly string[] = ['botName', 'refreshToken', 'iconPng'];
+/** What a bot Disconnect's body may hold: the install id of the bot the page showed. */
+const BOT_DISCONNECT_KEYS: readonly string[] = ['installId'];
 
 const PLUGIN = '@ax/channel-slack';
 /** "Connected by" when auth has no name, no account or no answer. Never the email: members read this page. */
@@ -186,6 +196,28 @@ function readBotBody(req: RouteRequest): BotBody {
   if (!name.ok) return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: name.reason }) };
   const icon = fields['iconPng'] === undefined ? null : parseIconPng(fields['iconPng']);
   return { ok: true, botName: name.name, refreshToken, icon };
+}
+
+type BotDisconnectBody = { ok: true; installId: string } | { ok: false; reply: Reply };
+
+/**
+ * A bot Disconnect's JSON body: an object whose only key is the install id
+ * of the bot the page showed. 413 past the cap (http-server's `maxBodyBytes`
+ * refused it first; this is the backstop), 400 `invalid-body` for anything
+ * but such an object, 400 `invalid-install-id` for an id of the wrong shape,
+ * as Admin › Slack's Disconnect answers (admin-bot-routes.ts).
+ */
+function readBotDisconnectBody(req: RouteRequest): BotDisconnectBody {
+  if (req.body.length > ADMIN_BODY_MAX_BYTES) return { ok: false, reply: json(413, { error: 'body-too-large' }) };
+  const fields = bodyObject(req.body);
+  if (fields === null || Object.keys(fields).some((k) => !BOT_DISCONNECT_KEYS.includes(k))) {
+    return { ok: false, reply: INVALID_BODY };
+  }
+  const installId = fields['installId'];
+  if (typeof installId !== 'string' || !INSTALL_ID_RE.test(installId)) {
+    return { ok: false, reply: json(400, { error: 'invalid-install-id' }) };
+  }
+  return { ok: true, installId };
 }
 
 /** One lookup per key per request, however many channels share it. */
@@ -420,13 +452,16 @@ export function createAgentSlackRoutes(
 
   /**
    * Take the agent's own bot away, pending or live (TASK-1172): any team
-   * admin who manages the agent may, with or without the shared app.
+   * admin who manages the agent may, with or without the shared app, naming
+   * the bot by the install id their page showed.
    */
   async function disconnectBot(a: Asked): Promise<Reply> {
     const rights = await manages(a);
     if (!rights.ok) return refused(rights.reason);
+    const body = readBotDisconnectBody(a.req);
+    if (!body.ok) return body.reply;
     // The domain asks the rights again inside the app lock, before anything else.
-    return bots.disconnect({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId });
+    return bots.disconnect({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId, installId: body.installId });
   }
 
   /**

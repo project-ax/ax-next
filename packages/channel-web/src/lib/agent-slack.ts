@@ -12,7 +12,8 @@
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
- *   POST /settings/slack/:agentId/bot/disconnect  → { appDeleted }   (TASK-1172: a live or pending bot)
+ *   POST /settings/slack/:agentId/bot/disconnect  { installId } → { appDeleted }
+ *        (TASK-1172: a live or pending bot, named by the install id the page showed; 409 no-bot for any other)
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
@@ -47,14 +48,26 @@ export interface InviteTarget {
  * The agent's own Slack bot, as this viewer may see it (mirrors
  * @ax/channel-slack's `AgentSlackBot` by shape). `pending` reaches only the
  * people who manage the agent. `approver` is a display name, never an email.
+ *
+ * `installId` is the bot's own opaque id, the key its Disconnect takes, so a
+ * page only ever takes away the bot it showed (TASK-1172). Only the people
+ * who manage the agent get it. It is null for anyone else, and from an older
+ * server that doesn't send it; with no id there is no Disconnect.
  */
 export type AgentSlackBot =
   /** `configTokenStored`: whether the server holds the viewer's OWN configuration token, so the form can skip the paste. */
   | { state: 'none'; configTokenStored: boolean }
   /** `canContinue`: the viewer is the approver and Slack is connected, so "Continue in Slack" can finish it. */
-  | { state: 'pending'; botName: string; approver: string; canContinue: boolean }
+  | { state: 'pending'; botName: string; approver: string; canContinue: boolean; installId: string | null }
   /** `handle`: the bot's @handle, or null when Slack never said. `needsClaim`: no team admin stands behind it now. */
-  | { state: 'live'; botName: string; handle: string | null; approver: string; needsClaim: boolean };
+  | {
+      state: 'live';
+      botName: string;
+      handle: string | null;
+      approver: string;
+      needsClaim: boolean;
+      installId: string | null;
+    };
 
 export type AgentSlackStatus =
   | {
@@ -107,6 +120,8 @@ const writeHeaders = {
 
 /** The server's own refusal codes (`channel-taken`, `needs-reconnect`, …). */
 const CODE_RE = /^[a-z0-9-]{1,64}$/;
+/** A bot's install id as the server makes them: 16 random bytes, base64url. */
+const INSTALL_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 
 /**
  * A request that failed with an answer we could read, or an answer we
@@ -155,6 +170,16 @@ function parseRow(value: unknown): SlackChannelRow | null {
   return { channelId, name, remember, connectedBy, needsReconnect, needsInvite };
 }
 
+/**
+ * A bot's install id: one the server could have made, or null (the viewer
+ * doesn't manage the agent). An older server omits it, which reads as null.
+ * Anything else is no answer at all: it would be posted back as the bot to
+ * disconnect.
+ */
+function isInstallId(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && INSTALL_ID_RE.test(value));
+}
+
 function parseBot(value: unknown): AgentSlackBot | null {
   if (!isRecord(value)) return null;
   switch (value['state']) {
@@ -163,18 +188,22 @@ function parseBot(value: unknown): AgentSlackBot | null {
       return typeof configTokenStored === 'boolean' ? { state: 'none', configTokenStored } : null;
     }
     case 'pending': {
-      const { botName, approver, canContinue } = value;
-      return typeof botName === 'string' && typeof approver === 'string' && typeof canContinue === 'boolean'
-        ? { state: 'pending', botName, approver, canContinue }
+      const { botName, approver, canContinue, installId = null } = value;
+      return typeof botName === 'string' &&
+        typeof approver === 'string' &&
+        typeof canContinue === 'boolean' &&
+        isInstallId(installId)
+        ? { state: 'pending', botName, approver, canContinue, installId }
         : null;
     }
     case 'live': {
-      const { botName, handle, approver, needsClaim } = value;
+      const { botName, handle, approver, needsClaim, installId = null } = value;
       return typeof botName === 'string' &&
         (handle === null || typeof handle === 'string') &&
         typeof approver === 'string' &&
-        typeof needsClaim === 'boolean'
-        ? { state: 'live', botName, handle, approver, needsClaim }
+        typeof needsClaim === 'boolean' &&
+        isInstallId(installId)
+        ? { state: 'live', botName, handle, approver, needsClaim, installId }
         : null;
     }
     default:
@@ -369,9 +398,14 @@ export async function cancelSlackBot(agentId: string): Promise<{ appDeleted: boo
   return { appDeleted };
 }
 
-/** Take the agent's own bot away, pending or live. `appDeleted` is false when its Slack app may still be on Slack. */
-export async function disconnectSlackBot(agentId: string): Promise<{ appDeleted: boolean }> {
-  const answer = await post(agentId, '/bot/disconnect', {});
+/**
+ * Take the agent's own bot away, pending or live: the one whose `installId`
+ * the page showed, and no other (any other is a 409 `no-bot`, see
+ * `agentSlackBotStale`). `appDeleted` is false when its Slack app may still
+ * be on Slack.
+ */
+export async function disconnectSlackBot(agentId: string, installId: string): Promise<{ appDeleted: boolean }> {
+  const answer = await post(agentId, '/bot/disconnect', { installId });
   const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
   if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
   return { appDeleted };

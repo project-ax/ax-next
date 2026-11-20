@@ -790,7 +790,7 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/settings/slack/:agentId/bot/cancel', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
-      // A team admin disconnects the agent's own bot, pending or live (TASK-1172).
+      // A team admin disconnects the agent's own bot, pending or live, by the install id the page showed (TASK-1172).
       {
         method: 'POST',
         path: '/settings/slack/:agentId/bot/disconnect',
@@ -2409,18 +2409,34 @@ describe('@ax/channel-slack plugin', () => {
     );
     expect(s.invokes).toEqual([]);
 
-    // 2. Ada, a team admin of the agent, disconnects its bot from the agent's settings.
-    const before = slack.calls.length;
-    expect(
-      await call(
+    // 2. Ada, a team admin of the agent, reads its settings: as one who manages it, she
+    //    gets the bot's install id, the key its Disconnect takes. A Disconnect naming any
+    //    other install (here the shared app's) is 409 no-bot and touches nothing; the one
+    //    her page showed disconnects the bot.
+    const settings = await call(
+      'GET',
+      '/settings/slack/:agentId',
+      request('GET', `/settings/slack/${TEAM_AGENT.id}`, { as: ADMIN.id, params: { agentId: TEAM_AGENT.id } }),
+    );
+    expect(settings).toMatchObject({
+      status: 200,
+      body: { state: 'ready', canManage: true, bot: { state: 'live', installId: BOT_INSTALL_ID } },
+    });
+    const disconnectBot = (installId: string) =>
+      call(
         'POST',
         '/settings/slack/:agentId/bot/disconnect',
         request('POST', `/settings/slack/${TEAM_AGENT.id}/bot/disconnect`, {
           as: ADMIN.id,
           params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify({ installId })),
         }),
-      ),
-    ).toEqual({ status: 200, body: { appDeleted: true }, done: true });
+      );
+    const before = slack.calls.length;
+    expect(await disconnectBot(INSTALL_ID)).toEqual({ status: 409, body: { error: 'no-bot' }, done: true });
+    expect(slack.calls).toHaveLength(before);
+    expect(await installCount()).toBe(2);
+    expect(await disconnectBot(BOT_INSTALL_ID)).toEqual({ status: 200, body: { appDeleted: true }, done: true });
     // Grace's own token is rotated, and the access token minted with it deletes the bot's app.
     expect(slack.calls.slice(before).map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
       ['tooling.tokens.rotate', graces],

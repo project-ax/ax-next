@@ -13,9 +13,13 @@
  *            app couldn't be deleted leaves a note saying where to find it
  *   live     everyone sees the @handle and how to invite it; a manager also
  *            sees who set it up, and can disconnect it (TASK-1172): it leaves
- *            its channels and its Slack app is deleted. A disconnect whose
- *            Slack app couldn't be deleted leaves the same kind of note a
- *            cancel does
+ *            its channels and its Slack app is deleted. The Disconnect names
+ *            the bot it showed by its install id, so a page drawn before the
+ *            bot was replaced can't take the new one (the server says
+ *            `no-bot`, and the page reads the status again); with no id (an
+ *            older server) there is no Disconnect. A disconnect whose Slack
+ *            app couldn't be deleted leaves the same kind of note a cancel
+ *            does
  *
  * THE PASTED TOKEN NEVER LIVES IN REACT STATE. It is an uncontrolled password
  * input (as in Admin › Slack), read once on submit and cleared as the request
@@ -401,6 +405,8 @@ function Live({
 }) {
   const handle = bot.handle;
   const [asking, setAsking] = useState(false);
+  // The key the Disconnect takes: only a manager gets one, and with none there is nothing to name.
+  const installId = canManage ? bot.installId : null;
   return (
     <Section>
       <p className="text-sm">
@@ -414,7 +420,7 @@ function Live({
           {bot.botName} needs a team admin to claim it. Until then it answers team members only.
         </p>
       )}
-      {canManage && (
+      {installId !== null && (
         <div>
           <Button variant="outline" onClick={() => setAsking(true)}>
             Disconnect bot
@@ -425,6 +431,7 @@ function Live({
             agentId={agentId}
             agentName={agentName}
             bot={bot}
+            installId={installId}
             sharedConnected={sharedConnected}
             onCancelled={onCancelled}
             onChanged={onChanged}
@@ -435,13 +442,17 @@ function Live({
   );
 }
 
-/** Asks before taking a live bot away: it leaves its channels, and its Slack app is deleted. */
+/**
+ * Asks before taking a live bot away: it leaves its channels, and its Slack
+ * app is deleted. Confirming names the bot the dialog shows by `installId`.
+ */
 function DisconnectBotDialog({
   open,
   onClose,
   agentId,
   agentName,
   bot,
+  installId,
   sharedConnected,
   onCancelled,
   onChanged,
@@ -451,6 +462,8 @@ function DisconnectBotDialog({
   agentId: string;
   agentName: string;
   bot: Extract<Bot, { state: 'live' }>;
+  /** The install id of `bot`, the one this dialog names. */
+  installId: string;
   sharedConnected: boolean;
   onCancelled: (cancelled: BotCancelled) => void;
   onChanged: () => void;
@@ -470,7 +483,7 @@ function DisconnectBotDialog({
     setBusy(true);
     setError(null);
     try {
-      const { appDeleted } = await disconnectSlackBot(agentId);
+      const { appDeleted } = await disconnectSlackBot(agentId, installId);
       // The bot is gone: say how it went before the status is read again and this section goes with it.
       onCancelled({ how: 'disconnected', appDeleted, approverIsViewer: false, approver: bot.approver });
       onChanged();

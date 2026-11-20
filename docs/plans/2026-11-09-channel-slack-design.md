@@ -538,8 +538,11 @@ admin to approve is a later card. Here the approver is the requester.
 **As built (TASK-1172).** Disconnect runs the same removal as deleting the
 agent, under the one app lock. A team admin's Disconnect (from the agent's
 settings) is re-checked inside that lock, so a rights change mid-click can't
-slip through. An AX admin's (from Admin › Slack) goes by install id and only
-ever touches bots. It works with no shared install connected. The shared bot
+slip through. An AX admin's (from Admin › Slack) only ever touches bots.
+Both name the bot by the install id their page showed, so a page drawn
+before the bot was disconnected and asked for again can't take the new one
+(it gets `no-bot`). The agent's settings send that id only to the people who
+manage the agent. It works with no shared install connected. The shared bot
 answers again in the agent's old shared channels, because we never touched
 its bindings. It only stepped aside while the agent's own bot was live.
 Admin › Slack's list shows each bot's name, handle, approver (or "A former

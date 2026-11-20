@@ -200,9 +200,12 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
     installUrl: async (as: string, agentId: string = SUPPORT.id): Promise<Reply> =>
       keep(await bots.installUrl({ actorUserId: as, agentId })),
     cancel: async (agentId: string = SUPPORT.id): Promise<Reply> => keep(await bots.cancel({ agentId })),
-    /** A team admin's Disconnect, from the agent's settings (TASK-1172). */
-    disconnect: async (as: string, agentId: string = SUPPORT.id): Promise<Reply> =>
-      keep(await bots.disconnect({ ctx: ctxOf(as), actorUserId: as, agentId })),
+    /**
+     * A team admin's Disconnect, from the agent's settings (TASK-1172), naming
+     * the bot the page showed by its install id.
+     */
+    disconnect: async (as: string, installId: string, agentId: string = SUPPORT.id): Promise<Reply> =>
+      keep(await bots.disconnect({ ctx: ctxOf(as), actorUserId: as, agentId, installId })),
     /** An AX admin's Disconnect, from Admin › Slack, by the bot's install id (TASK-1172). */
     disconnectForAdmin: async (installId: string): Promise<Reply> => keep(await bots.disconnectForAdmin({ installId })),
     /** Admin › Slack's list of every team bot, read as an AX admin (TASK-1172). */
@@ -1041,7 +1044,7 @@ describe('disconnect', () => {
     await seedShared(w);
     const installId = await seedSupportBot(w);
 
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE, installId)).toEqual({ status: 200, body: { appDeleted: true } });
 
     expect(w.trail).toEqual(['store:botForAgent', ...REMOVAL_TRAIL]);
     // Grace's own stored token is the one rotated, and the app deleted is the bot's.
@@ -1066,7 +1069,7 @@ describe('disconnect', () => {
     const w = world();
     const installId = await seedSupportBot(w);
 
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE, installId)).toEqual({ status: 200, body: { appDeleted: true } });
 
     expect(w.trail).toEqual(['store:botForAgent', ...REMOVAL_TRAIL]);
     expect(w.memory.rows.size).toBe(0);
@@ -1083,7 +1086,7 @@ describe('disconnect', () => {
     await seedShared(w);
     const installId = await seedSupportBot(w, { live: false });
 
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE, installId)).toEqual({ status: 200, body: { appDeleted: true } });
 
     expect(w.trail).toEqual(['store:botForAgent', ...REMOVAL_TRAIL]);
     expect(supportBot(w)).toBeUndefined();
@@ -1101,7 +1104,7 @@ describe('disconnect', () => {
     const installId = await seedSupportBot(w);
     failRotate(w, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
 
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: false } });
+    expect(await w.disconnect(GRACE, installId)).toEqual({ status: 200, body: { appDeleted: false } });
 
     expect([...w.memory.leftovers.values()]).toEqual([
       { installId, appId: ADDED_BOT_APP, botName: BOT_NAME, leftAt: new Date(NOW_MS), connectedByUserId: GRACE },
@@ -1123,7 +1126,7 @@ describe('disconnect', () => {
       throw new SlackApiError('apps.manifest.delete', 'no_permission');
     };
 
-    expect(await d.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: false } });
+    expect(await d.disconnect(GRACE, dId)).toEqual({ status: 200, body: { appDeleted: false } });
 
     expect([...d.memory.leftovers.values()]).toEqual([
       { installId: dId, appId: ADDED_BOT_APP, botName: BOT_NAME, leftAt: new Date(NOW_MS), connectedByUserId: GRACE },
@@ -1140,10 +1143,10 @@ describe('disconnect', () => {
   it('disconnect: an approver whose shared app still names them keeps their token', async () => {
     const w = world();
     await seedShared(w);
-    await seedSupportBot(w, { approver: ADA });
+    const installId = await seedSupportBot(w, { approver: ADA });
 
     // Grace disconnects it: the delete still uses Ada's token, whose app it is on Slack.
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE, installId)).toEqual({ status: 200, body: { appDeleted: true } });
 
     expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args)).toEqual([[ADA_STORED]]);
     // The delete's successor, kept for the shared app that still names her.
@@ -1157,9 +1160,9 @@ describe('disconnect', () => {
     const lock = createMutex();
     const w = world({ lock });
     await seedShared(w);
-    await seedSupportBot(w);
+    const installId = await seedSupportBot(w);
     const hold = await holdLock(lock);
-    const asked = w.disconnect(GRACE);
+    const asked = w.disconnect(GRACE, installId);
     w.people.setRole(SUPPORT_TEAM, GRACE, 'member');
     hold.free();
     await hold.done;
@@ -1178,9 +1181,9 @@ describe('disconnect', () => {
     const lock2 = createMutex();
     const g = world({ lock: lock2 });
     await seedShared(g);
-    await seedSupportBot(g);
+    const gId = await seedSupportBot(g);
     const held = await holdLock(lock2);
-    const gone = g.disconnect(GRACE);
+    const gone = g.disconnect(GRACE, gId);
     g.people.agents.delete(SUPPORT.id);
     held.free();
     await held.done;
@@ -1195,14 +1198,14 @@ describe('disconnect', () => {
   it('disconnect: rights that cannot be answered throw before anything is read', async () => {
     const w = world();
     await seedShared(w);
-    await seedSupportBot(w);
+    const installId = await seedSupportBot(w);
     w.people.faults.set(
       'agents:resolve',
       new PluginError({ code: 'unavailable', plugin: '@ax/agents', message: `db down ${FAILURE_CANARY}` }),
     );
 
     // An outage is no refusal: the route's 500.
-    await expect(w.disconnect(GRACE)).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(w.disconnect(GRACE, installId)).rejects.toMatchObject({ code: 'unavailable' });
 
     expect(w.trail).toEqual([]);
     expect(w.slack.calls).toEqual([]);
@@ -1213,10 +1216,10 @@ describe('disconnect', () => {
   it('disconnect: an agent with no bot is 409 no-bot, with no vault or Slack call', async () => {
     const w = world();
     await seedShared(w);
-    // Another agent's bot is no business of this one's.
-    await addBot(w);
+    // Another agent's bot is no business of this one's, even named by its own install id.
+    const salesBot = await addBot(w);
 
-    expect(await w.disconnect(GRACE)).toEqual({ status: 409, body: { error: 'no-bot' } });
+    expect(await w.disconnect(GRACE, salesBot)).toEqual({ status: 409, body: { error: 'no-bot' } });
 
     expect(w.trail).toEqual(['store:botForAgent']);
     expect(w.slack.calls).toEqual([]);
@@ -1231,7 +1234,7 @@ describe('disconnect', () => {
     const installId = await seedSupportBot(w);
     w.memory.failures.set('remove', connectionReset());
 
-    await expect(w.disconnect(GRACE)).rejects.toMatchObject({ code: 'ECONNRESET' });
+    await expect(w.disconnect(GRACE, installId)).rejects.toMatchObject({ code: 'ECONNRESET' });
 
     // The app went first; nothing after the row's delete ran.
     expect(w.trail.slice(-2)).toEqual(['slack:deleteApp', 'store:remove']);
@@ -1250,7 +1253,7 @@ describe('disconnect', () => {
       throw new SlackApiError('apps.manifest.delete', 'app_not_found');
     };
     forget(w);
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE, installId)).toEqual({ status: 200, body: { appDeleted: true } });
     expect(w.memory.rows.has(installId)).toBe(false);
     expect(w.memory.leftovers.size).toBe(0);
     expectNoSecretsOf(w, installId);
@@ -1309,7 +1312,7 @@ describe('disconnect', () => {
 
     // A stale tab: the bot it listed was disconnected, and the agent asked for a new one since.
     const oldId = await seedSupportBot(w);
-    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.disconnect(GRACE, oldId)).toEqual({ status: 200, body: { appDeleted: true } });
     expect(await w.request({ as: GRACE, refreshToken: PASTED })).toMatchObject({ status: 200 });
     const fresh = { ...supportBot(w)! };
     expect(fresh).toMatchObject({ kind: 'bot', status: 'pending', agentId: SUPPORT.id });
@@ -1327,13 +1330,49 @@ describe('disconnect', () => {
     expect(w.lines).toEqual([]);
   });
 
+  it("disconnect: a stale settings page's bot (disconnected since, and a new one asked for and live) is 409 no-bot, and the new bot is left alone", async () => {
+    // Grace's tab shows the old bot. It was disconnected elsewhere, Ada asked
+    // for a new one and it went live, and only then does Grace confirm.
+    const w = world();
+    await seedShared(w);
+    const oldId = await seedSupportBot(w);
+    expect(await w.disconnect(ADA, oldId)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.request({ as: ADA, refreshToken: PASTED })).toMatchObject({ status: 200 });
+    const newId = supportBot(w)!.installId;
+    expect(newId).not.toBe(oldId);
+    await w.memory.store.activate(newId, {
+      teamId: 'T07ABCDEF12',
+      teamName: 'Canopy Works',
+      botUserId: 'U07NEWBOT01',
+      installedAt: new Date(NOW_MS),
+    });
+    const fresh = { ...supportBot(w)! };
+    expect(fresh).toMatchObject({ kind: 'bot', status: 'active', agentId: SUPPORT.id });
+    const vaultBefore = new Map(w.vault);
+    forget(w);
+
+    expect(await w.disconnect(GRACE, oldId)).toEqual({ status: 409, body: { error: 'no-bot' } });
+
+    // Her rights, then the one read that shows the agent's bot is another one: nothing else.
+    expect(w.trail).toEqual(['store:botForAgent']);
+    expect(supportBot(w)).toEqual(fresh);
+    expect(w.vault).toEqual(vaultBefore);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.lines).toEqual([]);
+
+    // The page read again names the new bot, and that Disconnect takes it.
+    expect(await w.disconnect(GRACE, newId)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(supportBot(w)).toBeUndefined();
+  });
+
   it('two disconnects at once remove the bot once: the other is 409 no-bot', async () => {
     // A team admin and an AX admin together.
     const w = world();
     await seedShared(w);
     const installId = await seedSupportBot(w);
 
-    const both = await Promise.all([w.disconnect(GRACE), w.disconnectForAdmin(installId)]);
+    const both = await Promise.all([w.disconnect(GRACE, installId), w.disconnectForAdmin(installId)]);
 
     expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
     expect(both.find((r) => r.status === 200)).toEqual({ status: 200, body: { appDeleted: true } });
@@ -1348,8 +1387,8 @@ describe('disconnect', () => {
     // A double click.
     const d = world();
     await seedShared(d);
-    await seedSupportBot(d);
-    const clicks = await Promise.all([d.disconnect(GRACE), d.disconnect(GRACE)]);
+    const dId = await seedSupportBot(d);
+    const clicks = await Promise.all([d.disconnect(GRACE, dId), d.disconnect(GRACE, dId)]);
     expect(clicks.map((r) => r.status).sort()).toEqual([200, 409]);
     expect(clicks.find((r) => r.status === 409)).toEqual({ status: 409, body: { error: 'no-bot' } });
     expect(d.slack.calls.filter((c) => c.method === 'deleteApp')).toHaveLength(1);
@@ -1364,7 +1403,7 @@ describe('disconnect', () => {
     const installId = await seedSupportBot(w);
     const hold = await holdLock(lock);
 
-    const byTeamAdmin = w.disconnect(GRACE);
+    const byTeamAdmin = w.disconnect(GRACE, installId);
     const byAdmin = w.disconnectForAdmin(installId);
     await settle();
 
@@ -1573,8 +1612,15 @@ describe('status', () => {
     const w = world();
     await seedShared(w);
     await w.request({ as: GRACE, refreshToken: PASTED });
+    const installId = supportBot(w)!.installId;
     forget(w);
-    const pending = (canContinue: boolean) => ({ state: 'pending', botName: BOT_NAME, approver: 'Grace Hopper', canContinue });
+    const pending = (canContinue: boolean) => ({
+      state: 'pending',
+      botName: BOT_NAME,
+      approver: 'Grace Hopper',
+      canContinue,
+      installId,
+    });
 
     expect(await w.status({ as: GRACE, manages: true, sharedActive: true })).toEqual(pending(true));
     expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toEqual(pending(false));
@@ -1591,12 +1637,14 @@ describe('status', () => {
     await seedShared(w);
     await addBot(w, { agentId: SUPPORT.id, approver: GRACE, botName: BOT_NAME, handle: 'supporthelper' });
     const installId = supportBot(w)!.installId;
-    const live = (o: { approver?: string; needsClaim?: boolean } = {}) => ({
+    // The install id only for those who manage the agent: the key its Disconnect takes.
+    const live = (o: { approver?: string; needsClaim?: boolean; manages?: boolean } = {}) => ({
       state: 'live',
       botName: BOT_NAME,
       handle: 'supporthelper',
       approver: o.approver ?? 'Grace Hopper',
       needsClaim: o.needsClaim ?? false,
+      installId: (o.manages ?? true) ? installId : null,
     });
 
     for (const [as, manages] of [
@@ -1604,15 +1652,15 @@ describe('status', () => {
       [ADA, true],
       [MEL, false],
     ] as const) {
-      expect(await w.status({ as, manages, sharedActive: true }), as).toEqual(live());
+      expect(await w.status({ as, manages, sharedActive: true }), as).toEqual(live({ manages }));
     }
     // A live bot outlives the shared install (Disconnect leaves it alone).
-    expect(await w.status({ as: MEL, manages: false, sharedActive: false })).toEqual(live());
+    expect(await w.status({ as: MEL, manages: false, sharedActive: false })).toEqual(live({ manages: false }));
 
     // No display name: "A teammate", never the email.
     w.users.get(GRACE)!.displayName = null;
     const nameless = await w.status({ as: MEL, manages: false, sharedActive: true });
-    expect(nameless).toEqual(live({ approver: 'A teammate' }));
+    expect(nameless).toEqual(live({ approver: 'A teammate', manages: false }));
     expect(JSON.stringify(nameless)).not.toContain('@');
     w.users.get(GRACE)!.displayName = 'Grace Hopper';
 
@@ -1643,7 +1691,36 @@ describe('status', () => {
     const plain = world();
     await seedShared(plain);
     await addBot(plain, { agentId: SUPPORT.id, approver: GRACE, botName: BOT_NAME, live: true });
-    expect(await plain.status({ as: MEL, manages: false, sharedActive: true })).toEqual({ ...live(), handle: null });
+    expect(await plain.status({ as: MEL, manages: false, sharedActive: true })).toEqual({
+      ...live({ manages: false }),
+      handle: null,
+    });
+  });
+
+  it("the bot's install id, the key its Disconnect takes, reaches only those who manage the agent: pending (which only they see) and live, with or without the shared app; anyone else reads null", async () => {
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const pendingId = supportBot(w)!.installId;
+    for (const as of [GRACE, ADA]) {
+      for (const sharedActive of [true, false]) {
+        expect(await w.status({ as, manages: true, sharedActive }), `${as} ${sharedActive}`).toMatchObject({
+          state: 'pending',
+          installId: pendingId,
+        });
+      }
+    }
+
+    const l = world();
+    await seedShared(l);
+    const liveId = await seedSupportBot(l);
+    for (const sharedActive of [true, false]) {
+      expect(await l.status({ as: ADA, manages: true, sharedActive })).toMatchObject({ state: 'live', installId: liveId });
+      expect(await l.status({ as: MEL, manages: false, sharedActive })).toMatchObject({ state: 'live', installId: null });
+    }
+    // Reading it never writes, rotates or asks Slack.
+    expect(l.slack.calls).toEqual([]);
+    expect(l.vaultCalls).toEqual([]);
   });
 });
 
@@ -1717,10 +1794,10 @@ describe('answers and logs', () => {
     // TASK-1172: Admin › Slack's list, a team admin's Disconnect, then one with nothing left to take.
     const disconnected = add(world());
     await seedShared(disconnected);
-    await seedSupportBot(disconnected);
+    const disconnectedId = await seedSupportBot(disconnected);
     await disconnected.listForAdmin();
-    await disconnected.disconnect(GRACE);
-    await disconnected.disconnect(GRACE);
+    await disconnected.disconnect(GRACE, disconnectedId);
+    await disconnected.disconnect(GRACE, disconnectedId);
 
     // The list while auth is down: each approver reads "A teammate", logged code-only.
     const listFault = add(world({ getUserFault: connectionReset() }));
@@ -1737,9 +1814,9 @@ describe('answers and logs', () => {
     // One Slack won't delete: the leftover names its approver, and no line does.
     const deadDisconnect = add(world());
     await seedShared(deadDisconnect);
-    await seedSupportBot(deadDisconnect);
+    const deadId = await seedSupportBot(deadDisconnect);
     failRotate(deadDisconnect, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
-    await deadDisconnect.disconnect(GRACE);
+    await deadDisconnect.disconnect(GRACE, deadId);
 
     // Every world said something, so the scan below reads real output.
     for (const x of worlds) {
