@@ -63,6 +63,12 @@ import {
   withoutSlackInstallReturn,
   type SlackInstallOutcome,
 } from './lib/slack-install-return';
+import {
+  SLACK_BOT_RETURN_MESSAGES,
+  readSlackBotReturn,
+  withoutSlackBotReturn,
+  type SlackBotReturn,
+} from './lib/slack-bot-return';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { redirectRetiredChatPath } from './lib/retired-chat-path';
 import { applyShareReferrerPolicy, parseShareRoute } from './lib/share-route';
@@ -149,6 +155,23 @@ export const App = () => {
       `${pathname}${withoutSlackInstallReturn(search)}${hash}`,
     );
   }, [slackReturn]);
+
+  // TASK-1167 — back from Slack's Allow page for an agent's own Slack bot:
+  // `/?slack-bot=connected|cancelled|failed&agentId=<id>`. Not `?slack=`, which
+  // is the admin's workspace install. Taken out of the address bar once, and
+  // the address becomes that agent's Slack settings (the route is read after
+  // sign-in, below). Whoever started it may not be a workspace admin, so
+  // nothing here is role-gated; AppContent says what happened.
+  const [slackBotReturn] = useState(() => readSlackBotReturn(window.location.search));
+  useEffect(() => {
+    if (slackBotReturn === null) return;
+    const { pathname, search, hash } = window.location;
+    window.history.replaceState(
+      window.history.state,
+      '',
+      slackBotReturn.returnPath ?? `${pathname}${withoutSlackBotReturn(search)}${hash}`,
+    );
+  }, [slackBotReturn]);
 
   useEffect(() => {
     // `/chat` and `/chat/*` land on `/` (TASK-360). First thing, before any
@@ -238,16 +261,19 @@ export const App = () => {
       </>
     );
   }
-  return <AppContent user={mode.user} slackReturn={slackReturn} />;
+  return <AppContent user={mode.user} slackReturn={slackReturn} slackBotReturn={slackBotReturn} />;
 };
 
 const AppContent = ({
   user,
   slackReturn = null,
+  slackBotReturn = null,
 }: {
   user: AuthUser;
   /** TASK-1093 — what Slack's Allow page sent this person back with, if anything. */
   slackReturn?: SlackInstallOutcome | null;
+  /** TASK-1167 — what Slack's Allow page sent this person back with for an agent's own bot, if anything. */
+  slackBotReturn?: SlackBotReturn | null;
 }) => {
   useHydrateAgents(); // before the first-run gate, which reads the result
   const { agents, agentsStatus } = useAgentStore();
@@ -274,6 +300,16 @@ const AppContent = ({
     if (slackOutcome === 'failed') toastActions.error(message);
     else toastActions.show({ title: message, kind: 'info' });
   }, [slackOutcome]);
+  // TASK-1167 — and for an agent's own bot, to whoever started it (a team
+  // admin, not necessarily a workspace admin): once, a fixed sentence.
+  const slackBotToasted = useRef(false);
+  useEffect(() => {
+    if (slackBotReturn === null || slackBotToasted.current) return;
+    slackBotToasted.current = true;
+    const message = SLACK_BOT_RETURN_MESSAGES[slackBotReturn.outcome];
+    if (slackBotReturn.outcome === 'failed') toastActions.error(message);
+    else toastActions.show({ title: message, kind: 'info' });
+  }, [slackBotReturn]);
   // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
   //
   // Settings is a PANE SWAP, not an overlay: the branches below render either

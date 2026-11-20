@@ -37,6 +37,7 @@ export function TokenField({
   inputRef,
   error,
   disabled,
+  required = false,
 }: {
   id: string;
   label: string;
@@ -44,6 +45,8 @@ export function TokenField({
   inputRef: RefObject<HTMLInputElement | null>;
   error: string | null;
   disabled: boolean;
+  /** The form can't go without it (an agent's bot request when the server holds no token for the person). */
+  required?: boolean;
 }) {
   const invalid = error !== null;
   return (
@@ -59,6 +62,7 @@ export function TokenField({
         data-bwignore
         spellCheck={false}
         disabled={disabled}
+        required={required}
         aria-invalid={invalid || undefined}
         aria-describedby={invalid ? `${id}-hint ${id}-error` : `${id}-hint`}
       />

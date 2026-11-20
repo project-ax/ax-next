@@ -14,6 +14,7 @@ import {
   fetchAgentSlack,
   fetchAvailableChannels,
   setSlackChannelRemember,
+  type AgentSlackBot,
   type AgentSlackRead,
   type SlackChannelRow,
 } from '@/lib/agent-slack';
@@ -42,8 +43,17 @@ const SUPPORT: SlackChannelRow = {
 };
 const OPS: SlackChannelRow = { ...SUPPORT, channelId: 'C0OPS00001', name: 'ops', remember: true, needsReconnect: true };
 
-function ready(channels: SlackChannelRow[], canManage = true): AgentSlackRead {
-  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, channels };
+const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
+const LIVE_BOT: AgentSlackBot = {
+  state: 'live',
+  botName: 'Quill',
+  handle: 'quill',
+  approver: 'Ada Lovelace',
+  needsClaim: false,
+};
+
+function ready(channels: SlackChannelRow[], canManage = true, bot: AgentSlackBot = NO_BOT): AgentSlackRead {
+  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, channels, bot };
 }
 
 const AVAILABLE = {
@@ -79,9 +89,25 @@ describe('the states', () => {
   });
 
   it('no workspace: one plain line, no button', async () => {
-    renderIt({ state: 'no-workspace' });
+    renderIt({ state: 'no-workspace', bot: NO_BOT });
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
     expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText('Its own Slack bot')).toBeNull();
+  });
+
+  it("no workspace, but the agent's own bot is live: the live line still shows", async () => {
+    renderIt({ state: 'no-workspace', bot: LIVE_BOT });
+    expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
+    expect(screen.getByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
+  });
+
+  it('no workspace, with a pending request: it can still be cancelled (only a manager is told of it)', async () => {
+    renderIt({
+      state: 'no-workspace',
+      bot: { state: 'pending', botName: 'Quill', approver: 'Ada Lovelace', canContinue: false },
+    });
+    expect(await screen.findByRole('button', { name: 'Cancel request' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue in Slack' })).toBeNull();
   });
 
   it('a personal agent that answers direct messages: one line about the direct message', async () => {
@@ -101,7 +127,7 @@ describe('the states', () => {
 
   it('a failed read offers a retry', async () => {
     fetchStatus.mockRejectedValueOnce(new Error('boom'));
-    fetchStatus.mockResolvedValueOnce({ state: 'no-workspace' });
+    fetchStatus.mockResolvedValueOnce({ state: 'no-workspace', bot: NO_BOT });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     render(<AgentSlack agentId="a1" agentName="Quill" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
@@ -112,6 +138,39 @@ describe('the states', () => {
     renderIt(ready([]));
     expect(await screen.findByText("Quill isn't answering in any channels yet.")).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Connect a channel' })).toBeInTheDocument();
+  });
+});
+
+describe("the agent's own bot, around the channel list", () => {
+  it('live: the picker is gone and one line above the list says to invite the bot', async () => {
+    renderIt(ready([SUPPORT], true, LIVE_BOT));
+    expect(
+      await screen.findByText(
+        'Mentioning the shared bot in these channels no longer reaches Quill. Invite @quill to each one.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Connect a channel' })).toBeNull();
+    expect(screen.getByRole('list', { name: 'Connected channels' })).toBeInTheDocument();
+  });
+
+  it('live with no handle: the line names the bot instead', async () => {
+    renderIt(ready([SUPPORT], true, { ...LIVE_BOT, handle: null }));
+    expect(await screen.findByText(/Invite Quill to each one\./)).toBeInTheDocument();
+  });
+
+  it('not live: the picker stays and there is no such line', async () => {
+    renderIt(ready([SUPPORT]));
+    expect(await screen.findByRole('combobox', { name: 'Connect a channel' })).toBeInTheDocument();
+    expect(screen.queryByText(/no longer reaches/)).toBeNull();
+  });
+
+  it("a manager sees the request form; a member sees nothing of the bot until it is live", async () => {
+    const { unmount } = renderIt(ready([], true));
+    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    unmount();
+    renderIt(ready([], false));
+    await screen.findByText("Quill isn't connected to any Slack channels yet.");
+    expect(screen.queryByText('Its own Slack bot')).toBeNull();
   });
 });
 

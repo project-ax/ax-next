@@ -382,6 +382,7 @@ describe('what an error says', () => {
       "Slack says that token can't manage this Slack app. Paste a refresh token from someone who can manage it, in the same Slack workspace.",
     ],
     [refusal(502, 'slack-name'), 'botName', "Slack didn't accept that bot name. Try another."],
+    [refusal(409, 'bot-name-taken'), 'botName', 'Another Slack bot here already uses that name. Pick another.'],
     [
       refusal(502, 'slack-unconfirmed'),
       null,

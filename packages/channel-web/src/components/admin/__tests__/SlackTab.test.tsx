@@ -443,6 +443,17 @@ describe('Connect', () => {
     expectNoSecretsOnPage();
   });
 
+  it('bot-name-taken (an agent\'s own bot has the name): the message sits under the name field', async () => {
+    const message = 'Another Slack bot here already uses that name. Pick another.';
+    connect.mockRejectedValueOnce(new SlackAdminError(409, 'bot-name-taken'));
+    renderTab(NOT_CONNECTED);
+    await fillAndConnect();
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(input(/bot name/i)).toHaveAttribute('aria-invalid', 'true');
+    expect(input(/bot name/i)).toHaveAccessibleDescription(expect.stringContaining(message));
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['slack-token', "Slack didn't accept the access token. Generate a new pair and paste both again."],
     ['slack-refresh-token', "Slack didn't accept the refresh token. Generate a new token and try again."],

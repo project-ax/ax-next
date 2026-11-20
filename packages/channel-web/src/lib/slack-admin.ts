@@ -348,6 +348,8 @@ export function slackErrorCopy(err: unknown): { field: SlackErrorField; message:
         return { field: null, message: SLACK_ERROR_COPY['slack-app-gone'] };
       case 'slack-name':
         return { field: 'botName', message: SLACK_ERROR_COPY['slack-name'] };
+      case 'bot-name-taken':
+        return { field: 'botName', message: SLACK_ERROR_COPY['bot-name-taken'] };
       case 'slack-unconfirmed':
         return { field: null, message: SLACK_ERROR_COPY['slack-unconfirmed'] };
     }

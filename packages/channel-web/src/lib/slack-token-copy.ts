@@ -13,6 +13,8 @@ export const SLACK_TOKEN_COPY = Object.freeze({
   'slack-refresh-token': "Slack didn't accept the refresh token. Generate a new token and try again.",
   'slack-token': "Slack didn't accept the access token. Generate a new pair and paste both again.",
   'slack-name': "Slack didn't accept that bot name. Try another.",
+  // Another bot (any agent's, or the shared one) already has this name: names are unique across them.
+  'bot-name-taken': 'Another Slack bot here already uses that name. Pick another.',
   // Connect never heard back from Slack, so the app may exist with no way for us to delete it.
   'slack-unconfirmed':
     "Slack didn't give us a clear answer, so a Slack app may have been created anyway. Check api.slack.com/apps and delete it before you try again.",
