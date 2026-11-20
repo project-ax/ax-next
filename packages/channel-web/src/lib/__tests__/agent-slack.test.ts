@@ -140,8 +140,9 @@ describe('fetchAgentSlack', () => {
 
   it('parses a requested bot', async () => {
     const bot = { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' };
-    answer = () => json(200, { state: 'no-workspace', bot });
-    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', bot });
+    // A request reaches only those who manage the agent, so the server says they do (TASK-1172's `canManage`).
+    answer = () => json(200, { state: 'no-workspace', canManage: true, bot });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', canManage: true, bot });
     answer = () => json(200, { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [], bot });
     await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ state: 'ready', bot });
   });

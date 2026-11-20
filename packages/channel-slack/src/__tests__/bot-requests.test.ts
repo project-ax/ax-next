@@ -630,7 +630,14 @@ describe('cancel', () => {
     // What the team sees in the agent's settings: the bot an AX admin is finishing.
     expect(
       await w.bots.status({ ctx: w.ctxOf(ADA), viewerUserId: ADA, agentId: SUPPORT.id, manages: true, sharedActive: true }),
-    ).toEqual({ state: 'pending', botName: BOT_NAME, approver: 'Grace Hopper', canContinue: false });
+    ).toEqual({
+      state: 'pending',
+      botName: BOT_NAME,
+      approver: 'Grace Hopper',
+      canContinue: false,
+      // The team admin manages the agent, so its Disconnect key reaches them (TASK-1172).
+      installId: supportBot(w)!.installId,
+    });
   });
 });
 

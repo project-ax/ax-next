@@ -2331,7 +2331,7 @@ describe('status', () => {
     // takes no lock can read the two at once.
     const w = world();
     await seedShared(w);
-    await addBot(w, { agentId: SUPPORT.id, approver: HEDY, requester: GRACE, botName: BOT_NAME });
+    const installId = await addBot(w, { agentId: SUPPORT.id, approver: HEDY, requester: GRACE, botName: BOT_NAME });
     await seedRequest(w);
 
     expect(await w.status({ as: GRACE, manages: true, sharedActive: true })).toEqual({
@@ -2339,6 +2339,8 @@ describe('status', () => {
       botName: BOT_NAME,
       approver: 'Hedy Lamarr',
       canContinue: false,
+      // The bot's own key (TASK-1172), never the request's.
+      installId,
     });
     expect(w.trail).not.toContain('store:botRequestForAgent');
   });
