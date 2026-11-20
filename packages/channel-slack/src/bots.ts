@@ -238,6 +238,26 @@ const APPROVER_FALLBACK = 'A teammate';
  */
 const HANDLE_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 
+/**
+ * Slack's `users.info` answer about `botUserId` as the @handle we keep, or
+ * why not. Read at the Allow (`keepHandle`) and after a rename
+ * (bot-changes.ts). It is Slack's text, so this is its one check before it
+ * is stored, and it is never cleaned into something else: an answer about
+ * anyone but the bot is `user-mismatch`, and a `name` outside HANDLE_RE, or a
+ * reserved word, is `unusable-handle`.
+ */
+export function handleFrom(
+  user: unknown,
+  botUserId: string,
+): { ok: true; handle: string } | { ok: false; code: 'user-mismatch' | 'unusable-handle' } {
+  if (!isRecord(user) || user['id'] !== botUserId) return { ok: false, code: 'user-mismatch' };
+  const handle = user['name'];
+  if (typeof handle !== 'string' || !HANDLE_RE.test(handle) || RESERVED_BOT_NAMES.has(handle)) {
+    return { ok: false, code: 'unusable-handle' };
+  }
+  return { ok: true, handle };
+}
+
 const json = (status: number, body: unknown): BotReply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
 const NOT_PENDING = json(409, { error: 'not-pending' });
@@ -480,17 +500,13 @@ export function createBots(d: BotDeps): Bots {
       steps.failed('bot-handle', err, installId);
       return;
     }
-    if (!isRecord(user) || user['id'] !== granted.botUserId) {
-      log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: 'user-mismatch' });
-      return;
-    }
-    const handle = user['name'];
-    if (typeof handle !== 'string' || !HANDLE_RE.test(handle) || RESERVED_BOT_NAMES.has(handle)) {
-      log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: 'unusable-handle' });
+    const read = handleFrom(user, granted.botUserId);
+    if (!read.ok) {
+      log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: read.code });
       return;
     }
     try {
-      await d.installs.setBotHandle(installId, handle);
+      await d.installs.setBotHandle(installId, read.handle);
     } catch (err) {
       steps.failed('bot-handle', err, installId);
     }
