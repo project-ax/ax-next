@@ -507,7 +507,11 @@ export function createBots(d: BotDeps): Bots {
       const installUrl = await steps.mintInstallUrl(installId, app.clientId, i.approverUserId, botLink(installId));
       // Last, once everything else worked: an approve that fails anywhere,
       // this delete included, leaves its request open for another try.
-      if (i.requestId !== null) await d.installs.removeBotRequest(i.requestId);
+      // A request that vanished under the lock (only the CLI reset, which takes
+      // none, can) is no approve: the catch takes the app back.
+      if (i.requestId !== null && !(await d.installs.removeBotRequest(i.requestId))) {
+        throw new InstallStoreError('request-gone');
+      }
       if (i.requestId === null) log('info', 'slack_bot_requested', { installId });
       else log('info', 'slack_bot_approved', { installId, requestId: i.requestId });
       return json(200, { installUrl, iconSet });

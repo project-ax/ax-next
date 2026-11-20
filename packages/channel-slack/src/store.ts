@@ -364,9 +364,17 @@ function isUniqueViolationOn(err: unknown, index: string): boolean {
  * its bot (`bot-exists`) or an open bot request (`request-exists`). Carries
  * no data, so it is safe to log.
  */
+export type InstallStoreErrorCode =
+  | 'install-not-pending'
+  | 'install-not-active'
+  | 'bot-exists'
+  | 'request-exists'
+  // The caller's open request was gone when it came to delete it (TASK-1169).
+  | 'request-gone';
+
 export class InstallStoreError extends Error {
-  readonly code: 'install-not-pending' | 'install-not-active' | 'bot-exists' | 'request-exists';
-  constructor(code: 'install-not-pending' | 'install-not-active' | 'bot-exists' | 'request-exists') {
+  readonly code: InstallStoreErrorCode;
+  constructor(code: InstallStoreErrorCode) {
     super(`channel-slack install store: ${code}`);
     this.name = 'InstallStoreError';
     this.code = code;

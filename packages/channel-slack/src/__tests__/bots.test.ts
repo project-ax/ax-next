@@ -1104,6 +1104,29 @@ describe('create', () => {
     expect(first.vault.has(configTokenRef(HEDY))).toBe(false);
   });
 
+  it('an approve whose request vanished before its last step is not a success: the app is taken back and nothing says approved', async () => {
+    // Only the unlocked CLI reset can delete a request under the lock: the store says no row went.
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    const remove = w.memory.store.removeBotRequest;
+    w.memory.store.removeBotRequest = async (requestId) => {
+      w.memory.requests.delete(requestId);
+      return remove(requestId);
+    };
+
+    const reply = await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST });
+
+    expect(reply.status).not.toBe(200);
+    expect(reply).toEqual({ status: 500, body: { error: 'internal' } });
+    // Taken back with the access token the create already held.
+    expect(w.slack.calls.map((c) => c.method)).toContain('deleteApp');
+    expect(supportBot(w)).toBeUndefined();
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines.map((l) => l.msg)).not.toContain('slack_bot_approved');
+  });
+
   it('an approve that fails at any earlier step leaves the request open too, and any app Slack made is taken back', async () => {
     const cases: Array<[step: string, arrange: (w: World) => void, status: number, appMade: boolean]> = [
       ['the rotate', (w) => failRotate(w, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token')), 502, false],
