@@ -22,8 +22,8 @@ import type { InstallRow, InstallStore } from './store.js';
  *     (`undoConnect`, `deleteSlackApp`).
  *
  * Every step that uses a configuration token runs under the caller's app lock
- * (the one admin mutex): none of them takes it, and none may be called
- * without it. Log lines are code-only: an install id, a stage, a code. Never
+ * (the one plugin.ts creates, shared by Admin › Slack and the team bots):
+ * none of them takes it, and none may be called without it. Log lines are code-only: an install id, a stage, a code. Never
  * a token, a person's id or a Slack id other than the install's.
  */
 

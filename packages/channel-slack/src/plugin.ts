@@ -15,6 +15,7 @@ import { createAdminRoutes } from './admin-routes.js';
 import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
 import { createClickHandler } from './answers.js';
+import { createBots } from './bots.js';
 import { subscribeCaptureVeto } from './capture-veto.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import type { ChannelDeps } from './channels.js';
@@ -312,9 +313,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const store = createInstallStore(db);
         const channelStore = createChannelStore(db);
         channelsReady(channelStore);
-        // One store for both the events route and the admin routes, so every
-        // change the admin routes make to an install's secrets (a disconnect, a
-        // failed connect's undo) drops the signing secret the events route keeps.
+        // One store for the events route, the admin routes and the team
+        // agents' bots, so every change the others make to an install's
+        // secrets (a disconnect, a failed connect's undo, a bot's removal)
+        // drops the signing secret the events route keeps.
         const secrets = cacheSigningSecrets(createSecretStore(bus, { logger }), {
           ttlMs: SIGNING_SECRET_CACHE_TTL_MS,
           max: SIGNING_SECRET_CACHE_MAX,
@@ -347,13 +349,35 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // post prompts into, and stream replies to, the same registries.
         const turnDeps: TurnDeps = { bus, api, registry, prompts, publicOrigin, logger, clock: systemClock };
 
+        // The one app lock: every Slack app's create, change and delete, and
+        // every use of a person's configuration token, by Admin › Slack and
+        // by the team agents' own bots alike. Bot names are unique across
+        // both, and one person's token serves every app they made, so nothing
+        // narrower would do. It isn't re-entrant (mutex.ts): code that runs
+        // under it never takes it again.
+        const appLock = createMutex();
+        // A team agent's own Slack bot (TASK-1167), on the same cached secret
+        // store as the events route, so removing a bot drops the signing
+        // secret that route keeps for it.
+        const bots = createBots({
+          bus,
+          installs: store,
+          secrets,
+          api,
+          lock: appLock,
+          publicOrigin,
+          logger,
+          now,
+          randomBytes,
+        });
+
         const routes: RouteSpec[] = [
           ...createAdminRoutes({
             bus,
             store,
             secrets,
             api,
-            lock: createMutex(),
+            lock: appLock,
             publicOrigin,
             logger,
             now,
@@ -447,7 +471,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         undos.push(() => {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
-        undos.push(subscribeAgentsDeleted(bus, channelStore, logger));
+        undos.push(subscribeAgentsDeleted(bus, { channels: channelStore, bots }, logger));
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
         // Undone first: turns not yet started are dropped from both lanes,
         // and each install's count is logged once (those senders never get a

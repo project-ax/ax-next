@@ -2186,6 +2186,98 @@ describe('@ax/channel-slack plugin', () => {
     expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual(['C07OTHER002']);
   });
 
+  it("deleting a team agent deletes its own Slack bot through the wiring, after the Admin › Slack step that holds the one app lock (TASK-1167)", async () => {
+    const adas = fakeConfigRefreshToken('ONELOCKADASECRET');
+    const graces = fakeConfigRefreshToken('ONELOCKGRACESECRET');
+    const calls: Array<{ method: string; auth: string | null; body: Record<string, string> }> = [];
+    let rotates = 0;
+    let releaseSharedDelete!: () => void;
+    const sharedDelete = new Promise<void>((resolve) => {
+      releaseSharedDelete = resolve;
+    });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = String(input).replace('https://slack.com/api/', '');
+      const body = Object.fromEntries(new URLSearchParams(typeof init?.body === 'string' ? init.body : ''));
+      calls.push({ method, auth: new Headers(init?.headers).get('authorization'), body });
+      let answer: Record<string, unknown> = { ok: true };
+      if (method === 'tooling.tokens.rotate') {
+        rotates += 1;
+        answer = {
+          ok: true,
+          token: fakeConfigAccessToken(`ONELOCKACCESS${rotates}`),
+          refresh_token: fakeConfigRefreshToken(`ONELOCKREFRESH${rotates}`),
+          exp: 4_102_444_800,
+        };
+      }
+      // Slack is slow to delete the shared app, so Ada's Disconnect holds the app lock until the test lets it go.
+      if (method === 'apps.manifest.delete' && body['app_id'] === APP_ID) await sharedDelete;
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { s, call, harness } = await boot({ fetchImpl });
+    // Ada's shared app, and Grace's bot for the team agent, both live, each made with its person's own token.
+    await insertActiveInstall();
+    const store = createInstallStore(probe);
+    await store.insertPendingBot({
+      installId: BOT_INSTALL_ID,
+      appId: BOT_APP_ID,
+      clientId: '7512345678901.7522222222222',
+      botName: 'support-helper',
+      connectedByUserId: GRACE,
+      agentId: TEAM_AGENT.id,
+      requestedByUserId: GRACE,
+    });
+    await store.activate(BOT_INSTALL_ID, {
+      teamId: TEAM_ID,
+      teamName: 'Canopy Works',
+      botUserId: 'U07HELPERBOT',
+      installedAt: new Date(NOW_MS),
+    });
+    s.vault.set(configTokenRef(ADMIN.id), adas);
+    s.vault.set(configTokenRef(GRACE), graces);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), fakeBotToken('ONELOCKBOTSECRET'));
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-02');
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-02');
+    // A channel of the agent's on the shared app: it goes as soon as the agent's cleanup starts.
+    const channels = createChannelStore(probe);
+    await channels.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: ADMIN.id,
+      channelName: 'support',
+    });
+
+    const disconnecting = call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
+    await vi.waitFor(() => expect(calls.map((c) => c.method)).toContain('apps.manifest.delete'));
+    const deleting = harness.bus.fire('agents:deleted', harness.ctx(), {
+      agentId: TEAM_AGENT.id,
+      ownerId: 'team_support',
+      ownerType: 'team',
+    });
+    // The agent's channel goes at once; its bot waits for the lock. The pause
+    // only gives a removal that didn't wait time to show it: with the one
+    // lock, nothing below depends on how long it is.
+    await vi.waitFor(async () => expect(await channels.listAll(INSTALL_ID)).toEqual([]));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(s.credentialGets).not.toContain(configTokenRef(GRACE));
+    expect(calls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
+
+    releaseSharedDelete();
+    expect(await disconnecting).toMatchObject({ status: 200, body: { appDeleted: true } });
+    expect((await deleting).rejected).toBe(false);
+    // Then Grace's own token is rotated, and the access token minted with it deletes the bot's app.
+    expect(calls.map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
+      ['tooling.tokens.rotate', adas],
+      ['apps.manifest.delete', APP_ID],
+      ['tooling.tokens.rotate', graces],
+      ['apps.manifest.delete', BOT_APP_ID],
+    ]);
+    expect(calls[3]!.auth).toBe(`Bearer ${fakeConfigAccessToken('ONELOCKACCESS2')}`);
+    // Both apps' rows, the bot's secrets and both people's tokens are gone.
+    expect(await installCount()).toBe(0);
+    expect([...s.vault.keys()]).toEqual([]);
+  });
+
   it('the memory switch through the wiring: a turn while it is off keeps its thread out of memory for good; a new thread is remembered', async () => {
     const slack = fakeSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
