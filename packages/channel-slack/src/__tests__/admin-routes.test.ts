@@ -1033,7 +1033,7 @@ describe('POST /admin/slack/connect', () => {
     expect(Buffer.from(icon.args[2] as Uint8Array).equals(ICON)).toBe(true);
   });
 
-  it('stores client-secret, signing-secret and the refresh token Slack minted from the pasted one, then a pending row', async () => {
+  it('stores the refresh token Slack minted from the pasted one first, then client-secret and signing-secret, then a pending row', async () => {
     const w = world();
     await w.connect();
     const installId = onlyRow(w).installId;
@@ -1051,15 +1051,15 @@ describe('POST /admin/slack/connect', () => {
       'store:leftoverApps',
       'slack:createApp',
       'slack:rotateConfigToken',
-      'vault:set client-secret',
+      'vault:set config-refresh-token',
     ]);
     expect(w.slack.calls.filter((c) => c.args.includes(REFRESH)).map((c) => c.method)).toEqual(['rotateConfigToken']);
     // The access token that rotate minted is never used.
     expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS))).toEqual([]);
     expect(w.trail.filter((t) => t.startsWith('vault:') || t === 'store:insertPending')).toEqual([
+      'vault:set config-refresh-token',
       'vault:set client-secret',
       'vault:set signing-secret',
-      'vault:set config-refresh-token',
       'store:insertPending',
     ]);
     expect(onlyRow(w)).toMatchObject({
@@ -3621,6 +3621,36 @@ describe('every configuration-token use goes through its person (TASK-1175)', ()
     expect(keeps.trail.at(-1)).toBe('store:personHasApps');
     expect(keeps.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
     expect([...keeps.memory.leftovers.keys()]).toEqual([LEFT_1.installId]);
+  });
+
+  it("R7 Connect stores the person's token straight after the rotate: a client or signing secret that won't store never strands it", async () => {
+    for (const name of ['client-secret', 'signing-secret'] as const) {
+      // A leftover of Ada's still names her (Slack wouldn't delete it at this
+      // Connect's pass), and her slot holds the token the rotate's paste
+      // replaced: the minted one is now her only live token, so it must be there.
+      const keeps = world();
+      keeps.vault.set(configTokenRef(ADA.id), ADA_STORED);
+      leaveApp(keeps, LEFT_1, 'Canopy Bot', NOW_MS - 60_000, ADA.id);
+      keeps.slack.on.deleteApp = async (_token, appId) => {
+        if (appId === LEFT_1.appId) throw new SlackApiError('apps.manifest.delete', 'no_permission');
+      };
+      keeps.vaultFailures.set(`credentials:set ${name}`, connectionReset());
+      expect(await keeps.connect(), name).toMatchObject({ status: 500, body: { error: 'internal' } });
+      const at = keeps.trail.indexOf('slack:rotateConfigToken');
+      expect(keeps.trail.slice(at, at + 2), name).toEqual(['slack:rotateConfigToken', 'vault:set config-refresh-token']);
+      expect(keeps.vault.get(configTokenRef(ADA.id)), name).toBe(mintedRefresh(1));
+      // The new app was still taken back; her leftover still names her.
+      expect([...keeps.slack.live], name).toEqual([]);
+      expect([...keeps.memory.leftovers.keys()], name).toEqual([LEFT_1.installId]);
+      expect(keeps.memory.rows.size, name).toBe(0);
+
+      // Nothing else names her: the undo's release drops it, as it does for any later failure.
+      const drops = world();
+      drops.vaultFailures.set(`credentials:set ${name}`, connectionReset());
+      expect(await drops.connect(), name).toMatchObject({ status: 500, body: { error: 'internal' } });
+      expect(drops.trail.slice(-2), name).toEqual(['store:personHasApps', 'vault:delete config-refresh-token']);
+      expect(drops.vault.size, name).toBe(0);
+    }
   });
 });
 

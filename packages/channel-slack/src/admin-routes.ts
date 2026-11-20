@@ -711,13 +711,17 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
 
     const owner: SecretOwner = { installId, connectedByUserId: actor.id };
     try {
-      await d.secrets.put(owner, 'client-secret', app.clientSecret);
-      await d.secrets.put(owner, 'signing-secret', app.signingSecret);
       // The one Slack just minted from the pasted one, as the connecting
       // admin's own token (TASK-1175), until a rotate (Rename, Disconnect)
-      // saves its replacement. An id that can't name a ref throws here,
-      // before the vault, and the undo takes the app back.
+      // saves its replacement. First, straight after the rotate: generating
+      // the pasted one revoked the token in their slot, so the minted one is
+      // their only live token, and a later failure must not leave it unstored
+      // (the undo's release then keeps it while anything names them). An id
+      // that can't name a ref throws here, before the vault, and the undo
+      // takes the app back.
       await d.secrets.putConfigToken(owner, mintedRefreshToken);
+      await d.secrets.put(owner, 'client-secret', app.clientSecret);
+      await d.secrets.put(owner, 'signing-secret', app.signingSecret);
       await d.store.insertPending({
         installId,
         appId: app.appId,
