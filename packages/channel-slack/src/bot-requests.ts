@@ -93,6 +93,8 @@ export interface AdminBotRequest {
 export interface AdminBotRequestList {
   /** Oldest first, at most BOT_REQUESTS_MAX. */
   requests: AdminBotRequest[];
+  /** More were waiting than are listed: the page says so, and the rest show once these are answered. */
+  truncated: boolean;
   /**
    * Whether AX holds the VIEWING admin's own configuration token, so Approve
    * can skip the paste. Presence only (a rotate is the one honest test of a
@@ -138,8 +140,9 @@ export interface BotRequests {
    */
   cancel(i: { agentId: string }): Promise<BotReply>;
   /**
-   * The open requests Admin › Slack shows `viewerUserId`, an AX admin. Takes
-   * no lock, never rotates or asks Slack. A lookup that fails reads as its
+   * The open requests Admin › Slack shows `viewerUserId`, an AX admin: the
+   * oldest BOT_REQUESTS_MAX, and `truncated` when more wait. Takes no lock,
+   * never rotates or asks Slack. A lookup that fails reads as its
    * fallback, logged; a store fault reading the requests throws.
    */
   list(i: { ctx: AgentContext; viewerUserId: string }): Promise<AdminBotRequestList>;
@@ -366,9 +369,11 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
   }
 
   async function list(i: { ctx: AgentContext; viewerUserId: string }): Promise<AdminBotRequestList> {
-    const rows = (await d.installs.listBotRequests()).slice(0, BOT_REQUESTS_MAX);
+    const all = await d.installs.listBotRequests();
+    const truncated = all.length > BOT_REQUESTS_MAX;
+    const rows = all.slice(0, BOT_REQUESTS_MAX);
     // Nothing to approve: no token fact is needed.
-    if (rows.length === 0) return { requests: [], configTokenStored: false };
+    if (rows.length === 0) return { requests: [], configTokenStored: false, truncated: false };
     const hasTeams = d.bus.hasService('teams:list-for-user');
     // One question per requester per list, however many requests they made.
     const teamsOf = new Map<string, Promise<ReadonlyMap<string, string>>>();
@@ -405,7 +410,7 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
         requestedAt: r.createdAt.toISOString(),
       });
     }
-    return { requests, configTokenStored: await viewerTokenStored(i.viewerUserId) };
+    return { requests, truncated, configTokenStored: await viewerTokenStored(i.viewerUserId) };
   }
 
   return { ask, cancel, list, approve, decline };

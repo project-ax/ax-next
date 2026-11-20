@@ -99,7 +99,7 @@ async function leftoverNote(several = false): Promise<HTMLElement> {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(renderSlackAvatar).mockResolvedValue('AVATARB64');
-  vi.mocked(fetchSlackBotRequests).mockResolvedValue({ requests: [], configTokenStored: false });
+  vi.mocked(fetchSlackBotRequests).mockResolvedValue({ requests: [], truncated: false, configTokenStored: false });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -143,6 +143,7 @@ describe('SlackTab states', () => {
           requestedAt: CONNECTED_AT,
         },
       ],
+      truncated: false,
       configTokenStored: true,
     });
     renderTab(CONNECTED);

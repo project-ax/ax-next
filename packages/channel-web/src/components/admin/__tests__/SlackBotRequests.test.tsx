@@ -56,8 +56,16 @@ const ROOK: SlackBotRequest = {
   requestedBy: 'Grace Hopper',
   requestedAt: ASKED_AT,
 };
-const withToken = (...requests: SlackBotRequest[]): SlackBotRequestList => ({ requests, configTokenStored: true });
-const noToken = (...requests: SlackBotRequest[]): SlackBotRequestList => ({ requests, configTokenStored: false });
+const withToken = (...requests: SlackBotRequest[]): SlackBotRequestList => ({
+  requests,
+  truncated: false,
+  configTokenStored: true,
+});
+const noToken = (...requests: SlackBotRequest[]): SlackBotRequestList => ({
+  requests,
+  truncated: false,
+  configTokenStored: false,
+});
 
 const refusal = (status: number, code: string) => new SlackAdminError(status, code);
 
@@ -98,6 +106,19 @@ describe('the list', () => {
     expect(screen.getAllByRole('button', { name: 'Approve…' })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Decline' })).toHaveLength(2);
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  it('says when more requests are waiting than are listed, and only then', async () => {
+    const MORE = 'There are more requests waiting. Approve or decline these to see the rest.';
+    list.mockResolvedValue({ ...withToken(QUILL, ROOK), truncated: true });
+    const { unmount } = render(<SlackBotRequests />);
+    expect(await screen.findByText(MORE)).toBeInTheDocument();
+    unmount();
+
+    list.mockResolvedValue(withToken(QUILL, ROOK));
+    render(<SlackBotRequests />);
+    await screen.findByText('Quill Bot for Quill · Support');
+    expect(screen.queryByText(MORE)).toBeNull();
   });
 
   it('renders nothing with no requests, and nothing while it loads', async () => {

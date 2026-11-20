@@ -14,7 +14,7 @@ import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
  * Decline. The domain is bot-requests.ts; the rest of Admin › Slack is
  * admin-routes.ts.
  *
- *   GET  /admin/slack/bot-requests                     → { requests, configTokenStored }
+ *   GET  /admin/slack/bot-requests                     → { requests, truncated, configTokenStored }
  *   POST /admin/slack/bot-requests/:requestId/approve  { refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /admin/slack/bot-requests/:requestId/decline  → {}
  *

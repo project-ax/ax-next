@@ -665,6 +665,7 @@ describe('list', () => {
         },
       ],
       configTokenStored: true,
+      truncated: false,
     });
     // Each agent as its requester sees it: Grace is on neither team, and her own view is never asked.
     expect(w.people.inputs('agents:resolve')).toEqual([
@@ -842,6 +843,25 @@ describe('list', () => {
     const oldestFirst = Array.from({ length: total }, (_, i) => `Care ${total - 1 - i}`);
     expect(listed.requests.map((r) => r.agentName)).toEqual(oldestFirst.slice(0, BOT_REQUESTS_MAX));
     expect(w.people.inputs('agents:resolve')).toHaveLength(BOT_REQUESTS_MAX);
+    // Said, so the page can tell the admin there are more waiting.
+    expect(listed.truncated).toBe(true);
+  });
+
+  it(`says nothing is cut off at exactly ${BOT_REQUESTS_MAX} requests, and with none`, async () => {
+    const w = world();
+    await seedShared(w);
+    expect(await w.list(GRACE)).toMatchObject({ requests: [], truncated: false });
+    for (let n = 0; n < BOT_REQUESTS_MAX; n += 1) {
+      const agentId = `agt_care_${n}`;
+      w.people.addAgent({ ...SUPPORT, id: agentId, displayName: `Care ${n}` });
+      w.clock.ms = NOW_MS + n * 1_000;
+      await seedRequest(w, { requestId: `CareBotAsk${String(n).padStart(2, '0')}AAAAAAAAAA`, agentId, botName: `Care ${n}` });
+    }
+
+    const listed = await w.list(GRACE);
+
+    expect(listed.requests).toHaveLength(BOT_REQUESTS_MAX);
+    expect(listed.truncated).toBe(false);
   });
 
   it("configTokenStored is whether AX holds the VIEWING admin's own token, never the requester's; presence only; a fault reads false", async () => {
@@ -877,7 +897,7 @@ describe('list', () => {
     await seedShared(w);
     w.vault.set(configTokenRef(GRACE), GRACE_STORED);
 
-    expect(await w.list(GRACE)).toEqual({ requests: [], configTokenStored: false });
+    expect(await w.list(GRACE)).toEqual({ requests: [], configTokenStored: false, truncated: false });
 
     expect(w.trail).toEqual(['store:listBotRequests']);
     expect(w.people.calls).toEqual([]);

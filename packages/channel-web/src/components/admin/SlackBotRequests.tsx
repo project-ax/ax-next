@@ -140,7 +140,7 @@ export function SlackBotRequests() {
     );
   }
 
-  const { requests, configTokenStored } = load.list;
+  const { requests, configTokenStored, truncated } = load.list;
   if (requests.length === 0) {
     // Nothing left to act on. If that's why the dialog just closed, say so.
     return changed ? (
@@ -197,6 +197,7 @@ export function SlackBotRequests() {
               </li>
             ))}
           </ul>
+          {truncated && <p className="text-[12.5px] text-muted-foreground">{COPY['more']}</p>}
         </CardContent>
       </Card>
       <ApproveDialog

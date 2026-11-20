@@ -54,6 +54,7 @@ const LISTED: AdminBotRequestList = {
     },
   ],
   configTokenStored: true,
+  truncated: false,
 };
 const INSTALL_LINK = { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=approved', iconSet: true } };
 const NOT_FOUND = { status: 404, body: { error: 'not-found' } };

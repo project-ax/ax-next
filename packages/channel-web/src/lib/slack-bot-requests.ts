@@ -6,7 +6,7 @@
  * (`packages/channel-slack/src/bot-request-routes.ts`); the types mirror its
  * answers by shape, not by import (the SPA depends on no host plugin).
  *
- *   GET  /admin/slack/bot-requests                      → { requests, configTokenStored }
+ *   GET  /admin/slack/bot-requests                      → { requests, truncated, configTokenStored }
  *   POST /admin/slack/bot-requests/:requestId/approve   { refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /admin/slack/bot-requests/:requestId/decline   → {}
  *
@@ -35,6 +35,8 @@ export interface SlackBotRequest {
 
 export interface SlackBotRequestList {
   requests: SlackBotRequest[];
+  /** More requests are waiting than are listed (the server lists the oldest few). */
+  truncated: boolean;
   /** Whether the server holds the VIEWING admin's own configuration token, so Approve can skip the paste. */
   configTokenStored: boolean;
 }
@@ -85,7 +87,12 @@ export async function fetchSlackBotRequests(): Promise<SlackBotRequestList> {
   } catch {
     throw badResponse(res.status);
   }
-  if (!isRecord(body) || !Array.isArray(body['requests']) || typeof body['configTokenStored'] !== 'boolean') {
+  if (
+    !isRecord(body) ||
+    !Array.isArray(body['requests']) ||
+    typeof body['truncated'] !== 'boolean' ||
+    typeof body['configTokenStored'] !== 'boolean'
+  ) {
     throw badResponse(res.status);
   }
   const requests: SlackBotRequest[] = [];
@@ -94,7 +101,7 @@ export async function fetchSlackBotRequests(): Promise<SlackBotRequestList> {
     if (request === null) throw badResponse(res.status);
     requests.push(request);
   }
-  return { requests, configTokenStored: body['configTokenStored'] };
+  return { requests, truncated: body['truncated'], configTokenStored: body['configTokenStored'] };
 }
 
 /** A POST with the write headers. A non-ok answer becomes a SlackAdminError. */
@@ -160,6 +167,7 @@ export const SLACK_BOT_REQUEST_COPY: Readonly<Record<string, string>> = Object.f
   loadFailed: "We couldn't load bot requests.",
   declineFailed: "We couldn't decline that just now. Try again in a minute.",
   changed: "This changed while you were here, so we've refreshed it.",
+  more: 'There are more requests waiting. Approve or decline these to see the rest.',
 });
 
 /**

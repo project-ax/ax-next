@@ -71,12 +71,14 @@ describe('fetchSlackBotRequests', () => {
     answer = () =>
       json(200, {
         requests: [ROW, { ...ROW, requestId: 'BBBBBBBBBBBBBBBBBBBBBB', teamName: null, extra: 1 }],
+        truncated: true,
         configTokenStored: true,
       });
     const list = await fetchSlackBotRequests();
     expect(calls[0]).toMatchObject({ url: '/admin/slack/bot-requests', method: 'GET', credentials: 'include' });
     expect(list).toEqual({
       requests: [ROW, { ...ROW, requestId: 'BBBBBBBBBBBBBBBBBBBBBB', teamName: null }],
+      truncated: true,
       configTokenStored: true,
     });
   });
@@ -91,12 +93,17 @@ describe('fetchSlackBotRequests', () => {
       null,
     ];
     for (const row of bad) {
-      answer = () => json(200, { requests: [row], configTokenStored: false });
+      answer = () => json(200, { requests: [row], truncated: false, configTokenStored: false });
       await expect(fetchSlackBotRequests()).rejects.toMatchObject({ code: 'bad-response' });
     }
-    answer = () => json(200, { requests: [], configTokenStored: 'yes' });
+    answer = () => json(200, { requests: [], truncated: false, configTokenStored: 'yes' });
     await expect(fetchSlackBotRequests()).rejects.toMatchObject({ code: 'bad-response' });
-    answer = () => json(200, { configTokenStored: false });
+    // The server always says whether it cut the list: a missing or mistyped answer is a bad one.
+    answer = () => json(200, { requests: [], configTokenStored: false });
+    await expect(fetchSlackBotRequests()).rejects.toMatchObject({ code: 'bad-response' });
+    answer = () => json(200, { requests: [], truncated: 'no', configTokenStored: false });
+    await expect(fetchSlackBotRequests()).rejects.toMatchObject({ code: 'bad-response' });
+    answer = () => json(200, { truncated: false, configTokenStored: false });
     await expect(fetchSlackBotRequests()).rejects.toMatchObject({ code: 'bad-response' });
   });
 
