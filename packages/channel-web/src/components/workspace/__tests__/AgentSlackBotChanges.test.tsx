@@ -62,10 +62,16 @@ async function pick(png: string | null) {
   const file = new File(['x'], 'logo.png', { type: 'image/png' });
   fireEvent.change(screen.getByLabelText('Image file'), { target: { files: [file] } });
   await waitFor(() => expect(draw).toHaveBeenCalledTimes(1));
+  // The drawing was asked for; wait until its result is what the dialog shows,
+  // so a click on Save can't land before the picture is in state.
+  if (png === null) await screen.findByText(AGENT_SLACK_BOT_CHANGE_COPY.badPicture);
+  else await waitFor(() => expect(screen.getByRole('button', { name: 'Save picture' })).toBeEnabled());
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // reset, not clear: a queued `*Once` value from a failed test must not leak into the next.
+  // The mocks have no default implementations; each test queues what it needs.
+  vi.resetAllMocks();
 });
 
 describe('the bot row', () => {
