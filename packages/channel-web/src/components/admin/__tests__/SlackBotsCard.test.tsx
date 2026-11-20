@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SlackBotsCard } from '../SlackBotsCard';
+import { RequestTimeoutError } from '@/lib/http';
 import { SlackAdminError } from '@/lib/slack-admin';
 import {
   disconnectTeamBot,
@@ -107,17 +108,35 @@ describe('the list', () => {
     ).toBeInTheDocument();
   });
 
-  it('no bots, or a server without the route: nothing at all', async () => {
+  it('while the first read is in flight a placeholder says it is loading, so a slow read is not "no bots"', async () => {
+    let answer: (read: SlackBotsRead) => void = () => {};
+    list.mockReturnValueOnce(new Promise<SlackBotsRead>((resolve) => (answer = resolve)));
+    render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    expect(screen.getByText("Loading the team agents' own bots")).toBeInTheDocument();
+    expect(screen.queryByRole('table')).toBeNull();
+    answer(ready(LIVE));
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(screen.queryByText("Loading the team agents' own bots")).toBeNull();
+  });
+
+  it('no bots, or a server without the route: nothing at all once the read is back', async () => {
     list.mockResolvedValueOnce(ready());
     const first = render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-    expect(first.container).toBeEmptyDOMElement();
+    await waitFor(() => expect(first.container).toBeEmptyDOMElement());
     first.unmount();
 
     list.mockResolvedValueOnce({ state: 'unavailable' });
     const second = render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-    expect(second.container).toBeEmptyDOMElement();
+    await waitFor(() => expect(second.container).toBeEmptyDOMElement());
+  });
+
+  it('a read that times out ends the placeholder in the same alert, with Try again', async () => {
+    list.mockRejectedValueOnce(new RequestTimeoutError('/admin/slack/bots', 8000));
+    render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("We couldn't load the team agents' own bots.");
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(screen.queryByText("Loading the team agents' own bots")).toBeNull();
   });
 
   it('a failed read says so, with Try again', async () => {

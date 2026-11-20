@@ -10,9 +10,13 @@
  * every shared-app action, and a card inside it would unmount and lose its own
  * note with it. Bots outlive the shared app, so the card does not wait for it.
  *
+ *   the first read in flight                 a placeholder, so a slow read is
+ *                                            not mistaken for "no bots"
  *   no bots, or a server without the route   nothing at all
- *   a read that fails                        an alert with Try again, never
- *                                            "no bots" (an admin relies on this)
+ *   a read that fails or hangs               an alert with Try again, never
+ *                                            "no bots" (an admin relies on this;
+ *                                            the client gives up after
+ *                                            REQUEST_TIMEOUT_MS)
  *   after a Disconnect                       the list is read again and the tab
  *                                            is told its apps changed; when
  *                                            the Slack app couldn't be deleted,
@@ -36,6 +40,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import {
   Table,
@@ -143,6 +148,17 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
             </Button>
           </AlertDescription>
         </Alert>
+      )}
+      {load.kind === 'loading' && (
+        // No title yet: the card may turn out to have nothing to show, and a heading that vanished would read as a glitch.
+        // (Not a live region: the tab above has its own `status` for the same wait.)
+        <Card variant="settings" aria-busy="true">
+          <CardContent className="flex flex-col gap-3">
+            <span className="sr-only">Loading the team agents&apos; own bots</span>
+            <Skeleton className="h-4 w-1/3" />
+            <Skeleton className="h-9 w-full" />
+          </CardContent>
+        </Card>
       )}
       {bots.length > 0 && (
         <Card variant="settings">
