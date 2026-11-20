@@ -47,6 +47,19 @@ const INSTALL: InstallRow = {
   configTokenAddedAt: new Date('2026-11-13T10:00:00Z'),
   installedAt: new Date('2026-11-13T10:05:00Z'),
 };
+/** The Support agent's own bot (TASK-1167), live: Grace asked for it and allowed it. */
+const OWN_BOT: InstallRow = {
+  ...INSTALL,
+  installId: 'Hb7Kq2Lw8vNc5Xr1Bm7KdA',
+  kind: 'bot',
+  appId: 'A07HELPER01',
+  botName: 'Support Helper',
+  botUserId: 'U07HELPER01',
+  connectedByUserId: 'usr_grace',
+  agentId: 'agt_support',
+  requestedByUserId: 'usr_grace',
+  botHandle: 'supporthelper',
+};
 
 const SUPPORT_TEAM = 'team_support';
 const SALES_TEAM = 'team_sales';
@@ -189,10 +202,22 @@ function world(o: { workspaceAdminsMayManage?: boolean } = {}) {
     install: { ...INSTALL } as InstallRow | null,
     botToken: BOT_TOKEN as string | null,
     vaultFault: undefined as unknown,
+    /** The agent's own bot (store.ts `botForAgent`, any status): none unless a test sets one. */
+    bot: null as InstallRow | null,
+    botFault: undefined as unknown,
   };
+  /** The agents `botForAgent` was asked about, in order. */
+  const botLookups: string[] = [];
   const deps: ChannelDeps = {
     bus,
-    installs: { current: async () => (state.install === null ? null : { ...state.install }) },
+    installs: {
+      current: async () => (state.install === null ? null : { ...state.install }),
+      botForAgent: async (agentId) => {
+        botLookups.push(agentId);
+        if (state.botFault !== undefined) throw state.botFault;
+        return state.bot !== null && state.bot.agentId === agentId ? { ...state.bot } : null;
+      },
+    },
     channels: memory.store,
     secrets: {
       get: async (_owner, name) => {
@@ -205,7 +230,7 @@ function world(o: { workspaceAdminsMayManage?: boolean } = {}) {
   };
   const connect = (channelId: string, actorUserId = ADA, agentId = SUPPORT.id) =>
     connectChannel(deps, { install: state.install, agentId, channelId, actorUserId, ctx });
-  return { bus, people, memory, slack, state, deps, lines, connect };
+  return { bus, people, memory, slack, state, deps, lines, connect, botLookups };
 }
 
 // ── agentAccess ─────────────────────────────────────────────────────────────
@@ -519,6 +544,80 @@ describe('connectChannel', () => {
       expect(w.slack.calls).toEqual([]);
       expect(w.memory.rows.size).toBe(0);
     }
+  });
+
+  it('refuses an agent whose own bot is live as own-bot, naming the bot, before Slack is asked anything: nothing joined, nothing bound (TASK-1168)', async () => {
+    const w = world();
+    // A channel a connect would otherwise take.
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    w.state.bot = OWN_BOT;
+    expect(await w.connect(SUPPORT_CH)).toEqual({
+      ok: false,
+      reason: 'own-bot',
+      ownBot: { botName: 'Support Helper', handle: 'supporthelper' },
+    });
+    expect(w.slack.calls).toEqual([]);
+    await expect(w.memory.store.listAll(INSTALL_ID)).resolves.toEqual([]);
+    expect(w.botLookups).toEqual([SUPPORT.id]);
+    expect(w.lines).toEqual([
+      {
+        level: 'info',
+        msg: 'slack_channel_refused',
+        fields: { installId: INSTALL_ID, reason: 'own-bot', stage: 'own-bot' },
+      },
+    ]);
+    // Codes alone: never the bot's name or its handle.
+    const logged = JSON.stringify(w.lines);
+    expect(logged).not.toContain('Support Helper');
+    expect(logged).not.toContain('supporthelper');
+  });
+
+  it('a pending bot changes nothing: the connect goes through', async () => {
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    w.state.bot = {
+      ...OWN_BOT,
+      status: 'pending',
+      teamId: null,
+      teamName: null,
+      botUserId: null,
+      installedAt: null,
+      botHandle: null,
+    };
+    expect(await w.connect(SUPPORT_CH)).toMatchObject({ ok: true, reconnected: false });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SUPPORT.id, connectedByUserId: ADA });
+  });
+
+  it('a live bot Slack never gave a handle is named by its name alone', async () => {
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    w.state.bot = { ...OWN_BOT, botHandle: null };
+    expect(await w.connect(SUPPORT_CH)).toEqual({
+      ok: false,
+      reason: 'own-bot',
+      ownBot: { botName: 'Support Helper', handle: null },
+    });
+    expect(w.slack.calls).toEqual([]);
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it("a fault reading the agent's bot fails the connect: it propagates, and Slack is asked nothing", async () => {
+    const w = world();
+    w.slack.channels.set(SUPPORT_CH, channel(SUPPORT_CH, 'support-desk'));
+    const fault = Object.assign(new Error('relation gone'), { code: '42P01' });
+    w.state.botFault = fault;
+    await expect(w.connect(SUPPORT_CH)).rejects.toBe(fault);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.memory.rows.size).toBe(0);
+  });
+
+  it('no workspace still comes first: the bot is never looked up without one', async () => {
+    const w = world();
+    w.state.install = null;
+    // Even with the agent's own bot live.
+    w.state.bot = OWN_BOT;
+    expect(await w.connect(SUPPORT_CH)).toEqual({ ok: false, reason: 'no-workspace' });
+    expect(w.botLookups).toEqual([]);
   });
 
   it("refuses another agent's channel as channel-taken, and leaves that binding as it was", async () => {

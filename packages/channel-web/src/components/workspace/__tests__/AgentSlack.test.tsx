@@ -53,7 +53,9 @@ const SUPPORT: SlackChannelRow = {
   remember: false,
   connectedBy: 'Ada Lovelace',
   needsReconnect: false,
+  needsInvite: false,
 };
+const MOVED: SlackChannelRow = { ...SUPPORT, needsInvite: true };
 const OPS: SlackChannelRow = { ...SUPPORT, channelId: 'C0OPS00001', name: 'ops', remember: true, needsReconnect: true };
 
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
@@ -165,26 +167,66 @@ describe('the states', () => {
 });
 
 describe("the agent's own bot, around the channel list", () => {
-  it('live: the picker is gone and one line above the list says to invite the bot', async () => {
-    renderIt(ready([SUPPORT], true, LIVE_BOT));
+  const NOTICE =
+    'These channels still need @quill: run /invite @quill in each one. A channel leaves this list once @quill answers there.';
+
+  it('live: the channels it still needs are listed under one line that says to /invite it; the picker is gone', async () => {
+    renderIt(ready([MOVED, { ...MOVED, channelId: 'C0OPS00001', name: 'ops' }], true, LIVE_BOT));
+    expect(await screen.findByText(NOTICE)).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Connected channels' });
+    expect(within(list).getByText('support')).toBeInTheDocument();
+    expect(within(list).getByText('ops')).toBeInTheDocument();
+    expect(within(list).getAllByText('Run /invite @quill here.')).toHaveLength(2);
+    expect(screen.queryByRole('combobox', { name: 'Connect a channel' })).toBeNull();
+  });
+
+  it('a channel it still needs has no memory switch, no "Connected by" and no Reconnect: only the hint and, for a manager, Disconnect', async () => {
+    renderIt(ready([{ ...OPS, needsInvite: true }], true, LIVE_BOT));
+    await screen.findByText('Run /invite @quill here.');
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByText(/Connected by/)).toBeNull();
+    expect(screen.queryByText('Needs reconnecting')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+    expect(screen.queryByText(/remembers what people with access/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+
+  it('live with no handle: the lines name the bot instead', async () => {
+    renderIt(ready([MOVED], true, { ...LIVE_BOT, handle: null }));
     expect(
       await screen.findByText(
-        'Mentioning the shared bot in these channels no longer reaches Quill. Invite @quill to each one.',
+        'These channels still need Quill: invite it to each one with /invite. A channel leaves this list once Quill answers there.',
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: 'Connect a channel' })).toBeNull();
-    expect(screen.getByRole('list', { name: 'Connected channels' })).toBeInTheDocument();
+    expect(screen.getByText('Invite Quill here with /invite.')).toBeInTheDocument();
   });
 
-  it('live with no handle: the line names the bot instead', async () => {
-    renderIt(ready([SUPPORT], true, { ...LIVE_BOT, handle: null }));
-    expect(await screen.findByText(/Invite Quill to each one\./)).toBeInTheDocument();
+  it('a member reads the same notice and hint, with no Disconnect', async () => {
+    renderIt(ready([MOVED], false, LIVE_BOT));
+    expect(await screen.findByText(NOTICE)).toBeInTheDocument();
+    expect(screen.getByText('Run /invite @quill here.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
   });
 
-  it('not live: the picker stays and there is no such line', async () => {
-    renderIt(ready([SUPPORT]));
+  it.each([true, false])(
+    'live, with no channel left to invite: no "no channels" line (manager: %s), and the live line still says how to invite it',
+    async (canManage) => {
+      renderIt(ready([], canManage, LIVE_BOT));
+      expect(await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
+      expect(screen.queryByText(/isn't answering in any channels yet/)).toBeNull();
+      expect(screen.queryByText(/isn't connected to any Slack channels yet/)).toBeNull();
+      expect(screen.queryByText(/still need/)).toBeNull();
+    },
+  );
+
+  it('not live: the picker stays, and a row marked needsInvite is drawn as an ordinary row', async () => {
+    renderIt(ready([MOVED]));
     expect(await screen.findByRole('combobox', { name: 'Connect a channel' })).toBeInTheDocument();
-    expect(screen.queryByText(/no longer reaches/)).toBeNull();
+    expect(screen.queryByText(/still need/)).toBeNull();
+    expect(screen.queryByText(/Run \/invite/)).toBeNull();
+    expect(screen.getByRole('switch', { name: 'Let Quill remember this channel' })).toBeInTheDocument();
+    expect(screen.getByText(/Connected by Ada Lovelace/)).toBeInTheDocument();
   });
 
   it("a manager sees the request form; a member sees nothing of the bot until it is live", async () => {
@@ -530,6 +572,17 @@ describe('a write on a stale picture re-reads the section', () => {
     expect(screen.queryByText(/Try again/)).toBeNull();
   });
 
+  it('connect refused with 409 own-bot (its bot went live meanwhile) re-reads, with no error line', async () => {
+    connect.mockRejectedValueOnce(new AgentSlackError(409, 'own-bot'));
+    renderIt(ready([]));
+    await openPicker();
+    fetchStatus.mockResolvedValueOnce(ready([], true, LIVE_BOT));
+    fireEvent.click(await screen.findByRole('option', { name: /#sales/ }));
+    expect(await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('a 5xx on remember keeps the "try again" line and does not re-read', async () => {
     remember.mockRejectedValueOnce(new AgentSlackError(502, 'slack-error'));
     renderIt(ready([SUPPORT]));
@@ -571,6 +624,23 @@ describe('disconnecting', () => {
     await waitFor(() => expect(disconnect).toHaveBeenCalledWith('a1', 'C0SUPPORT1'));
     await waitFor(() => expect(screen.queryByRole('list', { name: 'Connected channels' })).toBeNull());
     expect(await screen.findByText("Quill isn't answering in any channels yet.")).toBeInTheDocument();
+  });
+
+  it('a channel the bot still needs: the dialog says what Disconnect does then; confirming takes it off the list, and the line goes with the last one', async () => {
+    disconnect.mockResolvedValueOnce({ removed: true });
+    renderIt(ready([MOVED], true, LIVE_BOT));
+    const dialog = await openDialog();
+    expect(
+      within(dialog).getByText(
+        "We'll take #support off this list. The agent answers there only after its own bot is invited.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/connect it again any time/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(disconnect).toHaveBeenCalledWith('a1', 'C0SUPPORT1'));
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Connected channels' })).toBeNull());
+    expect(screen.queryByText(/still need/)).toBeNull();
+    expect(screen.queryByText(/isn't answering in any channels yet/)).toBeNull();
   });
 
   it('a server failure keeps the dialog and the row, with a sentence', async () => {

@@ -43,7 +43,7 @@ const NO_BOT = { state: 'none', configTokenStored: true };
 const PENDING_BOT = { state: 'pending', botName: 'Quill', approver: 'Ada', canContinue: true };
 const LIVE_BOT = { state: 'live', botName: 'Quill', handle: 'quill', approver: 'Ada', needsClaim: false };
 
-const ROW = { channelId: 'C1', name: 'support', remember: false, connectedBy: 'Ada', needsReconnect: false };
+const ROW = { channelId: 'C1', name: 'support', remember: false, connectedBy: 'Ada', needsReconnect: false, needsInvite: false };
 
 beforeEach(() => {
   calls = [];
@@ -94,6 +94,17 @@ describe('fetchAgentSlack', () => {
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy' });
     await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true });
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: 'no' });
+    await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+  });
+
+  it("reads whether a row still needs the agent's own bot invited; an older host that omits it reads false; a wrong-typed one is a bad response", async () => {
+    const ready = (row: unknown) => ({ state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [row], bot: LIVE_BOT });
+    answer = () => json(200, ready({ ...ROW, needsInvite: true }));
+    await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ channels: [{ ...ROW, needsInvite: true }] });
+    const { needsInvite: _omit, ...older } = ROW;
+    answer = () => json(200, ready(older));
+    await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ channels: [{ ...ROW, needsInvite: false }] });
+    answer = () => json(200, ready({ ...ROW, needsInvite: 'yes' }));
     await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
   });
 
@@ -202,6 +213,12 @@ describe('writes', () => {
     });
     expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
     expect(calls[0]?.headers['content-type']).toBe('application/json');
+  });
+
+  it('connect reads a row without needsInvite as false', async () => {
+    const { needsInvite: _omit, ...older } = ROW;
+    answer = () => json(200, { channel: older, reconnected: false });
+    await expect(connectSlackChannel('a1', 'C1')).resolves.toEqual({ channel: { ...ROW, needsInvite: false }, reconnected: false });
   });
 
   it('disconnect and remember send their own bodies', async () => {
@@ -396,8 +413,25 @@ describe('what an error says', () => {
   it('personal-agent and no-workspace refusals mean the picture is stale', () => {
     expect(agentSlackStateChanged(new AgentSlackError(409, 'personal-agent'))).toBe(true);
     expect(agentSlackStateChanged(new AgentSlackError(409, 'no-workspace'))).toBe(true);
+    expect(agentSlackStateChanged(new AgentSlackError(409, 'own-bot'))).toBe(true);
     expect(agentSlackStateChanged(new AgentSlackError(409, 'channel-taken'))).toBe(false);
     expect(agentSlackStateChanged(new Error('x'))).toBe(false);
+  });
+
+  it("the moved-channel lines name the bot's @handle, or its name when Slack never said one", () => {
+    const known = { botName: 'Quill', handle: 'quill' };
+    const unknown = { botName: 'Quill', handle: null };
+    expect(AGENT_SLACK_COPY.movedNotice(known)).toBe(
+      'These channels still need @quill: run /invite @quill in each one. A channel leaves this list once @quill answers there.',
+    );
+    expect(AGENT_SLACK_COPY.movedNotice(unknown)).toBe(
+      'These channels still need Quill: invite it to each one with /invite. A channel leaves this list once Quill answers there.',
+    );
+    expect(AGENT_SLACK_COPY.movedRow(known)).toBe('Run /invite @quill here.');
+    expect(AGENT_SLACK_COPY.movedRow(unknown)).toBe('Invite Quill here with /invite.');
+    expect(AGENT_SLACK_COPY.movedDisconnect('support')).toBe(
+      "We'll take #support off this list. The agent answers there only after its own bot is invited.",
+    );
   });
 
   it('a connect that is no longer allowed or no longer found means the picture is stale', () => {
