@@ -1,7 +1,11 @@
 import { sql, type Kysely, type Selectable } from 'kysely';
 import { cleanLabel } from './label.js';
 import { LEFTOVER_APPS_MAX } from './limits.js';
-import type { ChannelSlackDatabase, ChannelSlackInstallsTable } from './migrations.js';
+import type {
+  ChannelSlackBotRequestsTable,
+  ChannelSlackDatabase,
+  ChannelSlackInstallsTable,
+} from './migrations.js';
 
 /**
  * Which Slack app an install is: `shared`, the one Admin › Slack connects, or
@@ -30,8 +34,9 @@ export interface InstallRow {
   botUserId: string | null;
   /**
    * Whose configuration token made the app: the admin who connected the
-   * shared app, or a bot's approver (in TASK-1167 always its requester). So
-   * every change to the app uses their token (one per person, TASK-1175).
+   * shared app, or a bot's approver (its requester on the self path, or the
+   * AX admin who approved its request, TASK-1169). So every change to the
+   * app uses their token (one per person, TASK-1175).
    * Vault reads name them. Set once, by the insert: a Replace stores the
    * pasted token as theirs and never moves the app to another person. Their
    * name is auth's, read when shown.
@@ -55,7 +60,10 @@ export interface InstallRow {
   /**
    * When the configuration token this install uses was added. At Connect
    * that is the same instant as `createdAt`; after a Replace it is the latest
-   * replace (TASK-1128).
+   * replace (TASK-1128). A bot's row keeps the time it was asked for instead:
+   * one person's token serves all their apps (TASK-1175) and has no date of its
+   * own, so a Replace or a paste through another of their apps changes the
+   * token without moving this date.
    */
   configTokenAddedAt: Date;
   installedAt: Date | null;
@@ -95,6 +103,29 @@ export interface LeftoverApp {
    * before TASK-1175. An id, never a name, and never logged.
    */
   connectedByUserId: string | null;
+}
+
+/**
+ * A team admin's open ask for their agent's own bot, waiting for an AX admin
+ * (TASK-1169). No secret, no Slack app and no picture: nothing exists on
+ * Slack until an AX admin approves it. Never changed: approving, declining or
+ * cancelling it deletes it.
+ */
+export interface BotRequest {
+  /**
+   * Our own random id (16 bytes, base64url: 22 characters): how logs name
+   * the request, and what an AX admin's approve or decline names.
+   */
+  requestId: string;
+  agentId: string;
+  /**
+   * The team admin who asked: the bot's `requestedByUserId` once it is
+   * approved. An id, never a name, and never logged.
+   */
+  requestedByUserId: string;
+  /** Already passed `checkBotName`. */
+  botName: string;
+  createdAt: Date;
 }
 
 export interface InstallStore {
@@ -150,6 +181,29 @@ export interface InstallStore {
    */
   setBotHandle(installId: string, handle: string): Promise<void>;
   /**
+   * Open a team admin's ask for their agent's own bot (TASK-1169). One per
+   * agent: the database's unique index decides, so of two inserts for one
+   * agent exactly one gets in, and the other throws `request-exists`. A
+   * request id already taken throws as `insertPending` does. `botName` must
+   * already have passed `checkBotName`; nothing is cleaned here.
+   */
+  insertBotRequest(r: Pick<BotRequest, 'requestId' | 'agentId' | 'requestedByUserId' | 'botName'>): Promise<void>;
+  /** One open request, by its id, or null. */
+  getBotRequest(requestId: string): Promise<BotRequest | null>;
+  /** The agent's open request, or null. */
+  botRequestForAgent(agentId: string): Promise<BotRequest | null>;
+  /**
+   * Every open request, oldest first (by `created_at`, then request id).
+   * Uncapped, unlike `leftoverApps`: an agent has one at most, and a name
+   * check has to see every one. A caller that shows them caps the list
+   * (BOT_REQUESTS_MAX).
+   */
+  listBotRequests(): Promise<BotRequest[]>;
+  /** Delete one open request, by its id. True when a row went. */
+  removeBotRequest(requestId: string): Promise<boolean>;
+  /** Delete the agent's open request: the removed request's id, or null when it had none. */
+  removeBotRequestForAgent(agentId: string): Promise<string | null>;
+  /**
    * Replace a PENDING install's OAuth state, so any earlier one stops
    * matching. Throws when the install is missing or already active.
    */
@@ -199,13 +253,14 @@ export interface InstallStore {
    */
   remove(installId: string, o?: { appLeft?: boolean }): Promise<void>;
   /**
-   * Delete every install, any status and any kind, and their channel
-   * bindings, in ONE statement, and return exactly the installs that
-   * statement deleted, in no particular order. A row inserted meanwhile is
-   * either deleted and returned or kept; a delete that fails deletes and
-   * returns nothing. A binding goes only with an install this delete removed.
-   * Bots too: its one caller is the bootstrap reset, which also wipes every
-   * credential and every agent (TASK-1167).
+   * Delete every install, any status and any kind, their channel bindings
+   * and every open bot request (TASK-1169), in ONE statement, and return
+   * exactly the installs that statement deleted, in no particular order. A
+   * row inserted meanwhile is either deleted and returned or kept; a delete
+   * that fails deletes and returns nothing. A binding goes only with an
+   * install this delete removed.
+   * Bots and requests too: its one caller is the bootstrap reset, which also
+   * wipes every credential and every agent (TASK-1167).
    */
   removeAll(): Promise<RemovedInstall[]>;
   /**
@@ -228,8 +283,11 @@ export interface InstallStore {
 
 const INSTALLS = 'channel_slack_v1_installs';
 const LEFTOVER_APPS = 'channel_slack_v1_leftover_apps';
+const BOT_REQUESTS = 'channel_slack_v1_bot_requests';
 /** The partial unique index that allows one bot per agent (migrations.ts). */
 const BOT_AGENT_INDEX = 'channel_slack_v1_installs_bot_agent';
+/** The unique index that allows one open bot request per agent (migrations.ts). */
+const BOT_REQUEST_AGENT_INDEX = 'channel_slack_v1_bot_requests_agent';
 
 /** Every column but the OAuth state, which never leaves this file in a row. */
 const ROW_COLUMNS = [
@@ -280,20 +338,46 @@ function toRow(r: SelectedRow): InstallRow {
   };
 }
 
-/** Postgres refusing a second bot for one agent: a unique violation on its index, and no other. */
-function isBotAgentConflict(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) return false;
-  const e = err as { code?: unknown; constraint?: unknown };
-  return e.code === '23505' && e.constraint === BOT_AGENT_INDEX;
+const REQUEST_COLUMNS = ['request_id', 'agent_id', 'requested_by_user_id', 'bot_name', 'created_at'] as const;
+
+type SelectedRequest = Pick<Selectable<ChannelSlackBotRequestsTable>, (typeof REQUEST_COLUMNS)[number]>;
+
+function toRequest(r: SelectedRequest): BotRequest {
+  return {
+    requestId: r.request_id,
+    agentId: r.agent_id,
+    requestedByUserId: r.requested_by_user_id,
+    botName: r.bot_name,
+    createdAt: r.created_at,
+  };
 }
 
 /**
- * A store call that found nothing to change, or (`bot-exists`) an agent that
- * already has its bot. Carries no data, so it is safe to log.
+ * Postgres refusing a second row for one agent: a unique violation on this
+ * index (one bot, or one open request, per agent), and no other.
  */
+function isUniqueViolationOn(err: unknown, index: string): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: unknown; constraint?: unknown };
+  return e.code === '23505' && e.constraint === index;
+}
+
+/**
+ * A store call that found nothing to change, or an agent that already has
+ * its bot (`bot-exists`) or an open bot request (`request-exists`). Carries
+ * no data, so it is safe to log.
+ */
+export type InstallStoreErrorCode =
+  | 'install-not-pending'
+  | 'install-not-active'
+  | 'bot-exists'
+  | 'request-exists'
+  // The caller's open request was gone when it came to delete it (TASK-1169).
+  | 'request-gone';
+
 export class InstallStoreError extends Error {
-  readonly code: 'install-not-pending' | 'install-not-active' | 'bot-exists';
-  constructor(code: 'install-not-pending' | 'install-not-active' | 'bot-exists') {
+  readonly code: InstallStoreErrorCode;
+  constructor(code: InstallStoreErrorCode) {
     super(`channel-slack install store: ${code}`);
     this.name = 'InstallStoreError';
     this.code = code;
@@ -392,7 +476,7 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
           })
           .execute();
       } catch (err) {
-        if (isBotAgentConflict(err)) throw new InstallStoreError('bot-exists');
+        if (isUniqueViolationOn(err, BOT_AGENT_INDEX)) throw new InstallStoreError('bot-exists');
         throw err;
       }
     },
@@ -428,6 +512,66 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         .where('status', '=', 'active')
         .executeTakeFirst();
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
+    },
+
+    async insertBotRequest(r) {
+      try {
+        await db
+          .insertInto(BOT_REQUESTS)
+          .values({
+            request_id: r.requestId,
+            agent_id: r.agentId,
+            requested_by_user_id: r.requestedByUserId,
+            bot_name: r.botName,
+          })
+          .execute();
+      } catch (err) {
+        if (isUniqueViolationOn(err, BOT_REQUEST_AGENT_INDEX)) throw new InstallStoreError('request-exists');
+        throw err;
+      }
+    },
+
+    async getBotRequest(requestId) {
+      const row = await db
+        .selectFrom(BOT_REQUESTS)
+        .select(REQUEST_COLUMNS)
+        .where('request_id', '=', requestId)
+        .executeTakeFirst();
+      return row === undefined ? null : toRequest(row);
+    },
+
+    async botRequestForAgent(agentId) {
+      // The unique index allows one at most.
+      const row = await db
+        .selectFrom(BOT_REQUESTS)
+        .select(REQUEST_COLUMNS)
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return row === undefined ? null : toRequest(row);
+    },
+
+    async listBotRequests() {
+      const rows = await db
+        .selectFrom(BOT_REQUESTS)
+        .select(REQUEST_COLUMNS)
+        .orderBy('created_at', 'asc')
+        .orderBy('request_id', 'asc')
+        .execute();
+      return rows.map(toRequest);
+    },
+
+    async removeBotRequest(requestId) {
+      const r = await db.deleteFrom(BOT_REQUESTS).where('request_id', '=', requestId).executeTakeFirst();
+      return r.numDeletedRows > 0n;
+    },
+
+    async removeBotRequestForAgent(agentId) {
+      const row = await db
+        .deleteFrom(BOT_REQUESTS)
+        .where('agent_id', '=', agentId)
+        .returning('request_id')
+        .executeTakeFirst();
+      return row?.request_id ?? null;
     },
 
     async setOAuthState(installId, s) {
@@ -569,6 +713,9 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
       `.execute(db);
     },
 
+    // Every open bot request goes in the same statement (TASK-1169): the
+    // reset wipes every agent without announcing it, so a request it left
+    // would name an agent that's gone.
     async removeAll() {
       const r = await sql<{
         install_id: string;
@@ -583,6 +730,8 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         ), unbound AS (
           DELETE FROM channel_slack_v1_channels
            WHERE install_id IN (SELECT install_id FROM removed)
+        ), requests AS (
+          DELETE FROM channel_slack_v1_bot_requests
         )
         SELECT install_id, app_id, team_id, connected_by_user_id, kind FROM removed
       `.execute(db);

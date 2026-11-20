@@ -18,8 +18,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     and a CHECK pairs `agent_id` and `requested_by_user_id` with the kind,
  *     so neither kind can pass for the other.
  *     `connected_by_user_id` is whose configuration token made the app: the
- *     admin who connected the shared app, or a bot's approver (in TASK-1167
- *     always its requester). Every change to the app uses that person's token
+ *     admin who connected the shared app, or a bot's approver (its requester
+ *     on the self path, or the AX admin who approved its request, TASK-1169).
+ *     Every change to the app uses that person's token
  *     (one per person, TASK-1175), and vault reads name them. Only the insert
  *     sets it: a Replace (TASK-1128) stores the pasted token as theirs and
  *     moves only `config_token_added_at`, when the token was last added.
@@ -76,13 +77,28 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     (design §8 Q5). NULL for an app left before the column, never
  *     backfilled.
  *
+ *   channel_slack_v1_bot_requests — a team admin's open ask for their
+ *     agent's own bot, waiting for an AX admin (TASK-1169): the agent, the
+ *     team admin who asked (`requested_by_user_id`) and the bot's name. One
+ *     per agent (a unique index). An AX admin's Approve turns it into a
+ *     pending bot row in the installs table, with that admin as its
+ *     `connected_by_user_id` and the asker as its `requested_by_user_id`,
+ *     and deletes it. An AX admin's Decline, the team's Cancel, the agent's
+ *     deletion (agents-deleted.ts) and a reset delete it too; nothing ever
+ *     changes one. It names the person who asked and never an approver: no
+ *     configuration token is involved until an AX admin approves, so
+ *     `personHasApps` (store.ts) never reads it. No picture either: the
+ *     approving admin's browser draws the deployment's logo at Approve, as
+ *     Connect's does. Keyed by a random id of our own (`request_id`).
+ *
  * No secret is here. They live in the credentials vault (secrets.ts): an
  * install's three under `slack:<install_id>:<name>`, and the configuration
  * refresh token once per person (TASK-1175), under
  * `slack:person:<connected_by_user_id>:config-refresh-token`, shared by every
  * app of theirs. Nor is any AX account's
  * name: `connected_by_user_id` is an id in the installs, channels and
- * leftover apps tables, and that person's name is read from auth when it is
+ * leftover apps tables, as `requested_by_user_id` is in the installs and bot
+ * requests tables, and that person's name is read from auth when it is
  * shown (invariant 4).
  * The one kind of person's name kept here is Slack's: `speaker_names` holds
  * members' Slack display names and ids as their sender labels showed them,
@@ -165,11 +181,24 @@ export interface ChannelSlackLeftoverAppsTable {
   connected_by_user_id: string | null;
 }
 
+/**
+ * TASK-1169. A request is inserted and deleted, never updated, so an approve
+ * keyed on its id takes exactly the request its admin saw.
+ */
+export interface ChannelSlackBotRequestsTable {
+  request_id: ColumnType<string, string, never>;
+  agent_id: ColumnType<string, string, never>;
+  requested_by_user_id: ColumnType<string, string, never>;
+  bot_name: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, Date | undefined, never>;
+}
+
 export interface ChannelSlackDatabase {
   channel_slack_v1_installs: ChannelSlackInstallsTable;
   channel_slack_v1_channels: ChannelSlackChannelsTable;
   channel_slack_v1_threads: ChannelSlackThreadsTable;
   channel_slack_v1_leftover_apps: ChannelSlackLeftoverAppsTable;
+  channel_slack_v1_bot_requests: ChannelSlackBotRequestsTable;
 }
 
 export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
@@ -331,5 +360,22 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS channel_slack_v1_installs_bot_agent
       ON channel_slack_v1_installs (agent_id)
       WHERE kind = 'bot'
+  `.execute(db);
+  // A team admin's ask for their agent's own bot, waiting for an AX admin
+  // (TASK-1169).
+  await sql`
+    CREATE TABLE IF NOT EXISTS channel_slack_v1_bot_requests (
+      request_id             TEXT PRIMARY KEY,
+      agent_id               TEXT NOT NULL,
+      requested_by_user_id   TEXT NOT NULL,
+      bot_name               TEXT NOT NULL,
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `.execute(db);
+  // One open request per agent: of two asks for one agent, the database lets
+  // exactly one in (store.ts answers the other `request-exists`).
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS channel_slack_v1_bot_requests_agent
+      ON channel_slack_v1_bot_requests (agent_id)
   `.execute(db);
 }

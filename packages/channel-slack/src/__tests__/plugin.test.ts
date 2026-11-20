@@ -293,6 +293,32 @@ function fakeSlackFetch() {
   return { fetchImpl, calls };
 }
 
+/**
+ * fakeSlackFetch, with `tooling.tokens.rotate` answered by a fresh pair each
+ * time (DISCONNECTACCESS<n>, DISCONNECTREFRESH<n>), so a bot's app can be
+ * deleted with its approver's token (TASK-1172). Every call, the rotate
+ * included, is still recorded in `calls`.
+ */
+function disconnectSlackFetch() {
+  const slack = fakeSlackFetch();
+  let rotates = 0;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const answered = await slack.fetchImpl(input, init);
+    if (String(input) !== 'https://slack.com/api/tooling.tokens.rotate') return answered;
+    rotates += 1;
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        token: fakeConfigAccessToken(`DISCONNECTACCESS${rotates}`),
+        refresh_token: fakeConfigRefreshToken(`DISCONNECTREFRESH${rotates}`),
+        exp: 4_102_444_800,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  };
+  return { fetchImpl, calls: slack.calls };
+}
+
 // ── A request and response shaped like @ax/http-server's ───────────────────
 
 interface Answer {
@@ -442,6 +468,46 @@ async function insertActiveInstall(): Promise<void> {
 async function installCount(): Promise<number> {
   const r = await sql<{ n: string }>`SELECT count(*)::text AS n FROM channel_slack_v1_installs`.execute(probe);
   return Number(r.rows[0]?.n ?? '0');
+}
+
+/**
+ * TASK-1172's world: Ada's shared app, live, with its signing secret, bot
+ * token and her own configuration token; Grace's live bot for the team agent,
+ * with its three secrets and her own token; and the agent's #support bound on
+ * both, the shared binding Ada's and the bot's Grace's.
+ */
+async function seedSupportBot(s: Services): Promise<{ adas: string; graces: string }> {
+  const adas = fakeConfigRefreshToken('DISCONNECTADASECRET');
+  const graces = fakeConfigRefreshToken('DISCONNECTGRACESECRET');
+  await insertActiveInstall();
+  s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+  s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+  s.vault.set(configTokenRef(ADMIN.id), adas);
+  const store = createInstallStore(probe);
+  await store.insertPendingBot({
+    installId: BOT_INSTALL_ID,
+    appId: BOT_APP_ID,
+    clientId: '7512345678901.7522222222222',
+    botName: 'support-helper',
+    connectedByUserId: GRACE,
+    agentId: TEAM_AGENT.id,
+    requestedByUserId: GRACE,
+  });
+  await store.activate(BOT_INSTALL_ID, {
+    teamId: TEAM_ID,
+    teamName: 'Canopy Works',
+    botUserId: 'U07HELPERBOT',
+    installedAt: new Date(NOW_MS),
+  });
+  s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), fakeBotToken('DISCONNECTBOTSECRET'));
+  s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-03');
+  s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-03');
+  s.vault.set(configTokenRef(GRACE), graces);
+  const channels = createChannelStore(probe);
+  const bound = { channelId: SUPPORT_CH, agentId: TEAM_AGENT.id, channelName: 'support' };
+  expect(await channels.upsert({ ...bound, installId: INSTALL_ID, connectedByUserId: ADMIN.id })).toBe('connected');
+  expect(await channels.upsert({ ...bound, installId: BOT_INSTALL_ID, connectedByUserId: GRACE })).toBe('connected');
+  return { adas, graces };
 }
 
 /** Text a failing delete's message carries, which no log line may repeat. */
@@ -673,7 +739,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the twenty-two routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the thirty routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -696,6 +762,23 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'GET', path: '/admin/slack/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
+      // Admin › Slack's list of the team agents' own bots, and its Disconnect for one (TASK-1172).
+      { method: 'GET', path: '/admin/slack/bots', bypassCsrf: false, maxBodyBytes: undefined },
+      { method: 'POST', path: '/admin/slack/bots/disconnect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // Admin › Slack's bot requests (TASK-1169): Approve's body can carry the bot's picture, as Connect's can.
+      { method: 'GET', path: '/admin/slack/bot-requests', bypassCsrf: false, maxBodyBytes: undefined },
+      {
+        method: 'POST',
+        path: '/admin/slack/bot-requests/:requestId/approve',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES,
+      },
+      {
+        method: 'POST',
+        path: '/admin/slack/bot-requests/:requestId/decline',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
       { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
       {
@@ -723,6 +806,13 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/settings/slack/:agentId/bot/cancel', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // A team admin disconnects the agent's own bot, pending or live, by the install id the page showed (TASK-1172).
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/disconnect',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       // Its live bot's name and picture (TASK-1171): a picture's body is the PNG, so it has Connect's cap.
       { method: 'POST', path: '/settings/slack/:agentId/bot/rename', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       {
@@ -730,6 +820,14 @@ describe('@ax/channel-slack plugin', () => {
         path: '/settings/slack/:agentId/bot/icon',
         bypassCsrf: false,
         maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES,
+      },
+      // Asking an AX admin for it instead (TASK-1169), and taking the ask back.
+      { method: 'POST', path: '/settings/slack/:agentId/bot-request', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot-request/cancel',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       // Where Slack sends a bot's approver back after Allow: signed in, its OAuth state the proof.
       { method: 'GET', path: '/slack/bots/oauth/callback', bypassCsrf: false, maxBodyBytes: undefined },
@@ -2093,7 +2191,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(22);
+    expect(s.routes).toHaveLength(30);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2115,7 +2213,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(22);
+    expect(s.routes).toHaveLength(30);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2144,7 +2242,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(22);
+    expect(s.routes).toHaveLength(30);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2187,10 +2285,10 @@ describe('@ax/channel-slack plugin', () => {
     expect((await get()).status).toBe(401);
     expect(await get('usr_bob')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
     expect(await get(ADMIN.id, 'agt_nobody')).toEqual({ status: 404, body: { error: 'not-found' }, done: true });
-    // No workspace is connected yet.
+    // No workspace is connected yet. Ada manages the agent, so she could still disconnect its own bot.
     expect(await get(ADMIN.id)).toEqual({
       status: 200,
-      body: { state: 'no-workspace', bot: { state: 'none', configTokenStored: false } },
+      body: { state: 'no-workspace', canManage: true, bot: { state: 'none', configTokenStored: false } },
       done: true,
     });
     await insertActiveInstall();
@@ -2435,6 +2533,132 @@ describe('@ax/channel-slack plugin', () => {
     expect(await store.get(BOT_INSTALL_ID)).toMatchObject({ botName: 'Quill Desk', botHandle: 'quilldesk' });
   });
 
+  it("after a team admin disconnects the agent's own bot, a mention of the shared bot in the agent's channel runs a turn again; the bot's app, row, binding, secrets and its approver's token go, the shared binding stays (TASK-1172)", async () => {
+    const slack = disconnectSlackFetch();
+    const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
+    const { adas, graces } = await seedSupportBot(s);
+    const channels = createChannelStore(probe);
+    const logs = captureLogs();
+    const post = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+      );
+
+    // 1. While the agent's own bot is live, the shared bot steps aside in the
+    //    agent's channel: Ada is told which bot to mention, and no turn runs.
+    expect((await post(mentionBody('Ev07ABCDEF40', '1763035600.000600', 'are you there?', ADA_SLACK))).status).toBe(200);
+    await vi.waitFor(() => expect(slack.calls.map((c) => c.method)).toContain('chat.postEphemeral'));
+    expect(logs).toContainEqual(
+      expect.objectContaining({ level: 'info', msg: 'slack_event_ignored', installId: INSTALL_ID, reason: 'own-bot' }),
+    );
+    expect(s.invokes).toEqual([]);
+
+    // 2. Ada, a team admin of the agent, reads its settings: as one who manages it, she
+    //    gets the bot's install id, the key its Disconnect takes. A Disconnect naming any
+    //    other install (here the shared app's) is 409 no-bot and touches nothing; the one
+    //    her page showed disconnects the bot.
+    const settings = await call(
+      'GET',
+      '/settings/slack/:agentId',
+      request('GET', `/settings/slack/${TEAM_AGENT.id}`, { as: ADMIN.id, params: { agentId: TEAM_AGENT.id } }),
+    );
+    expect(settings).toMatchObject({
+      status: 200,
+      body: { state: 'ready', canManage: true, bot: { state: 'live', installId: BOT_INSTALL_ID } },
+    });
+    const disconnectBot = (installId: string) =>
+      call(
+        'POST',
+        '/settings/slack/:agentId/bot/disconnect',
+        request('POST', `/settings/slack/${TEAM_AGENT.id}/bot/disconnect`, {
+          as: ADMIN.id,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify({ installId })),
+        }),
+      );
+    const before = slack.calls.length;
+    expect(await disconnectBot(INSTALL_ID)).toEqual({ status: 409, body: { error: 'no-bot' }, done: true });
+    expect(slack.calls).toHaveLength(before);
+    expect(await installCount()).toBe(2);
+    expect(await disconnectBot(BOT_INSTALL_ID)).toEqual({ status: 200, body: { appDeleted: true }, done: true });
+    // Grace's own token is rotated, and the access token minted with it deletes the bot's app.
+    expect(slack.calls.slice(before).map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
+      ['tooling.tokens.rotate', graces],
+      ['apps.manifest.delete', BOT_APP_ID],
+    ]);
+    expect(slack.calls.at(-1)!.auth).toBe(`Bearer ${fakeConfigAccessToken('DISCONNECTACCESS1')}`);
+
+    // 3. The bot's row, its binding, its secrets and Grace's token are gone (nothing else
+    //    names her); the shared app, its #support binding, its secrets and Ada's token stay.
+    expect(await installCount()).toBe(1);
+    expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual([SUPPORT_CH]);
+    expect(await channels.listAll(BOT_INSTALL_ID)).toEqual([]);
+    expect([...s.vault.keys()].sort()).toEqual(
+      [configTokenRef(ADMIN.id), secretRef(INSTALL_ID, 'signing-secret'), secretRef(INSTALL_ID, 'bot-token')].sort(),
+    );
+    expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(adas);
+
+    // 4. The shared bot answers for the agent there again, with no restore step: Ada's
+    //    next mention runs a turn, as her, in the thread's own conversation.
+    expect((await post(mentionBody('Ev07ABCDEF41', '1763035700.000700', 'and now?', ADA_SLACK))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect(s.invokes![0]!.ctx).toMatchObject({
+      conversationId: `conv:slack:${INSTALL_ID}:${SUPPORT_CH}:1763035700.000700`,
+      userId: ADMIN.id,
+    });
+  });
+
+  it('Admin › Slack lists the bot with its approver, marks one auth no longer has, and an AX admin disconnects it through the wiring (TASK-1172)', async () => {
+    const slack = disconnectSlackFetch();
+    const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
+    const { adas, graces } = await seedSupportBot(s);
+    const list = (as: string) => call('GET', '/admin/slack/bots', request('GET', '/admin/slack/bots', { as }));
+
+    // Grace approved it, and auth here has no account for her: null, which the page marks.
+    const listed = await list(ADMIN.id);
+    expect(listed).toEqual({
+      status: 200,
+      body: {
+        bots: [
+          {
+            installId: BOT_INSTALL_ID,
+            botName: 'support-helper',
+            handle: null,
+            approver: null,
+            state: 'live',
+            addedAt: expect.any(String),
+          },
+        ],
+      },
+      done: true,
+    });
+    // When the bot was asked for, as the row keeps it.
+    const addedAt = (listed.body as { bots: Array<{ addedAt: string }> }).bots[0]!.addedAt;
+    expect(new Date(addedAt).toISOString()).toBe(addedAt);
+    // Admins only.
+    expect(await list('usr_bob')).toEqual({ status: 403, body: { error: 'forbidden' }, done: true });
+
+    // The harness calls handlers directly: the CSRF check is the canary's to show.
+    const path = '/admin/slack/bots/disconnect';
+    const body = Buffer.from(JSON.stringify({ installId: BOT_INSTALL_ID }));
+    expect(await call('POST', path, request('POST', path, { as: ADMIN.id, body }))).toEqual({
+      status: 200,
+      body: { appDeleted: true },
+      done: true,
+    });
+    // With Grace's token, as the agent's settings would have; nothing about the shared app.
+    expect(slack.calls.map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
+      ['tooling.tokens.rotate', graces],
+      ['apps.manifest.delete', BOT_APP_ID],
+    ]);
+    expect(await list(ADMIN.id)).toEqual({ status: 200, body: { bots: [] }, done: true });
+    expect(await installCount()).toBe(1);
+    expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(adas);
+    expect(s.vault.has(configTokenRef(GRACE))).toBe(false);
+  });
+
   it('the memory switch through the wiring: a turn while it is off keeps its thread out of memory for good; a new thread is remembered', async () => {
     const slack = fakeSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
@@ -2544,7 +2768,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(22);
+    expect(s.routes).toHaveLength(30);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

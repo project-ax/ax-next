@@ -64,6 +64,7 @@ import {
   type SlackInstallOutcome,
 } from './lib/slack-install-return';
 import {
+  SLACK_BOT_APPROVED_RETURN_MESSAGES,
   SLACK_BOT_RETURN_MESSAGES,
   readSlackBotReturn,
   withoutSlackBotReturn,
@@ -161,7 +162,9 @@ export const App = () => {
   // is the admin's workspace install. Taken out of the address bar once, and
   // the address becomes that agent's Slack settings (the route is read after
   // sign-in, below). Whoever started it may not be a workspace admin, so
-  // nothing here is role-gated; AppContent says what happened.
+  // nothing here is role-gated; AppContent says what happened. TASK-1169: an
+  // AX admin back from approving a team's request comes back with `&from=admin`
+  // and no agent, and lands in Admin › Slack instead (AppContent).
   const [slackBotReturn] = useState(() => readSlackBotReturn(window.location.search));
   useEffect(() => {
     if (slackBotReturn === null) return;
@@ -280,15 +283,19 @@ const AppContent = ({
   // TASK-1093 — only an admin can have started a Slack install, so for anyone
   // else a `?slack=` (a link someone sent round, say) means nothing at all.
   const slackOutcome = user.role === 'admin' ? slackReturn : null;
+  // TASK-1169 — an AX admin back from approving a team's bot request lands in the
+  // same place. For anyone else `from=admin` means nothing: no toast, no Settings.
+  const slackBotAdminReturn =
+    user.role === 'admin' && slackBotReturn !== null && slackBotReturn.fromAdmin ? slackBotReturn : null;
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true. An
   // admin back from Slack lands in it, on Admin › Slack.
-  const [adminSettingsOpen, setAdminSettingsOpen] = useState(slackOutcome !== null);
+  const [adminSettingsOpen, setAdminSettingsOpen] = useState(slackOutcome !== null || slackBotAdminReturn !== null);
   // Which tab Settings opens on — set only by a caller that knows where the
   // person needs to go (the rail's paused-memory "Fix this", TASK-627; Slack's
   // install return, TASK-1093).
   const [adminSettingsTab, setAdminSettingsTab] = useState<AdminTabId | undefined>(
-    slackOutcome !== null ? 'slack' : undefined,
+    slackOutcome !== null || slackBotAdminReturn !== null ? 'slack' : undefined,
   );
   // And says what happened, once (a ref, so StrictMode's second effect run
   // doesn't say it twice). A fixed sentence per outcome, nothing from the URL.
@@ -305,11 +312,15 @@ const AppContent = ({
   const slackBotToasted = useRef(false);
   useEffect(() => {
     if (slackBotReturn === null || slackBotToasted.current) return;
+    // `from=admin` is the approving admin's: said only to an admin, in words about the team's bot.
+    if (slackBotReturn.fromAdmin && slackBotAdminReturn === null) return;
     slackBotToasted.current = true;
-    const message = SLACK_BOT_RETURN_MESSAGES[slackBotReturn.outcome];
+    const message = (slackBotReturn.fromAdmin ? SLACK_BOT_APPROVED_RETURN_MESSAGES : SLACK_BOT_RETURN_MESSAGES)[
+      slackBotReturn.outcome
+    ];
     if (slackBotReturn.outcome === 'failed') toastActions.error(message);
     else toastActions.show({ title: message, kind: 'info' });
-  }, [slackBotReturn]);
+  }, [slackBotReturn, slackBotAdminReturn]);
   // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
   //
   // Settings is a PANE SWAP, not an overlay: the branches below render either

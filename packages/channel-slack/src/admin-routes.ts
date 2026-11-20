@@ -52,6 +52,8 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   POST /admin/slack/forget-leftover-app  { appId } → {}, once the admin has deleted that app by hand
  *   GET  /admin/slack/oauth/callback  ?code&state or ?error&state → 302 to `<publicOrigin>/?slack=<outcome>`
  *
+ * Its list of the team agents' own bots, and their Disconnect: admin-bot-routes.ts (TASK-1172).
+ *
  * Every route is admin-only: 401 signed out, 403 not an admin, except that
  * the callback sends a refused browser home instead (below). Every one that
  * changes anything runs under one in-process lock, so two admins can't
