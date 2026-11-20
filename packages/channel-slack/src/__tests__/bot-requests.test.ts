@@ -1133,6 +1133,8 @@ describe('approve', () => {
       await hold.done;
 
       expect(await approving, what).toEqual({ status: 403, body: { error: 'forbidden' } });
+      // Asked first: the request isn't even read for an actor who is no longer an AX admin.
+      expect(w.trail, what).toEqual([]);
       expect(w.slack.calls, what).toEqual([]);
       expect(w.vaultCalls, what).toEqual([]);
       expect(w.memory.requests.has(REQUEST), what).toBe(true);

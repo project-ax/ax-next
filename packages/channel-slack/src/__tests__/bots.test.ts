@@ -1125,6 +1125,10 @@ describe('create', () => {
     expect(supportBot(w)).toBeUndefined();
     expect(w.memory.leftovers.size).toBe(0);
     expect(w.lines.map((l) => l.msg)).not.toContain('slack_bot_approved');
+    // Codes only: the one line names our own install id, the stage and the code.
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_bot_failed', fields: { installId: createdInstallId(w), stage: 'request', code: 'request-gone' } },
+    ]);
   });
 
   it('an approve that fails at any earlier step leaves the request open too, and any app Slack made is taken back', async () => {
