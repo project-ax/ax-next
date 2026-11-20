@@ -55,11 +55,11 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     and then Slack wouldn't delete the app Connect had just made;
  *     no install row ever held that one, so Connect writes it here directly,
  *     with the connecting admin as its person.
- *     Either way the id is never in both tables. The next Connect tries to
- *     delete them with the pasted access token; the Slack tab names them
- *     until that works or the admin says they deleted one by hand
- *     (`forget-leftover-app`). Keyed by the install's id (for Connect's own,
- *     the one it minted and never stored). No secret.
+ *     Either way the id is never in both tables. The next Connect or Replace
+ *     tries to delete each with its maker's token (admin-routes.ts); the
+ *     Slack tab names them until that works or the admin says they deleted
+ *     one by hand (`forget-leftover-app`). Keyed by the install's id (for
+ *     Connect's own, the one it minted and never stored). No secret.
  *     `connected_by_user_id` (TASK-1175) is whose configuration token made
  *     the app (the removed install's person, or the admin whose Connect
  *     made it): on Slack, only that person's token can manage the app
