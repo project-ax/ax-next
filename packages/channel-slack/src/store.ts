@@ -150,8 +150,8 @@ export interface InstallStore {
    */
   leftoverApps(): Promise<LeftoverApp[]>;
   /**
-   * Remember a Slack app Connect made and couldn't take back (TASK-1159): no
-   * install row ever held it. `connectedByUserId` is the connecting admin,
+   * Remember a Slack app Connect made and couldn't take back (TASK-1159),
+   * before any install row held it. `connectedByUserId` is the connecting admin,
    * whose token made it. An id already on the list keeps its first app, and
    * that app's person.
    */

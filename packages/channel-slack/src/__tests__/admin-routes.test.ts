@@ -1274,6 +1274,44 @@ describe('POST /admin/slack/connect', () => {
     expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
   });
 
+  it("undo after the pending row was stored moves the app Slack won't delete to the leftover list with the row, as Disconnect does (TASK-1175)", async () => {
+    const w = world();
+    w.memory.failures.set('setOAuthState', new Error('connection reset'));
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+    };
+    expect((await w.connect()).status).toBe(500);
+    const installId = mintedInstallId(w);
+    expect(w.memory.rows.size).toBe(0);
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+    ]);
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+    expect((await w.status()).body).toMatchObject({
+      state: 'not-connected',
+      leftoverApps: [{ botName: 'Canopy Bot', appId: APP.appId }],
+    });
+  });
+
+  it("undo whose pending row won't go remembers nothing: the row still names the app, never both tables, and Ada keeps her token", async () => {
+    const w = world();
+    w.memory.failures.set('setOAuthState', new Error('connection reset'));
+    w.memory.failures.set('remove', new Error('connection reset'));
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'ratelimited', 60_000);
+    };
+    expect((await w.connect()).status).toBe(500);
+    const installId = mintedInstallId(w);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(onlyRow(w)).toMatchObject({ installId, appId: APP.appId, connectedByUserId: ADA.id });
+    expect(w.vault.get(configTokenRef(ADA.id))).toBe(mintedRefresh(1));
+    expect(w.lines).toContainEqual({
+      level: 'error',
+      msg: 'slack_admin_failed',
+      fields: { installId, stage: 'undo-remove', code: expect.any(String) },
+    });
+  });
+
   it("undo doesn't list an app Slack says is already gone", async () => {
     const w = world();
     w.memory.failures.set('insertPending', new Error('insert failed'));

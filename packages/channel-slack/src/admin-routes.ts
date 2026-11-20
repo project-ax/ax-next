@@ -119,9 +119,10 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * still goes, and in the same statement its app's id, name and person (whose
  * token made it, TASK-1175) move to the leftover list (store.ts) instead of
  * being forgotten; that person's token then stays while the app names them.
- * Connect's own undo does the same when trying the pasted refresh token
- * fails in any way and Slack then won't delete the app Connect just made: no
- * install row holds that one yet, so it goes straight onto the list. The
+ * Connect's own undo does the same when Slack won't delete the app Connect
+ * just made: with the pending row, in the same statement, once it exists,
+ * and straight onto the list before it (trying the pasted refresh token
+ * failed, or storing failed before the row). The
  * status names them in every state, and the next Connect or Replace deletes
  * them, each with its maker's token (deleteLeftoverApps): the access token
  * in hand when it is theirs, else one minted from their stored token. To
@@ -517,16 +518,20 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * is left half-made. Each step is best-effort and logged. Deleting the app
    * needs a configuration access token, and the pasted one is still in hand.
    * If Slack won't delete it, the app goes onto the leftover list naming the
-   * connecting admin, as in `undoCreate`, so the tab names it and the next
-   * Connect or Replace deletes it. Last, the connecting admin's token goes
-   * too, unless an install or a leftover app (that one included) still names
-   * them.
+   * connecting admin, so the tab names it and the next Connect or Replace
+   * deletes it: once the pending row exists (`rowStored`), in the statement
+   * that deletes the row, as Disconnect does, so the id is never in both
+   * tables (a row that won't go keeps naming the app, and nothing is
+   * remembered); before it, directly, as `undoCreate` does. Last, the
+   * connecting admin's token goes too, unless an install or a leftover app
+   * (that one included) still names them.
    */
   async function undoConnect(
     accessToken: string,
     appId: string,
     owner: SecretOwner,
     botName: string,
+    rowStored: boolean,
   ): Promise<void> {
     let appLeft = false;
     try {
@@ -538,12 +543,13 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         failed('undo-delete-app', err, owner.installId);
       }
     }
-    try {
-      await d.store.remove(owner.installId);
-    } catch (err) {
-      failed('undo-remove', err, owner.installId);
-    }
-    if (appLeft) {
+    if (rowStored) {
+      try {
+        await d.store.remove(owner.installId, { appLeft });
+      } catch (err) {
+        failed('undo-remove', err, owner.installId);
+      }
+    } else if (appLeft) {
       try {
         await d.store.rememberLeftoverApp({
           installId: owner.installId,
@@ -737,6 +743,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
     }
 
     const owner: SecretOwner = { installId, connectedByUserId: actor.id };
+    let rowStored = false;
     try {
       // The one Slack just minted from the pasted one, as the connecting
       // admin's own token (TASK-1175), until a rotate (Rename, Disconnect)
@@ -757,12 +764,13 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
         botName,
         connectedByUserId: actor.id,
       });
+      rowStored = true;
       const iconSet = await setIcon(accessToken, app.appId, installId, icon);
       const installUrl = await mintInstallUrl(installId, app.clientId, actor.id);
       return json(200, { installUrl, iconSet });
     } catch (err) {
       failed('connect', err, installId);
-      await undoConnect(accessToken, app.appId, owner, botName);
+      await undoConnect(accessToken, app.appId, owner, botName, rowStored);
       return INTERNAL;
     }
   }
