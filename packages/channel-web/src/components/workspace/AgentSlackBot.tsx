@@ -9,7 +9,8 @@
  *            holds no configuration token for them, the steps and the field to
  *            paste one into; everyone else sees nothing
  *   pending  a manager sees where it stands, with "Continue in Slack" for the
- *            person who started it, and "Cancel request"
+ *            person who started it, and "Cancel request"; a cancel whose Slack
+ *            app couldn't be deleted leaves a note saying where to find it
  *   live     everyone sees the @handle and how to invite it; a manager also
  *            sees who set it up
  *
@@ -76,7 +77,26 @@ function Section({ description, children }: { description?: ReactNode; children:
   );
 }
 
+/**
+ * A cancelled request whose Slack app Slack wouldn't delete for us. The server
+ * keeps it on Admin › Slack's list of leftover apps; the note says so, here,
+ * because the pending view it came from is gone once the status is read again.
+ */
+function AppLeftOverNote() {
+  return (
+    <Alert>
+      <AlertDescription>
+        We cancelled the request, but we couldn&apos;t confirm its Slack app was deleted, so it may still be on
+        Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete. Or delete it yourself:
+        open it in <SlackAppsLink /> and click Delete App at the bottom of the page.
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 export function AgentSlackBot({ agentId, agentName, bot, canManage, onChanged }: AgentSlackBotProps) {
+  // Held here, not in Pending: a successful cancel reads the status again, and Pending goes with it.
+  const [appLeftOver, setAppLeftOver] = useState(false);
   switch (bot.state) {
     case 'none':
       return canManage ? (
@@ -84,11 +104,19 @@ export function AgentSlackBot({ agentId, agentName, bot, canManage, onChanged }:
           agentId={agentId}
           agentName={agentName}
           configTokenStored={bot.configTokenStored}
+          notice={appLeftOver ? <AppLeftOverNote /> : null}
           onChanged={onChanged}
         />
       ) : null;
     case 'pending':
-      return canManage ? <Pending agentId={agentId} bot={bot} onChanged={onChanged} /> : null;
+      return canManage ? (
+        <Pending
+          agentId={agentId}
+          bot={bot}
+          onCancelled={(appDeleted) => setAppLeftOver(!appDeleted)}
+          onChanged={onChanged}
+        />
+      ) : null;
     case 'live':
       return <Live bot={bot} canManage={canManage} />;
   }
@@ -98,11 +126,14 @@ function RequestForm({
   agentId,
   agentName,
   configTokenStored,
+  notice,
   onChanged,
 }: {
   agentId: string;
   agentName: string;
   configTokenStored: boolean;
+  /** Something to say before the form: what a cancel just left behind. */
+  notice: ReactNode;
   onChanged: () => void;
 }) {
   const tokenRef = useRef<HTMLInputElement>(null);
@@ -158,6 +189,7 @@ function RequestForm({
       <Section
         description={`Give ${agentName} its own name in Slack. People mention it directly, and you add it to a channel with /invite. You need to be able to install apps in Slack.`}
       >
+        {notice}
         {showToken ? (
           <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
             <li>
@@ -216,10 +248,13 @@ function RequestForm({
 function Pending({
   agentId,
   bot,
+  onCancelled,
   onChanged,
 }: {
   agentId: string;
   bot: Extract<Bot, { state: 'pending' }>;
+  /** The request is gone; `appDeleted` false: its Slack app may still be on Slack. */
+  onCancelled: (appDeleted: boolean) => void;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<'continue' | 'cancel' | null>(null);
@@ -235,7 +270,8 @@ function Pending({
         // The page is leaving for Slack, so it stays busy.
         goToSlack(installUrl);
       } else {
-        await cancelSlackBot(agentId);
+        const { appDeleted } = await cancelSlackBot(agentId);
+        onCancelled(appDeleted);
         onChanged();
       }
     } catch (err) {

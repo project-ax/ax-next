@@ -300,8 +300,39 @@ describe('pending', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
   });
 
+  it("a cancel whose Slack app couldn't be deleted leaves a note, after the status is read again, saying where to find it", async () => {
+    cancel.mockResolvedValueOnce({ appDeleted: false });
+    const onChanged = vi.fn();
+    const { rerender } = render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage onChanged={onChanged} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    // The re-read status has no bot: the form is back, and the note sits above it.
+    rerender(<AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_STORED} canManage onChanged={onChanged} />);
+    const note = screen.getByText(/couldn.t confirm its Slack app was deleted/);
+    expect(note).toHaveTextContent(
+      "We cancelled the request, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Or delete it yourself: open it in Slack's app settings and click Delete App at the bottom of the page.",
+    );
+    expect(screen.getByRole('link', { name: "Slack's app settings" })).toHaveAttribute('href', 'https://api.slack.com/apps');
+    expect(screen.getByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bAX\b/);
+  });
+
+  it('a cancel that deleted its Slack app leaves no note', async () => {
+    const onChanged = vi.fn();
+    const { rerender } = render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={PENDING} canManage onChanged={onChanged} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    rerender(<AgentSlackBot agentId="a1" agentName="Quill" bot={NONE_STORED} canManage onChanged={onChanged} />);
+    expect(screen.queryByText(/couldn.t confirm/)).toBeNull();
+    expect(screen.queryByRole('link', { name: "Slack's app settings" })).toBeNull();
+  });
+
   it('a cancel that failed says so and nothing is re-read', async () => {
-    cancel.mockRejectedValueOnce(refusal(502, 'slack-error'));
+    cancel.mockRejectedValueOnce(refusal(500, 'internal'));
     const onChanged = renderIt(PENDING);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong talking to Slack.');
