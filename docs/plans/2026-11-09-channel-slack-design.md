@@ -282,7 +282,7 @@ see, and @mention, the bot by its new name: on the TASK-1097 walk,
 `@ax` became `@ax-walk`. If the stored
 token can't be used (Slack refuses it, or its owner can't manage the app), the tab says so and the fix is **Replace** (below), which keeps every channel connected. If the Slack app was deleted on Slack's side, the fix is Disconnect, then Connect again.
 
-**Replacing the token:** Admin › Slack → **Replace**, next to who added the configuration token (TASK-1128), once Slack is connected. The admin pastes one value, a refresh token, from someone who can manage this Slack app. AX tries it once (`tooling.tokens.rotate`) and sends the app's whole manifest with the access token that rotate minted (`apps.manifest.update`, as Rename does). Slack taking it shows that the token's owner can manage this app. Only then does AX store the minted refresh token in place of the old one and record who added it and when. The install, its channels, the bot token and the other secrets stay as they are, and if any step before the store fails, the old token stays. AX never reads or rotates the old token here, so it keeps working on Slack until whoever generated it revokes it, and the tab says so. Like Rename, Replace sends this build's manifest, so it also syncs the app to it: a hand edit on api.slack.com is overwritten, and a scope a later build adds would make Slack ask for the app to be reinstalled. A replace also tries again to delete any Slack apps listed as left over. Whether another admin's token can manage an app the first admin's token made, or only an app collaborator's can, is unmeasured (§8 Q5).
+**Replacing the token:** Admin › Slack → **Replace**, next to who added the configuration token (TASK-1128), once Slack is connected. The admin pastes one value, a refresh token, from someone who can manage this Slack app. AX tries it once (`tooling.tokens.rotate`) and sends the app's whole manifest with the access token that rotate minted (`apps.manifest.update`, as Rename does). Slack taking it shows that the token's owner can manage this app. Only then does AX store the minted refresh token in place of the old one and record who added it and when. The install, its channels, the bot token and the other secrets stay as they are, and if any step before the store fails, the old token stays. AX never reads or rotates the old token here, so it keeps working on Slack until whoever generated it revokes it, and the tab says so. Like Rename, Replace sends this build's manifest, so it also syncs the app to it: a hand edit on api.slack.com is overwritten, and a scope a later build adds would make Slack ask for the app to be reinstalled. A replace also tries again to delete any Slack apps listed as left over. **Measured (§8 Q5): only the app creator's own token passes the check.** Another person's token is refused even when they are a collaborator on the app, so "someone who can manage this Slack app" in practice means the person who created it, with a newer token of theirs.
 
 **The secrets:** bot token, signing secret, client secret, and the
 configuration **refresh token**. All live in the credentials store, readable
@@ -928,7 +928,23 @@ and the configuration token revoked. "Tested" means we watched it happen;
    Recommendation: say this once when the owner first connects. Also confirm
    the workspace enforces Google SSO, since without it the bar is a Slack
    password.
-5. **Whose configuration token can manage the shared app?** Can a second admin's configuration token update and delete an app the first admin's token made, or must they be added as a collaborator on the app first? Replace (TASK-1128) is built for either answer: it sends the app's manifest before it keeps a new token, and turns away one Slack says can't manage the app. Measure it on the next real-Slack walk. The answer decides the form's copy, and whether it should link to the app's collaborators page.
+5. ~~**Whose configuration token can manage the shared app?**~~ **Measured
+   2026-11-19 (TASK-1163 walk, real Slack):** only the token of the person who
+   created the app. A second person's token was refused with `no_permission` on
+   `apps.manifest.update`, before AND after they were added as a collaborator on
+   api.slack.com, and also with a token generated after the add. A newer token
+   from the creator works: Replace took it, and Disconnect, plus Connect's
+   leftover cleanup, deleted apps an older token of theirs had made. Slack also
+   allows only one configuration token per person per workspace, so "a newer
+   token" always means revoke, then generate.
+6. **Whose token creates a phase 2 bot?** Q5 makes this a real choice. Only the
+   creator's token can ever rename, re-sync or delete a bot. If every bot is
+   created with the token of the admin who connected the shared bot, that one
+   person is the only one who can ever manage any of them, and when they leave,
+   no other token can delete those apps. If each bot is created with its
+   approver's token, management follows whoever approved it. Handing a bot to
+   someone else is never a token swap: it means making a new app. Decide before
+   decomposing phase 2.
 
 ## 9. Delivery
 
@@ -963,7 +979,9 @@ Before starting: TASK-1133 (the avatar upload works), TASK-1159 (Connect tries
 the pasted token), TASK-1128 (an admin can replace a dead configuration token)
 and TASK-1139 (Disconnect logs whether the app was deleted). Also one
 measurement on a real workspace: can a newer configuration token delete an app
-an older one made?
+an older one made? **All done 2026-11-19** (deployed rev 90; walk TASK-1163:
+yes for the creator's own newer token, no for anyone else's, §8 Q5). Decide
+§8 Q6 before decomposing.
 
 - **8.** Request a bot (name and avatar), approval by the owner or an AX admin,
   creating and installing the app, its own events URL and signing secret,
