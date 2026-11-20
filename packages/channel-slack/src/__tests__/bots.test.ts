@@ -192,6 +192,11 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
     installUrl: async (as: string, agentId: string = SUPPORT.id): Promise<Reply> =>
       keep(await bots.installUrl({ actorUserId: as, agentId })),
     cancel: async (agentId: string = SUPPORT.id): Promise<Reply> => keep(await bots.cancel({ agentId })),
+    /** A team admin's Disconnect, from the agent's settings (TASK-1172). */
+    disconnect: async (as: string, agentId: string = SUPPORT.id): Promise<Reply> =>
+      keep(await bots.disconnect({ ctx: ctxOf(as), actorUserId: as, agentId })),
+    /** An AX admin's Disconnect, from Admin › Slack, by the bot's install id (TASK-1172). */
+    disconnectForAdmin: async (installId: string): Promise<Reply> => keep(await bots.disconnectForAdmin({ installId })),
     status: async (s: { as: string; manages: boolean; sharedActive: boolean; agentId?: string }) =>
       keep(
         await bots.status({
@@ -278,6 +283,47 @@ async function addBot(
   if (o.handle !== undefined) await w.memory.store.setBotHandle(installId, o.handle);
   forget(w);
   return installId;
+}
+
+/** The Slack app addBot's row names. */
+const ADDED_BOT_APP = 'A07OTHERBOT1';
+/** The support agent's own bot's secrets, as its request and its Allow stored them. */
+const SUPPORT_BOT_TOKEN = fakeBotToken('SUPPORTBOTSECRET');
+/** Each approver's own configuration token, as seedSupportBot stores it. */
+const STORED_TOKEN: Readonly<Record<string, string>> = { [ADA]: ADA_STORED, [GRACE]: GRACE_STORED };
+
+/**
+ * The support agent's own bot, as its request (and, when live, its Allow)
+ * left it: its row through addBot, its own secrets (the bot token only once
+ * live), and its approver's stored configuration token. Grace's and live
+ * unless told otherwise. The vault writes are the test's own: not watched.
+ */
+async function seedSupportBot(
+  w: World,
+  o: { approver?: string; live?: boolean; handle?: string } = {},
+): Promise<string> {
+  const approver = o.approver ?? GRACE;
+  const live = o.live ?? true;
+  const installId = await addBot(w, {
+    agentId: SUPPORT.id,
+    approver,
+    botName: BOT_NAME,
+    live,
+    ...(o.handle !== undefined ? { handle: o.handle } : {}),
+  });
+  w.vault.set(secretRef(installId, 'client-secret'), CLIENT_SECRET);
+  w.vault.set(secretRef(installId, 'signing-secret'), SIGNING_SECRET);
+  if (live) w.vault.set(secretRef(installId, 'bot-token'), SUPPORT_BOT_TOKEN);
+  const stored = STORED_TOKEN[approver];
+  if (stored === undefined) throw new Error(`no stored token for ${approver}`);
+  w.vault.set(configTokenRef(approver), stored);
+  forget(w);
+  return installId;
+}
+
+/** Let every queued microtask run: whatever can proceed, does. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 /** The support agent's bot, if it has one. */
@@ -955,6 +1001,377 @@ describe('cancel', () => {
   });
 });
 
+// ── disconnect (TASK-1172) ──────────────────────────────────────────────────
+
+/**
+ * A bot's removal (`removeBot`), after its lookup: what Cancel and agent
+ * deletion do too.
+ */
+const REMOVAL_TRAIL = [
+  // The approver's token: read, rotated, the successor saved, then the delete with the minted access token.
+  'vault:get config-refresh-token',
+  'slack:rotateConfigToken',
+  'vault:set config-refresh-token',
+  'slack:deleteApp',
+  // One statement: the row and its bindings (and, had Slack refused, the app onto the leftover list).
+  'store:remove',
+  'vault:delete bot-token',
+  'vault:delete signing-secret',
+  'vault:delete client-secret',
+  'vault:delete config-refresh-token',
+  // Last, the approver's token: nothing names them any more.
+  'store:personHasApps',
+  'vault:delete config-refresh-token',
+];
+
+describe('disconnect', () => {
+  it("disconnect: a live bot's app is deleted with its approver's token (rotate, save, delete); its row and three secrets go; the token is released once nothing names its person", async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w);
+
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+
+    expect(w.trail).toEqual(['store:botForAgent', ...REMOVAL_TRAIL]);
+    // Grace's own stored token is the one rotated, and the app deleted is the bot's.
+    expect(w.slack.calls.map((c) => [c.method, c.args])).toEqual([
+      ['rotateConfigToken', [GRACE_STORED]],
+      ['deleteApp', [MINTED_ACCESS, ADDED_BOT_APP]],
+    ]);
+    expect(w.vaultCalls.at(-1)).toEqual({ hook: 'credentials:delete', ref: configTokenRef(GRACE) });
+    expect(w.memory.rows.has(installId)).toBe(false);
+    expect(w.memory.leftovers.size).toBe(0);
+    expectNoSecretsOf(w, installId);
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+    // The shared app, its secrets and Ada's own token are as they were.
+    expect(w.memory.rows.get(SHARED_INSTALL)).toMatchObject({ kind: 'shared', status: 'active' });
+    for (const [ref, value] of sharedVault()) expect(w.vault.get(ref), ref).toBe(value);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId, appDeleted: true, by: 'team-admin' } },
+    ]);
+  });
+
+  it('disconnect: with no shared install at all (Admin › Slack disconnected it), the bot still goes', async () => {
+    const w = world();
+    const installId = await seedSupportBot(w);
+
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+
+    expect(w.trail).toEqual(['store:botForAgent', ...REMOVAL_TRAIL]);
+    expect(w.memory.rows.size).toBe(0);
+    expect(w.memory.leftovers.size).toBe(0);
+    expectNoSecretsOf(w, installId);
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId, appDeleted: true, by: 'team-admin' } },
+    ]);
+  });
+
+  it('disconnect: a pending bot goes the same way', async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w, { live: false });
+
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+
+    expect(w.trail).toEqual(['store:botForAgent', ...REMOVAL_TRAIL]);
+    expect(supportBot(w)).toBeUndefined();
+    expectNoSecretsOf(w, installId);
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId, appDeleted: true, by: 'team-admin' } },
+    ]);
+  });
+
+  it("disconnect: Slack won't delete the app: it is listed as left over naming the approver, the install still goes, the approver's token stays", async () => {
+    // Slack refuses Grace's token at the rotate.
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w);
+    failRotate(w, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
+
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: false } });
+
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: ADDED_BOT_APP, botName: BOT_NAME, leftAt: new Date(NOW_MS), connectedByUserId: GRACE },
+    ]);
+    expect(supportBot(w)).toBeUndefined();
+    expectNoSecretsOf(w, installId);
+    // The leftover names her, so her token stays: only it can delete that app later.
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(GRACE_STORED);
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_failed', fields: { installId, stage: 'rotate', code: 'invalid_refresh_token' } },
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId, appDeleted: false, by: 'team-admin' } },
+    ]);
+
+    // Slack refuses the delete itself: the rotate's successor is the token that stays.
+    const d = world();
+    await seedShared(d);
+    const dId = await seedSupportBot(d);
+    d.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'no_permission');
+    };
+
+    expect(await d.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: false } });
+
+    expect([...d.memory.leftovers.values()]).toEqual([
+      { installId: dId, appId: ADDED_BOT_APP, botName: BOT_NAME, leftAt: new Date(NOW_MS), connectedByUserId: GRACE },
+    ]);
+    expect(supportBot(d)).toBeUndefined();
+    expectNoSecretsOf(d, dId);
+    expect(d.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+    expect(d.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_failed', fields: { installId: dId, stage: 'delete-app', code: 'no_permission' } },
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId: dId, appDeleted: false, by: 'team-admin' } },
+    ]);
+  });
+
+  it('disconnect: an approver whose shared app still names them keeps their token', async () => {
+    const w = world();
+    await seedShared(w);
+    await seedSupportBot(w, { approver: ADA });
+
+    // Grace disconnects it: the delete still uses Ada's token, whose app it is on Slack.
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args)).toEqual([[ADA_STORED]]);
+    // The delete's successor, kept for the shared app that still names her.
+    expect(w.vault.get(configTokenRef(ADA))).toBe(mintedRefresh(1));
+    expect(w.trail.at(-1)).toBe('store:personHasApps');
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+  });
+
+  it('disconnect: rights are asked again inside the lock: a team admin demoted while it was held gets 403, an agent deleted meanwhile 404, and nothing is touched', async () => {
+    // Demoted to member while another Slack-app step held the one app lock.
+    const lock = createMutex();
+    const w = world({ lock });
+    await seedShared(w);
+    await seedSupportBot(w);
+    const hold = await holdLock(lock);
+    const asked = w.disconnect(GRACE);
+    w.people.setRole(SUPPORT_TEAM, GRACE, 'member');
+    hold.free();
+    await hold.done;
+
+    expect(await asked).toEqual({ status: 403, body: { error: 'forbidden' } });
+    expect(w.trail).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(supportBot(w)).toMatchObject({ status: 'active' });
+    // Asked as a non-admin, as every manage question is.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT.id, actor: { userId: GRACE, isAdmin: false } },
+    ]);
+
+    // The agent deleted while it waited.
+    const lock2 = createMutex();
+    const g = world({ lock: lock2 });
+    await seedShared(g);
+    await seedSupportBot(g);
+    const held = await holdLock(lock2);
+    const gone = g.disconnect(GRACE);
+    g.people.agents.delete(SUPPORT.id);
+    held.free();
+    await held.done;
+
+    expect(await gone).toEqual({ status: 404, body: { error: 'not-found' } });
+    expect(g.trail).toEqual([]);
+    expect(g.slack.calls).toEqual([]);
+    expect(g.vaultCalls).toEqual([]);
+    expect(supportBot(g)).toMatchObject({ status: 'active' });
+  });
+
+  it('disconnect: rights that cannot be answered throw before anything is read', async () => {
+    const w = world();
+    await seedShared(w);
+    await seedSupportBot(w);
+    w.people.faults.set(
+      'agents:resolve',
+      new PluginError({ code: 'unavailable', plugin: '@ax/agents', message: `db down ${FAILURE_CANARY}` }),
+    );
+
+    // An outage is no refusal: the route's 500.
+    await expect(w.disconnect(GRACE)).rejects.toMatchObject({ code: 'unavailable' });
+
+    expect(w.trail).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(supportBot(w)).toMatchObject({ status: 'active' });
+  });
+
+  it('disconnect: an agent with no bot is 409 no-bot, with no vault or Slack call', async () => {
+    const w = world();
+    await seedShared(w);
+    // Another agent's bot is no business of this one's.
+    await addBot(w);
+
+    expect(await w.disconnect(GRACE)).toEqual({ status: 409, body: { error: 'no-bot' } });
+
+    expect(w.trail).toEqual(['store:botForAgent']);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.lines).toEqual([]);
+    expect(bots(w)).toEqual([expect.objectContaining({ agentId: SALES.id })]);
+  });
+
+  it("disconnect: a row that won't go throws; the bot's secrets and its approver's token stay for a retry", async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w);
+    w.memory.failures.set('remove', connectionReset());
+
+    await expect(w.disconnect(GRACE)).rejects.toMatchObject({ code: 'ECONNRESET' });
+
+    // The app went first; nothing after the row's delete ran.
+    expect(w.trail.slice(-2)).toEqual(['slack:deleteApp', 'store:remove']);
+    expect(w.memory.rows.has(installId)).toBe(true);
+    expect(w.vault.get(secretRef(installId, 'bot-token'))).toBe(SUPPORT_BOT_TOKEN);
+    expect(w.vault.get(secretRef(installId, 'signing-secret'))).toBe(SIGNING_SECRET);
+    expect(w.vault.get(secretRef(installId, 'client-secret'))).toBe(CLIENT_SECRET);
+    // Grace's token as the delete's rotate left it: its successor, saved before the delete.
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines).toEqual([]);
+
+    // Once the store is back, a retry finishes it: Slack already deleted the app, which counts as deleted.
+    w.memory.failures.delete('remove');
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+    };
+    forget(w);
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(w.memory.rows.has(installId)).toBe(false);
+    expect(w.memory.leftovers.size).toBe(0);
+    expectNoSecretsOf(w, installId);
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+  });
+
+  it("disconnectForAdmin: removes a bot by its install id the same way, without asking anyone's rights, and logs by: 'admin'", async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w);
+
+    expect(await w.disconnectForAdmin(installId)).toEqual({ status: 200, body: { appDeleted: true } });
+
+    expect(w.trail).toEqual(['store:get', ...REMOVAL_TRAIL]);
+    // No agents hook at all: Admin › Slack's own gate let the AX admin through.
+    expect(w.people.calls).toEqual([]);
+    expect(w.slack.calls.map((c) => [c.method, c.args])).toEqual([
+      ['rotateConfigToken', [GRACE_STORED]],
+      ['deleteApp', [MINTED_ACCESS, ADDED_BOT_APP]],
+    ]);
+    expect(w.memory.rows.has(installId)).toBe(false);
+    expect(w.memory.leftovers.size).toBe(0);
+    expectNoSecretsOf(w, installId);
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+    expect(w.memory.rows.get(SHARED_INSTALL)).toMatchObject({ kind: 'shared', status: 'active' });
+    for (const [ref, value] of sharedVault()) expect(w.vault.get(ref), ref).toBe(value);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId, appDeleted: true, by: 'admin' } },
+    ]);
+
+    // Admin › Slack lists pending bots too, so its Disconnect takes them.
+    const p = world();
+    await seedShared(p);
+    const pendingId = await seedSupportBot(p, { live: false });
+    expect(await p.disconnectForAdmin(pendingId)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(supportBot(p)).toBeUndefined();
+    expect(p.lines).toEqual([
+      { level: 'info', msg: 'slack_bot_disconnected', fields: { installId: pendingId, appDeleted: true, by: 'admin' } },
+    ]);
+  });
+
+  it("disconnectForAdmin: the shared install's id, an id no install has, or an old bot's id after a new request is 409 no-bot, and nothing is touched", async () => {
+    const w = world();
+    await seedShared(w);
+
+    // The shared app has its own Disconnect, with its own rules: never this one.
+    expect(await w.disconnectForAdmin(SHARED_INSTALL)).toEqual({ status: 409, body: { error: 'no-bot' } });
+    expect(w.trail).toEqual(['store:get']);
+    expect(w.memory.rows.get(SHARED_INSTALL)).toMatchObject({ kind: 'shared', status: 'active' });
+    for (const [ref, value] of sharedVault()) expect(w.vault.get(ref), ref).toBe(value);
+
+    // An id no install has.
+    forget(w);
+    expect(await w.disconnectForAdmin('A'.repeat(22))).toEqual({ status: 409, body: { error: 'no-bot' } });
+    expect(w.trail).toEqual(['store:get']);
+
+    // A stale tab: the bot it listed was disconnected, and the agent asked for a new one since.
+    const oldId = await seedSupportBot(w);
+    expect(await w.disconnect(GRACE)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.request({ as: GRACE, refreshToken: PASTED })).toMatchObject({ status: 200 });
+    const fresh = { ...supportBot(w)! };
+    expect(fresh).toMatchObject({ kind: 'bot', status: 'pending', agentId: SUPPORT.id });
+    expect(fresh.installId).not.toBe(oldId);
+    const vaultBefore = new Map(w.vault);
+    forget(w);
+
+    expect(await w.disconnectForAdmin(oldId)).toEqual({ status: 409, body: { error: 'no-bot' } });
+
+    expect(w.trail).toEqual(['store:get']);
+    expect(supportBot(w)).toEqual(fresh);
+    expect(w.vault).toEqual(vaultBefore);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('two disconnects at once remove the bot once: the other is 409 no-bot', async () => {
+    // A team admin and an AX admin together.
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w);
+
+    const both = await Promise.all([w.disconnect(GRACE), w.disconnectForAdmin(installId)]);
+
+    expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(both.find((r) => r.status === 200)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(both.find((r) => r.status === 409)).toEqual({ status: 409, body: { error: 'no-bot' } });
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp')).toHaveLength(1);
+    // Her token was rotated once: a second rotate of a retired token would have left the app behind.
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken')).toHaveLength(1);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(bots(w)).toEqual([]);
+    expect(w.lines.filter((l) => l.msg === 'slack_bot_disconnected')).toHaveLength(1);
+
+    // A double click.
+    const d = world();
+    await seedShared(d);
+    await seedSupportBot(d);
+    const clicks = await Promise.all([d.disconnect(GRACE), d.disconnect(GRACE)]);
+    expect(clicks.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(clicks.find((r) => r.status === 409)).toEqual({ status: 409, body: { error: 'no-bot' } });
+    expect(d.slack.calls.filter((c) => c.method === 'deleteApp')).toHaveLength(1);
+    expect(d.memory.leftovers.size).toBe(0);
+    expect(bots(d)).toEqual([]);
+  });
+
+  it('both wait for the one app lock: nothing is read, rotated or deleted until the step holding it lets go', async () => {
+    const lock = createMutex();
+    const w = world({ lock });
+    await seedShared(w);
+    const installId = await seedSupportBot(w);
+    const hold = await holdLock(lock);
+
+    const byTeamAdmin = w.disconnect(GRACE);
+    const byAdmin = w.disconnectForAdmin(installId);
+    await settle();
+
+    // Not a store read, a rights question, a vault read or a Slack call while another step holds it.
+    expect(w.trail).toEqual([]);
+    expect(w.people.calls).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+
+    hold.free();
+    await hold.done;
+    // In the order they arrived: the first removes it, the second finds nothing.
+    expect(await byTeamAdmin).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await byAdmin).toEqual({ status: 409, body: { error: 'no-bot' } });
+    expect(w.slack.calls.filter((c) => c.method === 'deleteApp')).toHaveLength(1);
+  });
+});
+
 // ── status ──────────────────────────────────────────────────────────────────
 
 describe('status', () => {
@@ -1133,6 +1550,26 @@ describe('answers and logs', () => {
     failRotate(deadCancel, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
     await deadCancel.cancel();
 
+    // TASK-1172: a team admin's Disconnect, then one with nothing left to take.
+    const disconnected = add(world());
+    await seedShared(disconnected);
+    await seedSupportBot(disconnected);
+    await disconnected.disconnect(GRACE);
+    await disconnected.disconnect(GRACE);
+
+    // An AX admin's, then one naming the shared app.
+    const adminDisconnected = add(world());
+    await seedShared(adminDisconnected);
+    await adminDisconnected.disconnectForAdmin(await seedSupportBot(adminDisconnected));
+    await adminDisconnected.disconnectForAdmin(SHARED_INSTALL);
+
+    // One Slack won't delete: the leftover names its approver, and no line does.
+    const deadDisconnect = add(world());
+    await seedShared(deadDisconnect);
+    await seedSupportBot(deadDisconnect);
+    failRotate(deadDisconnect, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
+    await deadDisconnect.disconnect(GRACE);
+
     // Every world said something, so the scan below reads real output.
     for (const x of worlds) {
       expect(x.replies.length).toBeGreaterThan(0);
@@ -1153,7 +1590,7 @@ describe('answers and logs', () => {
       for (const text of [...tokens, ...people]) expect(replies, text).not.toContain(text);
       // Log lines are code-only: not the agent either, nor a failure's own text.
       const logged = JSON.stringify(x.lines);
-      for (const text of [...tokens, ...people, SUPPORT.id, BOT_NAME, APP.appId, FAILURE_CANARY]) {
+      for (const text of [...tokens, ...people, SUPPORT.id, BOT_NAME, APP.appId, ADDED_BOT_APP, FAILURE_CANARY]) {
         expect(logged, text).not.toContain(text);
       }
     }

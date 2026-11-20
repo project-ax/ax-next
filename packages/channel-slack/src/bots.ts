@@ -65,12 +65,20 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * bot is live in. Its @handle is read once there, and kept only when a copy
  * line can show it.
  *
+ * A bot goes, pending or live, only through `removeBot`: Cancel (a team
+ * admin, a pending bot only), Disconnect (TASK-1172: a team admin from the
+ * agent's settings, their rights asked again inside the lock; or an AX admin
+ * from Admin › Slack, by the bot's install id, never the shared app's), and
+ * its agent's deletion. The shared bot's channel bindings are never touched,
+ * so it answers in the agent's channels again once the agent's bot is gone.
+ *
  * Every step that touches a Slack app or a configuration token runs under the
  * one app lock (`lock`), which plugin.ts creates once and shares with Admin ›
  * Slack: bot names are unique across every bot and the shared bot, and one
  * person's token serves all their apps, so nothing narrower would do. It
- * isn't re-entrant (mutex.ts): each method says whether it takes it, and
- * `finish` and `removeBot` run under their caller's.
+ * isn't re-entrant (mutex.ts): `removeForAgent`, `request`, `installUrl`,
+ * `cancel`, `disconnect` and `disconnectForAdmin` each take it once; `finish`
+ * and `removeBot` run under their caller's; `status` takes none.
  *
  * A bot has three secrets of its own, under its install (bot token, signing
  * secret, client secret), and never a configuration token. No answer carries
@@ -193,6 +201,29 @@ export interface Bots {
    */
   cancel(i: { agentId: string }): Promise<BotReply>;
   /**
+   * A team admin takes the agent's own bot away, pending or live (TASK-1172),
+   * as `removeBot` does: its app deleted with its approver's token, whoever
+   * asks. Takes the app lock, and asks `actorUserId`'s manage rights again
+   * inside it (the route asked before the lock): it can be held for minutes,
+   * and a team admin demoted, or an agent deleted, while this waited must not
+   * still take a live bot's channels away. 200 `{ appDeleted }`, logged
+   * `slack_bot_disconnected { installId, appDeleted, by: 'team-admin' }`; 409
+   * `no-bot`; 404/403/409 as the rights re-check says. A rights check that
+   * can't be answered, or a row that won't go, throws: the route's 500.
+   */
+  disconnect(i: { ctx: AgentContext; actorUserId: string; agentId: string }): Promise<BotReply>;
+  /**
+   * An AX admin takes a team agent's bot away from Admin › Slack, by its
+   * install id, pending or live, as `disconnect` does. Takes the app lock;
+   * asks no one's rights (Admin › Slack's own gate let the admin through).
+   * Only a `kind 'bot'` row: the shared app's id, or one no install has (a
+   * stale page whose bot was disconnected, and maybe asked for again under a
+   * new id since), is 409 `no-bot` and touches nothing. 200 `{ appDeleted }`,
+   * logged `slack_bot_disconnected { installId, appDeleted, by: 'admin' }`.
+   * A row that won't go throws: the route's 500.
+   */
+  disconnectForAdmin(i: { installId: string }): Promise<BotReply>;
+  /**
    * The approver's Allow, back from Slack: bot-callback.ts checked that the
    * OAuth state was minted for `actorUserId`, spent it, and read `install`
    * from the row it named. The bot goes live only if it is a pending bot,
@@ -241,6 +272,8 @@ const HANDLE_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const json = (status: number, body: unknown): BotReply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
 const NOT_PENDING = json(409, { error: 'not-pending' });
+/** Nothing to disconnect: no bot for the agent, or an install id that names no bot (any more). */
+const NO_BOT = json(409, { error: 'no-bot' });
 
 /** A refused rights re-check, answered as the route answers its own. */
 function rightsRefused(reason: Extract<Rights, { ok: false }>['reason']): BotReply {
@@ -464,6 +497,34 @@ export function createBots(d: BotDeps): Bots {
     });
   }
 
+  async function disconnect(i: { ctx: AgentContext; actorUserId: string; agentId: string }): Promise<BotReply> {
+    return d.lock.run(async () => {
+      // The route checked before the lock. Asked again inside it, before
+      // anything is read: a team admin demoted, or an agent deleted, while
+      // this waited is refused, and nothing is touched.
+      const rights = await checkRights(d.bus, i.ctx, i.agentId, i.actorUserId, 'manage');
+      if (!rights.ok) return rightsRefused(rights.reason);
+      const bot = await d.installs.botForAgent(i.agentId);
+      if (bot === null) return NO_BOT;
+      const appDeleted = await removeBot(bot);
+      log('info', 'slack_bot_disconnected', { installId: bot.installId, appDeleted, by: 'team-admin' });
+      return json(200, { appDeleted });
+    });
+  }
+
+  async function disconnectForAdmin(i: { installId: string }): Promise<BotReply> {
+    return d.lock.run(async () => {
+      const bot = await d.installs.get(i.installId);
+      // A team agent's bot, and nothing else: the shared app has its own
+      // Disconnect (every agent's channels go with it). Keyed by install id,
+      // a stale page can't take a bot asked for since: that one has a new id.
+      if (bot === null || bot.kind !== 'bot') return NO_BOT;
+      const appDeleted = await removeBot(bot);
+      log('info', 'slack_bot_disconnected', { installId: bot.installId, appDeleted, by: 'admin' });
+      return json(200, { appDeleted });
+    });
+  }
+
   /**
    * Slack's @handle for the new bot user, kept only when a copy line can show
    * it (HANDLE_RE, and no reserved word). It is Slack's text, so it is checked
@@ -594,5 +655,5 @@ export function createBots(d: BotDeps): Bots {
     };
   }
 
-  return { removeForAgent, request, installUrl, cancel, finish, status };
+  return { removeForAgent, request, installUrl, cancel, disconnect, disconnectForAdmin, finish, status };
 }
