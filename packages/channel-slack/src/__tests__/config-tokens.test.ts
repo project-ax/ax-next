@@ -526,6 +526,44 @@ describe("moveConfigTokens: at boot, each install's old configuration token move
     faults.list = dbFault('57P01');
     await expect(moveConfigTokens({ store, secrets, logger })).resolves.toEqual({ moved: 0, dropped: 0 });
   });
+
+  it("M11 the newest install holding no old token: the newest one that does is the one that moves", async () => {
+    const w = world({ installs: [ADA_OLDER, ADA_NEWER] });
+    w.vault.rows.set(oldRef(ADA_OLDER), TOKEN.adaOlder);
+
+    await expect(w.move()).resolves.toEqual({ moved: 1, dropped: 0 });
+
+    expect(w.vault.rows).toEqual(new Map([[personRef(ADA), TOKEN.adaOlder]]));
+    expect(w.lines).toEqual([movedLine(1, 0)]);
+  });
+
+  it("M12 a secret store that throws where it promised not to can't fail the boot or stop anyone else's move", async () => {
+    const vault = fakeVault();
+    const { logger, lines } = recordingLogger();
+    const real = createSecretStore(vault.bus, { logger });
+    const surprise = Object.assign(new Error(`surprise ${TOKEN.adaNewer}`), { code: 'EBROKEN' });
+    const secrets = {
+      ...real,
+      // `remove` promises never to throw; this one does, for Ada's old row only.
+      remove: async (install: { installId: string }, name: Parameters<typeof real.remove>[1]) => {
+        if (install.installId === ADA_NEWER.installId) throw surprise;
+        await real.remove(install, name);
+      },
+    };
+    const { store } = fakeStore([ADA_NEWER, GRACE_APP], []);
+    vault.rows.set(oldRef(ADA_NEWER), TOKEN.adaNewer);
+    vault.rows.set(oldRef(GRACE_APP), TOKEN.grace);
+
+    await expect(moveConfigTokens({ store, secrets, logger })).resolves.toEqual({ moved: 1, dropped: 0 });
+
+    expect(vault.rows.get(personRef(GRACE))).toBe(TOKEN.grace);
+    expect(vault.rows.has(oldRef(GRACE_APP))).toBe(false);
+    expect(lines).toEqual([
+      moveFailed({ installId: ADA_NEWER.installId, stage: 'move', code: 'EBROKEN' }),
+      movedLine(1, 0),
+    ]);
+    expect(JSON.stringify(lines)).not.toContain(TOKEN.adaNewer);
+  });
 });
 
 describe('releaseConfigToken: a person keeps their token while anything still names them (TASK-1175)', () => {

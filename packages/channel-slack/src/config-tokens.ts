@@ -90,9 +90,15 @@ export async function moveConfigTokens(d: {
   let moved = 0;
   let dropped = 0;
   for (const group of people.values()) {
-    const done = await movePerson(d.secrets, group, failed);
-    moved += done.moved;
-    dropped += done.dropped;
+    // Each step inside already catches its own fault; this is the backstop
+    // that keeps one person's surprise from failing the boot or skipping the rest.
+    try {
+      const done = await movePerson(d.secrets, group, failed);
+      moved += done.moved;
+      dropped += done.dropped;
+    } catch (err) {
+      failed('move', err, group[0]!.installId);
+    }
   }
   if (moved + dropped > 0) log('info', 'slack_config_tokens_moved', { moved, dropped });
   return { moved, dropped };
