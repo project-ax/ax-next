@@ -94,10 +94,11 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
-//   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect}  — the
-//        agent's own Slack bot (TASK-1167, bots.ts): a team admin of its team
-//        asks for it, picks it back up in Slack, cancels it, or disconnects it
-//        (TASK-1172); CSRF-checked
+//   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,
+//        /remember}  — the agent's own Slack bot (TASK-1167, bots.ts): a team
+//        admin of its team asks for it, picks it back up in Slack, cancels it,
+//        or disconnects it (TASK-1172), or flips the memory switch of a channel
+//        it has answered in (TASK-1180); CSRF-checked
 //   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
 //        to approve it, without a token, and takes that ask back (TASK-1169,
 //        bot-requests.ts); CSRF-checked
@@ -145,7 +146,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // `memory_note`, so the veto stops both. A member's turn also records the
 // names its sender label shows, and the veto answers a thread it lets
 // through with them, so memory stores nothing said there under the
-// speaker's name (TASK-1146).
+// speaker's name (TASK-1146). A team agent's own bot's channels have the
+// switch too, and the agent's switch for a channel is kept after a
+// Disconnect, so the bot starts where the team left it (TASK-1180).
 //
 // TASK-1095: when a DM or an attended turn's agent has a call held for the
 // sender's OK, the reply ends with the ask and a prompt follows it in the

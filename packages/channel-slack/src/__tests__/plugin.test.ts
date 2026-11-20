@@ -789,7 +789,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the twenty-eight routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the twenty-nine routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -847,6 +847,13 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/settings/slack/:agentId/remember', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // The memory switch of a channel the agent's own bot has answered in (TASK-1180).
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/remember',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       // A team agent's own bot (TASK-1167): its request can carry the bot's picture, as Connect's can.
       { method: 'POST', path: '/settings/slack/:agentId/bot', bypassCsrf: false, maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES },
       {
@@ -2233,7 +2240,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(29);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2255,7 +2262,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(29);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2284,7 +2291,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(29);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2696,7 +2703,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(29);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
