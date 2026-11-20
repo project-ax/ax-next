@@ -12,6 +12,8 @@
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
+ *   POST /settings/slack/:agentId/bot-request         { botName } → {}
+ *   POST /settings/slack/:agentId/bot-request/cancel  → {}
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
@@ -39,6 +41,11 @@ export interface SlackChannelRow {
 export type AgentSlackBot =
   /** `configTokenStored`: whether the server holds the viewer's OWN configuration token, so the form can skip the paste. */
   | { state: 'none'; configTokenStored: boolean }
+  /**
+   * A team admin asked the AX admins for it, and none has approved yet (TASK-1169). Nothing exists in Slack.
+   * `requestedAt`: when it was asked, as an ISO 8601 instant. Like `pending`, it reaches only managers.
+   */
+  | { state: 'requested'; botName: string; requestedAt: string }
   /** `canContinue`: the viewer is the approver and Slack is connected, so "Continue in Slack" can finish it. */
   | { state: 'pending'; botName: string; approver: string; canContinue: boolean }
   /** `handle`: the bot's @handle, or null when Slack never said. `needsClaim`: no team admin stands behind it now. */
@@ -116,6 +123,12 @@ function codeOf(value: unknown): string | null {
 
 const badResponse = (status: number): AgentSlackError => new AgentSlackError(status, 'bad-response');
 
+/** A date for a line of prose ("Nov 20, 2026"); a value that isn't a date shows as it came. */
+export function slackShortDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
+}
+
 const base = (agentId: string): string => `/settings/slack/${encodeURIComponent(agentId)}`;
 
 function parseRow(value: unknown): SlackChannelRow | null {
@@ -139,6 +152,12 @@ function parseBot(value: unknown): AgentSlackBot | null {
     case 'none': {
       const { configTokenStored } = value;
       return typeof configTokenStored === 'boolean' ? { state: 'none', configTokenStored } : null;
+    }
+    case 'requested': {
+      const { botName, requestedAt } = value;
+      return typeof botName === 'string' && typeof requestedAt === 'string'
+        ? { state: 'requested', botName, requestedAt }
+        : null;
     }
     case 'pending': {
       const { botName, approver, canContinue } = value;
@@ -329,6 +348,19 @@ export async function requestSlackBot(
   return { installUrl, iconSet };
 }
 
+/**
+ * Ask the AX admins to approve the agent's own bot, for a team admin who
+ * can't install apps in Slack. Nothing secret goes: only the name.
+ */
+export async function askSlackBotApproval(agentId: string, i: { botName: string }): Promise<void> {
+  await post(agentId, '/bot-request', { botName: i.botName });
+}
+
+/** Take back a request no AX admin has approved yet. */
+export async function cancelSlackBotRequest(agentId: string): Promise<void> {
+  await post(agentId, '/bot-request/cancel', {});
+}
+
 /** A fresh install link for the pending bot (its approver only). */
 export async function continueSlackBot(agentId: string): Promise<{ installUrl: string }> {
   const answer = await post(agentId, '/bot/install-url', {});
@@ -465,7 +497,7 @@ export function agentSlackBotErrorCopy(err: unknown): {
 
 /**
  * A bot request, continue or cancel that says what we drew is out of date:
- * the bot is already there or no longer pending (409), or the agent can't be
+ * the bot is already there, already asked for, or no longer pending or requested (409), or the agent can't be
  * managed (403 `forbidden`) or seen (404) any more. Read the status again.
  * (`not-approver` is a 403 too, but it is an answer about the person, shown as it is.)
  */
@@ -473,6 +505,11 @@ export function agentSlackBotStale(err: unknown): boolean {
   if (!(err instanceof AgentSlackError)) return false;
   if (err.status === 404 || (err.status === 403 && err.code === 'forbidden')) return true;
   return (
-    err.status === 409 && (err.code === 'bot-exists' || err.code === 'not-pending' || err.code === 'personal-agent')
+    err.status === 409 &&
+    (err.code === 'bot-exists' ||
+      err.code === 'not-pending' ||
+      err.code === 'bot-requested' ||
+      err.code === 'not-requested' ||
+      err.code === 'personal-agent')
   );
 }
