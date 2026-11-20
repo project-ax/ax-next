@@ -17,8 +17,8 @@
  *                                            "no bots" (an admin relies on this;
  *                                            the client gives up after
  *                                            REQUEST_TIMEOUT_MS)
- *   after a Disconnect                       the list is read again and the tab
- *                                            is told its apps changed; when
+ *   after a Disconnect, or finding someone   the list is read again and the tab
+ *   else already did it                      is told its apps changed; when
  *                                            the Slack app couldn't be deleted,
  *                                            a note says so and outlives that
  *                                            re-read (and an emptied list)
@@ -125,6 +125,8 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
   function staleRow() {
     setAsking(null);
     void read();
+    // Whoever got there first may have left a Slack app behind: the tab's list of those is out of date too.
+    onAppsChanged();
   }
 
   const bots = load.kind === 'ready' ? load.bots : [];

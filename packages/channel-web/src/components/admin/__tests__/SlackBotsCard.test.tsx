@@ -228,7 +228,7 @@ describe('Disconnect', () => {
     expect(screen.queryByRole('table')).toBeNull();
   });
 
-  it('no-bot (someone got there first) closes the dialog and reads the list again; a failure says so in the dialog', async () => {
+  it("no-bot (someone got there first) closes the dialog, reads the list again and tells the tab, whose leftover apps may have changed too", async () => {
     disconnect.mockRejectedValueOnce(new SlackAdminError(409, 'no-bot'));
     list.mockResolvedValueOnce(ready(LIVE));
     list.mockResolvedValueOnce(ready());
@@ -241,7 +241,7 @@ describe('Disconnect', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.queryByRole('table')).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(onAppsChanged).not.toHaveBeenCalled();
+    expect(onAppsChanged).toHaveBeenCalledTimes(1);
   });
 
   it('a failure says so in the dialog and keeps the bot', async () => {
