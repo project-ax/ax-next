@@ -599,9 +599,15 @@ no reinstall.
 - Change picture is drawn in the admin's browser on a white 512 px square and
   sent with `apps.icon.set` only. AX keeps no copy.
 - If Slack refuses the token, or answers `no_permission` or
-  `app_not_owned_by_manager_app`, the route answers 502 `slack-config-token`
-  and nothing in AX changes. The settings say "This bot's Slack token needs
-  replacing by <approver>." An agent with no live bot gets 409 `not-live`.
+  `app_not_owned_by_manager_app`, the route answers 502 `slack-config-token`.
+  The bot's name and handle stay as they were. The approver's stored token
+  may not: a refusal at the update or picture step comes after the rotate,
+  so that token has already been swapped for its successor, which is still
+  the approver's working token. The settings say "This bot's Slack token
+  needs replacing by <approver>." An agent with no live bot gets 409
+  `not-live`, and so does one whose bot a reset removed while Slack was
+  being asked, whatever Slack answered; the approver's token then goes
+  unless something else of theirs still needs it.
 
 **As built (TASK-1172).** Disconnect runs the same removal as deleting the
 agent, under the one app lock. A team admin's Disconnect (from the agent's
