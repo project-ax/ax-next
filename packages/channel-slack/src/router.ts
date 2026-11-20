@@ -76,7 +76,12 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      whose channel was reconnected by someone else meanwhile is dropped
  *      too (`reconnected`), and its sender told to try again: it was
  *      planned as the old connector, in their conversation, and must not
- *      run as anyone else.
+ *      run as anyone else. On a team agent's own bot, an outsider's turn
+ *      runs as its requester only while they are still a team admin of the
+ *      agent's team, so it is asked again here: not any more drops the turn
+ *      (`requester`) with the polite "I can't answer you here right now"
+ *      line, and a failed read drops it too (`slack_event_failed`, stage
+ *      `requester`), its sender told to try again.
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads, with the channel's memory switch as it is NOW
  *      (channel-store.ts `recordThread`): a turn that starts while the switch
