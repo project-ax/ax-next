@@ -1,7 +1,9 @@
 /**
- * An agent's Slack section in its settings (TASK-1094): the channels it
- * answers in, and — for the team admins who manage it — connecting,
- * disconnecting and "remember this channel".
+ * An agent's Slack section in its settings (TASK-1094): the channels
+ * connected to it through the shared Slack app, and — for the team admins who
+ * manage it — connecting, disconnecting and "remember this channel". Once the
+ * agent's own bot is live (TASK-1168), the list is the channels that still
+ * need that bot invited, and nothing more is connected through the shared app.
  *
  * Claude-simple on purpose. No ids, scopes or install words: a channel is
  * `#name`, a person is a name, and a problem shows up only when there is one.
@@ -52,6 +54,7 @@ import {
   setSlackChannelRemember,
   type AgentSlackRead,
   type AvailableSlackChannels,
+  type InviteTarget,
   type SlackChannelRow,
 } from '@/lib/agent-slack';
 
@@ -205,6 +208,11 @@ function ReadySection({
   onStale: () => void;
 }) {
   const { channels, canManage, bot } = ready;
+  // A live bot answers where it was invited and the shared bot no longer reaches this agent, so the
+  // rows that still need an invite say so and carry nothing else.
+  const invite: InviteTarget | null =
+    bot.state === 'live' ? { botName: bot.botName, handle: bot.handle } : null;
+  const isMoved = (row: SlackChannelRow) => invite !== null && row.needsInvite;
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
   const [notice, setNotice] = useState<string | null>(null);
@@ -275,18 +283,18 @@ function ReadySection({
         </Alert>
       )}
       {channels.length === 0 ? (
-        <p className="text-[13px] text-muted-foreground">
-          {canManage
-            ? `${agentName} isn't answering in any channels yet.`
-            : `${agentName} isn't connected to any Slack channels yet.`}
-        </p>
+        // A live bot may be answering in channels this list doesn't show; its own section says how to invite it.
+        bot.state !== 'live' && (
+          <p className="text-[13px] text-muted-foreground">
+            {canManage
+              ? `${agentName} isn't answering in any channels yet.`
+              : `${agentName} isn't connected to any Slack channels yet.`}
+          </p>
+        )
       ) : (
         <>
-        {bot.state === 'live' && (
-          <p className="text-[13px] text-muted-foreground">
-            Mentioning the shared bot in these channels no longer reaches {agentName}. Invite{' '}
-            {bot.handle !== null ? `@${bot.handle}` : bot.botName} to each one.
-          </p>
+        {invite !== null && channels.some(isMoved) && (
+          <p className="text-[13px] text-muted-foreground">{AGENT_SLACK_COPY.movedNotice(invite)}</p>
         )}
         <Card className="overflow-hidden p-0 shadow-none">
           <CardContent className="p-0">
@@ -297,6 +305,7 @@ function ReadySection({
                   row={row}
                   agentName={agentName}
                   canManage={canManage}
+                  invite={isMoved(row) ? invite : null}
                   busy={pending.has(row.channelId)}
                   error={rowErrors[row.channelId] ?? null}
                   onRemember={(on) => void remember(row, on)}
@@ -333,6 +342,7 @@ function ReadySection({
       <DisconnectDialog
         agentId={agentId}
         row={disconnecting}
+        moved={disconnecting !== null && isMoved(disconnecting)}
         onClose={() => setDisconnecting(null)}
         onStale={onStale}
         onDisconnected={(channelId) => {
@@ -348,6 +358,7 @@ function ChannelRow({
   row,
   agentName,
   canManage,
+  invite,
   busy,
   error,
   onRemember,
@@ -357,6 +368,8 @@ function ChannelRow({
   row: SlackChannelRow;
   agentName: string;
   canManage: boolean;
+  /** Set when the agent's own bot is live and still needs inviting here: the row shrinks to its hint. */
+  invite: InviteTarget | null;
   busy: boolean;
   error: string | null;
   onRemember: (on: boolean) => void;
@@ -365,6 +378,31 @@ function ChannelRow({
 }) {
   const switchId = `slack-remember-${row.channelId}`;
   const rememberNote = `${agentName} remembers what people with access to it say here. It never remembers what anyone else says.`;
+  if (invite !== null) {
+    return (
+      <li className="flex flex-col gap-3 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="flex items-center gap-1.5 text-[14px] font-medium">
+              <Hash aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{row.name}</span>
+            </span>
+            <span className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_COPY.movedRow(invite)}</span>
+          </div>
+          {canManage && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={onDisconnect}>
+              Disconnect
+            </Button>
+          )}
+        </div>
+        {error !== null && (
+          <p role="alert" className="text-[12.5px] text-destructive">
+            {error}
+          </p>
+        )}
+      </li>
+    );
+  }
   return (
     <li className="flex flex-col gap-3 px-4 py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -546,12 +584,15 @@ function ChannelPicker({
 function DisconnectDialog({
   agentId,
   row,
+  moved,
   onClose,
   onStale,
   onDisconnected,
 }: {
   agentId: string;
   row: SlackChannelRow | null;
+  /** The row is one the agent's own bot still needs: Disconnect only takes it off the list. */
+  moved: boolean;
   onClose: () => void;
   /** The server says that row isn't ours to change any more: read it again. */
   onStale: () => void;
@@ -593,7 +634,9 @@ function DisconnectDialog({
         <DialogHeader>
           <DialogTitle>Disconnect #{row?.name ?? ''}?</DialogTitle>
           <DialogDescription>
-            The agent stops answering in #{row?.name ?? ''}. You can connect it again any time.
+            {moved
+              ? AGENT_SLACK_COPY.movedDisconnect(row?.name ?? '')
+              : `The agent stops answering in #${row?.name ?? ''}. You can connect it again any time.`}
           </DialogDescription>
         </DialogHeader>
         {error !== null && (
