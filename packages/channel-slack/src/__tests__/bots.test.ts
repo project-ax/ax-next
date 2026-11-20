@@ -112,7 +112,7 @@ interface Reply {
   body: unknown;
 }
 
-function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
+function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown } = {}) {
   /** Every vault, store and Slack call, in order. */
   const trail: string[] = [];
   const lines: Line[] = [];
@@ -129,10 +129,17 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
   people.setRole(SUPPORT_TEAM, MEL, 'member');
   people.setRole(SALES_TEAM, SAM, 'admin');
 
-  // Auth's own accounts, by id: a test may rename one.
+  // Auth's own accounts, by id: a test may rename or delete one. Auth answers
+  // null for an id it doesn't know, and `getUserFault`, when given, is thrown
+  // for every id instead (an outage).
   const users = new Map(USERS.map((u) => [u.id, { ...u }]));
+  /** Every id auth was asked about, in order. */
+  const authAsked: string[] = [];
   bus.registerService('auth:get-user', '@ax/auth-better', async (_ctx, raw) => {
-    const user = users.get((raw as { userId: string }).userId);
+    const userId = (raw as { userId: string }).userId;
+    authAsked.push(userId);
+    if (o.getUserFault !== undefined) throw o.getUserFault;
+    const user = users.get(userId);
     return user === undefined ? null : { ...user };
   });
 
@@ -163,6 +170,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
     bus,
     people,
     users,
+    authAsked,
     vault,
     vaultCalls,
     vaultAs,
@@ -197,6 +205,8 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
       keep(await bots.disconnect({ ctx: ctxOf(as), actorUserId: as, agentId })),
     /** An AX admin's Disconnect, from Admin › Slack, by the bot's install id (TASK-1172). */
     disconnectForAdmin: async (installId: string): Promise<Reply> => keep(await bots.disconnectForAdmin({ installId })),
+    /** Admin › Slack's list of every team bot, read as an AX admin (TASK-1172). */
+    listForAdmin: async (as: string = ADA) => keep(await bots.listForAdmin({ ctx: ctxOf(as) })),
     status: async (s: { as: string; manages: boolean; sharedActive: boolean; agentId?: string }) =>
       keep(
         await bots.status({
@@ -220,6 +230,7 @@ function forget(w: World): void {
   w.vaultCalls.length = 0;
   w.vaultAs.length = 0;
   w.lines.length = 0;
+  w.authAsked.length = 0;
 }
 
 /** What seedShared stores: the shared app's three secrets, and Ada's own token. */
@@ -1372,6 +1383,148 @@ describe('disconnect', () => {
   });
 });
 
+// ── listForAdmin (TASK-1172) ────────────────────────────────────────────────
+
+describe('listForAdmin', () => {
+  it('listForAdmin: every bot, pending and live, never the shared app: name, handle, approver, state and when it was asked for', async () => {
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const supportId = supportBot(w)!.installId;
+    // Sam's live bot for the sales agent, whose bot user Slack called @salesdesk.
+    await addBot(w, { handle: 'salesdesk' });
+
+    const listed = await w.listForAdmin();
+
+    // Both rows share the fake clock, so their order is the store's tie-break (store.test.ts).
+    expect(listed).toHaveLength(2);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        {
+          installId: supportId,
+          botName: BOT_NAME,
+          handle: null,
+          approver: 'Grace Hopper',
+          state: 'pending',
+          addedAt: new Date(NOW_MS).toISOString(),
+        },
+        {
+          installId: 'U2FsZXNCb3RJbnN0YWxsMQ',
+          botName: 'Sales Desk',
+          handle: 'salesdesk',
+          approver: 'Sam Sales',
+          state: 'live',
+          addedAt: new Date(NOW_MS).toISOString(),
+        },
+      ]),
+    );
+    // One read of the bots; no vault read, no Slack call; auth asked about each approver, never the shared app's.
+    expect(w.trail).toEqual(['store:listBots']);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect([...w.authAsked].sort()).toEqual([GRACE, SAM].sort());
+    // In the order the store lists them.
+    expect(listed.map((b) => b.installId)).toEqual((await w.memory.store.listBots()).map((r) => r.installId));
+  });
+
+  it('listForAdmin: an approver without a display name reads as their email (only admins read this list)', async () => {
+    const w = world();
+    await seedShared(w);
+    await addBot(w, { handle: 'salesdesk' });
+    w.users.get(SAM)!.displayName = null;
+
+    expect(await w.listForAdmin()).toEqual([expect.objectContaining({ approver: 'sam@canopyworks.example' })]);
+
+    // The agent's settings, which members read too, still never show it.
+    expect(await w.status({ as: SAM, manages: true, sharedActive: true, agentId: SALES.id })).toMatchObject({
+      state: 'live',
+      approver: 'A teammate',
+    });
+  });
+
+  it('listForAdmin: an approver auth no longer has is null; an auth fault reads "A teammate" and is logged code-only', async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await addBot(w, { handle: 'salesdesk' });
+    w.users.delete(SAM);
+
+    expect(await w.listForAdmin()).toEqual([expect.objectContaining({ installId, approver: null })]);
+    // An account that's gone is an answer, not a fault.
+    expect(w.lines).toEqual([]);
+
+    const f = world({ getUserFault: connectionReset() });
+    await seedShared(f);
+    const faultId = await addBot(f, { handle: 'salesdesk' });
+
+    expect(await f.listForAdmin()).toEqual([expect.objectContaining({ installId: faultId, approver: 'A teammate' })]);
+    expect(f.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_failed', fields: { installId: faultId, stage: 'approver', code: 'ECONNRESET' } },
+    ]);
+  });
+
+  it('listForAdmin: no bots is [] and asks auth nothing', async () => {
+    const w = world();
+    await seedShared(w);
+
+    expect(await w.listForAdmin()).toEqual([]);
+
+    expect(w.trail).toEqual(['store:listBots']);
+    expect(w.authAsked).toEqual([]);
+
+    // Nor with no shared app at all.
+    const none = world();
+    expect(await none.listForAdmin()).toEqual([]);
+    expect(none.authAsked).toEqual([]);
+  });
+
+  it('listForAdmin: each item holds exactly the six fields, and no person id, token, app id or agent id', async () => {
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    await addBot(w, { handle: 'salesdesk' });
+
+    const answer = await w.listForAdmin();
+
+    expect(answer).toHaveLength(2);
+    for (const item of answer) {
+      expect(Object.keys(item).sort()).toEqual(['addedAt', 'approver', 'botName', 'handle', 'installId', 'state']);
+    }
+    const text = JSON.stringify(answer);
+    for (const leak of [GRACE, SAM, ADA, 'usr_', SUPPORT.id, SALES.id, ADDED_BOT_APP, APP.appId, SHARED_APP, SHARED_INSTALL]) {
+      expect(text, leak).not.toContain(leak);
+    }
+    // The vault holds tokens and secrets enough to make the scan mean something.
+    expect(w.vault.size).toBeGreaterThan(4);
+    for (const [ref, value] of w.vault) expect(text, ref).not.toContain(value);
+  });
+
+  it('listForAdmin: takes no lock, reads no vault and asks Slack nothing', async () => {
+    const lock = createMutex();
+    const w = world({ lock });
+    await seedShared(w);
+    await addBot(w, { handle: 'salesdesk' });
+    const hold = await holdLock(lock);
+
+    let listed: unknown = 'still waiting for the lock';
+    void w.listForAdmin().then(
+      (answer) => {
+        listed = answer;
+      },
+      (err: unknown) => {
+        listed = err;
+      },
+    );
+    await settle();
+
+    // Answered while another Slack-app step still holds the one app lock.
+    expect(listed).toEqual([expect.objectContaining({ botName: 'Sales Desk', state: 'live' })]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    hold.free();
+    await hold.done;
+  });
+});
+
 // ── status ──────────────────────────────────────────────────────────────────
 
 describe('status', () => {
@@ -1550,12 +1703,19 @@ describe('answers and logs', () => {
     failRotate(deadCancel, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
     await deadCancel.cancel();
 
-    // TASK-1172: a team admin's Disconnect, then one with nothing left to take.
+    // TASK-1172: Admin › Slack's list, a team admin's Disconnect, then one with nothing left to take.
     const disconnected = add(world());
     await seedShared(disconnected);
     await seedSupportBot(disconnected);
+    await disconnected.listForAdmin();
     await disconnected.disconnect(GRACE);
     await disconnected.disconnect(GRACE);
+
+    // The list while auth is down: each approver reads "A teammate", logged code-only.
+    const listFault = add(world({ getUserFault: connectionReset() }));
+    await seedShared(listFault);
+    await seedSupportBot(listFault);
+    await listFault.listForAdmin();
 
     // An AX admin's, then one naming the shared app.
     const adminDisconnected = add(world());

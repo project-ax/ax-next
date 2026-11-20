@@ -5,7 +5,7 @@ import type { ParsedIcon } from './icon.js';
 import { INSTALL_ID_BYTES } from './limits.js';
 import { DEDICATED_BOT_SCOPES, botUrls, buildBotManifest } from './manifest.js';
 import type { Mutex } from './mutex.js';
-import { personName } from './person-name.js';
+import { accountName, personName } from './person-name.js';
 import { configTokenRef, type SecretOwner, type SecretStore } from './secrets.js';
 import {
   SlackApiError,
@@ -78,7 +78,8 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * person's token serves all their apps, so nothing narrower would do. It
  * isn't re-entrant (mutex.ts): `removeForAgent`, `request`, `installUrl`,
  * `cancel`, `disconnect` and `disconnectForAdmin` each take it once; `finish`
- * and `removeBot` run under their caller's; `status` takes none.
+ * and `removeBot` run under their caller's; `status` and `listForAdmin` take
+ * none.
  *
  * A bot has three secrets of its own, under its install (bot token, signing
  * secret, client secret), and never a configuration token. No answer carries
@@ -105,6 +106,20 @@ export type AgentSlackBot =
    * agent's team, so its outsiders are turned away until one claims it.
    */
   | { state: 'live'; botName: string; handle: string | null; approver: string; needsClaim: boolean };
+
+/** Admin › Slack's view of one bot (TASK-1172). Only admins read it: the approver may be an email. */
+export interface AdminSlackBot {
+  /** The key its Disconnect takes. */
+  installId: string;
+  botName: string;
+  /** Slack's @handle for the bot user, or null when Slack never said. */
+  handle: string | null;
+  /** Display name, else email; "A teammate" when auth can't answer; null when auth has no such account. */
+  approver: string | null;
+  state: 'pending' | 'live';
+  /** When the bot was asked for: its row's `createdAt`, ISO 8601. */
+  addedAt: string;
+}
 
 /** A route's answer, as agent-routes.ts writes it. */
 export interface BotReply {
@@ -257,9 +272,25 @@ export interface Bots {
     manages: boolean;
     sharedActive: boolean;
   }): Promise<AgentSlackBot>;
+  /**
+   * Admin › Slack's list of every team agent's bot, pending or live, never
+   * the shared app (TASK-1172), in the store's order (oldest first). Each
+   * approver as auth knows them now (`accountName`): their display name, else
+   * their email (only admins read this list); "A teammate" when auth can't
+   * answer, logged `slack_bot_failed { installId, stage: 'approver', code }`;
+   * null when auth has no such account, so the page can say they've left.
+   * Takes no lock, reads no vault and asks Slack nothing. A store fault
+   * throws: the route's 500.
+   */
+  listForAdmin(i: { ctx: AgentContext }): Promise<AdminSlackBot[]>;
 }
 
-/** The approver's name when auth has none, no account or no answer. Never the email: members read this. */
+/**
+ * The approver's name when auth has none to show or can't answer. The
+ * agent's settings, which members read, also show it for an account auth no
+ * longer has, and never the email; Admin › Slack's list shows the email, and
+ * null for an account that's gone.
+ */
 const APPROVER_FALLBACK = 'A teammate';
 /**
  * A bot user's @handle we keep: Slack's `name` field as its username rules
@@ -655,5 +686,26 @@ export function createBots(d: BotDeps): Bots {
     };
   }
 
-  return { removeForAgent, request, installUrl, cancel, disconnect, disconnectForAdmin, finish, status };
+  async function listForAdmin(i: { ctx: AgentContext }): Promise<AdminSlackBot[]> {
+    const listed: AdminSlackBot[] = [];
+    for (const bot of await d.installs.listBots()) {
+      listed.push({
+        installId: bot.installId,
+        botName: bot.botName,
+        handle: bot.botHandle,
+        // As auth knows them now (the row keeps only the id), the email
+        // included: only admins read this list.
+        approver: await accountName(d.bus, i.ctx, bot.connectedByUserId, {
+          allowEmail: true,
+          fallback: APPROVER_FALLBACK,
+          onFault: (err) => steps.failed('approver', err, bot.installId, 'warn'),
+        }),
+        state: bot.status === 'active' ? 'live' : 'pending',
+        addedAt: bot.createdAt.toISOString(),
+      });
+    }
+    return listed;
+  }
+
+  return { removeForAgent, request, installUrl, cancel, disconnect, disconnectForAdmin, finish, status, listForAdmin };
 }
