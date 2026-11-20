@@ -297,8 +297,9 @@ function failRotate(w: World, code: string): void {
 /**
  * A whole bootstrap reset while the approver's token is being rotated: the
  * vault wiped (credentials-store-db does that first) and every row removed.
- * Then Slack refuses the rotate with `invalid_refresh_token` (the token it
- * was sent is gone with the reset), so nothing is saved after the wipe; or,
+ * Then Slack refuses the rotate (a reset only wipes AX's vault and never asks
+ * Slack anything, so the refusal stands in for any refusal of the rotate,
+ * e.g. a rate limit), so nothing is saved after the wipe; or,
  * with `'mint'`, the rotate goes through and its successor is saved after the
  * wipe, as a rotate already on its way to Slack would.
  */
