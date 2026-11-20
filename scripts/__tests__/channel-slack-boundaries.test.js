@@ -82,6 +82,10 @@ const RULES = {
     dirs: ['packages/channel-slack/'],
     files: new Map([
       ['presets/k8s/src/__tests__/channel-slack-composition.test.ts', "checks Disconnect removed the install's vault refs"],
+      [
+        'packages/cli/src/__tests__/admin-reset-bootstrap.test.ts',
+        "plants an install's pre-TASK-1175 configuration token to prove the CLI never moves it",
+      ],
     ]),
   },
 };
