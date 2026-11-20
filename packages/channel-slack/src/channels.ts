@@ -380,8 +380,12 @@ export async function connectChannel(
   return { ok: true, binding, reconnected };
 }
 
-/** A channel the picker offers: a channel, public, live, and in no other workspace. */
-function connectable(c: SlackChannel): boolean {
+/**
+ * A channel the picker offers: a channel, public, live, and in no other
+ * workspace. Also what a team agent's own bot binds at its first mention in
+ * a channel (router.ts, TASK-1167), so the two can't disagree.
+ */
+export function connectable(c: SlackChannel): boolean {
   return c.isChannel && !c.isPrivate && !c.isArchived && !c.isExtShared && !c.isPendingExtShared;
 }
 

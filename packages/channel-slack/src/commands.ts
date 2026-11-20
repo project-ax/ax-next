@@ -34,8 +34,12 @@ import type { InstallRow, InstallStore } from './store.js';
  *      `command`, `team_id`, `api_app_id`, `user_id` and `channel_id` once
  *      each, the ids Slack-shaped, and `text` at most SLASH_TEXT_MAX, else
  *      400. Slack's `ssl_check` is an empty 200.
- *   2. Another app, a pending install, another workspace or another command
- *      → an empty 200, ignored.
+ *   2. Any install but the shared app's, another app, a pending install,
+ *      another workspace or another command → an empty 200, ignored. A team
+ *      agent's own bot (TASK-1167) has no `/ax` in its manifest; one its
+ *      approver adds by hand on api.slack.com still connects nothing: its
+ *      channels are bound only by its own mentions, to its one agent
+ *      (router.ts).
  *   3. Who is asking is the signed `user_id`, admitted through users.info
  *      with the install's bot token (admission.ts), and mapped to an AX
  *      account through its verified email. Never `user_name`, never anything
@@ -252,7 +256,7 @@ function defaultSleep(ms: number): Promise<void> {
 
 // ── The handler ─────────────────────────────────────────────────────────────
 
-type IgnoreReason = 'app' | 'status' | 'team' | 'command';
+type IgnoreReason = 'kind' | 'app' | 'status' | 'team' | 'command';
 type Declined = 'no-such-agent' | 'not-manager' | 'ambiguous' | 'nothing-connected';
 
 /** What one invocation has learned so far, for the answer at the deadline and the reply after it. */
@@ -300,16 +304,20 @@ export function createCommandsHandler(d: CommandsHandlerDeps): RouteHandler {
       return;
     }
     const c = form.command;
+    // Only exactly the shared app answers `/ax`: anything else is a team
+    // agent's own bot, whatever its manifest was made to say.
     const ignored: IgnoreReason | null =
-      c.apiAppId !== install.appId
-        ? 'app'
-        : install.status !== 'active'
-          ? 'status'
-          : c.teamId !== install.teamId
-            ? 'team'
-            : c.command !== SLASH_COMMAND
-              ? 'command'
-              : null;
+      install.kind !== 'shared'
+        ? 'kind'
+        : c.apiAppId !== install.appId
+          ? 'app'
+          : install.status !== 'active'
+            ? 'status'
+            : c.teamId !== install.teamId
+              ? 'team'
+              : c.command !== SLASH_COMMAND
+                ? 'command'
+                : null;
     if (ignored !== null) {
       log('info', 'slack_command_ignored', { installId, reason: ignored });
       res.status(200).end();

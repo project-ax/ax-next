@@ -48,6 +48,17 @@ const ARGS: Record<string, unknown[][]> = {
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
   slashChannelNotAllowed: [['not-public'], ['archived'], ['shared'], ['workspace-policy']],
+  // A bot's name and its @handle (TASK-1167): the handle is checked before it's stored, but a broadcast word
+  // after the line's own `@` must stay dead here too.
+  answersAsOwnBot: [
+    ['Support Bot', 'supportbot'],
+    ['Support Bot', null],
+    [HOSTILE, HOSTILE],
+    [HOSTILE, null],
+    ['Ops', 'here'],
+    ['Ops', 'channel'],
+    ['Ops', 'everyone'],
+  ],
 };
 
 /** Every string the bot can say, with the ones that take arguments filled in. */
@@ -119,6 +130,8 @@ describe('COPY: everything the bot says in Slack', () => {
         'slashNeedsReconnect',
         'slashWorking',
         'slashFailed',
+        'answersAsOwnBot',
+        'botUnavailable',
       ].sort(),
     );
   });
@@ -327,8 +340,8 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
 });
 
 describe('COPY: what a channel mention can get privately, before its turn (mrkdwn)', () => {
-  /** Every line router.ts sends a channel mention's sender as an ephemeral. */
-  const PRIVATE = ['channelNotConnected', 'channelUnavailable', 'channelBusy', 'queueFull', 'turnFailed'] as const;
+  /** Every line router.ts sends a channel mention's sender as an ephemeral (answersAsOwnBot, which takes names, below). */
+  const PRIVATE = ['channelNotConnected', 'channelUnavailable', 'botUnavailable', 'channelBusy', 'queueFull', 'turnFailed'] as const;
 
   it('is plain mrkdwn text: no < or >, no Markdown link', () => {
     for (const key of PRIVATE) {
@@ -351,6 +364,49 @@ describe('COPY: what a channel mention can get privately, before its turn (mrkdw
     expect(COPY.channelUnavailable).toMatch(/connect/);
     expect(COPY.channelBusy).toMatch(/try again/i);
     expect(new Set([COPY.channelUnavailable, COPY.channelBusy, COPY.turnFailed, COPY.queueFull]).size).toBe(4);
+  });
+});
+
+describe("COPY: a team agent's own bot (TASK-1167; mrkdwn, shown only to a mention's sender)", () => {
+  /** Every line answersAsOwnBot can make, from ordinary names and from the hostile ones. */
+  const STEP_ASIDE = (ARGS['answersAsOwnBot'] ?? []).map(([name, handle]) =>
+    COPY.answersAsOwnBot(name as string, handle as string | null),
+  );
+
+  it('the shared bot steps aside naming the bot, with its @handle or without one', () => {
+    expect(COPY.answersAsOwnBot('Support Bot', 'supportbot')).toBe(
+      'Support Bot answers as @supportbot now. Invite it with /invite @supportbot.',
+    );
+    expect(COPY.answersAsOwnBot('Support Bot', null)).toBe(
+      'Support Bot has its own Slack bot now. Invite it to this channel to keep talking to it here.',
+    );
+  });
+
+  it("an outsider whose bot's requester can no longer vouch for them is told politely, and told nothing else", () => {
+    expect(COPY.botUnavailable).toBe(
+      "I can't answer you here right now. A team admin needs to check my settings in the web app.",
+    );
+    expect(new Set([COPY.botUnavailable, COPY.channelUnavailable, COPY.turnFailed]).size).toBe(3);
+  });
+
+  it('none holds a broadcast, the product name, a < or a >, or a Markdown link, whatever the names are', () => {
+    expect(STEP_ASIDE).toHaveLength(7);
+    for (const line of [COPY.botUnavailable, ...STEP_ASIDE]) {
+      expect(line).not.toMatch(BROADCAST);
+      expect(line).not.toMatch(/\bAX\b/);
+      expect(line).not.toMatch(/[<>]/);
+      expect(line).not.toMatch(/\]\(/);
+      expect(spellsMention(decodeSlackEntities(line)), line).toBe(false);
+    }
+  });
+
+  it("a hostile name or handle shows as typed, escaped and marked; a handle that is a broadcast word gets its mark after the line's @", () => {
+    const hostile = COPY.answersAsOwnBot(HOSTILE, HOSTILE);
+    const escaped = '&lt;!channel&gt; &amp; &lt;@U1&gt; @here';
+    expect(hostile.split(ZWSP).join('')).toBe(`${escaped} answers as @${escaped} now. Invite it with /invite @${escaped}.`);
+    expect(COPY.answersAsOwnBot(HOSTILE, null).split(ZWSP).join('')).toContain(`${escaped} has its own Slack bot now.`);
+    // Read whole, `@` + `here` would broadcast: the mark goes right after the line's own `@`.
+    expect(COPY.answersAsOwnBot('Ops', 'here')).toBe(`Ops answers as @${ZWSP}here now. Invite it with /invite @${ZWSP}here.`);
   });
 });
 
