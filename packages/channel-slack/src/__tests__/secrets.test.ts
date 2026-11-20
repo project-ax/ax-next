@@ -288,7 +288,7 @@ describe('createSecretStore', () => {
     ]);
   });
 
-  it('a configuration refresh token that will not delete is logged at error: it outlives the Slack app (TASK-1129)', async () => {
+  it("an install's old configuration refresh token that will not delete is logged at warn: the boot move emptied it (TASK-1175)", async () => {
     const vault = fakeVault({
       hook: 'credentials:delete',
       ref: secretRef(INSTALL.installId, 'config-refresh-token'),
@@ -303,7 +303,7 @@ describe('createSecretStore', () => {
     await expect(secrets.removeAll({ installId: INSTALL.installId })).resolves.toBeUndefined();
     expect(lines).toEqual([
       {
-        level: 'error',
+        level: 'warn',
         msg: 'slack_secret_remove_failed',
         fields: { installId: INSTALL.installId, stage: 'config-refresh-token', code: 'timeout' },
       },
@@ -358,8 +358,8 @@ describe('createSecretStore', () => {
     // The failures did reach the log, so the checks below are not vacuous.
     expect(lines.map((l) => [l.level, l.fields?.['stage'], l.fields?.['code']])).toEqual([
       ['warn', 'bot-token', 'unknown'],
-      ['error', 'config-refresh-token', 'unknown'],
-      ['error', 'config-refresh-token', 'invalid-person-id'],
+      ['error', 'person-config-refresh-token', 'unknown'],
+      ['error', 'person-config-refresh-token', 'invalid-person-id'],
     ]);
     const logged = JSON.stringify(lines);
     for (const value of [...Object.values(VALUES), ADA_TOKEN]) expect(logged).not.toContain(value);
@@ -415,7 +415,7 @@ describe('the configuration token, one per person (TASK-1175)', () => {
         {
           level: 'error',
           msg: 'slack_secret_remove_failed',
-          fields: { installId: INSTALL.installId, stage: 'config-refresh-token', code: 'invalid-person-id' },
+          fields: { installId: INSTALL.installId, stage: 'person-config-refresh-token', code: 'invalid-person-id' },
         },
       ]);
       expect(vault.calls, label).toEqual([]);
@@ -496,7 +496,7 @@ describe('the configuration token, one per person (TASK-1175)', () => {
     await expect(s3.getConfigToken(ADA_APP)).rejects.toMatchObject({ code: 'unknown' });
   });
 
-  it('S5 removeConfigToken deletes as the person; a failure is logged at error with the install, stage config-refresh-token and a code, and never throws', async () => {
+  it('S5 removeConfigToken deletes as the person; a failure is logged at error with the install, stage person-config-refresh-token and a code, and never throws', async () => {
     const vault = fakeVault();
     vault.rows.set(configTokenRef('usr_ada'), Buffer.from(ADA_TOKEN));
     vault.rows.set(configTokenRef('usr_grace'), Buffer.from(GRACE_TOKEN));
@@ -529,7 +529,7 @@ describe('the configuration token, one per person (TASK-1175)', () => {
       {
         level: 'error',
         msg: 'slack_secret_remove_failed',
-        fields: { installId: ADA_APP.installId, stage: 'config-refresh-token', code: 'timeout' },
+        fields: { installId: ADA_APP.installId, stage: 'person-config-refresh-token', code: 'timeout' },
       },
     ]);
 

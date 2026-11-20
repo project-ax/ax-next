@@ -382,7 +382,8 @@ describe("moveConfigTokens: at boot, each install's old configuration token move
     );
     expect(w.lines).toEqual([
       {
-        level: 'error',
+        // The old per-install row: a warning, told apart from a person's token by its stage.
+        level: 'warn',
         msg: 'slack_secret_remove_failed',
         fields: { installId: ADA_NEWER.installId, stage: 'config-refresh-token', code: 'timeout' },
       },
@@ -486,7 +487,7 @@ describe("moveConfigTokens: at boot, each install's old configuration token move
       ['error', 'slack_config_token_move_failed', installs.adaNewer.installId, 'read-install-token'],
       ['error', 'slack_config_token_move_failed', installs.grace.installId, 'read-person-token'],
       ['error', 'slack_config_token_move_failed', installs.hopper.installId, 'store-person-token'],
-      ['error', 'slack_secret_remove_failed', installs.lin.installId, 'config-refresh-token'],
+      ['warn', 'slack_secret_remove_failed', installs.lin.installId, 'config-refresh-token'],
       ['error', 'slack_config_token_move_failed', installs.kay.installId, 'read-person-token'],
       ['info', 'slack_config_tokens_moved', null, null],
       ['error', 'slack_config_token_move_failed', null, 'list'],
@@ -639,7 +640,7 @@ describe('releaseConfigToken: a person keeps their token while anything still na
       {
         level: 'error',
         msg: 'slack_secret_remove_failed',
-        fields: { installId: ADA_APP.installId, stage: 'config-refresh-token', code: 'timeout' },
+        fields: { installId: ADA_APP.installId, stage: 'person-config-refresh-token', code: 'timeout' },
       },
     ]);
     expect(faults).toEqual([]);

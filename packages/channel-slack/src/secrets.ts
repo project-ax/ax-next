@@ -132,7 +132,7 @@ export interface SecretStore {
   put(install: SecretOwner, name: InstallSecretName, value: string): Promise<void>;
   /** The value, or null when none is stored. Any other vault failure rejects. */
   get(install: SecretOwner, name: SecretName): Promise<string | null>;
-  /** Deletes one. Logs a failure code-only, never throws. */
+  /** Deletes one. Logs a failure at warn, code-only, never throws. */
   remove(install: { installId: string }, name: SecretName): Promise<void>;
   /**
    * Deletes all four names, the old per-install configuration token too.
@@ -150,7 +150,8 @@ export interface SecretStore {
   putConfigToken(app: SecretOwner, value: string): Promise<void>;
   /**
    * Deletes that person's token, as them. Never throws: a failure, a bad id
-   * included, is logged at error with the app's installId and a code.
+   * included, is logged at error with the app's installId, stage
+   * `person-config-refresh-token` and a code.
    */
   removeConfigToken(app: SecretOwner): Promise<void>;
 }
@@ -217,25 +218,20 @@ export function createSecretStore(bus: HookBus, opts: { logger?: Logger } = {}):
   /**
    * Deletes one global row as `ctx`'s user. `refOf` runs inside the try, so a
    * ref that can't be built is logged like any other failed delete. Never
-   * throws: a failure is logged with the install, the secret's name and a code.
+   * throws: a failure is logged at `level` with the install, `stage` and a code.
    */
   const erase = async (
     ctx: AgentContext,
     installId: string,
-    name: SecretName,
+    stage: string,
+    level: 'warn' | 'error',
     refOf: () => string,
   ): Promise<void> => {
     try {
       await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref: refOf() });
     } catch (err) {
       try {
-        const fields = { installId, stage: name, code: logCode(err) };
-        // The configuration refresh token is the one secret that outlives the
-        // Slack app: left behind, it can still create apps in the workspace,
-        // even after Disconnect deleted this one, until someone revokes it on
-        // Slack's page.
-        if (name === 'config-refresh-token') ctx.logger.error('slack_secret_remove_failed', fields);
-        else ctx.logger.warn('slack_secret_remove_failed', fields);
+        ctx.logger[level]('slack_secret_remove_failed', { installId, stage, code: logCode(err) });
       } catch {
         // Nothing left to report it with; any remaining deletes still run.
       }
@@ -244,8 +240,10 @@ export function createSecretStore(bus: HookBus, opts: { logger?: Logger } = {}):
 
   const remove = (install: { installId: string }, name: SecretName): Promise<void> =>
     // Not an admin action of anyone's in particular: it also runs when a
-    // Connect fails halfway, before any row exists.
-    erase(ctxFor('system'), install.installId, name, () => secretRef(install.installId, name));
+    // Connect fails halfway, before any row exists. A warning, the old
+    // per-install `config-refresh-token` included: the boot move emptied it
+    // (TASK-1175), and its stage tells it apart from a person's token.
+    erase(ctxFor('system'), install.installId, name, 'warn', () => secretRef(install.installId, name));
 
   return {
     async put(install, name, value) {
@@ -272,8 +270,12 @@ export function createSecretStore(bus: HookBus, opts: { logger?: Logger } = {}):
       await write(app.connectedByUserId, configTokenRef(app.connectedByUserId), value);
     },
 
+    // An error, under its own stage: a person's configuration refresh token
+    // is the one secret that outlives the Slack app. Left behind, it can
+    // still create apps in the workspace, even after Disconnect deleted this
+    // one, until someone revokes it on Slack's page.
     async removeConfigToken(app) {
-      await erase(ctxFor(app.connectedByUserId), app.installId, 'config-refresh-token', () =>
+      await erase(ctxFor(app.connectedByUserId), app.installId, 'person-config-refresh-token', 'error', () =>
         configTokenRef(app.connectedByUserId),
       );
     },

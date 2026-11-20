@@ -1792,7 +1792,8 @@ describe('@ax/channel-slack plugin', () => {
     const failed = logs.filter((l) => l['msg'] === 'slack_secret_remove_failed');
     expect(failed).toHaveLength(1);
     expect(failed[0]).toMatchObject({
-      level: 'error',
+      // An install's old per-install row (TASK-1175): a warning; a person's token's stage is its own.
+      level: 'warn',
       installId: INSTALL_ID,
       stage: 'config-refresh-token',
       code: 'ECONNRESET',

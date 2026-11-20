@@ -3588,7 +3588,7 @@ describe('every configuration-token use goes through its person (TASK-1175)', ()
       {
         level: 'error',
         msg: 'slack_secret_remove_failed',
-        fields: { installId, stage: 'config-refresh-token', code: 'invalid-person-id' },
+        fields: { installId, stage: 'person-config-refresh-token', code: 'invalid-person-id' },
       },
     ]);
   });
