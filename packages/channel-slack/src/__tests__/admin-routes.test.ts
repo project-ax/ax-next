@@ -40,8 +40,8 @@ import { InstallStoreError } from '../store.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
-/** What the one-name-per-bot check reads (TASK-1167): the shared install, then every bot. */
-const NAME_CHECK = ['store:current', 'store:listBots'] as const;
+/** What the one-name-per-bot check reads (TASK-1167): the shared install, every bot, then every open bot request (TASK-1169). */
+const NAME_CHECK = ['store:current', 'store:listBots', 'store:listBotRequests'] as const;
 
 const ORIGIN = 'https://ax.example';
 const HTTP_ORIGIN = 'http://ax.internal:8080';

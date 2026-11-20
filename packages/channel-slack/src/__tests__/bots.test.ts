@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { HookBus, PluginError, makeAgentContext, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
-import { createBots } from '../bots.js';
+import { createBots, type BotFinish } from '../bots.js';
 import { parseIconPng, type ParsedIcon } from '../icon.js';
 import { OAUTH_STATE_TTL_MS } from '../limits.js';
 import { logCode } from '../log-code.js';
@@ -9,9 +9,19 @@ import { botUrls, buildBotManifest } from '../manifest.js';
 import { createMutex, type Mutex } from '../mutex.js';
 import { SECRET_NAMES, configTokenRef, createSecretStore, secretRef } from '../secrets.js';
 import { SlackApiError } from '../slack-api.js';
+import { namesInUse } from '../slack-apps.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { pngBase64 } from './fake-png.js';
-import { APP, CLIENT_SECRET, MINTED_ACCESS, NOW_MS, SIGNING_SECRET, fakeSlack, mintedRefresh } from './fake-slack-config.js';
+import {
+  APP,
+  BOT_TOKEN,
+  CLIENT_SECRET,
+  MINTED_ACCESS,
+  NOW_MS,
+  SIGNING_SECRET,
+  fakeSlack,
+  mintedRefresh,
+} from './fake-slack-config.js';
 import {
   BOT_PREFIX,
   CONFIG_ACCESS_PREFIX,
@@ -38,6 +48,13 @@ import { memoryStore, type Row } from './memory-install-store.js';
   it is used. Every refusal that needs no Slack call comes first, rights included,
   re-checked inside the lock. A request that fails after Slack made the app takes
   all of it back, and the approver's token goes only once nothing names them.
+
+  And the one create path both ways share (TASK-1169): a team admin's own
+  request, and an AX admin approving a team admin's open request in Admin ›
+  Slack, where the AX admin is the approver and the team admin stays the
+  requester. The approved request goes only once everything else worked, and
+  the bot goes live for such an approver while they are still an AX admin and
+  its requester still a team admin of the agent's team.
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -77,16 +94,28 @@ const MEL = 'usr_mel';
 const SAM = 'usr_sam';
 /** A team admin of the support team whose id can't name a vault ref (secrets.ts PERSON_ID_RE). */
 const IVY = 'usr@ivy';
+/** An AX admin on no team at all: she approves a team admin's request in Admin › Slack (TASK-1169). */
+const HEDY = 'usr_hedy';
 const USERS = [
-  { id: ADA, displayName: 'Ada Admin' as string | null, email: 'ada@canopyworks.example' },
-  { id: GRACE, displayName: 'Grace Hopper' as string | null, email: 'grace@canopyworks.example' },
-  { id: MEL, displayName: 'Mel Member' as string | null, email: 'mel@canopyworks.example' },
-  { id: SAM, displayName: 'Sam Sales' as string | null, email: 'sam@canopyworks.example' },
+  // Ada connected the shared app in Admin › Slack, so she is an AX admin too.
+  { id: ADA, displayName: 'Ada Admin' as string | null, email: 'ada@canopyworks.example', isAdmin: true },
+  { id: GRACE, displayName: 'Grace Hopper' as string | null, email: 'grace@canopyworks.example', isAdmin: false },
+  { id: MEL, displayName: 'Mel Member' as string | null, email: 'mel@canopyworks.example', isAdmin: false },
+  { id: SAM, displayName: 'Sam Sales' as string | null, email: 'sam@canopyworks.example', isAdmin: false },
+  { id: HEDY, displayName: 'Hedy Lamarr' as string | null, email: 'hedy@canopyworks.example', isAdmin: true },
 ];
 
 /** Each person's own configuration token (TASK-1175), as their last use of it left it. */
 const ADA_STORED = fakeConfigRefreshToken('ADASTOREDSECRET');
 const GRACE_STORED = fakeConfigRefreshToken('GRACESTOREDSECRET');
+const HEDY_STORED = fakeConfigRefreshToken('HEDYSTOREDSECRET');
+
+/** Grace's open request for the support agent's bot, waiting for an AX admin (TASK-1169): our own 22-character id. */
+const REQUEST = 'U3VwcG9ydEJvdEFzazAwMQ';
+/** An open request for the sales agent's bot. */
+const SALES_REQUEST = 'U2FsZXNCb3RBc2swMDAwMg';
+/** The code Slack sends back with an approver's Allow. */
+const CODE = '7512345678901.7598765432109.0123456789abcdef';
 /** A refresh token a team admin pastes into the form. */
 const PASTED = fakeConfigRefreshToken('PASTEDBOTREFRESHSECRET');
 
@@ -130,28 +159,33 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
   people.setRole(SUPPORT_TEAM, MEL, 'member');
   people.setRole(SALES_TEAM, SAM, 'admin');
 
-  // Auth's own accounts, by id: a test may rename or delete one. Auth answers
-  // null for an id it doesn't know, and `getUserFault`, when given, is thrown
-  // for every id instead (an outage).
+  // Auth's own accounts, by id: a test may rename one, demote one, or delete one.
+  // Auth answers null for an id it doesn't know. `asked` (also `authAsked`) is
+  // whom each lookup named, in order; `fault` (from the start when
+  // `getUserFault` is given) makes every lookup throw (an outage), and
+  // `answer` makes every lookup return its value as it is.
   const users = new Map(USERS.map((u) => [u.id, { ...u }]));
-  /** Every id auth was asked about, in order. */
-  const authAsked: string[] = [];
+  const auth: { asked: string[]; fault?: unknown; answer?: { value: unknown } } = { asked: [] };
+  if (o.getUserFault !== undefined) auth.fault = o.getUserFault;
+  const authAsked = auth.asked;
   bus.registerService('auth:get-user', '@ax/auth-better', async (_ctx, raw) => {
     const userId = (raw as { userId: string }).userId;
-    authAsked.push(userId);
-    if (o.getUserFault !== undefined) throw o.getUserFault;
+    auth.asked.push(userId);
+    if (auth.fault !== undefined) throw auth.fault;
+    if (auth.answer !== undefined) return auth.answer.value;
     const user = users.get(userId);
     return user === undefined ? null : { ...user };
   });
 
   const memory = memoryStore(() => NOW_MS, trail);
   const slack = fakeSlack(trail);
+  const lock = o.lock ?? createMutex();
   const bots = createBots({
     bus,
     installs: memory.store,
     secrets: createSecretStore(bus, { logger }),
     api: slack.api,
-    lock: o.lock ?? createMutex(),
+    lock,
     publicOrigin: o.publicOrigin ?? ORIGIN,
     logger,
     now: () => NOW_MS,
@@ -171,6 +205,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
     bus,
     people,
     users,
+    auth,
     authAsked,
     vault,
     vaultCalls,
@@ -181,6 +216,45 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
     trail,
     lines,
     replies,
+    /**
+     * The one create path (TASK-1169), under the app lock as every caller
+     * holds it: an AX admin approving a team admin's open request unless
+     * `requestId` is null. The support agent, its name and picture unless
+     * told otherwise; the approver's stored token unless one is pasted.
+     */
+    create: async (c: {
+      approver: string;
+      requester: string;
+      requestId: string | null;
+      agentId?: string;
+      botName?: string;
+      refreshToken?: string | null;
+      icon?: ParsedIcon | null;
+    }): Promise<Reply> =>
+      keep(
+        await lock.run(() =>
+          bots.create({
+            agentId: c.agentId ?? SUPPORT.id,
+            approverUserId: c.approver,
+            requesterUserId: c.requester,
+            botName: c.botName ?? BOT_NAME,
+            refreshToken: c.refreshToken ?? null,
+            icon: c.icon === undefined ? ICON : c.icon,
+            requestId: c.requestId,
+          }),
+        ),
+      ),
+    /**
+     * The approver's Allow, as bot-callback.ts hands it over once the OAuth
+     * state proved the visit is `as`'s: the row as it stands, under the app lock.
+     */
+    finish: async (as: string, installId: string): Promise<BotFinish> => {
+      const row = memory.rows.get(installId);
+      if (row === undefined) throw new Error(`no install ${installId}`);
+      return lock.run(() => bots.finish({ actorUserId: as, ctx: ctxOf(as), install: { ...row }, code: CODE }));
+    },
+    /** The agent was deleted (agents-deleted.ts). */
+    removeForAgent: (agentId: string = SUPPORT.id): Promise<void> => bots.removeForAgent(agentId),
     request: async (r: {
       as: string;
       agentId?: string;
@@ -233,8 +307,46 @@ function forget(w: World): void {
   w.slack.calls.length = 0;
   w.vaultCalls.length = 0;
   w.vaultAs.length = 0;
+  w.people.calls.length = 0;
+  // `authAsked` is the same array.
+  w.auth.asked.length = 0;
   w.lines.length = 0;
-  w.authAsked.length = 0;
+}
+
+/**
+ * A team admin's open request for an agent's own bot, waiting for an AX admin
+ * (TASK-1169): Grace's, for the support agent, under BOT_NAME, unless told
+ * otherwise. Returns its id.
+ */
+async function seedRequest(
+  w: World,
+  o: { requestId?: string; agentId?: string; by?: string; botName?: string } = {},
+): Promise<string> {
+  const requestId = o.requestId ?? REQUEST;
+  await w.memory.store.insertBotRequest({
+    requestId,
+    agentId: o.agentId ?? SUPPORT.id,
+    requestedByUserId: o.by ?? GRACE,
+    botName: o.botName ?? BOT_NAME,
+  });
+  forget(w);
+  return requestId;
+}
+
+/**
+ * Hedy (an AX admin on no team) approving Grace's open request for the
+ * support agent with her stored token: the pending bot it makes, and the
+ * state its install link carries.
+ */
+async function approvedBot(w: World): Promise<{ installId: string; state: string }> {
+  await seedRequest(w);
+  w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+  const reply = await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST });
+  expect(reply.status).toBe(200);
+  const bot = supportBot(w);
+  if (bot === undefined) throw new Error('the approve made no bot');
+  forget(w);
+  return { installId: bot.installId, state: stateOf(reply) };
 }
 
 /** What seedShared stores: the shared app's three secrets, and Ada's own token. */
@@ -270,11 +382,13 @@ async function seedShared(w: World, o: { active?: boolean } = {}): Promise<void>
 
 /**
  * A bot already in the store, not made by the request under test: the sales
- * agent's, Sam's, unless told otherwise. Live when `live` or a `handle` is given.
+ * agent's, Sam's, unless told otherwise. Its requester is its approver unless
+ * one is given (an AX admin approved it, TASK-1169). Live when `live` or a
+ * `handle` is given.
  */
 async function addBot(
   w: World,
-  o: { agentId?: string; approver?: string; botName?: string; live?: boolean; handle?: string } = {},
+  o: { agentId?: string; approver?: string; requester?: string; botName?: string; live?: boolean; handle?: string } = {},
 ): Promise<string> {
   const installId = 'U2FsZXNCb3RJbnN0YWxsMQ';
   const approver = o.approver ?? SAM;
@@ -285,7 +399,7 @@ async function addBot(
     botName: o.botName ?? 'Sales Desk',
     connectedByUserId: approver,
     agentId: o.agentId ?? SALES.id,
-    requestedByUserId: approver,
+    requestedByUserId: o.requester ?? approver,
   });
   if (o.live === true || o.handle !== undefined) {
     await w.memory.store.activate(installId, {
@@ -417,11 +531,14 @@ describe('request', () => {
 
     expect(reply).toEqual({ status: 200, body: { installUrl: expect.any(String), iconSet: true } });
     expect(w.trail).toEqual([
-      // Every refusal that needs no Slack call: the shared app, the agent's bot, the names in use.
+      // Every refusal that needs no Slack call: the shared app, the agent's
+      // bot, its open request (TASK-1169), the names in use (requests' too).
       'store:current',
       'store:botForAgent',
+      'store:botRequestForAgent',
       'store:current',
       'store:listBots',
+      'store:listBotRequests',
       // Grace's own token: read, rotated, and its successor saved BEFORE the minted access token is used.
       'vault:get config-refresh-token',
       'slack:rotateConfigToken',
@@ -507,8 +624,10 @@ describe('request', () => {
     expect(w.trail).toEqual([
       'store:current',
       'store:botForAgent',
+      'store:botRequestForAgent',
       'store:current',
       'store:listBots',
+      'store:listBotRequests',
       // Nothing stored is read: the paste is the token.
       'slack:rotateConfigToken',
       'vault:set config-refresh-token',
@@ -878,6 +997,450 @@ describe('request', () => {
     expect(w.lines).toEqual([
       { level: 'error', msg: 'slack_bot_failed', fields: { stage: 'request', code: 'invalid-person-id' } },
     ]);
+  });
+
+  it('refuses while the agent has an open request waiting for an AX admin: 409 bot-requested, no token, no Slack call', async () => {
+    const w = world();
+    await seedShared(w);
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    // Ada asked an AX admin for it, under another name.
+    await seedRequest(w, { by: ADA, botName: 'Support Desk' });
+
+    expect(await w.request({ as: GRACE })).toEqual({ status: 409, body: { error: 'bot-requested' } });
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(bots(w)).toEqual([]);
+    // The request is left as it was, for the AX admin to approve or decline.
+    expect([...w.memory.requests.keys()]).toEqual([REQUEST]);
+  });
+
+  it("refuses a name an open request holds (by key), for any agent: 409 bot-name-taken, no token, no Slack call", async () => {
+    const w = world();
+    await seedShared(w);
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    // Sam's request for the sales agent's bot holds "Support Helper" until it is approved or taken back.
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: BOT_NAME });
+
+    for (const botName of [BOT_NAME, 'support-helper', 'SUPPORT_HELPER']) {
+      expect(await w.request({ as: GRACE, botName }), botName).toEqual({ status: 409, body: { error: 'bot-name-taken' } });
+    }
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(supportBot(w)).toBeUndefined();
+  });
+});
+
+// ── create: the one create path, and an AX admin's approve (TASK-1169) ───────
+
+describe('create', () => {
+  it("makes the bot with the approving AX admin's token, the admin as approver and the requester as requester, and takes the request last", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+
+    const reply = await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST });
+
+    expect(reply).toEqual({ status: 200, body: { installUrl: expect.any(String), iconSet: true } });
+    expect(w.trail).toEqual([
+      // The same refusals the self path makes: the request being approved is
+      // the agent's own open one, and its own name doesn't count against it.
+      'store:current',
+      'store:botForAgent',
+      'store:botRequestForAgent',
+      'store:current',
+      'store:listBots',
+      'store:listBotRequests',
+      // Hedy's own token: read, rotated, its successor saved BEFORE the minted access token is used.
+      'vault:get config-refresh-token',
+      'slack:rotateConfigToken',
+      'vault:set config-refresh-token',
+      'slack:createApp',
+      'vault:set client-secret',
+      'vault:set signing-secret',
+      'store:insertPendingBot',
+      'slack:setAppIcon',
+      'store:setOAuthState',
+      // Last, once everything else worked: the request goes.
+      'store:removeBotRequest',
+    ]);
+    expect(w.memory.calls.find((c) => c.method === 'removeBotRequest')!.args).toEqual([REQUEST]);
+    // Her token, as herself: never the requester's.
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args)).toEqual([[HEDY_STORED]]);
+    expect(w.vaultAs.filter((v) => v.name === 'config-refresh-token')).toEqual([
+      { hook: 'credentials:get', name: 'config-refresh-token', userId: HEDY },
+      { hook: 'credentials:set', name: 'config-refresh-token', userId: HEDY },
+    ]);
+    expect(w.vault.get(configTokenRef(HEDY))).toBe(mintedRefresh(1));
+    expect(w.slack.calls.find((c) => c.method === 'createApp')!.args[0]).toBe(MINTED_ACCESS);
+
+    const installId = createdInstallId(w);
+    // Approved by Hedy (her token made it, so she manages it); asked for by Grace (its outsiders run as her).
+    expect(supportBot(w)).toMatchObject({
+      installId,
+      kind: 'bot',
+      status: 'pending',
+      agentId: SUPPORT.id,
+      connectedByUserId: HEDY,
+      requestedByUserId: GRACE,
+      botName: BOT_NAME,
+    });
+    // Only Hedy's Allow can finish what her token made.
+    expect(await w.memory.store.peekOAuthState(sha256(stateOf(reply)), 'bot')).toEqual({
+      installId,
+      userId: HEDY,
+      expiresAt: new Date(NOW_MS + OAUTH_STATE_TTL_MS),
+    });
+    expect(w.memory.requests.size).toBe(0);
+    // Nothing of Grace's was read or written: no token of hers is involved.
+    expect(w.vaultCalls.map((c) => c.ref)).not.toContain(configTokenRef(GRACE));
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_bot_approved', fields: { installId, requestId: REQUEST } },
+    ]);
+  });
+
+  it("a pasted token wins over the stored one, and its successor is kept as the approver's", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+
+    expect(await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST, refreshToken: PASTED })).toMatchObject({
+      status: 200,
+    });
+
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args)).toEqual([[PASTED]]);
+    expect(w.vault.get(configTokenRef(HEDY))).toBe(mintedRefresh(1));
+    expect([...w.vault.values()]).not.toContain(PASTED);
+    expect(supportBot(w)).toMatchObject({ connectedByUserId: HEDY, requestedByUserId: GRACE });
+  });
+
+  it("leaves the request open when its last step fails: the app is taken back, no bot row is left, and the approver's token goes only once nothing names her", async () => {
+    // Hedy approved the sales agent's bot before, so her token stays for it.
+    const w = world();
+    await seedShared(w);
+    await addBot(w, { approver: HEDY, requester: SAM });
+    await seedRequest(w);
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    w.memory.failures.set('removeBotRequest', connectionReset());
+
+    expect(await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).toEqual({
+      status: 500,
+      body: { error: 'internal' },
+    });
+
+    const id = createdInstallId(w);
+    // Everything else had worked: the row, the picture and the install link.
+    expect(w.trail).toContain('store:setOAuthState');
+    // Deleted with the access token the create already held.
+    expect(w.slack.calls.map((c) => [c.method, c.args[0]])).toEqual([
+      ['rotateConfigToken', HEDY_STORED],
+      ['createApp', MINTED_ACCESS],
+      ['setAppIcon', MINTED_ACCESS],
+      ['deleteApp', MINTED_ACCESS],
+    ]);
+    expect(supportBot(w)).toBeUndefined();
+    expect(w.memory.leftovers.size).toBe(0);
+    expectNoSecretsOf(w, id);
+    // Still open, as the AX admin saw it: they can approve it again, or decline it.
+    expect(w.memory.requests.get(REQUEST)).toMatchObject({ agentId: SUPPORT.id, requestedByUserId: GRACE, botName: BOT_NAME });
+    expect(w.vault.get(configTokenRef(HEDY))).toBe(mintedRefresh(1));
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_bot_failed', fields: { installId: id, stage: 'request', code: 'ECONNRESET' } },
+    ]);
+
+    // Her first app: nothing else names her, so the rotate's successor goes with the undo.
+    const first = world();
+    await seedShared(first);
+    await seedRequest(first);
+    first.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    first.memory.failures.set('removeBotRequest', connectionReset());
+    expect((await first.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).status).toBe(500);
+    expect(first.memory.requests.has(REQUEST)).toBe(true);
+    expect(first.vault.has(configTokenRef(HEDY))).toBe(false);
+  });
+
+  it('an approve whose request vanished before its last step is not a success: the app is taken back and nothing says approved', async () => {
+    // Only the unlocked CLI reset can delete a request under the lock: the store says no row went.
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    const remove = w.memory.store.removeBotRequest;
+    w.memory.store.removeBotRequest = async (requestId) => {
+      w.memory.requests.delete(requestId);
+      return remove(requestId);
+    };
+
+    const reply = await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST });
+
+    expect(reply.status).not.toBe(200);
+    expect(reply).toEqual({ status: 500, body: { error: 'internal' } });
+    // Taken back with the access token the create already held.
+    expect(w.slack.calls.map((c) => c.method)).toContain('deleteApp');
+    expect(supportBot(w)).toBeUndefined();
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.lines.map((l) => l.msg)).not.toContain('slack_bot_approved');
+    // Codes only: the one line names our own install id, the stage and the code.
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_bot_failed', fields: { installId: createdInstallId(w), stage: 'request', code: 'request-gone' } },
+    ]);
+  });
+
+  it('an approve that fails at any earlier step leaves the request open too, and any app Slack made is taken back', async () => {
+    const cases: Array<[step: string, arrange: (w: World) => void, status: number, appMade: boolean]> = [
+      ['the rotate', (w) => failRotate(w, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token')), 502, false],
+      [
+        'the create',
+        (w) => {
+          w.slack.on.createApp = async () => {
+            throw new SlackApiError('apps.manifest.create', 'invalid_manifest');
+          };
+        },
+        502,
+        false,
+      ],
+      ['the signing secret', (w) => w.vaultFailures.set('credentials:set signing-secret', connectionReset()), 500, true],
+      ['the bot row', (w) => w.memory.failures.set('insertPendingBot', connectionReset()), 500, true],
+      // The step right before the request's delete: the install link's state.
+      ['the install link', (w) => w.memory.failures.set('setOAuthState', connectionReset()), 500, true],
+    ];
+    for (const [step, arrange, status, appMade] of cases) {
+      const w = world();
+      await seedShared(w);
+      await seedRequest(w);
+      w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+      arrange(w);
+
+      expect((await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).status, step).toBe(status);
+
+      expect(w.memory.requests.get(REQUEST), step).toMatchObject({ agentId: SUPPORT.id, botName: BOT_NAME });
+      expect(w.trail, step).not.toContain('store:removeBotRequest');
+      expect(supportBot(w), step).toBeUndefined();
+      expect(methods(w).includes('deleteApp'), step).toBe(appMade);
+      expect(w.lines.map((l) => l.msg), step).not.toContain('slack_bot_approved');
+    }
+  });
+
+  it("leaves out the request's own name, and no other: another open request with a name of the same key is 409 bot-name-taken, before any token", async () => {
+    // Approving the request under its own name passes.
+    const own = world();
+    await seedShared(own);
+    await seedRequest(own);
+    own.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    expect((await own.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).status).toBe(200);
+
+    // Sam's open request for the sales agent holds a name with the same key.
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: 'support-helper' });
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+
+    expect(await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).toEqual({
+      status: 409,
+      body: { error: 'bot-name-taken' },
+    });
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(supportBot(w)).toBeUndefined();
+    expect([...w.memory.requests.keys()].sort()).toEqual([REQUEST, SALES_REQUEST].sort());
+  });
+
+  it("an approve for a request that is no longer the agent's open one makes nothing: gone is 404 not-found, another is 409 bot-requested", async () => {
+    // Gone: taken back between the approve's own read and this create.
+    const gone = world();
+    await seedShared(gone);
+    gone.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    expect(await gone.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).toEqual({
+      status: 404,
+      body: { error: 'not-found' },
+    });
+
+    // Another agent's request: the support agent's own open request isn't it.
+    const other = world();
+    await seedShared(other);
+    await seedRequest(other);
+    await seedRequest(other, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: 'Sales Desk' });
+    other.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    expect(await other.create({ approver: HEDY, requester: GRACE, requestId: SALES_REQUEST })).toEqual({
+      status: 409,
+      body: { error: 'bot-requested' },
+    });
+    expect(other.memory.requests.size).toBe(2);
+
+    for (const w of [gone, other]) {
+      expect(w.slack.calls).toEqual([]);
+      expect(w.vaultCalls).toEqual([]);
+      expect(bots(w)).toEqual([]);
+    }
+  });
+
+  it('the agent already has a bot: 409 bot-exists before any token, and the request stays', async () => {
+    const w = world();
+    await seedShared(w);
+    await addBot(w, { agentId: SUPPORT.id, approver: GRACE, botName: 'Old Helper' });
+    await seedRequest(w);
+    w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+
+    expect(await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).toEqual({
+      status: 409,
+      body: { error: 'bot-exists' },
+    });
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.memory.requests.has(REQUEST)).toBe(true);
+  });
+
+  it('an approver with no stored token and no paste: 409 config-token-needed, and the request stays', async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+
+    expect(await w.create({ approver: HEDY, requester: GRACE, requestId: REQUEST })).toEqual({
+      status: 409,
+      body: { error: 'config-token-needed' },
+    });
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([{ hook: 'credentials:get', ref: configTokenRef(HEDY) }]);
+    expect(w.memory.requests.has(REQUEST)).toBe(true);
+  });
+});
+
+// ── finish ──────────────────────────────────────────────────────────────────
+
+describe('finish', () => {
+  it("goes live for an AX admin who is not on the agent's team: she is still an AX admin, and the requester still a team admin", async () => {
+    const w = world();
+    await seedShared(w);
+    const { installId } = await approvedBot(w);
+
+    expect(await w.finish(HEDY, installId)).toEqual({ outcome: 'connected' });
+
+    expect(supportBot(w)).toMatchObject({ status: 'active', connectedByUserId: HEDY, requestedByUserId: GRACE });
+    expect(w.vault.get(secretRef(installId, 'bot-token'))).toBe(BOT_TOKEN);
+    // Asked of auth about Hedy, and of @ax/agents about Grace only, as a non-admin.
+    expect(w.auth.asked).toEqual([HEDY]);
+    expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: SUPPORT.id, userId: GRACE }]);
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT.id, actor: { userId: GRACE, isAdmin: false } },
+    ]);
+  });
+
+  it('refuses an approver who is no longer an AX admin, or no longer exists: not-admin, and Slack is asked nothing', async () => {
+    for (const change of ['demoted', 'deleted'] as const) {
+      const w = world();
+      await seedShared(w);
+      const { installId } = await approvedBot(w);
+      if (change === 'demoted') w.users.get(HEDY)!.isAdmin = false;
+      else w.users.delete(HEDY);
+
+      expect(await w.finish(HEDY, installId), change).toEqual({ outcome: 'failed', reason: 'not-admin' });
+
+      expect(w.slack.calls, change).toEqual([]);
+      expect(supportBot(w), change).toMatchObject({ status: 'pending' });
+      // Refused before the requester is even asked about.
+      expect(w.people.calls, change).toEqual([]);
+    }
+  });
+
+  it('only an isAdmin of exactly true counts, and only in an answer about the approver', async () => {
+    const answers: unknown[] = [
+      { id: HEDY, displayName: 'Hedy Lamarr', isAdmin: 'true' },
+      { id: HEDY, displayName: 'Hedy Lamarr', isAdmin: 1 },
+      { id: HEDY, displayName: 'Hedy Lamarr' },
+      // An answer about someone else is no answer about her.
+      { id: GRACE, displayName: 'Grace Hopper', isAdmin: true },
+      [{ id: HEDY, isAdmin: true }],
+      'admin',
+      null,
+    ];
+    for (const value of answers) {
+      const w = world();
+      await seedShared(w);
+      const { installId } = await approvedBot(w);
+      w.auth.answer = { value };
+
+      expect(await w.finish(HEDY, installId), JSON.stringify(value)).toEqual({ outcome: 'failed', reason: 'not-admin' });
+      expect(w.slack.calls, JSON.stringify(value)).toEqual([]);
+      expect(supportBot(w), JSON.stringify(value)).toMatchObject({ status: 'pending' });
+    }
+  });
+
+  it('refuses when the requester is no longer a team admin: requester-not-admin, and Slack is asked nothing', async () => {
+    for (const role of ['member', null] as const) {
+      const w = world();
+      await seedShared(w);
+      const { installId } = await approvedBot(w);
+      w.people.setRole(SUPPORT_TEAM, GRACE, role);
+
+      expect(await w.finish(HEDY, installId), String(role)).toEqual({ outcome: 'failed', reason: 'requester-not-admin' });
+      expect(w.slack.calls, String(role)).toEqual([]);
+      expect(supportBot(w), String(role)).toMatchObject({ status: 'pending' });
+    }
+  });
+
+  it('refuses when the agent is gone (not-found) or no longer a team agent (personal-agent)', async () => {
+    const gone = world();
+    await seedShared(gone);
+    const g = await approvedBot(gone);
+    gone.people.agents.delete(SUPPORT.id);
+    expect(await gone.finish(HEDY, g.installId)).toEqual({ outcome: 'failed', reason: 'not-found' });
+
+    const personal = world();
+    await seedShared(personal);
+    const p = await approvedBot(personal);
+    personal.people.agents.set(SUPPORT.id, { ...SUPPORT, visibility: 'personal', ownerType: 'user', ownerId: GRACE });
+    expect(await personal.finish(HEDY, p.installId)).toEqual({ outcome: 'failed', reason: 'personal-agent' });
+
+    for (const w of [gone, personal]) expect(w.slack.calls).toEqual([]);
+  });
+
+  it("a fault asking auth or @ax/agents throws, as the self path's rights check does, before Slack is asked anything", async () => {
+    const authDown = world();
+    await seedShared(authDown);
+    const a = await approvedBot(authDown);
+    authDown.auth.fault = new PluginError({ code: 'session-store-down', plugin: '@ax/auth-better', message: `down ${FAILURE_CANARY}` });
+    await expect(authDown.finish(HEDY, a.installId)).rejects.toMatchObject({ code: 'session-store-down' });
+
+    const agentsDown = world();
+    await seedShared(agentsDown);
+    const b = await approvedBot(agentsDown);
+    agentsDown.people.faults.set(
+      'agents:resolve',
+      new PluginError({ code: 'agents-down', plugin: '@ax/agents', message: `down ${FAILURE_CANARY}` }),
+    );
+    await expect(agentsDown.finish(HEDY, b.installId)).rejects.toMatchObject({ code: 'agents-down' });
+
+    for (const w of [authDown, agentsDown]) {
+      expect(w.slack.calls).toEqual([]);
+      expect(supportBot(w)).toMatchObject({ status: 'pending' });
+    }
+  });
+
+  it('the self path still asks only whether the approver manages the agent, never auth', async () => {
+    const w = world();
+    await seedShared(w);
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    await w.request({ as: GRACE });
+    const installId = supportBot(w)!.installId;
+    forget(w);
+
+    expect(await w.finish(GRACE, installId)).toEqual({ outcome: 'connected' });
+    expect(w.auth.asked).toEqual([]);
+
+    // A team admin who asked for it herself and is an AX admin too is still on the self path: demoted, she is refused.
+    const a = world();
+    await seedShared(a);
+    await a.request({ as: ADA });
+    const adaBot = supportBot(a)!.installId;
+    a.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    forget(a);
+    expect(await a.finish(ADA, adaBot)).toEqual({ outcome: 'failed', reason: 'forbidden' });
+    expect(a.auth.asked).toEqual([]);
   });
 });
 
@@ -1737,6 +2300,135 @@ describe('status', () => {
     expect(l.slack.calls).toEqual([]);
     expect(l.vaultCalls).toEqual([]);
   });
+
+  it('requested: a manager sees an open request, its name and when it was asked, with or without a live shared bot', async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    const requested = { state: 'requested', botName: BOT_NAME, requestedAt: new Date(NOW_MS).toISOString() };
+
+    // Whoever asked, any team admin of the agent's team sees it.
+    for (const as of [GRACE, ADA]) {
+      expect(await w.status({ as, manages: true, sharedActive: true }), as).toEqual(requested);
+      expect(await w.status({ as, manages: true, sharedActive: false }), as).toEqual(requested);
+    }
+    // Reading never writes, rotates or asks Slack; no token is involved until an AX admin approves.
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+  });
+
+  it("requested: anyone who doesn't manage the agent sees none, and the request isn't read for them", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+
+    expect(await w.status({ as: MEL, manages: false, sharedActive: true })).toEqual({ state: 'none', configTokenStored: false });
+    expect(w.trail).toEqual(['store:botForAgent']);
+  });
+
+  it('a bot row wins over a request: mid-approve, the pending bot shows', async () => {
+    // An approve inserts the bot, then takes the request last: a status that
+    // takes no lock can read the two at once.
+    const w = world();
+    await seedShared(w);
+    const installId = await addBot(w, { agentId: SUPPORT.id, approver: HEDY, requester: GRACE, botName: BOT_NAME });
+    await seedRequest(w);
+
+    expect(await w.status({ as: GRACE, manages: true, sharedActive: true })).toEqual({
+      state: 'pending',
+      botName: BOT_NAME,
+      approver: 'Hedy Lamarr',
+      canContinue: false,
+      // The bot's own key (TASK-1172), never the request's.
+      installId,
+    });
+    expect(w.trail).not.toContain('store:botRequestForAgent');
+  });
+});
+
+// ── removeForAgent ──────────────────────────────────────────────────────────
+
+describe('removeForAgent', () => {
+  it("removes the agent's open request, under the app lock, and says so by its id alone", async () => {
+    const lock = createMutex();
+    const w = world({ lock });
+    await seedShared(w);
+    await seedRequest(w);
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: 'Sales Desk' });
+    // Another Slack-app step holds the lock: an approve of this very request, say.
+    const hold = await holdLock(lock);
+    const removing = w.removeForAgent();
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+    expect(w.trail).toEqual([]);
+
+    hold.free();
+    await hold.done;
+    await removing;
+
+    expect([...w.memory.requests.keys()]).toEqual([SALES_REQUEST]);
+    // No bot: one read, no vault or Slack call.
+    expect(w.trail).toEqual(['store:removeBotRequestForAgent', 'store:botForAgent']);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_agent_bot_request_removed', fields: { requestId: REQUEST } },
+    ]);
+
+    // An agent with neither costs two reads and says nothing.
+    forget(w);
+    await w.removeForAgent();
+    expect(w.trail).toEqual(['store:removeBotRequestForAgent', 'store:botForAgent']);
+    expect(w.lines).toEqual([]);
+  });
+
+  it("a fault taking the request doesn't stop the bot's removal: logged code-only, then the bot goes", async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await addBot(w, { agentId: SUPPORT.id, approver: GRACE, botName: BOT_NAME, live: true });
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    w.memory.failures.set('removeBotRequestForAgent', connectionReset());
+
+    await w.removeForAgent();
+
+    expect(supportBot(w)).toBeUndefined();
+    expect(methods(w)).toEqual(['rotateConfigToken', 'deleteApp']);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_bot_failed', fields: { stage: 'agent-deleted-request', code: 'ECONNRESET' } },
+      { level: 'info', msg: 'slack_agent_bot_removed', fields: { installId, appDeleted: true } },
+    ]);
+  });
+});
+
+// ── namesInUse ──────────────────────────────────────────────────────────────
+
+describe('namesInUse', () => {
+  it('reads the shared bot, every bot and its handle, and every open request; except leaves out one install or one request', async () => {
+    const w = world();
+    await seedShared(w);
+    const salesBot = await addBot(w, { botName: 'Sales Desk', handle: 'salesdesk2' });
+    await seedRequest(w);
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: 'agt_ops', by: SAM, botName: 'Ops Helper' });
+
+    // Requests come as the store lists them: oldest first, then by id (both were asked at NOW_MS).
+    expect(await namesInUse(w.memory.store)).toEqual(['canopy-works', 'Sales Desk', 'salesdesk2', 'Ops Helper', BOT_NAME]);
+    expect(w.trail).toEqual(['store:current', 'store:listBots', 'store:listBotRequests']);
+
+    // One install out (a rename keeps or varies its own name)…
+    expect(await namesInUse(w.memory.store, { except: SHARED_INSTALL })).toEqual([
+      'Sales Desk',
+      'salesdesk2',
+      'Ops Helper',
+      BOT_NAME,
+    ]);
+    expect(await namesInUse(w.memory.store, { except: salesBot })).toEqual(['canopy-works', 'Ops Helper', BOT_NAME]);
+    // …or one request (an approve keeps its own name), and only that one.
+    expect(await namesInUse(w.memory.store, { except: REQUEST })).toEqual([
+      'canopy-works',
+      'Sales Desk',
+      'salesdesk2',
+      'Ops Helper',
+    ]);
+  });
 });
 
 // ── What leaves the domain ──────────────────────────────────────────────────
@@ -1806,6 +2498,31 @@ describe('answers and logs', () => {
     failRotate(deadCancel, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
     await deadCancel.cancel();
 
+    // TASK-1169: an open request as its managers see it, an AX admin's
+    // approve and her Allow, a refused self request, and the agent's deletion.
+    const approved = add(world());
+    await seedShared(approved);
+    await seedRequest(approved);
+    approved.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    await approved.status({ as: GRACE, manages: true, sharedActive: true });
+    await approved.request({ as: GRACE, refreshToken: PASTED });
+    await approved.create({ approver: HEDY, requester: GRACE, requestId: REQUEST });
+    await approved.finish(HEDY, supportBot(approved)!.installId);
+    await approved.status({ as: MEL, manages: false, sharedActive: true });
+    await approved.removeForAgent();
+
+    // An approve whose last step fails, and the agent's deletion taking its request.
+    const unremoved = add(world());
+    await seedShared(unremoved);
+    await seedRequest(unremoved);
+    unremoved.vault.set(configTokenRef(HEDY), HEDY_STORED);
+    unremoved.memory.failures.set('removeBotRequest', connectionReset());
+    await unremoved.create({ approver: HEDY, requester: GRACE, requestId: REQUEST });
+    unremoved.memory.failures.set('removeBotRequestForAgent', connectionReset());
+    await unremoved.removeForAgent();
+    unremoved.memory.failures.delete('removeBotRequestForAgent');
+    await unremoved.removeForAgent();
+
     // TASK-1172: Admin › Slack's list, a team admin's Disconnect, then one with nothing left to take.
     const disconnected = add(world());
     await seedShared(disconnected);
@@ -1841,7 +2558,7 @@ describe('answers and logs', () => {
       SHARED_CLIENT_SECRET,
       SHARED_SIGNING_SECRET,
     ];
-    const people = [ADA, GRACE, MEL, SAM, IVY, 'usr_'];
+    const people = [ADA, GRACE, MEL, SAM, IVY, HEDY, 'usr_'];
     for (const x of worlds) {
       const replies = JSON.stringify(x.replies);
       for (const text of [...tokens, ...people]) expect(replies, text).not.toContain(text);

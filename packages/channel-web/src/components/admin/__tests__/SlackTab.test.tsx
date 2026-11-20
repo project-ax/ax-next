@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SlackTab } from '../SlackTab';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
+import { fetchSlackBotRequests } from '@/lib/slack-bot-requests';
 import {
   SlackAdminError,
   connectSlack,
@@ -36,6 +37,11 @@ vi.mock('@/lib/slack-admin', async (original) => ({
 }));
 
 vi.mock('@/lib/slack-avatar', () => ({ renderSlackAvatar: vi.fn() }));
+// Bot requests have their own tests (SlackBotRequests.test.tsx); here the list is empty unless a test says otherwise.
+vi.mock('@/lib/slack-bot-requests', async (original) => ({
+  ...(await original<typeof import('@/lib/slack-bot-requests')>()),
+  fetchSlackBotRequests: vi.fn(),
+}));
 
 // The team bots card (TASK-1172) reads its own list; its own tests are in SlackBotsCard.test.tsx.
 vi.mock('@/lib/slack-bots-admin', async (original) => ({
@@ -101,6 +107,7 @@ async function leftoverNote(several = false): Promise<HTMLElement> {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(renderSlackAvatar).mockResolvedValue('AVATARB64');
+  vi.mocked(fetchSlackBotRequests).mockResolvedValue({ requests: [], truncated: false, configTokenStored: false });
   vi.mocked(fetchSlackBots).mockResolvedValue({ state: 'ready', bots: [] });
 });
 afterEach(() => {
@@ -133,6 +140,34 @@ function expectNoSecretsOnPage() {
 }
 
 describe('SlackTab states', () => {
+  it('connected: lists the bot requests under the connected card, and only there', async () => {
+    vi.mocked(fetchSlackBotRequests).mockResolvedValue({
+      requests: [
+        {
+          requestId: 'AAAAAAAAAAAAAAAAAAAAAA',
+          botName: 'Quill Bot',
+          agentName: 'Quill',
+          teamName: 'Support',
+          requestedBy: 'Ada Lovelace',
+          requestedAt: CONNECTED_AT,
+        },
+      ],
+      truncated: false,
+      configTokenStored: true,
+    });
+    renderTab(CONNECTED);
+    expect(await screen.findByText('Quill Bot for Quill · Support')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Bot requests' })).toBeInTheDocument();
+    expect(screen.getByText('Connected to Canopy Works')).toBeInTheDocument();
+  });
+
+  it('not connected: asks for no bot requests', async () => {
+    renderTab(NOT_CONNECTED);
+    await screen.findByRole('button', { name: 'Connect' });
+    expect(fetchSlackBotRequests).not.toHaveBeenCalled();
+    expect(screen.queryByText('Bot requests')).toBeNull();
+  });
+
   it('shows a placeholder while it reads, then the state', async () => {
     let resolve!: (s: SlackStatusRead) => void;
     status.mockReturnValueOnce(new Promise((r) => (resolve = r)));

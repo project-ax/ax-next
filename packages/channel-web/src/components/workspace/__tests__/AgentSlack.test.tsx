@@ -10,6 +10,7 @@ import { AgentSlack } from '../AgentSlack';
 import {
   AgentSlackError,
   cancelSlackBot,
+  cancelSlackBotRequest,
   connectSlackChannel,
   disconnectSlackBot,
   disconnectSlackChannel,
@@ -31,6 +32,7 @@ vi.mock('@/lib/agent-slack', async (original) => ({
   disconnectSlackChannel: vi.fn(),
   setSlackChannelRemember: vi.fn(),
   cancelSlackBot: vi.fn(),
+  cancelSlackBotRequest: vi.fn(),
   disconnectSlackBot: vi.fn(),
   requestSlackBot: vi.fn(),
 }));
@@ -138,6 +140,21 @@ describe('the states', () => {
     expect(screen.queryByRole('button', { name: 'Continue in Slack' })).toBeNull();
   });
 
+  it('no workspace, with a request waiting for an AX admin: a manager can still cancel it', async () => {
+    const cancelAsk = vi.mocked(cancelSlackBotRequest);
+    cancelAsk.mockResolvedValue(undefined);
+    // A request reaches only those who manage the agent, so the server says they do (TASK-1172's `canManage`).
+    renderIt({
+      state: 'no-workspace',
+      canManage: true,
+      bot: { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' },
+    });
+    expect(await screen.findByText('Waiting for an AX admin to approve Quill Bot.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    await waitFor(() => expect(cancelAsk).toHaveBeenCalledWith('a1'));
+    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
+  });
+
   it('a personal agent that answers direct messages: one line about the direct message', async () => {
     renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: true });
     expect(await screen.findByText(/Quill is a personal agent.*direct message with canopy/)).toBeInTheDocument();
@@ -234,7 +251,8 @@ describe("the agent's own bot, around the channel list", () => {
 
   it("a manager sees the request form; a member sees nothing of the bot until it is live", async () => {
     const { unmount } = renderIt(ready([], true));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    // No token on file, so it opens on asking an AX admin.
+    expect(await screen.findByRole('button', { name: 'Ask an AX admin' })).toBeInTheDocument();
     unmount();
     renderIt(ready([], false));
     await screen.findByText("Quill isn't connected to any Slack channels yet.");
@@ -293,7 +311,7 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     );
     expect(within(note).getByRole('link', { name: "Slack's app settings" })).toBeInTheDocument();
     expect(cancel).toHaveBeenCalledWith('a1');
-    expect(document.body.textContent).not.toMatch(/\bAX\b/);
+    expect(note.textContent).not.toMatch(/\bAX\b/);
   });
 
   it('ready, cancelled by another manager: the note names the person who can delete the app', async () => {

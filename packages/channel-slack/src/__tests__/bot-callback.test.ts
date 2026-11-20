@@ -50,6 +50,9 @@ import { memoryStore, type Row } from './memory-install-store.js';
     - its @handle is kept only when a copy line can show it;
     - every answer is a redirect to the app's root, naming the bot's agent
       (read from its row) only for the person the state was minted for;
+    - an AX admin who approved a team admin's request in Admin › Slack
+      (TASK-1169) finishes it while still an AX admin, and lands back in
+      Admin › Slack (`from=admin`), never on the agent's settings;
     - no redirect or log line carries a code, a state, a token or a Slack id.
 */
 
@@ -83,10 +86,15 @@ const ADA = 'usr_ada';
 const GRACE = 'usr_grace';
 /** A plain member of the support team. */
 const MEL = 'usr_mel';
+/** An AX admin on no team: she approves Grace's request in Admin › Slack (TASK-1169). */
+const HEDY = 'usr_hedy';
 
 /** Each person's own configuration token (TASK-1175). */
 const ADA_STORED = fakeConfigRefreshToken('ADASTOREDSECRET');
 const GRACE_STORED = fakeConfigRefreshToken('GRACESTOREDSECRET');
+const HEDY_STORED = fakeConfigRefreshToken('HEDYSTOREDSECRET');
+/** Grace's open request for the support agent's bot (TASK-1169). */
+const REQUEST = 'U3VwcG9ydEJvdEFzazAwMQ';
 
 const BOT_NAME = 'Support Helper';
 /** What Slack named the new bot user (fake-slack-config.ts BOT_USER). */
@@ -103,6 +111,8 @@ const home = (outcome: 'connected' | 'cancelled' | 'failed'): string => `${ORIGI
 /** The app's root, with the outcome and the bot's agent: only for the person the state was minted for. */
 const toAgent = (outcome: 'connected' | 'cancelled' | 'failed'): string =>
   `${ORIGIN}/?slack-bot=${outcome}&agentId=agt_support`;
+/** The app's root, back to Admin › Slack: an AX admin who approved a team admin's request (TASK-1169). */
+const toAdmin = (outcome: 'connected' | 'cancelled' | 'failed'): string => `${ORIGIN}/?slack-bot=${outcome}&from=admin`;
 
 // ── A request and response shaped like @ax/http-server's ───────────────────
 
@@ -206,6 +216,17 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
     }
     return { user: { id, isAdmin: false } };
   });
+  /** auth:get-user: auth's own accounts, which `finish` asks about an AX admin approver (TASK-1169). */
+  const users = new Map([
+    [ADA, { id: ADA, displayName: 'Ada Admin', email: 'ada@canopyworks.example', isAdmin: true }],
+    [GRACE, { id: GRACE, displayName: 'Grace Hopper', email: 'grace@canopyworks.example', isAdmin: false }],
+    [MEL, { id: MEL, displayName: 'Mel Member', email: 'mel@canopyworks.example', isAdmin: false }],
+    [HEDY, { id: HEDY, displayName: 'Hedy Lamarr', email: 'hedy@canopyworks.example', isAdmin: true }],
+  ]);
+  bus.registerService('auth:get-user', '@ax/auth-better', async (_ctx, raw) => {
+    const user = users.get((raw as { userId: string }).userId);
+    return user === undefined ? null : { ...user };
+  });
 
   const memory = memoryStore(() => nowMs, trail);
   const slack = fakeSlack(trail);
@@ -238,6 +259,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
   return {
     bus,
     auth,
+    users,
     people,
     agent,
     vault,
@@ -250,6 +272,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
     answers,
     route,
     bots,
+    ctxOf,
     advance(ms: number): void {
       nowMs += ms;
     },
@@ -271,9 +294,33 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
         icon: null,
       });
     },
-    /** Continue in Slack, as Grace: a fresh state for the pending bot (the earlier one stops matching). */
-    async continueInSlack(): Promise<string> {
-      const reply = await bots.installUrl({ actorUserId: GRACE, agentId: agent.id });
+    /**
+     * Grace asked an AX admin, and Hedy (an AX admin on no team) approves her
+     * open request with her stored token: the one create path, under the app
+     * lock, as Admin › Slack's approve runs it (TASK-1169).
+     */
+    async approve(): Promise<{ status: number; body: unknown }> {
+      await memory.store.insertBotRequest({
+        requestId: REQUEST,
+        agentId: agent.id,
+        requestedByUserId: GRACE,
+        botName: BOT_NAME,
+      });
+      return lock.run(() =>
+        bots.create({
+          agentId: agent.id,
+          approverUserId: HEDY,
+          requesterUserId: GRACE,
+          botName: BOT_NAME,
+          refreshToken: null,
+          icon: null,
+          requestId: REQUEST,
+        }),
+      );
+    },
+    /** Continue in Slack, as Grace (or `as`): a fresh state for the pending bot (the earlier one stops matching). */
+    async continueInSlack(as: string = GRACE): Promise<string> {
+      const reply = await bots.installUrl({ actorUserId: as, agentId: agent.id });
       expect(reply.status).toBe(200);
       return stateIn(reply.body);
     },
@@ -334,6 +381,22 @@ async function requested(o: Parameters<typeof world>[0] = {}): Promise<{ w: Worl
   expect(reply.status).toBe(200);
   const bot = [...w.memory.rows.values()].find((r) => r.kind === 'bot');
   if (bot === undefined) throw new Error('the request made no bot');
+  forget(w);
+  return { w, installId: bot.installId, state: stateIn(reply.body) };
+}
+
+/**
+ * A world where Hedy, an AX admin on no team, approved Grace's request for
+ * the agent's bot (TASK-1169): its install id and the state her link carries.
+ */
+async function approved(o: Parameters<typeof world>[0] = {}): Promise<{ w: World; installId: string; state: string }> {
+  const w = world(o);
+  await seed(w);
+  w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+  const reply = await w.approve();
+  expect(reply.status).toBe(200);
+  const bot = [...w.memory.rows.values()].find((r) => r.kind === 'bot');
+  if (bot === undefined) throw new Error('the approve made no bot');
   forget(w);
   return { w, installId: bot.installId, state: stateIn(reply.body) };
 }
@@ -860,6 +923,106 @@ describe('GET /slack/bots/oauth/callback', () => {
       ['agentId', 'agt odd&next=//evil.example#x'],
     ]);
     expect(url.hash).toBe('');
+  });
+
+  it('sends an AX admin who approved back to Admin › Slack: the bot goes live, and the address never names the agent', async () => {
+    const { w, installId, state } = await approved();
+
+    const res = await w.callback({ code: CODE, state }, HEDY);
+
+    expect(res).toStrictEqual(redirect(toAdmin('connected')));
+    expect(res.location).toBe('https://ax.example/?slack-bot=connected&from=admin');
+    expect(w.row(installId)).toMatchObject({
+      status: 'active',
+      connectedByUserId: HEDY,
+      requestedByUserId: GRACE,
+      botHandle: HANDLE,
+    });
+    // Her own rights were never asked of @ax/agents: the requester's were, as a non-admin.
+    for (const input of w.people.inputs('agents:resolve')) expect(input).toEqual({ agentId: SUPPORT.id, userId: GRACE });
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT.id, actor: { userId: GRACE, isAdmin: false } },
+    ]);
+    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_bot_connected', fields: { installId } }]);
+  });
+
+  it("an AX admin's cancel, expiry or refusal lands in Admin › Slack too; a refusal is logged by its reason", async () => {
+    const cancelled = await approved();
+    expect(await cancelled.w.callback({ error: 'access_denied', state: cancelled.state }, HEDY)).toStrictEqual(
+      redirect(toAdmin('cancelled')),
+    );
+
+    const expired = await approved();
+    expired.w.advance(OAUTH_STATE_TTL_MS);
+    expect(await expired.w.callback({ code: CODE, state: expired.state }, HEDY)).toStrictEqual(redirect(toAdmin('failed')));
+
+    // No longer an AX admin by the time she clicks Allow.
+    const demoted = await approved();
+    demoted.w.users.get(HEDY)!.isAdmin = false;
+    expect(await demoted.w.callback({ code: CODE, state: demoted.state }, HEDY)).toStrictEqual(redirect(toAdmin('failed')));
+    expect(demoted.w.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_install_refused', fields: { installId: demoted.installId, reason: 'not-admin' } },
+    ]);
+
+    // The requester is no longer a team admin of the agent's team.
+    const unclaimed = await approved();
+    unclaimed.w.people.setRole(SUPPORT_TEAM, GRACE, 'member');
+    expect(await unclaimed.w.callback({ code: CODE, state: unclaimed.state }, HEDY)).toStrictEqual(
+      redirect(toAdmin('failed')),
+    );
+    expect(unclaimed.w.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_bot_install_refused',
+        fields: { installId: unclaimed.installId, reason: 'requester-not-admin' },
+      },
+    ]);
+
+    for (const { w, installId } of [cancelled, expired, demoted, unclaimed]) {
+      expect(methods(w)).not.toContain('oauthAccess');
+      expect(w.row(installId).status).toBe('pending');
+    }
+
+    // A fault once the bot is known still lands her in Admin › Slack.
+    const faulted = await approved();
+    faulted.w.people.faults.set(
+      'agents:resolve',
+      new PluginError({ code: 'agents-down', plugin: '@ax/agents', message: `down ${FAILURE_CANARY}` }),
+    );
+    expect(await faulted.w.callback({ code: CODE, state: faulted.state }, HEDY)).toStrictEqual(redirect(toAdmin('failed')));
+    expect(faulted.w.lines).toEqual([
+      { level: 'error', msg: 'slack_bot_failed', fields: { installId: faulted.installId, stage: 'callback', code: 'agents-down' } },
+    ]);
+  });
+
+  it("anyone else's browser with an AX admin's state learns nothing: no from=admin, the state unspent", async () => {
+    const { w, installId, state } = await approved();
+
+    // The requester herself, and the team admin who connected the shared app: neither is whom the state binds.
+    for (const as of [GRACE, ADA]) {
+      expect(await w.callback({ code: CODE, state }, as), as).toStrictEqual(redirect(home('failed')));
+    }
+    expect(w.row(installId)).toMatchObject({ status: 'pending', stateHash: sha256(state) });
+
+    expect(await w.callback({ code: CODE, state }, HEDY)).toStrictEqual(redirect(toAdmin('connected')));
+  });
+
+  it('a team admin who asked for the bot herself still lands on its agent, even when she is an AX admin too', async () => {
+    // Ada is an AX admin and a team admin of the support team: on the self path she is both approver and requester.
+    const w = world();
+    await seed(w);
+    const reply = await w.bots.request({
+      ctx: w.ctxOf(ADA),
+      actorUserId: ADA,
+      agentId: SUPPORT.id,
+      botName: BOT_NAME,
+      refreshToken: null,
+      icon: null,
+    });
+    expect(reply.status).toBe(200);
+    forget(w);
+
+    expect(await w.callback({ code: CODE, state: stateIn(reply.body) }, ADA)).toStrictEqual(redirect(toAgent('connected')));
   });
 
   it('no redirect or log line carries the code, the state, a token or a Slack id', async () => {

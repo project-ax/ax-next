@@ -1,5 +1,6 @@
 import { makeAgentContext, type AgentContext } from '@ax/core';
 import { checkBotName } from './bot-name.js';
+import type { BotRequests } from './bot-requests.js';
 import type { AgentSlackBot, Bots } from './bots.js';
 import {
   agentAccess,
@@ -30,7 +31,9 @@ import { checkUser } from './user-auth.js';
  * channels aren't listed, and `POST …/connect` refuses that agent with
  * `409 own-bot` (channels.ts). And the agent's own Slack bot (TASK-1167,
  * bots.ts): asking for it, picking the request back up in Slack, cancelling
- * it, and disconnecting it (TASK-1172).
+ * it, and disconnecting it (TASK-1172). Or, for a team admin who can't install
+ * Slack apps, asking an AX admin to approve it instead (TASK-1169,
+ * bot-requests.ts), and taking that ask back.
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
@@ -45,6 +48,8 @@ import { checkUser } from './user-auth.js';
  *                                               or without the shared app (the domain asks the rights
  *                                               again, and answers 409 no-bot unless `installId` is
  *                                               the agent's bot)
+ *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
+ *   POST /settings/slack/:agentId/bot-request/cancel  → {}, while it has an open request
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
@@ -61,7 +66,9 @@ import { checkUser } from './user-auth.js';
  * id of the bot the page showed (INSTALL_ID_RE, as Admin › Slack's
  * Disconnect does), so a page drawn before the bot was disconnected, and
  * asked for again, can't take the new one. Install-url and Cancel read no
- * body.
+ * body. An ask for an AX admin's approval holds the name and nothing else:
+ * no token (the approving AX admin brings their own) and no picture (their
+ * browser draws it at Approve). Taking the ask back reads no body.
  *
  * Team members who aren't admins read the section, so "connected by" and a
  * bot's approver are a display name or "A teammate", never an email, and a
@@ -114,6 +121,8 @@ const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 const BOT_KEYS: readonly string[] = ['botName', 'refreshToken', 'iconPng'];
 /** What a bot Disconnect's body may hold: the install id of the bot the page showed. */
 const BOT_DISCONNECT_KEYS: readonly string[] = ['installId'];
+/** What an ask for an AX admin's approval may hold (TASK-1169): the name alone. */
+const ASK_KEYS: readonly string[] = ['botName'];
 
 const PLUGIN = '@ax/channel-slack';
 /** "Connected by" when auth has no name, no account or no answer. Never the email: members read this page. */
@@ -166,6 +175,20 @@ type BotBody =
   | { ok: false; reply: Reply };
 
 /**
+ * A body's `botName`, as checkBotName tidies it: a missing (or null) one is
+ * `empty`, one that isn't text is `bad-characters`.
+ */
+function botNameOf(value: unknown): { ok: true; botName: string } | { ok: false; reply: Reply } {
+  const raw = value ?? '';
+  if (typeof raw !== 'string') {
+    return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: 'bad-characters' }) };
+  }
+  const name = checkBotName(raw);
+  if (!name.ok) return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: name.reason }) };
+  return { ok: true, botName: name.name };
+}
+
+/**
  * A bot request's JSON body: an object with no key but BOT_KEYS. 413 past
  * Connect's cap (http-server's `maxBodyBytes` refused it first; this is the
  * backstop), else 400. The refresh token comes before the name, as at
@@ -188,14 +211,25 @@ function readBotBody(req: RouteRequest): BotBody {
   if (pasted !== undefined && refreshToken === null) {
     return { ok: false, reply: json(400, { error: 'invalid-refresh-token' }) };
   }
-  const rawName = fields['botName'] ?? '';
-  if (typeof rawName !== 'string') {
-    return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: 'bad-characters' }) };
-  }
-  const name = checkBotName(rawName);
-  if (!name.ok) return { ok: false, reply: json(400, { error: 'invalid-bot-name', reason: name.reason }) };
+  const name = botNameOf(fields['botName']);
+  if (!name.ok) return name;
   const icon = fields['iconPng'] === undefined ? null : parseIconPng(fields['iconPng']);
-  return { ok: true, botName: name.name, refreshToken, icon };
+  return { ok: true, botName: name.botName, refreshToken, icon };
+}
+
+/**
+ * An ask for an AX admin's approval (TASK-1169): an object with no key but
+ * ASK_KEYS, so no token and no picture. 413 past the plain cap (http-server's
+ * `maxBodyBytes` refused it first; this is the backstop), else 400. The name
+ * must pass checkBotName, as the self path's does.
+ */
+function readAskBody(req: RouteRequest): { ok: true; botName: string } | { ok: false; reply: Reply } {
+  if (req.body.length > ADMIN_BODY_MAX_BYTES) return { ok: false, reply: json(413, { error: 'body-too-large' }) };
+  const fields = bodyObject(req.body);
+  if (fields === null || Object.keys(fields).some((k) => !ASK_KEYS.includes(k))) {
+    return { ok: false, reply: INVALID_BODY };
+  }
+  return botNameOf(fields['botName']);
 }
 
 type BotDisconnectBody = { ok: true; installId: string } | { ok: false; reply: Reply };
@@ -244,6 +278,7 @@ interface Asked {
 export function createAgentSlackRoutes(
   d: ChannelDeps,
   bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status'>,
+  requests: Pick<BotRequests, 'ask' | 'cancel'>,
 ): RouteSpec[] {
   const authCtx = makeAgentContext({
     sessionId: 'channel-slack',
@@ -450,6 +485,23 @@ export function createAgentSlackRoutes(
     return bots.cancel({ agentId: a.agentId });
   }
 
+  /** Ask an AX admin to approve the agent's own bot (TASK-1169): the person asking becomes its requester. */
+  async function askForBot(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    const body = readAskBody(a.req);
+    if (!body.ok) return body.reply;
+    // The domain asks the rights again inside the app lock, before anything else.
+    return requests.ask({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId, botName: body.botName });
+  }
+
+  /** Take the agent's open ask back: any team admin who manages the agent may. */
+  async function cancelAsk(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    return requests.cancel({ agentId: a.agentId });
+  }
+
   /**
    * Take the agent's own bot away, pending or live (TASK-1172): any team
    * admin who manages the agent may, with or without the shared app, naming
@@ -518,5 +570,8 @@ export function createAgentSlackRoutes(
     route('POST', '/bot/install-url', 'bot-install-url', botInstallUrl),
     route('POST', '/bot/cancel', 'bot-cancel', cancelBot),
     route('POST', '/bot/disconnect', 'bot-disconnect', disconnectBot),
+    // Asking an AX admin instead (TASK-1169): a name and nothing else, so the plain cap.
+    route('POST', '/bot-request', 'bot-request', askForBot),
+    route('POST', '/bot-request/cancel', 'bot-request-cancel', cancelAsk),
   ];
 }
