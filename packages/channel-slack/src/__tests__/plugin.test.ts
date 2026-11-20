@@ -317,6 +317,34 @@ function disconnectSlackFetch() {
   return { fetchImpl, calls: slack.calls };
 }
 
+/**
+ * disconnectSlackFetch, with conversations.info describing #support as a live
+ * public channel the agent's own bot may bind at its first mention there
+ * (TASK-1180). Every flag is set, as Slack's own answer sets them.
+ */
+function botChannelSlackFetch() {
+  const slack = disconnectSlackFetch();
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const answered = await slack.fetchImpl(input, init);
+    if (String(input) !== 'https://slack.com/api/conversations.info') return answered;
+    const channel = {
+      id: SUPPORT_CH,
+      name: 'support',
+      is_channel: true,
+      is_private: false,
+      is_archived: false,
+      is_ext_shared: false,
+      is_pending_ext_shared: false,
+      is_member: true,
+    };
+    return new Response(JSON.stringify({ ok: true, channel }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  return { fetchImpl, calls: slack.calls };
+}
+
 // ── A request and response shaped like @ax/http-server's ───────────────────
 
 interface Answer {
@@ -468,6 +496,10 @@ async function installCount(): Promise<number> {
   return Number(r.rows[0]?.n ?? '0');
 }
 
+/** The agent's own bot's signing secret and Slack user id, as seedSupportBot stores them (TASK-1180). */
+const BOT_SIGNING_SECRET = 'test-bot-signing-secret-03';
+const BOT_USER_ID = 'U07HELPERBOT';
+
 /**
  * TASK-1172's world: Ada's shared app, live, with its signing secret, bot
  * token and her own configuration token; Grace's live bot for the team agent,
@@ -494,11 +526,11 @@ async function seedSupportBot(s: Services): Promise<{ adas: string; graces: stri
   await store.activate(BOT_INSTALL_ID, {
     teamId: TEAM_ID,
     teamName: 'Canopy Works',
-    botUserId: 'U07HELPERBOT',
+    botUserId: BOT_USER_ID,
     installedAt: new Date(NOW_MS),
   });
   s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), fakeBotToken('DISCONNECTBOTSECRET'));
-  s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-03');
+  s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), BOT_SIGNING_SECRET);
   s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-03');
   s.vault.set(configTokenRef(GRACE), graces);
   const channels = createChannelStore(probe);
@@ -566,6 +598,23 @@ function mentionBody(eventId: string, ts: string, text: string, user = ALICE): B
       api_app_id: APP_ID,
       event_id: eventId,
       event: { type: 'app_mention', user, channel: SUPPORT_CH, ts, text },
+    }),
+  );
+}
+
+/**
+ * An @mention of the agent's own bot in #support, from Ada unless told
+ * otherwise (TASK-1180): mentionBody's envelope, for the bot's app, its text
+ * led by the bot's own @mention as Slack writes it.
+ */
+function botMentionBody(eventId: string, ts: string, text: string, user = ADA_SLACK): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      type: 'event_callback',
+      team_id: TEAM_ID,
+      api_app_id: BOT_APP_ID,
+      event_id: eventId,
+      event: { type: 'app_mention', user, channel: SUPPORT_CH, ts, text: `<@${BOT_USER_ID}> ${text}` },
     }),
   );
 }
@@ -2692,5 +2741,209 @@ describe('@ax/channel-slack plugin', () => {
     } finally {
       await db.shutdown?.();
     }
+  });
+
+  // TASK-1180: the switch a team set for a channel is kept apart from the
+  // channel's connections, so it reaches the agent's own bot even when the
+  // shared connection it was set on is gone before the bot first answers
+  // there. Before the fix the bot bound such a channel with the switch back on,
+  // and the agent learned from a channel the team chose not to have remembered.
+  it("a channel the team switched off stays off when the agent's own bot first answers there, after its shared connection was disconnected (TASK-1180)", async () => {
+    const slack = botChannelSlackFetch();
+    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
+    await seedSupportBot(s);
+    const channels = createChannelStore(probe);
+    const postToBot = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
+          params: { installId: BOT_INSTALL_ID },
+          body,
+          headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
+        }),
+      );
+    const settings = (suffix: string, body: unknown, as: string = ADMIN.id) =>
+      call(
+        'POST',
+        `/settings/slack/:agentId${suffix}`,
+        request('POST', `/settings/slack/${TEAM_AGENT.id}${suffix}`, {
+          as,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify(body)),
+        }),
+      );
+
+    // The bot hasn't answered in #support yet: the channel is still waiting for it (TASK-1168).
+    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
+    expect(await settings('/remember', { channelId: SUPPORT_CH, remember: false })).toEqual({
+      status: 200,
+      body: {},
+      done: true,
+    });
+    // Disconnect on the moved row: the shared connection goes before the bot's first mention there.
+    expect(await settings('/disconnect', { channelId: SUPPORT_CH })).toEqual({
+      status: 200,
+      body: { removed: true },
+      done: true,
+    });
+    expect(await channels.get(INSTALL_ID, SUPPORT_CH)).toBeNull();
+
+    expect((await postToBot(botMentionBody('Ev07ABCDEF60', '1763036000.000600', 'hello there'))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036000.000600`;
+    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: thread, userId: ADMIN.id });
+    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
+    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
+  });
+
+  it("a channel the team switched off stays off when the agent's own bot first answers there, after Slack was disconnected in Admin › Slack (TASK-1180)", async () => {
+    const slack = botChannelSlackFetch();
+    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
+    await seedSupportBot(s);
+    const channels = createChannelStore(probe);
+    const postToBot = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
+          params: { installId: BOT_INSTALL_ID },
+          body,
+          headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
+        }),
+      );
+    const settings = (suffix: string, body: unknown, as: string = ADMIN.id) =>
+      call(
+        'POST',
+        `/settings/slack/:agentId${suffix}`,
+        request('POST', `/settings/slack/${TEAM_AGENT.id}${suffix}`, {
+          as,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify(body)),
+        }),
+      );
+
+    // The bot hasn't answered in #support yet: the channel is still waiting for it (TASK-1168).
+    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
+    expect(await settings('/remember', { channelId: SUPPORT_CH, remember: false })).toEqual({
+      status: 200,
+      body: {},
+      done: true,
+    });
+    // Admin › Slack's Disconnect: the shared app, its row and its bindings go; the agent's own bot stays.
+    const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
+    expect(off.status).toBe(200);
+    expect(await installCount()).toBe(1);
+    expect(await channels.get(INSTALL_ID, SUPPORT_CH)).toBeNull();
+
+    expect((await postToBot(botMentionBody('Ev07ABCDEF60', '1763036000.000600', 'hello there'))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036000.000600`;
+    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: thread, userId: ADMIN.id });
+    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
+    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
+  });
+
+  it("a bot channel's switch: only the agent's team admin flips it, the settings show it, and memory follows it (TASK-1180)", async () => {
+    const slack = botChannelSlackFetch();
+    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
+    // #support is bound on both installs, the shared app's and the bot's, and on.
+    await seedSupportBot(s);
+    const channels = createChannelStore(probe);
+    const postToBot = (body: Buffer) =>
+      call(
+        'POST',
+        '/slack/events/:installId',
+        request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
+          params: { installId: BOT_INSTALL_ID },
+          body,
+          headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
+        }),
+      );
+    const settings = (suffix: string, body: unknown, as: string = ADMIN.id) =>
+      call(
+        'POST',
+        `/settings/slack/:agentId${suffix}`,
+        request('POST', `/settings/slack/${TEAM_AGENT.id}${suffix}`, {
+          as,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify(body)),
+        }),
+      );
+    const remembered = (conversationId: string) => ({
+      rejected: false,
+      payload: { conversationId, speakerNames: ['Ada', ADA_SLACK] },
+    });
+    const t1 = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036100.000610`;
+    const t2 = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036200.000620`;
+
+    // 1. Ada's mention of the agent's own bot runs a turn, as her, in a thread memory may learn from.
+    expect((await postToBot(botMentionBody('Ev07ABCDEF61', '1763036100.000610', 'what is the refund window?'))).status).toBe(
+      200,
+    );
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: t1, userId: ADMIN.id });
+    expect(await askMemory(harness.bus, t1)).toEqual(remembered(t1));
+
+    // 2. The agent's settings list the channel the bot answered in, with its switch.
+    const read = await call(
+      'GET',
+      '/settings/slack/:agentId',
+      request('GET', `/settings/slack/${TEAM_AGENT.id}`, { as: ADMIN.id, params: { agentId: TEAM_AGENT.id } }),
+    );
+    expect(read).toMatchObject({
+      status: 200,
+      body: {
+        state: 'ready',
+        bot: { state: 'live' },
+        botChannels: [{ channelId: SUPPORT_CH, name: 'support', remember: true }],
+      },
+    });
+
+    // 3. Bob can't see the agent: the same 404 a missing agent gets, and the switch stays.
+    expect(await settings('/bot/remember', { channelId: SUPPORT_CH, remember: false }, 'usr_bob')).toEqual({
+      status: 404,
+      body: { error: 'not-found' },
+      done: true,
+    });
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(true);
+
+    // 4. Ada, a team admin of the agent's team, switches it off: the bot's binding, and the
+    //    agent's shared binding of #support with it. Memory stops learning from the thread.
+    expect(await settings('/bot/remember', { channelId: SUPPORT_CH, remember: false })).toEqual({
+      status: 200,
+      body: {},
+      done: true,
+    });
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect(await askMemory(harness.bus, t1)).toEqual(NOT_REMEMBERED);
+
+    // 5. The shared connection's switch is the bot's now: refused, and nothing changes.
+    expect(await settings('/remember', { channelId: SUPPORT_CH, remember: true })).toEqual({
+      status: 409,
+      body: { error: 'own-bot' },
+      done: true,
+    });
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+
+    // 6. A mention while it is off: that thread is never remembered.
+    expect((await postToBot(botMentionBody('Ev07ABCDEF62', '1763036200.000620', 'my number is 4417'))).status).toBe(200);
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(2));
+    expect(s.invokes![1]!.ctx.conversationId).toBe(t2);
+    expect((await channels.getThread(t2))?.notRemembered).toBe(true);
+
+    // 7. On again: the first thread had no turn while it was off, so memory may learn from it
+    //    again; the second stays out for good.
+    expect(await settings('/bot/remember', { channelId: SUPPORT_CH, remember: true })).toEqual({
+      status: 200,
+      body: {},
+      done: true,
+    });
+    expect(await askMemory(harness.bus, t1)).toEqual(remembered(t1));
+    expect(await askMemory(harness.bus, t2)).toEqual(NOT_REMEMBERED);
   });
 });

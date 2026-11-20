@@ -272,6 +272,7 @@ type Suffix =
   | '/connect'
   | '/disconnect'
   | '/remember'
+  | '/bot/remember'
   | '/bot'
   | '/bot/install-url'
   | '/bot/cancel'
@@ -1789,6 +1790,44 @@ describe('disconnect and remember', () => {
       status: 404,
       body: { error: 'not-connected' },
     });
+  });
+});
+
+// ── POST …/bot/remember (TASK-1180) ─────────────────────────────────────────
+
+describe("a bot channel's memory switch (TASK-1180)", () => {
+  it("only a team admin of the agent's team flips a bot channel's switch: everyone else gets the shared toggle's answer, and no switch moves (TASK-1180)", async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    // The route reads the bot itself (liveOwnBot); bots.status isn't asked.
+    w.state.bot = OWN_BOT;
+    // The bot's first mention in #support bound it on the bot's own install (router.ts).
+    await w.memory.store.upsert({
+      installId: OWN_BOT.installId,
+      channelId: SUPPORT_CH,
+      agentId: SUPPORT.id,
+      connectedByUserId: 'usr_grace',
+      channelName: 'support-desk',
+    });
+    const flip = async (agentId: string, as: TestUser | null) => {
+      const a = await w.call('POST', '/bot/remember', agentId, as, { channelId: SUPPORT_CH, remember: false });
+      return { status: a.status, body: a.body };
+    };
+
+    expect((await flip(SUPPORT.id, null)).status).toBe(401);
+    // Outside the team, a workspace admin outside it, another team's admin, a missing agent: one 404.
+    for (const as of [OTTO, WANDA, SAM]) expect(await flip(SUPPORT.id, as), as.id).toEqual(NOT_FOUND);
+    expect(await flip('agt_nobody', ADA)).toEqual(NOT_FOUND);
+    // A member, and a workspace admin who is a plain member: they see the agent, and can't manage it.
+    for (const as of [MEL, WILL]) expect(await flip(SUPPORT.id, as), as.id).toEqual(FORBIDDEN);
+    expect(await flip(PATS.id, PAT)).toEqual({ status: 409, body: { error: 'personal-agent' } });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
+    expect(w.memory.calls).not.toContain('setRemember');
+
+    expect(await flip(SUPPORT.id, ADA)).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
   });
 });
 
