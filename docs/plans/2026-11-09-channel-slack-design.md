@@ -225,7 +225,8 @@ recalled in a channel.
   (TASK-1180). AX also keeps the agent's switch for each channel apart from
   its connections, so a Disconnect (of the channel, or of Slack in
   Admin › Slack) doesn't lose it: the agent's own bot starts there where the
-  team left it. A brand-new channel still starts on.
+  team left it, unless the channel was connected again since (then the new
+  connection's switch wins). A brand-new channel still starts on.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
@@ -541,7 +542,10 @@ the requester.
   read, nothing is bound and nothing runs.
 - The kept switch is written in the same statement as every flip, and filled
   at boot for connections made before it existed (off wins when an agent has
-  two connections of one channel that disagree). It goes only with the agent.
+  two connections of one channel that disagree). The boot fill also keeps an
+  off for a channel that was switched off and disconnected before the table
+  existed, read from its threads that weren't remembered. The boot fill only
+  ever moves a kept switch toward off. It goes only with the agent.
   We keep it when it's set rather than copying it when the bot goes live, so
   it doesn't matter what got disconnected first.
 - Each of the bot's channels has its own switch in the agent's settings. Only
@@ -551,8 +555,9 @@ the requester.
   The shared connection's switch is refused (`409 own-bot`) only once the bot
   has answered in that channel. Before that it is the bot's starting value, so
   a moved channel's row shows it. A flip racing the bot's first answer in that
-  channel can leave the bot on the value from just before the flip: the page
-  shows which.
+  channel can leave the bot on the value from just before the flip. After a
+  flip on a channel still waiting for the bot, the page reads the status
+  again, so it shows where the switch really landed.
 - Outsiders in a bot's channels run as the requester, while the requester is
   still a team admin. Otherwise they get a polite line and the bot shows
   "needs a team admin to claim it".
