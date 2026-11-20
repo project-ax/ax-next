@@ -6,7 +6,6 @@ import type { RouteRequest, RouteResponse } from '../http-types.js';
 import {
   ADMIN_BODY_MAX_BYTES,
   ADMIN_CONNECT_BODY_MAX_BYTES,
-  LEFTOVER_APPS_MAX,
   OAUTH_STATE_TTL_MS,
   SLACK_ICON_MAX_BYTES,
   SLACK_TOKEN_MAX,
@@ -14,23 +13,29 @@ import {
 import { BOT_SCOPES, buildAppManifest, slackUrls } from '../manifest.js';
 import { pngBase64, pngHeader } from './fake-png.js';
 import {
+  APP,
+  BOT_TOKEN,
+  CLIENT_SECRET,
+  GRANT,
+  MINTED_ACCESS,
+  NOW_MS,
+  SIGNING_SECRET,
+  fakeSlack,
+  mintedRefresh,
+} from './fake-slack-config.js';
+import {
   BOT_PREFIX,
   CONFIG_ACCESS_PREFIX,
   CONFIG_REFRESH_PREFIX,
-  fakeBotToken,
   fakeConfigAccessToken,
   fakeConfigRefreshToken,
 } from './fake-slack-tokens.js';
+import { busVault } from './fake-vault.js';
+import { memoryStore, type Row } from './memory-install-store.js';
 import { createMutex } from '../mutex.js';
 import { SECRET_NAMES, configTokenRef, createSecretStore, secretRef } from '../secrets.js';
-import {
-  SlackApiError,
-  type CreatedApp,
-  type OAuthInstall,
-  type RotatedConfigToken,
-  type SlackApi,
-} from '../slack-api.js';
-import { InstallStoreError, type InstallRow, type InstallStore, type LeftoverApp } from '../store.js';
+import { SlackApiError } from '../slack-api.js';
+import { InstallStoreError } from '../store.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -42,23 +47,16 @@ const CALLBACK = '/admin/slack/oauth/callback';
 /** "I deleted it": the admin deleted a leftover app on Slack's page themselves (TASK-1132). */
 const FORGET = '/admin/slack/forget-leftover-app';
 const REDIRECT_URI = `${ORIGIN}${CALLBACK}`;
-const NOW_MS = Date.parse('2026-11-13T12:00:00.000Z');
 
 // Distinctive, so a leak is easy to spot. Shaped like Slack's, but short
 // enough that a secret scanner won't take them for real ones.
 const ACCESS = fakeConfigAccessToken();
 const REFRESH = fakeConfigRefreshToken();
-const MINTED_ACCESS = fakeConfigAccessToken('MINTEDACCESSSECRET');
-/** The refresh token the fake Slack mints with its nth rotate, counting from 1. */
-const mintedRefresh = (n: number): string => fakeConfigRefreshToken(`MINTEDREFRESH${n}SECRET`);
 const SECOND_ACCESS = fakeConfigAccessToken('SECONDACCESSSECRET');
 const SECOND_REFRESH = fakeConfigRefreshToken('SECONDREFRESHSECRET');
 /** A person's own configuration token (TASK-1175), kept in their slot since an earlier Connect of theirs. */
 const ADA_STORED = fakeConfigRefreshToken('ADASTOREDSECRET');
 const EVE_STORED = fakeConfigRefreshToken('EVESTOREDSECRET');
-const CLIENT_SECRET = 'CLIENTSECRET0123456789abcdef';
-const SIGNING_SECRET = 'SIGNINGSECRET3f1c2b9a8e7d6c5b';
-const BOT_TOKEN = fakeBotToken();
 const SECRETS = [
   ACCESS,
   REFRESH,
@@ -74,20 +72,6 @@ const SECRETS = [
   BOT_TOKEN,
 ];
 
-const APP: CreatedApp = {
-  appId: 'A07QF9ZK2MN',
-  clientId: '7512345678901.7598765432109',
-  clientSecret: CLIENT_SECRET,
-  signingSecret: SIGNING_SECRET,
-};
-const GRANT: OAuthInstall = {
-  botToken: BOT_TOKEN,
-  botUserId: 'U07BOTUSER1',
-  appId: APP.appId,
-  teamId: 'T07ABCDEF12',
-  teamName: 'Canopy Works',
-  enterpriseInstall: false,
-};
 const CODE = '7512345678901.7598765432109.0123456789abcdef';
 const CONNECT_BODY = {
   accessToken: ACCESS,
@@ -195,302 +179,6 @@ function request(
   };
 }
 
-// ── An in-memory InstallStore, with the real one's rules ────────────────────
-
-interface Row extends InstallRow {
-  stateHash: string | null;
-  stateUserId: string | null;
-  stateExpiresAt: Date | null;
-}
-type StoreMethod = keyof InstallStore;
-
-function memoryStore(clock: () => number, trail: string[]) {
-  const rows = new Map<string, Row>();
-  /** The Slack apps Disconnect couldn't delete, by the removed install's id. */
-  const leftovers = new Map<string, LeftoverApp>();
-  const calls: Array<{ method: StoreMethod; args: unknown[] }> = [];
-  /** A method listed here throws this, every time, until it is deleted. */
-  const failures = new Map<StoreMethod, unknown>();
-
-  async function enter(method: StoreMethod, args: unknown[]): Promise<void> {
-    calls.push({ method, args });
-    trail.push(`store:${method}`);
-    await Promise.resolve(); // a real store answers later
-    if (failures.has(method)) throw failures.get(method);
-  }
-  function view(r: Row): InstallRow {
-    return {
-      installId: r.installId,
-      status: r.status,
-      appId: r.appId,
-      clientId: r.clientId,
-      botName: r.botName,
-      teamId: r.teamId,
-      teamName: r.teamName,
-      botUserId: r.botUserId,
-      connectedByUserId: r.connectedByUserId,
-      createdAt: r.createdAt,
-      configTokenAddedAt: r.configTokenAddedAt,
-      installedAt: r.installedAt,
-    };
-  }
-  function holding(stateHash: string): Row | undefined {
-    for (const r of rows.values()) if (r.stateHash === stateHash) return r;
-    return undefined;
-  }
-
-  const store: InstallStore = {
-    async current() {
-      await enter('current', []);
-      const oldest = [...rows.values()].sort(
-        (a, b) =>
-          a.createdAt.getTime() - b.createdAt.getTime() || a.installId.localeCompare(b.installId),
-      )[0];
-      return oldest === undefined ? null : view(oldest);
-    },
-    async get(installId) {
-      await enter('get', [installId]);
-      const r = rows.get(installId);
-      return r === undefined ? null : view(r);
-    },
-    async insertPending(r) {
-      await enter('insertPending', [r]);
-      if (rows.has(r.installId)) throw new Error('duplicate key value violates unique constraint');
-      // One INSERT in the real store: both dates are its now().
-      const at = clock();
-      rows.set(r.installId, {
-        ...r,
-        status: 'pending',
-        teamId: null,
-        teamName: null,
-        botUserId: null,
-        createdAt: new Date(at),
-        configTokenAddedAt: new Date(at),
-        installedAt: null,
-        stateHash: null,
-        stateUserId: null,
-        stateExpiresAt: null,
-      });
-    },
-    async setOAuthState(installId, s) {
-      await enter('setOAuthState', [installId, s]);
-      const r = rows.get(installId);
-      if (r === undefined || r.status !== 'pending') throw new InstallStoreError('install-not-pending');
-      r.stateHash = s.stateHash;
-      r.stateUserId = s.userId;
-      r.stateExpiresAt = s.expiresAt;
-    },
-    async peekOAuthState(stateHash) {
-      await enter('peekOAuthState', [stateHash]);
-      const r = holding(stateHash);
-      if (r === undefined || r.stateUserId === null || r.stateExpiresAt === null) return null;
-      return { installId: r.installId, userId: r.stateUserId, expiresAt: r.stateExpiresAt };
-    },
-    async consumeOAuthState(stateHash) {
-      await enter('consumeOAuthState', [stateHash]);
-      const r = holding(stateHash);
-      if (r === undefined || r.stateUserId === null || r.stateExpiresAt === null) return null;
-      const spent = { installId: r.installId, userId: r.stateUserId, expiresAt: r.stateExpiresAt };
-      r.stateHash = null;
-      r.stateUserId = null;
-      r.stateExpiresAt = null;
-      return spent;
-    },
-    async activate(installId, a) {
-      await enter('activate', [installId, a]);
-      const r = rows.get(installId);
-      if (r === undefined || r.status !== 'pending') throw new InstallStoreError('install-not-pending');
-      r.status = 'active';
-      r.teamId = a.teamId;
-      r.teamName = a.teamName;
-      r.botUserId = a.botUserId;
-      r.installedAt = a.installedAt;
-    },
-    async setBotName(installId, botName) {
-      await enter('setBotName', [installId, botName]);
-      const r = rows.get(installId);
-      if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
-      r.botName = botName;
-    },
-    async setConfigTokenAddedAt(installId, addedAt) {
-      await enter('setConfigTokenAddedAt', [installId, addedAt]);
-      const r = rows.get(installId);
-      if (r === undefined || r.status !== 'active') throw new InstallStoreError('install-not-active');
-      // Only the date: the row's person never moves (TASK-1175).
-      r.configTokenAddedAt = new Date(addedAt.getTime());
-    },
-    async remove(installId, o) {
-      await enter('remove', [installId, o]);
-      // One statement in the real store: the app is remembered only with its
-      // row's own delete, with the row's own person (TASK-1175), and an id
-      // already remembered keeps its first app.
-      const r = rows.get(installId);
-      if (r !== undefined && o?.appLeft === true && !leftovers.has(installId)) {
-        leftovers.set(installId, {
-          installId,
-          appId: r.appId,
-          botName: r.botName,
-          leftAt: new Date(clock()),
-          connectedByUserId: r.connectedByUserId,
-        });
-      }
-      rows.delete(installId);
-    },
-    async removeAll() {
-      await enter('removeAll', []);
-      const removed = [...rows.values()].map((r) => ({
-        installId: r.installId,
-        appId: r.appId,
-        teamId: r.teamId,
-        connectedByUserId: r.connectedByUserId,
-      }));
-      rows.clear();
-      return removed;
-    },
-    async list() {
-      await enter('list', []);
-      return [...rows.values()]
-        .sort(
-          (a, b) =>
-            b.configTokenAddedAt.getTime() - a.configTokenAddedAt.getTime() ||
-            a.installId.localeCompare(b.installId),
-        )
-        .map(view);
-    },
-    async personHasApps(userId) {
-      await enter('personHasApps', [userId]);
-      return (
-        [...rows.values()].some((r) => r.connectedByUserId === userId) ||
-        [...leftovers.values()].some((l) => l.connectedByUserId === userId)
-      );
-    },
-    async leftoverApps() {
-      await enter('leftoverApps', []);
-      return [...leftovers.values()]
-        .sort((a, b) => a.leftAt.getTime() - b.leftAt.getTime() || a.installId.localeCompare(b.installId))
-        .slice(0, LEFTOVER_APPS_MAX)
-        .map((l) => ({ ...l }));
-    },
-    async rememberLeftoverApp(a) {
-      await enter('rememberLeftoverApp', [a]);
-      if (!leftovers.has(a.installId)) {
-        leftovers.set(a.installId, {
-          installId: a.installId,
-          appId: a.appId,
-          botName: a.botName,
-          leftAt: new Date(clock()),
-          connectedByUserId: a.connectedByUserId,
-        });
-      }
-    },
-    async forgetLeftoverApp(installId) {
-      await enter('forgetLeftoverApp', [installId]);
-      leftovers.delete(installId);
-    },
-  };
-  return { store, rows, leftovers, calls, failures };
-}
-
-// ── A fake Slack: the six calls the admin routes make ───────────────────────
-
-interface SlackBehaviour {
-  rotateConfigToken(refreshToken: string): Promise<RotatedConfigToken>;
-  createApp(token: string, manifest: Record<string, unknown>): Promise<CreatedApp>;
-  updateApp(token: string, appId: string, manifest: Record<string, unknown>): Promise<void>;
-  deleteApp(token: string, appId: string): Promise<void>;
-  setAppIcon(token: string, appId: string, png: Uint8Array): Promise<void>;
-  oauthAccess(i: {
-    clientId: string;
-    clientSecret: string;
-    code: string;
-    redirectUri: string;
-  }): Promise<OAuthInstall>;
-}
-
-function fakeSlack(trail: string[]) {
-  const calls: Array<{ method: keyof SlackBehaviour; args: unknown[] }> = [];
-  /** Every refresh token a rotate was sent, and how many refresh tokens the rotates minted. */
-  const rotated = new Set<string>();
-  let mints = 0;
-  /** The apps that exist on this Slack: each create that succeeded, less each delete that did. */
-  const live = new Set<string>();
-  /** What each call does; a test swaps one out. */
-  const on: SlackBehaviour = {
-    /**
-     * Slack retires a rotated refresh token within minutes to hours (MEASURED,
-     * TASK-1097 walk; slack-api.ts). This fake retires it at once, so any path
-     * that rotates one token twice fails. `rotatedStillWork` stands in for the
-     * time before Slack retires it.
-     */
-    rotateConfigToken: async (refreshToken) => {
-      if (rotated.has(refreshToken) && !slack.rotatedStillWork) {
-        throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
-      }
-      rotated.add(refreshToken);
-      mints += 1;
-      return { accessToken: MINTED_ACCESS, refreshToken: mintedRefresh(mints), expiresAt: NOW_MS + 43_200_000 };
-    },
-    createApp: async () => ({ ...APP }),
-    updateApp: async () => {},
-    deleteApp: async () => {},
-    setAppIcon: async () => {},
-    oauthAccess: async () => ({ ...GRANT }),
-  };
-  const record = (method: keyof SlackBehaviour, args: unknown[]): void => {
-    calls.push({ method, args });
-    trail.push(`slack:${method}`);
-  };
-  const notHere = async (): Promise<never> => {
-    throw new Error('the admin routes never make this call');
-  };
-  const api: SlackApi = {
-    rotateConfigToken: async (refreshToken) => {
-      record('rotateConfigToken', [refreshToken]);
-      return on.rotateConfigToken(refreshToken);
-    },
-    createApp: async (token, manifest) => {
-      record('createApp', [token, manifest]);
-      const app = await on.createApp(token, manifest);
-      live.add(app.appId);
-      return app;
-    },
-    updateApp: async (token, appId, manifest) => {
-      record('updateApp', [token, appId, manifest]);
-      return on.updateApp(token, appId, manifest);
-    },
-    deleteApp: async (token, appId) => {
-      record('deleteApp', [token, appId]);
-      await on.deleteApp(token, appId);
-      live.delete(appId);
-    },
-    setAppIcon: async (token, appId, png) => {
-      record('setAppIcon', [token, appId, png]);
-      return on.setAppIcon(token, appId, png);
-    },
-    oauthAccess: async (i) => {
-      record('oauthAccess', [i]);
-      return on.oauthAccess(i);
-    },
-    usersInfo: notHere,
-    postMessage: notHere,
-    postBlocks: notHere,
-    updateMessage: notHere,
-    postEphemeral: notHere,
-    startStream: notHere,
-    appendStream: notHere,
-    stopStream: notHere,
-  };
-  const slack = {
-    api,
-    calls,
-    on,
-    live,
-    /** A rotated refresh token still works, as it does on Slack for a while after its rotate. */
-    rotatedStillWork: false,
-  };
-  return slack;
-}
-
 // ── The routes' surroundings ────────────────────────────────────────────────
 
 interface Line {
@@ -530,49 +218,7 @@ function world(
 
   // The real bus, with a fake vault, auth and branding behind it.
   const bus = new HookBus();
-  const vault = new Map<string, string>();
-  const vaultCalls: Array<{ hook: string; ref: string }> = [];
-  /**
-   * Whom each vault call names (TASK-1128): a read's `userId`, a write's or
-   * delete's ctx user. Apart from vaultCalls, whose entries tests compare whole.
-   */
-  const vaultAs: Array<{ hook: string; name: string; userId: string }> = [];
-  /**
-   * `<hook> <secret name>` → what that call throws. `<hook> <ref>` names one
-   * ref only, so one person's configuration token can fail while another's
-   * doesn't (both end in `config-refresh-token`); it wins over the name.
-   */
-  const vaultFailures = new Map<string, unknown>();
-  const nameOf = (ref: string): string => ref.slice(ref.lastIndexOf(':') + 1);
-  const vaultHook = (hook: string, run: (input: Record<string, unknown>) => unknown): void => {
-    bus.registerService(hook, '@ax/credentials', async (ctx, raw) => {
-      const input = raw as Record<string, unknown>;
-      const ref = String(input['ref']);
-      vaultCalls.push({ hook, ref });
-      vaultAs.push({
-        hook,
-        name: nameOf(ref),
-        userId: hook === 'credentials:get' ? String(input['userId']) : ctx.userId,
-      });
-      trail.push(`vault:${hook.slice('credentials:'.length)} ${nameOf(ref)}`);
-      const failure = vaultFailures.get(`${hook} ${ref}`) ?? vaultFailures.get(`${hook} ${nameOf(ref)}`);
-      if (failure !== undefined) throw failure;
-      return run(input);
-    });
-  };
-  vaultHook('credentials:set', (i) => {
-    vault.set(String(i['ref']), new TextDecoder().decode(i['payload'] as Uint8Array));
-  });
-  vaultHook('credentials:get', (i) => {
-    const value = vault.get(String(i['ref']));
-    if (value === undefined) {
-      throw new PluginError({ code: 'credential-not-found', plugin: '@ax/credentials', message: 'none' });
-    }
-    return value;
-  });
-  vaultHook('credentials:delete', (i) => {
-    vault.delete(String(i['ref']));
-  });
+  const { vault, vaultCalls, vaultAs, vaultFailures } = busVault(bus, trail);
 
   // Auth's own accounts, by id: a test may rename or delete one.
   const users = new Map(USERS.map((u) => [u.id, { ...u }]));
