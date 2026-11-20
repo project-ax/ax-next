@@ -458,7 +458,9 @@ answer for one agent. The owner is told which channels changed, and that
   settings (`apps.manifest.update` + `apps.icon.set`). That's the same rename
   path the shared bot uses (TASK-1096), and the same name check from step 1
   applies. Neither needs a new approval.
-- **Disconnect** deletes the app with `apps.manifest.delete`.
+- **Disconnect** deletes the app with `apps.manifest.delete`. A team admin
+  does it from agent settings. An AX admin does it from Admin › Slack
+  (TASK-1172).
 - **Only the approver can manage the bot** (measured, §8 Q5): rename, avatar,
   re-sync and delete all use the approver's stored token (one per person, step
   3). When it dies, the fix is Replace with a new token **from the same
@@ -467,8 +469,9 @@ answer for one agent. The owner is told which channels changed, and that
   touch the app: the bot can only be **rebuilt**, meaning a new request,
   approved under the new approver's token, with a new app and a new handle that
   channels must `/invite` again. The old app goes on the leftover-apps list for
-  someone to delete by hand on api.slack.com. Admin settings shows each bot's
-  approver, so an offboarding admin can see which bots need rebuilding.
+  someone to delete by hand on api.slack.com. Admin › Slack lists each bot with
+  its approver, and marks an approver who has left AX, so an offboarding admin
+  can see which bots need rebuilding (TASK-1172).
 
 **More phase 2 decisions (2026-11-19, Vinay, from decomposing it into TASK-1167..1174).**
 - An outsider's turn in a dedicated bot's channel runs as **the bot's
@@ -502,7 +505,8 @@ admin to approve is a later card. Here the approver is the requester.
   never stored: it's rotated at once and only the successor is kept.
 - The request waits in Slack for the approver's Allow. They can pick it back
   up (**Continue in Slack**) or **Cancel** it while it's pending. A live bot
-  isn't cancelled that way, because its channels would go with it.
+  isn't cancelled that way, because its channels would go with it; it's
+  disconnected instead (TASK-1172).
 - Names are unique across the shared bot and every team bot, by a key of 21
   letters and digits (lowercased, everything else dropped), which is how far
   Slack's handle goes. `Ada Bot` and `ada-bot` are the same name to us.
@@ -517,6 +521,17 @@ admin to approve is a later card. Here the approver is the requester.
 - Deleting the agent deletes its bot and its app.
 - Disconnecting the shared bot leaves team bots alone and keeps the approver's
   token while a bot still uses it (`tokenKept`).
+
+**As built (TASK-1172).** Disconnect runs the same removal as deleting the
+agent, under the one app lock. A team admin's Disconnect (from the agent's
+settings) is re-checked inside that lock, so a rights change mid-click can't
+slip through. An AX admin's (from Admin › Slack) goes by install id and only
+ever touches bots. It works with no shared install connected. The shared bot
+answers again in the agent's old shared channels, because we never touched
+its bindings. It only stepped aside while the agent's own bot was live.
+Admin › Slack's list shows each bot's name, handle, approver (or "A former
+member" when auth no longer has them), when it was added, and its status. It
+has no agent or team column yet.
 
 ## 5. How a turn runs
 
@@ -1083,5 +1098,6 @@ approving a second app never breaks the first).
   *Progress:* TASK-1167 built the self path: a team admin requests the bot
   and approves it with their own token, the shared bot steps aside once it's
   live, and deleting the agent deletes it. Asking an admin to approve, rename,
-  avatar change, Replace and Disconnect of a live bot are still to do.
+  avatar change and Replace of a live bot are still to do. TASK-1172 did
+  Disconnect and the Admin › Slack list.
 - **9. Walk (walk).**
