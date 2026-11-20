@@ -768,6 +768,18 @@ describe('rename', () => {
       expect(await kept.rename(NEW_NAME), code).toEqual({ status: 409, body: { error: 'not-live' } });
       expect(kept.trail.at(-1), code).toBe('store:personHasApps');
       expect(kept.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
+
+      // Our own store failing at that re-read is no reset: it rejects (the
+      // route's 500), nothing asks whether anything names Grace, and her
+      // successor stays.
+      const broken = await seeded();
+      broken.memory.failures.set('get', connectionReset());
+      failUpdate(broken, code);
+      expect(logCode(await rejection(broken.rename(NEW_NAME))), code).toBe('ECONNRESET');
+      expect(broken.trail.at(-1), code).toBe('store:get');
+      expect(broken.trail, code).not.toContain('store:personHasApps');
+      expect(broken.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
+      expect(supportRow(broken).botName, code).toBe(OLD_NAME);
     }
   });
 });
@@ -908,6 +920,19 @@ describe('setPicture', () => {
       };
       expect(await kept.setPicture(), code).toEqual({ status: 409, body: { error: 'not-live' } });
       expect(kept.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
+
+      // Our own store failing at that re-read is no reset: it rejects (the
+      // route's 500), nothing asks whether anything names Grace, and her
+      // successor stays.
+      const broken = await seeded();
+      broken.memory.failures.set('get', connectionReset());
+      broken.slack.on.setAppIcon = async () => {
+        throw new SlackApiError('apps.icon.set', code);
+      };
+      expect(logCode(await rejection(broken.setPicture())), code).toBe('ECONNRESET');
+      expect(broken.trail.at(-1), code).toBe('store:get');
+      expect(broken.trail, code).not.toContain('store:personHasApps');
+      expect(broken.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
     }
   });
 });
