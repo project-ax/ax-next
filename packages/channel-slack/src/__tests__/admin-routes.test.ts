@@ -1252,7 +1252,7 @@ describe('POST /admin/slack/connect', () => {
     }
   });
 
-  it('undo keeps going when deleting the app fails, and says so code-only', async () => {
+  it('undo keeps going when deleting the app fails, says so code-only, and lists the app as left over, so its maker keeps the token that can delete it (TASK-1175)', async () => {
     const w = world();
     w.memory.failures.set('insertPending', new Error('insert failed'));
     w.slack.on.deleteApp = async () => {
@@ -1260,12 +1260,30 @@ describe('POST /admin/slack/connect', () => {
     };
     expect((await w.connect()).status).toBe(500);
     const installId = mintedInstallId(w);
-    expect(w.vault.size).toBe(0);
     expect(w.lines).toContainEqual({
       level: 'warn',
       msg: 'slack_admin_failed',
       fields: { installId, stage: 'undo-delete-app', code: 'ratelimited' },
     });
+    // The app is still live on Slack: the tab names it, and the next Connect or Replace deletes it.
+    expect([...w.memory.leftovers.values()]).toEqual([
+      { installId, appId: APP.appId, botName: 'Canopy Bot', leftAt: expect.any(Date), connectedByUserId: ADA.id },
+    ]);
+    expect(w.memory.rows.size).toBe(0);
+    // The install's own secrets go; Ada's token stays, because the leftover still names her.
+    expect(w.vault).toEqual(new Map([[configTokenRef(ADA.id), mintedRefresh(1)]]));
+  });
+
+  it("undo doesn't list an app Slack says is already gone", async () => {
+    const w = world();
+    w.memory.failures.set('insertPending', new Error('insert failed'));
+    w.slack.on.deleteApp = async () => {
+      throw new SlackApiError('apps.manifest.delete', 'app_not_found');
+    };
+    expect((await w.connect()).status).toBe(500);
+    expect(w.memory.leftovers.size).toBe(0);
+    expect(w.vault.size).toBe(0);
+    expect(w.lines.filter((l) => (l.fields as { stage?: string } | undefined)?.stage === 'undo-delete-app')).toEqual([]);
   });
 
   it('the picture is best-effort: Slack refusing it, none sent, or an unusable one never fails Connect', async () => {

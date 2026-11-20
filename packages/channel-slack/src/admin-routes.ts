@@ -516,19 +516,44 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * Connect failed after Slack made the app: take all of it back, so nothing
    * is left half-made. Each step is best-effort and logged. Deleting the app
    * needs a configuration access token, and the pasted one is still in hand.
-   * Last, the connecting admin's token goes too, unless an install or a
-   * leftover app still names them.
+   * If Slack won't delete it, the app goes onto the leftover list naming the
+   * connecting admin, as in `undoCreate`, so the tab names it and the next
+   * Connect or Replace deletes it. Last, the connecting admin's token goes
+   * too, unless an install or a leftover app (that one included) still names
+   * them.
    */
-  async function undoConnect(accessToken: string, appId: string, owner: SecretOwner): Promise<void> {
+  async function undoConnect(
+    accessToken: string,
+    appId: string,
+    owner: SecretOwner,
+    botName: string,
+  ): Promise<void> {
+    let appLeft = false;
     try {
       await d.api.deleteApp(accessToken, appId);
     } catch (err) {
-      failed('undo-delete-app', err, owner.installId);
+      // Already gone on Slack's side is what the undo wanted.
+      if (!(err instanceof SlackApiError && err.code === 'app_not_found')) {
+        appLeft = true;
+        failed('undo-delete-app', err, owner.installId);
+      }
     }
     try {
       await d.store.remove(owner.installId);
     } catch (err) {
       failed('undo-remove', err, owner.installId);
+    }
+    if (appLeft) {
+      try {
+        await d.store.rememberLeftoverApp({
+          installId: owner.installId,
+          appId,
+          botName,
+          connectedByUserId: owner.connectedByUserId,
+        });
+      } catch (err) {
+        failed('remember-leftover-app', err, owner.installId);
+      }
     }
     await d.secrets.removeAll(owner);
     await release(owner);
@@ -737,7 +762,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       return json(200, { installUrl, iconSet });
     } catch (err) {
       failed('connect', err, installId);
-      await undoConnect(accessToken, app.appId, owner);
+      await undoConnect(accessToken, app.appId, owner, botName);
       return INTERNAL;
     }
   }
