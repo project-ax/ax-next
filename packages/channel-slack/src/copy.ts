@@ -349,10 +349,10 @@ export const COPY = {
         ? `${shown(bot.botName)} is live. Invite it to a channel with /invite.`
         : `@${shown(bot.handle, '@')} is live. Invite it to a channel with /invite @${shown(bot.handle, '@')}.`;
     if (channels.length === 0) return head;
-    const names = channels.map((c) => `#${shown(c)}`);
-    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-    const tail = more > 0 ? ` and ${more} more` : '';
-    return `${head} These channels still need it: ${list}${tail}. Run /invite in each one.`;
+    const items = channels.map((c) => `#${shown(c)}`);
+    if (more > 0) items.push(`${more} more`);
+    const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+    return `${head} These channels still need it: ${list}. Run /invite in each one.`;
   },
   botDeclinedForOwner: (botName: string) =>
     `An admin declined your request for @${shown(botName, '@')}. ` +

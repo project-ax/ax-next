@@ -584,7 +584,7 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
       'still need it: #a, #c and #d. Run /invite',
     );
     expect(COPY.botLiveForOwner({ botName: 'B', handle: 'b' }, ['a', 'c', 'd'], 4)).toContain(
-      'still need it: #a, #c and #d and 4 more. Run /invite',
+      'still need it: #a, #c, #d and 4 more. Run /invite',
     );
     // After the line's own `@`, a broadcast word gets its mark.
     expect(COPY.botLiveForOwner({ botName: 'Ops', handle: 'here' }, [], 0)).toContain(`@${ZWSP}here is live`);
