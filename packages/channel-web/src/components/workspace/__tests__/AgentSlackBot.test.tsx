@@ -76,7 +76,7 @@ describe('none', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'Its own Slack bot' })).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Give Quill its own name in Slack. People mention it directly, and you add it to a channel with /invite. You need to be able to install apps in Slack.',
+        'Give Quill its own name in Slack. People mention it directly, and you add it to a channel with /invite. When someone outside the team mentions it, it answers them with your access. You need to be able to install apps in Slack.',
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: "Slack's app settings" })).toHaveAttribute('href', 'https://api.slack.com/apps');

@@ -187,7 +187,7 @@ function RequestForm({
   return (
     <form onSubmit={(e) => void submit(e)}>
       <Section
-        description={`Give ${agentName} its own name in Slack. People mention it directly, and you add it to a channel with /invite. You need to be able to install apps in Slack.`}
+        description={`Give ${agentName} its own name in Slack. People mention it directly, and you add it to a channel with /invite. When someone outside the team mentions it, it answers them with your access. You need to be able to install apps in Slack.`}
       >
         {notice}
         {showToken ? (
