@@ -201,8 +201,13 @@ export interface AppSteps {
    * throws: the secret store logs a delete that fails. Answers `'kept'` when
    * the token stayed (something still names the person, or the check failed)
    * and `'released'` when it went (or none was stored).
+   *
+   * With `onlyIfStored`, the token is read first and deleted only when it is
+   * there or can't be read (a failed read is logged here too): for a caller
+   * that may run after a reset wiped it, since the vault deletes by writing
+   * an empty row, and a reset leaves no rows behind.
    */
-  release(app: SecretOwner): Promise<'kept' | 'released'>;
+  release(app: SecretOwner, o?: { onlyIfStored?: boolean }): Promise<'kept' | 'released'>;
   /**
    * Keep the refresh token a rotate just minted as `app.connectedByUserId`'s
    * token, in place of the one it was minted from (TASK-1175: that one slot
@@ -373,9 +378,10 @@ export function createAppSteps(d: AppStepsDeps): AppSteps {
     }
   }
 
-  function release(app: SecretOwner): Promise<'kept' | 'released'> {
+  function release(app: SecretOwner, o: { onlyIfStored?: boolean } = {}): Promise<'kept' | 'released'> {
     return releaseConfigToken({ store: d.store, secrets: d.secrets }, app, {
       onFault: (err) => failed('release-config-token', err, app.installId),
+      ...(o.onlyIfStored === true ? { onlyIfStored: true } : {}),
     });
   }
 

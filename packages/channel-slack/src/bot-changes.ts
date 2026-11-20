@@ -45,8 +45,11 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * again. A row gone answers `not-live`, not Slack's refusal (there is no bot
  * left to fix), and the approver's token goes, unless an install or a
  * leftover app still names them: the successor saved after the reset's sweep
- * would otherwise outlive it. When nothing was saved, that release is the
- * sweep's own outcome again. `release` takes no lock.
+ * would otherwise outlive it. When nothing was saved after the sweep, there
+ * is nothing left to delete, and nothing is: that release reads the token
+ * first, as the reset's own does, because the vault deletes by writing an
+ * empty row and a reset leaves no credential rows behind. `release` takes no
+ * lock.
  *
  * Log lines are code-only: `slack_bot_failed { installId, stage, code }` for
  * a step that failed, and `slack_bot_renamed { installId }` or
@@ -173,12 +176,15 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
   /**
    * After `changeApp`, whatever Slack said: true when the bot's row went
    * meanwhile (a reset takes no lock), after taking back its approver's token
-   * unless something still names them. A store fault reading the row throws:
-   * the route's 500. The caller holds the app lock.
+   * unless something still names them. Only a token still stored is deleted:
+   * when the reset finished before anything was saved (say, Slack refused
+   * the rotate), the vault's delete would leave an empty row of its own. A
+   * store fault reading the row throws: the route's 500. The caller holds
+   * the app lock.
    */
   async function goneMeanwhile(bot: InstallRow): Promise<boolean> {
     if ((await d.installs.get(bot.installId)) !== null) return false;
-    await steps.release(bot);
+    await steps.release(bot, { onlyIfStored: true });
     return true;
   }
 

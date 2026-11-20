@@ -294,6 +294,24 @@ function failRotate(w: World, code: string): void {
   };
 }
 
+/**
+ * A whole bootstrap reset while the approver's token is being rotated: the
+ * vault wiped (credentials-store-db does that first) and every row removed.
+ * Then Slack refuses the rotate with `invalid_refresh_token` (the token it
+ * was sent is gone with the reset), so nothing is saved after the wipe; or,
+ * with `'mint'`, the rotate goes through and its successor is saved after the
+ * wipe, as a rotate already on its way to Slack would.
+ */
+function resetDuringRotate(w: World, then: 'refuse' | 'mint'): void {
+  const rotate = w.slack.on.rotateConfigToken;
+  w.slack.on.rotateConfigToken = async (refreshToken) => {
+    w.vault.clear();
+    await w.memory.store.removeAll();
+    if (then === 'refuse') throw new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token');
+    return rotate(refreshToken);
+  };
+}
+
 /** A failing `w.rename` or `w.setPicture`'s rejection, or a sign it resolved. */
 async function rejection(p: Promise<unknown>): Promise<unknown> {
   return p.then(
@@ -740,10 +758,12 @@ describe('rename', () => {
 
       expect(await w.rename(NEW_NAME), code).toEqual({ status: 409, body: { error: 'not-live' } });
 
-      // The refusal re-read the row, found it gone, and asked whether anything still names Grace.
-      expect(w.trail.slice(-3), code).toEqual([
+      // The refusal re-read the row, found it gone, asked whether anything
+      // still names Grace, and read her token: only one still stored is deleted.
+      expect(w.trail.slice(-4), code).toEqual([
         'store:get',
         'store:personHasApps',
+        'vault:get config-refresh-token',
         'vault:delete config-refresh-token',
       ]);
       // Nothing does, so the successor saved after the reset's sweep goes too.
@@ -781,6 +801,44 @@ describe('rename', () => {
       expect(broken.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
       expect(supportRow(broken).botName, code).toBe(OLD_NAME);
     }
+  });
+
+  it("R11 a whole reset during the rotate → 409 not-live; a token nothing saved after the wipe is left alone (no tombstone row), one saved after it goes", async () => {
+    // Slack refuses the rotate: nothing was saved after the wipe.
+    const w = await seeded();
+    resetDuringRotate(w, 'refuse');
+
+    expect(await w.rename(NEW_NAME)).toEqual({ status: 409, body: { error: 'not-live' } });
+
+    // The row re-read, found gone, nothing names Grace; her token is read
+    // and, not being there, never deleted: the vault deletes by writing an
+    // empty row, and a reset leaves no credential rows behind.
+    expect(w.trail.slice(-3)).toEqual(['store:get', 'store:personHasApps', 'vault:get config-refresh-token']);
+    expect(w.trail).not.toContain('vault:delete config-refresh-token');
+    expect(w.vault.size).toBe(0);
+    expect(w.lines).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_bot_failed',
+        fields: { installId: SUPPORT_BOT, stage: 'rotate', code: 'invalid_refresh_token' },
+      },
+    ]);
+
+    // The rotate goes through, its successor saved after the wipe, then Slack
+    // refuses the update: that successor goes.
+    const minted = await seeded();
+    resetDuringRotate(minted, 'mint');
+    failUpdate(minted, 'ratelimited');
+
+    expect(await minted.rename(NEW_NAME)).toEqual({ status: 409, body: { error: 'not-live' } });
+
+    expect(minted.trail.slice(-4)).toEqual([
+      'store:get',
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+      'vault:delete config-refresh-token',
+    ]);
+    expect(minted.vault.size).toBe(0);
   });
 });
 
@@ -864,6 +922,7 @@ describe('setPicture', () => {
     expect(w.trail.slice(ONE_PICTURE.length - 1)).toEqual([
       'store:get',
       'store:personHasApps',
+      'vault:get config-refresh-token',
       'vault:delete config-refresh-token',
     ]);
     expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
@@ -899,6 +958,7 @@ describe('setPicture', () => {
       expect(w.trail.slice(ONE_PICTURE.length - 1), code).toEqual([
         'store:get',
         'store:personHasApps',
+        'vault:get config-refresh-token',
         'vault:delete config-refresh-token',
       ]);
       expect(w.vault.has(configTokenRef(GRACE)), code).toBe(false);
@@ -934,6 +994,37 @@ describe('setPicture', () => {
       expect(broken.trail, code).not.toContain('store:personHasApps');
       expect(broken.vault.get(configTokenRef(GRACE)), code).toBe(mintedRefresh(1));
     }
+  });
+
+  it('P5 setPicture: a whole reset during the rotate → 409 not-live; a token nothing saved after the wipe is left alone (no tombstone row), one saved after it goes', async () => {
+    // Slack refuses the rotate: nothing was saved after the wipe.
+    const w = await seeded();
+    resetDuringRotate(w, 'refuse');
+
+    expect(await w.setPicture()).toEqual({ status: 409, body: { error: 'not-live' } });
+
+    expect(w.trail.slice(-3)).toEqual(['store:get', 'store:personHasApps', 'vault:get config-refresh-token']);
+    expect(w.trail).not.toContain('vault:delete config-refresh-token');
+    expect(w.vault.size).toBe(0);
+    expect(methods(w)).toEqual(['rotateConfigToken']);
+
+    // The rotate goes through, its successor saved after the wipe, then Slack
+    // refuses the picture: that successor goes.
+    const minted = await seeded();
+    resetDuringRotate(minted, 'mint');
+    minted.slack.on.setAppIcon = async () => {
+      throw new SlackApiError('apps.icon.set', 'ratelimited');
+    };
+
+    expect(await minted.setPicture()).toEqual({ status: 409, body: { error: 'not-live' } });
+
+    expect(minted.trail.slice(-4)).toEqual([
+      'store:get',
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+      'vault:delete config-refresh-token',
+    ]);
+    expect(minted.vault.size).toBe(0);
   });
 });
 
