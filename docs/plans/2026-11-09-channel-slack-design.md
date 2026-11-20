@@ -399,9 +399,12 @@ A team agent that wants its own `@ada`:
    `apps.icon.set`) and opens Slack's install screen straight away. The
    approver's **Allow** there is the approval: one click, on Slack's own
    screen. There's no second AX-side approve step, and the configuration token
-   doesn't skip it. AX stores that bot's rotated configuration token under the
-   bot's own install, recorded as the approver's: each bot has its own token
-   and manager, never the shared bot's.
+   doesn't skip it. Each bot records its approver as its manager. **AX keeps
+   one rotating configuration token per person** (decided 2026-11-20, Vinay;
+   TASK-1175), not one per bot: Slack allows one configuration token per person
+   per workspace, and revoking it also kills AX's rotated copy, so per-bot
+   tokens would make a second approval break the first. An approver whose
+   stored token is live pastes nothing: approving uses it.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
    bot's real `name` field as read back from `users.info`. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
@@ -443,8 +446,9 @@ answer for one agent. The owner is told which channels changed, and that
   applies. Neither needs a new approval.
 - **Disconnect** deletes the app with `apps.manifest.delete`.
 - **Only the approver can manage the bot** (measured, §8 Q5): rename, avatar,
-  re-sync and delete all use the token the approver gave. When that token
-  dies, the fix is Replace with a new token **from the same approver**
+  re-sync and delete all use the approver's stored token (one per person, step
+  3). When it dies, the fix is Replace with a new token **from the same
+  approver**, which fixes every app of theirs at once
   (TASK-1128's flow, per bot). If the approver is gone, no other token can
   touch the app: the bot can only be **rebuilt**, meaning a new request,
   approved under the new approver's token, with a new app and a new handle that
@@ -453,9 +457,11 @@ answer for one agent. The owner is told which channels changed, and that
   approver, so an offboarding admin can see which bots need rebuilding.
 
 **More phase 2 decisions (2026-11-19, Vinay, from decomposing it into TASK-1167..1174).**
-- An outsider's turn in a dedicated bot's channel runs as **the agent's owner**,
-  read when the turn runs. An `/invite` is the binding, so there's no "person who
-  connected the channel" to run as.
+- An outsider's turn in a dedicated bot's channel runs as **the bot's
+  requester**, the team admin who asked for it (2026-11-20; a team agent's owner
+  is the team, not a person). If the requester is no longer an admin of that
+  team, outsider turns are refused politely, members' turns still work, and the
+  bot shows "needs a team admin to claim it" until one does.
 - **Dedicated bots are channels only:** no DM scopes, and the Messages tab is
   off. DMs would be unwatched, would leak into team memory, and would have no
   one suitable to approve held actions. Adding DM scopes later would make Slack
