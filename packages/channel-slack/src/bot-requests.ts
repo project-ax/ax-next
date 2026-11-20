@@ -1,4 +1,5 @@
 import { PluginError, type AgentContext, type HookBus, type Logger } from '@ax/core';
+import { isAxAdmin } from './ax-admin.js';
 import { isBotNameTaken } from './bot-name.js';
 import type { BotReply, Bots } from './bots.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
@@ -38,7 +39,9 @@ import { InstallStoreError, type BotRequest, type InstallStore } from './store.j
  *     with the AX admin as its approver (her own configuration token, stored
  *     or pasted, makes the app, and she manages it from then on) and the
  *     request's requester as its requester (whom its channels' outsiders run
- *     as). Only while that requester is still a team admin of the agent's
+ *     as). Only while she is still an AX admin (403 `forbidden`, asked first
+ *     inside the lock: one demoted while the call waited makes nothing) and
+ *     that requester is still a team admin of the agent's
  *     team, asked inside the lock; the AX admin's own rights over the agent
  *     are never asked, since she needn't be on the team. The request goes
  *     only once the bot is made (`create` deletes it last), so an approve
@@ -142,7 +145,8 @@ export interface BotRequests {
   list(i: { ctx: AgentContext; viewerUserId: string }): Promise<AdminBotRequestList>;
   /**
    * An AX admin, `actorUserId`, approves one open request, by its id. Takes
-   * the app lock, reads the request inside it (404 `not-found` when it is
+   * the app lock, asks inside it whether she still is an AX admin (403
+   * `forbidden`), reads the request (404 `not-found` when it is
    * gone: approved, declined or cancelled first), asks whether its requester
    * is still a team admin of the agent's team (409 `requester-not-admin`;
    * `agent-gone` for an agent deleted), then makes the bot through `create`,
@@ -263,6 +267,10 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     icon: ParsedIcon | null;
   }): Promise<BotReply> {
     return d.lock.run(async () => {
+      // Still an AX admin, asked inside the lock: one demoted while this waited
+      // makes nothing, as the approver's Allow asks (bots.ts `finish`). Before
+      // the request is read, so a non-admin learns nothing about it.
+      if (!(await isAxAdmin(d.bus, i.ctx, i.actorUserId))) return json(403, { error: 'forbidden' });
       // Read under the lock: an approve, a decline or a cancel that got here first has taken it.
       const request = await d.installs.getBotRequest(i.requestId);
       if (request === null) return NOT_FOUND;

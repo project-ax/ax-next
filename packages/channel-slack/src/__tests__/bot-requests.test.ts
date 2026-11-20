@@ -1093,6 +1093,46 @@ describe('approve', () => {
     expect(w.slack.calls).toEqual([]);
   });
 
+  it('asks whether the AX admin still is one inside the lock: one demoted (or deleted) while it waited makes nothing, and the request stays', async () => {
+    for (const [what, demote] of [
+      ['demoted', (w: World) => (w.users.get(GRACE)!.isAdmin = false)],
+      ['deleted', (w: World) => w.users.delete(GRACE)],
+    ] as const) {
+      const lock = createMutex();
+      const w = world({ lock });
+      await seedShared(w);
+      await seedRequest(w);
+      w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+      const hold = await holdLock(lock);
+      const approving = w.approve({ as: GRACE });
+      await settle();
+      expect(w.auth.asked, what).toEqual([]);
+
+      demote(w);
+      hold.free();
+      await hold.done;
+
+      expect(await approving, what).toEqual({ status: 403, body: { error: 'forbidden' } });
+      expect(w.slack.calls, what).toEqual([]);
+      expect(w.vaultCalls, what).toEqual([]);
+      expect(w.memory.requests.has(REQUEST), what).toBe(true);
+    }
+  });
+
+  it("an auth fault asking whether she is an AX admin throws (the route's 500), before any token", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    w.auth.fault = connectionReset();
+
+    await expect(w.approve({ as: GRACE })).rejects.toThrow();
+
+    expect(w.slack.calls).toEqual([]);
+    expect(w.vaultCalls).toEqual([]);
+    expect(w.memory.requests.has(REQUEST)).toBe(true);
+  });
+
   it("a fault asking @ax/agents throws (the route's 500), before any token; the request stays", async () => {
     const w = world();
     await seedShared(w);

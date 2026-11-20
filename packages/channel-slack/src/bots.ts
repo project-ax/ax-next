@@ -1,4 +1,5 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
+import { isAxAdmin } from './ax-admin.js';
 import { RESERVED_BOT_NAMES, isBotNameTaken } from './bot-name.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
@@ -613,16 +614,6 @@ export function createBots(d: BotDeps): Bots {
     }
   }
 
-  /**
-   * Whether auth says `userId` is an AX admin now: only an answer about that
-   * person whose `isAdmin` is exactly true. No account (null) is no. A fault
-   * throws, as a rights check that can't be answered does.
-   */
-  async function isAxAdmin(ctx: AgentContext, userId: string): Promise<boolean> {
-    const user = await d.bus.call<{ userId: string }, unknown>('auth:get-user', ctx, { userId });
-    return isRecord(user) && user['id'] === userId && user['isAdmin'] === true;
-  }
-
   async function finish(i: {
     actorUserId: string;
     ctx: AgentContext;
@@ -648,7 +639,7 @@ export function createBots(d: BotDeps): Bots {
       // be on the agent's team, so her rights over it are never asked: she
       // must still be an AX admin, and the requester, whom its outsiders run
       // as, still a team admin of the agent's team.
-      if (!(await isAxAdmin(i.ctx, i.actorUserId))) return refuse('not-admin');
+      if (!(await isAxAdmin(d.bus, i.ctx, i.actorUserId))) return refuse('not-admin');
       const requester = await teamAdminAccess(d.bus, i.ctx, bot.agentId, bot.requestedByUserId);
       if (requester === 'agent-gone') return refuse('not-found');
       if (requester === 'not-team') return refuse('personal-agent');
