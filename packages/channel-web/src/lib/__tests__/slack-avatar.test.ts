@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import markLight from '@/assets/design/ax-mark-light.svg';
 import { logoUrl, type Branding } from '../branding';
 
@@ -97,13 +97,16 @@ describe('renderSlackAvatar', () => {
 });
 
 describe('drawPickedSlackAvatar', () => {
-  const create = vi.fn();
-  const revoke = vi.fn();
+  let create: MockInstance<typeof URL.createObjectURL>;
+  let revoke: MockInstance<typeof URL.revokeObjectURL>;
   const FILE = new File(['x'], 'p.png', { type: 'image/png' });
   beforeEach(() => {
-    create.mockReset().mockReturnValue('blob:picked');
-    revoke.mockReset();
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }));
+    create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:picked');
+    revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    create.mockRestore();
+    revoke.mockRestore();
   });
 
   it('draws the picked file and revokes its URL', async () => {
