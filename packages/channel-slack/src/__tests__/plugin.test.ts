@@ -79,6 +79,11 @@ const SIGNING_SECRET = 'test-signing-secret-not-real-01';
 const APP_ID = 'A07QF9ZK2MN';
 const TEAM_ID = 'T07ABCDEF12';
 const ADMIN = { id: 'usr_ada', displayName: 'Ada Admin', isAdmin: true };
+/** Another admin, whose configuration token is her own (TASK-1175). */
+const GRACE = 'usr_grace';
+const GRACE_INSTALL_ID = 'Gr4c3InstallIdNotReal1';
+/** A Slack app an earlier Disconnect couldn't delete: its removed install's id. */
+const LEFTOVER_ID = 'L3ftoverInstallId0001A';
 const BOT_TOKEN = fakeBotToken('PLUGINTESTSECRET');
 const ALICE = 'U07ALICE001';
 /** Ada's Slack user: she connected #support, and is a team admin of its agent. */
@@ -113,6 +118,8 @@ interface Services {
   invokesReturned?: number;
   /** When set, what each agent:invoke's turn says instead of "Hi Alice.". */
   turnScript?: (bus: HookBus, ctx: AgentContext) => Promise<void>;
+  /** When set, called as each route registers, before it is recorded. */
+  onRegisterRoute?: () => void;
 }
 
 const newServices = (): Services => ({
@@ -128,6 +135,7 @@ const newServices = (): Services => ({
 function fakeServices(s: Services) {
   return {
     'http:register-route': async (_ctx: unknown, input: unknown) => {
+      s.onRegisterRoute?.();
       const unregister = vi.fn();
       s.routes.push({ ...(input as RouteSpec), unregister });
       return { unregister };
@@ -374,8 +382,10 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
-async function boot(config: Partial<ChannelSlackConfig> = {}) {
+/** `seed` runs before the plugin starts: what the vault holds, or what a test watches, at boot. */
+async function boot(config: Partial<ChannelSlackConfig> = {}, o: { seed?: (s: Services) => void } = {}) {
   const s = newServices();
+  o.seed?.(s);
   const plugin = createChannelSlackPlugin({
     publicOrigin: HTTPS_ORIGIN,
     now: () => NOW_MS,
@@ -1672,8 +1682,9 @@ describe('@ax/channel-slack plugin', () => {
     can store the configuration refresh token Slack just minted AFTER the wipe
     and still find its row for setBotName (TASK-1129 review, F1).
   */
-  it('a rename that stores its new configuration token after the reset wiped the vault, but before the install row went, leaves no token behind (TASK-1129)', async () => {
-    // The person's own token (TASK-1175): the install's admin's.
+  it('P2 a rename that stores its new configuration token after the reset wiped the vault, but before the install row went, leaves no token behind (TASK-1129, TASK-1175)', async () => {
+    // The person's own token (TASK-1175): the install's admin's. No install
+    // and no leftover app names them once the reset has run.
     const ref = configTokenRef(ADMIN.id);
     const minted = fakeConfigRefreshToken('RESETRACEMINTEDSECRET');
     // Slack: the rotate waits for the test, then mints `minted`; the update is taken.
@@ -1809,6 +1820,213 @@ describe('@ax/channel-slack plugin', () => {
     expect(await installCount()).toBe(0);
     expect(s.vault.has(configRef)).toBe(false);
     expect(s.credentialDeletes).toEqual([configRef]);
+  });
+
+  /*
+    TASK-1175: one configuration token per person, under
+    `slack:person:<userId>:config-refresh-token`. The vault wipe takes every
+    person's token, and `removeAll` takes the installs but never the leftover
+    apps (they are still on Slack, and only their maker's token can delete
+    them). So the one person token a reset can find is one a racing route
+    stored after the wipe: it goes unless an install or a leftover app still
+    names its person. And at boot, before any route can use a token, each
+    install's old per-install token moves to its person (config-tokens.ts).
+  */
+  it('P3 a reset takes a re-stored token whose person nothing names any more, and keeps one a leftover app still names (TASK-1175)', async () => {
+    const { harness, s } = await boot();
+    const store = createInstallStore(probe);
+    // Ada's install, and an app of hers an earlier Disconnect couldn't delete.
+    await insertActiveInstall();
+    await store.rememberLeftoverApp({
+      installId: LEFTOVER_ID,
+      appId: 'A07LEFTOVER1',
+      botName: 'old-bot',
+      connectedByUserId: ADMIN.id,
+    });
+    // Grace's unfinished install, and nothing else of hers.
+    await store.insertPending({
+      installId: GRACE_INSTALL_ID,
+      appId: 'A07GRACEAPP1',
+      clientId: '7512345678901.7511111111111',
+      botName: 'grace-bot',
+      connectedByUserId: GRACE,
+    });
+    // Both stored after the vault wipe, as a racing rename would.
+    const adaRef = configTokenRef(ADMIN.id);
+    const graceRef = configTokenRef(GRACE);
+    const adas = fakeConfigRefreshToken('RESETKEPTFORLEFTOVERSECRET');
+    s.vault.set(adaRef, adas);
+    s.vault.set(graceRef, fakeConfigRefreshToken('RESETNOONENAMESSECRET'));
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    // The leftover app is still listed, still Ada's: the reset never takes one.
+    expect(await store.leftoverApps()).toEqual([
+      expect.objectContaining({ installId: LEFTOVER_ID, appId: 'A07LEFTOVER1', connectedByUserId: ADMIN.id }),
+    ]);
+    // So Ada's token stays: it is how that app gets deleted. Grace's goes.
+    expect(s.vault.get(adaRef)).toBe(adas);
+    expect(s.vault.has(graceRef)).toBe(false);
+    expect(s.credentialDeletes).toEqual([graceRef]);
+  });
+
+  it("P6 a reset whose check of who still names a person fails keeps that person's token, and logs only the install, the stage and a code (TASK-1175)", async () => {
+    const { harness, s } = await boot();
+    await insertActiveInstall();
+    const personRef = configTokenRef(ADMIN.id);
+    const kept = fakeConfigRefreshToken('RESETCHECKFAILSSECRET');
+    s.vault.set(personRef, kept);
+    // The check reads the leftover list, which deleting the installs never
+    // touches: without that table, only the check fails.
+    await sql`ALTER TABLE channel_slack_v1_leftover_apps RENAME TO channel_slack_test_hidden_leftovers`.execute(probe);
+    try {
+      const logs = captureLogs();
+      const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+      expect(fired.rejected).toBe(false);
+      expect(await installCount()).toBe(0);
+      // Not knowing whether an app still needs it, the token stays (re-running the reset wipes it).
+      expect(s.vault.get(personRef)).toBe(kept);
+      expect(s.credentialDeletes).toEqual([]);
+      const failed = logs.filter((l) => l['msg'] === 'slack_reset_cleanup_failed');
+      expect(failed).toEqual([
+        // Postgres's undefined_table: its code, never its message.
+        expect.objectContaining({ level: 'error', installId: INSTALL_ID, stage: 'release-config-token', code: '42P01' }),
+      ]);
+      expect(Object.keys(failed[0]!).sort()).toEqual(['code', 'installId', 'level', 'msg', 'reqId', 'stage', 'ts']);
+      const all = JSON.stringify(logs);
+      for (const text of [kept, ADMIN.id, 'channel_slack_test_hidden_leftovers']) expect(all).not.toContain(text);
+    } finally {
+      await sql`ALTER TABLE channel_slack_test_hidden_leftovers RENAME TO channel_slack_v1_leftover_apps`.execute(probe);
+    }
+  });
+
+  it("P7 a reset takes the token of every person it removed an install of, reading each person's once (TASK-1175)", async () => {
+    const { harness, s } = await boot();
+    const store = createInstallStore(probe);
+    // Two installs of Ada's, one of Grace's.
+    await insertActiveInstall();
+    await store.insertPending({
+      installId: UNKNOWN_ID,
+      appId: 'A07PENDING01',
+      clientId: '7512345678901.7500000000000',
+      botName: 'pending-bot',
+      connectedByUserId: ADMIN.id,
+    });
+    await store.insertPending({
+      installId: GRACE_INSTALL_ID,
+      appId: 'A07GRACEAPP1',
+      clientId: '7512345678901.7511111111111',
+      botName: 'grace-bot',
+      connectedByUserId: GRACE,
+    });
+    const adaRef = configTokenRef(ADMIN.id);
+    const graceRef = configTokenRef(GRACE);
+    s.vault.set(adaRef, fakeConfigRefreshToken('RESETADASECRET'));
+    s.vault.set(graceRef, fakeConfigRefreshToken('RESETGRACESECRET'));
+
+    const fired = await harness.bus.fire('bootstrap:reset-cleanup', harness.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await installCount()).toBe(0);
+    expect(s.vault.has(adaRef)).toBe(false);
+    expect(s.vault.has(graceRef)).toBe(false);
+    expect([...s.credentialDeletes].sort()).toEqual([adaRef, graceRef].sort());
+    expect(s.credentialGets.filter((ref) => ref === adaRef)).toHaveLength(1);
+    expect(s.credentialGets.filter((ref) => ref === graceRef)).toHaveLength(1);
+  });
+
+  it("P1 the first boot moves an install's configuration token to its admin's own place; the next boot does nothing (TASK-1175)", async () => {
+    await runMigrations(probe);
+    await insertActiveInstall();
+    const oldRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    const personRef = configTokenRef(ADMIN.id);
+    const old = fakeConfigRefreshToken('BOOTMOVEOLDSECRET');
+    const logs = captureLogs();
+
+    const first = await boot({}, {
+      seed: (s) => {
+        s.vault.set(oldRef, old);
+      },
+    });
+    expect(first.s.vault.get(personRef)).toBe(old);
+    expect(first.s.vault.has(oldRef)).toBe(false);
+    const moved = logs.filter((l) => l['msg'] === 'slack_config_tokens_moved');
+    expect(moved).toEqual([expect.objectContaining({ level: 'info', moved: 1, dropped: 0 })]);
+    // Counts only: never a token, never a person.
+    expect(Object.keys(moved[0]!).sort()).toEqual(['dropped', 'level', 'moved', 'msg', 'reqId', 'ts']);
+    for (const text of [old, ADMIN.id]) expect(JSON.stringify(logs)).not.toContain(text);
+
+    // The next boot: the token is already the person's, and no old one is left.
+    await first.harness.close({ onError: () => {} });
+    const mark = logs.length;
+    const second = await boot({}, {
+      seed: (s) => {
+        s.vault.set(personRef, old);
+      },
+    });
+    expect(second.s.credentialSets).toBe(0);
+    expect(second.s.credentialDeletes).toEqual([]);
+    expect(second.s.vault.get(personRef)).toBe(old);
+    expect(logs.slice(mark).filter((l) => l['msg'] === 'slack_config_tokens_moved')).toEqual([]);
+  });
+
+  it('P4 the boot move runs after the migrations and before any route is registered (TASK-1175)', async () => {
+    // An installs table from before a column the move reads (TASK-1128's
+    // config_token_added_at): until this boot's migrations add it back, no
+    // install can be listed.
+    await runMigrations(probe);
+    await insertActiveInstall();
+    await sql`ALTER TABLE channel_slack_v1_installs DROP COLUMN config_token_added_at`.execute(probe);
+    const oldRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    const personRef = configTokenRef(ADMIN.id);
+    const old = fakeConfigRefreshToken('BOOTORDEROLDSECRET');
+    // The vault as the first route to register finds it: routes serve as soon as they register.
+    let atFirstRoute: Map<string, string> | undefined;
+
+    const { s } = await boot({}, {
+      seed: (s) => {
+        s.vault.set(oldRef, old);
+        s.onRegisterRoute = () => {
+          atFirstRoute ??= new Map(s.vault);
+        };
+      },
+    });
+    expect(s.routes).toHaveLength(16);
+    expect(atFirstRoute?.get(personRef)).toBe(old);
+    expect(atFirstRoute?.has(oldRef)).toBe(false);
+  });
+
+  it('P5 a vault fault in the boot move never fails the boot: every route registers, the old token waits for the next boot, and the line names only the install, the stage and a code (TASK-1175)', async () => {
+    await runMigrations(probe);
+    await insertActiveInstall();
+    const oldRef = secretRef(INSTALL_ID, 'config-refresh-token');
+    const personRef = configTokenRef(ADMIN.id);
+    const old = fakeConfigRefreshToken('BOOTFAULTOLDSECRET');
+    const logs = captureLogs();
+
+    const { s } = await boot({}, {
+      seed: (s) => {
+        s.vault.set(oldRef, old);
+        s.vaultFailures.set(
+          `credentials:get ${personRef}`,
+          Object.assign(new Error(`vault down holding ${old}`), { code: 'ECONNRESET' }),
+        );
+      },
+    });
+    expect(s.routes).toHaveLength(16);
+    // Nothing stored and nothing deleted: the next boot tries again.
+    expect(s.vault.get(oldRef)).toBe(old);
+    expect(s.vault.has(personRef)).toBe(false);
+    expect(s.credentialSets).toBe(0);
+    expect(s.credentialDeletes).toEqual([]);
+    const failed = logs.filter((l) => l['msg'] === 'slack_config_token_move_failed');
+    expect(failed).toEqual([
+      expect.objectContaining({ level: 'error', installId: INSTALL_ID, stage: 'read-person-token', code: 'ECONNRESET' }),
+    ]);
+    expect(Object.keys(failed[0]!).sort()).toEqual(['code', 'installId', 'level', 'msg', 'reqId', 'stage', 'ts']);
+    expect(logs.filter((l) => l['msg'] === 'slack_config_tokens_moved')).toEqual([]);
+    const all = JSON.stringify(logs);
+    for (const text of [old, 'vault down', ADMIN.id]) expect(all).not.toContain(text);
   });
 
   it('the settings routes are mounted behind the person and the agent: 401 signed out, 404 to an outsider, the section to a team admin', async () => {
