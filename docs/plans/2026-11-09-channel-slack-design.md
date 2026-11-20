@@ -580,6 +580,29 @@ admin.
   abandoned Allow, the team cancels the pending bot and asks again. The
   approver is the bot's only manager (see Lifecycle).
 
+**As built (TASK-1171).** A team admin of the agent's team can rename a live
+team bot or change its picture, from the agent's settings. Two routes:
+`POST /settings/slack/:agentId/bot/rename` with `{ botName }`, and
+`POST /settings/slack/:agentId/bot/icon` with `{ iconPng }`. Both use the
+approver's stored per-person configuration token, rotated, with its successor
+saved before the old one is used, all under the one app lock. No new approval,
+no reinstall.
+
+- Rename checks the name as a request does: Slack's rules, and no clash with
+  the shared bot, the other bots, the other bots' handles or an open bot
+  request (TASK-1169). The bot itself is left out of that check, so keeping
+  its own name is fine. AX sends the whole bot manifest with
+  `apps.manifest.update`, then re-reads the bot user's `name` with
+  `users.info` into the handle, best-effort: if that read fails, the old handle
+  stays. We haven't measured whether Slack changes the handle on a rename
+  (§7 Q3).
+- Change picture is drawn in the admin's browser on a white 512 px square and
+  sent with `apps.icon.set` only. AX keeps no copy.
+- If Slack refuses the token, or answers `no_permission` or
+  `app_not_owned_by_manager_app`, the route answers 502 `slack-config-token`
+  and nothing in AX changes. The settings say "This bot's Slack token needs
+  replacing by <approver>." An agent with no live bot gets 409 `not-live`.
+
 **As built (TASK-1172).** Disconnect runs the same removal as deleting the
 agent, under the one app lock. A team admin's Disconnect (from the agent's
 settings) is re-checked inside that lock, so a rights change mid-click can't
@@ -1166,8 +1189,9 @@ approving a second app never breaks the first).
   *Progress:* TASK-1167 built the self path: a team admin requests the bot
   and approves it with their own token, the shared bot steps aside once it's
   live, and deleting the agent deletes it. TASK-1169 built asking an AX admin
-  to approve (see "As built (TASK-1169)" in section 4). Rename, avatar change
-  and Replace of a live bot are still to do.
+  to approve (see "As built (TASK-1169)" in section 4). Replace of a live bot is still to do.
+  TASK-1171 built rename and picture change (see "As built (TASK-1171)" in
+  section 4).
   TASK-1168 lists the already-connected channels that still need the new
   handle, and refuses connecting the agent through the shared app once its bot
   is live. TASK-1172 did Disconnect and the Admin › Slack list.

@@ -77,7 +77,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * managing its agent. For an AX admin's approve it is its approver still an
  * AX admin and its requester still a team admin of the agent's team: the AX
  * admin needn't be on the team, so her own rights over the agent are never
- * asked. Its @handle is read once there, and kept only when a copy line can
+ * asked. Its @handle is read there (and again after a rename, bot-changes.ts), and kept only when a copy line can
  * show it.
  *
  * A bot goes, pending or live, only through `removeBot`: Cancel (a team

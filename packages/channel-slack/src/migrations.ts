@@ -14,7 +14,7 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     and its `requested_by_user_id`, the team admin who asked for it, whom
  *     its channels' outsiders run as (each of its bindings copies it at the
  *     first mention there). `bot_handle` is the @handle Slack gave its bot
- *     user, read once at its Allow. The shared row has none of these three,
+ *     user, read at its Allow, and again after a rename (TASK-1171). The shared row has none of these three,
  *     and a CHECK pairs `agent_id` and `requested_by_user_id` with the kind,
  *     so neither kind can pass for the other.
  *     `connected_by_user_id` is whose configuration token made the app: the
