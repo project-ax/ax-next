@@ -288,7 +288,7 @@ describe('createSecretStore', () => {
     ]);
   });
 
-  it("an install's old configuration refresh token that will not delete is logged at warn: the boot move emptied it (TASK-1175)", async () => {
+  it("an install's old configuration refresh token that will not delete is logged at warn: the boot move empties it once its person's move succeeds, and logs an error when that fails (TASK-1175)", async () => {
     const vault = fakeVault({
       hook: 'credentials:delete',
       ref: secretRef(INSTALL.installId, 'config-refresh-token'),

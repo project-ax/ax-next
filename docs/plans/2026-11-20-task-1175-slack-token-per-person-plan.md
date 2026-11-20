@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript, Kysely/Postgres (`channel_slack_v1_*`), the credentials vault through `credentials:get|set|delete`, vitest (Postgres via Testcontainers for store, plugin and composition tests), React and shadcn (one copy change).
 
+> **As built (after review):** a few details below were superseded in review. A failed delete of a person's token logs stage `person-config-refresh-token`. `releaseConfigToken`'s `onFault` takes `(err, step)`, where step is `'check' | 'read'`. Connect stores the person's token straight after the rotate. The CLI reset builds the plugin with `moveConfigTokens: false`. Connect's undo lists an app Slack won't delete as left over. The decisions shard has the reasons.
+
 **Spec:** the card (the TASK-1175 brief) and `docs/plans/2026-11-09-channel-slack-design.md` §3, §4, §7, §8 Q5/Q6. Every decision below has its reasons and alternatives in `.claude/memory/decisions/2026-11-20-TASK-1175.md`. Read that shard before Task 1.
 
 ---

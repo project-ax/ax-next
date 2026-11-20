@@ -241,8 +241,10 @@ export function createSecretStore(bus: HookBus, opts: { logger?: Logger } = {}):
   const remove = (install: { installId: string }, name: SecretName): Promise<void> =>
     // Not an admin action of anyone's in particular: it also runs when a
     // Connect fails halfway, before any row exists. A warning, the old
-    // per-install `config-refresh-token` included: the boot move emptied it
-    // (TASK-1175), and its stage tells it apart from a person's token.
+    // per-install `config-refresh-token` included: the boot move empties it
+    // once its person's move succeeds (TASK-1175); when that move failed, the
+    // boot already logged an error for it. Its stage tells it apart from a
+    // person's token.
     erase(ctxFor('system'), install.installId, name, 'warn', () => secretRef(install.installId, name));
 
   return {
