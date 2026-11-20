@@ -795,7 +795,7 @@ describe('@ax/preset-memory canary', () => {
     expect((await apiJson('GET', '/admin/slack/bot-requests', ALICE)).status).toBe(403);
     expect(await apiJson('GET', '/admin/slack/bot-requests', CANARY_ADMIN)).toEqual({
       status: 200,
-      json: { requests: [], configTokenStored: false },
+      json: { requests: [], truncated: false, configTokenStored: false },
     });
     // Approve and Decline keep the CSRF check: no header, no entry. With it, a
     // request nobody made is the route's own 404, which an unmounted POST (the
