@@ -51,7 +51,8 @@ export const CAPTURE_CHECK_DEADLINE_MS = MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_M
  *     private chats included, so an outsider's words, once learned, would
  *     come back as facts with a member's authority. The switch is for what
  *     members say. Reversible: this one rule.
- *   - `channel-not-remembered`: the switch keeps it out.
+ *   - `channel-not-remembered`: the switch keeps it out, or the channel is
+ *     private (TASK-1188): the same refusal, whatever the switch says.
  */
 const REFUSALS = ['channel-external-turn', 'channel-not-remembered'] as const;
 type Refusal = (typeof REFUSALS)[number];
@@ -79,12 +80,20 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
   // means recording outsiders' names first, or memory would file what they
   // say under them.
   if (thread.external !== false) return { refusal: 'channel-external-turn', speakerNames: NO_NAMES };
-  // A turn ran while the switch was off. Sticky, whatever the switch says now.
+  // A turn ran while the switch was off, or while the channel was private
+  // (TASK-1188). Sticky, whatever the switch or the channel says now.
   if (thread.notRemembered !== false) return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   const binding = await channels.get(thread.installId, thread.channelId);
   // Disconnected (or its install removed), connected to another agent since,
-  // or switched off now.
-  if (binding === null || binding.agentId !== thread.agentId || binding.remember !== true) {
+  // switched off now, or private now (TASK-1188, design §4b.3: a private
+  // channel's words would surface wherever shared memory is recalled). Only
+  // a binding that plainly says public lets memory in.
+  if (
+    binding === null ||
+    binding.agentId !== thread.agentId ||
+    binding.remember !== true ||
+    binding.isPrivate !== false
+  ) {
     return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   }
   // As stored, with no default: a row that has no names list throws when
@@ -104,9 +113,10 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
  *
  * A conversation channel-slack never recorded gets no opinion. One it did is
  * refused when outsiders' turns run in it (`channel-external-turn`), and a
- * member's when any turn in it started while the channel's switch was off,
- * or when the channel is no longer connected to its agent, or when the
- * switch is off now (`channel-not-remembered`).
+ * member's when any turn in it started while the channel's switch was off
+ * or while the channel was private, or when the channel is no longer
+ * connected to its agent, or when the switch is off now, or the channel is
+ * private now (`channel-not-remembered`; TASK-1188, design §4b.3).
  *
  * A member's thread it lets through is answered with the names that
  * member's turns were labelled with (TASK-1146): the payload it was given,

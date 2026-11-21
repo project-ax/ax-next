@@ -64,7 +64,7 @@ const HTTP_ORIGIN = 'http://ax.internal:8080';
 /** Where Slack sends the approver back after Allow: the bot's own callback, never Admin › Slack's. */
 const BOT_CALLBACK = 'https://ax.example/slack/bots/oauth/callback';
 /** The six scopes a team agent's own bot asks for, as its install link carries them. */
-const SIX_SCOPES = 'app_mentions:read,chat:write,reactions:write,users:read,users:read.email,channels:read';
+const BOT_SCOPES_ASKED = 'app_mentions:read,chat:write,reactions:write,users:read,users:read.email,channels:read,groups:read';
 
 /** The shared app (Admin › Slack), connected by Ada with her own configuration token. */
 const SHARED_INSTALL = 'q3VtZ0xH4kTn9Wb2LmPa1A';
@@ -575,7 +575,7 @@ describe('request', () => {
     expect(create.args[0]).toBe(MINTED_ACCESS);
     expect(create.args[1]).toStrictEqual(buildBotManifest(BOT_NAME, botUrls(ORIGIN, installId)));
     expect(create.args[1]).toMatchObject({
-      oauth_config: { redirect_urls: [BOT_CALLBACK], scopes: { bot: SIX_SCOPES.split(',') } },
+      oauth_config: { redirect_urls: [BOT_CALLBACK], scopes: { bot: BOT_SCOPES_ASKED.split(',') } },
       settings: { event_subscriptions: { request_url: `${ORIGIN}/slack/events/${installId}` } },
     });
     expect(w.slack.calls.find((c) => c.method === 'setAppIcon')!.args.slice(0, 2)).toEqual([MINTED_ACCESS, APP.appId]);
@@ -610,7 +610,7 @@ describe('request', () => {
     expect(state).toMatch(/^[0-9a-f]{64}$/);
     expect(Object.fromEntries(link.searchParams)).toEqual({
       client_id: APP.clientId,
-      scope: SIX_SCOPES,
+      scope: BOT_SCOPES_ASKED,
       redirect_uri: BOT_CALLBACK,
       state,
     });
@@ -1473,7 +1473,7 @@ describe('installUrl', () => {
     expect(newState).not.toBe(oldState);
     expect(Object.fromEntries(linkOf(again).searchParams)).toEqual({
       client_id: APP.clientId,
-      scope: SIX_SCOPES,
+      scope: BOT_SCOPES_ASKED,
       redirect_uri: BOT_CALLBACK,
       state: newState,
     });

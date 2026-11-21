@@ -70,6 +70,12 @@ export interface ChannelBinding {
    * agent and channel, TASK-1180/1186); a reconnect keeps it.
    */
   remember: boolean;
+  /**
+   * Slack last described the channel as private (TASK-1188, design §4b.3):
+   * the bot answers there, and memory never learns from it, whatever
+   * `remember` says (capture-veto.ts). Set at the bind and by `setPrivate`.
+   */
+  isPrivate: boolean;
   createdAt: Date;
 }
 
@@ -81,7 +87,11 @@ export interface ChannelThread {
   installId: string;
   channelId: string;
   agentId: string;
-  /** True once any turn started while the channel's memory switch was off. Never cleared. */
+  /**
+   * True once any turn started while the channel's memory switch was off, or
+   * while the channel was private (TASK-1188). Never cleared: a thread said
+   * in private stays out of memory if the channel goes public.
+   */
   notRemembered: boolean;
   /**
    * The conversation outsiders' (external) turns run in: memory never learns
@@ -121,11 +131,13 @@ export interface ChannelStore {
    * channel was already this agent's; the connector and name are replaced,
    * and the stored remember and createdAt kept (`remember` is ignored).
    * `taken`: it is another agent's, and nothing changed. The name is stored
-   * cleaned.
+   * cleaned. `isPrivate` (off when not given) is written by a new binding
+   * only, like `remember`: a turn's check moves it (`setPrivate`).
    */
   upsert(
     b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'> & {
       remember?: boolean;
+      isPrivate?: boolean;
     },
   ): Promise<'connected' | 'reconnected' | 'taken'>;
   /**
@@ -147,6 +159,18 @@ export interface ChannelStore {
    * binding that bind wrote.
    */
   setRemember(installId: string, channelId: string, agentId: string, remember: boolean): Promise<boolean>;
+  /**
+   * Record whether Slack now describes the channel as private (TASK-1188),
+   * on `installId`'s binding of it, only when that binding is THIS agent's.
+   * False when it isn't (or the channel isn't bound). Not the switch: no
+   * lock, and nothing kept apart from the binding.
+   */
+  setPrivate(installId: string, channelId: string, agentId: string, isPrivate: boolean): Promise<boolean>;
+  /**
+   * Mark a thread not remembered, for good (TASK-1188): an Allow continuation
+   * ran in it while its channel was private. Nothing when it isn't a thread.
+   */
+  markNotRemembered(conversationId: string): Promise<void>;
   /**
    * The switch last set for this agent in this channel (TASK-1180): kept
    * when the bindings go (a Disconnect, a removed install, a removed bot),
@@ -170,7 +194,9 @@ export interface ChannelStore {
    * (as `upsert` does), so the caller reads the binding back. A failed read
    * throws before anything is written: the switch is never guessed.
    */
-  bindBot(b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'>): Promise<boolean>;
+  bindBot(
+    b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName' | 'isPrivate'>,
+  ): Promise<boolean>;
   /**
    * Delete the agent's bindings, thread rows and kept switches on every
    * install, in one transaction (all go, or none does), and say how many
@@ -194,9 +220,15 @@ export interface ChannelStore {
    * (TASK-1146): the union, each once, ordered by when last seen, keeping
    * the THREAD_SPEAKER_NAMES_MAX most recent. An outsider's turn adds none,
    * whatever it is handed. Names arrive only with an attended turn.
+   * A private channel taints the thread like a switch that is off
+   * (TASK-1188): `isPrivate`, what the turn's own check said, or the
+   * binding's `isPrivate` as it is at the write.
    */
   recordThread(
-    t: Omit<ChannelThread, 'notRemembered' | 'external' | 'speakerNames'> & { conversationId: string } & ThreadTurn,
+    t: Omit<ChannelThread, 'notRemembered' | 'external' | 'speakerNames'> & {
+      conversationId: string;
+      isPrivate: boolean;
+    } & ThreadTurn,
   ): Promise<'recorded' | 'no-binding' | 'reconnected'>;
   /** The thread a conversation is, or null when no channel turn ever ran in it (a web chat, a DM). */
   getThread(conversationId: string): Promise<ChannelThread | null>;
@@ -239,6 +271,7 @@ const COLUMNS = [
   'connected_by_user_id',
   'channel_name',
   'remember',
+  'is_private',
   'created_at',
 ] as const;
 
@@ -267,6 +300,7 @@ function toBinding(r: SelectedRow): ChannelBinding {
     connectedByUserId: r.connected_by_user_id,
     channelName: r.channel_name,
     remember: r.remember,
+    isPrivate: r.is_private,
     createdAt: r.created_at,
   };
 }
@@ -301,14 +335,15 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // nothing. A concurrent insert of the same channel waits on the primary
       // key, then takes that same conflict path: one statement, no
       // read-then-write window. `xmax = 0` holds only for a freshly inserted
-      // row, so it tells a new binding from a reconnect. `remember` is
-      // written by the insert only: the conflict's SET leaves it alone.
+      // row, so it tells a new binding from a reconnect. `remember` and
+      // `is_private` are written by the insert only: the conflict's SET
+      // leaves them alone.
       const r = await sql<{ inserted: boolean }>`
         INSERT INTO channel_slack_v1_channels
-          (install_id, channel_id, agent_id, connected_by_user_id, channel_name, remember)
+          (install_id, channel_id, agent_id, connected_by_user_id, channel_name, remember, is_private)
         VALUES
           (${b.installId}, ${b.channelId}, ${b.agentId}, ${b.connectedByUserId}, ${cleanChannelName(b.channelName)},
-           ${b.remember ?? true})
+           ${b.remember ?? true}, ${b.isPrivate ?? false})
         ON CONFLICT (install_id, channel_id) DO UPDATE
            SET connected_by_user_id = EXCLUDED.connected_by_user_id,
                channel_name = EXCLUDED.channel_name,
@@ -373,6 +408,21 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       });
     },
 
+    async setPrivate(installId, channelId, agentId, isPrivate) {
+      const r = await db
+        .updateTable(CHANNELS)
+        .set({ is_private: isPrivate, updated_at: new Date() })
+        .where('install_id', '=', installId)
+        .where('channel_id', '=', channelId)
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return r.numUpdatedRows > 0n;
+    },
+
+    async markNotRemembered(conversationId) {
+      await db.updateTable(THREADS).set({ not_remembered: true }).where('conversation_id', '=', conversationId).execute();
+    },
+
     async keptRemember(agentId, channelId) {
       const row = await db
         .selectFrom(SWITCHES)
@@ -424,6 +474,10 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // the answer. Anything but `attended` is an outsider's turn, and one
       // without a `runAs` matches no connector.
       //
+      // A private channel (TASK-1188) taints the thread as a switch that is
+      // off does: what this turn's own check said, or the binding as it is
+      // at this write (a newer check may have set it meanwhile).
+      //
       // A member's turn adds the names its label showed (TASK-1146), in the
       // same statement: the conflict keeps the union, each name once at the
       // place it was last seen, the THREAD_SPEAKER_NAMES_MAX most recent,
@@ -433,11 +487,13 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // parameter (node-postgres writes a JS array as an array literal,
       // quoting each element), never spliced into the statement.
       const external = t.mode !== 'attended';
+      // Anything but a plain `false` is private: a caller that didn't say keeps memory out.
+      const privateTurn = t.isPrivate !== false;
       const connector = t.mode === 'attended' ? sql`true` : sql`b.connected_by_user_id = ${t.runAs ?? null}`;
       const names = t.mode === 'attended' ? mostRecentNames(t.speakerNames) : [];
       const r = await sql<{ bound: number; recorded: number }>`
         WITH binding AS (
-          SELECT c.install_id, c.channel_id, c.agent_id, c.remember, c.connected_by_user_id
+          SELECT c.install_id, c.channel_id, c.agent_id, c.remember, c.is_private, c.connected_by_user_id
             FROM channel_slack_v1_channels c
            WHERE c.install_id = ${t.installId}
              AND c.channel_id = ${t.channelId}
@@ -445,7 +501,8 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         ), recorded AS (
           INSERT INTO channel_slack_v1_threads
             (conversation_id, install_id, channel_id, agent_id, not_remembered, external, speaker_names)
-          SELECT ${t.conversationId}, b.install_id, b.channel_id, b.agent_id, NOT b.remember, CAST(${external} AS boolean),
+          SELECT ${t.conversationId}, b.install_id, b.channel_id, b.agent_id,
+                 (NOT b.remember) OR b.is_private OR CAST(${privateTurn} AS boolean), CAST(${external} AS boolean),
                  ${names}::text[]
             FROM binding b
            WHERE ${connector}

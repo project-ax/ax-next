@@ -21,6 +21,10 @@ const LACKS = DEDICATED_BOT_SCOPES.filter((s) => s !== 'channels:read').join(','
 /** Every scope conversations.info takes: what Slack may say is `needed` from a token that holds none of them (unmeasured). */
 const EVERY_INFO_SCOPE = 'channels:read,groups:read,mpim:read,im:read';
 
+/** What the check answers for a channel it may answer in, public or private (TASK-1188). */
+const PUBLIC = { kind: 'allowed', isPrivate: false } as const;
+const PRIVATE = { kind: 'allowed', isPrivate: true } as const;
+
 /** Slack's `missing_scope`, naming what the call needed and what the token holds, as it says them. */
 function missingScope(scopes: { needed?: string; provided?: string }): SlackApiError {
   return new SlackApiError('conversations.info', 'missing_scope', undefined, scopes);
@@ -96,7 +100,7 @@ function held() {
 describe('createChannelCheck', () => {
   it("a public, live channel is allowed, asked with the install's token about that channel", async () => {
     const { calls, check } = setup((c) => live(c));
-    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
     expect(calls).toEqual([[TOKEN, CH]]);
   });
 
@@ -107,7 +111,7 @@ describe('createChannelCheck', () => {
     await check.check(INSTALL, TOKEN, CH);
     expect(calls).toHaveLength(1);
     at(TTL);
-    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
     expect(calls).toHaveLength(2);
   });
 
@@ -136,14 +140,29 @@ describe('createChannelCheck', () => {
     expect(calls).toHaveLength(2);
   });
 
+  /*
+    TASK-1188 (design §4b.3): a private channel is answered in, and never
+    remembered. The check says which, so the router can keep memory out.
+  */
+  it("a private, live channel of this workspace is allowed, and says it's private; kept like any allowed answer", async () => {
+    const { calls, check, at } = setup((c) => live(c, { isPrivate: true }));
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PRIVATE);
+    at(TTL - 1);
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PRIVATE);
+    expect(calls).toHaveLength(1);
+  });
+
   it.each([
-    ['private', { isPrivate: true }, 'not-public'],
-    ['a private group, not a channel', { isChannel: false }, 'not-public'],
+    ['not a channel (a group DM, or a private group from before 2021)', { isChannel: false }, 'not-a-channel'],
+    ['private, but not a channel', { isChannel: false, isPrivate: true }, 'not-a-channel'],
     ['archived', { isArchived: true }, 'archived'],
     ['Slack Connect', { isExtShared: true }, 'shared'],
     ['a pending Slack Connect invitation', { isPendingExtShared: true }, 'shared'],
+    // Private changes nothing for these: still refused.
+    ['private and archived', { isPrivate: true, isArchived: true }, 'archived'],
+    ['private and Slack Connect', { isPrivate: true, isExtShared: true }, 'shared'],
+    ['private and a pending Slack Connect invitation', { isPrivate: true, isPendingExtShared: true }, 'shared'],
     // More than one at once: the first in channels.ts `connectable`'s order names it.
-    ['private and archived', { isPrivate: true, isArchived: true }, 'not-public'],
     ['archived and Slack Connect', { isArchived: true, isExtShared: true }, 'archived'],
   ] as const)('a channel Slack describes as %s is refused, and the refusal is never kept', async (_n, over, code) => {
     const { calls, check } = setup((c) => live(c, over));
@@ -268,11 +287,12 @@ describe('createChannelCheck', () => {
       const { check } = setup(() => info);
       const result = await check.check(INSTALL, TOKEN, CH);
       expect(result.kind === 'allowed', JSON.stringify(info)).toBe(connectable(info));
+      if (result.kind === 'allowed') expect(result.isPrivate, JSON.stringify(info)).toBe(info.isPrivate);
       expect(result.kind, JSON.stringify(info)).not.toBe('unknown');
       if (result.kind === 'allowed') allowed += 1;
     }
-    // Only a channel with no refusing flag at all: the loop compared something.
-    expect(allowed).toBe(1);
+    // A channel with no refusing flag at all, public or private (TASK-1188): the loop compared something.
+    expect(allowed).toBe(2);
   });
 
   it.each([
@@ -312,7 +332,7 @@ describe('createChannelCheck', () => {
   it('an expired answer that Slack now fails to give is unknown, never the old allowed', async () => {
     let answer: Answer = live(CH);
     const { calls, check, at } = setup(() => answer);
-    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
     answer = new SlackApiError('conversations.info', 'internal_error');
     at(TTL);
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'unknown', code: 'internal_error' });
@@ -357,14 +377,14 @@ describe('createChannelCheck', () => {
     expect(await second).toEqual({ kind: 'refused', code: 'missing_scope' });
     // It may describe the channel as it was before: its own turn has it, and nothing else does.
     asks[0]!.answer(live(CH));
-    expect(await first).toEqual({ kind: 'allowed' });
+    expect(await first).toEqual(PUBLIC);
 
     const third = check.check(INSTALL, TOKEN, CH);
     expect(asks).toHaveLength(3);
     // Asked after the refusal landed: kept as any answer is.
     asks[2]!.answer(live(CH));
-    expect(await third).toEqual({ kind: 'allowed' });
-    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(await third).toEqual(PUBLIC);
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
     expect(asks).toHaveLength(3);
   });
 
@@ -373,14 +393,49 @@ describe('createChannelCheck', () => {
     const first = check.check(INSTALL, TOKEN, CH);
     const second = check.check(INSTALL, TOKEN, CH);
     asks[0]!.answer(live(CH));
-    expect(await first).toEqual({ kind: 'allowed' });
+    expect(await first).toEqual(PUBLIC);
+    asks[1]!.answer(live(CH, { isArchived: true }));
+    expect(await second).toEqual({ kind: 'refused', code: 'archived' });
+
+    const third = check.check(INSTALL, TOKEN, CH);
+    expect(asks).toHaveLength(3);
+    asks[2]!.answer(live(CH, { isArchived: true }));
+    expect(await third).toEqual({ kind: 'refused', code: 'archived' });
+  });
+
+  /*
+    TASK-1188: private is the answer that keeps memory out, so a public
+    answer must never stand in for a newer private one. Made private while two
+    turns ask: the private answer lands first, then the public one that left
+    before it. That public answer is its own turn's, and is not kept.
+  */
+  it('a public answer still on its way when a private one for that channel lands is not kept; the private one is', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    const second = check.check(INSTALL, TOKEN, CH);
     asks[1]!.answer(live(CH, { isPrivate: true }));
-    expect(await second).toEqual({ kind: 'refused', code: 'not-public' });
+    expect(await second).toEqual(PRIVATE);
+    asks[0]!.answer(live(CH));
+    expect(await first).toEqual(PUBLIC);
+
+    // What is kept is the private answer: no third ask.
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PRIVATE);
+    expect(asks).toHaveLength(2);
+  });
+
+  it('a private answer still on its way when a refusal lands is not kept either', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    const second = check.check(INSTALL, TOKEN, CH);
+    asks[1]!.answer(live(CH, { isArchived: true }));
+    expect(await second).toEqual({ kind: 'refused', code: 'archived' });
+    asks[0]!.answer(live(CH, { isPrivate: true }));
+    expect(await first).toEqual(PRIVATE);
 
     const third = check.check(INSTALL, TOKEN, CH);
     expect(asks).toHaveLength(3);
     asks[2]!.answer(live(CH, { isPrivate: true }));
-    expect(await third).toEqual({ kind: 'refused', code: 'not-public' });
+    expect(await third).toEqual(PRIVATE);
   });
 
   it('only a refusal for the same install and channel does that: a failure, or one for another, changes nothing kept', async () => {
@@ -396,9 +451,9 @@ describe('createChannelCheck', () => {
     expect(await otherChannel).toEqual({ kind: 'refused', code: 'channel_not_found' });
     expect(await otherInstall).toEqual({ kind: 'refused', code: 'missing_scope' });
     asks[0]!.answer(live(CH));
-    expect(await kept).toEqual({ kind: 'allowed' });
+    expect(await kept).toEqual(PUBLIC);
 
-    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
     expect(asks).toHaveLength(4);
   });
 

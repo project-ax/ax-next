@@ -393,6 +393,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
         // Outsiders' channel turns, one lane per channel (router.ts).
         const externalQueue = createKeyedQueue({ maxPerKey: MAX_EXTERNAL_TURNS_PER_CHANNEL });
+        // Slack's word on a bound channel (TASK-1184): asked when each channel
+        // turn starts, and again before an Allow carries a held turn on
+        // (answers.ts, TASK-1188). One instance, so both share its kept answers.
+        const channelCheck = createChannelCheck({ api, now, ttlMs: CHANNEL_CHECK_TTL_MS, max: CHANNEL_CHECK_MAX });
 
         // What a turn, and the follow-up to an Allow, run on: one set, so both
         // post prompts into, and stream replies to, the same registries.
@@ -501,7 +505,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 queue,
                 channels: channelStore,
                 externalQueue,
-                channelCheck: createChannelCheck({ api, now, ttlMs: CHANNEL_CHECK_TTL_MS, max: CHANNEL_CHECK_MAX }),
+                channelCheck,
               }),
               logger,
               now,
@@ -526,6 +530,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 secrets,
                 prompts,
                 channels: channelStore,
+                channelCheck,
                 publicOrigin,
                 logger,
                 answers: {

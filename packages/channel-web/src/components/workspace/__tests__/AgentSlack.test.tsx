@@ -557,6 +557,24 @@ describe("the agent's own bot's channels (TASK-1180)", () => {
     ).toHaveLength(1);
   });
 
+  // TASK-1188 (design §4b.3): the agent answers in a private channel and never remembers it, so its row says that
+  // instead of offering a switch that would change nothing.
+  it.each([
+    ['a manager', true],
+    ['a member', false],
+  ] as const)("%s sees a private channel's row say it isn't remembered, with no switch", async (_who, canManage) => {
+    const privateRoom: BotChannelRow = { channelId: 'C0BOTPRV01', name: 'leads', remember: true, isPrivate: true };
+    renderIt(withBotChannels(ready(canManage, LIVE_BOT), [privateRoom, BOT_SUPPORT]));
+    const list = await botList();
+    const rows = within(list).getAllByRole('listitem');
+    expect(within(rows[0]!).getByText("Private channels aren't remembered.")).toBeInTheDocument();
+    expect(within(rows[0]!).queryByRole('switch')).toBeNull();
+    expect(within(rows[0]!).queryByText(/remembers what people with access/)).toBeNull();
+    // The public row beside it is unchanged.
+    expect(within(rows[1]!).queryByText("Private channels aren't remembered.")).toBeNull();
+    if (canManage) expect(within(rows[1]!).getByRole('switch', { name: 'Let Quill remember this channel' })).toBeChecked();
+  });
+
   it("with Slack not connected, a live bot's channels are still listed, and a manager can flip them", async () => {
     rememberBot.mockResolvedValueOnce();
     renderIt(withBotChannels({ state: 'no-workspace', canManage: true, bot: LIVE_BOT }, [BOT_OPS]));

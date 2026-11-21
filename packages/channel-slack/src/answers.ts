@@ -1,6 +1,7 @@
 import { makeAgentContext, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import { admitSender, findSenderUser, isTemporaryLookupFailure, type Admission } from './admission.js';
 import { outcomeBlocks, type PromptAction } from './blocks.js';
+import type { ChannelCheck, ChannelCheckResult } from './channel-check.js';
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { agentAccess, type AgentAccess } from './channels.js';
 import { COPY } from './copy.js';
@@ -48,7 +49,14 @@ import type { InstallRow } from './store.js';
  *      prompt closes.
  *   8. An attended prompt's channel is still connected to that agent
  *      (`channels.get`): a disconnected channel was promised no more
- *      answers. Else the prompt closes.
+ *      answers. Else the prompt closes. And Slack still describes it as one
+ *      the bot may answer in (`channelCheck`, the turn-start check,
+ *      TASK-1184): a prompt lives a day, and the channel may have been
+ *      archived or shared with another company since. Refused, the prompt
+ *      closes (the channel's next turn removes the binding); Slack not
+ *      answering is "try again". A channel private now (TASK-1188) is
+ *      answered in, never remembered: the binding says private, and the
+ *      thread is marked not remembered for good, before the answer runs.
  *   9. Something here answers the prompt's kind of subject (`answers`), else
  *      the prompt closes. The answer runs as the prompt's user, agent and
  *      conversation, never as anything the click says.
@@ -125,7 +133,9 @@ export interface AnswerDeps {
   api: SlackApi;
   secrets: Pick<SecretStore, 'get'>;
   prompts: PromptRegistry;
-  channels: Pick<ChannelStore, 'get'>;
+  channels: Pick<ChannelStore, 'get' | 'setPrivate' | 'markNotRemembered'>;
+  /** The turn-start channel check (channel-check.ts), asked again before an attended prompt's answer runs. */
+  channelCheck: Pick<ChannelCheck, 'check'>;
   /** The web app's origin, for the Today link. */
   publicOrigin: string;
   logger: Logger;
@@ -413,6 +423,36 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         }
         if (binding === null || binding.agentId !== prompt.agentId) {
           await close('disconnected');
+          return;
+        }
+
+        // 8b. The channel as Slack describes it now (TASK-1184's check, TASK-1188).
+        let channelNow: ChannelCheckResult;
+        try {
+          channelNow = await bounded(() => d.channelCheck.check(installId, token, prompt.channel));
+        } catch (err) {
+          await failed('channel-check', err);
+          return;
+        }
+        if (channelNow.kind === 'refused') {
+          await close('channel-not-allowed');
+          return;
+        }
+        if (channelNow.kind !== 'allowed') {
+          const code = channelNow.kind === 'token-scope' ? 'token-scope' : channelNow.code;
+          await failed('channel-check', Object.assign(new Error(`channel check: ${code}`), { code }));
+          return;
+        }
+        // Private now: memory stays out of this thread for good, and of the
+        // channel while it stays private, before the answer runs on.
+        try {
+          if (binding.isPrivate !== channelNow.isPrivate) {
+            const isPrivate = channelNow.isPrivate;
+            await bounded(() => d.channels.setPrivate(installId, prompt.channel, prompt.agentId, isPrivate));
+          }
+          if (channelNow.isPrivate) await bounded(() => d.channels.markNotRemembered(prompt.conversationId));
+        } catch (err) {
+          await failed('channel-private', err);
           return;
         }
       }

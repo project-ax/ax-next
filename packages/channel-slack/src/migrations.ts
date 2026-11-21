@@ -195,6 +195,7 @@ export interface ChannelSlackChannelsTable {
   connected_by_user_id: string;
   channel_name: string;
   remember: ColumnType<boolean, boolean | undefined, boolean>;
+  is_private: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, Date | undefined, never>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
 }
@@ -294,6 +295,16 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE INDEX IF NOT EXISTS channel_slack_v1_channels_agent
       ON channel_slack_v1_channels (agent_id)
+  `.execute(db);
+  // Whether Slack last described the channel as private (TASK-1188, design
+  // §4b.3): a bot answers there and memory never learns from it. Written at
+  // the bind, and again whenever a turn's check (channel-check.ts) finds it
+  // changed. Every binding before this column was bound public (private ones
+  // were refused, channels.ts `connectable`), so false is what they are; a
+  // channel made private since is set at its next turn.
+  await sql`
+    ALTER TABLE channel_slack_v1_channels
+      ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS channel_slack_v1_threads (

@@ -32,11 +32,16 @@ import { HttpError, httpFetch } from './http';
 import { SLACK_ERROR_COPY } from './slack-admin';
 import { BOT_NAME_COPY, BOT_NAME_FALLBACK, BOT_TOKEN_COPY, SLACK_TOKEN_COPY } from './slack-token-copy';
 
-/** A channel the agent's own bot has answered in, with its memory switch (TASK-1180). */
+/**
+ * A channel the agent's own bot has answered in, with its memory switch
+ * (TASK-1180). `isPrivate`: Slack last described it as private, where the
+ * agent answers and never remembers, whatever the switch says (TASK-1188).
+ */
 export interface BotChannelRow {
   channelId: string;
   name: string;
   remember: boolean;
+  isPrivate?: boolean;
 }
 
 /** A live bot as the invite line names it: its @handle, or its name when Slack never said one. */
@@ -438,6 +443,7 @@ export async function setAgentSlackBotPicture(agentId: string, iconPng: string):
 export const AGENT_SLACK_COPY = Object.freeze({
   generic: 'Something went wrong. Try again in a minute.',
   rememberFailed: "We couldn't change that, so nothing is different. Try again.",
+  privateChannelNotRemembered: "Private channels aren't remembered.",
   botChannelsNotice: (t: InviteTarget): string =>
     t.handle !== null ? `@${t.handle} has answered in these channels.` : `${t.botName} has answered in these channels.`,
 });

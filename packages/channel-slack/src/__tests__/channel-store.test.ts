@@ -147,20 +147,21 @@ type ThreadIds = Omit<ChannelThread, 'notRemembered' | 'external' | 'speakerName
  * by default), or an outsider's, run as `runAs` (Ada, who connects #support,
  * by default).
  */
-type Turn = { mode?: 'attended' | 'external'; runAs?: string; speakerNames?: readonly string[] };
+type Turn = { mode?: 'attended' | 'external'; runAs?: string; speakerNames?: readonly string[]; isPrivate?: boolean };
 
 /**
  * A turn starting in `conversationId`: a member's, in #support of the support
  * agent, unless told otherwise; the switch as it is.
  */
 function record(conversationId: string, o: Partial<ThreadIds> & Turn = {}): ReturnType<ChannelStore['recordThread']> {
-  const { mode, runAs, speakerNames, ...ids } = o;
+  const { mode, runAs, speakerNames, isPrivate, ...ids } = o;
   return channels.recordThread({
     installId: INSTALL,
     channelId: SUPPORT,
     agentId: AGENT,
     ...ids,
     conversationId,
+    isPrivate: isPrivate ?? false,
     ...(mode === 'external'
       ? { mode, runAs: runAs ?? ADA }
       : { mode: 'attended' as const, speakerNames: speakerNames ?? MEL }),
@@ -384,6 +385,7 @@ describe('upsert: one agent per channel', () => {
       connectedByUserId: ADA,
       channelName: 'support',
       remember: true,
+      isPrivate: false,
     };
     expect(await channels.get(INSTALL, SUPPORT)).toEqual({ ...want, createdAt: expect.any(Date) });
     // A binding is keyed by install AND channel.
@@ -705,6 +707,7 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
       agentId: AGENT,
       connectedByUserId: BOB,
       channelName: 'support',
+      isPrivate: false,
     });
   /** The switch the team last set for `agentId` in #support, kept apart from any binding. */
   const keep = async (remember: boolean, agentId: string = AGENT): Promise<void> => {
@@ -739,7 +742,7 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
     expect(await bind()).toBe(want);
     expect(await channels.get(OTHER_INSTALL, SUPPORT)).toEqual({
       installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB,
-      channelName: 'support', remember: want, createdAt: expect.any(Date),
+      channelName: 'support', remember: want, isPrivate: false, createdAt: expect.any(Date),
     });
     // Not a flip: the bind keeps nothing.
     expect(await keptSwitches()).toEqual(kept);
@@ -797,6 +800,7 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
           agentId: AGENT,
           connectedByUserId: BOB,
           channelName: 'support',
+          isPrivate: false,
         }),
       // The flip's kept switch, committed off while the bind waits.
       async (holder) => {
@@ -856,6 +860,7 @@ describe('lists', () => {
         connectedByUserId: BOB,
         channelName: 'support',
         remember: true,
+        isPrivate: false,
         createdAt: OLDER,
       },
       {
@@ -865,6 +870,7 @@ describe('lists', () => {
         connectedByUserId: ADA,
         channelName: 'sales',
         remember: true,
+        isPrivate: false,
         createdAt: NEWER,
       },
     ];
@@ -1168,5 +1174,93 @@ describe("the speakers' names on a member's thread (TASK-1146)", () => {
       const names = (await channels.getThread(conversationId))?.speakerNames ?? [];
       expect([...names].sort(), conversationId).toEqual(['Mel', 'Mel B', 'U1']);
     }
+  });
+});
+
+// ── Private channels: answered in, never remembered (TASK-1188) ─────────────
+
+describe('a private channel (TASK-1188)', () => {
+  it('runMigrations adds is_private to a channel table made before it: every old binding public, since only public ones were bound; a second run changes nothing', async () => {
+    await connect();
+    await sql`ALTER TABLE channel_slack_v1_channels DROP COLUMN is_private`.execute(db);
+    await runMigrations(db);
+    expect((await channels.get(INSTALL, SUPPORT))?.isPrivate).toBe(false);
+    await runMigrations(db);
+    expect((await channels.get(INSTALL, SUPPORT))?.isPrivate).toBe(false);
+  });
+
+  it("a bot's first bind of a private channel writes it private; a reconnect keeps what is stored, as it keeps the switch", async () => {
+    expect(
+      await channels.bindBot({
+        installId: OTHER_INSTALL,
+        channelId: SUPPORT,
+        agentId: AGENT,
+        connectedByUserId: BOB,
+        channelName: 'support',
+        isPrivate: true,
+      }),
+    ).toBe(true);
+    expect(await channels.get(OTHER_INSTALL, SUPPORT)).toMatchObject({ isPrivate: true, remember: true });
+    expect(await connect({ installId: OTHER_INSTALL, connectedByUserId: BOB, isPrivate: false })).toBe('reconnected');
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.isPrivate).toBe(true);
+  });
+
+  it('setPrivate moves only the named agent\'s binding, both ways; another agent, install or channel changes nothing', async () => {
+    await connect();
+    await connect({ channelId: SALES, channelName: 'sales' });
+    expect(await channels.setPrivate(INSTALL, SUPPORT, OTHER_AGENT, true)).toBe(false);
+    expect(await channels.setPrivate(OTHER_INSTALL, SUPPORT, AGENT, true)).toBe(false);
+    expect(await channels.setPrivate(INSTALL, GENERAL, AGENT, true)).toBe(false);
+    expect((await channels.get(INSTALL, SUPPORT))?.isPrivate).toBe(false);
+
+    expect(await channels.setPrivate(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    expect((await channels.get(INSTALL, SUPPORT))?.isPrivate).toBe(true);
+    expect((await channels.get(INSTALL, SALES))?.isPrivate).toBe(false);
+    // Not the switch: it is left alone, and nothing is kept apart from the binding.
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+
+    expect(await channels.setPrivate(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect((await channels.get(INSTALL, SUPPORT))?.isPrivate).toBe(false);
+  });
+
+  it("a turn the router saw as private records its thread not remembered, the switch on", async () => {
+    await connect();
+    expect(await record(CONV, { isPrivate: true })).toBe('recorded');
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+    expect(await vetoFor(CONV)).toEqual(REFUSED);
+  });
+
+  it("the binding's privacy is read in the same statement as the write: made private after the caller's check, the thread is recorded not remembered", async () => {
+    await connect();
+    expect(await channels.setPrivate(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    expect(await record(CONV, { isPrivate: false })).toBe('recorded');
+    expect((await channels.getThread(CONV))?.notRemembered).toBe(true);
+  });
+
+  it('the veto reads the binding at capture time: private refuses every thread of the channel; public again lets the clean ones through, never one a private turn ran in', async () => {
+    await connect();
+    expect(await record(CONV)).toBe('recorded');
+    expect(await channels.setPrivate(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    expect(await vetoFor(CONV)).toEqual(REFUSED);
+    expect(await record(OTHER_CONV, { isPrivate: true })).toBe('recorded');
+
+    expect(await channels.setPrivate(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect(await vetoFor(CONV)).toEqual(remembered(CONV));
+    expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);
+    // Sticky: a clean turn there later never clears it.
+    expect(await record(OTHER_CONV)).toBe('recorded');
+    expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);
+  });
+
+  it('markNotRemembered marks a thread for good, and a conversation that is no thread is left alone', async () => {
+    await connect();
+    expect(await record(CONV)).toBe('recorded');
+    await channels.markNotRemembered(CONV);
+    await channels.markNotRemembered('conv_web_chat');
+    expect((await channels.getThread(CONV))?.notRemembered).toBe(true);
+    expect(await channels.getThread('conv_web_chat')).toBeNull();
+    expect(await record(CONV)).toBe('recorded');
+    expect((await channels.getThread(CONV))?.notRemembered).toBe(true);
   });
 });

@@ -3,10 +3,12 @@
  * agent's own channel-only bot (TASK-1167). For each: its manifest, the URLs
  * Slack calls back on, and the install link an admin follows to Allow it.
  *
- * The dedicated bot is channel-only (invariant 5): six scopes, one event
+ * The dedicated bot is channel-only (invariant 5): seven scopes, one event
  * (`app_mention`), no slash command, no DMs (the App Home messages tab is
  * off, no `im:history`) and no `channels:join` (it only answers in channels
- * it was invited to). It alone reads public channels (`channels:read`): the
+ * it was invited to). It alone reads channels' flags: public ones
+ * (`channels:read`) and, since TASK-1188 (design §4b.3), private ones it was
+ * invited to (`groups:read`), where it answers and never remembers. The
  * shared app serves none (TASK-1186). Its OAuth callback is its own,
  * `BOT_OAUTH_CALLBACK_PATH`, apart from Admin › Slack's.
  *
@@ -48,8 +50,15 @@ export const BOT_EVENTS = Object.freeze(['app_mention', 'message.im'] as const);
 
 /**
  * The dedicated bot's grant: hear @mentions, reply, react, resolve a sender's
- * email, and look up a public channel. Nothing that reads DMs, joins channels,
- * takes commands or reads channel history.
+ * email, and read a channel's flags (`conversations.info`): `channels:read`
+ * for a public channel, `groups:read` for a private one (TASK-1188; Slack's
+ * docs say `conversations.info` takes it for private channels, which the
+ * TASK-1189 walk measures). The turn-start check (channel-check.ts) needs
+ * those flags to tell a private channel, where it answers and never
+ * remembers, from an archived or Slack Connect one, where it doesn't answer.
+ * Nothing that reads DMs or group DMs, joins channels, takes commands or
+ * reads channel history. Adding a scope means Slack asks an installed bot
+ * for Allow again.
  */
 export const DEDICATED_BOT_SCOPES = Object.freeze([
   'app_mentions:read',
@@ -58,6 +67,7 @@ export const DEDICATED_BOT_SCOPES = Object.freeze([
   'users:read',
   'users:read.email',
   'channels:read',
+  'groups:read',
 ] as const);
 
 export const DEDICATED_BOT_EVENTS = Object.freeze(['app_mention'] as const);

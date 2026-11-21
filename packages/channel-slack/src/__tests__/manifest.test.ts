@@ -222,6 +222,7 @@ describe('the dedicated bot manifest', () => {
             'users:read',
             'users:read.email',
             'channels:read',
+            'groups:read',
           ],
         },
       },
@@ -249,14 +250,25 @@ describe('the dedicated bot manifest', () => {
     expect(Object.isFrozen(DEDICATED_BOT_EVENTS)).toBe(true);
   });
 
-  it("a dedicated bot can't read DMs, join channels or take commands", () => {
-    expect(DEDICATED_BOT_SCOPES).toHaveLength(6);
-    for (const banned of ['im:history', 'channels:join', 'commands', 'channels:history', 'chat:write.public', 'chat:write.customize']) {
+  it("a dedicated bot can't read DMs, group DMs or any history, join channels or take commands", () => {
+    expect(DEDICATED_BOT_SCOPES).toHaveLength(7);
+    for (const banned of [
+      'im:history',
+      'im:read',
+      'mpim:read',
+      'mpim:history',
+      'groups:history',
+      'channels:join',
+      'commands',
+      'channels:history',
+      'chat:write.public',
+      'chat:write.customize',
+    ]) {
       expect(DEDICATED_BOT_SCOPES).not.toContain(banned);
     }
-    for (const scope of DEDICATED_BOT_SCOPES) {
-      expect(scope).not.toMatch(/^(groups|mpim|im):/);
-    }
+    // Private channels: only their flags, so it can answer there and never remember them (design §4b.3, TASK-1188).
+    const privateScopes = DEDICATED_BOT_SCOPES.filter((s) => /^(groups|mpim|im):/.test(s));
+    expect(privateScopes).toStrictEqual(['groups:read']);
   });
 
   it('never shares its scope or event lists with the caller', () => {
@@ -266,7 +278,7 @@ describe('the dedicated bot manifest', () => {
     };
     manifest.oauth_config.scopes.bot.push('channels:history');
     manifest.settings.event_subscriptions.bot_events.push('message.channels');
-    expect(DEDICATED_BOT_SCOPES).toHaveLength(6);
+    expect(DEDICATED_BOT_SCOPES).toHaveLength(7);
     expect(DEDICATED_BOT_EVENTS).toHaveLength(1);
   });
 
@@ -279,7 +291,7 @@ describe('the dedicated bot manifest', () => {
     });
   });
 
-  it('an install link for a bot asks for the six scopes; the shared link is unchanged', () => {
+  it('an install link for a bot asks for the seven scopes; the shared link is unchanged', () => {
     const scopeOf = (scopes?: readonly string[]): string[] =>
       new URL(
         buildInstallUrl({
@@ -292,7 +304,7 @@ describe('the dedicated bot manifest', () => {
         .searchParams.get('scope')!
         .split(',');
     expect(scopeOf(DEDICATED_BOT_SCOPES)).toStrictEqual([...DEDICATED_BOT_SCOPES]);
-    expect(scopeOf(DEDICATED_BOT_SCOPES)).toHaveLength(6);
+    expect(scopeOf(DEDICATED_BOT_SCOPES)).toHaveLength(7);
     expect(scopeOf()).toStrictEqual([...BOT_SCOPES]);
   });
 });
