@@ -799,14 +799,24 @@ paths exist, not who may do what.
 
 ### 1. A team agent reaches channels only through its own bot
 
-- **No new shared-app channel connections.** The agent settings' "Connect a
-  channel" picker and `/ax connect` stop offering team agents. Inviting the
-  agent's own bot is the only way in. That also retires the rules that only
-  exist because there were two ways in: "answers only its new @handle", the
-  moved-channels list (TASK-1168) and the shared connection's switch.
-- **Existing shared-app connections keep working** until the agent's own bot
-  is live. Then the TASK-1168 list tells the team where to `/invite` it, as
-  built. How many prod channels this affects is §8 Q7.
+- **The shared app stops doing channels.** The agent settings' "Connect a
+  channel" picker, the `/ax` slash command (it only ever did `connect` and
+  `disconnect`), and shared-app channel turns are removed. Inviting the agent's
+  own bot is the only way in. That also retires the rules that only exist
+  because there were two ways in: "answers only its new @handle", the
+  moved-channels list (TASK-1168), the shared connection's switch and the
+  `own-bot` refusal.
+- **Existing shared-app connections are deleted, not migrated** (decided
+  2026-11-21, Vinay: prod has no real users yet, so §8 Q7 needs no count).
+  Only the shared install's rows in `channel_slack_v1_channels` go. A bot's
+  bindings live in the same table under its own install id and stay. The
+  kept switches (`channel_slack_v1_memory_switches`) stay, because the bot's
+  first bind reads them.
+- **The shared manifest drops `channels:join` and `commands`**, the two scopes
+  that only served connecting channels. Whether Slack needs a new Allow to
+  *drop* a scope is unmeasured. Either way, prod's shared install sheds them
+  with one Disconnect + Connect after the deploy. With no real users, that
+  costs nothing.
 - **The shared bot keeps two jobs:** DMs with each person's personal agent,
   and the DMs about bot requests (TASK-1170).
 - **The cost.** §1 decision 7 said every agent works in Slack straight away
@@ -898,9 +908,10 @@ stay as built (§2, §4). People just don't have to learn the words.
 Land this **before phase 2 deploys**, so nobody in prod meets the confusing
 version first. Cards to file once this section merges:
 
-- **A. Channels only through a bot.** Stop new shared-app connects for team
-  agents (the settings picker and `/ax connect`); keep existing connections
-  until the agent's bot is live. Waits on §8 Q7.
+- **A. Channels only through a bot.** Remove the shared app's channel path
+  (the settings picker, `/ax`, shared-app channel turns, the moved-channels
+  list), delete the shared install's channel rows, and drop `channels:join`
+  and `commands` from the shared manifest.
 - **B. One Slack card per agent.** The three states, the ⋯ menu (with the
   memory switch in it), problem-only status with one action each, and a copy
   pass with the `ux-designer` agent. UI only.
@@ -1447,12 +1458,12 @@ and the configuration token revoked. "Tested" means we watched it happen;
    decomposing phase 2. **Stored once per person** (decided 2026-11-20, Vinay;
    TASK-1175): one rotating token per approver, used for every Slack app they
    made through AX.
-7. **How many prod channels are connected to team agents through the shared
-   app?** §4b stops new ones. Existing ones keep answering until each agent
-   has its own bot, and then need a `/invite`. The count says whether that's a
-   footnote or a migration worth a DM to each team. Needs a read-only prod
-   query, which needs Vinay's OK first. Run it alongside the phase 2 deploy
-   prerequisite (channels switched off, then disconnected).
+7. ~~**How many prod channels are connected to team agents through the shared
+   app?**~~ **Moot 2026-11-21 (Vinay):** prod has no real users yet, so §4b
+   deletes the shared app's channel connections outright, with no count and no
+   migration. The same answer retires the phase 2 deploy prerequisite (a prod
+   query for channels switched off and then disconnected): there's no real
+   setting to keep.
 
 ## 9. Delivery
 
