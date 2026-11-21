@@ -1,7 +1,6 @@
 /**
  * The "remember this channel" switch of one Slack channel row (TASK-1180),
- * shared by the shared-app list and the agent's own bot's list so both read
- * the same. A manager gets the switch; anyone else reads the note, and only
+ * in the agent's own bot's list. A manager gets the switch; anyone else reads the note, and only
  * while memory is on.
  *
  * Never optimistic: `busy` disables the switch at its old position, and the

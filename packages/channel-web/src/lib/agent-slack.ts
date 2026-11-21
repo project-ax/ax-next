@@ -5,10 +5,6 @@
  * answers by shape, not by import (the SPA depends on no host plugin).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus
- *   GET  /settings/slack/:agentId/available   → { channels, truncated }
- *   POST /settings/slack/:agentId/connect     { channelId } → { channel, reconnected } (409 own-bot once its own bot is live)
- *   POST /settings/slack/:agentId/disconnect  { channelId } → { removed }
- *   POST /settings/slack/:agentId/remember    { channelId, remember } → {} (409 own-bot once its own bot has answered there)
  *   POST /settings/slack/:agentId/bot/remember  { channelId, remember } → {}
  *        (TASK-1180: the switch for a channel the agent's own bot has answered in; the status lists them as `botChannels`)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -36,19 +32,6 @@ import { HttpError, httpFetch } from './http';
 import { SLACK_ERROR_COPY } from './slack-admin';
 import { BOT_NAME_COPY, BOT_NAME_FALLBACK, BOT_TOKEN_COPY, SLACK_TOKEN_COPY } from './slack-token-copy';
 
-export interface SlackChannelRow {
-  channelId: string;
-  name: string;
-  remember: boolean;
-  connectedBy: string;
-  needsReconnect: boolean;
-  /**
-   * The agent's own bot is live and has not answered in this channel yet, so
-   * it still needs an invite. An older host omits it; that reads as false.
-   */
-  needsInvite: boolean;
-}
-
 /** A channel the agent's own bot has answered in, with its memory switch (TASK-1180). */
 export interface BotChannelRow {
   channelId: string;
@@ -56,7 +39,7 @@ export interface BotChannelRow {
   remember: boolean;
 }
 
-/** A live bot as the moved-channel lines name it: its @handle, or its name when Slack never said one. */
+/** A live bot as the invite line names it: its @handle, or its name when Slack never said one. */
 export interface InviteTarget {
   botName: string;
   handle: string | null;
@@ -125,7 +108,6 @@ export type AgentSlackStatus =
       botName: string;
       workspaceName: string;
       canManage: boolean;
-      channels: SlackChannelRow[];
       bot: AgentSlackBot;
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
@@ -134,24 +116,12 @@ export type AgentSlackStatus =
 /** `unavailable`: this server doesn't run the Slack plugin (or can't show us the agent). */
 export type AgentSlackRead = AgentSlackStatus | { state: 'unavailable' };
 
-export interface AvailableSlackChannel {
-  channelId: string;
-  name: string;
-  /** Who has it: nobody, this agent, or another one. */
-  connected: 'this-agent' | 'other-agent' | null;
-}
-
-export interface AvailableSlackChannels {
-  channels: AvailableSlackChannel[];
-  truncated: boolean;
-}
-
 const writeHeaders = {
   'content-type': 'application/json',
   'x-requested-with': 'ax-admin',
 } as const;
 
-/** The server's own refusal codes (`channel-taken`, `needs-reconnect`, …). */
+/** The server's own refusal codes (`not-live`, `bot-exists`, …). */
 const CODE_RE = /^[a-z0-9-]{1,64}$/;
 /** A bot's install id as the server makes them: 16 random bytes, base64url. */
 const INSTALL_ID_RE = /^[A-Za-z0-9_-]{22}$/;
@@ -192,22 +162,6 @@ export function slackShortDate(iso: string): string {
 }
 
 const base = (agentId: string): string => `/settings/slack/${encodeURIComponent(agentId)}`;
-
-function parseRow(value: unknown): SlackChannelRow | null {
-  if (!isRecord(value)) return null;
-  const { channelId, name, remember, connectedBy, needsReconnect, needsInvite = false } = value;
-  if (
-    typeof channelId !== 'string' ||
-    typeof name !== 'string' ||
-    typeof remember !== 'boolean' ||
-    typeof connectedBy !== 'string' ||
-    typeof needsReconnect !== 'boolean' ||
-    typeof needsInvite !== 'boolean'
-  ) {
-    return null;
-  }
-  return { channelId, name, remember, connectedBy, needsReconnect, needsInvite };
-}
 
 /**
  * A bot's install id: one the server could have made, or null (the viewer
@@ -294,23 +248,16 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
         : null;
     }
     case 'ready': {
-      const { botName, workspaceName, canManage, channels } = body;
+      const { botName, workspaceName, canManage } = body;
       if (
         typeof botName !== 'string' ||
         typeof workspaceName !== 'string' ||
-        typeof canManage !== 'boolean' ||
-        !Array.isArray(channels)
+        typeof canManage !== 'boolean'
       ) {
         return null;
       }
       const bot = parseBot(body['bot']);
       if (bot === null) return null;
-      const rows: SlackChannelRow[] = [];
-      for (const c of channels) {
-        const row = parseRow(c);
-        if (row === null) return null;
-        rows.push(row);
-      }
       const botChannels = parseBotChannels(body['botChannels']);
       if (botChannels === null) return null;
       return {
@@ -318,7 +265,6 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
         botName,
         workspaceName,
         canManage,
-        channels: rows,
         bot,
         ...(botChannels !== undefined ? { botChannels } : {}),
       };
@@ -360,35 +306,6 @@ export async function fetchAgentSlack(agentId: string): Promise<AgentSlackRead> 
   return status;
 }
 
-/** The channels a connect could accept, each marked by who has it. */
-export async function fetchAvailableChannels(agentId: string): Promise<AvailableSlackChannels> {
-  const res = await httpFetch(`${base(agentId)}/available`);
-  if (!res.ok) throw await failure(res);
-  let body: unknown;
-  try {
-    body = await res.json();
-  } catch {
-    throw badResponse(res.status);
-  }
-  if (!isRecord(body) || !Array.isArray(body['channels']) || typeof body['truncated'] !== 'boolean') {
-    throw badResponse(res.status);
-  }
-  const channels: AvailableSlackChannel[] = [];
-  for (const c of body['channels']) {
-    if (!isRecord(c)) throw badResponse(res.status);
-    const { channelId, name, connected } = c;
-    if (
-      typeof channelId !== 'string' ||
-      typeof name !== 'string' ||
-      (connected !== null && connected !== 'this-agent' && connected !== 'other-agent')
-    ) {
-      throw badResponse(res.status);
-    }
-    channels.push({ channelId, name, connected });
-  }
-  return { channels, truncated: body['truncated'] };
-}
-
 /** A POST with the write headers. A non-ok answer becomes an AgentSlackError. */
 async function post(agentId: string, suffix: string, body: unknown): Promise<{ status: number; body: unknown }> {
   const res = await httpFetch(`${base(agentId)}${suffix}`, {
@@ -404,36 +321,6 @@ async function post(agentId: string, suffix: string, body: unknown): Promise<{ s
     json = undefined;
   }
   return { status: res.status, body: json };
-}
-
-/** Connect (or reconnect) a channel. The answer is the row to draw. */
-export async function connectSlackChannel(
-  agentId: string,
-  channelId: string,
-): Promise<{ channel: SlackChannelRow; reconnected: boolean }> {
-  const answer = await post(agentId, '/connect', { channelId });
-  const fields = isRecord(answer.body) ? answer.body : {};
-  const channel = parseRow(fields['channel']);
-  const reconnected = fields['reconnected'];
-  if (channel === null || typeof reconnected !== 'boolean') throw badResponse(answer.status);
-  return { channel, reconnected };
-}
-
-/** Disconnect a channel. `removed` is false when it was already gone. */
-export async function disconnectSlackChannel(agentId: string, channelId: string): Promise<{ removed: boolean }> {
-  const answer = await post(agentId, '/disconnect', { channelId });
-  const removed = isRecord(answer.body) ? answer.body['removed'] : undefined;
-  if (typeof removed !== 'boolean') throw badResponse(answer.status);
-  return { removed };
-}
-
-/** Turn "remember this channel" on or off. Resolves once the server holds it. */
-export async function setSlackChannelRemember(
-  agentId: string,
-  channelId: string,
-  remember: boolean,
-): Promise<void> {
-  await post(agentId, '/remember', { channelId, remember });
 }
 
 /**
@@ -549,72 +436,14 @@ export async function setAgentSlackBotPicture(agentId: string, iconPng: string):
 // ── What an error says ────────────────────────────────────────────────────
 
 export const AGENT_SLACK_COPY = Object.freeze({
-  notPublic: "That's a private channel. Only public channels can be connected.",
-  archived: "That channel is archived. Pick one that's still in use.",
-  shared: "Channels shared with another organization can't be connected.",
-  channelNotAllowed: "That channel can't be connected.",
-  channelTaken:
-    "That channel is already connected to another agent. A team admin of that agent's team can disconnect it.",
-  workspacePolicy: "Your Slack workspace doesn't let the bot join that channel. A Slack admin can change that.",
-  needsReconnect: 'Slack needs to be reconnected before we can do that. An admin can do it in Admin settings.',
-  slackError: "Slack didn't answer just now. Try again in a minute.",
   generic: 'Something went wrong. Try again in a minute.',
   rememberFailed: "We couldn't change that, so nothing is different. Try again.",
-  movedNotice: (t: InviteTarget): string =>
-    t.handle !== null
-      ? `These channels still need @${t.handle}: run /invite @${t.handle} in each one. A channel leaves this list once @${t.handle} answers there.`
-      : `These channels still need ${t.botName}: invite it to each one with /invite. A channel leaves this list once ${t.botName} answers there.`,
-  movedRow: (t: InviteTarget): string =>
-    t.handle !== null ? `Run /invite @${t.handle} here.` : `Invite ${t.botName} here with /invite.`,
   botChannelsNotice: (t: InviteTarget): string =>
     t.handle !== null ? `@${t.handle} has answered in these channels.` : `${t.botName} has answered in these channels.`,
-  movedDisconnect: (channel: string): string =>
-    `We'll take #${channel} off this list. The agent answers there only after its own bot is invited.`,
 });
 
-/** The sentence a refused connect or channel list becomes. Never a raw code. */
-export function agentSlackErrorCopy(err: unknown): string {
-  if (err instanceof AgentSlackError) {
-    switch (err.code) {
-      case 'needs-reconnect':
-        return AGENT_SLACK_COPY.needsReconnect;
-      case 'channel-taken':
-        return AGENT_SLACK_COPY.channelTaken;
-      case 'channel-not-allowed':
-        switch (err.reason) {
-          case 'not-public':
-            return AGENT_SLACK_COPY.notPublic;
-          case 'archived':
-            return AGENT_SLACK_COPY.archived;
-          case 'shared':
-            return AGENT_SLACK_COPY.shared;
-          case 'workspace-policy':
-            return AGENT_SLACK_COPY.workspacePolicy;
-          default:
-            return AGENT_SLACK_COPY.channelNotAllowed;
-        }
-      case 'slack-error':
-        return AGENT_SLACK_COPY.slackError;
-    }
-  }
-  return AGENT_SLACK_COPY.generic;
-}
-
 /**
- * A refused connect that means the picture is stale: this agent is personal or
- * there is no workspace now (409), or it can't be managed (403) or seen (404)
- * any more. Read it again. `channel-taken` and `needs-reconnect` are 409s too,
- * but they are answers about the channel, shown as they are. `own-bot` is
- * stale too: the agent's own bot went live since this page was drawn.
- */
-export function agentSlackStateChanged(err: unknown): boolean {
-  if (!(err instanceof AgentSlackError)) return false;
-  if (err.status === 403 || err.status === 404) return true;
-  return err.status === 409 && (err.code === 'personal-agent' || err.code === 'no-workspace' || err.code === 'own-bot');
-}
-
-/**
- * A remember or disconnect the server refused because what we drew is gone or
+ * A remember the server refused because what we drew is gone or
  * no longer ours to change (403, 404, 409): read it again. Only a 5xx or a
  * dropped connection is worth "try again".
  */

@@ -1,8 +1,8 @@
 /**
  * The channels the agent's own Slack bot has answered in, each with the same
- * "remember this channel" switch a shared channel has (TASK-1180). Only the
- * switch is here: no Disconnect (the bot answers where it was invited) and no
- * "Connected by" (nobody connected it).
+ * "remember this channel" switch (TASK-1180). Only the switch is here: no
+ * Disconnect (the bot answers where it was invited) and no "Connected by"
+ * (nobody connected it).
  *
  * Rows live in local state seeded from the status. A re-read remounts this
  * component (the loading face unmounts it), so a stale page never lingers.
