@@ -10,6 +10,7 @@ import {
   type DirectMessage,
   type Mention,
 } from './admission.js';
+import { channelInfoFailure, type ChannelCheck } from './channel-check.js';
 import { decideTier, runsAsConnector, type SenderFacts } from './channel-route.js';
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { agentAccess, connectable, teamAdminAccess, type AgentAccess } from './channels.js';
@@ -19,7 +20,7 @@ import { channelSenderLabel, dmSenderLabel, senderLabelNames } from './format.js
 import { cleanChannelName } from './label.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
-import { SlackApiError, type SlackChannel } from './slack-api.js';
+import type { SlackChannel } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
 import type { KeyedQueue } from './turn-queue.js';
 import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
@@ -81,7 +82,23 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      agent's team, so it is asked again here: not any more drops the turn
  *      (`requester`) with the polite "I can't answer you here right now"
  *      line, and a failed read drops it too (`slack_event_failed`, stage
- *      `requester`), its sender told to try again.
+ *      `requester`), its sender told to try again. Last, Slack itself is
+ *      asked about the channel, with the install's token (channel-check.ts,
+ *      which keeps an answer that allows it for a minute), since a channel
+ *      can change after it is bound (TASK-1184). A channel it now says is
+ *      private, archived or Slack Connect, or can't find, loses its binding
+ *      as a team admin's Disconnect would take it (the memory switch kept
+ *      for the agent and channel stays). The one turn whose removal took it
+ *      tells its sender, privately and once (`channelNoLongerAllowed`); every
+ *      turn it stops is dropped (`slack_turns_dropped`,
+ *      `channel-not-allowed`). Slack not answering is no turn either: "try
+ *      again", and the binding stays. Nor is Slack saying the install's own
+ *      token can't read any public channel (code `token-scope`): the binding
+ *      stays, and since no retry fixes that, its sender is told a team admin
+ *      must look (`channelUnavailable`, or `botUnavailable` on a team agent's
+ *      own bot), never to try again. A Slack Connect channel seldom gets
+ *      this far: step 1 drops its events, so only a turn that was waiting
+ *      when it was shared, or one while its share is still pending, finds it.
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads, with the channel's memory switch as it is NOW
  *      (channel-store.ts `recordThread`): a turn that starts while the switch
@@ -109,9 +126,13 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *     The binding is written at the first mention in a channel, once Slack's
  *     own conversations.info, read with the bot's token and about this
  *     channel, shows one the agent settings could connect (channels.ts
- *     `connectable`): to the bot's one agent, connected by its requester. A
- *     refused channel is silence; a binding naming any other agent runs
- *     nothing;
+ *     `connectable`): to the bot's one agent, connected by its requester.
+ *     Slack is asked again when each turn starts, as on the shared app (step
+ *     8). A channel refused at its first mention is silence; Slack failing is
+ *     "try again"; Slack saying the bot's token can't read any public
+ *     channel (the turn-start check's reading, channel-check.ts
+ *     `channelInfoFailure`) is `botUnavailable`; a binding naming any other
+ *     agent runs nothing;
  *   - an outsider's turn runs as that requester, and only while they are
  *     still a team admin of the agent's team (channels.ts `teamAdminAccess`);
  *     otherwise an outsider is told privately (`botUnavailable`) and gets
@@ -147,11 +168,18 @@ export interface RouterDeps extends TurnDeps {
    * reads, written just before the turn's agent runs; and the binding a team
    * agent's own bot writes at its first mention in a channel (TASK-1167),
    * with the switch the team last set for the agent there, under the lock a
-   * flip takes (`bindBot`, TASK-1182).
+   * flip takes (`bindBot`, TASK-1182). And a binding removed when Slack says
+   * its channel can't be served any more (`remove`, TASK-1184).
    */
-  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot'>;
+  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot' | 'remove'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
+  /**
+   * Slack's word that a connected channel is still public, live and not Slack
+   * Connect, asked when each channel turn starts and kept for a minute
+   * (channel-check.ts, TASK-1184).
+   */
+  channelCheck: ChannelCheck;
 }
 
 type Log = (level: 'info' | 'warn' | 'error', msg: string, fields?: Record<string, string | number>) => void;
@@ -607,6 +635,55 @@ async function routeMention(
         return;
       }
     }
+    // 8b. The channel itself, as Slack describes it now (TASK-1184). It was
+    // checked when it was bound, and it may have been made private, archived
+    // or shared with another company since: a mention doesn't say, though
+    // step 1 drops one Slack flags as Slack Connect. Asked last, so a turn
+    // the reads above drop costs no Slack call. A definitive refusal
+    // disconnects the channel, as a team admin's Disconnect would (the switch
+    // kept for the agent and channel stays), so the agent's settings stop
+    // listing it and memory stops learning from its threads. Slack not
+    // answering says nothing about the channel: no turn, and the binding stays.
+    const channelNow = await d.channelCheck.check(installId, botToken, m.channel);
+    // Only `allowed` goes on to the turn; every other kind returns, and a kind
+    // added later fails to compile (the `never` below) rather than run a turn.
+    if (channelNow.kind !== 'allowed') {
+      switch (channelNow.kind) {
+        case 'token-scope': {
+          // The install's own token can't read any public channel (its app lost
+          // channels:read): nothing about this channel, so the binding stays. No
+          // retry fixes it, so no "try again": a team admin must look, as for a
+          // broken connection (tier `unavailable`, step 5).
+          log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
+          await tell(install.kind === 'shared' ? COPY.channelUnavailable : COPY.botUnavailable);
+          return;
+        }
+        case 'unknown': {
+          log('error', 'slack_event_failed', { stage: 'channel-check', code: channelNow.code });
+          await tell(COPY.turnFailed);
+          return;
+        }
+        case 'refused': {
+          let removed: boolean;
+          try {
+            removed = await d.channels.remove(installId, m.channel, agentId);
+          } catch (err) {
+            await failed('channel-remove', err);
+            return;
+          }
+          if (removed) log('info', 'slack_channel_disconnected', { reason: 'channel-not-allowed', code: channelNow.code });
+          log('info', 'slack_turns_dropped', { reason: 'channel-not-allowed', count: 1, code: channelNow.code });
+          // Only the turn whose removal took the binding says so: once, however many were waiting.
+          if (removed) await tell(COPY.channelNoLongerAllowed);
+          return;
+        }
+        default: {
+          const unhandled: never = channelNow;
+          void unhandled;
+          return;
+        }
+      }
+    }
     // 9. The memory switch, before anything is said in the conversation. The
     // store reads the switch in the same statement that records the thread,
     // so it is the switch as it is at that write: not as it was when the
@@ -764,8 +841,9 @@ async function reachShared(
  * with no binding is never "no agent here" (the bot serves its one agent
  * wherever it was invited). Then the channel's binding, or the one this
  * first mention there writes (bindBotChannel): a channel it refuses is
- * silence, Slack failing is "try again". A binding naming any agent but the
- * bot's runs nothing.
+ * silence, Slack failing is "try again", and a token that can't read any
+ * public channel is `botUnavailable`, since no retry fixes it. A binding
+ * naming any agent but the bot's runs nothing.
  */
 async function reachOwnBot(
   d: RouterDeps,
@@ -808,7 +886,11 @@ async function reachOwnBot(
     }
     if (!outcome.ok) {
       const code = outcome.code !== undefined ? { code: outcome.code } : {};
-      if (outcome.reason === 'slack-error') {
+      if (outcome.reason === 'token-scope') {
+        // As at the turn-start check (step 8): no retry fixes the bot's token, a team admin must.
+        log('error', 'slack_event_failed', { stage: 'channel-info', code: 'token-scope' });
+        await say.tell(COPY.botUnavailable);
+      } else if (outcome.reason === 'slack-error') {
         log('error', 'slack_event_failed', { stage: 'channel-info', ...code });
         await say.tell(COPY.turnFailed);
       } else {
@@ -834,21 +916,14 @@ function isId(value: string | null | undefined): value is string {
 }
 
 /**
- * conversations.info refusals that are about the channel, not Slack failing:
- * a team agent's own bot reads public channels only (its manifest's
- * `channels:read`), so a private channel or a group DM it was added to
- * anyway is `channel_not_found` or `missing_scope` to it. Silence, as for a
- * channel Slack describes as one it can't serve.
- */
-const CHANNEL_REFUSED_CODES: ReadonlySet<string> = new Set(['channel_not_found', 'missing_scope']);
-
-/**
  * `code` is Slack's own (or this file's `id-mismatch`), when there is one to
- * log. `slack-error` always has one.
+ * log. `slack-error` always has one. `token-scope` (never a code): the bot's
+ * own token can't read any public channel (channel-check.ts
+ * `channelInfoFailure`).
  */
 type BindOutcome =
   | { ok: true; binding: ChannelBinding }
-  | { ok: false; reason: 'channel-not-allowed' | 'slack-error'; code?: string };
+  | { ok: false; reason: 'channel-not-allowed' | 'slack-error' | 'token-scope'; code?: string };
 
 /**
  * A team agent's own bot binds a channel at its first mention there
@@ -881,10 +956,13 @@ async function bindBotChannel(
   try {
     info = await d.api.conversationsInfo(botToken, channelId);
   } catch (err) {
-    if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
-      return { ok: false, reason: 'channel-not-allowed', code: err.code };
-    }
-    return { ok: false, reason: 'slack-error', code: logCode(err) };
+    // The turn-start check's own reading (channel-check.ts), so this bind and
+    // every later turn agree: a token that can't read public channels at all
+    // is no refusal of this channel.
+    const failure = channelInfoFailure(err);
+    if (failure.kind === 'refused') return { ok: false, reason: 'channel-not-allowed', code: failure.code };
+    if (failure.kind === 'token-scope') return { ok: false, reason: 'token-scope' };
+    return { ok: false, reason: 'slack-error', code: failure.code };
   }
   // Every check reads this answer, so it must be about the channel the mention came from.
   if (info.id !== channelId) return { ok: false, reason: 'channel-not-allowed', code: 'id-mismatch' };

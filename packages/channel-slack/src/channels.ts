@@ -27,7 +27,9 @@ import type { InstallRow, InstallStore } from './store.js';
  * (slack-api.ts narrows them, and its refusing flags fail closed). Every
  * check reads `conversations.info` BEFORE the bot joins, an answer about some
  * other channel is refused, and the binding is written last: a refused or
- * failed step binds nothing.
+ * failed step binds nothing. A channel can change
+ * after that, so the router asks Slack again when each turn starts
+ * (channel-check.ts, TASK-1184).
  *
  * An agent whose own bot is live (liveOwnBot) takes no channel through the
  * shared app (TASK-1168): its bot answers for it, and the shared bot steps
@@ -431,7 +433,9 @@ export async function connectChannel(
 /**
  * A channel the picker offers: a channel, public, live, and in no other
  * workspace. Also what a team agent's own bot binds at its first mention in
- * a channel (router.ts, TASK-1167), so the two can't disagree.
+ * a channel (router.ts, TASK-1167), and what every channel turn is checked
+ * against before it runs (channel-check.ts, TASK-1184), so none of them can
+ * disagree.
  */
 export function connectable(c: SlackChannel): boolean {
   return c.isChannel && !c.isPrivate && !c.isArchived && !c.isExtShared && !c.isPendingExtShared;

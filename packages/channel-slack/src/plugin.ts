@@ -24,6 +24,7 @@ import { createBotRequestAdminRoutes } from './bot-request-routes.js';
 import { createBotRequests } from './bot-requests.js';
 import { createBots } from './bots.js';
 import { subscribeCaptureVeto } from './capture-veto.js';
+import { createChannelCheck } from './channel-check.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import type { ChannelDeps } from './channels.js';
 import { COMMANDS_ROUTE_PATH, createCommandsHandler } from './commands.js';
@@ -34,6 +35,8 @@ import type { RouteSpec } from './http-types.js';
 import { INTERACTIONS_ROUTE_PATH, createInteractionsHandler } from './interactions.js';
 import { createLifetime, type Lifetime } from './lifetime.js';
 import {
+  CHANNEL_CHECK_MAX,
+  CHANNEL_CHECK_TTL_MS,
   COMMANDS_MAX_BODY_BYTES,
   EVENT_DEDUPE_MAX,
   EVENT_DEDUPE_TTL_MS,
@@ -504,6 +507,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 queue,
                 channels: channelStore,
                 externalQueue,
+                channelCheck: createChannelCheck({ api, now, ttlMs: CHANNEL_CHECK_TTL_MS, max: CHANNEL_CHECK_MAX }),
               }),
               logger,
               now,

@@ -1,10 +1,13 @@
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createChannelCheck } from '../channel-check.js';
 import type { ChannelBinding, ChannelStore } from '../channel-store.js';
 import { COPY } from '../copy.js';
 import { pickPersonalAgent } from '../turn.js';
 import type { SlackEnvelope, SlackInnerEvent } from '../events.js';
 import {
+  CHANNEL_CHECK_MAX,
+  CHANNEL_CHECK_TTL_MS,
   FLUSH_INTERVAL_MS,
   MAX_EXTERNAL_TURNS_PER_CHANNEL,
   MAX_TURNS_PER_CONVERSATION,
@@ -14,6 +17,7 @@ import {
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
+import { DEDICATED_BOT_SCOPES } from '../manifest.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { createEventRouter } from '../router.js';
@@ -198,6 +202,21 @@ const CHANNEL_INFO: Record<string, SlackChannel> = {
   [OPS]: slackChannel(OPS, 'ops'),
 };
 
+/**
+ * Slack's `provided` on a `missing_scope` (TASK-1184): every scope the token
+ * holds. A team agent's own bot's (all of them are the shared app's too), with and
+ * without channels:read.
+ */
+const HOLDS_CHANNELS_READ = DEDICATED_BOT_SCOPES.join(',');
+const LACKS_CHANNELS_READ = DEDICATED_BOT_SCOPES.filter((s) => s !== 'channels:read').join(',');
+/** Every scope conversations.info takes: what Slack may say is `needed` from a token that holds none of them (unmeasured). */
+const EVERY_INFO_SCOPE = 'channels:read,groups:read,mpim:read,im:read';
+
+/** conversations.info's `missing_scope`, naming what the call needed and what the token holds, as Slack says them. */
+function missingScopeNaming(scopes: { needed?: string; provided?: string }): SlackApiError {
+  return new SlackApiError('conversations.info', 'missing_scope', undefined, scopes);
+}
+
 function agent(id: string, ownerId: string, createdAt: string, team = false) {
   return {
     id,
@@ -267,8 +286,11 @@ interface SlackCall {
 function fakeSlack(
   o: {
     fail?: (method: Method) => Error | undefined;
-    /** conversations.info's answer for a channel; an Error is thrown. Default: CHANNEL_INFO. */
-    info?: (channel: string) => SlackChannel | Error;
+    /**
+     * conversations.info's answer for a channel; an Error is thrown, and a
+     * promise is waited for first (a Slack slow to answer). Default: CHANNEL_INFO.
+     */
+    info?: (channel: string) => SlackChannel | Error | Promise<SlackChannel | Error>;
   } = {},
 ) {
   const info =
@@ -307,7 +329,7 @@ function fakeSlack(
     },
     async conversationsInfo(token, channel) {
       record('conversationsInfo', token, { channel });
-      const answer = info(channel);
+      const answer = await info(channel);
       if (answer instanceof Error) throw answer;
       return { ...answer };
     },
@@ -384,8 +406,18 @@ function world(o: {
   beforeThreadWrite?: (store: ChannelStore) => Promise<void>;
   /** agents:resolve fails for this user (an outage, not a refusal). */
   resolveFails?: (userId: string) => boolean;
-  /** conversations.info's answer for a channel (TASK-1167); an Error is thrown. Default: CHANNEL_INFO. */
-  channelInfo?: (channel: string) => SlackChannel | Error;
+  /**
+   * conversations.info's answer for a channel (TASK-1167); an Error is
+   * thrown, and a promise is waited for first. Default: CHANNEL_INFO.
+   */
+  channelInfo?: (channel: string) => SlackChannel | Error | Promise<SlackChannel | Error>;
+  /**
+   * The clock of the check each channel turn makes (TASK-1184), alone: the
+   * reply stream keeps `systemClock`. Default: `Date.now`.
+   */
+  now?: () => number;
+  /** The channel store fails to remove a binding Slack no longer allows (TASK-1184). */
+  removeFails?: boolean;
   /** The install store fails the n-th read of an agent's own bot (1-based) when this says so. */
   botReadFails?: (n: number) => boolean;
   /** auth:is-approved-email fails. */
@@ -610,6 +642,13 @@ function world(o: {
       }
       return channels.store.bindBot(...args);
     },
+    // A channel Slack no longer allows loses its binding, as a team admin's Disconnect takes it (TASK-1184).
+    async remove(installId: string, channelId: string, agentId: string): Promise<boolean> {
+      if (o.removeFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
+      }
+      return channels.store.remove(installId, channelId, agentId);
+    },
   };
   /**
    * The install rows, as the store would answer a re-read. `disconnect()`
@@ -662,6 +701,12 @@ function world(o: {
     queue,
     channels: bindings,
     externalQueue,
+    channelCheck: createChannelCheck({
+      api: slack.api,
+      now: o.now ?? (() => Date.now()),
+      ttlMs: CHANNEL_CHECK_TTL_MS,
+      max: CHANNEL_CHECK_MAX,
+    }),
   });
 
   /** Wait until every turn started so far, and any it let start, has finished. */
@@ -2640,7 +2685,8 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     expect(w.invokes).toEqual([]);
     expect(w.channels.threads.size).toBe(0);
     expect(w.slack.reactions).toEqual([]);
-    expect(methods(w.slack.calls).filter((m) => m !== 'usersInfo')).toEqual([]);
+    // Nothing is said: the turn's only Slack call is its check of the channel, which allowed it (TASK-1184).
+    expect(methods(w.slack.calls).filter((m) => m !== 'usersInfo')).toEqual(['conversationsInfo']);
     expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
       { level: 'info', msg: 'slack_turns_dropped', fields: { installId: INSTALL_ID, reason: 'disconnected', count: 1 } },
     ]);
@@ -2737,8 +2783,11 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 
-    // Slack is asked about the channel once, with the bot's own token.
-    expect(infoCalls(w).map((c) => [c.token, c.args])).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT }]]);
+    // Slack is asked about the channel with the bot's own token twice: to bind it, then when its turn starts (TASK-1184).
+    expect(infoCalls(w).map((c) => [c.token, c.args])).toEqual([
+      [OWN_BOT_TOKEN, { channel: SUPPORT }],
+      [OWN_BOT_TOKEN, { channel: SUPPORT }],
+    ]);
     // Bound on the bot's install, to the bot's agent, connected by its requester (whom outsiders run as), remembered.
     expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual({
       installId: OWN_BOT_ID,
@@ -2775,11 +2824,11 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       { level: 'info', msg: 'slack_bot_channel_bound', fields: { installId: OWN_BOT_ID } },
     ]);
 
-    // A second mention there reads the binding: Slack isn't asked about the channel again.
+    // A second mention there reads the binding, and the turn's check is still fresh: Slack isn't asked again.
     await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301', text: `<@${OWN_BOT_USER_ID}> and now?` }));
     await w.idle();
     expect(w.invokes).toHaveLength(2);
-    expect(infoCalls(w)).toHaveLength(1);
+    expect(infoCalls(w)).toHaveLength(2);
     expect(w.lines.filter((l) => l.msg === 'slack_bot_channel_bound')).toHaveLength(1);
   });
 
@@ -2856,6 +2905,11 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       new SlackApiError('conversations.info', 'missing_scope'),
       { code: 'missing_scope' },
     ],
+    [
+      'a private channel, by a missing scope the bot holds channels:read beside (Slack names groups:read)',
+      missingScopeNaming({ needed: 'groups:read', provided: HOLDS_CHANNELS_READ }),
+      { code: 'missing_scope' },
+    ],
   ] as const)('%s: no binding, no turn, no line', async (_name, info, code) => {
     const w = world({ channelInfo: () => info });
     w.putInstall(OWN_BOT);
@@ -2879,6 +2933,38 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     };
     expect(w.lines).toEqual([ignored, ignored]);
   });
+
+  /*
+    TASK-1184 review round 2 (R4, R3): a bot whose token can't read public
+    channels at all (its app reinstalled without channels:read) learns
+    nothing about this channel from Slack's missing_scope. It was silence, as
+    for a private channel; it binds nothing, and says so: a team admin must
+    look at the bot, since no retry fixes its token.
+  */
+  it.each([
+    ["Slack's provided lacks channels:read, whatever it needs", { needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ }],
+    ['no provided, and Slack needs exactly channels:read', { needed: 'channels:read' }],
+  ] as const)(
+    "a missing_scope that is the bot token's own (%s) binds nothing and runs nothing, and its sender is told a team admin must look",
+    async (_name, scopes) => {
+      const w = world({ channelInfo: () => missingScopeNaming(scopes) });
+      w.putInstall(OWN_BOT);
+      await w.dispatch(OWN_BOT, botMention());
+      await w.idle();
+
+      expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+      expect(w.channels.calls).toEqual(['get']);
+      expect(w.invokes).toEqual([]);
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.botUnavailable }]);
+      expect(w.lines).toEqual([
+        {
+          level: 'error',
+          msg: 'slack_event_failed',
+          fields: { installId: OWN_BOT_ID, stage: 'channel-info', code: 'token-scope' },
+        },
+      ]);
+    },
+  );
 
   it('a conversations.info that fails tells the admitted sender privately to try again, binds nothing and runs nothing', async () => {
     const w = world({ channelInfo: () => new SlackApiError('conversations.info', 'ratelimited') });
@@ -3149,7 +3235,11 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       ['usr_alice', OPS_AGENT.id],
     ]);
     expect(ephemerals(w.slack.calls)).toEqual([]);
-    expect(infoCalls(w)).toEqual([]);
+    // Only the shared app's own turns check, with its own token: nothing is asked with the bot's.
+    expect(infoCalls(w).map((c) => [c.token, c.args])).toEqual([
+      [BOT_TOKEN, { channel: SUPPORT }],
+      [BOT_TOKEN, { channel: OPS }],
+    ]);
     expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
   });
 
@@ -3268,5 +3358,351 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     for (const leak of ['@', 'usr_', 'agt_', 'U07', 'C07', 'D07', 'support', 'Support', 'secret', 'Alice', 'Carol', 'canopyworks']) {
       expect(all, leak).not.toContain(leak);
     }
+  });
+});
+
+// ── A bound channel Slack no longer allows (TASK-1184) ──────────────────────
+
+/*
+  TASK-1184: a channel is checked when it is bound (a connect in the agent
+  settings, or a team agent's own bot at its first mention there), and it can
+  change after that. The TASK-1174 walk made a bound channel private and the
+  bot kept answering there. Before the fix no turn asked Slack again: every
+  turn below ran, and the binding stayed.
+*/
+describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)', () => {
+  const infoCalls = (w: ReturnType<typeof world>) => w.slack.calls.filter((c) => c.method === 'conversationsInfo');
+  /**
+   * A channel a bot that reads public channels only can't read. The TASK-1174
+   * walk measured it at a bot's first bind, for a channel private from the
+   * start; what Slack's `needed` says then is unknown, so this names none.
+   */
+  const missingScope = () => new SlackApiError('conversations.info', 'missing_scope');
+  const WALK_START = Date.parse('2026-11-21T12:00:00Z');
+
+  /** The two ways into a channel turn. */
+  interface Way {
+    way: string;
+    install: InstallRow;
+    installId: string;
+    token: string;
+    mention: (over?: Partial<SlackInnerEvent>) => SlackEnvelope;
+    /** The install, live (the world already has the shared app's). */
+    live: (w: ReturnType<typeof world>) => void;
+    /** Live, with #support bound to the support agent while it was public. */
+    bound: (w: ReturnType<typeof world>) => void;
+    /** What Alice is told at a mention there once its binding is gone. */
+    next: Array<Record<string, unknown>>;
+    /** What a sender is told when the install's own token can't read public channels: no retry fixes that. */
+    tokenScopeLine: string;
+  }
+  const WAYS: Way[] = [
+    {
+      way: 'the shared app',
+      install: INSTALL,
+      installId: INSTALL_ID,
+      token: BOT_TOKEN,
+      mention: (over) => mention(over),
+      live: () => undefined,
+      // The world binds #support, connected by Ada.
+      bound: () => undefined,
+      // The shared bot's line for a channel nothing is connected to.
+      next: [{ channel: SUPPORT, user: ALICE, text: COPY.channelNotConnected }],
+      // As for a broken connection: a team admin must look.
+      tokenScopeLine: COPY.channelUnavailable,
+    },
+    {
+      way: "a team agent's own bot",
+      install: OWN_BOT,
+      installId: OWN_BOT_ID,
+      token: OWN_BOT_TOKEN,
+      mention: (over) => botMention(over),
+      live: (w) => w.putInstall(OWN_BOT),
+      bound: (w) => {
+        w.putInstall(OWN_BOT);
+        w.channels.rows.set(`${OWN_BOT_ID}/${SUPPORT}`, {
+          installId: OWN_BOT_ID,
+          channelId: SUPPORT,
+          agentId: SUPPORT_AGENT.id,
+          connectedByUserId: 'usr_ada',
+          channelName: 'support',
+          remember: true,
+          createdAt: new Date('2026-11-19T11:00:00Z'),
+        });
+      },
+      // The bot asks Slack to bind the channel again, and binds nothing, in silence (bindBotChannel).
+      next: [],
+      // Nobody connected a bot's channel by hand: what needs a team admin is the bot itself.
+      tokenScopeLine: COPY.botUnavailable,
+    },
+  ];
+
+  /** What Slack says about #support now, and the code its refusal is logged with. */
+  const REFUSED: Array<[string, SlackChannel | Error, string]> = [
+    ['made private', slackChannel(SUPPORT, 'support', { isPrivate: true }), 'not-public'],
+    ['a private group', slackChannel(SUPPORT, 'support', { isChannel: false }), 'not-public'],
+    ['archived', slackChannel(SUPPORT, 'support', { isArchived: true }), 'archived'],
+    ['shared with another company', slackChannel(SUPPORT, 'support', { isExtShared: true }), 'shared'],
+    ['invited to Slack Connect', slackChannel(SUPPORT, 'support', { isPendingExtShared: true }), 'shared'],
+    ['hidden by its missing scope (the walk measured this)', missingScope(), 'missing_scope'],
+    [
+      'hidden by a missing scope its token holds channels:read beside (Slack names groups:read)',
+      missingScopeNaming({ needed: 'groups:read', provided: HOLDS_CHANNELS_READ }),
+      'missing_scope',
+    ],
+    ['not found', new SlackApiError('conversations.info', 'channel_not_found'), 'channel_not_found'],
+  ];
+
+  it.each(WAYS.flatMap((way) => REFUSED.map(([what, answer, code]) => [way.way, what, way, answer, code] as const)))(
+    '%s: a turn in a bound channel Slack now says is %s never runs; the binding goes and the sender is told once',
+    async (_way, _what, way, answer, code) => {
+      const w = world({ channelInfo: () => answer });
+      way.bound(w);
+      await w.dispatch(way.install, way.mention());
+      await w.idle();
+
+      expect(w.invokes).toEqual([]);
+      expect(w.threadWrites).toEqual([]);
+      expect(w.channels.row(way.installId, SUPPORT)).toBeUndefined();
+      // Asked once, with the install's own token, about this channel.
+      expect(infoCalls(w).map((c) => [c.token, c.args])).toEqual([[way.token, { channel: SUPPORT }]]);
+      expect(methods(w.slack.calls)).toEqual(['usersInfo', 'conversationsInfo', 'postEphemeral']);
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.channelNoLongerAllowed }]);
+      expect(w.slack.calls.find((c) => c.method === 'postEphemeral')!.token).toBe(way.token);
+      expect(w.slack.reactions).toEqual([]);
+      expect(w.lines).toEqual([
+        {
+          level: 'info',
+          msg: 'slack_channel_disconnected',
+          fields: { installId: way.installId, reason: 'channel-not-allowed', code },
+        },
+        {
+          level: 'info',
+          msg: 'slack_turns_dropped',
+          fields: { installId: way.installId, reason: 'channel-not-allowed', count: 1, code },
+        },
+      ]);
+      const all = JSON.stringify(w.lines);
+      for (const leak of ['@', 'usr_', 'agt_', 'U07', 'C07', 'support', 'Support']) expect(all, leak).not.toContain(leak);
+    },
+  );
+
+  it.each(WAYS)("$way: an outsider's turn there never runs either", async (way) => {
+    const w = world({ channelInfo: missingScope });
+    way.bound(w);
+    await w.dispatch(way.install, way.mention({ user: BOB }));
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(w.threadWrites).toEqual([]);
+    expect(w.channels.row(way.installId, SUPPORT)).toBeUndefined();
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: BOB, text: COPY.channelNoLongerAllowed }]);
+    expect(w.lines.map((l) => l.msg)).toEqual(['slack_channel_disconnected', 'slack_turns_dropped']);
+  });
+
+  it.each(WAYS)('$way: two turns waiting in a channel that turned private: one line, one disconnect, no turn', async (way) => {
+    // Slack answers only once both turns are asking it, so neither knows yet when the other asks.
+    const asking = deferred();
+    const w = world({
+      channelInfo: async () => {
+        await asking.promise;
+        return missingScope();
+      },
+    });
+    way.bound(w);
+    // Alice's turn in her own conversation's lane, Bob's in the lane of the channel's outsiders: side by side.
+    await w.dispatch(way.install, way.mention({ user: ALICE }));
+    await w.dispatch(way.install, way.mention({ user: BOB, ts: '1763035301.000301' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    asking.release();
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    // Both asked and were refused, and both removed the binding: only one removal took it.
+    expect(infoCalls(w)).toHaveLength(2);
+    expect(w.channels.calls.filter((c) => c === 'remove')).toHaveLength(2);
+    expect(w.channels.row(way.installId, SUPPORT)).toBeUndefined();
+    const told = ephemerals(w.slack.calls);
+    expect(told.map((a) => a['text'])).toEqual([COPY.channelNoLongerAllowed]);
+    expect([ALICE, BOB]).toContain(told[0]!['user']);
+    expect(w.lines.filter((l) => l.msg === 'slack_channel_disconnected')).toHaveLength(1);
+    const dropped = {
+      level: 'info',
+      msg: 'slack_turns_dropped',
+      fields: { installId: way.installId, reason: 'channel-not-allowed', count: 1, code: 'missing_scope' },
+    };
+    expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([dropped, dropped]);
+
+    // A mention there now finds no binding.
+    const before = w.slack.calls.length;
+    await w.dispatch(way.install, way.mention({ ts: '1763035302.000302' }));
+    await w.idle();
+    expect(w.invokes).toEqual([]);
+    expect(ephemerals(w.slack.calls.slice(before))).toEqual(way.next);
+  });
+
+  it.each(WAYS)(
+    "$way: bound while public, then made private: turns go on for at most CHANNEL_CHECK_TTL_MS, then stop (the walk's sequence)",
+    async (way) => {
+      let answer: SlackChannel | Error = slackChannel(SUPPORT, 'support');
+      let t = WALK_START;
+      const w = world({ channelInfo: () => answer, now: () => t });
+      // The bot binds #support at its first mention there, as on the walk.
+      way.live(w);
+      await w.dispatch(way.install, way.mention());
+      await w.idle();
+      expect(w.invokes).toHaveLength(1);
+      const asked = infoCalls(w).length;
+
+      // Made private. A turn that starts within the minute still runs on the answer kept: the window accepted.
+      answer = missingScope();
+      t += CHANNEL_CHECK_TTL_MS - 1;
+      await w.dispatch(way.install, way.mention({ ts: '1763035301.000301' }));
+      await w.idle();
+      expect(w.invokes).toHaveLength(2);
+      expect(infoCalls(w)).toHaveLength(asked);
+
+      // A minute after the answer, Slack is asked again: no turn, and the channel goes.
+      t += 1;
+      await w.dispatch(way.install, way.mention({ ts: '1763035302.000302' }));
+      await w.idle();
+      expect(w.invokes).toHaveLength(2);
+      expect(w.channels.row(way.installId, SUPPORT)).toBeUndefined();
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.channelNoLongerAllowed }]);
+      // The shared app asked for its first turn and its last; the bot also asked to bind the channel.
+      expect(asked).toBe(way.install.kind === 'shared' ? 1 : 2);
+      expect(infoCalls(w)).toHaveLength(asked + 1);
+    },
+  );
+
+  it.each([
+    ['rate limited', new SlackApiError('conversations.info', 'ratelimited'), 'ratelimited'],
+    ['its token refused', new SlackApiError('conversations.info', 'token_revoked'), 'token_revoked'],
+    ['an unreadable answer', new SlackApiError('conversations.info', 'bad-response'), 'bad-response'],
+    ['a network failure', new Error('socket hang up'), 'unknown'],
+    ['an answer about another channel', slackChannel(OPS, 'ops'), 'id-mismatch'],
+  ] as const)(
+    "when Slack can't say (%s), no turn runs, the binding stays, the sender is told to try again, and nothing is kept",
+    async (_what, failure, code) => {
+      let answer: SlackChannel | Error = failure;
+      const w = world({ channelInfo: () => answer });
+      await w.dispatch(INSTALL, mention());
+      await w.idle();
+
+      expect(w.invokes).toEqual([]);
+      expect(w.threadWrites).toEqual([]);
+      expect(w.channels.calls).not.toContain('remove');
+      expect(w.channels.row(INSTALL_ID, SUPPORT)).toMatchObject({ agentId: SUPPORT_AGENT.id, connectedByUserId: 'usr_ada' });
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+      expect(w.lines).toEqual([
+        { level: 'error', msg: 'slack_event_failed', fields: { installId: INSTALL_ID, stage: 'channel-check', code } },
+      ]);
+
+      // Slack answers again: the next turn asks, and runs.
+      answer = slackChannel(SUPPORT, 'support');
+      await w.dispatch(INSTALL, mention({ ts: '1763035301.000301' }));
+      await w.idle();
+      expect(w.invokes).toHaveLength(1);
+      expect(infoCalls(w)).toHaveLength(2);
+    },
+  );
+
+  /*
+    The app's configuration lost channels:read and it was reinstalled: the
+    token kept its string, and reads no channel at all. Slack's provided says
+    so, whatever it needs; without one, a need of exactly channels:read. That
+    says nothing about the channel, so the binding stays, as when Slack can't
+    say. But no retry fixes it either (review round 2, R3): "try again" would
+    be a promise kept by nobody, so the sender hears that a team admin must
+    look, the line the router already has for a channel no turn can run in.
+  */
+  it.each(
+    WAYS.flatMap((way) =>
+      (
+        [
+          ['as the scopes it holds say', missingScopeNaming({ needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ })],
+          ['as Slack needs exactly that one', missingScopeNaming({ needed: 'channels:read' })],
+        ] as const
+      ).map(([how, answer]) => [way.way, how, way, answer] as const),
+    ),
+  )(
+    '%s: a token that lacks channels:read (%s) runs no turn and keeps the binding; its sender is told a team admin must look, never to try again',
+    async (_way, _how, way, answer) => {
+      let info: SlackChannel | Error = answer;
+      const w = world({ channelInfo: () => info });
+      way.bound(w);
+      await w.dispatch(way.install, way.mention());
+      await w.idle();
+
+      expect(w.invokes).toEqual([]);
+      expect(w.threadWrites).toEqual([]);
+      expect(w.channels.calls).not.toContain('remove');
+      expect(w.channels.row(way.installId, SUPPORT)).toMatchObject({ agentId: SUPPORT_AGENT.id, connectedByUserId: 'usr_ada' });
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: way.tokenScopeLine }]);
+      expect(w.lines).toEqual([
+        {
+          level: 'error',
+          msg: 'slack_event_failed',
+          fields: { installId: way.installId, stage: 'channel-check', code: 'token-scope' },
+        },
+      ]);
+
+      // Nothing was kept: once the token reads channels again, the next turn asks Slack, and runs.
+      info = slackChannel(SUPPORT, 'support');
+      await w.dispatch(way.install, way.mention({ ts: '1763035301.000301' }));
+      await w.idle();
+      expect(w.invokes).toHaveLength(1);
+      expect(infoCalls(w)).toHaveLength(2);
+    },
+  );
+
+  it("a binding the store can't remove: no turn, and the sender is told to try again", async () => {
+    const w = world({ channelInfo: missingScope, removeFails: true });
+    await w.dispatch(INSTALL, mention());
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(w.threadWrites).toEqual([]);
+    expect(w.channels.row(INSTALL_ID, SUPPORT)).toMatchObject({ agentId: SUPPORT_AGENT.id });
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+    expect(w.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_event_failed',
+        fields: { installId: INSTALL_ID, stage: 'channel-remove', code: 'store-unavailable' },
+      },
+    ]);
+  });
+
+  it("a team agent's own bot binds the channel again once it is public, with the switch the team set", async () => {
+    let answer: SlackChannel | Error = slackChannel(SUPPORT, 'support');
+    let t = WALK_START;
+    const w = world({ channelInfo: () => answer, now: () => t });
+    w.putInstall(OWN_BOT);
+    // The team turned #support's memory off, then the shared app's binding went: only the kept switch says so now.
+    expect(await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    expect(await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id)).toBe(true);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(false);
+
+    // Made private: a minute later, the bot's binding goes. The switch kept for the agent and channel stays.
+    answer = missingScope();
+    t += CHANNEL_CHECK_TTL_MS;
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301' }));
+    await w.idle();
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+    expect(w.channels.kept(SUPPORT_AGENT.id, SUPPORT)).toBe(false);
+
+    // Public again: the next mention binds it again, off as the team set it, and its turn runs.
+    answer = slackChannel(SUPPORT, 'support');
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035302.000302' }));
+    await w.idle();
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(false);
+    expect(w.invokes).toHaveLength(2);
+    expect(w.threadWrites.map((r) => [r.installId, r.notRemembered])).toEqual([
+      [OWN_BOT_ID, true],
+      [OWN_BOT_ID, true],
+    ]);
   });
 });

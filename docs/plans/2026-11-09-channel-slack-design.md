@@ -394,6 +394,16 @@ Rules, the same on both sides:
 - **The channel:** public only. Private, archived and Slack Connect channels
   (including a pending one) are refused. The bot joins the channel itself, after
   those checks pass.
+  Slack is asked again when each turn starts, and its answer is trusted for a
+  minute (TASK-1184). A turn that finds its connected channel has since become
+  private, archived or Slack Connect never runs, and the channel is
+  disconnected, as a team admin's Disconnect would do it. The person whose turn
+  found it is told once, privately. If Slack can't answer, no turn runs either.
+  A channel shared with another company seldom gets that far: Slack flags its
+  events as Slack Connect, and those are dropped before any turn (§1 rule 6,
+  `admission.ts screenEvent`). So it is never answered, but its connection
+  mostly stays: only a turn already waiting when it was shared, or a mention
+  while the share is still pending, reaches the check.
 - **Shape:** one agent per channel; one agent may serve several channels. The
   binding belongs to `@ax/channel-slack`; agents get no Slack-specific fields.
 - **Reconnecting** a connected channel (by another team admin) takes over as
@@ -556,8 +566,9 @@ the requester.
   Slack's legacy username goes (the @handle people type is the display name
   itself, TASK-1185). `Ada Bot` and `ada-bot` are the same name to us.
 - A channel binding is written on the bot's first mention there, after the
-  channel check (public, live, not Slack Connect). It's bound only to the bot's
-  own agent.
+  channel check (public, live, not Slack Connect), and checked again when each
+  turn starts, as on the shared app (section 3, TASK-1184). It's bound only to
+  the bot's own agent.
 - That binding starts with the switch the team last set for the agent in that
   channel: the shared app's binding of it while there is one (TASK-1179), else
   the switch AX keeps for the agent and channel, which outlives a Disconnect
@@ -1397,6 +1408,56 @@ connectors. The protections are:
   the name is a group's. Only the three broadcast words are marked. The
   TASK-1097 walk checks whether Slack's Markdown turns a typed handle into a
   mention.
+
+**Known gaps, accepted (TASK-1184):**
+
+- **The one-minute window.** Only an allowed answer is kept, for a minute. A
+  turn that starts inside that minute still runs, and a turn already running
+  finishes. A refusal or a failure is never kept, and an allowed answer that a
+  refusal overtook is dropped, so nothing stays open past the minute.
+- **Continuations aren't checked again, for up to a day.** After an Allow,
+  the continuation streams into the thread of the turn that asked. The
+  Allow's own gate (`answers.ts`) only checks that the channel is still
+  connected to the agent, and a prompt can be answered for 24 hours
+  (`PROMPT_TTL_MS`; a restart ends it sooner). So a channel made private
+  after its prompt was posted still gets the reply, unless a turn there has
+  disconnected it first. It's worse for a channel shared with another
+  company: it mostly stays connected (below), and the click path has no
+  Slack Connect screen, so an Allow within those 24 hours can stream a reply
+  in front of the other company. This was already so before TASK-1184; a
+  follow-up card owns it.
+- **Memory may learn from window turns.** Turns that ran inside the minute can
+  feed memory until the binding goes. After that, the veto refuses the
+  channel's threads.
+- **A spurious `channel_not_found` disconnects.** If Slack wrongly says a public
+  channel is gone, we disconnect it.
+- **What Slack names in a `missing_scope` is unmeasured.** A token that can't
+  read public channels at all (its app reinstalled without `channels:read`)
+  gets `missing_scope` for every channel, just like a channel made private.
+  We tell them apart by Slack's `provided`, the scopes the token holds: if it
+  lacks `channels:read`, the answer is about the token, not the channel, so
+  no turn runs, the connection stays, and the sender hears that a team admin
+  must look. Without `provided`, only a `needed` of exactly `channels:read`
+  reads that way. Nobody has recorded what Slack sends in either case; the
+  next Slack walk does (the TASK-1184 plan's walk note).
+- **Connected again on the shared app, a channel starts with memory on.** That
+  is the cost of every disconnect this check makes, not only a spurious one:
+  once the channel is public again, a team admin must connect it again, and
+  that new connection starts with memory on, like any Disconnect plus Connect,
+  whatever the team had set. A bot binds it again at its next mention, with the
+  team's switch.
+- **A bot's removal leaves the agent's shared binding.** The shared bot steps
+  aside before its own check, so settings may list the channel as waiting for an
+  `/invite`.
+- **The stored channel name isn't refreshed** from the new answer.
+- **Cold turns each ask.** Two turns in one channel with nothing kept each ask
+  Slack.
+- **A channel shared with another company mostly stays connected.** Its events
+  are dropped before any turn (§1 rule 6), so it is never answered, but only a
+  turn already waiting when it was shared, or a mention while the share is
+  pending, reaches the check that disconnects it. Settings go on listing it.
+- **Slack's conversion, archive and share events aren't subscribed.** We learn
+  at the next turn, not when it happens.
 
 ## 7. Spike results (TASK-1090, 2026-11-12)
 
