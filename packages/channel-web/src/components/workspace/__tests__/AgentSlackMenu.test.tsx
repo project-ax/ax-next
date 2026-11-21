@@ -35,11 +35,19 @@ describe('AgentSlackMenu', () => {
   });
 
   it('an item runs once the menu has closed, with focus back on the ⋯', async () => {
-    const onSelect = vi.fn();
+    // What was true at the moment the item ran, not after: the menu already gone, focus already on the ⋯.
+    const seen: { menuGone: boolean; focusOnTrigger: boolean }[] = [];
+    const onSelect = vi.fn(() => {
+      seen.push({
+        menuGone: document.querySelector('[role="menu"]') === null,
+        focusOnTrigger: document.activeElement === screen.getByRole('button', { name: 'Actions for @quill' }),
+      });
+    });
     render(<AgentSlackMenu label="Actions for @quill" items={[{ label: 'Rename', onSelect }]} />);
     await openMenu('Actions for @quill');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
     await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
+    expect(seen).toEqual([{ menuGone: true, focusOnTrigger: true }]);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Actions for @quill' }));
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.body.style.pointerEvents).not.toBe('none');
