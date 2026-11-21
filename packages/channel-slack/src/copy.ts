@@ -222,15 +222,29 @@ export const COPY = {
     The channel's connection is broken: the person who connected it can't use
     the agent anymore, or the agent is gone. Outsiders' turns would run as
     that person, so none runs until a team admin connects the channel again.
+    Any sender hears it too when the app's own token can't read public
+    channels any more (TASK-1184): no retry fixes that either.
   */
   channelUnavailable: "I can't answer here right now. A team admin needs to connect me to this channel again.",
+  /*
+    A connected channel Slack no longer allows (TASK-1184): made private,
+    archived or shared with another company since it was connected (or since
+    a team agent's own bot first answered there). Checked when each turn
+    starts. The turn that finds it disconnects the channel and says this once,
+    to its sender. Archived and deleted channels take no line at all, so it
+    names the two cases someone can read it in. It names nothing else.
+  */
+  channelNoLongerAllowed:
+    "I've stopped answering in this channel: it's private now, or shared with another organization. " +
+    'I only answer in public channels of this workspace.',
   channelBusy: "I'm busy with other questions in this channel. Try again in a minute.",
   /*
     A team agent's own bot (TASK-1167) whose requester can't vouch for its
     channels' outsiders anymore: they are no longer a team admin of the
     agent's team, or are gone. An outsider's turn would run as them, so none
     runs until a team admin claims the bot in the web app; members are still
-    answered. Only an outsider ever reads it.
+    answered. Members read it only when the bot's own token can't read public
+    channels any more (TASK-1184): no retry fixes that, a team admin must.
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
   /*

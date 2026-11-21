@@ -33,7 +33,7 @@ import {
   OAUTH_STATE_BYTES,
   OAUTH_STATE_TTL_MS,
 } from '../limits.js';
-import { botUrls, buildBotManifest } from '../manifest.js';
+import { BOT_SCOPES, botUrls, buildBotManifest } from '../manifest.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
@@ -273,7 +273,10 @@ function fakeServices(s: Services) {
  * and Meg, users.lookupByEmail for Ada and Meg (TASK-1170), and every chat.*
  * call (a chat.postMessage to a person's user id lands in the shared bot's DM
  * with them, which the answer names), and records each method with its auth
- * header and body.
+ * header and body. conversations.info describes #support as a live public
+ * channel, every flag set as Slack's own answer sets them, and finds no other
+ * channel: every channel turn asks it first (TASK-1184), and a team agent's
+ * own bot asks it to bind #support at its first mention there (TASK-1180).
  */
 function fakeSlackFetch() {
   const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
@@ -323,6 +326,24 @@ function fakeSlackFetch() {
     if (method === 'users.lookupByEmail') {
       const id = { 'ada@canopyworks.com': ADA_SLACK, [MEG.email]: MEG_SLACK }[String(body['email'])];
       answer = id === undefined ? { ok: false, error: 'users_not_found' } : { ok: true, user: { id } };
+    }
+    if (method === 'conversations.info') {
+      answer =
+        body['channel'] === SUPPORT_CH
+          ? {
+              ok: true,
+              channel: {
+                id: SUPPORT_CH,
+                name: 'support',
+                is_channel: true,
+                is_private: false,
+                is_archived: false,
+                is_ext_shared: false,
+                is_pending_ext_shared: false,
+                is_member: true,
+              },
+            }
+          : { ok: false, error: 'channel_not_found' };
     }
     if (method === 'chat.startStream') answer = { ok: true, ts: '1763039999.000001' };
     if (method === 'chat.postMessage') {
@@ -389,34 +410,6 @@ function disconnectSlackFetch() {
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
-  };
-  return { fetchImpl, calls: slack.calls };
-}
-
-/**
- * disconnectSlackFetch, with conversations.info describing #support as a live
- * public channel the agent's own bot may bind at its first mention there
- * (TASK-1180). Every flag is set, as Slack's own answer sets them.
- */
-function botChannelSlackFetch() {
-  const slack = disconnectSlackFetch();
-  const fetchImpl: typeof fetch = async (input, init) => {
-    const answered = await slack.fetchImpl(input, init);
-    if (String(input) !== 'https://slack.com/api/conversations.info') return answered;
-    const channel = {
-      id: SUPPORT_CH,
-      name: 'support',
-      is_channel: true,
-      is_private: false,
-      is_archived: false,
-      is_ext_shared: false,
-      is_pending_ext_shared: false,
-      is_member: true,
-    };
-    return new Response(JSON.stringify({ ok: true, channel }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
   };
   return { fetchImpl, calls: slack.calls };
 }
@@ -3120,6 +3113,101 @@ describe('@ax/channel-slack plugin', () => {
     expect(await askMemory(harness.bus, outsiderThread)).toEqual(OUTSIDER_THREAD);
   });
 
+  /*
+    TASK-1184, through the wiring: every channel turn asks Slack about its
+    channel first, with the check plugin.ts builds. Without it, a channel made
+    private after it was connected kept getting answers.
+
+    The shared app reads public channels only (no groups:read), so Slack
+    answers a private channel with missing_scope, never with a channel object
+    flagged private: the TASK-1174 walk measured missing_scope at a bot's
+    first bind. Slack names the scopes the call needed and the ones the token
+    holds (`provided`); which `needed` it sends is unmeasured, so `provided`
+    is what tells a channel the token can't read from a token that can't read
+    channels at all.
+  */
+  /**
+   * #support connected to the team agent on the shared app, then Ada mentions
+   * the bot there while conversations.info answers `info`. Resolves once her
+   * turn ran or she was told something, whichever comes first.
+   */
+  async function mentionWhileSlackSays(info: Record<string, unknown>) {
+    const slack = fakeSlackFetch();
+    // fakeSlackFetch, recording the call, except for what conversations.info says.
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const answered = await slack.fetchImpl(input, init);
+      if (String(input) !== 'https://slack.com/api/conversations.info') return answered;
+      return new Response(JSON.stringify(info), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { s, call } = await boot({ fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const channels = createChannelStore(probe);
+    await channels.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: ADMIN.id,
+      channelName: 'support',
+    });
+    const logs = captureLogs();
+    const body = mentionBody('Ev07ABCDEF30', '1763035300.000300', 'are you still here?', ADA_SLACK);
+    const delivered = await call(
+      'POST',
+      '/slack/events/:installId',
+      request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+    );
+    expect(delivered.status).toBe(200);
+
+    const told = () => slack.calls.filter((c) => c.method === 'chat.postEphemeral');
+    await vi.waitFor(() => expect(told().length + s.invokes!.length).toBeGreaterThan(0));
+    // Asked once, with the install's own token, about this channel.
+    expect(slack.calls.filter((c) => c.method === 'conversations.info')).toEqual([
+      { method: 'conversations.info', auth: `Bearer ${BOT_TOKEN}`, body: { channel: SUPPORT_CH } },
+    ]);
+    return { s, told: told(), binding: await channels.get(INSTALL_ID, SUPPORT_CH), logs };
+  }
+
+  it('a mention in a connected #support that Slack now hides behind a missing scope its token holds channels:read beside runs no turn: the binding goes from Postgres and its sender is told once (TASK-1184)', async () => {
+    const { s, told, binding } = await mentionWhileSlackSays({
+      ok: false,
+      error: 'missing_scope',
+      needed: 'groups:read',
+      provided: BOT_SCOPES.join(','),
+    });
+    expect(s.invokes).toEqual([]);
+    expect(told).toEqual([
+      {
+        method: 'chat.postEphemeral',
+        auth: `Bearer ${BOT_TOKEN}`,
+        body: { channel: SUPPORT_CH, user: ADA_SLACK, text: COPY.channelNoLongerAllowed },
+      },
+    ]);
+    expect(binding).toBeNull();
+  });
+
+  it("a missing_scope from a token that has lost channels:read itself runs no turn and keeps #support's binding: its sender hears a team admin must look (TASK-1184)", async () => {
+    const { s, told, binding, logs } = await mentionWhileSlackSays({
+      ok: false,
+      error: 'missing_scope',
+      needed: 'channels:read,groups:read,mpim:read,im:read',
+      provided: BOT_SCOPES.filter((scope) => scope !== 'channels:read').join(','),
+    });
+    expect(s.invokes).toEqual([]);
+    expect(told).toEqual([
+      {
+        method: 'chat.postEphemeral',
+        auth: `Bearer ${BOT_TOKEN}`,
+        body: { channel: SUPPORT_CH, user: ADA_SLACK, text: COPY.channelUnavailable },
+      },
+    ]);
+    expect(binding).toMatchObject({ agentId: TEAM_AGENT.id, connectedByUserId: ADMIN.id });
+    expect(logs.filter((l) => l['msg'] === 'slack_event_failed')).toEqual([
+      expect.objectContaining({ level: 'error', installId: INSTALL_ID, stage: 'channel-check', code: 'token-scope' }),
+    ]);
+  });
+
   it('the memory veto is on the bus before the database: a pass while init waits for it is answered once the store is ready', async () => {
     // A thread kept out of memory before this restart.
     await runMigrations(probe);
@@ -3218,7 +3306,7 @@ describe('@ax/channel-slack plugin', () => {
   // there. Before the fix the bot bound such a channel with the switch back on,
   // and the agent learned from a channel the team chose not to have remembered.
   it("a channel the team switched off stays off when the agent's own bot first answers there, after its shared connection was disconnected (TASK-1180)", async () => {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
@@ -3268,7 +3356,7 @@ describe('@ax/channel-slack plugin', () => {
   });
 
   it("a channel the team switched off stays off when the agent's own bot first answers there, after Slack was disconnected in Admin › Slack (TASK-1180)", async () => {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
@@ -3333,7 +3421,7 @@ describe('@ax/channel-slack plugin', () => {
     expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
     expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBeNull();
 
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot(
       { fetchImpl: slack.fetchImpl },
       {
@@ -3362,7 +3450,7 @@ describe('@ax/channel-slack plugin', () => {
   });
 
   it("a bot channel's switch: only the agent's team admin flips it, the settings show it, and memory follows it (TASK-1180)", async () => {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     // #support is bound on both installs, the shared app's and the bot's, and on.
     await seedSupportBot(s);
@@ -3485,7 +3573,7 @@ async function waitingOn(pid: number): Promise<number[]> {
 describe("a memory switch flip and the agent's own bot's first bind take turns (TASK-1182)", () => {
   /** TASK-1180's world with the bot not yet answered in #support; its mention, and the shared switch turned off, through the wiring. */
   async function race() {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);

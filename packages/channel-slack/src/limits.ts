@@ -166,6 +166,15 @@ export const CHANNEL_LIST_MAX_PAGES = 5;
  * units (label.ts). Slack's own cap on a channel name is 80 characters.
  */
 export const CHANNEL_NAME_MAX = 80;
+/**
+ * How long Slack's word that a connected channel is still public, live and
+ * not Slack Connect is trusted before a turn there asks again
+ * (channel-check.ts, TASK-1184). A channel made private, archived or shared
+ * meanwhile still gets the turns that start within this long.
+ */
+export const CHANNEL_CHECK_TTL_MS = 60_000;
+/** At most this many channels' answers are kept, the oldest forgotten first. */
+export const CHANNEL_CHECK_MAX = 1_000;
 
 // ── The /ax command ─────────────────────────────────────────────────────────
 

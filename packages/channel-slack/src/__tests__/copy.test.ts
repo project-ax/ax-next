@@ -118,6 +118,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'channelBusy',
         'channelNotConnected',
         'channelUnavailable',
+        'channelNoLongerAllowed',
         'emptyReply',
         'filesUnsupported',
         'heldForOwner',
@@ -394,7 +395,15 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
 
 describe('COPY: what a channel mention can get privately, before its turn (mrkdwn)', () => {
   /** Every line router.ts sends a channel mention's sender as an ephemeral (answersAsOwnBot, which takes names, below). */
-  const PRIVATE = ['channelNotConnected', 'channelUnavailable', 'botUnavailable', 'channelBusy', 'queueFull', 'turnFailed'] as const;
+  const PRIVATE = [
+    'channelNotConnected',
+    'channelUnavailable',
+    'channelNoLongerAllowed',
+    'botUnavailable',
+    'channelBusy',
+    'queueFull',
+    'turnFailed',
+  ] as const;
 
   it('is plain mrkdwn text: no < or >, no Markdown link', () => {
     for (const key of PRIVATE) {
@@ -417,6 +426,14 @@ describe('COPY: what a channel mention can get privately, before its turn (mrkdw
     expect(COPY.channelUnavailable).toMatch(/connect/);
     expect(COPY.channelBusy).toMatch(/try again/i);
     expect(new Set([COPY.channelUnavailable, COPY.channelBusy, COPY.turnFailed, COPY.queueFull]).size).toBe(4);
+  });
+
+  it('a channel Slack no longer allows: says it stopped and why, in a line of its own', () => {
+    expect(COPY.channelNoLongerAllowed).toMatch(/stopped answering/);
+    expect(COPY.channelNoLongerAllowed).toMatch(/private/);
+    expect(COPY.channelNoLongerAllowed).toMatch(/another organization/);
+    expect(COPY.channelNoLongerAllowed).toMatch(/public channels/);
+    expect(new Set([COPY.channelNoLongerAllowed, COPY.channelUnavailable, COPY.channelNotConnected]).size).toBe(3);
   });
 });
 
