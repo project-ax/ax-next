@@ -90,11 +90,15 @@ import type { InstallRow, InstallStore } from './store.js';
  *
  * Log lines are code-only: `slack_bot_request_dms_sent { requestId, sent,
  * skipped }` once per fan-out, `slack_bot_request_dms_skipped { requestId,
- * reason }`, `slack_bot_request_owner_dm_sent { requestId | installId,
- * notice }`, and `slack_bot_request_dm_failed { requestId | installId, stage,
- * code }` (plus admission.ts's own `slack_sender_not_mapped { installId }` for
- * a confirmed Slack email no AX account has). Never an email, a name, a
- * person's or an agent's id, a Slack user or channel id, a ts, or a token.
+ * reason }` for a fan-out not started, `slack_bot_request_dm_skipped
+ * { requestId, stage, code }` for each admin it can't reach (Slack doesn't
+ * know them at `lookup`, `admission` refused them, or their Slack email maps
+ * elsewhere at `find-user`), `slack_bot_request_owner_dm_sent { requestId |
+ * installId, notice }`, and `slack_bot_request_dm_failed { requestId |
+ * installId, stage, code }` (plus admission.ts's own `slack_sender_not_mapped
+ * { installId }` for a confirmed Slack email no AX account has). Never an
+ * email, a name, a person's or an agent's id, a Slack user or channel id, a
+ * ts, or a token.
  */
 
 export interface BotRequestDmsDeps {
@@ -220,6 +224,9 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
   };
   const failed = (key: LogKey, stage: string, code: string): void =>
     log('warn', 'slack_bot_request_dm_failed', { ...key, stage, code });
+  /** One admin the fan-out can't reach (D2), and which check said so. */
+  const skipped = (key: LogKey, stage: string, code: string): void =>
+    log('info', 'slack_bot_request_dm_skipped', { ...key, stage, code });
 
   /** Forget what has outlived its TTL or window, then make room for one more record. */
   function prune(now: number): void {
@@ -372,7 +379,9 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
         if (record.closing) break;
         const reach = await memberFor(ws, admin);
         if (!reach.ok) {
-          if (reach.why !== 'absent') failed(key, reach.stage, reach.code);
+          // Not reachable is no fault, but an operator can still see why: by stage and code alone.
+          if (reach.why === 'absent') skipped(key, reach.stage, reach.code);
+          else failed(key, reach.stage, reach.code);
           if (reach.why === 'temporary') break;
           continue;
         }

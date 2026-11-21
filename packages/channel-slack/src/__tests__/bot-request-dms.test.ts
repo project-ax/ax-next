@@ -215,6 +215,12 @@ const failedLine = (stage: string, code: string, key: Record<string, string> = {
   msg: 'slack_bot_request_dm_failed',
   fields: { ...key, stage, code },
 });
+/** One admin the fan-out skipped, and why: the stage that said so and its code. */
+const skippedLine = (stage: string, code: string) => ({
+  level: 'info',
+  msg: 'slack_bot_request_dm_skipped',
+  fields: { requestId: REQUEST, stage, code },
+});
 
 // ── The fakes ───────────────────────────────────────────────────────────────
 
@@ -671,9 +677,16 @@ describe('opened', () => {
       'auth:find-user-by-email nia@old-canopy.example',
       `auth:find-user-by-email ${GRACE.email}`,
     ]);
+    // One line per admin skipped, by the stage that said so and its code: never who.
     expect(w.lines).toEqual([
+      skippedLine('lookup', 'users_not_found'),
+      skippedLine('admission', 'guest'),
+      skippedLine('admission', 'deactivated'),
+      skippedLine('admission', 'email-unconfirmed'),
+      skippedLine('find-user', 'not-mapped'),
       // admission.ts's own line for an address nobody has (Nia's): the install alone.
       { level: 'info', msg: 'slack_sender_not_mapped', fields: { installId: SHARED_INSTALL } },
+      skippedLine('find-user', 'not-mapped'),
       sentLine(1, 6),
     ]);
     expectNoLeak(w.lines, [ADA, ULLA, GUS, DEE, UNA, ELI, NIA, GRACE]);
@@ -1554,9 +1567,12 @@ describe('logs', () => {
     await w.dms.live({ installId: bot });
 
     expect(w.lines.map((l) => l.msg)).toEqual([
-      // The fan-out: Ada's name, Eli's address nobody has, Kay's DM refused, the summary.
+      // The fan-out: Ada's name, Gus skipped (a guest), Eli's address nobody
+      // has and Eli skipped, Kay's DM refused, the summary.
       'slack_bot_request_dm_failed',
+      'slack_bot_request_dm_skipped',
       'slack_sender_not_mapped',
+      'slack_bot_request_dm_skipped',
       'slack_bot_request_dm_failed',
       'slack_bot_request_dms_sent',
       // The decline: Grace's redraw, then Ada's address.
