@@ -35,8 +35,9 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  *
  *   - `dm`: the owner, in a 1:1 DM with their own personal agent.
  *   - `attended`: a channel member who can use the channel's team agent.
- *   - `external`: anyone else the channel admits, run as the person who
- *     connected the channel.
+ *   - `external`: anyone else the channel admits, run as the bot's
+ *     requester, copied into the binding at its first mention; a Claim
+ *     moves it.
  *
  * The turn's context is built here, by the host, from what admission and AX
  * decided (never from the message): the user, the agent, the thread's
@@ -62,9 +63,9 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  *     prompt can't be posted: the line that sends them to their own Today,
  *     in the reply or as a message of its own after it. Only the first held
  *     call gets a prompt; any other waits in Today, which the prompt links.
- *   - Any other turn runs as someone else for them (the person who connected
- *     the channel, the agent's owner), whom they can't reach: the reply says
- *     the owner was asked, and nothing is looked up or posted.
+ *   - Any other turn runs as someone else for them (the bot's requester, the
+ *     agent's owner), whom they can't reach: the reply says the owner was
+ *     asked, and nothing is looked up or posted.
  *
  * The two `chat:permission-request` cards get a prompt too, in a DM or an
  * attended turn only (permission-prompts.ts): after the reply, and after a
@@ -489,8 +490,8 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     Whose approval a held call waits for. @ax/decisions files a hold under
     the turn's user. A turn with source 'user' runs as the person who wrote,
     so it waits in their own Today. Any other turn runs as someone else for
-    them (the person who connected the channel: the agent's owner), whom
-    they can't reach.
+    them (the bot's requester, or whoever claimed the bot since: the agent's
+    owner), whom they can't reach.
   */
   const approver = source === 'user' ? 'sender' : 'owner';
   /*

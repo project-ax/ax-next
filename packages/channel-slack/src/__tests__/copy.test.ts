@@ -48,17 +48,6 @@ const ARGS: Record<string, unknown[][]> = {
   slashConnected: [[HOSTILE, HOSTILE]],
   slashReconnected: [[HOSTILE]],
   slashChannelNotAllowed: [['not-public'], ['archived'], ['shared'], ['workspace-policy']],
-  // A bot's name and its @handle (TASK-1167): the handle is checked before it's stored, but a broadcast word
-  // after the line's own `@` must stay dead here too.
-  answersAsOwnBot: [
-    ['Support Bot', 'supportbot'],
-    ['Support Bot', null],
-    [HOSTILE, HOSTILE],
-    [HOSTILE, null],
-    ['Ops', 'here'],
-    ['Ops', 'channel'],
-    ['Ops', 'everyone'],
-  ],
   // A bot request's DMs (TASK-1170). The subject is plain_text: benign args only (its hostile case is in blocks.test.ts).
   botRequestSubject: [
     [{ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' }],
@@ -116,8 +105,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'artifactLink',
         'busy',
         'channelBusy',
-        'channelNotConnected',
-        'channelUnavailable',
+        'sharedBotInChannel',
         'channelNoLongerAllowed',
         'emptyReply',
         'filesUnsupported',
@@ -171,7 +159,6 @@ describe('COPY: everything the bot says in Slack', () => {
         'slashNeedsReconnect',
         'slashWorking',
         'slashFailed',
-        'answersAsOwnBot',
         'botUnavailable',
         'botRequestAsked',
         'botRequestSubject',
@@ -393,11 +380,10 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
   });
 });
 
-describe('COPY: what a channel mention can get privately, before its turn (mrkdwn)', () => {
-  /** Every line router.ts sends a channel mention's sender as an ephemeral (answersAsOwnBot, which takes names, below). */
+describe('COPY: what a channel mention can get privately, in place of its turn or before it (mrkdwn)', () => {
+  /** Every line router.ts sends a channel mention's sender as an ephemeral. */
   const PRIVATE = [
-    'channelNotConnected',
-    'channelUnavailable',
+    'sharedBotInChannel',
     'channelNoLongerAllowed',
     'botUnavailable',
     'channelBusy',
@@ -405,27 +391,34 @@ describe('COPY: what a channel mention can get privately, before its turn (mrkdw
     'turnFailed',
   ] as const;
 
-  it('is plain mrkdwn text: no < or >, no Markdown link', () => {
+  it('is plain mrkdwn text: no < or >, no Markdown link, no broadcast, no product name, nothing a lenient reader takes for a mention', () => {
     for (const key of PRIVATE) {
       const line = COPY[key];
       expect(typeof line, key).toBe('string');
       expect(line, key).not.toMatch(/[<>]/);
       expect(line, key).not.toMatch(/\]\(/);
+      expect(line, key).not.toMatch(BROADCAST);
+      expect(line, key).not.toMatch(/\bAX\b/);
+      expect(spellsMention(decodeSlackEntities(line)), key).toBe(false);
     }
   });
 
-  it('no agent here: a team admin connects one to a public channel with /ax connect; your own agent is a DM away', () => {
-    expect(COPY.channelNotConnected).toContain('`/ax connect`');
-    expect(COPY.channelNotConnected).toMatch(/team admin/);
-    expect(COPY.channelNotConnected).toMatch(/public channel/);
-    expect(COPY.channelNotConnected).toMatch(/direct message/);
+  it('each reads differently, so the sender can tell what happened', () => {
+    expect(new Set(PRIVATE.map((key) => COPY[key])).size).toBe(PRIVATE.length);
   });
 
-  it("a broken connection says a team admin must connect it again; busy says try again soon; neither names anyone", () => {
-    expect(COPY.channelUnavailable).toMatch(/team admin/);
-    expect(COPY.channelUnavailable).toMatch(/connect/);
+  it("the shared bot in a channel (TASK-1186): it doesn't answer there; your own agent is a DM away, a team agent comes in as its own bot", () => {
+    expect(COPY.sharedBotInChannel).toBe(
+      "I don't answer in channels. To talk to your own agent, send me a direct message. " +
+        'To bring a team agent into this channel, invite its own bot with /invite.',
+    );
+    // The retired way in is never offered: no slash command of the shared app's, no connecting.
+    expect(COPY.sharedBotInChannel).not.toContain('/ax');
+    expect(COPY.sharedBotInChannel).not.toMatch(/connect/i);
+  });
+
+  it('busy says try again soon', () => {
     expect(COPY.channelBusy).toMatch(/try again/i);
-    expect(new Set([COPY.channelUnavailable, COPY.channelBusy, COPY.turnFailed, COPY.queueFull]).size).toBe(4);
   });
 
   it('a channel Slack no longer allows: says it stopped and why, in a line of its own', () => {
@@ -433,50 +426,12 @@ describe('COPY: what a channel mention can get privately, before its turn (mrkdw
     expect(COPY.channelNoLongerAllowed).toMatch(/private/);
     expect(COPY.channelNoLongerAllowed).toMatch(/another organization/);
     expect(COPY.channelNoLongerAllowed).toMatch(/public channels/);
-    expect(new Set([COPY.channelNoLongerAllowed, COPY.channelUnavailable, COPY.channelNotConnected]).size).toBe(3);
-  });
-});
-
-describe("COPY: a team agent's own bot (TASK-1167; mrkdwn, shown only to a mention's sender)", () => {
-  /** Every line answersAsOwnBot can make, from ordinary names and from the hostile ones. */
-  const STEP_ASIDE = (ARGS['answersAsOwnBot'] ?? []).map(([name, handle]) =>
-    COPY.answersAsOwnBot(name as string, handle as string | null),
-  );
-
-  it('the shared bot steps aside naming the bot, with its @handle or without one', () => {
-    expect(COPY.answersAsOwnBot('Support Bot', 'supportbot')).toBe(
-      'Support Bot answers as @supportbot now. Invite it with /invite @supportbot.',
-    );
-    expect(COPY.answersAsOwnBot('Support Bot', null)).toBe(
-      'Support Bot has its own Slack bot now. Invite it to this channel to keep talking to it here.',
-    );
   });
 
-  it("an outsider whose bot's requester can no longer vouch for them is told politely, and told nothing else", () => {
+  it("an outsider whose bot's requester can no longer vouch for them is told politely, and told nothing else (TASK-1167)", () => {
     expect(COPY.botUnavailable).toBe(
       "I can't answer you here right now. A team admin needs to check my settings in the web app.",
     );
-    expect(new Set([COPY.botUnavailable, COPY.channelUnavailable, COPY.turnFailed]).size).toBe(3);
-  });
-
-  it('none holds a broadcast, the product name, a < or a >, or a Markdown link, whatever the names are', () => {
-    expect(STEP_ASIDE).toHaveLength(7);
-    for (const line of [COPY.botUnavailable, ...STEP_ASIDE]) {
-      expect(line).not.toMatch(BROADCAST);
-      expect(line).not.toMatch(/\bAX\b/);
-      expect(line).not.toMatch(/[<>]/);
-      expect(line).not.toMatch(/\]\(/);
-      expect(spellsMention(decodeSlackEntities(line)), line).toBe(false);
-    }
-  });
-
-  it("a hostile name or handle shows as typed, escaped and marked; a handle that is a broadcast word gets its mark after the line's @", () => {
-    const hostile = COPY.answersAsOwnBot(HOSTILE, HOSTILE);
-    const escaped = '&lt;!channel&gt; &amp; &lt;@U1&gt; @here';
-    expect(hostile.split(ZWSP).join('')).toBe(`${escaped} answers as @${escaped} now. Invite it with /invite @${escaped}.`);
-    expect(COPY.answersAsOwnBot(HOSTILE, null).split(ZWSP).join('')).toContain(`${escaped} has its own Slack bot now.`);
-    // Read whole, `@` + `here` would broadcast: the mark goes right after the line's own `@`.
-    expect(COPY.answersAsOwnBot('Ops', 'here')).toBe(`Ops answers as @${ZWSP}here now. Invite it with /invite @${ZWSP}here.`);
   });
 });
 
@@ -645,7 +600,6 @@ describe("COPY: a bot's @handle is its display name, shown as people type it (TA
   // and every line that names the bot by its handle shows it after `@` unchanged.
   it.each(['fern-walk', 'Fern Walk'])('%s', (handle) => {
     const bot = { botName: 'Fern', handle };
-    expect(COPY.answersAsOwnBot('Fern', handle)).toBe(`Fern answers as @${handle} now. Invite it with /invite @${handle}.`);
     expect(COPY.slashDisconnectedOwnBot(bot)).toBe(
       `Disconnected. If @${handle} is in this channel, it still answers here: remove it with /kick @${handle}.`,
     );
@@ -658,7 +612,6 @@ describe("COPY: a bot's @handle is its display name, shown as people type it (TA
   it.each(['Here Now', 'channel x', 'EVERYONE-else'])('%s is marked after the @', (handle) => {
     const bot = { botName: 'Fern', handle };
     for (const line of [
-      COPY.answersAsOwnBot('Fern', handle),
       COPY.slashDisconnectedOwnBot(bot),
       COPY.slashOwnBot('Fern', bot),
       COPY.botLiveForOwner(bot, [], 0),

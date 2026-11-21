@@ -282,11 +282,11 @@ export function screenEvent(
   return ignore('other');
 }
 
-// ── A mention no agent takes ────────────────────────────────────────────────
+// ── A mention no turn answers ───────────────────────────────────────────────
 
 /**
  * A mention no turn will come of, where the router has nothing to go on but
- * the sender (no agent is connected, or the binding couldn't be read): an
+ * the sender (a mention of the shared bot in a channel, TASK-1186): an
  * admitted member gets `text` once, ephemeral, so only they see it, in the
  * mention's thread when it was in one (never a thread under the mention's
  * own ts: one that doesn't exist yet hides the line); a refused sender gets
