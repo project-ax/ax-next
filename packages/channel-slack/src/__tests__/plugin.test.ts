@@ -791,7 +791,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the thirty-one routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the thirty-four routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -817,6 +817,13 @@ describe('@ax/channel-slack plugin', () => {
       // Admin › Slack's list of the team agents' own bots, and its Disconnect for one (TASK-1172).
       { method: 'GET', path: '/admin/slack/bots', bypassCsrf: false, maxBodyBytes: undefined },
       { method: 'POST', path: '/admin/slack/bots/disconnect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      // A team bot's approver replaces their token from Admin › Slack (TASK-1173).
+      {
+        method: 'POST',
+        path: '/admin/slack/bots/replace-token',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       // Admin › Slack's bot requests (TASK-1169): Approve's body can carry the bot's picture, as Connect's can.
       { method: 'GET', path: '/admin/slack/bot-requests', bypassCsrf: false, maxBodyBytes: undefined },
       {
@@ -880,6 +887,14 @@ describe('@ax/channel-slack plugin', () => {
         bypassCsrf: false,
         maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES,
       },
+      // Its approver's Replace of their token, and a team admin's Claim (TASK-1173).
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/replace-token',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      { method: 'POST', path: '/settings/slack/:agentId/bot/claim', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       // Asking an AX admin for it instead (TASK-1169), and taking the ask back.
       { method: 'POST', path: '/settings/slack/:agentId/bot-request', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       {
@@ -2250,7 +2265,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(31);
+    expect(s.routes).toHaveLength(34);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2272,7 +2287,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(31);
+    expect(s.routes).toHaveLength(34);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2301,7 +2316,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(31);
+    expect(s.routes).toHaveLength(34);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2829,7 +2844,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(31);
+    expect(s.routes).toHaveLength(34);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);

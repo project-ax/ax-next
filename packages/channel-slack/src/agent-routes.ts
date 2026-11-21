@@ -36,9 +36,10 @@ import { checkUser } from './user-auth.js';
  * the agent's own Slack bot (TASK-1167, bots.ts): asking for it, picking the
  * request back up in Slack, cancelling it, and disconnecting it (TASK-1172);
  * once it's live, renaming it or changing its picture (TASK-1171,
- * bot-changes.ts). Or, for a team admin who can't install Slack apps, asking
- * an AX admin to approve it instead (TASK-1169, bot-requests.ts), and taking
- * that ask back.
+ * bot-changes.ts), its approver replacing their configuration token, and a
+ * team admin claiming it once its requester is no longer one (TASK-1173). Or,
+ * for a team admin who can't install Slack apps, asking an AX admin to
+ * approve it instead (TASK-1169, bot-requests.ts), and taking that ask back.
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
@@ -51,13 +52,21 @@ import { checkUser } from './user-auth.js';
  *                                               answered in, with or without the shared app (TASK-1180)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }, its approver only, while pending
- *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }, while pending
+ *   POST /settings/slack/:agentId/bot/cancel  { installId } → { appDeleted }, while pending (the domain
+ *                                             asks the rights again, and answers 409 not-pending
+ *                                             unless `installId` is the agent's pending bot, TASK-1173)
  *   POST /settings/slack/:agentId/bot/disconnect  { installId } → { appDeleted }, pending or live, with
  *                                               or without the shared app (the domain asks the rights
  *                                               again, and answers 409 no-bot unless `installId` is
  *                                               the agent's bot)
  *   POST /settings/slack/:agentId/bot/rename  { botName } → { botName }, a live bot only (the approver's token, TASK-1171)
  *   POST /settings/slack/:agentId/bot/icon    { iconPng } → {}, a live bot only (the approver's token, TASK-1171)
+ *   POST /settings/slack/:agentId/bot/replace-token  { refreshToken } → {}, a live bot only, and only
+ *                                             its approver (403 not-approver for anyone else, TASK-1173)
+ *   POST /settings/slack/:agentId/bot/claim   { installId } → {}, a live bot whose requester is no
+ *                                             longer a team admin (the domain asks the rights again,
+ *                                             and answers 409 no-bot unless `installId` is the
+ *                                             agent's live bot, TASK-1173)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}, while it has an open request
  *
@@ -73,18 +82,24 @@ import { checkUser } from './user-auth.js';
  * The request's `refreshToken` is optional (the one stored for the person is
  * used without it), but one that is there must look like a configuration
  * refresh token, so an access token pasted into that box never reaches Slack.
- * The bot's Disconnect takes only the install id of the bot the page showed
- * (INSTALL_ID_RE, as Admin › Slack's Disconnect does), so a page drawn before
- * the bot was disconnected, and asked for again, can't take the new one.
+ * Install-url reads no body; Cancel, Disconnect and Claim take only the
+ * install id of the bot the page showed (INSTALL_ID_RE, as Admin › Slack's
+ * Disconnect does), so a page drawn before the bot was cancelled or
+ * disconnected, and asked for again, can't take the new one.
  * A rename's name must pass checkBotName (400 `invalid-bot-name` {reason}),
  * and a new picture parseIconPng (400 `invalid-icon` {reason}: here the
  * picture is the whole ask, so a bad one is refused, never skipped), both
  * before the domain takes the app lock. Neither hands the domain who asked:
- * it uses the bot's approver's token, whoever that is. Install-url and
- * Cancel read no body. An ask for an AX admin's approval holds the name and
- * nothing else: no token (the approving AX admin brings their own) and no
- * picture (their browser draws it at Approve). Taking the ask back reads no
- * body.
+ * it uses the bot's approver's token, whoever that is. A Replace's body is
+ * the pasted refresh token alone, and it must look like one (400
+ * `invalid-refresh-token`, a missing one included) before the domain takes
+ * the app lock, so nothing else ever reaches Slack. It hands the domain who
+ * asked only to be compared with the bot's approver: the minted token is
+ * always stored as the approver's. A Claim hands the domain who asked, who
+ * becomes the bot's requester once the domain has asked their rights again.
+ * An ask for an AX admin's approval holds the name and nothing else: no
+ * token (the approving AX admin brings their own) and no picture (their
+ * browser draws it at Approve). Taking the ask back reads no body.
  *
  * Team members who aren't admins read the section, so "connected by" and a
  * bot's approver are a display name or "A teammate", never an email, and a
@@ -151,7 +166,7 @@ type Reply = { status: number; body: unknown };
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 /** What a bot request's body may hold. */
 const BOT_KEYS: readonly string[] = ['botName', 'refreshToken', 'iconPng'];
-/** What a bot Disconnect's body may hold: the install id of the bot the page showed. */
+/** What a bot Disconnect's, Cancel's or Claim's body may hold: the install id of the bot the page showed. */
 const BOT_DISCONNECT_KEYS: readonly string[] = ['installId'];
 /** What an ask for an AX admin's approval may hold (TASK-1169): the name alone. */
 const ASK_KEYS: readonly string[] = ['botName'];
@@ -159,6 +174,8 @@ const ASK_KEYS: readonly string[] = ['botName'];
 const RENAME_KEYS: readonly string[] = ['botName'];
 /** What a live bot's new picture body may hold: the picture alone. */
 const PICTURE_KEYS: readonly string[] = ['iconPng'];
+/** What the approver's Replace body may hold (TASK-1173): the pasted refresh token alone. */
+const REPLACE_KEYS: readonly string[] = ['refreshToken'];
 
 const PLUGIN = '@ax/channel-slack';
 /** "Connected by" when auth has no name, no account or no answer. Never the email: members read this page. */
@@ -280,11 +297,12 @@ function readAskBody(req: RouteRequest): { ok: true; botName: string } | { ok: f
 type BotDisconnectBody = { ok: true; installId: string } | { ok: false; reply: Reply };
 
 /**
- * A bot Disconnect's JSON body: an object whose only key is the install id
- * of the bot the page showed. 413 past the cap (http-server's `maxBodyBytes`
- * refused it first; this is the backstop), 400 `invalid-body` for anything
- * but such an object, 400 `invalid-install-id` for an id of the wrong shape,
- * as Admin › Slack's Disconnect answers (admin-bot-routes.ts).
+ * A bot Disconnect's, Cancel's or Claim's JSON body (Cancel and Claim since
+ * TASK-1173): an object whose only key is the install id of the bot the page
+ * showed. 413 past the cap (http-server's `maxBodyBytes` refused it first;
+ * this is the backstop), 400 `invalid-body` for anything but such an object,
+ * 400 `invalid-install-id` for an id of the wrong shape (a missing one
+ * included), as Admin › Slack's Disconnect answers (admin-bot-routes.ts).
  */
 function readBotDisconnectBody(req: RouteRequest): BotDisconnectBody {
   if (req.body.length > ADMIN_BODY_MAX_BYTES) return { ok: false, reply: json(413, { error: 'body-too-large' }) };
@@ -315,6 +333,27 @@ function readRenameBody(req: RouteRequest): RenameBody {
     return { ok: false, reply: INVALID_BODY };
   }
   return botNameOf(fields['botName']);
+}
+
+type ReplaceBody = { ok: true; refreshToken: string } | { ok: false; reply: Reply };
+
+/**
+ * The approver's Replace body (TASK-1173): an object holding `refreshToken`
+ * alone. 413 past ADMIN_BODY_MAX_BYTES (http-server's `maxBodyBytes` refused
+ * it first; this is the backstop), 400 `invalid-body` for anything but such
+ * an object, 400 `invalid-refresh-token` for anything that doesn't look like
+ * a configuration refresh token (a missing one included), so an access token
+ * pasted into that box, or anything else, never reaches Slack.
+ */
+function readReplaceBody(req: RouteRequest): ReplaceBody {
+  if (req.body.length > ADMIN_BODY_MAX_BYTES) return { ok: false, reply: json(413, { error: 'body-too-large' }) };
+  const fields = bodyObject(req.body);
+  if (fields === null || Object.keys(fields).some((k) => !REPLACE_KEYS.includes(k))) {
+    return { ok: false, reply: INVALID_BODY };
+  }
+  const refreshToken = configToken(fields['refreshToken'], REFRESH_TOKEN_PREFIX);
+  if (refreshToken === null) return { ok: false, reply: json(400, { error: 'invalid-refresh-token' }) };
+  return { ok: true, refreshToken };
 }
 
 type PictureBody = { ok: true; png: Buffer } | { ok: false; reply: Reply };
@@ -365,7 +404,8 @@ export function createAgentSlackRoutes(
   d: ChannelDeps,
   bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status'>,
   requests: Pick<BotRequests, 'ask' | 'cancel'>,
-  changes: BotChanges,
+  // Never Admin › Slack's Replace by install id: admin-bot-routes.ts is its one caller.
+  changes: Pick<BotChanges, 'rename' | 'setPicture' | 'replaceToken' | 'claim'>,
 ): RouteSpec[] {
   const authCtx = makeAgentContext({
     sessionId: 'channel-slack',
@@ -615,15 +655,17 @@ export function createAgentSlackRoutes(
     return bots.installUrl({ actorUserId: a.userId, agentId: a.agentId });
   }
 
-  /** Cancel the pending bot: any team admin who manages the agent may. */
+  /**
+   * Cancel the pending bot: any team admin who manages the agent may, naming
+   * it by the install id their page showed (TASK-1173).
+   */
   async function cancelBot(a: Asked): Promise<Reply> {
     const rights = await manages(a);
     if (!rights.ok) return refused(rights.reason);
-    // TASK-1173: the domain takes the install id the page showed, which this
-    // route reads from the body in the PR's routes task. Until then it names
-    // none ('' is no install's id), so Cancel answers 409 not-pending and
-    // touches nothing.
-    return bots.cancel({ agentId: a.agentId, installId: '' });
+    const body = readBotDisconnectBody(a.req);
+    if (!body.ok) return body.reply;
+    // The domain asks the rights again inside the app lock, before anything else.
+    return bots.cancel({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId, installId: body.installId });
   }
 
   /** Ask an AX admin to approve the agent's own bot (TASK-1169): the person asking becomes its requester. */
@@ -676,6 +718,34 @@ export function createAgentSlackRoutes(
     const body = readPictureBody(a.req);
     if (!body.ok) return body.reply;
     return changes.setPicture({ agentId: a.agentId, png: body.png });
+  }
+
+  /**
+   * The live bot's approver replaces their own configuration token with one
+   * they pasted (TASK-1173). Only a team admin who manages the agent gets
+   * this far; the domain then refuses anyone but the bot's approver (403
+   * `not-approver`) inside the app lock, before the vault or Slack.
+   */
+  async function replaceBotToken(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    const body = readReplaceBody(a.req);
+    if (!body.ok) return body.reply;
+    return changes.replaceToken({ actorUserId: a.userId, agentId: a.agentId, refreshToken: body.refreshToken });
+  }
+
+  /**
+   * A team admin who manages the agent claims its live bot, named by the
+   * install id their page showed, once its requester is no longer a team
+   * admin (TASK-1173): from then on its outsiders run as the claimer.
+   */
+  async function claimBot(a: Asked): Promise<Reply> {
+    const rights = await manages(a);
+    if (!rights.ok) return refused(rights.reason);
+    const body = readBotDisconnectBody(a.req);
+    if (!body.ok) return body.reply;
+    // The domain asks the rights again inside the app lock, before anything else.
+    return changes.claim({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId, installId: body.installId });
   }
 
   /**
@@ -737,6 +807,9 @@ export function createAgentSlackRoutes(
     route('POST', '/bot/rename', 'bot-rename', renameBot),
     // Its body is the bot's new picture: Connect's cap.
     route('POST', '/bot/icon', 'bot-icon', setBotPicture, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
+    // Its approver's Replace, and a team admin's Claim (TASK-1173): a token or an id, so the plain cap.
+    route('POST', '/bot/replace-token', 'bot-replace-token', replaceBotToken),
+    route('POST', '/bot/claim', 'bot-claim', claimBot),
     // Asking an AX admin instead (TASK-1169): a name and nothing else, so the plain cap.
     route('POST', '/bot-request', 'bot-request', askForBot),
     route('POST', '/bot-request/cancel', 'bot-request-cancel', cancelAsk),

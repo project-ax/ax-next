@@ -82,11 +82,12 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * show it.
  *
  * A bot goes, pending or live, only through `removeBot`: Cancel (a team
- * admin, a pending bot only), Disconnect (TASK-1172: a team admin from the
- * agent's settings, their rights asked again inside the lock; or an AX admin
- * from Admin › Slack, never the shared app), and its agent's deletion. Cancel
- * and Disconnect name the bot by the install id their page showed (Cancel
- * since TASK-1173), so a stale page can't take a bot asked for since. The
+ * admin, a pending bot only, their rights asked again inside the lock since
+ * TASK-1173), Disconnect (TASK-1172: a team admin from the agent's settings,
+ * their rights asked again inside the lock; or an AX admin from Admin ›
+ * Slack, never the shared app), and its agent's deletion. Cancel and
+ * Disconnect name the bot by the install id their page showed (Cancel since
+ * TASK-1173), so a stale page can't take a bot asked for since. The
  * shared bot's channel bindings are never touched, so it answers in the
  * agent's channels again once the agent's bot is gone.
  *
@@ -318,16 +319,19 @@ export interface Bots {
   /**
    * Take back the agent's PENDING bot (one failed or cancelled Allow would
    * otherwise block the agent's bot for good), as `removeBot` does: with its
-   * approver's token, whoever asks (the route let only a team admin of the
-   * agent through). A live bot isn't cancelled here. `installId` is the
-   * pending bot the page showed (its status's `installId`, TASK-1173): an
-   * agent whose pending bot is another one (a stale page whose bot was
-   * cancelled, and asked for again since) is 409 `not-pending`, as one with
-   * no pending bot is, and nothing is touched. Takes the app lock. 200
-   * `{ appDeleted }`, logged `slack_bot_cancelled { installId, appDeleted }`;
-   * 409 `not-pending`.
+   * approver's token, whoever asks. A live bot isn't cancelled here. Takes
+   * the app lock, and asks `actorUserId`'s manage rights again inside it,
+   * before anything is read (TASK-1173; the route asked before the lock): a
+   * team admin demoted, or an agent deleted, while this waited deletes no
+   * Slack app. `installId` is the pending bot the page showed (its status's
+   * `installId`, TASK-1173): an agent whose pending bot is another one (a
+   * stale page whose bot was cancelled, and asked for again since) is 409
+   * `not-pending`, as one with no pending bot is, and nothing is touched.
+   * 200 `{ appDeleted }`, logged `slack_bot_cancelled { installId,
+   * appDeleted }`; 409 `not-pending`; 404/403/409 as the rights re-check
+   * says. A rights check that can't be answered throws: the route's 500.
    */
-  cancel(i: { agentId: string; installId: string }): Promise<BotReply>;
+  cancel(i: { ctx: AgentContext; actorUserId: string; agentId: string; installId: string }): Promise<BotReply>;
   /**
    * A team admin takes the agent's own bot away, pending or live (TASK-1172),
    * as `removeBot` does: its app deleted with its approver's token, whoever
@@ -704,8 +708,18 @@ export function createBots(d: BotDeps): Bots {
     });
   }
 
-  async function cancel(i: { agentId: string; installId: string }): Promise<BotReply> {
+  async function cancel(i: {
+    ctx: AgentContext;
+    actorUserId: string;
+    agentId: string;
+    installId: string;
+  }): Promise<BotReply> {
     return d.lock.run(async () => {
+      // The route checked before the lock. Asked again inside it, before
+      // anything is read, as Disconnect does: a team admin demoted, or an
+      // agent deleted, while this waited is refused, and nothing is touched.
+      const rights = await checkRights(d.bus, i.ctx, i.agentId, i.actorUserId, 'manage');
+      if (!rights.ok) return rightsRefused(rights.reason);
       const bot = await d.installs.botForAgent(i.agentId);
       // A live bot isn't cancelled here: its channels would go with it. And
       // only the pending bot the page showed: a stale page whose bot was

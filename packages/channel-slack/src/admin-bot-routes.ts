@@ -1,36 +1,50 @@
 import { makeAgentContext, type HookBus, type Logger } from '@ax/core';
 import { checkAdmin, type AdminActor } from './admin-auth.js';
+import type { BotChanges } from './bot-changes.js';
 import type { Bots } from './bots.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { INSTALL_ID_RE } from './ingress.js';
 import { ADMIN_BODY_MAX_BYTES } from './limits.js';
 import { logCode } from './log-code.js';
-import { bodyObject } from './slack-apps.js';
+import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
 
 /**
- * Admin › Slack's list of the team agents' own bots, and its Disconnect for
- * one of them (TASK-1172; the domain is bots.ts):
+ * Admin › Slack's list of the team agents' own bots, its Disconnect for one
+ * of them (TASK-1172; the domain is bots.ts), and the Replace of a bot's
+ * configuration token by the bot's own approver (TASK-1173; the domain is
+ * bot-changes.ts):
  *
- *   GET  /admin/slack/bots             → { bots: AdminSlackBot[] }
- *   POST /admin/slack/bots/disconnect  { installId } → { appDeleted }
+ *   GET  /admin/slack/bots                → { bots: AdminSlackBot[] }
+ *   POST /admin/slack/bots/disconnect     { installId } → { appDeleted }
+ *   POST /admin/slack/bots/replace-token  { installId, refreshToken } → {}
  *
  * Their own routes, beside admin-routes.ts's: the bots outlive the shared
  * install (its Disconnect leaves them alone), so they are their own resource.
  *
- * Both are admin-only, as every /admin/slack route is (admin-auth.ts): 401
- * signed out, 403 not an admin, 500 (logged code-only) when auth can't say,
- * before a body is read or anything is asked. That gate is the ONLY one
- * `listForAdmin` and `disconnectForAdmin` have: neither asks anyone's rights,
- * so these routes must stay their only callers.
+ * All three are admin-only, as every /admin/slack route is (admin-auth.ts):
+ * 401 signed out, 403 not an admin, 500 (logged code-only) when auth can't
+ * say, before a body is read or anything is asked. That gate is the ONLY one
+ * `listForAdmin` and `disconnectForAdmin` have: neither asks anyone's
+ * rights, so these routes must stay their only callers. `replaceTokenForAdmin`
+ * asks no one's manage rights either, so the same holds for it; past this
+ * gate, it refuses anyone but the bot's approver (403 `not-approver`) inside
+ * the one app lock, before the vault or Slack. An admin-approved bot's
+ * approver is an AX admin who may not be on its agent's team (TASK-1169), so
+ * Admin › Slack is where they replace their token.
  *
  * The list is read as the admin reading it. Its approvers may be emails
- * (only admins read it), and its install ids are the key the Disconnect
- * takes. The Disconnect's body is a JSON object whose only key is a
- * well-formed `installId` (INSTALL_ID_RE), else a 400 before the domain is
+ * (only admins read it), and its install ids are the key the Disconnect and
+ * the Replace take. The Disconnect's body is a JSON object whose only key is
+ * a well-formed `installId` (INSTALL_ID_RE), else a 400 before the domain is
  * asked; the domain takes only a team agent's bot by that id, never the
- * shared app's, and answers 409 `no-bot` for anything else. The POST keeps
- * http-server's CSRF check and its body cap. Neither route takes the one app
- * lock: the domain does, and it isn't re-entrant (mutex.ts).
+ * shared app's, and answers 409 `no-bot` for anything else. The Replace's
+ * body holds a well-formed `installId` and a `refreshToken` that looks like
+ * a configuration refresh token, and no other key (400 `invalid-body`,
+ * `invalid-install-id`, `invalid-refresh-token`, in that order), so nothing
+ * else ever reaches Slack; the domain answers 409 `no-bot` for an id no team
+ * bot has. The POSTs keep http-server's CSRF check and their body cap. No
+ * route takes the one app lock: the domain does, and it isn't re-entrant
+ * (mutex.ts).
  *
  * A fault is a 500, logged `slack_admin_failed { stage, code }` with the
  * code alone, never the error's message.
@@ -38,10 +52,13 @@ import { bodyObject } from './slack-apps.js';
 
 export const ADMIN_BOTS_PATH = '/admin/slack/bots';
 export const ADMIN_BOT_DISCONNECT_PATH = '/admin/slack/bots/disconnect';
+export const ADMIN_BOT_REPLACE_TOKEN_PATH = '/admin/slack/bots/replace-token';
 
 export interface AdminBotRoutesDeps {
   bus: HookBus;
   bots: Pick<Bots, 'listForAdmin' | 'disconnectForAdmin'>;
+  /** The approver's Replace by install id (TASK-1173), and nothing else of bot-changes.ts. */
+  changes: Pick<BotChanges, 'replaceTokenForAdmin'>;
   logger: Logger;
 }
 
@@ -50,6 +67,8 @@ type Reply = { status: number; body: unknown };
 const PLUGIN = '@ax/channel-slack';
 /** What a Disconnect's body may hold. */
 const DISCONNECT_KEYS: readonly string[] = ['installId'];
+/** What a Replace's body may hold (TASK-1173): the bot's install id and the pasted refresh token. */
+const REPLACE_KEYS: readonly string[] = ['installId', 'refreshToken'];
 
 const json = (status: number, body: unknown): Reply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
@@ -95,6 +114,26 @@ export function createAdminBotRoutes(d: AdminBotRoutesDeps): RouteSpec[] {
   }
 
   /**
+   * A team bot's approver replaces their own configuration token, naming the
+   * bot by its install id (TASK-1173). The admin is handed on only for the
+   * domain to compare with the bot's approver.
+   */
+  async function replaceToken(req: RouteRequest, actor: AdminActor): Promise<Reply> {
+    // http-server's maxBodyBytes refused anything larger already; this is the backstop.
+    if (req.body.length > ADMIN_BODY_MAX_BYTES) return json(413, { error: 'body-too-large' });
+    const body = bodyObject(req.body);
+    if (body === null || Object.keys(body).some((k) => !REPLACE_KEYS.includes(k))) return INVALID_BODY;
+    const installId = body['installId'];
+    if (typeof installId !== 'string' || !INSTALL_ID_RE.test(installId)) {
+      return json(400, { error: 'invalid-install-id' });
+    }
+    // Checked before the domain, so an access token pasted into the refresh box never reaches Slack.
+    const refreshToken = configToken(body['refreshToken'], REFRESH_TOKEN_PREFIX);
+    if (refreshToken === null) return json(400, { error: 'invalid-refresh-token' });
+    return d.changes.replaceTokenForAdmin({ actorUserId: actor.id, installId, refreshToken });
+  }
+
+  /**
    * One route: the admin gate, then `run`, then exactly one answer. A throw
    * `run` didn't handle is a 500, logged code-only with the route's stage.
    */
@@ -128,5 +167,6 @@ export function createAdminBotRoutes(d: AdminBotRoutesDeps): RouteSpec[] {
   return [
     route('GET', ADMIN_BOTS_PATH, 'bots', list),
     route('POST', ADMIN_BOT_DISCONNECT_PATH, 'bot-disconnect', disconnect),
+    route('POST', ADMIN_BOT_REPLACE_TOKEN_PATH, 'bot-replace-token', replaceToken),
   ];
 }

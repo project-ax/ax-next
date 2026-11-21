@@ -739,7 +739,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1171, TASK-1172)', async () => {
+  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1171, TASK-1172, TASK-1173)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -879,10 +879,11 @@ describe('@ax/preset-memory canary', () => {
 
     // TASK-1167: a team agent's own bot routes are mounted too, its Disconnect
     // (TASK-1172) with them, renaming its live bot and changing its picture
-    // (TASK-1171), TASK-1169's ask for an AX admin's approval, and the memory
-    // switch of a channel the bot answered in (TASK-1180). Each POST keeps
-    // http-server's CSRF check; with the header, an agent nobody can see is
-    // the route's own 404 (an unmounted POST would get the router's 405).
+    // (TASK-1171), TASK-1169's ask for an AX admin's approval, the memory
+    // switch of a channel the bot answered in (TASK-1180), and its approver's
+    // Replace of their token and a team admin's Claim (TASK-1173). Each POST
+    // keeps http-server's CSRF check; with the header, an agent nobody can see
+    // is the route's own 404 (an unmounted POST would get the router's 405).
     for (const suffix of [
       '/bot',
       '/bot/install-url',
@@ -891,6 +892,8 @@ describe('@ax/preset-memory canary', () => {
       '/bot/remember',
       '/bot/rename',
       '/bot/icon',
+      '/bot/replace-token',
+      '/bot/claim',
       '/bot-request',
       '/bot-request/cancel',
     ]) {
@@ -922,6 +925,25 @@ describe('@ax/preset-memory canary', () => {
     expect(noCsrfBotDisconnect.status).toBe(403);
     expect(
       await apiJson('POST', '/admin/slack/bots/disconnect', CANARY_ADMIN, { installId: 'A'.repeat(22) }),
+    ).toEqual({ status: 409, json: { error: 'no-bot' } });
+    // TASK-1173: a team bot's approver replaces their token from Admin › Slack
+    // too. It keeps the CSRF check; with the header, a body the route accepts
+    // (a refresh-token-shaped paste, built from pieces so no token-shaped
+    // literal sits in source) naming an install id no bot has reaches the
+    // domain, whose own answer is 409 no-bot before the vault or Slack is
+    // asked anything (an unmounted POST would get the router's 405).
+    const canaryPaste = ['xo', 'xe-', '1-CANARY'].join('');
+    const noCsrfBotReplace = await fetch(url('/admin/slack/bots/replace-token'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': CANARY_ADMIN },
+      body: JSON.stringify({ installId: 'A'.repeat(22), refreshToken: canaryPaste }),
+    });
+    expect(noCsrfBotReplace.status).toBe(403);
+    expect(
+      await apiJson('POST', '/admin/slack/bots/replace-token', CANARY_ADMIN, {
+        installId: 'A'.repeat(22),
+        refreshToken: canaryPaste,
+      }),
     ).toEqual({ status: 409, json: { error: 'no-bot' } });
     // The bot's OAuth callback is mounted: signed out, it sends the browser back
     // to the app's root with one fixed word, never a JSON error.

@@ -274,9 +274,12 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
       ),
     installUrl: async (as: string, agentId: string = SUPPORT.id): Promise<Reply> =>
       keep(await bots.installUrl({ actorUserId: as, agentId })),
-    /** A team admin's Cancel, naming the pending bot the page showed by its install id (TASK-1173). */
-    cancel: async (installId: string, agentId: string = SUPPORT.id): Promise<Reply> =>
-      keep(await bots.cancel({ agentId, installId })),
+    /**
+     * A team admin's Cancel (Grace's, unless told otherwise), naming the
+     * pending bot the page showed by its install id (TASK-1173).
+     */
+    cancel: async (installId: string, agentId: string = SUPPORT.id, as: string = GRACE): Promise<Reply> =>
+      keep(await bots.cancel({ ctx: ctxOf(as), actorUserId: as, agentId, installId })),
     /**
      * A team admin's Disconnect, from the agent's settings (TASK-1172), naming
      * the bot the page showed by its install id.
@@ -1617,6 +1620,69 @@ describe('cancel', () => {
     expect(await w.cancel(fresh.installId)).toEqual({ status: 200, body: { appDeleted: true } });
     expect(supportBot(w)).toBeUndefined();
     expect(w.memory.rows.get(salesId)).toMatchObject({ status: 'pending' });
+  });
+
+  it('cancel: rights are asked again inside the lock: a team admin demoted while it was held gets 403, an agent deleted meanwhile 404, and nothing is touched (TASK-1173)', async () => {
+    // Demoted to member while another Slack-app step held the one app lock.
+    const lock = createMutex();
+    const w = world({ lock });
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const pending = { ...supportBot(w)! };
+    forget(w);
+    const hold = await holdLock(lock);
+    const asked = w.cancel(pending.installId, SUPPORT.id, ADA);
+    w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    hold.free();
+    await hold.done;
+
+    expect(await asked).toEqual({ status: 403, body: { error: 'forbidden' } });
+    // Not even the agent's bot was read: no vault, no Slack, no line.
+    expect(w.trail).toEqual([]);
+    expect(reached(w)).toEqual([]);
+    expect(w.lines).toEqual([]);
+    expect(supportBot(w)).toEqual(pending);
+    // Asked as a non-admin, as every manage question is.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT.id, actor: { userId: ADA, isAdmin: false } },
+    ]);
+
+    // The agent deleted while it waited.
+    const lock2 = createMutex();
+    const g = world({ lock: lock2 });
+    await seedShared(g);
+    await g.request({ as: GRACE, refreshToken: PASTED });
+    const gPending = { ...supportBot(g)! };
+    forget(g);
+    const held = await holdLock(lock2);
+    const gone = g.cancel(gPending.installId);
+    g.people.agents.delete(SUPPORT.id);
+    held.free();
+    await held.done;
+
+    expect(await gone).toEqual({ status: 404, body: { error: 'not-found' } });
+    expect(g.trail).toEqual([]);
+    expect(reached(g)).toEqual([]);
+    expect(supportBot(g)).toEqual(gPending);
+  });
+
+  it('cancel: rights that cannot be answered throw before anything is read (TASK-1173)', async () => {
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const pending = { ...supportBot(w)! };
+    forget(w);
+    w.people.faults.set(
+      'agents:resolve',
+      new PluginError({ code: 'unavailable', plugin: '@ax/agents', message: `db down ${FAILURE_CANARY}` }),
+    );
+
+    // An outage is no refusal: the route's 500.
+    await expect(w.cancel(pending.installId)).rejects.toMatchObject({ code: 'unavailable' });
+
+    expect(w.trail).toEqual([]);
+    expect(reached(w)).toEqual([]);
+    expect(supportBot(w)).toEqual(pending);
   });
 });
 

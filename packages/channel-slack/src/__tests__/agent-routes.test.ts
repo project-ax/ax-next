@@ -11,7 +11,12 @@ import { createSlackApi } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { pngBase64, pngHeader } from './fake-png.js';
-import { fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
+import {
+  CONFIG_REFRESH_PREFIX,
+  fakeBotToken,
+  fakeConfigAccessToken,
+  fakeConfigRefreshToken,
+} from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
 
 /*
@@ -27,8 +32,9 @@ import { memoryChannelStore } from './memory-channel-store.js';
   what the domain is handed, with a stub domain (bots.test.ts tests the
   domain itself). So does asking an AX admin for it (TASK-1169), with its own
   stub (bot-requests.test.ts tests that domain), and so do renaming the live
-  bot and changing its picture (TASK-1171; bot-changes.test.ts tests that
-  domain).
+  bot and changing its picture (TASK-1171), and its approver's Replace of
+  their token and a team admin's Claim (TASK-1173; bot-changes.test.ts tests
+  that domain).
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -282,8 +288,14 @@ type Suffix =
   | '/bot/disconnect'
   | '/bot/rename'
   | '/bot/icon'
+  | '/bot/replace-token'
+  | '/bot/claim'
   | '/bot-request'
   | '/bot-request/cancel';
+
+/** A token pasted into the bot form's refresh-token field, and one of the wrong kind. */
+const REFRESH = fakeConfigRefreshToken('ROUTESREFRESHSECRET');
+const ACCESS = fakeConfigAccessToken('ROUTESACCESSSECRET');
 
 /** Every route, with a body each write would accept. */
 const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknown }> = [
@@ -296,19 +308,20 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   { method: 'POST', suffix: '/bot/remember', body: { channelId: SUPPORT_CH, remember: false } },
   { method: 'POST', suffix: '/bot', body: { botName: 'Support Helper' } },
   { method: 'POST', suffix: '/bot/install-url' },
-  { method: 'POST', suffix: '/bot/cancel' },
+  // Cancel names the pending bot the page showed (TASK-1173); the domain is a stub, so any well-formed id does.
+  { method: 'POST', suffix: '/bot/cancel', body: { installId: OWN_BOT.installId } },
   { method: 'POST', suffix: '/bot/disconnect', body: { installId: OWN_BOT.installId } },
   { method: 'POST', suffix: '/bot/rename', body: { botName: 'Support Helper' } },
   { method: 'POST', suffix: '/bot/icon', body: { iconPng: pngBase64(512, 512) } },
+  // The approver's Replace of their token, and a team admin's Claim (TASK-1173).
+  { method: 'POST', suffix: '/bot/replace-token', body: { refreshToken: REFRESH } },
+  { method: 'POST', suffix: '/bot/claim', body: { installId: OWN_BOT.installId } },
   // Asking an AX admin for the bot instead (TASK-1169).
   { method: 'POST', suffix: '/bot-request', body: { botName: 'Ada Bot' } },
   { method: 'POST', suffix: '/bot-request/cancel', body: {} },
 ];
 const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '');
 
-/** A token pasted into the bot form's refresh-token field, and one of the wrong kind. */
-const REFRESH = fakeConfigRefreshToken('ROUTESREFRESHSECRET');
-const ACCESS = fakeConfigAccessToken('ROUTESACCESSSECRET');
 /** What the bot domain answers for an agent with no bot and a viewer with no token. */
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 
@@ -322,7 +335,16 @@ const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
  */
 function stubBots() {
   const calls: Array<{
-    method: 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status' | 'rename' | 'setPicture';
+    method:
+      | 'request'
+      | 'installUrl'
+      | 'cancel'
+      | 'disconnect'
+      | 'status'
+      | 'rename'
+      | 'setPicture'
+      | 'replaceToken'
+      | 'claim';
     input: Record<string, unknown>;
   }> = [];
   const answers: {
@@ -333,6 +355,8 @@ function stubBots() {
     status: AgentSlackBot;
     rename: BotReply;
     setPicture: BotReply;
+    replaceToken: BotReply;
+    claim: BotReply;
   } = {
     request: { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=first', iconSet: true } },
     installUrl: { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=again' } },
@@ -341,6 +365,8 @@ function stubBots() {
     status: NO_BOT,
     rename: { status: 200, body: { botName: 'Quill Desk' } },
     setPicture: { status: 200, body: {} },
+    replaceToken: { status: 200, body: {} },
+    claim: { status: 200, body: {} },
   };
   const state: { fail: unknown } = { fail: undefined };
   const enter = (method: (typeof calls)[number]['method'], input: object): void => {
@@ -371,7 +397,8 @@ function stubBots() {
     },
   };
   // Into the same `calls`, so every "the domain was never asked" covers these too.
-  const changes: BotChanges = {
+  // What the agent's settings may reach of bot-changes.ts: never the Admin › Slack Replace.
+  const changes: Pick<BotChanges, 'rename' | 'setPicture' | 'replaceToken' | 'claim'> = {
     rename: async (i) => {
       enter('rename', i);
       return answers.rename;
@@ -379,6 +406,14 @@ function stubBots() {
     setPicture: async (i) => {
       enter('setPicture', i);
       return answers.setPicture;
+    },
+    replaceToken: async (i) => {
+      enter('replaceToken', i);
+      return answers.replaceToken;
+    },
+    claim: async (i) => {
+      enter('claim', i);
+      return answers.claim;
     },
   };
   return { bots, changes, calls, answers, state };
@@ -635,6 +670,19 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES,
       },
+      // Its approver's Replace of their token, and a team admin's Claim (TASK-1173): small bodies, the plain cap.
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/replace-token',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/claim',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       // Asking an AX admin for it (TASK-1169): a name and nothing else, so the plain cap.
       {
         method: 'POST',
@@ -763,9 +811,13 @@ describe('rights', () => {
       '/remember',
       '/bot/remember',
       '/bot',
+      // Cancel reads the install id the page showed since TASK-1173.
+      '/bot/cancel',
       '/bot/disconnect',
       '/bot/rename',
       '/bot/icon',
+      '/bot/replace-token',
+      '/bot/claim',
       '/bot-request',
     ] as const) {
       for (const body of [garbage, oversized, arrayBody, extraKey]) {
@@ -1445,13 +1497,13 @@ describe('the bot routes', () => {
       status: 403,
       body: { error: 'not-approver' },
     });
+    // A bot that isn't the one the page showed (gone, or replaced since).
+    const shown = { installId: OWN_BOT.installId };
     w.bots.answers.cancel = { status: 409, body: { error: 'not-pending' } };
-    expect(await w.call('POST', '/bot/cancel', SUPPORT.id, ADA)).toMatchObject({
+    expect(await w.call('POST', '/bot/cancel', SUPPORT.id, ADA, shown)).toMatchObject({
       status: 409,
       body: { error: 'not-pending' },
     });
-    // A bot that isn't the one the page showed (gone, or replaced since).
-    const shown = { installId: OWN_BOT.installId };
     w.bots.answers.disconnect = { status: 409, body: { error: 'no-bot' } };
     expect(await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, shown)).toMatchObject({
       status: 409,
@@ -1470,20 +1522,17 @@ describe('the bot routes', () => {
     });
   });
 
-  it('install-url and cancel reach the domain for a team admin of the agent, and never read a body', async () => {
+  it('install-url reaches the domain for a team admin of the agent, and never reads a body', async () => {
     const w = world();
     expect(await w.call('POST', '/bot/install-url', SUPPORT.id, GRACE, JSON.stringify({ agentId: SALES.id }))).toMatchObject({
       status: 200,
       body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=again' },
     });
-    expect(await w.call('POST', '/bot/cancel', SUPPORT.id, ADA, 'garbage')).toMatchObject({
-      status: 200,
-      body: { appDeleted: true },
-    });
+    expect(await w.call('POST', '/bot/install-url', SUPPORT.id, ADA, 'garbage')).toMatchObject({ status: 200 });
+    // Only the agent in the path, for the person asking: the body named another agent, and was never read.
     expect(w.bots.calls).toEqual([
       { method: 'installUrl', input: { actorUserId: GRACE.id, agentId: SUPPORT.id } },
-      // TASK-1173: no install id until the route reads the body the page sends (the PR's routes task).
-      { method: 'cancel', input: { agentId: SUPPORT.id, installId: '' } },
+      { method: 'installUrl', input: { actorUserId: ADA.id, agentId: SUPPORT.id } },
     ]);
   });
 
@@ -1545,6 +1594,7 @@ describe('the bot routes', () => {
     w.requests.state.fail = fault;
     const bodies: Partial<Record<Suffix, unknown>> = {
       '/bot': { botName: 'Support Helper' },
+      '/bot/cancel': { installId: OWN_BOT.installId },
       '/bot/disconnect': { installId: OWN_BOT.installId },
       '/bot-request': { botName: 'Support Helper' },
     };
@@ -1800,6 +1850,225 @@ describe("the agent's own bot's name and picture (TASK-1171)", () => {
     ]);
     const logged = JSON.stringify(w.lines);
     for (const text of [REFRESH, 'vault down', 'Quill Desk', SUPPORT.id, ADA.id]) expect(logged).not.toContain(text);
+  });
+});
+
+// ── The live bot's token, its claim, and Cancel by install id (TASK-1173) ───
+
+describe("the agent's own bot's token, its claim, and Cancel by the page's install id (TASK-1173)", () => {
+  /** One POST to the support agent, status and body only. A string or a Buffer goes as it is, anything else as JSON. */
+  const post = async (
+    w: ReturnType<typeof world>,
+    suffix: '/bot/replace-token' | '/bot/claim' | '/bot/cancel',
+    body: unknown,
+    as: TestUser = ADA,
+  ): Promise<{ status: number; body: unknown }> => {
+    const a = await w.call('POST', suffix, SUPPORT.id, as, body);
+    return { status: a.status, body: a.body };
+  };
+  /** A body of exactly `bytes` bytes: `{"<key>":"xxx…"}`. */
+  const sized = (key: string, bytes: number, fill: string): Buffer => {
+    const head = `{"${key}":"`;
+    const out = Buffer.from(`${head}${fill.repeat(bytes - head.length - 2)}"}`);
+    expect(out.length).toBe(bytes);
+    return out;
+  };
+
+  it("a team admin's Replace hands the domain the pasted refresh token, the person asking and the agent in the path, and nothing else; its answer is the route's", async () => {
+    const w = world();
+    expect(await post(w, '/bot/replace-token', { refreshToken: REFRESH }, GRACE)).toEqual({ status: 200, body: {} });
+    // Exactly these three. Who asked is only for the domain to compare with the
+    // bot's approver; the bot is the agent's, never the body's to name.
+    expect(w.bots.calls).toEqual([
+      { method: 'replaceToken', input: { actorUserId: GRACE.id, agentId: SUPPORT.id, refreshToken: REFRESH } },
+    ]);
+    // The domain's answer is the answer, whatever it is.
+    for (const answer of [
+      { status: 403, body: { error: 'not-approver' } },
+      { status: 409, body: { error: 'not-live' } },
+      { status: 409, body: { error: 'public-origin-not-https' } },
+      { status: 502, body: { error: 'slack-refresh-token' } },
+      { status: 502, body: { error: 'slack-not-app-manager' } },
+      { status: 502, body: { error: 'slack-error' } },
+      { status: 500, body: { error: 'internal' } },
+    ]) {
+      w.bots.answers.replaceToken = answer;
+      expect(await post(w, '/bot/replace-token', { refreshToken: REFRESH }), JSON.stringify(answer)).toEqual(answer);
+    }
+    expect(w.bots.calls).toHaveLength(8);
+    // The route itself asks Slack nothing and logs nothing: the domain does both.
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('a Replace body must be an object holding a refresh token alone, within the cap every other write has: anything else is a 400 before the domain', async () => {
+    const w = world();
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['an access token pasted into the refresh field', { refreshToken: ACCESS }, { error: 'invalid-refresh-token' }],
+      ['no refresh token', {}, { error: 'invalid-refresh-token' }],
+      ['a null refresh token', { refreshToken: null }, { error: 'invalid-refresh-token' }],
+      ['a refresh token that is not text', { refreshToken: 42 }, { error: 'invalid-refresh-token' }],
+      ['an empty refresh token', { refreshToken: '' }, { error: 'invalid-refresh-token' }],
+      ['the prefix alone', { refreshToken: CONFIG_REFRESH_PREFIX }, { error: 'invalid-refresh-token' }],
+      ['a refresh token with a space after it', { refreshToken: `${REFRESH} ` }, { error: 'invalid-refresh-token' }],
+      [
+        'an unknown key beside a good token, even one naming another agent',
+        { refreshToken: REFRESH, agentId: SALES.id },
+        { error: 'invalid-body' },
+      ],
+      [
+        "an install id beside it: the bot is the agent's, never the body's to name",
+        { refreshToken: REFRESH, installId: OWN_BOT.installId },
+        { error: 'invalid-body' },
+      ],
+      ['an array', [REFRESH], { error: 'invalid-body' }],
+      ['null', null, { error: 'invalid-body' }],
+      ['not JSON', 'garbage', { error: 'invalid-body' }],
+      ['bytes that are not UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), { error: 'invalid-body' }],
+      ['no body at all', Buffer.alloc(0), { error: 'invalid-body' }],
+    ];
+    for (const [what, body, error] of cases) {
+      expect(await post(w, '/bot/replace-token', body), what).toEqual({ status: 400, body: error });
+    }
+    // The backstop for http-server's cap: one byte past it is a 413; at it, the body is read.
+    expect(await post(w, '/bot/replace-token', sized('refreshToken', ADMIN_BODY_MAX_BYTES + 1, 'x'))).toEqual({
+      status: 413,
+      body: { error: 'body-too-large' },
+    });
+    expect(await post(w, '/bot/replace-token', sized('refreshToken', ADMIN_BODY_MAX_BYTES, 'x'))).toEqual({
+      status: 400,
+      body: { error: 'invalid-refresh-token' },
+    });
+    // Nothing reached the domain, so no paste reached Slack.
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('Claim and Cancel hand the domain the install id the page showed, for the agent in the path, as the person asking', async () => {
+    const w = world();
+    expect(await post(w, '/bot/claim', { installId: OWN_BOT.installId }, GRACE)).toEqual({ status: 200, body: {} });
+    expect(await post(w, '/bot/cancel', { installId: OWN_BOT.installId }, ADA)).toEqual({
+      status: 200,
+      body: { appDeleted: true },
+    });
+    // The id as sent, even one the agent's bot doesn't have: whether it names the agent's bot is the domain's to say.
+    expect(await post(w, '/bot/claim', { installId: INSTALL_ID }, ADA)).toEqual({ status: 200, body: {} });
+    expect(await post(w, '/bot/cancel', { installId: INSTALL_ID }, GRACE)).toEqual({
+      status: 200,
+      body: { appDeleted: true },
+    });
+    // Each domain asks the person's rights again inside the app lock, so it gets the person and their ctx.
+    expect(w.bots.calls).toEqual([
+      {
+        method: 'claim',
+        input: { ctxUserId: GRACE.id, actorUserId: GRACE.id, agentId: SUPPORT.id, installId: OWN_BOT.installId },
+      },
+      {
+        method: 'cancel',
+        input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id, installId: OWN_BOT.installId },
+      },
+      { method: 'claim', input: { ctxUserId: ADA.id, actorUserId: ADA.id, agentId: SUPPORT.id, installId: INSTALL_ID } },
+      {
+        method: 'cancel',
+        input: { ctxUserId: GRACE.id, actorUserId: GRACE.id, agentId: SUPPORT.id, installId: INSTALL_ID },
+      },
+    ]);
+  });
+
+  it('Claim and Cancel take { installId } and nothing else: an unknown key, a missing, non-string or malformed id is a 400 before the domain; past the cap a 413', async () => {
+    const w = world();
+    const id = OWN_BOT.installId;
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['no body at all', Buffer.alloc(0), { error: 'invalid-body' }],
+      [
+        'an unknown key beside a good id, even one naming another agent',
+        { installId: id, agentId: SALES.id },
+        { error: 'invalid-body' },
+      ],
+      ['a refresh token beside the id', { installId: id, refreshToken: REFRESH }, { error: 'invalid-body' }],
+      ['not JSON', 'garbage', { error: 'invalid-body' }],
+      ['an array', [id], { error: 'invalid-body' }],
+      ['null', null, { error: 'invalid-body' }],
+      ['bytes that are not UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), { error: 'invalid-body' }],
+      ['no installId (an older page)', {}, { error: 'invalid-install-id' }],
+      ['a number', { installId: 42 }, { error: 'invalid-install-id' }],
+      ['null for the id', { installId: null }, { error: 'invalid-install-id' }],
+      ['an id of 21 characters', { installId: id.slice(1) }, { error: 'invalid-install-id' }],
+      ['an id one too long', { installId: `${id}A` }, { error: 'invalid-install-id' }],
+      ['an id with a character no install id has', { installId: `${'A'.repeat(21)}/` }, { error: 'invalid-install-id' }],
+      ['an id with a space around it', { installId: ` ${id}` }, { error: 'invalid-install-id' }],
+    ];
+    for (const suffix of ['/bot/claim', '/bot/cancel'] as const) {
+      for (const [what, body, error] of cases) {
+        expect(await post(w, suffix, body), `${suffix} ${what}`).toEqual({ status: 400, body: error });
+      }
+      // The backstop for http-server's cap: one byte past it is a 413; at it, the body is read.
+      expect(await post(w, suffix, sized('installId', ADMIN_BODY_MAX_BYTES + 1, 'A')), `${suffix} past the cap`).toEqual({
+        status: 413,
+        body: { error: 'body-too-large' },
+      });
+      expect(await post(w, suffix, sized('installId', ADMIN_BODY_MAX_BYTES, 'A')), `${suffix} at the cap`).toEqual({
+        status: 400,
+        body: { error: 'invalid-install-id' },
+      });
+    }
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it("answers exactly what the domain answers: a Claim's refusals, and Cancel's", async () => {
+    const w = world();
+    const shown = { installId: OWN_BOT.installId };
+    for (const answer of [
+      { status: 409, body: { error: 'claim-not-needed' } },
+      { status: 409, body: { error: 'not-live' } },
+      { status: 409, body: { error: 'no-bot' } },
+      // The rights the domain asked again inside the lock.
+      { status: 403, body: { error: 'forbidden' } },
+      { status: 409, body: { error: 'personal-agent' } },
+      { status: 404, body: { error: 'not-found' } },
+    ]) {
+      w.bots.answers.claim = answer;
+      expect(await post(w, '/bot/claim', shown), JSON.stringify(answer)).toEqual(answer);
+    }
+    for (const answer of [
+      { status: 409, body: { error: 'not-pending' } },
+      // An app Slack wouldn't delete.
+      { status: 200, body: { appDeleted: false } },
+      { status: 403, body: { error: 'forbidden' } },
+      { status: 404, body: { error: 'not-found' } },
+    ]) {
+      w.bots.answers.cancel = answer;
+      expect(await post(w, '/bot/cancel', shown), JSON.stringify(answer)).toEqual(answer);
+    }
+    expect(w.bots.calls).toHaveLength(10);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it("a fault in the domain is a 500, logged by its code and the route alone: never the pasted token or the fault's text", async () => {
+    const w = world();
+    w.bots.state.fail = Object.assign(new Error(`vault down holding ${REFRESH} for ${OWN_BOT.installId}`), {
+      code: 'ECONNRESET',
+    });
+    expect(await post(w, '/bot/replace-token', { refreshToken: REFRESH })).toEqual({
+      status: 500,
+      body: { error: 'internal' },
+    });
+    expect(await post(w, '/bot/claim', { installId: OWN_BOT.installId })).toEqual({
+      status: 500,
+      body: { error: 'internal' },
+    });
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-replace-token', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-claim', code: 'ECONNRESET' } },
+    ]);
+    const logged = JSON.stringify(w.lines);
+    for (const text of [REFRESH, CONFIG_REFRESH_PREFIX, 'vault down', OWN_BOT.installId, SUPPORT.id, ADA.id]) {
+      expect(logged, text).not.toContain(text);
+    }
   });
 });
 
