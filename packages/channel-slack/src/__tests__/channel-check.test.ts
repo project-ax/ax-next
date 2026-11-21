@@ -62,6 +62,27 @@ function setup(answer: (channel: string) => Answer, max = 100) {
   };
 }
 
+/**
+ * A check over a fake conversations.info that answers nothing until the test
+ * says: `asks[i].answer(...)` lets the i-th ask's answer arrive, in whatever
+ * order the test picks.
+ */
+function held() {
+  const asks: Array<{ token: string; channel: string; answer: (a: Answer) => void }> = [];
+  const check = createChannelCheck({
+    api: {
+      conversationsInfo: (token, channel) =>
+        new Promise<SlackChannel>((resolve, reject) => {
+          asks.push({ token, channel, answer: (a) => (a instanceof Error ? reject(a) : resolve(a)) });
+        }),
+    },
+    now: () => START,
+    ttlMs: TTL,
+    max: 100,
+  });
+  return { asks, check };
+}
+
 describe('createChannelCheck', () => {
   it("a public, live channel is allowed, asked with the install's token about that channel", async () => {
     const { calls, check } = setup((c) => live(c));
@@ -222,6 +243,61 @@ describe('createChannelCheck', () => {
     expect(calls).toHaveLength(4);
     await check.check(INSTALL, TOKEN, CH3);
     expect(calls).toHaveLength(4);
+  });
+
+  // Two turns in one channel ask at once, and Slack's answers arrive out of order.
+  it('an allowed answer still on its way when a refusal for that channel lands is not kept', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    const second = check.check(INSTALL, TOKEN, CH);
+    expect(asks).toHaveLength(2);
+    asks[1]!.answer(new SlackApiError('conversations.info', 'missing_scope'));
+    expect(await second).toEqual({ kind: 'refused', code: 'missing_scope' });
+    // It may describe the channel as it was before: its own turn has it, and nothing else does.
+    asks[0]!.answer(live(CH));
+    expect(await first).toEqual({ kind: 'allowed' });
+
+    const third = check.check(INSTALL, TOKEN, CH);
+    expect(asks).toHaveLength(3);
+    // Asked after the refusal landed: kept as any answer is.
+    asks[2]!.answer(live(CH));
+    expect(await third).toEqual({ kind: 'allowed' });
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(asks).toHaveLength(3);
+  });
+
+  it('a refusal that lands after an allowed answer was kept forgets it', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    const second = check.check(INSTALL, TOKEN, CH);
+    asks[0]!.answer(live(CH));
+    expect(await first).toEqual({ kind: 'allowed' });
+    asks[1]!.answer(live(CH, { isPrivate: true }));
+    expect(await second).toEqual({ kind: 'refused', code: 'not-public' });
+
+    const third = check.check(INSTALL, TOKEN, CH);
+    expect(asks).toHaveLength(3);
+    asks[2]!.answer(live(CH, { isPrivate: true }));
+    expect(await third).toEqual({ kind: 'refused', code: 'not-public' });
+  });
+
+  it('only a refusal for the same install and channel does that: a failure, or one for another, changes nothing kept', async () => {
+    const { asks, check } = held();
+    const kept = check.check(INSTALL, TOKEN, CH);
+    const failed = check.check(INSTALL, TOKEN, CH);
+    const otherChannel = check.check(INSTALL, TOKEN, CH2);
+    const otherInstall = check.check(OTHER_INSTALL, OTHER_TOKEN, CH);
+    asks[1]!.answer(new SlackApiError('conversations.info', 'ratelimited'));
+    asks[2]!.answer(new SlackApiError('conversations.info', 'channel_not_found'));
+    asks[3]!.answer(new SlackApiError('conversations.info', 'missing_scope'));
+    expect(await failed).toEqual({ kind: 'unknown', code: 'ratelimited' });
+    expect(await otherChannel).toEqual({ kind: 'refused', code: 'channel_not_found' });
+    expect(await otherInstall).toEqual({ kind: 'refused', code: 'missing_scope' });
+    asks[0]!.answer(live(CH));
+    expect(await kept).toEqual({ kind: 'allowed' });
+
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'allowed' });
+    expect(asks).toHaveLength(4);
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('ttlMs and max must be positive integers (%s)', (bad) => {

@@ -40,9 +40,16 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * as Slack can answer, and an expired allowed answer is never used in its
  * place.
  *
+ * Two turns in one channel can ask at once, and Slack's answers can arrive in
+ * any order. So a refusal also forgets the allowed answer kept for that
+ * install and channel, and an allowed answer still on its way when a refusal
+ * for them lands is not kept: it may describe the channel as it was before.
+ * Its own turn still gets it, as every turn gets its own answer.
+ *
  * In-process and bounded (`max` channels, the oldest forgotten first), like
- * the event-id dedupe and the signing-secret cache. It never logs: the
- * caller logs the result's code.
+ * the event-id dedupe and the signing-secret cache; an install and channel
+ * is tracked for the race above only while an ask about it is on its way. It
+ * never logs: the caller logs the result's code.
  */
 
 /**
@@ -75,6 +82,27 @@ function refusalCode(c: SlackChannel): 'not-public' | 'archived' | 'shared' {
   return 'shared';
 }
 
+/** Slack's answer about one channel, sorted. Never rejects. */
+async function ask(
+  api: Pick<SlackApi, 'conversationsInfo'>,
+  botToken: string,
+  channelId: string,
+): Promise<ChannelCheckResult> {
+  let info: SlackChannel;
+  try {
+    info = await api.conversationsInfo(botToken, channelId);
+  } catch (err) {
+    if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
+      return { kind: 'refused', code: err.code };
+    }
+    return { kind: 'unknown', code: logCode(err) };
+  }
+  // Unexplained, so not a refusal: a refusal deletes a binding, and this says nothing about this channel.
+  if (info.id !== channelId) return { kind: 'unknown', code: 'id-mismatch' };
+  if (!connectable(info)) return { kind: 'refused', code: refusalCode(info) };
+  return { kind: 'allowed' };
+}
+
 export function createChannelCheck(o: {
   api: Pick<SlackApi, 'conversationsInfo'>;
   /** Epoch milliseconds. */
@@ -88,6 +116,25 @@ export function createChannelCheck(o: {
   const { api, now, ttlMs, max } = o;
   /** `${installId}/${channelId}` → when its allowed answer stops being good. Insertion order is age. */
   const allowedUntil = new Map<string, number>();
+  /**
+   * The keys Slack is being asked about now: how many asks are on their way,
+   * and how many refusals have landed since the oldest of them left. A key
+   * goes once its last ask is answered, so it never holds more keys than
+   * there are asks on their way.
+   */
+  const asking = new Map<string, { inFlight: number; refusals: number }>();
+
+  /** Keep an allowed answer, the newest, forgetting the oldest beyond `max`. */
+  const keep = (key: string): void => {
+    allowedUntil.delete(key);
+    while (allowedUntil.size >= max) {
+      const oldest = allowedUntil.keys().next();
+      if (oldest.done === true) break;
+      allowedUntil.delete(oldest.value);
+    }
+    // From when the answer arrived, not from when Slack was asked.
+    allowedUntil.set(key, now() + ttlMs);
+  };
 
   return {
     async check(installId, botToken, channelId) {
@@ -97,27 +144,24 @@ export function createChannelCheck(o: {
       if (until !== undefined && now() < until) return { kind: 'allowed' };
       allowedUntil.delete(key);
 
-      let info: SlackChannel;
+      const flight = asking.get(key) ?? { inFlight: 0, refusals: 0 };
+      asking.set(key, flight);
+      flight.inFlight += 1;
+      const refusalsBefore = flight.refusals;
       try {
-        info = await api.conversationsInfo(botToken, channelId);
-      } catch (err) {
-        if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
-          return { kind: 'refused', code: err.code };
+        const result = await ask(api, botToken, channelId);
+        if (result.kind === 'refused') {
+          // What another ask kept, or still brings back, may be from before this.
+          flight.refusals += 1;
+          allowedUntil.delete(key);
+        } else if (result.kind === 'allowed' && flight.refusals === refusalsBefore) {
+          keep(key);
         }
-        return { kind: 'unknown', code: logCode(err) };
+        return result;
+      } finally {
+        flight.inFlight -= 1;
+        if (flight.inFlight === 0) asking.delete(key);
       }
-      // Unexplained, so not a refusal: a refusal deletes a binding, and this says nothing about this channel.
-      if (info.id !== channelId) return { kind: 'unknown', code: 'id-mismatch' };
-      if (!connectable(info)) return { kind: 'refused', code: refusalCode(info) };
-
-      while (allowedUntil.size >= max) {
-        const oldest = allowedUntil.keys().next();
-        if (oldest.done === true) break;
-        allowedUntil.delete(oldest.value);
-      }
-      // From when the answer arrived, not from when Slack was asked.
-      allowedUntil.set(key, now() + ttlMs);
-      return { kind: 'allowed' };
     },
   };
 }
