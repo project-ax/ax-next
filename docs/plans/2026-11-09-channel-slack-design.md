@@ -686,9 +686,18 @@ no reinstall.
   app lock, like Disconnect.
 - Admin › Slack's Rename and Replace releases of a gone row read first
   (`onlyIfStored`), so a reset's wipe isn't answered with a stray vault delete.
-- **Residual, not built.** A claim racing an outsider's first mention in a
-  channel can leave that one binding with the old requester. Handed to a
-  follow-up.
+- **Residual, not built.** A claim racing the bot's first mention in a
+  channel (anyone's mention, a member's too; the window is about two Slack
+  calls) can leave that one binding with the old requester, because the
+  router copies the requester from the row it read when the event arrived.
+  While that person is not a team admin, outsiders in that channel are
+  refused. It is not a clean fail-closed, though: if they are made a team
+  admin again, outsiders there quietly run as them, while the settings and
+  the Claim dialog say the claimer. It is also a dead end while it lasts:
+  `needsClaim` reads only the install row, so the settings show nothing
+  wrong and Claim answers `claim-not-needed`; only Disconnect or Rebuild
+  clears it. Handed to a follow-up (take the app lock around re-reading the
+  bot row and writing the binding; one replica today).
 
 **As built (TASK-1172).** Disconnect runs the same removal as deleting the
 agent, under the one app lock. A team admin's Disconnect (from the agent's
