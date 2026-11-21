@@ -26,10 +26,10 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
  * that agent in that channel, on any install, and the kept switch;
  * `keptRemember` reads it (null when none was set). `upsert` and `remove`
  * never touch it. `bindBot` (TASK-1182) starts a binding from the agent's
- * binding of the channel on the shared install, else the kept switch, else
- * on, writes it as `upsert` does, and keeps nothing. It needs no lock: it
- * reads the switch and writes the binding in one synchronous run, so
- * nothing can come between.
+ * kept switch, else on, reading no binding (TASK-1186), writes it as
+ * `upsert` does, and keeps nothing. It needs no lock: it reads the switch
+ * and writes the binding in one synchronous run, so nothing can come
+ * between.
  * `removeForAgent` takes the agent's threads and kept switches too; nothing
  * else does.
  *
@@ -114,13 +114,9 @@ export function memoryChannelStore() {
       calls.push('keptRemember');
       return switches.get(switchKey(agentId, channelId)) ?? null;
     },
-    async bindBot(b, sharedInstallId) {
+    async bindBot(b) {
       calls.push('bindBot');
-      const shared = sharedInstallId === null ? undefined : rows.get(key(sharedInstallId, b.channelId));
-      const remember =
-        (shared !== undefined && shared.agentId === b.agentId ? shared.remember : undefined) ??
-        switches.get(switchKey(b.agentId, b.channelId)) ??
-        true;
+      const remember = switches.get(switchKey(b.agentId, b.channelId)) ?? true;
       await store.upsert({ ...b, remember });
       return remember;
     },

@@ -31,15 +31,14 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * apart from the bindings (TASK-1180), so a Disconnect never loses it. A flip
  * (`setRemember`) writes every binding of that agent in that channel, on any
  * install, and the kept switch, in ONE statement, so a flip leaves the kept
- * switch agreeing with every binding it reached; and a bot channel switched
- * off is off on the shared binding too, which the shared bot answers with
- * again once the bot is gone. `bindBot`, a team agent's own bot's first bind
- * there, reads it. An install's removal and a disconnect
- * keep it; only `removeForAgent` deletes it. Any future writer that flips a
+ * switch agreeing with every binding it reached. `bindBot`, a team agent's
+ * own bot's first bind there, reads it, and no binding: the kept switch is
+ * the team's last word (TASK-1186). An install's removal, a disconnect and
+ * the boot's delete of the shared install's bindings (migrations.ts) keep
+ * it; only `removeForAgent` deletes it. Any future writer that flips a
  * binding's `remember` must keep that one-statement rule. `upsert`'s insert
  * is the one exception, on purpose: a new binding's starting switch is not
- * a flip, so it keeps nothing (a fresh connect starts on beside whatever is
- * kept, and the bot's first bind reads a live binding before the kept
+ * a flip, so it keeps nothing (its writer gives it: `bindBot` the kept
  * switch). The two can also differ after a flip by code from before the
  * table (an older replica, or a rollback), which writes the binding alone;
  * the next boot moves the kept switch toward off (migrations.ts).
@@ -48,11 +47,10 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * (TASK-1182): each takes the switch lock on the agent and channel
  * (`lockSwitch`) as its transaction's first statement and reads only after
  * it, so whichever comes second sees what the other wrote. Any future
- * writer that flips a binding's `remember` takes it too. A fresh connect on
- * the shared app (`upsert`, channels.ts) is the one writer without it, on
- * purpose: a new binding starts on, which is not a flip; a reconnect never
- * writes `remember`; and a connect is refused once the agent's own bot is
- * live (channels.ts `liveOwnBot`).
+ * writer that flips a binding's `remember` takes it too. `upsert` called on
+ * its own takes no lock, on purpose: a new binding's starting switch is
+ * not a flip, and a reconnect never writes `remember`. A bot's binding is
+ * written only through `bindBot`, which reads the switch under the lock.
  */
 export interface ChannelBinding {
   installId: string;
@@ -64,8 +62,8 @@ export interface ChannelBinding {
   channelName: string;
   /**
    * The channel's memory switch. On for a new binding unless its writer says
-   * otherwise (a team agent's own bot starts from the agent's switch for the
-   * channel, TASK-1179/1180); a reconnect keeps it.
+   * otherwise (a team agent's own bot starts from the switch kept for the
+   * agent and channel, TASK-1180/1186); a reconnect keeps it.
    */
   remember: boolean;
   createdAt: Date;
@@ -136,9 +134,8 @@ export interface ChannelStore {
    * Flip the agent's memory switch for a channel. `installId`'s binding of
    * the channel must be THIS agent's, else false and nothing is written.
    * Then, in ONE statement, every binding of the agent in that channel, on
-   * any install (its shared binding while its own bot answers there, and the
-   * bot's), takes it, and so does the switch kept apart from the bindings
-   * (keptRemember). Another agent's rows and other channels are never
+   * any install, takes it, and so does the switch kept apart from the
+   * bindings (keptRemember). Another agent's rows and other channels are never
    * touched. True when the named binding took it. A Disconnect can delete
    * the named binding while the flip waits on it: then false, though the
    * agent's other bindings of the channel and the kept switch took it,
@@ -156,10 +153,11 @@ export interface ChannelStore {
   /**
    * A team agent's own bot's first bind of a channel (TASK-1167): `b` is
    * written as `upsert` writes it, with the memory switch the team last set
-   * for the agent there: the agent's binding of the channel on the shared
-   * app's install (`sharedInstallId`, null when there is none), else the
-   * switch kept for the agent and channel (keptRemember), else on. Another
-   * agent's binding there is about that agent's memory and is never read.
+   * for the agent there: the switch kept for the agent and channel
+   * (keptRemember), else on. No binding is read (TASK-1186): the shared
+   * app's are deleted at every boot, after their switches are kept
+   * (migrations.ts). Another agent's switch there is about that agent's
+   * memory and is never read either.
    * Read and written in one transaction holding the lock `setRemember`
    * takes on this agent and channel, so a flip and this bind never
    * interleave: a flip that came first is what it reads, and one that comes
@@ -169,10 +167,7 @@ export interface ChannelStore {
    * (as `upsert` does), so the caller reads the binding back. A failed read
    * throws before anything is written: the switch is never guessed.
    */
-  bindBot(
-    b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'>,
-    sharedInstallId: string | null,
-  ): Promise<boolean>;
+  bindBot(b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'>): Promise<boolean>;
   /**
    * Delete the agent's bindings, thread rows and kept switches on every
    * install, in one transaction (all go, or none does), and say how many
@@ -394,25 +389,19 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       return row?.remember ?? null;
     },
 
-    async bindBot(b, sharedInstallId) {
+    async bindBot(b) {
       return db.transaction().setIsolationLevel('read committed').execute(async (trx) => {
         // The switch lock first, in a statement of its own (lockSwitch): a
         // flip of the channel in progress commits before anything below reads.
         await lockSwitch(trx, b.agentId, b.channelId);
-        // This store on the transaction, so every read and the write below
-        // hold the lock, on the transaction's one connection. Only its get,
+        // This store on the transaction, so the read and the write below
+        // hold the lock, on the transaction's one connection. Only its
         // keptRemember and upsert: setRemember, bindBot and removeForAgent
         // each open a transaction, which a transaction can't.
         const locked = createChannelStore(trx);
-        // The agent's live shared binding comes first: a fresh connect keeps
-        // no switch, so that binding is never staler than the kept one, which
-        // only matters once it is gone. Another agent's binding is about that
-        // agent's memory.
-        const shared = sharedInstallId === null ? null : await locked.get(sharedInstallId, b.channelId);
-        const remember =
-          (shared !== null && shared.agentId === b.agentId ? shared.remember : null) ??
-          (await locked.keptRemember(b.agentId, b.channelId)) ??
-          true;
+        // The switch the team last set for this agent here, else on. Never a
+        // binding's, and never another agent's: that is about their memory.
+        const remember = (await locked.keptRemember(b.agentId, b.channelId)) ?? true;
         await locked.upsert({ ...b, remember });
         return remember;
       });

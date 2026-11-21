@@ -314,6 +314,56 @@ describe('runMigrations', () => {
     expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
     expect((await channels.get(INSTALL, SALES))?.remember).toBe(true);
   });
+
+  // TASK-1186. The shared app no longer serves channels (design §4b.1), so
+  // every boot deletes its bindings. Last, after the backfills: a binding
+  // switched off with nothing kept for it (phase 1 kept the switch on the
+  // binding alone) leaves its off as the switch kept for its agent and
+  // channel, which that agent's own bot's first bind reads.
+  it("deletes the shared install's channel bindings at boot, after keeping an off one's switch; a bot's bindings, a binding with no install row and every thread stay; a second run changes nothing (TASK-1186)", async () => {
+    /** An install id with no row in the installs table. */
+    const NO_INSTALL = 'bm8taW5zdGFsbC1yb3dfMQ';
+    await sql`
+      INSERT INTO channel_slack_v1_installs (install_id, status, app_id, client_id, bot_name, connected_by_user_id, kind)
+      VALUES (${INSTALL}, 'active', 'A07QF9ZK2MN', '7512345678901.7511111111111', 'canopy', ${ADA}, 'shared')
+    `.execute(db);
+    await sql`
+      INSERT INTO channel_slack_v1_installs
+        (install_id, status, app_id, client_id, bot_name, connected_by_user_id, kind, agent_id, requested_by_user_id)
+      VALUES (${OTHER_INSTALL}, 'active', 'A07BOT00001', '7512345678901.7522222222222', 'support-helper', ${BOB}, 'bot',
+              ${AGENT}, ${BOB})
+    `.execute(db);
+    // On the shared app: #support switched off with nothing kept, and #sales on.
+    expect(await connect({ remember: false })).toBe('connected');
+    expect(await connect({ channelId: SALES })).toBe('connected');
+    // The agent's own bot's binding, and one whose install row is gone.
+    expect(await connect({ installId: OTHER_INSTALL, channelId: GENERAL, connectedByUserId: BOB })).toBe('connected');
+    expect(await connect({ installId: NO_INSTALL, channelId: GENERAL, agentId: OTHER_AGENT })).toBe('connected');
+    // A member's thread in #sales, remembered. Not #support: a turn there with the switch off would keep its
+    // off through the thread backfill, whatever the order, and hide the one this test is about.
+    expect(await record(CONV, { channelId: SALES })).toBe('recorded');
+    expect(await vetoFor(CONV)).toEqual(remembered(CONV));
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+    const botBinding = await rawRow(OTHER_INSTALL, GENERAL);
+    const noInstallBinding = await rawRow(NO_INSTALL, GENERAL);
+    expect(botBinding).toBeDefined();
+    expect(noInstallBinding).toBeDefined();
+
+    for (let run = 1; run <= 2; run += 1) {
+      await runMigrations(db);
+      expect(await channels.get(INSTALL, SUPPORT), `run ${run}`).toBeNull();
+      expect(await channels.get(INSTALL, SALES), `run ${run}`).toBeNull();
+      expect(await rawRow(OTHER_INSTALL, GENERAL), `run ${run}`).toEqual(botBinding);
+      expect(await rawRow(NO_INSTALL, GENERAL), `run ${run}`).toEqual(noInstallBinding);
+      // Each shared binding's switch was kept before it went: #support's off, #sales's on.
+      expect(await channels.keptRemember(AGENT, SUPPORT), `run ${run}`).toBe(false);
+      expect(await channels.keptRemember(AGENT, SALES), `run ${run}`).toBe(true);
+      expect(await channels.getThread(CONV), `run ${run}`).toEqual(supportThread({ channelId: SALES }));
+    }
+    // With its binding gone, the veto refuses the thread.
+    expect(await vetoFor(CONV)).toEqual(REFUSED);
+  });
 });
 
 describe('upsert: one agent per channel', () => {
@@ -635,42 +685,58 @@ describe('the switch kept for the agent and channel (TASK-1180)', () => {
 /*
   TASK-1182. A team agent's own bot's first bind of a channel (bindBot) reads
   the switch the team last set for the agent there and writes the binding
-  with it, in one transaction under the lock a flip takes: the agent's
-  binding of the channel on the shared app's install, else the kept switch,
-  else on. Another agent's binding there is never read, and the bind keeps
-  nothing: it isn't a flip.
+  with it, in one transaction under the lock a flip takes: the switch kept
+  for the agent and channel, else on. It reads no binding (TASK-1186: the
+  shared app's are deleted at boot, so none is the team's last word), and
+  never another agent's switch. It keeps nothing: it isn't a flip.
 */
 describe("a team agent's own bot's first bind (bindBot)", () => {
-  /** The bot's binding goes on its own install, OTHER_INSTALL; INSTALL is the shared app's. */
-  const bind = (shared: string | null) =>
-    channels.bindBot(
-      { installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB, channelName: 'support' },
-      shared,
-    );
-  /** Switched off, then disconnected: the off is kept and there's no shared binding. */
-  const keptOff = async () => {
-    await connect();
-    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
-    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+  /** The bot's binding goes on its own install, OTHER_INSTALL. */
+  const bind = () =>
+    channels.bindBot({
+      installId: OTHER_INSTALL,
+      channelId: SUPPORT,
+      agentId: AGENT,
+      connectedByUserId: BOB,
+      channelName: 'support',
+    });
+  /** The switch the team last set for `agentId` in #support, kept apart from any binding. */
+  const keep = async (remember: boolean, agentId: string = AGENT): Promise<void> => {
+    await sql`
+      INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
+      VALUES (${agentId}, ${SUPPORT}, ${remember})
+    `.execute(db);
   };
+  /** Every switch kept, whoever's, as the database holds it. */
+  const keptSwitches = async () =>
+    (
+      await sql<Record<string, unknown>>`
+        SELECT * FROM channel_slack_v1_memory_switches ORDER BY agent_id, channel_id
+      `.execute(db)
+    ).rows;
 
   it.each([
-    ["this agent's shared binding is off", () => connect({ remember: false }), INSTALL, false],
-    ["this agent's shared binding is on, beside an older off kept", async () => { await keptOff(); await connect(); }, INSTALL, true],
-    ['no shared binding, an off kept', keptOff, INSTALL, false],
-    ['no shared app, an off kept', keptOff, null, false],
-    ["another agent's shared binding is off: that agent's switch, never read", () => connect({ agentId: OTHER_AGENT, remember: false }), INSTALL, true],
-    ['nothing anywhere', async () => {}, INSTALL, true],
-  ] as const)('%s: the bot binds with it', async (_case, setup, shared, want) => {
+    ['an off kept for the agent and channel', () => keep(false), false],
+    ['an on kept', () => keep(true), true],
+    ['nothing kept', async () => {}, true],
+    ["another agent's off kept: that agent's switch, never read", () => keep(false, OTHER_AGENT), true],
+    [
+      "the agent's own binding of the channel on another install is off, and nothing is kept: a binding is never read",
+      async () => {
+        expect(await connect({ remember: false })).toBe('connected');
+      },
+      true,
+    ],
+  ] as const)('%s: the bot binds with it', async (_case, setup, want) => {
     await setup();
-    const kept = await channels.keptRemember(AGENT, SUPPORT);
-    expect(await bind(shared)).toBe(want);
+    const kept = await keptSwitches();
+    expect(await bind()).toBe(want);
     expect(await channels.get(OTHER_INSTALL, SUPPORT)).toEqual({
       installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB,
       channelName: 'support', remember: want, createdAt: expect.any(Date),
     });
     // Not a flip: the bind keeps nothing.
-    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(kept);
+    expect(await keptSwitches()).toEqual(kept);
   });
 
   /*
@@ -717,19 +783,22 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
   }
 
   it("reads a flip that ends while it waits for the switch lock, whatever the server's default isolation", async () => {
-    await connect();
     const bound = await underRepeatableRead(
       (store) =>
-        store.bindBot(
-          { installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB, channelName: 'support' },
-          INSTALL,
-        ),
-      // The flip, committed while the bind waits.
+        store.bindBot({
+          installId: OTHER_INSTALL,
+          channelId: SUPPORT,
+          agentId: AGENT,
+          connectedByUserId: BOB,
+          channelName: 'support',
+        }),
+      // The flip's kept switch, committed off while the bind waits.
       async (holder) => {
-        await holder.query('UPDATE channel_slack_v1_channels SET remember = false WHERE channel_id = $1 AND agent_id = $2', [
-          SUPPORT,
-          AGENT,
-        ]);
+        await holder.query(
+          `INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember) VALUES ($1, $2, false)
+           ON CONFLICT (agent_id, channel_id) DO UPDATE SET remember = false`,
+          [AGENT, SUPPORT],
+        );
       },
     );
     expect(bound).toBe(false);
@@ -737,9 +806,8 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
   });
 
   it("a flip reaches a bind that ends while it waits for the switch lock, whatever the server's default isolation", async () => {
-    await connect();
     const flipped = await underRepeatableRead(
-      (store) => store.setRemember(INSTALL, SUPPORT, AGENT, false),
+      (store) => store.setRemember(OTHER_INSTALL, SUPPORT, AGENT, false),
       // The bot's first bind, committed on while the flip waits.
       async (holder) => {
         await holder.query(
@@ -751,7 +819,6 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
     );
     expect(flipped).toBe(true);
     expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
-    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
     expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
   });
 });
