@@ -1880,7 +1880,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   });
   // Last on purpose: the raw SQL above assumes one install row. This test ends with none (it
   // disconnects the shared workspace itself, and the agent's deletion takes the bot).
-  it("a team agent's own bot: requested, allowed, mentioned, the shared bot steps aside, Disconnect leaves it and keeps its approver's token, deleting the agent deletes it (TASK-1167)", async () => {
+  it("a team agent's own bot: requested, allowed, mentioned, a shared-bot mention in the channel runs no turn, Disconnect leaves it and keeps its approver's token, deleting the agent deletes it (TASK-1167)", async () => {
     const sharedId = await connectWorkspace();
     const { agentId } = await teamWithAgent('usr_ada', 'usr_mel');
     invokes.length = 0;

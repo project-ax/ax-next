@@ -2043,9 +2043,14 @@ describe("createEventRouter: 👀 on the owner's message while the agent works",
 describe('createEventRouter: a mention of the shared bot in a channel (TASK-1186)', () => {
   const ignored = { level: 'info', msg: 'slack_event_ignored', fields: { installId: INSTALL_ID, reason: 'shared-channel' } };
 
-  it("a member's mention runs no turn, even with a leftover binding row: one private line, and no binding, agent or channel is asked about", async () => {
+  // With no live own bot is the case the old code really ran a turn for (tier A, a
+  // shared binding); with one, it stepped aside. Both must now run nothing.
+  it.each([
+    ['no own bot', false],
+    ["the agent's own bot live", true],
+  ] as const)("a member's mention runs no turn, even with a leftover binding row (%s): one private line, and no binding, agent or channel is asked about", async (_label, ownBotLive) => {
     const w = world();
-    w.putInstall(OWN_BOT);
+    if (ownBotLive) w.putInstall(OWN_BOT);
     // A binding the shared app still has: an older replica wrote it after the boot's delete, or that delete hasn't run.
     const leftover = ownBinding({ installId: INSTALL_ID });
     w.channels.rows.set(`${INSTALL_ID}/${SUPPORT}`, leftover);
