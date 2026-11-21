@@ -107,9 +107,11 @@ import {
   type AgentSlackBot as Bot,
   type BotChannelRow,
 } from '@/lib/agent-slack';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
+import { cn } from '@/lib/utils';
 import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 
 /**
@@ -741,7 +743,8 @@ function Live({
         );
       })}
       {saved !== null && (
-        <Alert ref={savedNotice} tabIndex={-1} className="focus-visible:outline-none">
+        // Where focus lands after a Reconnect: a visible ring for a keyboard user (the TASK-427 landing rule).
+        <Alert ref={savedNotice} tabIndex={-1} className={cn('rounded-sm', RESOLUTION_FOCUS_RING)}>
           <AlertDescription>
             {saved === 'picture' ? AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged : BOT_TOKEN_COPY.replaced(bot.botName)}
           </AlertDescription>
