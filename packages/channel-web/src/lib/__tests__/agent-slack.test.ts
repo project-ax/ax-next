@@ -26,6 +26,7 @@ import {
   disconnectSlackChannel,
   fetchAgentSlack,
   fetchAvailableChannels,
+  setSlackBotChannelRemember,
   setSlackChannelRemember,
 } from '../agent-slack';
 import { fakeConfigRefreshToken } from '../../test-utils/fake-slack-tokens';
@@ -114,6 +115,29 @@ describe('fetchAgentSlack', () => {
     await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ channels: [{ ...ROW, needsInvite: false }] });
     answer = () => json(200, ready({ ...ROW, needsInvite: 'yes' }));
     await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+  });
+
+  it("reads the agent's own bot's channels on ready and no-workspace; an older host that omits them reads none; a malformed one is a bad response (TASK-1180)", async () => {
+    const BOT_ROW = { channelId: 'C0BOTSUP01', name: 'help', remember: true };
+    const ready = (extra: Record<string, unknown>) => ({ state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [], bot: LIVE_BOT, ...extra });
+    const noWorkspace = (extra: Record<string, unknown>) => ({ state: 'no-workspace', canManage: true, bot: LIVE_BOT, ...extra });
+
+    for (const make of [ready, noWorkspace]) {
+      // Absent: the key stays off the read, so an older host reads as none.
+      answer = () => json(200, make({}));
+      expect(await fetchAgentSlack('a1')).not.toHaveProperty('botChannels');
+      answer = () => json(200, make({ botChannels: [] }));
+      await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ botChannels: [] });
+      answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, extra: 1 }] }));
+      // toEqual, not toMatchObject: an unknown key must be stripped, not carried through.
+      expect(((await fetchAgentSlack('a1')) as { botChannels?: unknown }).botChannels).toEqual([BOT_ROW]);
+      answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, remember: 'yes' }] }));
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+      answer = () => json(200, make({ botChannels: [{ channelId: 'C1', remember: true }] }));
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+      answer = () => json(200, make({ botChannels: {} }));
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+    }
   });
 
   it('a 404 or a page that is not JSON is unavailable', async () => {
@@ -278,6 +302,21 @@ describe('writes', () => {
     await setSlackChannelRemember('a1', 'C1', true);
     expect(calls[1]).toMatchObject({ url: '/settings/slack/a1/remember', body: { channelId: 'C1', remember: true } });
     expect(calls[1]?.headers['x-requested-with']).toBe('ax-admin');
+  });
+
+  it('setSlackBotChannelRemember POSTs {channelId, remember} to /settings/slack/:agentId/bot/remember with the write headers', async () => {
+    answer = () => json(200, {});
+    await setSlackBotChannelRemember('a/1', 'C0BOTSUP01', false);
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%2F1/bot/remember',
+      method: 'POST',
+      credentials: 'include',
+      body: { channelId: 'C0BOTSUP01', remember: false },
+    });
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+    answer = () => json(409, { error: 'personal-agent' });
+    await expect(setSlackBotChannelRemember('a1', 'C1', true)).rejects.toMatchObject({ status: 409, code: 'personal-agent' });
   });
 
   it('a refusal carries the status, the code and the reason, only when code-shaped', async () => {
@@ -509,6 +548,11 @@ describe('what an error says', () => {
     expect(AGENT_SLACK_COPY.movedDisconnect('support')).toBe(
       "We'll take #support off this list. The agent answers there only after its own bot is invited.",
     );
+  });
+
+  it("the bot channel line names the bot's @handle, or its name when Slack never said one", () => {
+    expect(AGENT_SLACK_COPY.botChannelsNotice({ botName: 'Quill', handle: 'quill' })).toBe('@quill has answered in these channels.');
+    expect(AGENT_SLACK_COPY.botChannelsNotice({ botName: 'Quill', handle: null })).toBe('Quill has answered in these channels.');
   });
 
   it('a connect that is no longer allowed or no longer found means the picture is stale', () => {

@@ -879,14 +879,16 @@ describe('@ax/preset-memory canary', () => {
 
     // TASK-1167: a team agent's own bot routes are mounted too, its Disconnect
     // (TASK-1172) with them, renaming its live bot and changing its picture
-    // (TASK-1171), and TASK-1169's ask for an AX admin's approval. Each POST
-    // keeps http-server's CSRF check; with the header, an agent nobody can see
-    // is the route's own 404 (an unmounted POST would get the router's 405).
+    // (TASK-1171), TASK-1169's ask for an AX admin's approval, and the memory
+    // switch of a channel the bot answered in (TASK-1180). Each POST keeps
+    // http-server's CSRF check; with the header, an agent nobody can see is
+    // the route's own 404 (an unmounted POST would get the router's 405).
     for (const suffix of [
       '/bot',
       '/bot/install-url',
       '/bot/cancel',
       '/bot/disconnect',
+      '/bot/remember',
       '/bot/rename',
       '/bot/icon',
       '/bot-request',

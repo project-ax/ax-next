@@ -8,7 +8,9 @@
  *   GET  /settings/slack/:agentId/available   → { channels, truncated }
  *   POST /settings/slack/:agentId/connect     { channelId } → { channel, reconnected } (409 own-bot once its own bot is live)
  *   POST /settings/slack/:agentId/disconnect  { channelId } → { removed }
- *   POST /settings/slack/:agentId/remember    { channelId, remember } → {}
+ *   POST /settings/slack/:agentId/remember    { channelId, remember } → {} (409 own-bot once its own bot has answered there)
+ *   POST /settings/slack/:agentId/bot/remember  { channelId, remember } → {}
+ *        (TASK-1180: the switch for a channel the agent's own bot has answered in; the status lists them as `botChannels`)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
  *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
@@ -40,6 +42,13 @@ export interface SlackChannelRow {
    * it still needs an invite. An older host omits it; that reads as false.
    */
   needsInvite: boolean;
+}
+
+/** A channel the agent's own bot has answered in, with its memory switch (TASK-1180). */
+export interface BotChannelRow {
+  channelId: string;
+  name: string;
+  remember: boolean;
 }
 
 /** A live bot as the moved-channel lines name it: its @handle, or its name when Slack never said one. */
@@ -88,6 +97,8 @@ export type AgentSlackStatus =
        */
       canManage: boolean;
       bot: AgentSlackBot;
+      /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
+      botChannels?: BotChannelRow[];
     }
   | {
       state: 'personal-agent';
@@ -105,6 +116,8 @@ export type AgentSlackStatus =
       canManage: boolean;
       channels: SlackChannelRow[];
       bot: AgentSlackBot;
+      /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
+      botChannels?: BotChannelRow[];
     };
 
 /** `unavailable`: this server doesn't run the Slack plugin (or can't show us the agent). */
@@ -232,6 +245,24 @@ function parseBot(value: unknown): AgentSlackBot | null {
   }
 }
 
+/**
+ * The bot's channels: absent (an older host, or no live bot) reads as absent;
+ * present, it is an array of whole rows or the whole answer is bad (never a
+ * half-drawn list). `null` is "malformed".
+ */
+function parseBotChannels(value: unknown): BotChannelRow[] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const rows: BotChannelRow[] = [];
+  for (const c of value) {
+    if (!isRecord(c)) return null;
+    const { channelId, name, remember } = c;
+    if (typeof channelId !== 'string' || typeof name !== 'string' || typeof remember !== 'boolean') return null;
+    rows.push({ channelId, name, remember });
+  }
+  return rows;
+}
+
 function parseStatus(body: unknown): AgentSlackStatus | null {
   if (!isRecord(body)) return null;
   switch (body['state']) {
@@ -239,7 +270,9 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       const bot = parseBot(body['bot']);
       if (bot === null) return null;
       const canManage = 'canManage' in body ? body['canManage'] : bot.state === 'pending';
-      return typeof canManage === 'boolean' ? { state: 'no-workspace', canManage, bot } : null;
+      const botChannels = parseBotChannels(body['botChannels']);
+      if (typeof canManage !== 'boolean' || botChannels === null) return null;
+      return { state: 'no-workspace', canManage, bot, ...(botChannels !== undefined ? { botChannels } : {}) };
     }
     case 'personal-agent': {
       const { botName, answersDms = true } = body;
@@ -265,7 +298,17 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
         if (row === null) return null;
         rows.push(row);
       }
-      return { state: 'ready', botName, workspaceName, canManage, channels: rows, bot };
+      const botChannels = parseBotChannels(body['botChannels']);
+      if (botChannels === null) return null;
+      return {
+        state: 'ready',
+        botName,
+        workspaceName,
+        canManage,
+        channels: rows,
+        bot,
+        ...(botChannels !== undefined ? { botChannels } : {}),
+      };
     }
     default:
       return null;
@@ -381,6 +424,18 @@ export async function setSlackChannelRemember(
 }
 
 /**
+ * Turn "remember this channel" on or off for one of the agent's own bot's
+ * channels (TASK-1180). Resolves once the server holds it.
+ */
+export async function setSlackBotChannelRemember(
+  agentId: string,
+  channelId: string,
+  remember: boolean,
+): Promise<void> {
+  await post(agentId, '/bot/remember', { channelId, remember });
+}
+
+/**
  * Ask for the agent's own Slack bot. `refreshToken` is sent only when the
  * person pasted one (the server uses the one it holds otherwise); `iconPng`
  * only when there is a picture. The answer is where to send the person to
@@ -481,6 +536,8 @@ export const AGENT_SLACK_COPY = Object.freeze({
       : `These channels still need ${t.botName}: invite it to each one with /invite. A channel leaves this list once ${t.botName} answers there.`,
   movedRow: (t: InviteTarget): string =>
     t.handle !== null ? `Run /invite @${t.handle} here.` : `Invite ${t.botName} here with /invite.`,
+  botChannelsNotice: (t: InviteTarget): string =>
+    t.handle !== null ? `@${t.handle} has answered in these channels.` : `${t.botName} has answered in these channels.`,
   movedDisconnect: (channel: string): string =>
     `We'll take #${channel} off this list. The agent answers there only after its own bot is invited.`,
 });
