@@ -92,6 +92,8 @@ const ACCOUNTS: Record<string, unknown> = {
 };
 
 /** A Decline, as the interactions route hands one on. Ada's in her DM unless said otherwise. */
+/** A public channel a forged Decline might claim it was clicked in (only our DMs carry the button). */
+const NOT_IM = 'C07PUBLIC01';
 const decline = (over: Partial<BotRequestClick> = {}): BotRequestClick => ({
   slackUserId: ADA,
   channel: DM_ADA,
@@ -301,9 +303,19 @@ describe('the Decline gate: an AX admin declines', () => {
     ]);
   });
 
+  it('a Decline claiming a non-IM channel on a request already gone is "already handled", unmarked: it changed nothing', async () => {
+    const w = world({ decline: async () => ({ status: 404, body: { error: 'not-found' } }) });
+    await w.onBotRequestClick(SHARED, decline({ channel: NOT_IM }));
+
+    expect(w.declines).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
+    expect(w.lines).toStrictEqual([
+      { level: 'info', msg: 'slack_bot_request_click_refused', fields: { installId: INSTALL_ID, requestId: REQUEST_ID, reason: 'gone' } },
+    ]);
+  });
+
   it('a Decline that says it was clicked outside a DM still declines, but names no message to redraw: only our DMs carry the button', async () => {
     // Defense in depth: a forged click naming a channel message must never get the shared bot to overwrite it.
-    for (const channel of ['C07PUBLIC01', 'G07PRIVATE1']) {
+    for (const channel of [NOT_IM, 'G07PRIVATE1']) {
       const w = world();
       await w.onBotRequestClick(SHARED, decline({ channel, messageTs: '1763000000.000100' }));
 
@@ -518,8 +530,8 @@ describe('the Decline gate: no bot token, private lines and logs', () => {
       [{ decline: async () => ({ status: 404, body: { error: 'not-found' } }) }, {}],
       [{ ephemeralFails: new Error(`${DM_BEN} ${BEN}`) }, BENS],
       [{ botToken: null }, {}],
-      [{}, { channel: 'C07PUBLIC01' }],
-      [{ decline: async () => ({ status: 404, body: { error: 'not-found' } }) }, { channel: 'C07PUBLIC01' }],
+      [{}, { channel: NOT_IM }],
+      [{ decline: async () => ({ status: 404, body: { error: 'not-found' } }) }, { channel: NOT_IM }],
     ];
     for (const [options, who] of runs) {
       const w = world(options);
@@ -547,6 +559,7 @@ describe('the Decline gate: no bot token, private lines and logs', () => {
       'usr_ben',
       DM_ADA,
       DM_BEN,
+      NOT_IM,
       DM_TS,
       TEAM_ID,
       BOT_TOKEN,
