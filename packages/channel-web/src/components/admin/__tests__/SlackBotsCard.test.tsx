@@ -55,9 +55,9 @@ const MINE_PENDING: AdminSlackBot = { ...PENDING, viewerIsApprover: true };
 
 const ready = (...bots: AdminSlackBot[]): SlackBotsRead => ({ state: 'ready', bots });
 
-function renderCard(read: SlackBotsRead, sharedConnected = true, onAppsChanged = vi.fn()) {
+function renderCard(read: SlackBotsRead, onAppsChanged = vi.fn()) {
   list.mockResolvedValueOnce(read);
-  render(<SlackBotsCard sharedConnected={sharedConnected} onAppsChanged={onAppsChanged} />);
+  render(<SlackBotsCard onAppsChanged={onAppsChanged} />);
   return onAppsChanged;
 }
 
@@ -133,7 +133,7 @@ describe('the list', () => {
   it('while the first read is in flight a placeholder says it is loading, so a slow read is not "no bots"', async () => {
     let answer: (read: SlackBotsRead) => void = () => {};
     list.mockReturnValueOnce(new Promise<SlackBotsRead>((resolve) => (answer = resolve)));
-    render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    render(<SlackBotsCard onAppsChanged={vi.fn()} />);
     expect(screen.getByText("Loading the team agents' own bots")).toBeInTheDocument();
     expect(screen.queryByRole('table')).toBeNull();
     answer(ready(LIVE));
@@ -143,18 +143,18 @@ describe('the list', () => {
 
   it('no bots, or a server without the route: nothing at all once the read is back', async () => {
     list.mockResolvedValueOnce(ready());
-    const first = render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    const first = render(<SlackBotsCard onAppsChanged={vi.fn()} />);
     await waitFor(() => expect(first.container).toBeEmptyDOMElement());
     first.unmount();
 
     list.mockResolvedValueOnce({ state: 'unavailable' });
-    const second = render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    const second = render(<SlackBotsCard onAppsChanged={vi.fn()} />);
     await waitFor(() => expect(second.container).toBeEmptyDOMElement());
   });
 
   it('a read that times out ends the placeholder in the same alert, with Try again', async () => {
     list.mockRejectedValueOnce(new RequestTimeoutError('/admin/slack/bots', 8000));
-    render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    render(<SlackBotsCard onAppsChanged={vi.fn()} />);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent("We couldn't load the team agents' own bots.");
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
@@ -164,7 +164,7 @@ describe('the list', () => {
   it('a failed read says so, with Try again', async () => {
     list.mockRejectedValueOnce(new SlackAdminError(200, 'bad-response'));
     list.mockResolvedValueOnce(ready(LIVE));
-    render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    render(<SlackBotsCard onAppsChanged={vi.fn()} />);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent("We couldn't load the team agents' own bots.");
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
@@ -175,7 +175,7 @@ describe('the list', () => {
 
 describe('Disconnect', () => {
   it("asks first, in words for a live bot or an unfinished one; Keep it sends nothing", async () => {
-    renderCard(ready(PENDING, LIVE), false);
+    renderCard(ready(PENDING, LIVE));
     await screen.findByRole('table');
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
@@ -200,26 +200,20 @@ describe('Disconnect', () => {
     expect(document.body.textContent).not.toMatch(/\bAX\b/);
   });
 
-  it('the shared-bot sentence shows only while Slack is connected', async () => {
-    const sentence = 'The shared bot answers for its agent again in any channel it was connected to before.';
-    renderCard(ready(LIVE), true);
+  it('the Disconnect dialog does not say the shared bot answers again (it no longer reaches channels)', async () => {
+    renderCard(ready(LIVE));
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
-    expect(await screen.findByRole('dialog')).toHaveTextContent(sentence);
-  });
-
-  it('without the shared app connected the dialog promises nothing about the shared bot', async () => {
-    renderCard(ready(LIVE), false);
-    await screen.findByRole('table');
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
-    expect(await screen.findByRole('dialog')).not.toHaveTextContent(/shared bot/);
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).not.toHaveTextContent(/shared bot/i);
+    expect(dialog).not.toHaveTextContent('The shared bot answers');
   });
 
   it('confirming disconnects by install id, reads the list again and tells the tab its apps changed', async () => {
     list.mockResolvedValueOnce(ready(PENDING, LIVE));
     list.mockResolvedValueOnce(ready(PENDING));
     const onAppsChanged = vi.fn();
-    render(<SlackBotsCard sharedConnected onAppsChanged={onAppsChanged} />);
+    render(<SlackBotsCard onAppsChanged={onAppsChanged} />);
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
@@ -237,7 +231,7 @@ describe('Disconnect', () => {
     disconnect.mockResolvedValueOnce({ appDeleted: false });
     list.mockResolvedValueOnce(ready(LIVE));
     list.mockResolvedValueOnce(ready());
-    render(<SlackBotsCard sharedConnected onAppsChanged={vi.fn()} />);
+    render(<SlackBotsCard onAppsChanged={vi.fn()} />);
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
@@ -255,7 +249,7 @@ describe('Disconnect', () => {
     list.mockResolvedValueOnce(ready(LIVE));
     list.mockResolvedValueOnce(ready());
     const onAppsChanged = vi.fn();
-    render(<SlackBotsCard sharedConnected onAppsChanged={onAppsChanged} />);
+    render(<SlackBotsCard onAppsChanged={onAppsChanged} />);
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
@@ -351,7 +345,7 @@ describe('Replace token, for the bots the viewer set up (TASK-1173)', () => {
     list.mockResolvedValueOnce(ready(MINE));
     list.mockResolvedValueOnce(ready(ORPHAN));
     const onAppsChanged = vi.fn();
-    render(<SlackBotsCard sharedConnected onAppsChanged={onAppsChanged} />);
+    render(<SlackBotsCard onAppsChanged={onAppsChanged} />);
     await screen.findByRole('table');
     pasteAndSubmit(openReplace());
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));

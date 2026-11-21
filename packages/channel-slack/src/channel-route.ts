@@ -1,26 +1,28 @@
 import type { AgentAccess } from './channels.js';
 
 /**
- * Who a mention in a connected channel runs as (TASK-1094; the plan's sender
- * tiers). Pure: the router (router.ts) gathers the facts from admission and
- * AX, never from the message, and this decides.
+ * Who a mention in a team agent's own bot's channel runs as (TASK-1094; the
+ * plan's sender tiers). Pure: the router (router.ts) gathers the facts from
+ * admission and AX, never from the message, and this decides.
  *
  *   tier  sender                                       turn
  *   A     an AX user who can use the agent             attended, as themselves
  *   B     an AX user who can't                         external, as the connector
  *   C     no AX account, email on an approved domain   external, as the connector
  *   D     no AX account, any other email               refused: silence
- *   E     B or C while the connector can't use the     unavailable: a private line,
- *         agent anymore; or anyone, when the agent       no turn
- *         is gone or isn't a team agent
+ *   E     B or C while the connector can't vouch for   unavailable: a private line,
+ *         them anymore; or anyone, when the agent is     no turn
+ *         gone or isn't a team agent
  *
  * Guests, bots, other workspaces, unconfirmed emails and Slack Connect never
  * get here: admission refuses them first (admission.ts).
  *
- * The connector is the person who connected the channel. An outsider's turn
- * runs as them, so they must still be able to use the agent: someone who left
- * the agent's team must not keep lending the channel their identity. A member
- * (A) runs as themselves and never depends on the connector.
+ * The connector is the bot's requester, copied into the binding at its first
+ * mention; a Claim moves it. An outsider's turn runs as them, so they must
+ * still be a team admin of the agent's team (the router asks
+ * channels.ts `teamAdminAccess`): someone who left the agent's team must not
+ * keep lending the channel their identity. A member (A) runs as themselves
+ * and never depends on the connector.
  *
  * Every answer is matched exactly and fails closed: only `'yes'` attends,
  * only a mapped sender's `'no'` or an unmapped sender's literal `true` runs

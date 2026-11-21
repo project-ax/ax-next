@@ -1,5 +1,4 @@
 import { cleanPromptSubject, mrkdwnEscape, neutralizeSlackControls } from './format.js';
-import { SLASH_COMMAND } from './manifest.js';
 import type { SkillReach } from './turn-registry.js';
 
 /**
@@ -14,16 +13,16 @@ import type { SkillReach } from './turn-registry.js';
  * `@here`, `@channel` or `@everyone`: the bot never pings anyone, a name
  * from outside included (copy.test.ts).
  *
- * The `slash*` lines answer `/ax` (commands.ts), the `channel*` lines (with
- * `queueFull`, `turnFailed`, and TASK-1167's `botUnavailable` and
- * `answersAsOwnBot`) can reach a channel mention's sender
- * privately before its turn starts (router.ts), and the `prompt*` and
- * `decision*` lines surround an approval prompt (blocks.ts). All three go
- * out as mrkdwn, not Markdown (but for the prompt's two button labels, which
- * are plain_text): a link is a bare URL, and no line holds a `<` or `>` of
- * its own (mrkdwn reads `<…>` as a link). A name from outside goes through
- * `shown`. A prompt's subject is never a COPY line: it is outside text,
- * shown as `plain_text` (format.ts `cleanPromptSubject`). Two lines frame
+ * The `channel*` lines (with `queueFull`, `turnFailed`, TASK-1167's
+ * `botUnavailable` and TASK-1186's `sharedBotInChannel`) can reach a channel
+ * mention's sender privately, before its turn starts or in place of one
+ * (router.ts), and the `prompt*` and `decision*` lines surround an approval
+ * prompt (blocks.ts). Both go out as mrkdwn, not Markdown (but for the
+ * prompt's two button labels, which are plain_text): a link is a bare URL,
+ * and no line holds a `<` or `>` of its own (mrkdwn reads `<…>` as a link).
+ * A name from outside goes through `shown`. A prompt's subject is never a
+ * COPY line: it is outside text, shown as `plain_text` (format.ts
+ * `cleanPromptSubject`). Two lines frame
  * outside text as a subject, raw, cleaned where it is drawn: `hostSubject`
  * (a host past the egress proxy's HOST_RE, permission-prompts.ts) and
  * `skillSubject` (a catalog skill's id, the hosts it reaches and its
@@ -50,16 +49,6 @@ import type { SkillReach } from './turn-registry.js';
  * marked as one (format.ts `neutralizeSlackControls`).
  */
 const shown = (text: string, before = ''): string => mrkdwnEscape(neutralizeSlackControls(text, before));
-
-/**
- * Why a channel can't have an agent: channels.ts's refusals that are about
- * the channel, and `workspace-policy` (its `not-allowed`: the workspace's
- * settings keep the bot out).
- */
-export type ChannelNotAllowed = 'not-public' | 'archived' | 'shared' | 'workspace-policy';
-
-const CONNECT = `\`${SLASH_COMMAND} connect\``;
-const DISCONNECT = `\`${SLASH_COMMAND} disconnect\``;
 
 /** `a`, `a and b`, `a, b and c`: in the order given, each as given. */
 function listed(items: readonly string[]): string {
@@ -98,10 +87,10 @@ export const COPY = {
     A call the turn held for approval (reply-stream.ts `held`). Neither line
     names the tool, its connector or the person: they take nothing but the
     Today link. `heldForOwner` ends an outsider's turn, which runs as the
-    person who connected the channel: the call waits in their Today, and the
-    reader can't approve it, so it links nowhere. `heldForSender` ends a turn
-    whose writer can use the agent (a DM, or an attended channel turn): the
-    call waits in their own Today.
+    bot's requester (the team admin who set it up, or claimed it since): the
+    call waits in their Today, and the reader can't approve it, so it links
+    nowhere. `heldForSender` ends a turn whose writer can use the agent (a
+    DM, or an attended channel turn): the call waits in their own Today.
   */
   heldForOwner:
     "I need my owner's OK before I can do part of this. I've asked them, and nothing will happen until they approve it.",
@@ -209,30 +198,25 @@ export const COPY = {
     `This one needs a key or a closer look first. Finish it in the web app: ${shown(todayLink)}`,
   skillFailed: (todayLink: string) => `I couldn't connect it from here. Finish it in the web app: ${shown(todayLink)}`,
 
-  // ── Before a channel mention's turn (mrkdwn, shown only to its sender) ────
+  // ── A channel mention's private lines (mrkdwn, shown only to its sender) ──
   /*
-    One line for every conversation nothing is connected to: a mention can't
-    tell a group DM or a private channel from a public channel without more
-    scopes, so it says where an agent can be connected.
+    A mention of the shared bot in a channel (TASK-1186; design §4b.1): the
+    shared bot answers DMs only, and a team agent answers in a channel
+    through its own bot, once someone invites it there. Said in place of a
+    turn, to an admitted sender alone, in any channel. A mention can't tell
+    a group DM or a private channel from a public one, so it names no
+    channel, agent or bot.
   */
-  channelNotConnected:
-    'No agent is connected here. A team admin can connect one to a public channel ' +
-    `by typing ${CONNECT} there, followed by the agent's name. To talk to your own agent, send me a direct message.`,
+  sharedBotInChannel:
+    "I don't answer in channels. To talk to your own agent, send me a direct message. " +
+    'To bring a team agent into this channel, invite its own bot with /invite.',
   /*
-    The channel's connection is broken: the person who connected it can't use
-    the agent anymore, or the agent is gone. Outsiders' turns would run as
-    that person, so none runs until a team admin connects the channel again.
-    Any sender hears it too when the app's own token can't read public
-    channels any more (TASK-1184): no retry fixes that either.
-  */
-  channelUnavailable: "I can't answer here right now. A team admin needs to connect me to this channel again.",
-  /*
-    A connected channel Slack no longer allows (TASK-1184): made private,
-    archived or shared with another company since it was connected (or since
-    a team agent's own bot first answered there). Checked when each turn
-    starts. The turn that finds it disconnects the channel and says this once,
-    to its sender. Archived and deleted channels take no line at all, so it
-    names the two cases someone can read it in. It names nothing else.
+    A bound channel Slack no longer allows (TASK-1184): made private,
+    archived or shared with another company since a team agent's own bot
+    first answered there. Checked when each turn starts. The turn that finds
+    it disconnects the channel and says this once, to its sender. Archived
+    and deleted channels take no line at all, so it names the two cases
+    someone can read it in. It names nothing else.
   */
   channelNoLongerAllowed:
     "I've stopped answering in this channel: it's private now, or shared with another organization. " +
@@ -243,89 +227,11 @@ export const COPY = {
     channels' outsiders anymore: they are no longer a team admin of the
     agent's team, or are gone. An outsider's turn would run as them, so none
     runs until a team admin claims the bot in the web app; members are still
-    answered. Members read it only when the bot's own token can't read public
-    channels any more (TASK-1184): no retry fixes that, a team admin must.
+    answered. Every admitted sender reads it when the agent itself is gone,
+    or when the bot's own token can't read public channels any more
+    (TASK-1184): no retry fixes either, a team admin must look.
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
-  /*
-    The shared bot stepping aside for an agent that has its own bot now
-    (TASK-1167), so two bots never answer for one agent. It names that bot by
-    its own name and, once its Allow read one, its @handle, both through
-    `shown` (the handle after the line's own `@`), and never the agent: the
-    sender may not be able to see it.
-  */
-  answersAsOwnBot: (botName: string, handle: string | null) =>
-    handle === null
-      ? `${shown(botName)} has its own Slack bot now. Invite it to this channel to keep talking to it here.`
-      : `${shown(botName)} answers as @${shown(handle, '@')} now. Invite it with /invite @${shown(handle, '@')}.`,
-
-  // ── /ax replies (mrkdwn, shown only to whoever typed the command) ─────────
-  slashUsage:
-    `To connect this channel to a team agent, type ${CONNECT} followed by the agent's name. ` +
-    `To disconnect whichever agent is connected here, type ${DISCONNECT}.`,
-  slashNotMapped: (origin: string) =>
-    "I couldn't match your Slack account to an account in the web app. " +
-    `Sign in once at ${shown(origin)} with your work account, then try again.`,
-  slashNoSuchAgent:
-    "I couldn't find a team agent with that name that you can use. Check its name in the web app, then try again.",
-  slashNotManager: "Only a team admin of the agent's team can connect it to a channel or disconnect it.",
-  slashAmbiguous:
-    'More than one team agent you manage has that name. ' +
-    "Connect this channel from the agent's settings in the web app instead.",
-  slashConnected: (agent: string, channel: string) =>
-    `Connected *${shown(agent)}* to #${shown(channel)}. Mention me here to talk to it.\n` +
-    '• Anything in its instructions and files can show up in its answers, and everyone in this channel can read them.\n' +
-    "• When someone who can't use the agent talks to it here, it works with your access, " +
-    'and anything that needs approval waits for you in Today.',
-  slashReconnected: (agent: string) =>
-    `*${shown(agent)}* was already connected here. From now on, when someone who can't use it talks to it here, ` +
-    'it works with your access, and anything that needs approval waits for you in Today.',
-  slashDisconnected: "Disconnected. The agent won't answer in this channel anymore.",
-  /*
-    `/ax disconnect` for an agent whose own bot is live (TASK-1168): the shared
-    binding is gone, but its own bot keeps answering wherever it is a member, and
-    we can't tell from here whether it is one in this channel. Says so, and how to
-    remove it. The bot is named like slashOwnBot names it.
-  */
-  slashDisconnectedOwnBot: (bot: { botName: string; handle: string | null }) =>
-    bot.handle === null
-      ? `Disconnected. If ${shown(bot.botName)} is in this channel, it still answers here: remove it with /kick.`
-      : `Disconnected. If @${shown(bot.handle, '@')} is in this channel, it still answers here: ` +
-        `remove it with /kick @${shown(bot.handle, '@')}.`,
-  slashNothingConnected: 'No agent is connected to this channel.',
-  slashChannelTaken:
-    'Another agent is already connected to this channel. ' +
-    `A team admin of that agent's team can disconnect it with ${DISCONNECT}.`,
-  /*
-    `/ax connect` for an agent whose own bot is live (TASK-1168): the shared
-    app connects nothing for it any more, so the line says which bot to
-    /invite instead. Only someone who manages the agent ever reads it (the
-    rights come first, commands.ts), so the agent is named. The bot is named
-    by its @handle, through `shown(handle, '@')` after the line's own `@`, or
-    by its name when it has none (the Allow kept no handle: bots.ts
-    `keepHandle`).
-  */
-  slashOwnBot: (agent: string, bot: { botName: string; handle: string | null }) =>
-    bot.handle === null
-      ? `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
-        `Invite ${shown(bot.botName)} to this channel with /invite instead.`
-      : `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
-        `Invite it to this channel with /invite @${shown(bot.handle, '@')} instead.`,
-  slashChannelNotAllowed: (reason: ChannelNotAllowed) =>
-    reason === 'archived'
-      ? "This channel is archived, so I can't connect an agent to it."
-      : reason === 'shared'
-        ? "This channel is shared with another organization, so I can't connect an agent to it."
-        : reason === 'workspace-policy'
-          ? "This workspace's settings don't let me join this channel, so I can't connect an agent to it. " +
-            'A Slack admin can change that.'
-          : 'I can only connect an agent to a public channel, and this is a private channel or a direct message.',
-  slashNeedsReconnect:
-    'Slack needs to be connected to the web app again before an agent can join a channel. ' +
-    "An admin can do that in the web app's admin settings.",
-  slashWorking:
-    "I'm still working on it. If nothing shows up here, check the agent's Slack settings in the web app.",
-  slashFailed: "Something went wrong and I couldn't finish that. Try again in a moment.",
 
   // ── A bot request's DMs (TASK-1170; blocks.ts, bot-request-dms.ts) ──
   // The admin DM's notification and fallback: it names nobody.
@@ -359,22 +265,15 @@ export const COPY = {
   botRequestRequesterFallback: 'A team admin',
   botRequestAdminFallback: 'An admin',
   /*
-    To the agent's owner when someone else approved the bot: it is live, how to
-    invite it, and the channels the shared app served that now need it
-    (`channels` is already capped by the caller; `more` is how many it left
-    out). The bot is named like slashOwnBot names it.
+    To the agent's owner when someone else approved the bot: it is live and
+    how to invite it. The bot is named by its @handle, through
+    `shown(handle, '@')` after the line's own `@`, or by its name when it has
+    none (the Allow kept no handle: bots.ts `keepHandle`).
   */
-  botLiveForOwner: (bot: { botName: string; handle: string | null }, channels: readonly string[], more: number) => {
-    const head =
-      bot.handle === null
-        ? `${shown(bot.botName)} is live. Invite it to a channel with /invite.`
-        : `@${shown(bot.handle, '@')} is live. Invite it to a channel with /invite @${shown(bot.handle, '@')}.`;
-    if (channels.length === 0) return head;
-    const items = channels.map((c) => `#${shown(c)}`);
-    if (more > 0) items.push(`${more} more`);
-    const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-    return `${head} These channels still need it: ${list}. Run /invite in each one.`;
-  },
+  botLiveForOwner: (bot: { botName: string; handle: string | null }) =>
+    bot.handle === null
+      ? `${shown(bot.botName)} is live. Invite it to a channel with /invite.`
+      : `@${shown(bot.handle, '@')} is live. Invite it to a channel with /invite @${shown(bot.handle, '@')}.`,
   botDeclinedForOwner: (botName: string) =>
     `An admin declined your request for @${shown(botName, '@')}. ` +
     "You can ask again from the agent's Slack settings in the web app.",

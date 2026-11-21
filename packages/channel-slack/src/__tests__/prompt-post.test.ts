@@ -85,8 +85,6 @@ function fakeSlack(answers: Answer[] = [{ ts: PROMPT_TS }]) {
     addReaction: notHere,
     removeReaction: notHere,
     conversationsInfo: notHere,
-    conversationsList: notHere,
-    conversationsJoin: notHere,
   };
   return { api, calls };
 }

@@ -26,8 +26,6 @@ import { createBots } from './bots.js';
 import { subscribeCaptureVeto } from './capture-veto.js';
 import { createChannelCheck } from './channel-check.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
-import type { ChannelDeps } from './channels.js';
-import { COMMANDS_ROUTE_PATH, createCommandsHandler } from './commands.js';
 import { moveConfigTokens, releaseConfigToken } from './config-tokens.js';
 import { createDecisionAnswer } from './decision-answer.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
@@ -37,7 +35,6 @@ import { createLifetime, type Lifetime } from './lifetime.js';
 import {
   CHANNEL_CHECK_MAX,
   CHANNEL_CHECK_TTL_MS,
-  COMMANDS_MAX_BODY_BYTES,
   EVENT_DEDUPE_MAX,
   EVENT_DEDUPE_TTL_MS,
   EVENTS_MAX_BODY_BYTES,
@@ -68,8 +65,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // ---------------------------------------------------------------------------
 // @ax/channel-slack — connect a Slack workspace from AX admin settings, let
 // every AX user DM the shared bot to talk to their own personal agent
-// (TASK-1093), and let a team admin connect a public channel to a team agent
-// that answers @mentions there (TASK-1094). Design:
+// (TASK-1093), and let a team agent answer @mentions in the public channels
+// its own Slack bot was invited to (TASK-1094, TASK-1167). Design:
 // docs/plans/2026-11-09-channel-slack-design.md.
 //
 // It registers one service, `system-prompt:augment:optional:slack`
@@ -92,17 +89,16 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        {approve,decline}  — the team admins' asks for their agents' own bots,
 //        which an AX admin approves with their own configuration token or
 //        declines (TASK-1169, bot-request-routes.ts): admin only, CSRF-checked
-//   POST /slack/events/:installId     — Slack's deliveries,
-//   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts), and
+//   POST /slack/events/:installId     — Slack's deliveries, and
 //   POST /slack/interactions/:installId — a click on an approval prompt's
 //        Allow or Deny (interactions.ts, TASK-1095), or on Decline in the
 //        shared bot's DM to an AX admin about a bot request (TASK-1170):
-//        the THREE routes that bypass CSRF, because their caller is Slack,
+//        the TWO routes that bypass CSRF, because their caller is Slack,
 //        authenticated by the signature over the raw body and the install id
 //        in the path (ingress.ts)
-//   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
-//        remember}  — a team agent's channels, from its settings: any member
-//        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
+//   GET  /settings/slack/:agentId  — a team agent's Slack section, from its
+//        settings: its own bot and the channels the bot answers in; any
+//        member reads (agent-routes.ts)
 //   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,/rename,/icon,
 //        /remember,/replace-token,/claim} — the agent's own Slack bot
 //        (TASK-1167, bots.ts): a team admin of its team asks for it, picks it
@@ -126,8 +122,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // credentials vault and, there too, one
 // configuration token per admin who made a Slack app through AX, shared by
 // every app of theirs (secrets.ts, TASK-1175), and one binding row per
-// connected channel in `channel_slack_v1_channels` (channel-store.ts), removed
-// when its agent is deleted (agents-deleted.ts). A token an install kept under
+// channel a team agent's bot answers in, in `channel_slack_v1_channels`
+// (channel-store.ts), removed with the bot or when its agent is deleted
+// (agents-deleted.ts). A token an install kept under
 // its own ref before TASK-1175 moves to its admin at boot, before any route
 // registers (config-tokens.ts). Its only egress is
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
@@ -139,16 +136,19 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // the Slack thread (reply-stream.ts) from the turn's chat events, which one
 // subscriber per event hands to the running turn (turn-registry.ts).
 //
-// A team admin connects a public channel to a team agent (channels.ts), from
-// the agent's settings or with `/ax connect`; the bot joins it. An @mention
-// there becomes a turn of that agent (router.ts, channel-route.ts): attended,
-// as the sender, when they can use the agent; external, as the person who
-// connected the channel, for any other admitted company member (an AX user
-// outside the team, or one with no account whose email is on an approved
-// domain, `auth:is-approved-email`). Members' turns queue per conversation;
-// outsiders' turns in one lane per channel.
+// A team agent's own bot (TASK-1167) answers @mentions in the public
+// channels someone invited it to: its first mention in one binds the channel
+// to its agent (router.ts). Each mention becomes a turn of that agent
+// (router.ts, channel-route.ts): attended, as the sender, when they can use
+// the agent; external, as the bot's requester, for any other admitted
+// company member (an AX user outside the team, or one with no account whose
+// email is on an approved domain, `auth:is-approved-email`). Members' turns
+// queue per conversation; outsiders' turns in one lane per channel. The
+// shared bot connects no channel (TASK-1186; design §4b.1): a mention of it
+// in a channel runs no turn, and an admitted sender is told privately to DM
+// it, or to invite the team agent's own bot.
 //
-// Each connected channel has a "remember" switch, for what members say:
+// Each bot channel has a "remember" switch, for what members say:
 // what outsiders say is never remembered. Before a channel turn's agent
 // runs, its conversation is recorded in `channel_slack_v1_threads` with the
 // switch as it is then and whether it is outsiders' (router.ts), and a
@@ -159,9 +159,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // `memory_note`, so the veto stops both. A member's turn also records the
 // names its sender label shows, and the veto answers a thread it lets
 // through with them, so memory stores nothing said there under the
-// speaker's name (TASK-1146). A team agent's own bot's channels have the
-// switch too, and the agent's switch for a channel is kept after a
-// Disconnect, so the bot starts where the team left it (TASK-1180).
+// speaker's name (TASK-1146). The agent's switch for a channel is kept
+// after a Disconnect, so a bot that binds the channel again starts where the
+// team left it (TASK-1180).
 //
 // TASK-1170: a team admin's ask for their agent's own bot has the shared bot
 // DM every AX admin it can find in the workspace (`auth:list-admins`, each
@@ -301,10 +301,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           hook: 'agent:interrupt',
           degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
-        {
-          hook: 'teams:list-for-user',
-          degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
-        },
+        // A bot request's team, in Admin › Slack's list (bot-requests.ts).
+        { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
         // The approval buttons (TASK-1095). Each is looked at with
         // `bus.hasService` before it is called; without them a call held in
         // a Slack turn links to Today, as before.
@@ -396,9 +394,6 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // Outsiders' channel turns, one lane per channel (router.ts).
         const externalQueue = createKeyedQueue({ maxPerKey: MAX_EXTERNAL_TURNS_PER_CHANNEL });
 
-        // What the connect core and its two ways in (agent settings, `/ax`) share.
-        const channelDeps: ChannelDeps = { bus, installs: store, channels: channelStore, secrets, api, logger };
-
         // What a turn, and the follow-up to an Allow, run on: one set, so both
         // post prompts into, and stream replies to, the same registries.
         const turnDeps: TurnDeps = { bus, api, registry, prompts, publicOrigin, logger, clock: systemClock };
@@ -432,7 +427,6 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           bus,
           api,
           installs: store,
-          channels: channelStore,
           secrets,
           lifetime: life,
           publicOrigin,
@@ -515,24 +509,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           },
           {
             method: 'POST',
-            path: COMMANDS_ROUTE_PATH,
+            path: INTERACTIONS_ROUTE_PATH,
             // Same as the events route: Slack can't send our CSRF header, and
             // the signature and the install id in the path authenticate it.
-            bypassCsrf: true,
-            maxBodyBytes: COMMANDS_MAX_BODY_BYTES,
-            handler: createCommandsHandler({
-              ...channelDeps,
-              store,
-              lifetime: life,
-              publicOrigin,
-              now,
-            }),
-          },
-          {
-            method: 'POST',
-            path: INTERACTIONS_ROUTE_PATH,
-            // Same as the other two: Slack can't send our CSRF header, and the
-            // signature and the install id in the path authenticate it.
             bypassCsrf: true,
             maxBodyBytes: INTERACTIONS_MAX_BODY_BYTES,
             handler: createInteractionsHandler({
@@ -573,8 +552,14 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           // These keep http-server's CSRF check: the caller is a signed-in browser.
           // The bot routes reach the same `bots` as agents:deleted, and `botChanges`,
           // both under the one app lock, and the ask routes the same `botRequests`
-          // as Admin › Slack.
-          ...createAgentSlackRoutes(channelDeps, bots, botRequests, botChanges),
+          // as Admin › Slack. The section itself reads only the stores: no Slack
+          // client and no vault (invariant 5).
+          ...createAgentSlackRoutes(
+            { bus, installs: store, channels: channelStore, logger },
+            bots,
+            botRequests,
+            botChanges,
+          ),
           // Where Slack sends a bot's approver back after Allow: signed in, the
           // OAuth state bound to them, and the bot finished under the same lock.
           // A bot that went live is handed to its request's DMs once the lock is free.

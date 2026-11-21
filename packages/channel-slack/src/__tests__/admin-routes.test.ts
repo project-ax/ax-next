@@ -2447,9 +2447,10 @@ describe('POST /admin/slack/rename', () => {
     renamed.features.bot_user.display_name = 'Ada Helper';
     const sent = w.slack.calls[mark + 1]!.args[2];
     expect(sent).toEqual(renamed);
-    // ...so the approval buttons, /ax, the events and every scope survive it.
+    // ...so the approval buttons, the events and every scope survive it, and
+    // no slash command comes back (TASK-1186).
+    expect((sent as { features: Record<string, unknown> }).features).not.toHaveProperty('slash_commands');
     expect(sent).toMatchObject({
-      features: { slash_commands: [{ command: '/ax', url: `${ORIGIN}/slack/commands/${installId}` }] },
       oauth_config: { redirect_urls: [REDIRECT_URI], scopes: { bot: [...BOT_SCOPES] } },
       settings: {
         event_subscriptions: {

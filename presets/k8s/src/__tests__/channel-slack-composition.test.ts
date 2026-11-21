@@ -30,9 +30,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // half-wired plugins).
 //
 // One flow through the preset's OWN plugins: the real @ax/channel-slack (its
-// admin routes, OAuth callback, events route, and the TASK-1094 channel routes
-// and `/ax` command), the real @ax/agents (the personal agents a Slack DM
-// reaches, and the team agents a channel connects to), the real @ax/teams
+// admin routes, OAuth callback and events route, and a team agent's own bot, the
+// only way a channel reaches an agent), the real @ax/agents (the personal agents
+// a Slack DM reaches, and the team agents a channel's own bot answers as), the real @ax/teams
 // (who is a team admin), the real @ax/conversations (the
 // thread's conversation, origin 'slack'), the real @ax/decisions over the
 // real @ax/tool-policy (a held call becomes a pending row in somebody's
@@ -378,7 +378,6 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
       break;
     }
     case 'conversations.info':
-    case 'conversations.join':
       answer =
         body['channel'] === SUPPORT_CHANNEL
           ? {
@@ -394,23 +393,6 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
               },
             }
           : { ok: false, error: 'channel_not_found' };
-      break;
-    case 'conversations.list':
-      answer = {
-        ok: true,
-        channels: [
-          {
-            id: SUPPORT_CHANNEL,
-            name: 'support-desk',
-            is_channel: true,
-            is_private: false,
-            is_archived: false,
-            is_ext_shared: false,
-            is_pending_ext_shared: false,
-          },
-        ],
-        response_metadata: { next_cursor: '' },
-      };
       break;
     case 'tooling.tokens.rotate':
       rotateSeq += 1;
@@ -569,26 +551,6 @@ async function deliverToOwnBot(installId: string, event: Record<string, unknown>
   });
 }
 
-/** A signed `/ax` slash command, as Slack posts it: a form, signed over its raw bytes. */
-async function slash(installId: string, from: SlackPerson, channel: string, text: string): Promise<Captured> {
-  const body = Buffer.from(
-    new URLSearchParams({
-      command: '/ax',
-      text,
-      team_id: TEAM_ID,
-      api_app_id: APP_ID,
-      user_id: from.slackId,
-      channel_id: channel,
-    }).toString(),
-  );
-  return callRoute('POST', '/slack/commands/:installId', {
-    params: { installId },
-    rawPath: `/slack/commands/${installId}`,
-    headers: { ...signedHeaders(body), 'content-type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-}
-
 /** A prompt the bot posted: where it is, and the id its buttons carry (read from the blocks it sent). */
 interface PostedPrompt {
   channel: string;
@@ -617,20 +579,21 @@ function promptsIn(calls: SlackCall[]): PostedPrompt[] {
 }
 
 /**
- * A signed click on a prompt's button, as Slack posts it: a form whose one `payload` is the
- * interaction's JSON, signed over its raw bytes. `signWith` is the secret the signature uses.
+ * A signed click on a prompt's button, as Slack posts it to a team agent's own bot: a form whose one
+ * `payload` is the interaction's JSON, signed over its raw bytes. `signWith` is the secret the
+ * signature uses.
  */
 async function click(
   installId: string,
   from: SlackPerson,
   prompt: PostedPrompt,
   action: 'allow' | 'deny' = 'allow',
-  signWith: string = SIGNING_SECRET,
+  signWith: string = OWN_SIGNING_SECRET,
 ): Promise<Captured> {
   const messageTs = prompt.messageTs;
   const payload = {
     type: 'block_actions',
-    api_app_id: APP_ID,
+    api_app_id: OWN_APP_ID,
     team: { id: TEAM_ID },
     user: { id: from.slackId },
     channel: { id: prompt.channel },
@@ -790,6 +753,14 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     }));
   }
 
+  /** What a team agent's deletion must clear: the channels it was bound to, and its own bot. */
+  async function botsAndBindings(): Promise<unknown[]> {
+    return [
+      ...(await bindings()),
+      ...(await query("SELECT install_id FROM channel_slack_v1_installs WHERE kind = 'bot'")),
+    ];
+  }
+
   async function readSecret(installId: string, name: string): Promise<string> {
     try {
       return await theBus!.call<unknown, string>(
@@ -839,22 +810,25 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     shutdown = () => handle.shutdown();
   }, 180_000);
 
-  // Every channel test connects #support-desk and frees it at its end. One that fails first
-  // must not leave it bound: the next test's supportChannel() would get 409 (channel taken)
-  // and fail for a reason that is not its own. So whatever a test left connected goes here,
-  // by a site admin (a team's own admin may have left it), the way dropAgent frees it.
+  // Every channel test makes a team agent with its own bot and frees them at its end. One that
+  // fails first must not leave the bot behind: the next test's supportBot() would be refused the
+  // bot's name (taken) and fail for a reason that is not its own. So whatever a test left, a bound
+  // channel or a bot, goes here, by a site admin (a team's own admin may have left it), the way
+  // dropAgent frees it.
   afterEach(async () => {
     invokeScript = null;
     actor = null;
     if (theBus === null || pgContainer === null) return;
     const left = await bindings();
-    for (const agentId of new Set(left.map((b) => b.agentId))) {
+    const bots = await query("SELECT agent_id FROM channel_slack_v1_installs WHERE kind = 'bot'");
+    const leftAgents = new Set([...left.map((b) => b.agentId), ...bots.map((b) => b['agent_id'] as string)]);
+    for (const agentId of leftAgents) {
       await theBus.call('agents:delete', makeAgentContext({ sessionId: 'test', agentId: '', userId: ADMIN }), {
         actor: { userId: ADMIN, isAdmin: true },
         agentId,
       });
     }
-    if (left.length > 0) await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
+    if (leftAgents.size > 0) await vi.waitFor(async () => expect(await botsAndBindings()).toEqual([]), { timeout: 10_000 });
   });
 
   afterAll(async () => {
@@ -1077,8 +1051,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(String(calls[1]!.body['markdown_text'])).toContain(`](${PUBLIC_ORIGIN})`);
     expect(invokes).toHaveLength(3);
 
-    // A mention in a channel nothing is connected to: one private line, to
-    // the member alone, and no turn.
+    // The shared bot mentioned in a channel: one private line, to the member
+    // alone, and no turn (a team agent answers a channel through its own bot).
     const mentionTs = nextTs();
     mark = slackCalls.length;
     expect(
@@ -1117,114 +1091,51 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(await callRoute('GET', '/admin/slack')).toMatchObject({ body: { state: 'not-connected' } });
   });
 
-  it('a team admin connects a channel to a team agent, from settings and from /ax; members and personal agents cannot; deleting the agent frees it (TASK-1094)', async () => {
-    const installId = await connectWorkspace();
-    const { agentId } = await teamWithAgent('usr_ada', 'usr_mel');
-    const personal = await personalAgent('usr_alice');
-    const settings = (suffix: string) => ({ params: { agentId }, rawPath: `/settings/slack/${agentId}${suffix}` });
-    const connectBody = { body: jsonBody({ channelId: SUPPORT_CHANNEL }) };
-
-    // The settings routes, over the real agents and teams. A member reads the
-    // section and may not write; a personal agent is refused before Slack is asked.
-    actor = { id: 'usr_mel', isAdmin: false };
-    let mark = slackCalls.length;
-    expect(await callRoute('GET', '/settings/slack/:agentId', settings(''))).toMatchObject({
-      status: 200,
-      body: { state: 'ready', canManage: false, channels: [] },
-    });
-    expect(await callRoute('POST', '/settings/slack/:agentId/connect', { ...settings('/connect'), ...connectBody })).toMatchObject({
-      status: 403,
-    });
-    actor = { id: 'usr_alice', isAdmin: false };
-    expect(
-      await callRoute('POST', '/settings/slack/:agentId/connect', {
-        params: { agentId: personal },
-        rawPath: `/settings/slack/${personal}/connect`,
-        ...connectBody,
-      }),
-    ).toMatchObject({ status: 409, body: { error: 'personal-agent' } });
-    expect(slackCalls.slice(mark)).toEqual([]);
-    expect(await bindings()).toEqual([]);
-
-    // The team admin connects #support: Slack is asked about it, then the bot joins, then the row.
-    actor = { id: 'usr_ada', isAdmin: false };
-    mark = slackCalls.length;
-    const connected = await callRoute('POST', '/settings/slack/:agentId/connect', {
-      ...settings('/connect'),
-      ...connectBody,
-    });
-    expect(connected).toMatchObject({
-      status: 200,
-      body: { channel: { channelId: SUPPORT_CHANNEL, name: 'support-desk', connectedBy: 'usr_ada' }, reconnected: false },
-    });
-    expect(slackCalls.slice(mark).map((c) => c.method)).toEqual(['conversations.info', 'conversations.join']);
-    expect(await bindings()).toEqual([{ channelId: SUPPORT_CHANNEL, agentId, by: 'usr_ada' }]);
-    actor = null;
-
-    // /ax: the member is told it is a team admin's to do; the admin can disconnect, and connect again by name.
-    const memberTries = await slash(installId, MEL, SUPPORT_CHANNEL, 'disconnect');
-    expect(memberTries.status).toBe(200);
-    expect(String((memberTries.body as { text: string }).text)).toContain('Only a team admin');
-    expect(await bindings()).toHaveLength(1);
-
-    const memberConnects = await slash(installId, MEL, SUPPORT_CHANNEL, 'connect Support');
-    expect(String((memberConnects.body as { text: string }).text)).toContain('Only a team admin');
-
-    const disconnected = await slash(installId, ADA, SUPPORT_CHANNEL, 'disconnect');
-    expect(String((disconnected.body as { text: string }).text)).toContain('Disconnected');
-    expect(await bindings()).toEqual([]);
-
-    const slashConnected = await slash(installId, ADA, SUPPORT_CHANNEL, 'connect Support');
-    expect(slashConnected.status).toBe(200);
-    expect(String((slashConnected.body as { text: string }).text)).toContain('Connected *Support* to #support-desk');
-    expect(await bindings()).toEqual([{ channelId: SUPPORT_CHANNEL, agentId, by: 'usr_ada' }]);
-
-    // Deleting the agent frees its channel (agents:deleted → channel-slack).
-    await theBus!.call(
-      'agents:delete',
-      makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_ada' }),
-      { actor: { userId: 'usr_ada', isAdmin: false }, agentId },
-    );
-    await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
-  });
-
   // ── Channel turns (TASK-1094) ──────────────────────────────────────────────
 
-  /** A signed `app_mention` in the support channel, the way Slack writes it: the bot's own `<@…>` first. */
-  function mention(from: SlackPerson, ts: string, text: string, threadTs?: string): Record<string, unknown> {
+  /** A signed `app_mention` of the agent's own bot in the support channel, the way Slack writes it: the bot's own `<@…>` first. */
+  function botMention(from: SlackPerson, ts: string, text: string, threadTs?: string): Record<string, unknown> {
     return {
       type: 'app_mention',
       user: from.slackId,
       channel: SUPPORT_CHANNEL,
       ts,
-      text: `<@${BOT_USER_ID}> ${text}`,
+      text: `<@${OWN_BOT_USER_ID}> ${text}`,
       ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
     };
   }
 
-  /** The workspace connected, a support team (Ada its admin, Mel a member) with a team agent, and #support-desk connected to it by Ada. */
-  async function supportChannel(): Promise<{ installId: string; teamId: string; agentId: string }> {
+  /**
+   * The workspace connected, a support team (Ada its admin, Mel a member) with a team agent, and the
+   * agent's own bot: Ada asks for it, Allow comes back to its callback. `installId` is the shared
+   * install; `botId` is the bot's own. The bot binds #support-desk at its first mention there.
+   */
+  async function supportBot(): Promise<{ installId: string; botId: string; teamId: string; agentId: string }> {
     const installId = await connectWorkspace();
     const { teamId, agentId } = await teamWithAgent('usr_ada', 'usr_mel');
     actor = { id: 'usr_ada', isAdmin: false };
-    const connected = await callRoute('POST', '/settings/slack/:agentId/connect', {
+    const requested = await callRoute('POST', '/settings/slack/:agentId/bot', {
       params: { agentId },
-      rawPath: `/settings/slack/${agentId}/connect`,
-      body: jsonBody({ channelId: SUPPORT_CHANNEL }),
+      rawPath: `/settings/slack/${agentId}/bot`,
+      body: jsonBody({ botName: OWN_BOT_NAME, refreshToken: CONFIG_REFRESH_TOKEN }),
     });
+    expect(requested.status).toBe(200);
+    const state = new URL((requested.body as { installUrl: string }).installUrl).searchParams.get('state')!;
+    const callback = await callRoute('GET', '/slack/bots/oauth/callback', { query: { code: OAUTH_CODE, state } });
     actor = null;
-    expect(connected.status).toBe(200);
-    expect(await bindings()).toEqual([{ channelId: SUPPORT_CHANNEL, agentId, by: 'usr_ada' }]);
-    return { installId, teamId, agentId };
+    expect(callback.status).toBe(302);
+    const botRows = await query("SELECT install_id FROM channel_slack_v1_installs WHERE kind = 'bot'");
+    expect(botRows).toHaveLength(1);
+    return { installId, botId: botRows[0]!['install_id'] as string, teamId, agentId };
   }
 
-  /** Delete the team agent: its channel is freed (agents:deleted), so the next test starts clean. */
+  /** Delete the team agent: its bot and its channel go (agents:deleted), so the next test starts clean. */
   async function dropAgent(agentId: string, byAdmin = 'usr_ada'): Promise<void> {
     await theBus!.call('agents:delete', makeAgentContext({ sessionId: 'test', agentId: '', userId: byAdmin }), {
       actor: { userId: byAdmin, isAdmin: false },
       agentId,
     });
-    await vi.waitFor(async () => expect(await bindings()).toEqual([]), { timeout: 10_000 });
+    await vi.waitFor(async () => expect(await botsAndBindings()).toEqual([]), { timeout: 10_000 });
   }
 
   /** A channel turn's Slack calls, once its reply is closed and 👀 is off. */
@@ -1247,7 +1158,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   function expectOutsiderNote(note: unknown, name: string): void {
     expect(note).toEqual({ context: expect.stringContaining("They can't approve anything.") });
     const context = (note as { context: string }).context;
-    expect(context).toContain('waits for your owner, the person who connected this channel');
+    expect(context).toContain('waits for your owner, the team admin who set you up in Slack');
     expect(context).not.toContain(name);
   }
 
@@ -1283,14 +1194,14 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     ).decisions;
 
   it('a mention in a connected channel runs as the sender, or as whoever connected it; the rest get nothing (tiers A-E, TASK-1094)', async () => {
-    const { installId, teamId, agentId } = await supportChannel();
+    const { botId, teamId, agentId } = await supportBot();
     invokes.length = 0;
-    const keyOf = (thread: string, suffix = ''): string => `slack:${installId}:${SUPPORT_CHANNEL}:${thread}${suffix}`;
+    const keyOf = (thread: string, suffix = ''): string => `slack:${botId}:${SUPPORT_CHANNEL}:${thread}${suffix}`;
 
     // A: Mel is on the team. Attended, as herself, in a conversation of her own.
     const melTs = nextTs();
     let mark = slackCalls.length;
-    expect((await deliver(installId, mention(MEL, melTs, 'what is the status?'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'what is the status?'))).status).toBe(200);
     const melTurn = await invokedTurn(1);
     expect(melTurn.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
     expect(JSON.stringify(melTurn.input)).toContain(`[Slack · #support-desk · Mel (${MEL.slackId})]`);
@@ -1307,7 +1218,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // B: Bob has an AX account but isn't on the team. External, as Ada, who connected the channel.
     const bobTs = nextTs();
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(BOB, bobTs, 'can you help me?'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(BOB, bobTs, 'can you help me?'))).status).toBe(200);
     const bobTurn = await invokedTurn(2);
     expect(bobTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
     expect(JSON.stringify(bobTurn.input)).toContain(`[Slack · #support-desk · Bob (${BOB.slackId})]`);
@@ -1318,7 +1229,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // C: Carol has no AX account, on an approved domain. External too, and in Mel's own thread
     // she gets a conversation of her own, not Mel's.
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(CAROL, nextTs(), 'me too, please', melTs))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'me too, please', melTs))).status).toBe(200);
     const carolTurn = await invokedTurn(3);
     expect(carolTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
     expect(carolTurn.ctx.conversationId).not.toBe(melTurn.ctx.conversationId);
@@ -1330,11 +1241,12 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // D: Eve has no AX account and her address is on no approved domain: silence, no turn.
     const eveTs = nextTs();
     const eveMark = slackCalls.length;
-    expect((await deliver(installId, mention(EVE, eveTs, 'let me in'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(EVE, eveTs, 'let me in'))).status).toBe(200);
     await slackCallsUntil(eveMark, 'users.info');
 
-    // E: Ada leaves the team (Zoe becomes its second admin first: a team keeps one). Her channel
-    // can no longer lend her access, so outsiders hear that privately and nothing runs.
+    // E: Ada leaves the team (Zoe becomes its second admin first: a team keeps one). The bot's
+    // requester is no longer an admin, so she can't lend her access: outsiders hear one private
+    // line and nothing runs.
     const ctxFor = (userId: string) => makeAgentContext({ sessionId: 'test', agentId: '', userId });
     await theBus!.call('teams:add-member', ctxFor('usr_ada'), {
       actor: { userId: 'usr_ada' },
@@ -1349,18 +1261,16 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     });
     for (const outsider of [BOB, CAROL]) {
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(outsider, nextTs(), 'anyone there?'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(outsider, nextTs(), 'anyone there?'))).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.postEphemeral');
       expect(callOf(calls, 'chat.postEphemeral').body).toMatchObject({ channel: SUPPORT_CHANNEL, user: outsider.slackId });
-      expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toContain(
-        'A team admin needs to connect me to this channel again',
-      );
+      expect(typeof callOf(calls, 'chat.postEphemeral').body['text']).toBe('string');
       expect(calls.map((c) => c.method)).not.toContain('chat.startStream');
     }
     expect(invokes).toHaveLength(3);
     // Members keep working: Mel doesn't depend on the connector.
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(MEL, nextTs(), 'still me'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'still me'))).status).toBe(200);
     const melAgain = await invokedTurn(4);
     expect(melAgain.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
     expectMemberNote(melAgain.note);
@@ -1388,7 +1298,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   });
 
   it('a held call: the outsider thread says its owner was asked and the row waits in the connector\'s Today; a member\'s waits in their own (TASK-1094)', async () => {
-    const { installId, agentId } = await supportChannel();
+    const { botId, agentId } = await supportBot();
     invokes.length = 0;
     const holds: unknown[] = [];
     // The `n`th turn's pre-call answer, once it has one. A turn reaches agent:invoke (what
@@ -1417,7 +1327,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // External: Carol's turn runs as Ada. The thread says her owner was asked and links nowhere;
       // the row waits in Ada's Today, for this agent and Carol's external conversation.
       let mark = slackCalls.length;
-      expect((await deliver(installId, mention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
       const external = await invokedTurn(1);
       expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
       expect(isHold(await holdOf(1))).toBe(true);
@@ -1442,7 +1352,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // follows it in her thread (TASK-1095), and the row is hers.
       mark = slackCalls.length;
       const melTs = nextTs();
-      expect((await deliver(installId, mention(MEL, melTs, 'please book it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'please book it'))).status).toBe(200);
       const attended = await invokedTurn(2);
       expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
       expect(isHold(await holdOf(2))).toBe(true);
@@ -1475,7 +1385,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   });
 
   it("an attended held call: the prompt in the thread is answered only by the person who asked, with the real decisions behind it; an outsider's turn gets none (TASK-1095)", async () => {
-    const { installId, agentId } = await supportChannel();
+    const { botId, agentId } = await supportBot();
     invokes.length = 0;
     invokeScript = async (ctx) => {
       // connector_propose and not request_capability: an attended request_capability is no
@@ -1495,7 +1405,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // Mel's mention holds a call: her reply ends with the ask, then the prompt.
       const melTs = nextTs();
       let mark = slackCalls.length;
-      expect((await deliver(installId, mention(MEL, melTs, 'please book it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'please book it'))).status).toBe(200);
       await invokedTurn(1);
       let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
       expect(sentText(calls)).toContain('I need your OK before I can do part of this.');
@@ -1517,7 +1427,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // Ada, a team admin, is not who asked: Slack gets its 200, she is told privately, nothing else moves.
       mark = slackCalls.length;
-      expect((await click(installId, ADA, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, ADA, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.postEphemeral');
       expect(calls.map((c) => c.method)).toEqual(['chat.postEphemeral']);
       expect(calls[0]!.body).toMatchObject({ channel: SUPPORT_CHANNEL, user: ADA.slackId, thread_ts: melTs });
@@ -1526,14 +1436,14 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // A click Slack didn't sign is refused outright: no handler runs, no call goes out, nothing moves.
       mark = slackCalls.length;
-      expect((await click(installId, MEL, prompt!, 'allow', 'not-the-signing-secret')).status).toBe(401);
+      expect((await click(botId, MEL, prompt!, 'allow', 'not-the-signing-secret')).status).toBe(401);
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(slackCalls.slice(mark)).toEqual([]);
       expect(await statusOf()).toBe('pending');
 
       // Mel answers Allow: the real decisions:approve runs as her, and the prompt is redrawn without its buttons.
       mark = slackCalls.length;
-      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, MEL, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
       const update = callOf(calls, 'chat.update');
       expect(update.body).toMatchObject({ channel: SUPPORT_CHANNEL, ts: prompt!.messageTs });
@@ -1546,7 +1456,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // A second ask, answered Deny: the real decisions:dismiss runs as her.
       const secondTs = nextTs();
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(MEL, secondTs, 'and my files'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(MEL, secondTs, 'and my files'))).status).toBe(200);
       await invokedTurn(2);
       calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
       const [second] = promptsIn(calls);
@@ -1556,7 +1466,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(pendingRows).toHaveLength(1);
       expect(pendingRows[0]).toMatchObject({ status: 'pending' });
       mark = slackCalls.length;
-      expect((await click(installId, MEL, second!, 'deny')).status).toBe(200);
+      expect((await click(botId, MEL, second!, 'deny')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
       expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Denied. I won't do it.");
       expect(await listDecisions('usr_mel')).toEqual([]);
@@ -1564,7 +1474,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // Carol is no member: her turn runs as Ada, and gets no buttons. Ada's row waits in her Today.
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'please book it'))).status).toBe(200);
       const external = await invokedTurn(3);
       expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
       calls = await channelTurnCalls(mark);
@@ -1592,7 +1502,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     };
 
   it("a blocked website: the prompt is answered only by the person whose turn it was, and Allow widens just that session; an outsider's turn gets none (TASK-1095)", async () => {
-    const { installId, agentId } = await supportChannel();
+    const { botId, agentId } = await supportBot();
     invokes.length = 0;
     addHostCalls.length = 0;
     grantCalls.length = 0;
@@ -1603,7 +1513,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // Mel's mention: the reply, then the prompt, in her thread.
       const melTs = nextTs();
       let mark = slackCalls.length;
-      expect((await deliver(installId, mention(MEL, melTs, 'fetch it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'fetch it'))).status).toBe(200);
       await invokedTurn(1);
       let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
       const [prompt] = promptsIn(calls);
@@ -1615,14 +1525,14 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // Ada, a team admin, is not who asked: told privately, and the proxy is never called.
       mark = slackCalls.length;
-      expect((await click(installId, ADA, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, ADA, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.postEphemeral');
       expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toBe('Only the person who asked can answer this.');
       expect(addHostCalls).toEqual([]);
 
       // Mel's Allow: the proxy hears exactly this session and host, as her.
       mark = slackCalls.length;
-      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, MEL, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
       expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Allowed for now. Ask me again and I'll try it.");
       expect(addHostCalls).toEqual([
@@ -1631,13 +1541,13 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // A second click on the settled prompt does nothing more.
       mark = slackCalls.length;
-      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, MEL, prompt!, 'allow')).status).toBe(200);
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(addHostCalls).toHaveLength(1);
 
       // Carol is no member: her turn runs as Ada and gets no prompt, whatever the card says.
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(CAROL, nextTs(), 'fetch it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'fetch it'))).status).toBe(200);
       const external = await invokedTurn(2);
       expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
       await channelTurnCalls(mark);
@@ -1651,7 +1561,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   });
 
   it("a skill that needs only a yes: the prompt follows the reply, a bystander's click is refused, and Mel's Allow attaches it after the real conversation agrees; an outsider's turn gets none (TASK-1095)", async () => {
-    const { installId, agentId } = await supportChannel();
+    const { botId, agentId } = await supportBot();
     invokes.length = 0;
     addHostCalls.length = 0;
     grantCalls.length = 0;
@@ -1670,7 +1580,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     try {
       const melTs = nextTs();
       let mark = slackCalls.length;
-      expect((await deliver(installId, mention(MEL, melTs, 'book it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'book it'))).status).toBe(200);
       const attended = await invokedTurn(1);
       let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
       const [prompt] = promptsIn(calls);
@@ -1682,7 +1592,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // Ada is not who asked: refused, nothing attached.
       mark = slackCalls.length;
-      expect((await click(installId, ADA, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, ADA, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.postEphemeral');
       expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toBe('Only the person who asked can answer this.');
       expect(grantCalls).toEqual([]);
@@ -1690,7 +1600,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // Mel's Allow: the real conversations:get agreed the conversation is hers on this agent,
       // then the grant hears the prompt's four ids, as her.
       mark = slackCalls.length;
-      expect((await click(installId, MEL, prompt!, 'allow')).status).toBe(200);
+      expect((await click(botId, MEL, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
       expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Connected. Send your message again and I'll use it.");
       expect(grantCalls).toEqual([
@@ -1707,7 +1617,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // Carol's turn runs as Ada: no prompt, no grant.
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(CAROL, nextTs(), 'book it'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'book it'))).status).toBe(200);
       await invokedTurn(2);
       await channelTurnCalls(mark);
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1720,7 +1630,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   });
 
   it("a skill that reaches a connector: a member's request isn't held, its card is the one prompt and names the host, and Allow attaches it; an outsider's is still held for the owner's Today (TASK-1135)", async () => {
-    const { installId, agentId } = await supportChannel();
+    const { botId, agentId } = await supportBot();
     invokes.length = 0;
     grantCalls.length = 0;
     const verdicts: unknown[] = [];
@@ -1761,7 +1671,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // Mel is there to answer: the call runs, nothing is held, and the card is the one question.
       const melTs = nextTs();
       let mark = slackCalls.length;
-      expect((await deliver(installId, mention(MEL, melTs, 'use the weather skill'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'use the weather skill'))).status).toBe(200);
       const attended = await invokedTurn(1);
       expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
       expect(isHold(await verdictOf(1))).toBe(false);
@@ -1775,7 +1685,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
       // Mel's Allow attaches it: one grant, as her.
       mark = slackCalls.length;
-      expect((await click(installId, MEL, asked[0]!, 'allow')).status).toBe(200);
+      expect((await click(botId, MEL, asked[0]!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
       expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Connected. Send your message again and I'll use it.");
       expect(grantCalls).toHaveLength(1);
@@ -1787,7 +1697,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       // Carol is no member: her turn runs as Ada with nobody there, so the call is still held, the
       // row waits in Ada's Today, and no prompt goes into the thread.
       mark = slackCalls.length;
-      expect((await deliver(installId, mention(CAROL, nextTs(), 'use the weather skill'))).status).toBe(200);
+      expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'use the weather skill'))).status).toBe(200);
       const external = await invokedTurn(2);
       expect(external.ctx).toMatchObject({ userId: 'usr_ada', source: 'external' });
       expect(isHold(await verdictOf(2))).toBe(true);
@@ -1805,7 +1715,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   });
 
   it('the channel\'s memory switch: a member\'s thread is refused while it is off, for good once a turn ran then; an outsider\'s never is remembered (TASK-1094)', async () => {
-    const { installId, agentId } = await supportChannel();
+    const { botId, agentId } = await supportBot();
     invokes.length = 0;
     const preCapture = (conversationId: string) =>
       theBus!.fire(
@@ -1815,9 +1725,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       );
     const switchTo = async (remember: boolean): Promise<void> => {
       actor = { id: 'usr_ada', isAdmin: false };
-      const out = await callRoute('POST', '/settings/slack/:agentId/remember', {
+      const out = await callRoute('POST', '/settings/slack/:agentId/bot/remember', {
         params: { agentId },
-        rawPath: `/settings/slack/${agentId}/remember`,
+        rawPath: `/settings/slack/${agentId}/bot/remember`,
         body: jsonBody({ channelId: SUPPORT_CHANNEL, remember }),
       });
       actor = null;
@@ -1829,7 +1739,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // On (the default): a member's thread is captured like any other.
     const t1 = nextTs();
     let mark = slackCalls.length;
-    expect((await deliver(installId, mention(MEL, t1, 'first question'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(MEL, t1, 'first question'))).status).toBe(200);
     const first = (await invokedTurn(1)).ctx;
     expect(first).toMatchObject({ userId: 'usr_mel', source: 'user' });
     const conv1 = first.conversationId!;
@@ -1850,7 +1760,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // An outsider's thread is never captured, with the switch on: Carol runs as Ada, and what
     // she says would otherwise be recalled as fact in the agent's later turns, members' included.
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(CAROL, nextTs(), 'the refund window is 90 days'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'the refund window is 90 days'))).status).toBe(200);
     const outsider = (await invokedTurn(2)).ctx;
     expect(outsider).toMatchObject({ userId: 'usr_ada', source: 'external' });
     await channelTurnCalls(mark);
@@ -1862,7 +1772,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
     // A turn while it is off, in the same thread. Still the same conversation.
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(MEL, nextTs(), 'second question', t1))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'second question', t1))).status).toBe(200);
     expect((await invokedTurn(3)).ctx.conversationId).toBe(conv1);
     await channelTurnCalls(mark);
 
@@ -1870,7 +1780,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     await switchTo(true);
     expect(await preCapture(conv1)).toMatchObject(refused);
     mark = slackCalls.length;
-    expect((await deliver(installId, mention(MEL, nextTs(), 'a new question'))).status).toBe(200);
+    expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'a new question'))).status).toBe(200);
     const conv3 = (await invokedTurn(4)).ctx.conversationId!;
     await channelTurnCalls(mark);
     expect(conv3).not.toBe(conv1);
@@ -1883,21 +1793,21 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
     // Disconnected: nothing the channel said is captured anymore.
     actor = { id: 'usr_ada', isAdmin: false };
-    const disconnected = await callRoute('POST', '/settings/slack/:agentId/disconnect', {
+    const disconnected = await callRoute('POST', '/settings/slack/:agentId/bot/disconnect', {
       params: { agentId },
-      rawPath: `/settings/slack/${agentId}/disconnect`,
-      body: jsonBody({ channelId: SUPPORT_CHANNEL }),
+      rawPath: `/settings/slack/${agentId}/bot/disconnect`,
+      body: jsonBody({ installId: botId }),
     });
     actor = null;
-    expect(disconnected).toMatchObject({ status: 200, body: { removed: true } });
+    expect(disconnected).toMatchObject({ status: 200 });
     expect(await preCapture(conv3)).toMatchObject(refused);
     await dropAgent(agentId);
   });
 
-  it('an admin replaces the configuration token: the install, its channel and every secret stay, the plugin still reads them as the admin whose token it is, and Rename then rotates the new token (TASK-1128, TASK-1175)', async () => {
-    const { installId, agentId } = await supportChannel();
+  it('an admin replaces the configuration token: the install and every secret stay, the plugin still reads them as the admin whose token it is, and Rename then rotates the new token (TASK-1128, TASK-1175)', async () => {
+    const installId = await connectWorkspace();
+    await personalAgent('usr_alice');
     invokes.length = 0;
-    const before = await bindings();
     const rowOf = async (): Promise<Record<string, unknown>> => {
       const rows = await query(
         'SELECT install_id, status, connected_by_user_id, config_token_added_at FROM channel_slack_v1_installs',
@@ -1932,13 +1842,12 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(await readSecret(installId, 'bot-token')).toBe(BOT_TOKEN);
     expect(await readSecret(installId, 'signing-secret')).toBe(SIGNING_SECRET);
 
-    // The same install, still the first admin's: only the date moved. The channel binding is untouched.
+    // The same install, still the first admin's: only the date moved.
     const rowAfter = await rowOf();
     expect(rowAfter['install_id']).toBe(installId);
     expect(rowAfter['status']).toBe('active');
     expect(rowAfter['connected_by_user_id']).toBe(ADMIN);
     expect(rowAfter['config_token_added_at']).not.toEqual(rowBefore['config_token_added_at']);
-    expect(await bindings()).toEqual(before);
     // `created_at` is the database's clock and the replace uses the host's, so compare to the row itself.
     const status = await callRoute('GET', '/admin/slack');
     expect(status).toMatchObject({
@@ -1950,12 +1859,13 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       },
     });
 
-    // The plugin still reads the signing secret and the bot token, naming the first admin.
+    // The plugin still reads the signing secret and the bot token, naming the first admin: a DM
+    // is verified with the one and answered with the other.
     actor = null;
     const turnMark = slackCalls.length;
-    expect((await deliver(installId, mention(MEL, nextTs(), 'still there?'))).status).toBe(200);
-    expect((await invokedTurn(1)).ctx.agentId).toBe(agentId);
-    const turnCalls = await channelTurnCalls(turnMark);
+    expect((await deliver(installId, dm(ALICE, 'D07ALICEDM1', nextTs(), 'still there?'))).status).toBe(200);
+    await invokedTurn(1);
+    const turnCalls = await dmTurnCalls(turnMark);
     expect(callOf(turnCalls, 'chat.startStream').auth).toBe(`Bearer ${BOT_TOKEN}`);
 
     // Rename rotates the replaced token, not the one Connect kept.
@@ -1967,12 +1877,12 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(slackCalls[renameMark]!.body).toEqual({ refresh_token: kept });
 
     actor = null;
-    await dropAgent(agentId);
   });
   // Last on purpose: the raw SQL above assumes one install row. This test ends with none (it
   // disconnects the shared workspace itself, and the agent's deletion takes the bot).
-  it("a team agent's own bot: requested, allowed, mentioned, the shared bot steps aside, Disconnect leaves it and keeps its approver's token, deleting the agent deletes it (TASK-1167)", async () => {
-    const { installId: sharedId, agentId } = await supportChannel();
+  it("a team agent's own bot: requested, allowed, mentioned, a shared-bot mention in the channel runs no turn, Disconnect leaves it and keeps its approver's token, deleting the agent deletes it (TASK-1167)", async () => {
+    const sharedId = await connectWorkspace();
+    const { agentId } = await teamWithAgent('usr_ada', 'usr_mel');
     invokes.length = 0;
     const sharedToken = await readConfigToken(ADMIN);
     const sharedRefs = {
@@ -2047,16 +1957,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
     // 4. A member mentions the bot: its first mention in the channel writes the binding, and the
     // turn is the agent's, as Mel, under a key that names the bot's install.
-    const ownMention = (from: SlackPerson, ts: string, text: string): Record<string, unknown> => ({
-      type: 'app_mention',
-      user: from.slackId,
-      channel: SUPPORT_CHANNEL,
-      ts,
-      text: `<@${OWN_BOT_USER_ID}> ${text}`,
-    });
     const melTs = nextTs();
     let mark = slackCalls.length;
-    expect((await deliverToOwnBot(ownId, ownMention(MEL, melTs, 'who owns this bot?'))).status).toBe(200);
+    expect((await deliverToOwnBot(ownId, botMention(MEL, melTs, 'who owns this bot?'))).status).toBe(200);
     const melTurn = await invokedTurn(1);
     expect(melTurn.ctx).toMatchObject({ userId: 'usr_mel', agentId, source: 'user', audience: 'shared' });
     expect(await conversationRow(melTurn.ctx.conversationId!)).toEqual({
@@ -2075,7 +1978,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     // An outsider on the same bot runs as its requester, Ada, who is still a team admin.
     const bobTs = nextTs();
     mark = slackCalls.length;
-    expect((await deliverToOwnBot(ownId, ownMention(BOB, bobTs, 'can you help me?'))).status).toBe(200);
+    expect((await deliverToOwnBot(ownId, botMention(BOB, bobTs, 'can you help me?'))).status).toBe(200);
     const bobTurn = await invokedTurn(2);
     expect(bobTurn.ctx).toMatchObject({ userId: 'usr_ada', agentId, source: 'external', audience: 'shared' });
     expect((await conversationRow(bobTurn.ctx.conversationId!)).key).toBe(
@@ -2083,18 +1986,23 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     );
     await channelTurnCalls(mark);
 
-    // 5. The shared bot, mentioned in the same channel, steps aside: no turn, one private line
-    // that names the bot to mention instead.
+    // 5. The shared bot, mentioned in the same channel by Mel, runs no turn: one private line to
+    // her, in that channel, after the one lookup of who she is. The line's text is not pinned here.
     mark = slackCalls.length;
-    expect((await deliver(sharedId, mention(MEL, nextTs(), 'hello shared bot'))).status).toBe(200);
+    expect(
+      (
+        await deliver(sharedId, {
+          type: 'app_mention',
+          user: MEL.slackId,
+          channel: SUPPORT_CHANNEL,
+          ts: nextTs(),
+          text: `<@${BOT_USER_ID}> hello shared bot`,
+        })
+      ).status,
+    ).toBe(200);
     const aside = await slackCallsUntil(mark, 'chat.postEphemeral');
-    const ephemerals = aside.filter((c) => c.method === 'chat.postEphemeral');
-    expect(ephemerals).toHaveLength(1);
-    expect(ephemerals[0]!.body).toMatchObject({ channel: SUPPORT_CHANNEL, user: MEL.slackId });
-    const line = String(ephemerals[0]!.body['text']);
-    expect(line).toContain(OWN_BOT_NAME);
-    expect(line).toContain(`@${OWN_BOT_HANDLE}`);
-    expect(aside.map((c) => c.method)).not.toContain('chat.startStream');
+    expect(aside.map((c) => c.method)).toEqual(['users.info', 'chat.postEphemeral']);
+    expect(aside[1]!.body).toMatchObject({ channel: SUPPORT_CHANNEL, user: MEL.slackId });
     expect(invokes).toHaveLength(2);
 
     // 5b. Ada renames the live bot (TASK-1171). Her own token rotates, Slack gets the WHOLE

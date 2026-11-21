@@ -5,7 +5,6 @@ import {
   BOT_SCOPES,
   DEDICATED_BOT_EVENTS,
   DEDICATED_BOT_SCOPES,
-  SLASH_COMMAND,
   botUrls,
   buildAppManifest,
   buildBotManifest,
@@ -18,11 +17,10 @@ const ORIGIN = 'https://ax.example';
 const REDIRECT = 'https://ax.example/admin/slack/oauth/callback';
 
 describe('slackUrls', () => {
-  it('builds the events URL and the OAuth redirect from the public origin', () => {
+  it('builds the events URL, the OAuth redirect and the interactions URL from the public origin, and no commands URL', () => {
     expect(slackUrls(ORIGIN, INSTALL_ID)).toStrictEqual({
       eventsUrl: 'https://ax.example/slack/events/AAAAAAAAAAAAAAAAAAAAAA',
       redirectUrl: REDIRECT,
-      commandsUrl: 'https://ax.example/slack/commands/AAAAAAAAAAAAAAAAAAAAAA',
       interactionsUrl: 'https://ax.example/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA',
     });
   });
@@ -34,8 +32,8 @@ describe('slackUrls', () => {
     expect(slackUrls(ORIGIN, 'a/b').interactionsUrl).toBe('https://ax.example/slack/interactions/a%2Fb');
   });
 
-  it('percent-encodes the install id in the commands URL', () => {
-    expect(slackUrls(ORIGIN, 'a/b').commandsUrl).toBe('https://ax.example/slack/commands/a%2Fb');
+  it('percent-encodes the install id in the events URL', () => {
+    expect(slackUrls(ORIGIN, 'a/b').eventsUrl).toBe('https://ax.example/slack/events/a%2Fb');
   });
 
   it('does not double a slash when the origin ends in one', () => {
@@ -56,15 +54,6 @@ describe('buildAppManifest', () => {
     expect(buildAppManifest('ax', slackUrls(ORIGIN, INSTALL_ID))).toStrictEqual({
       display_information: { name: 'ax', description: 'Talk to your AX agent.' },
       features: {
-        slash_commands: [
-          {
-            command: '/ax',
-            url: 'https://ax.example/slack/commands/AAAAAAAAAAAAAAAAAAAAAA',
-            description: 'Connect this channel to a team agent',
-            usage_hint: 'connect <agent name> | disconnect',
-            should_escape: false,
-          },
-        ],
         app_home: {
           home_tab_enabled: false,
           messages_tab_enabled: true,
@@ -103,7 +92,7 @@ describe('buildAppManifest', () => {
     expect(manifest.features.bot_user.display_name).toBe('Ada Bot');
   });
 
-  it('asks for exactly nine bot scopes and two events', () => {
+  it('asks for exactly six bot scopes and two events', () => {
     expect([...BOT_SCOPES]).toStrictEqual([
       'app_mentions:read',
       'chat:write',
@@ -111,32 +100,34 @@ describe('buildAppManifest', () => {
       'reactions:write',
       'users:read',
       'users:read.email',
-      'channels:read',
-      'channels:join',
-      'commands',
     ]);
     expect([...BOT_EVENTS]).toStrictEqual(['app_mention', 'message.im']);
     expect(Object.isFrozen(BOT_SCOPES)).toBe(true);
     expect(Object.isFrozen(BOT_EVENTS)).toBe(true);
   });
 
-  it('asks for no history, public-write, private-channel or group-DM scope', () => {
-    for (const banned of ['channels:history', 'chat:write.public', 'groups:read', 'mpim:read']) {
+  it('asks for no history, public-write, private-channel or group-DM scope, and none that serves channels (TASK-1186)', () => {
+    for (const banned of [
+      'channels:history',
+      'chat:write.public',
+      'groups:read',
+      'mpim:read',
+      // The shared app no longer connects channels (design §4b.1): it reads,
+      // joins and takes a command for none.
+      'channels:read',
+      'channels:join',
+      'commands',
+    ]) {
       expect(BOT_SCOPES).not.toContain(banned);
     }
   });
 
-  it('declares exactly one /ax slash command, unescaped, and interactivity for approval buttons', () => {
+  it('declares no slash command, and interactivity for approval buttons', () => {
     const manifest = buildAppManifest('ax', slackUrls(ORIGIN, INSTALL_ID)) as {
-      features: { slash_commands: Array<{ command: string; url: string; should_escape: boolean }> };
+      features: Record<string, unknown>;
       settings: Record<string, unknown>;
     };
-    expect(SLASH_COMMAND).toBe('/ax');
-    expect(manifest.features.slash_commands).toHaveLength(1);
-    const [cmd] = manifest.features.slash_commands;
-    expect(cmd!.command).toBe(SLASH_COMMAND);
-    expect(cmd!.url).toBe(`${ORIGIN}/slack/commands/${INSTALL_ID}`);
-    expect(cmd!.should_escape).toBe(false);
+    expect(Object.keys(manifest.features)).not.toContain('slash_commands');
     expect(manifest.settings['interactivity']).toStrictEqual({
       is_enabled: true,
       request_url: `${ORIGIN}/slack/interactions/${INSTALL_ID}`,
@@ -150,7 +141,7 @@ describe('buildAppManifest', () => {
     };
     manifest.oauth_config.scopes.bot.push('channels:history');
     manifest.settings.event_subscriptions.bot_events.push('message.channels');
-    expect(BOT_SCOPES).toHaveLength(9);
+    expect(BOT_SCOPES).toHaveLength(6);
     expect(BOT_EVENTS).toHaveLength(2);
   });
 });

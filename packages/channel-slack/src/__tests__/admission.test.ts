@@ -483,14 +483,14 @@ describe('screenEvent', () => {
   });
 });
 
-// ── answerMention: a line for a mention no agent takes ─────────────────────
+// ── answerMention: a line for a mention no turn answers ────────────────────
 
 describe('answerMention', () => {
   const mention: Mention = { kind: 'mention', sender: ALICE, channel: 'C07GENERAL1', ts: MENTION.ts, text: 'hi' };
 
   it('a member who mentions the bot gets the line privately (ephemeral), at the top level', async () => {
     const { api, calls } = fakeApi();
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.channelNotConnected)).toEqual({
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.sharedBotInChannel)).toEqual({
       ok: true,
       email: ALICE_EMAIL,
       name: 'Alice Smith',
@@ -499,7 +499,7 @@ describe('answerMention', () => {
       {
         method: 'postEphemeral',
         token: BOT_TOKEN,
-        args: { channel: 'C07GENERAL1', user: ALICE, text: COPY.channelNotConnected },
+        args: { channel: 'C07GENERAL1', user: ALICE, text: COPY.sharedBotInChannel },
       },
     ]);
   });
@@ -516,9 +516,9 @@ describe('answerMention', () => {
     // An ephemeral with a thread_ts that has no thread yet is never shown, so
     // a top-level mention is answered at the top level.
     const { api, calls } = fakeApi();
-    await answerMention(api, BOT_TOKEN, TEAM_ID, { ...mention, threadTs: '1763035000.000010' }, COPY.channelNotConnected);
+    await answerMention(api, BOT_TOKEN, TEAM_ID, { ...mention, threadTs: '1763035000.000010' }, COPY.sharedBotInChannel);
     expect(calls.filter((c) => c.method === 'postEphemeral').map((c) => c.args)).toEqual([
-      { channel: 'C07GENERAL1', user: ALICE, text: COPY.channelNotConnected, threadTs: '1763035000.000010' },
+      { channel: 'C07GENERAL1', user: ALICE, text: COPY.sharedBotInChannel, threadTs: '1763035000.000010' },
     ]);
   });
 
@@ -533,13 +533,13 @@ describe('answerMention', () => {
     ['no email', { profile: {} }, 'no-email'],
   ])('%s who mentions the bot gets silence', async (_name, over, reason) => {
     const { api, calls } = fakeApi({ [ALICE]: member(over) });
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.channelNotConnected)).toEqual(refused(reason));
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.sharedBotInChannel)).toEqual(refused(reason));
     expect(calls.map((c) => c.method)).toEqual(['usersInfo']);
   });
 
   it('a users.info failure is silence too, never a guess', async () => {
     const { api, calls } = fakeApi({ [ALICE]: new SlackApiError('users.info', 'invalid_auth') });
-    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.channelNotConnected)).toEqual({
+    expect(await answerMention(api, BOT_TOKEN, TEAM_ID, mention, COPY.sharedBotInChannel)).toEqual({
       ok: false,
       reason: 'lookup-failed',
       code: 'invalid_auth',

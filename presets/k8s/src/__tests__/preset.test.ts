@@ -1304,7 +1304,7 @@ describe('@ax/preset-k8s wiring', () => {
       // A bot request's DMs (TASK-1170): who the AX admins are, with a verified email.
       'auth:list-admins',
       'agents:list-for-user',
-      // Connecting a channel to a team agent: who may see it, who may manage it.
+      // A team agent's Slack bot and its channels: who may see the agent, who may manage it.
       'agents:resolve',
       'agents:can-set-shared-credential',
       'conversations:find-or-create',
@@ -1317,11 +1317,8 @@ describe('@ax/preset-k8s wiring', () => {
         hook: 'agent:interrupt',
         degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
       },
-      // /ax connect looks a person's teams up; without @ax/teams it finds none.
-      {
-        hook: 'teams:list-for-user',
-        degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
-      },
+      // Admin › Slack's list of bot requests names each one's team; without @ax/teams it names none.
+      { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
       // The approval buttons (TASK-1095): a call held in a Slack turn gets Allow and Deny in the thread.
       ...[
         'decisions:recent-for-conversation',

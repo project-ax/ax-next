@@ -673,7 +673,7 @@ describe('live', () => {
     expect(screen.queryByRole('button', { name: 'Disconnect bot' })).toBeNull();
   });
 
-  it('Disconnect bot asks first: the dialog says the bot leaves every channel, @handle stops working, its Slack app is deleted, and the shared bot answers again; Keep it sends nothing', async () => {
+  it('Disconnect bot asks first: the dialog says the bot leaves every channel, @handle stops working, its Slack app is deleted; Keep it sends nothing', async () => {
     render(
       <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
     );
@@ -682,16 +682,17 @@ describe('live', () => {
     expect(within(dialog).getByRole('heading', { name: 'Disconnect @quill_bot?' })).toBeInTheDocument();
     expect(
       within(dialog).getByText(
-        "Quill Bot leaves every Slack channel it's in, and @quill_bot stops working. We'll delete its Slack app. The shared bot answers for Quill again in any channel it was connected to before.",
+        "Quill Bot leaves every Slack channel it's in, and @quill_bot stops working. We'll delete its Slack app.",
       ),
     ).toBeInTheDocument();
     expect(dialog.textContent).not.toMatch(/\bAX\b/);
+    expect(dialog).not.toHaveTextContent('The shared bot answers');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(disconnect).not.toHaveBeenCalled();
   });
 
-  it('with no handle the dialog names the bot and says mentioning it stops working; without the shared app connected it promises nothing about the shared bot', async () => {
+  it('with no handle the dialog names the bot and says mentioning it stops working', async () => {
     renderIt({ ...LIVE, handle: null });
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
     const dialog = await screen.findByRole('dialog');

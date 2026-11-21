@@ -743,7 +743,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events, commands and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1171, TASK-1172, TASK-1173)', async () => {
+  it('channel-slack: admin status over the real route; only the events and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1171, TASK-1172, TASK-1173, TASK-1186)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -851,16 +851,25 @@ describe('@ax/preset-memory canary', () => {
     expect(delivery.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
     const unservedText = await unserved.text();
     expect(await delivery.text()).toBe(unservedText);
-    // The `/ax` route is mounted too: an unknown install gets the route's own
-    // 404, the same as the events route. A 405 would mean it is NOT mounted.
+    // The `/ax` route is gone (TASK-1186): the shared app connects no
+    // channels, so a `/ax` Slack still sends before the admin's Disconnect +
+    // Connect reaches no handler. As Slack sends it (no CSRF header), the
+    // CSRF check refuses it before routing: no route there bypasses it any
+    // more. A mounted route would have answered its own 404 for this unknown
+    // install, as the events route does above.
     const command = await fetch(url('/slack/commands/AAAAAAAAAAAAAAAAAAAAAA'), {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: 'command=%2Fax&text=connect',
     });
-    expect(command.status).toBe(unserved.status);
-    expect(command.headers.get('content-type')).toBe(unserved.headers.get('content-type'));
-    expect(await command.text()).toBe(unservedText);
+    expect(command.status).toBe(403);
+    // Past the CSRF check too, nothing serves it: the unserved POST's 405 (see above).
+    const commandPastCsrf = await fetch(url('/slack/commands/AAAAAAAAAAAAAAAAAAAAAA'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-requested-with': 'ax-admin' },
+      body: 'command=%2Fax&text=connect',
+    });
+    expect(commandPastCsrf.status).toBe(405);
     // And the interactions route (TASK-1095), where a click on an approval
     // prompt's Allow or Deny arrives: the same 404 for an unknown install.
     const interaction = await fetch(url('/slack/interactions/AAAAAAAAAAAAAAAAAAAAAA'), {

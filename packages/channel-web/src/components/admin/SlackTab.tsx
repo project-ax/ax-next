@@ -423,7 +423,7 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
 const DIALOG_COPY = {
   connected: {
     title: 'Disconnect Slack?',
-    body: "The bot leaves Slack and people can't reach their agents there. Every channel connected to an agent is disconnected too. Their conversations stay here.",
+    body: "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
     keep: 'Keep connected',
     confirm: 'Disconnect',
     working: 'Disconnecting…',
@@ -557,7 +557,7 @@ function RenameForm({
     <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
       <DialogHeader>
         <DialogTitle>Rename the bot</DialogTitle>
-        <DialogDescription>Only the name changes. Conversations and connected channels keep working.</DialogDescription>
+        <DialogDescription>Only the name changes. Conversations keep working.</DialogDescription>
       </DialogHeader>
       <FieldGroup>
         <Field data-invalid={nameError !== null || undefined}>
@@ -695,8 +695,8 @@ function ReplaceTokenForm({
       <DialogHeader>
         <DialogTitle>Replace the configuration token</DialogTitle>
         <DialogDescription>
-          Do this when the token we have stops working, or when whoever generated it is leaving. Conversations and
-          connected channels keep working.
+          Do this when the token we have stops working, or when whoever generated it is leaving. Conversations keep
+          working.
         </DialogDescription>
       </DialogHeader>
       <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
@@ -1014,7 +1014,6 @@ export function SlackTab() {
         />
       )}
       <SlackBotsCard
-        sharedConnected={load.kind === 'ready' && load.status.state === 'connected'}
         onAppsChanged={() => void read()}
       />
     </div>

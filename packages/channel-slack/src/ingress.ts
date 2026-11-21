@@ -8,9 +8,9 @@ import type { InstallRow, InstallStore } from './store.js';
 
 /**
  * What every public route Slack calls checks before it reads a byte of the
- * body: the events route (events.ts), the `/ax` command route (commands.ts)
- * and the button-click route (interactions.ts). All three are public, so
- * they trust nothing they haven't checked, in this order:
+ * body: the events route (events.ts) and the button-click route
+ * (interactions.ts). Both are public, so they trust nothing they haven't
+ * checked, in this order:
  *
  *   0. The body is at most the route's cap (413). The route's own
  *      `maxBodyBytes` already refused anything larger; this is the backstop.
@@ -32,8 +32,8 @@ import type { InstallRow, InstallStore } from './store.js';
  *
  * A failed install or secret lookup is a 503 (Slack may retry). Logs name
  * only the install and a reason, stage or code, under the route's own
- * prefix (`slack_event_*`, `slack_command_*`, `slack_interaction_*`): never
- * a header, the body, a Slack id or an error's message.
+ * prefix (`slack_event_*`, `slack_interaction_*`): never a header, the
+ * body, a Slack id or an error's message.
  */
 
 export const INSTALL_ID_RE = /^[A-Za-z0-9_-]{22}$/;
@@ -50,7 +50,7 @@ export interface IngressOptions {
   /** The route's path up to the install id, e.g. `/slack/events/`. */
   pathPrefix: string;
   maxBodyBytes: number;
-  logPrefix: 'slack_event' | 'slack_command' | 'slack_interaction';
+  logPrefix: 'slack_event' | 'slack_interaction';
 }
 
 /** A request the checks let through. */

@@ -94,13 +94,6 @@ export const BOT_REQUEST_FANOUT_WINDOW_MS = 600_000;
 export const BOT_REQUEST_DM_RECORDS_MAX = 200;
 /** How long a request's DMs are remembered for their redraw: 7 days. */
 export const BOT_REQUEST_DM_TTL_MS = 604_800_000;
-/**
- * The most channels a requester's "your bot is live" DM names: the agent's
- * shared-app channels that now need the bot invited. The rest are counted
- * ("and 3 more"); the agent's Slack settings list every one.
- */
-export const BOT_LIVE_DM_CHANNELS_MAX = 10;
-
 // ── Events ingress ──────────────────────────────────────────────────────────
 
 /** How far a request's timestamp may be from our clock, either way. */
@@ -151,17 +144,6 @@ export const SLACK_TOKEN_MAX = 512;
 // ── Channels ────────────────────────────────────────────────────────────────
 
 /**
- * Channels asked for per `conversations.list` page. Slack: "an integer under
- * 1000", and "We recommend no more than 200 results at a time".
- */
-export const CHANNEL_LIST_PAGE_LIMIT = 200;
-/**
- * At most this many `conversations.list` pages per channel picker (1,000
- * channels). A workspace with more gets a list marked truncated; a channel
- * past it can still be connected with `/ax connect` from inside it.
- */
-export const CHANNEL_LIST_MAX_PAGES = 5;
-/**
  * The longest channel name stored on a binding and shown, in UTF-16 code
  * units (label.ts). Slack's own cap on a channel name is 80 characters.
  */
@@ -175,24 +157,6 @@ export const CHANNEL_NAME_MAX = 80;
 export const CHANNEL_CHECK_TTL_MS = 60_000;
 /** At most this many channels' answers are kept, the oldest forgotten first. */
 export const CHANNEL_CHECK_MAX = 1_000;
-
-// ── The /ax command ─────────────────────────────────────────────────────────
-
-/** A slash command's request body: a short form (Slack's own fields come to well under 2 KiB). */
-export const COMMANDS_MAX_BODY_BYTES = 16_384;
-/** The longest `/ax` text read: a subcommand and an agent's name need far less. */
-export const SLASH_TEXT_MAX = 512;
-/**
- * How long `/ax` waits for its own answer before saying "working on it" and
- * sending the answer privately once it's ready. Slack wants the HTTP answer
- * within 3,000 ms.
- */
-export const SLASH_REPLY_DEADLINE_MS = 2_500;
-/**
- * The longest agent name `/ax connect` matches, after normalizing: @ax/agents'
- * own cap on a display name. Anything longer names no agent.
- */
-export const AGENT_NAME_ARG_MAX = 128;
 
 // ── Agent settings ──────────────────────────────────────────────────────────
 
@@ -225,10 +189,10 @@ export const REPLY_RATE_LIMIT_RETRIES = 5;
 export const MAX_TURNS_PER_CONVERSATION = 3;
 /**
  * Outsiders' turns running or waiting in one channel, across all its threads
- * (router.ts). Each one runs as the person who connected the channel, so this
- * bounds how much of one person's identity, and turn budget, a channel's
- * outsiders can spend at once: one runs, the rest wait, and one more is told
- * the channel is busy.
+ * (router.ts). Each one runs as the bot's requester (the binding's
+ * connector), so this bounds how much of one person's identity, and turn
+ * budget, a channel's outsiders can spend at once: one runs, the rest wait,
+ * and one more is told the channel is busy.
  */
 export const MAX_EXTERNAL_TURNS_PER_CHANNEL = 5;
 /** The longest one Slack turn may run: 15 minutes. */

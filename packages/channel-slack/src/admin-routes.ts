@@ -556,7 +556,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
    * change step (`changeApp`, slack-apps.ts: its person's stored token,
    * rotated, the successor saved first). Slack replaces the manifest on
    * update, so a part of one would drop the rest (the approval buttons,
-   * `/ax`, the scopes). Null when Slack took it, else what the admin is
+   * the scopes). Null when Slack took it, else what the admin is
    * told. A vault fault reading the token, or a person id that can't name
    * one, throws: the route's 500.
    */

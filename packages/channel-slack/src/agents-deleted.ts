@@ -26,12 +26,11 @@ function quietly(log: () => void): void {
  *
  * `@ax/agents` fires `agents:deleted { agentId, ownerId, ownerType }` after
  * the agent's row is gone. A binding has no foreign key to it (no plugin
- * references another's rows), so without this a deleted agent would keep its
- * channels "taken": a connect refuses them until someone runs `/ax disconnect`
- * in each one. Its thread rows go here and nowhere else: a disconnect and an
- * install's removal keep them on purpose (channel-store.ts). Its bot would
- * stay live in Slack, for an agent that is gone, and keep its approver's
- * configuration token alive. The repo guard
+ * references another's rows), so without this a deleted agent's bindings
+ * would outlive it. Its thread rows go here and nowhere else: a disconnect
+ * and an install's removal keep them on purpose (channel-store.ts). Its bot
+ * would stay live in Slack, for an agent that is gone, and keep its
+ * approver's configuration token alive. The repo guard
  * scripts/__tests__/agent-keyed-tables-are-cleaned.test.js requires every
  * one of these tables cleaned: each has an `agent_id`.
  *

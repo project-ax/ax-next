@@ -5,7 +5,6 @@ import { createBotRequestDms } from '../bot-request-dms.js';
 import { agentSeenBy } from '../bot-requests.js';
 import { createLifetime } from '../lifetime.js';
 import {
-  BOT_LIVE_DM_CHANNELS_MAX,
   BOT_REQUEST_DMS_MAX,
   BOT_REQUEST_DM_RECORDS_MAX,
   BOT_REQUEST_DM_TTL_MS,
@@ -17,7 +16,6 @@ import type { SecretName, SecretStore } from '../secrets.js';
 import { SlackApiError, type SlackApi } from '../slack-api.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
-import { memoryChannelStore } from './memory-channel-store.js';
 import { memoryStore } from './memory-install-store.js';
 
 /*
@@ -400,8 +398,6 @@ function fakeSlack() {
     addReaction: notHere('addReaction'),
     removeReaction: notHere('removeReaction'),
     conversationsInfo: notHere('conversationsInfo'),
-    conversationsList: notHere('conversationsList'),
-    conversationsJoin: notHere('conversationsJoin'),
   };
   return {
     api,
@@ -468,10 +464,6 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
       });
     }
   }
-  // The bindings: a channel's agent, on the shared app or on a team agent's own bot.
-  const channels = memoryChannelStore();
-  /** While set, every channel read throws it. */
-  const faults: { channels?: unknown } = {};
 
   /** Each install's bot token in the vault: a token, none (null), or a fault. */
   const tokens = new Map<string, string | null | Error>([[SHARED_INSTALL, SHARED_TOKEN]]);
@@ -490,12 +482,6 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
     bus,
     api: slack.api,
     installs: memory.store,
-    channels: {
-      async listForAgent(installId, agentId) {
-        if (faults.channels !== undefined) throw faults.channels;
-        return channels.store.listForAgent(installId, agentId);
-      },
-    },
     secrets,
     lifetime,
     publicOrigin: ORIGIN,
@@ -510,8 +496,6 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
     slack,
     clock,
     memory,
-    channels,
-    faults,
     tokens,
     vaultReads,
     lifetime,
@@ -579,11 +563,6 @@ async function seedBot(
   }
   w.tokens.set(BOT_INSTALL, OWN_BOT_TOKEN);
   return BOT_INSTALL;
-}
-
-/** A channel connected to `agentId` (the support agent unless told) on `installId`. */
-async function bind(w: World, installId: string, channelId: string, channelName: string, agentId = SUPPORT.id) {
-  await w.channels.store.upsert({ installId, channelId, agentId, connectedByUserId: ADA.id, channelName });
 }
 
 /** Every redraw Slack was asked for, in order. */
@@ -1296,50 +1275,14 @@ describe('live', () => {
     expect(w.lines).toEqual([ownerSent('live', { installId: bot })]);
   });
 
-  it(`names the channels the agent had through the shared bot, at most BOT_LIVE_DM_CHANNELS_MAX (${BOT_LIVE_DM_CHANNELS_MAX}), then "and N more"; a channel the bot already answers in isn't named`, async () => {
-    const names = [
-      'support',
-      'billing',
-      'returns',
-      'orders',
-      'shipping',
-      'refunds',
-      'vip',
-      'escalations',
-      'feedback',
-      'onboarding',
-      'churn',
-      'partners',
-    ];
-    const channelOf = (n: number): string => `C07CHAN${String(n).padStart(4, '0')}`;
+  it("the requester's live DM says the bot is live and how to invite it, and names no channel", async () => {
     const w = await world();
     const bot = await seedBot(w);
-    for (const [n, name] of names.entries()) await bind(w, SHARED_INSTALL, channelOf(n), name);
-    // Another agent's channel on the shared app is none of this bot's business.
-    await bind(w, SHARED_INSTALL, 'C07RANDOM01', 'random', 'agt_sales');
-    // The bot already answers in #billing: a binding on its own install.
-    await bind(w, bot, channelOf(1), 'billing');
     forget(w);
 
     await w.dms.live({ installId: bot });
 
-    expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([
-      `${LIVE} These channels still need it: #support, #returns, #orders, #shipping, #refunds, #vip, ` +
-        '#escalations, #feedback, #onboarding, #churn and 1 more. Run /invite in each one.',
-    ]);
-
-    // Exactly as many as it names: every one named, and no count.
-    const ten = await world();
-    const tenBot = await seedBot(ten);
-    for (const [n, name] of names.slice(0, BOT_LIVE_DM_CHANNELS_MAX).entries()) {
-      await bind(ten, SHARED_INSTALL, channelOf(n), name);
-    }
-    forget(ten);
-    await ten.dms.live({ installId: tenBot });
-    expect(ten.slack.of('postDirect').map((c) => c.args['text'])).toEqual([
-      `${LIVE} These channels still need it: #support, #billing, #returns, #orders, #shipping, #refunds, #vip, ` +
-        '#escalations, #feedback and #onboarding. Run /invite in each one.',
-    ]);
+    expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([LIVE]);
   });
 
   it('with no handle kept, names the bot', async () => {
@@ -1351,22 +1294,6 @@ describe('live', () => {
 
     expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([
       'Support Helper is live. Invite it to a channel with /invite.',
-    ]);
-  });
-
-  it("a fault reading the agent's channels: the DM still says it's live, without the list, logged", async () => {
-    const w = await world();
-    const bot = await seedBot(w);
-    await bind(w, SHARED_INSTALL, 'C07CHAN0000', 'support');
-    forget(w);
-    w.faults.channels = connectionReset();
-
-    await w.dms.live({ installId: bot });
-
-    expect(w.slack.of('postDirect').map((c) => c.args['text'])).toEqual([LIVE]);
-    expect(w.lines).toEqual([
-      failedLine('channels', 'ECONNRESET', { installId: bot }),
-      ownerSent('live', { installId: bot }),
     ]);
   });
 
@@ -1622,9 +1549,8 @@ describe('logs', () => {
 
     await w.open();
     await w.close({ outcome: 'declined', byUserId: KAY.id });
-    // Asked again, approved by Grace, and live: Ada hears, with a channel named.
+    // Asked again, approved by Grace, and live: Ada hears.
     const bot = await seedBot(w);
-    await bind(w, SHARED_INSTALL, 'C07CHAN0000', 'support');
     w.auth.faults.delete(`auth:get-user ${ADA.id}`);
     await w.dms.live({ installId: bot });
 

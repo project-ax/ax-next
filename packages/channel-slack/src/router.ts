@@ -33,7 +33,22 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      and edits are ignored (admission.ts owns those rules).
  *   2. The install's bot token, from the vault.
  *
- * A DM (routeDm):
+ * Who answers what (TASK-1186; design §4b.1): the shared app answers DMs,
+ * and a team agent's own bot (TASK-1167) answers mentions in the channels
+ * it was invited to. A team agent is reached in a channel only through its
+ * own bot. A team agent's own bot is any install whose kind isn't exactly
+ * `shared` (store.ts reads anything else as a bot, the kind that can do less).
+ *   - A mention of the shared bot in a channel runs no turn. It reads no
+ *     binding, so a row left from before is never used, and asks nothing
+ *     about an agent or the channel: an admitted sender is told privately
+ *     how to reach an agent instead (`sharedBotInChannel`, answerAdmitted),
+ *     anyone else gets silence, and it is logged as `slack_event_ignored`
+ *     (`shared-channel`).
+ *   - A DM to a team agent's own bot gets nothing, before any vault read or
+ *     Slack call: its manifest asks for none, and one its approver turns on
+ *     by hand reaches nobody.
+ *
+ * A DM to the shared app (routeDm):
  *   3. The sender is admitted from users.info, never from the text. A
  *      refused sender gets silence; a users.info call that failed only
  *      because Slack was briefly unavailable gets "try again".
@@ -47,22 +62,34 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      disconnected (or reset) while the turn waited is dropped, logged as
  *      `slack_turns_dropped`, and its agent never runs.
  *
- * A mention (routeMention), TASK-1094:
- *   3. The channel's binding. None: an admitted sender is told privately that
- *      no agent is connected here (answerMention); anyone else gets silence.
- *   4. The sender is admitted from users.info, as for a DM ("try again" goes
- *      to them alone, as an ephemeral). An empty mention is ignored.
+ * A mention of a team agent's own bot (routeMention; TASK-1094, TASK-1167):
+ *   3. The sender is admitted from users.info, as for a DM ("try again" goes
+ *      to them alone, as an ephemeral). A refused sender costs no other Slack
+ *      call and binds nothing. An empty mention is ignored.
+ *   4. The channel's binding. A missing one is never "no agent here": the bot
+ *      serves its one agent wherever it was invited. It is written at the
+ *      first mention in a channel, once Slack's own conversations.info, read
+ *      with the bot's token and about this channel, shows one a bot may bind
+ *      (channels.ts `connectable`): to the bot's one agent, connected by its
+ *      requester (a Claim moves it). A channel refused there is silence;
+ *      Slack failing is "try again"; Slack saying the bot's token can't read
+ *      any public channel (the turn-start check's reading, channel-check.ts
+ *      `channelInfoFailure`) is `botUnavailable`; a binding naming any other
+ *      agent runs nothing.
  *   5. Who they are to the agent, from AX alone: their account
  *      (auth:find-user-by-email) and its access to the agent
  *      (agents:resolve), or, with no account, whether their email is on an
  *      approved domain (auth:is-approved-email); then, only for a turn that
- *      would run as the person who connected the channel, that person's own
- *      access. channel-route.ts decides the tier: attended as the sender,
- *      external as the connector, silence (off-domain), or a private "a team
- *      admin needs to connect me here again" when the binding is broken.
+ *      would run as the bot's requester, whether they are still a team admin
+ *      of the agent's team (channels.ts `teamAdminAccess`). channel-route.ts
+ *      decides the tier: attended as the sender, external as the requester,
+ *      silence (off-domain), or a private "a team admin needs to check my
+ *      settings" (`botUnavailable`) when the agent is gone, or when the
+ *      requester can't vouch for outsiders any more: members still run as
+ *      themselves.
  *   6. conversations:find-or-create for the thread, one per identity: the
  *      sender's own (`slack:<installId>:<channel>:<thread_ts>`) or the
- *      connector's (`…:external`), so an outsider's words never enter a
+ *      requester's (`…:external`), so an outsider's words never enter a
  *      member's conversation, and a conversation is never run as anyone but
  *      its owner.
  *   7. Queued: a member's turn behind others in their conversation (the
@@ -70,79 +97,46 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      whole channel (MAX_EXTERNAL_TURNS_PER_CHANNEL; one more is told the
  *      channel is busy).
  *   8. When the turn's time comes, the install AND the binding are read
- *      again: an install or binding that went away, or a channel now
- *      connected to another agent, drops the turn (`slack_turns_dropped`,
- *      `disconnected`), and so, on the shared app, does the agent's own bot
- *      having gone live meanwhile (`own-bot`, below); an outsider's turn
- *      whose channel was reconnected by someone else meanwhile is dropped
- *      too (`reconnected`), and its sender told to try again: it was
- *      planned as the old connector, in their conversation, and must not
- *      run as anyone else. On a team agent's own bot, an outsider's turn
- *      runs as its requester only while they are still a team admin of the
- *      agent's team, so it is asked again here: not any more drops the turn
- *      (`requester`) with the polite "I can't answer you here right now"
- *      line, and a failed read drops it too (`slack_event_failed`, stage
- *      `requester`), its sender told to try again. Last, Slack itself is
- *      asked about the channel, with the install's token (channel-check.ts,
- *      which keeps an answer that allows it for a minute), since a channel
- *      can change after it is bound (TASK-1184). A channel it now says is
- *      private, archived or Slack Connect, or can't find, loses its binding
- *      as a team admin's Disconnect would take it (the memory switch kept
- *      for the agent and channel stays). The one turn whose removal took it
- *      tells its sender, privately and once (`channelNoLongerAllowed`); every
- *      turn it stops is dropped (`slack_turns_dropped`,
- *      `channel-not-allowed`). Slack not answering is no turn either: "try
- *      again", and the binding stays. Nor is Slack saying the install's own
- *      token can't read any public channel (code `token-scope`): the binding
- *      stays, and since no retry fixes that, its sender is told a team admin
- *      must look (`channelUnavailable`, or `botUnavailable` on a team agent's
- *      own bot), never to try again. A Slack Connect channel seldom gets
- *      this far: step 1 drops its events, so only a turn that was waiting
- *      when it was shared, or one while its share is still pending, finds it.
+ *      again: an install or binding that went away, or a channel now bound
+ *      to another agent, drops the turn (`slack_turns_dropped`,
+ *      `disconnected`); an outsider's turn whose bot someone else claimed
+ *      meanwhile is dropped too (`reconnected`), and its sender told to try
+ *      again: it was planned as the old requester, in their conversation, and
+ *      must not run as anyone else. An outsider's turn runs as the requester
+ *      only while they are still a team admin of the agent's team, so it is
+ *      asked again here: not any more drops the turn (`requester`) with the
+ *      polite `botUnavailable` line, and a failed read drops it too
+ *      (`slack_event_failed`, stage `requester`), its sender told to try
+ *      again. Last, Slack itself is asked about the channel, with the bot's
+ *      token (channel-check.ts, which keeps an answer that allows it for a
+ *      minute), since a channel can change after it is bound (TASK-1184). A
+ *      channel it now says is private, archived or Slack Connect, or can't
+ *      find, loses its binding (the memory switch kept for the agent and
+ *      channel stays). The one turn whose removal took it tells its sender,
+ *      privately and once (`channelNoLongerAllowed`); every turn it stops is
+ *      dropped (`slack_turns_dropped`, `channel-not-allowed`). Slack not
+ *      answering is no turn either: "try again", and the binding stays. Nor
+ *      is Slack saying the bot's own token can't read any public channel
+ *      (code `token-scope`): the binding stays, and since no retry fixes
+ *      that, its sender is told a team admin must look (`botUnavailable`),
+ *      never to try again. A Slack Connect channel seldom gets this far: step
+ *      1 drops its events, so only a turn that was waiting when it was
+ *      shared, or one while its share is still pending, finds it.
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads, with the channel's memory switch as it is NOW
  *      (channel-store.ts `recordThread`): a turn that starts while the switch
  *      is off keeps that thread out of memory for good (capture-veto.ts). An
  *      outsider's turn records its conversation as outsiders', which memory
  *      never learns from, whatever the switch says, and only while the
- *      channel is still connected by the person it runs as: a reconnect
- *      since step 8 drops it as there. A member's turn also records the
- *      names its sender label shows (format.ts `senderLabelNames`), which
- *      the veto hands to memory so nothing said in the thread is stored
- *      under them (TASK-1146); an outsider's records none. If the record
- *      can't be written the turn doesn't run, and the sender is told
- *      privately to try again. A DM records nothing: the switch is a
- *      channel's.
+ *      binding still names the person it runs as: a Claim since step 8 drops
+ *      it as there. A member's turn also records the names its sender label
+ *      shows (format.ts `senderLabelNames`), which the veto hands to memory
+ *      so nothing said in the thread is stored under them (TASK-1146); an
+ *      outsider's records none. If the record can't be written the turn
+ *      doesn't run, and the sender is told privately to try again. A DM
+ *      records nothing: the switch is a channel's.
  *   Lines before the turn are ephemeral, for the sender alone (in the
  *   mention's thread when it was in one); the reply goes in the thread.
- *
- * A team agent's own bot (TASK-1167) is any install whose kind isn't
- * exactly `shared` (store.ts reads anything else as a bot, the kind that
- * can do less):
- *   - a DM gets nothing, before any vault read or Slack call: its manifest
- *     asks for none, and one its approver turns on by hand reaches nobody;
- *   - a mention admits its sender first, and a missing binding is never "no
- *     agent here": a refused sender costs no Slack call and binds nothing.
- *     The binding is written at the first mention in a channel, once Slack's
- *     own conversations.info, read with the bot's token and about this
- *     channel, shows one the agent settings could connect (channels.ts
- *     `connectable`): to the bot's one agent, connected by its requester.
- *     Slack is asked again when each turn starts, as on the shared app (step
- *     8). A channel refused at its first mention is silence; Slack failing is
- *     "try again"; Slack saying the bot's token can't read any public
- *     channel (the turn-start check's reading, channel-check.ts
- *     `channelInfoFailure`) is `botUnavailable`; a binding naming any other
- *     agent runs nothing;
- *   - an outsider's turn runs as that requester, and only while they are
- *     still a team admin of the agent's team (channels.ts `teamAdminAccess`);
- *     otherwise an outsider is told privately (`botUnavailable`) and gets
- *     no turn, while members still run as themselves.
- * And the shared app steps aside for an agent whose own bot is live, so two
- * bots never answer for one agent: a mention in one of that agent's channels
- * runs no turn, and an admitted sender is told which bot answers now
- * (`answersAsOwnBot`); a turn that was waiting when the bot went live is
- * dropped when its time comes. Not knowing whether it is live is no shared
- * turn either.
  *
  * The dispatch resolves once the turn is queued: a turn can outlast the
  * ingress's shutdown drain, and isn't awaited (decisions: running turns
@@ -153,30 +147,25 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
 
 export interface RouterDeps extends TurnDeps {
   secrets: Pick<SecretStore, 'get'>;
-  /**
-   * Read again when a queued turn starts: Disconnect may have removed the
-   * install meanwhile. On the shared app, also whether a channel's agent has
-   * a live bot of its own (TASK-1167), when a mention arrives and again when
-   * its turn starts. And the shared app's install when a team agent's own
-   * bot binds a channel, for the memory switch the agent had there (TASK-1179).
-   */
-  installs: Pick<InstallStore, 'get' | 'botForAgent' | 'current'>;
+  /** Read again when a queued turn starts: Disconnect may have removed the install meanwhile. */
+  installs: Pick<InstallStore, 'get'>;
   /** DM turns and members' channel turns: one lane per conversation. */
   queue: KeyedQueue;
   /**
-   * Which agent each channel is connected to, read when a mention arrives and
-   * again when its turn starts; the thread map the memory switch's veto
-   * reads, written just before the turn's agent runs; and the binding a team
-   * agent's own bot writes at its first mention in a channel (TASK-1167),
-   * with the switch the team last set for the agent there, under the lock a
-   * flip takes (`bindBot`, TASK-1182). And a binding removed when Slack says
-   * its channel can't be served any more (`remove`, TASK-1184).
+   * Which agent each of a bot's channels is bound to, read when a mention
+   * arrives and again when its turn starts; the thread map the memory
+   * switch's veto reads, written just before the turn's agent runs; and the
+   * binding a team agent's own bot writes at its first mention in a channel
+   * (TASK-1167), with the switch the team last set for the agent there,
+   * under the lock a flip takes (`bindBot`, TASK-1182). And a binding
+   * removed when Slack says its channel can't be served any more (`remove`,
+   * TASK-1184). The shared app reads and writes none (TASK-1186).
    */
   channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot' | 'remove'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
   /**
-   * Slack's word that a connected channel is still public, live and not Slack
+   * Slack's word that a bound channel is still public, live and not Slack
    * Connect, asked when each channel turn starts and kept for a minute
    * (channel-check.ts, TASK-1184).
    */
@@ -463,6 +452,17 @@ async function routeMention(
   log: Log,
 ): Promise<void> {
   const installId = install.installId;
+  // The shared app answers in no channel (TASK-1186; design §4b.1): a team
+  // agent is reached there only through its own bot. Before any binding read,
+  // so a binding the shared app still has (one the boot hasn't deleted yet,
+  // or an older replica wrote after it did) never runs a turn, and nothing is
+  // asked about an agent or the channel. An admitted sender learns where to
+  // go instead; anyone else gets silence.
+  if (install.kind === 'shared') {
+    log('info', 'slack_event_ignored', { reason: 'shared-channel' });
+    await answerAdmitted(d, botToken, teamId, m, COPY.sharedBotInChannel, log);
+    return;
+  }
   const say: Say = {
     tell: async (text) => {
       try {
@@ -483,13 +483,9 @@ async function routeMention(
   };
   const { tell, failed } = say;
 
-  // 3–4. The channel's binding and the sender: the shared app's way, or a
-  // team agent's own bot's (TASK-1167). Null: the mention ends there, with
-  // whatever it needed said and logged.
-  const reached =
-    install.kind === 'shared'
-      ? await reachShared(d, install, teamId, botToken, m, log, say)
-      : await reachOwnBot(d, install, teamId, botToken, m, log, say);
+  // 3–4. The sender, then the channel's binding (TASK-1167). Null: the
+  // mention ends there, with whatever it needed said and logged.
+  const reached = await reachOwnBot(d, install, teamId, botToken, m, log, say);
   if (reached === null) return;
   const { binding, admission } = reached;
   const agentId = binding.agentId;
@@ -523,14 +519,12 @@ async function routeMention(
   }
   let connectorAccess: AgentAccess | null = null;
   if (runsAsConnector(sender)) {
-    // On the shared app the connector lends outsiders their identity while
-    // they can use the agent. On a team agent's own bot the connector is its
-    // requester, copied into the binding at the channel's first mention
-    // (TASK-1167), and they lend it only while still a team admin of the
-    // agent's team. Members never get here: they run as themselves.
-    const access = install.kind === 'shared' ? agentAccess : teamAdminAccess;
+    // The connector is the bot's requester, copied into the binding at the
+    // channel's first mention (TASK-1167; a Claim moves it), and they lend
+    // outsiders their identity only while still a team admin of the agent's
+    // team. Members never get here: they run as themselves.
     try {
-      connectorAccess = await access(d.bus, lookupCtx(connectorId), agentId, connectorId);
+      connectorAccess = await teamAdminAccess(d.bus, lookupCtx(connectorId), agentId, connectorId);
     } catch (err) {
       await failed('connector-access', err);
       return;
@@ -544,7 +538,7 @@ async function routeMention(
   if (tier.tier === 'unavailable') {
     log('warn', 'slack_channel_unavailable', { reason: tier.reason });
     // Nobody connected a bot's channel by hand: what needs a team admin is the bot itself.
-    await tell(install.kind === 'shared' ? COPY.channelUnavailable : COPY.botUnavailable);
+    await tell(COPY.botUnavailable);
     return;
   }
 
@@ -567,14 +561,14 @@ async function routeMention(
   }
 
   // 8. When its time comes, the turn is still wanted only if the channel is
-  // still this agent's, on a live install, and (for an outsider) still
-  // connected by the person it was planned to run as.
+  // still this agent's, on a live install, and (for an outsider) its binding
+  // still names the person it was planned to run as for the bot's requester.
   const job = async (): Promise<void> => {
     /**
-     * An outsider's turn whose channel someone else connected since it was
-     * planned. Planned as the old connector, in their conversation: run as
-     * anyone else, it would be a cross-user turn. Sent again, it runs as the
-     * new one.
+     * An outsider's turn whose bot someone else claimed since it was planned
+     * (a Claim moves the requester in every binding). Planned as the old
+     * requester, in their conversation: run as anyone else, it would be a
+     * cross-user turn. Sent again, it runs as the new one.
      */
     const droppedReconnected = async (): Promise<void> => {
       log('info', 'slack_turns_dropped', { reason: 'reconnected', count: 1 });
@@ -598,31 +592,15 @@ async function routeMention(
       log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
       return;
     }
-    // The agent's own bot went live while this shared turn waited
-    // (TASK-1167): it answers for the agent now, so this turn never runs,
-    // silently. Not knowing is no turn either, as at the mention.
-    if (install.kind === 'shared') {
-      let own: InstallRow | null;
-      try {
-        own = await d.installs.botForAgent(agentId);
-      } catch (err) {
-        await failed('own-bot', err);
-        return;
-      }
-      if (own?.status === 'active') {
-        log('info', 'slack_turns_dropped', { reason: 'own-bot', count: 1 });
-        return;
-      }
-    }
     if (external && now.connectedByUserId !== runAs) {
       await droppedReconnected();
       return;
     }
-    // On a team agent's own bot an outsider runs as its requester only while
-    // they are a team admin of the agent's team (TASK-1167). Asked at the
-    // mention, and again now: demoted while the turn waited, it never runs as
-    // them. Not knowing is no turn either. Members run as themselves.
-    if (external && install.kind !== 'shared') {
+    // An outsider runs as the bot's requester only while they are a team
+    // admin of the agent's team (TASK-1167). Asked at the mention, and again
+    // now: demoted while the turn waited, it never runs as them. Not knowing
+    // is no turn either. Members run as themselves.
+    if (external) {
       let still: AgentAccess;
       try {
         still = await teamAdminAccess(d.bus, lookupCtx(runAs), agentId, runAs);
@@ -640,23 +618,23 @@ async function routeMention(
     // checked when it was bound, and it may have been made private, archived
     // or shared with another company since: a mention doesn't say, though
     // step 1 drops one Slack flags as Slack Connect. Asked last, so a turn
-    // the reads above drop costs no Slack call. A definitive refusal
-    // disconnects the channel, as a team admin's Disconnect would (the switch
-    // kept for the agent and channel stays), so the agent's settings stop
-    // listing it and memory stops learning from its threads. Slack not
-    // answering says nothing about the channel: no turn, and the binding stays.
+    // the reads above drop costs no Slack call. A definitive refusal removes
+    // the channel's binding (the switch kept for the agent and channel
+    // stays), so the agent's settings stop listing it and memory stops
+    // learning from its threads. Slack not answering says nothing about the
+    // channel: no turn, and the binding stays.
     const channelNow = await d.channelCheck.check(installId, botToken, m.channel);
     // Only `allowed` goes on to the turn; every other kind returns, and a kind
     // added later fails to compile (the `never` below) rather than run a turn.
     if (channelNow.kind !== 'allowed') {
       switch (channelNow.kind) {
         case 'token-scope': {
-          // The install's own token can't read any public channel (its app lost
+          // The bot's own token can't read any public channel (its app lost
           // channels:read): nothing about this channel, so the binding stays. No
           // retry fixes it, so no "try again": a team admin must look, as for a
-          // broken connection (tier `unavailable`, step 5).
+          // requester who can't vouch for outsiders (tier `unavailable`, step 5).
           log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
-          await tell(install.kind === 'shared' ? COPY.channelUnavailable : COPY.botUnavailable);
+          await tell(COPY.botUnavailable);
           return;
         }
         case 'unknown': {
@@ -694,8 +672,8 @@ async function routeMention(
     // while the switch was off. No binding of this agent's at that write: the
     // channel was disconnected in the gap, so the turn is dropped like one
     // that found it disconnected above. For an outsider's turn the same
-    // write checks the channel is still connected by the person it runs as:
-    // a reconnect in the gap drops it like one found above.
+    // write checks the binding still names the person it runs as: a Claim in
+    // the gap drops it like one found above.
     let recorded: 'recorded' | 'no-binding' | 'reconnected';
     try {
       recorded = await d.channels.recordThread({
@@ -752,11 +730,11 @@ async function routeMention(
 }
 
 /**
- * Step 4, either way in: the sender, from users.info alone, per event and
- * never cached; then words, once the bot's own mention is gone. Null when the
- * mention ends here: a refusal is silence, a lookup that failed only because
- * Slack was briefly unavailable gets "try again" (the sender alone sees it),
- * and an empty mention is ignored.
+ * Step 3: the sender, from users.info alone, per event and never cached;
+ * then words, once the bot's own mention is gone. Null when the mention ends
+ * here: a refusal is silence, a lookup that failed only because Slack was
+ * briefly unavailable gets "try again" (the sender alone sees it), and an
+ * empty mention is ignored.
  */
 async function admitMention(
   d: RouterDeps,
@@ -782,58 +760,6 @@ async function admitMention(
     return null;
   }
   return admission;
-}
-
-/**
- * The shared app's steps 3–4. The channel's binding, read before admission:
- * with no turn to come, answerMention admits the sender itself, so a line
- * goes to an admitted member only. Then nothing for an agent whose own bot is
- * live (TASK-1167). Then the sender.
- */
-async function reachShared(
-  d: RouterDeps,
-  install: InstallRow,
-  teamId: string,
-  botToken: string,
-  m: Mention,
-  log: Log,
-  say: Say,
-): Promise<Reached | null> {
-  // 3. The channel's binding.
-  let binding: ChannelBinding | null;
-  try {
-    binding = await d.channels.get(install.installId, m.channel);
-  } catch (err) {
-    log('error', 'slack_event_failed', { stage: 'binding', code: logCode(err) });
-    await answerAdmitted(d, botToken, teamId, m, COPY.turnFailed, log);
-    return null;
-  }
-  if (binding === null) {
-    await answerAdmitted(d, botToken, teamId, m, COPY.channelNotConnected, log);
-    return null;
-  }
-
-  // The agent's own bot answers for it now: two bots never answer for one
-  // agent, so the shared bot steps aside, and an admitted sender learns which
-  // bot to mention instead. A pending bot changes nothing yet. Not knowing is
-  // no turn: the shared bot can't tell whether it would be the second.
-  let own: InstallRow | null;
-  try {
-    own = await d.installs.botForAgent(binding.agentId);
-  } catch (err) {
-    log('error', 'slack_event_failed', { stage: 'own-bot', code: logCode(err) });
-    await answerAdmitted(d, botToken, teamId, m, COPY.turnFailed, log);
-    return null;
-  }
-  if (own?.status === 'active') {
-    log('info', 'slack_event_ignored', { reason: 'own-bot' });
-    await answerAdmitted(d, botToken, teamId, m, COPY.answersAsOwnBot(own.botName, own.botHandle), log);
-    return null;
-  }
-
-  // 4. The sender.
-  const admission = await admitMention(d, install, teamId, botToken, m, log, say);
-  return admission === null ? null : { binding, admission };
 }
 
 /**
@@ -864,11 +790,11 @@ async function reachOwnBot(
     return null;
   }
 
-  // 4. The sender.
+  // 3. The sender.
   const admission = await admitMention(d, install, teamId, botToken, m, log, say);
   if (admission === null) return null;
 
-  // 3. The channel's binding.
+  // 4. The channel's binding.
   let binding: ChannelBinding | null;
   try {
     binding = await d.channels.get(install.installId, m.channel);
@@ -928,27 +854,23 @@ type BindOutcome =
 
 /**
  * A team agent's own bot binds a channel at its first mention there
- * (TASK-1167), with the checks the agent settings make before connecting
- * one for the shared app (channels.ts): Slack's own conversations.info, read
- * with the bot's token, must be about this channel and show one a connect
- * could take (`connectable`: public, live, not Slack Connect). The binding
+ * (TASK-1167): Slack's own conversations.info, read with the bot's token,
+ * must be about this channel and show one a bot may bind (channels.ts
+ * `connectable`: public, live, not Slack Connect). The binding
  * is to the bot's one agent, connected by its requester, whom the channel's
  * outsiders run as (channel-store.ts); read back, so it is the one stored.
  * Its memory switch is the one the team last set for the agent in this
  * channel, so a channel the team chose not to have remembered stays that
- * way: the agent's live binding of it on the shared app (TASK-1179), else
- * the switch kept for the agent and channel, which outlives a Disconnect and
- * a rebuilt bot (TASK-1180), else on, as any new connection is. The store
+ * way: the switch kept for the agent and channel, which outlives a
+ * Disconnect and a rebuilt bot (TASK-1180), else on, as any new connection
+ * is. No binding is read for it: the shared app's are deleted at every
+ * boot, after their switches are kept (migrations.ts, TASK-1186). The store
  * reads it and writes the binding with it in one transaction, under the
  * lock a flip takes (channel-store.ts `bindBot`, TASK-1182), so no turn
  * ever reads it on, and a flip at the same moment lands either before the
- * read or on the binding written. The shared app's install is read first,
- * outside that transaction, so the transaction needs no second database
- * connection. A stale answer is harmless: with no shared binding the store
- * falls back to the kept switch, which every flip writes. The bot never
- * joins a channel: it is in this one because someone invited it. A store
- * failure throws; a failed read of the shared app's install, or of the
- * switch, throws before anything is written.
+ * read or on the binding written. The bot never joins a channel: it is in
+ * this one because someone invited it. A store failure throws; a failed
+ * read of the switch throws before anything is written.
  */
 async function bindBotChannel(
   d: RouterDeps,
@@ -972,8 +894,6 @@ async function bindBotChannel(
   if (info.id !== channelId) return { ok: false, reason: 'channel-not-allowed', code: 'id-mismatch' };
   if (!connectable(info)) return { ok: false, reason: 'channel-not-allowed' };
 
-  // Read before bindBot's transaction, so that transaction never needs a second connection.
-  const shared = await d.installs.current();
   const wrote = {
     installId: install.installId,
     channelId,
@@ -984,7 +904,7 @@ async function bindBotChannel(
   // `taken` can't happen here (only this writes a bot's bindings, always
   // for its agent); if it ever did, the read below finds the other agent's
   // binding, which the caller refuses.
-  const remember = await d.channels.bindBot(wrote, shared?.installId ?? null);
+  const remember = await d.channels.bindBot(wrote);
   const stored = await d.channels.get(install.installId, channelId);
   // Gone again already (the bot removed meanwhile): what was written. The
   // turn's own re-read then finds the install gone and drops it.

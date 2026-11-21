@@ -3,35 +3,36 @@
  * agent's own channel-only bot (TASK-1167). For each: its manifest, the URLs
  * Slack calls back on, and the install link an admin follows to Allow it.
  *
- * The dedicated bot is the smaller of the two (invariant 5): six scopes, one
- * event (`app_mention`), no slash command, no DMs (the App Home messages tab
- * is off, no `im:history`) and no `channels:join` (it only answers in
- * channels it was invited to). Its OAuth callback is its own,
+ * The dedicated bot is channel-only (invariant 5): six scopes, one event
+ * (`app_mention`), no slash command, no DMs (the App Home messages tab is
+ * off, no `im:history`) and no `channels:join` (it only answers in channels
+ * it was invited to). It alone reads public channels (`channels:read`): the
+ * shared app serves none (TASK-1186). Its OAuth callback is its own,
  * `BOT_OAUTH_CALLBACK_PATH`, apart from Admin › Slack's.
  *
  * Everything below up to the dedicated bot section describes the shared app.
  *
- * The grant is as small as DMs and connected channels need (invariant 5):
- * nine bot scopes, two events, one slash command, and
- * interactivity for approval buttons (TASK-1095). The App
- * Home messages tab is on and writable, because without it people can't DM
- * the app at all (MEASURED: `messages_tab_disabled`). Token rotation is off
- * so the bot token never expires. Existing installs are granted a new scope
- * only by Disconnect + Connect: a rename sends Slack the new manifest, but
- * nothing builds the re-Allow Slack then asks for.
+ * The grant is as small as DMs need (invariant 5): six bot scopes, two
+ * events, no slash command, and interactivity for approval buttons
+ * (TASK-1095). The App Home messages tab is on and writable, because without
+ * it people can't DM the app at all (MEASURED: `messages_tab_disabled`).
+ * Token rotation is off so the bot token never expires. Existing installs
+ * gain or shed a scope only by Disconnect + Connect: a rename sends Slack the
+ * new manifest, but nothing builds the re-Allow Slack then asks for.
  *
  * What each scope is for:
- * - app_mentions:read  hear `@bot` in a channel.
- * - chat:write         reply (DMs and channels the bot has joined), and DM
- *   people about a bot request (TASK-1170).
+ * - app_mentions:read  hear `@bot` in a channel, to tell an admitted sender
+ *   privately that it answers DMs only (router.ts, TASK-1186): never a turn.
+ * - chat:write         reply in DMs, that one private line in a channel, and
+ *   DM people about a bot request (TASK-1170).
  * - im:history         read DMs sent to the bot.
  * - reactions:write    the eyes reaction while the agent works.
  * - users:read, users:read.email  resolve a sender to a workspace email, and
  *   find an AX admin or a bot's requester by email (TASK-1170).
- * - channels:read      look up a public channel's name and membership.
- * - channels:join      join a public channel when an admin connects it.
- * - commands           the `/ax` slash command. Deliberately NOT requested:
- *   channels:history, chat:write.public, groups:read, mpim:read.
+ * Deliberately NOT requested: channels:history, chat:write.public,
+ * groups:read, mpim:read; and channels:read, channels:join and commands,
+ * because the shared app no longer serves channels (design §4b.1,
+ * TASK-1186): a team agent answers in a channel only through its own bot.
  */
 
 export const BOT_SCOPES = Object.freeze([
@@ -41,13 +42,7 @@ export const BOT_SCOPES = Object.freeze([
   'reactions:write',
   'users:read',
   'users:read.email',
-  'channels:read',
-  'channels:join',
-  'commands',
 ] as const);
-
-/** The one slash command the app registers. */
-export const SLASH_COMMAND = '/ax';
 
 export const BOT_EVENTS = Object.freeze(['app_mention', 'message.im'] as const);
 
@@ -79,8 +74,6 @@ export interface SlackUrls {
   eventsUrl: string;
   /** Where Slack sends the admin back after Allow (the OAuth `redirect_uri`). */
   redirectUrl: string;
-  /** Where Slack sends `/ax` invocations for this install. */
-  commandsUrl: string;
   /** Where Slack sends button clicks for this install. */
   interactionsUrl: string;
 }
@@ -97,7 +90,6 @@ export function slackUrls(publicOrigin: string, installId: string): SlackUrls {
   return {
     eventsUrl: `${origin}/slack/events/${encodeURIComponent(installId)}`,
     redirectUrl: `${origin}/admin/slack/oauth/callback`,
-    commandsUrl: `${origin}/slack/commands/${encodeURIComponent(installId)}`,
     interactionsUrl: `${origin}/slack/interactions/${encodeURIComponent(installId)}`,
   };
 }
@@ -114,15 +106,6 @@ export function buildAppManifest(botName: string, urls: SlackUrls): Record<strin
   return {
     display_information: { name: botName, description: APP_DESCRIPTION },
     features: {
-      slash_commands: [
-        {
-          command: SLASH_COMMAND,
-          url: urls.commandsUrl,
-          description: 'Connect this channel to a team agent',
-          usage_hint: 'connect <agent name> | disconnect',
-          should_escape: false,
-        },
-      ],
       app_home: {
         home_tab_enabled: false,
         messages_tab_enabled: true,

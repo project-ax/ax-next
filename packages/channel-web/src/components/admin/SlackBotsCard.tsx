@@ -97,13 +97,11 @@ function Busy({ children }: { children: ReactNode }) {
 }
 
 export interface SlackBotsCardProps {
-  /** Whether the shared Slack app is connected: only then does the shared bot answer again after a Disconnect. */
-  sharedConnected: boolean;
   /** A bot's Slack app was deleted or listed as left over: the tab's own status may have changed too. */
   onAppsChanged: () => void;
 }
 
-export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardProps) {
+export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [asking, setAsking] = useState<AdminSlackBot | null>(null);
   // The bot whose Slack app a disconnect couldn't delete. Held here, apart from the list, so it outlasts the re-read.
@@ -298,7 +296,6 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
       />
       <DisconnectBotDialog
         bot={asking}
-        sharedConnected={sharedConnected}
         onClose={() => setAsking(null)}
         onGone={gone}
         onStale={staleRow}
@@ -309,13 +306,11 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
 
 function DisconnectBotDialog({
   bot,
-  sharedConnected,
   onClose,
   onGone,
   onStale,
 }: {
   bot: AdminSlackBot | null;
-  sharedConnected: boolean;
   onClose: () => void;
   onGone: (bot: AdminSlackBot, appDeleted: boolean) => void;
   /** Someone got there first: the row is out of date. */
@@ -366,10 +361,6 @@ function DisconnectBotDialog({
             {pending
               ? "We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."
               : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
-                  sharedConnected
-                    ? ' The shared bot answers for its agent again in any channel it was connected to before.'
-                    : ''
-                }${
                   needsRebuilding
                     ? " Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again."
                     : ''

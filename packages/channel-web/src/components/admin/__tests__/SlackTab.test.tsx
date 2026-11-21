@@ -583,7 +583,7 @@ describe('Disconnect', () => {
     renderTab(CONNECTED);
     const dialog = await openDialog();
     expect(dialog).toHaveTextContent(
-      "The bot leaves Slack and people can't reach their agents there. Every channel connected to an agent is disconnected too. Their conversations stay here.",
+      "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
     );
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep connected' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -676,7 +676,7 @@ describe('Rename', () => {
     renderTab(CONNECTED);
     expect(await screen.findByText('canopy')).toBeInTheDocument();
     const dialog = await openDialog();
-    expect(dialog).toHaveTextContent('Only the name changes. Conversations and connected channels keep working.');
+    expect(dialog).toHaveTextContent('Only the name changes. Conversations keep working.');
     expect(within(dialog).getByText('The name people see in Slack.')).toBeInTheDocument();
     expect(nameInput(dialog).value).toBe('canopy');
   });
@@ -839,7 +839,7 @@ describe('Replace the configuration token', () => {
     expect(await screen.findByText(`Added by Ada Admin on ${CONNECTED_DATE}`)).toBeInTheDocument();
     const dialog = await openDialog();
     expect(dialog).toHaveTextContent(
-      'Do this when the token we have stops working, or when whoever generated it is leaving. Conversations and connected channels keep working.',
+      'Do this when the token we have stops working, or when whoever generated it is leaving. Conversations keep working.',
     );
     const steps = within(dialog).getAllByRole('listitem');
     expect(steps).toHaveLength(2);
@@ -1015,7 +1015,7 @@ describe("Team agents' own bots", () => {
     // Slack is connected, so the dialog says the shared bot answers again.
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent('The shared bot answers for its agent again');
+    expect(dialog).not.toHaveTextContent('The shared bot answers');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
 
     // The tab reads its status again; the card is outside that and keeps its note.

@@ -314,7 +314,7 @@ export const SLACK_ERROR_COPY = Object.freeze({
   'public-origin-not-https':
     "Our public address isn't https right now, so we can't update the Slack app. Whoever runs this server can fix that.",
   'slack-app-gone':
-    'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again. Channels will need connecting again after that.',
+    'Slack no longer has the app we made for this bot. It may have been deleted on api.slack.com/apps. Disconnect Slack, then connect it again.',
   generic: 'Something went wrong talking to Slack. Try again in a minute.',
 });
 

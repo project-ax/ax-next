@@ -35,7 +35,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     another agent can neither take the channel nor change it
  *     (channel-store.ts). `remember` is the channel's memory switch.
  *     `channel_name` is Slack's, cleaned (label.ts) and read once per connect:
- *     a rename shows on the next connect.
+ *     a rename shows on the next connect. Only a team agent's own bot keeps
+ *     bindings across a boot: the shared app's channel path is retired
+ *     (design §4b.1), and every boot deletes the shared install's rows
+ *     (below, TASK-1186).
  *
  *   channel_slack_v1_threads — the memory switch's map (TASK-1094): every
  *     conversation a channel turn ran in, with the install, channel and agent
@@ -94,17 +97,18 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *
  *   channel_slack_v1_memory_switches — the memory switch the team last set
  *     for an agent in a channel (TASK-1180), kept apart from the bindings so
- *     a Disconnect never loses it: a channel's Disconnect, Admin › Slack's
- *     and a bot's removal all delete bindings, never this. Keyed by agent and
+ *     a Disconnect never loses it: a channel's Disconnect, Admin › Slack's,
+ *     a bot's removal and every boot's delete of the shared install's
+ *     bindings (TASK-1186) all delete bindings, never this. Keyed by agent and
  *     channel, with no install: Slack's channel ids are unique across
  *     workspaces. Two things write it: `setRemember` (channel-store.ts), in
  *     the same statement that flips the agent's bindings of the channel, and
  *     every boot's backfill (below). Its one reader is a team agent's own
  *     bot's first bind there (`bindBot`, channel-store.ts), which starts
- *     from the agent's live shared binding, else from this, else on, under
- *     the lock a flip takes (TASK-1182). It goes when its agent is
- *     deleted, with the agent's bindings and threads (agents-deleted.ts, on
- *     agents:deleted), and nothing else deletes it. Every boot fills it from
+ *     from this, else on, under the lock a flip takes (TASK-1182), and reads
+ *     no binding (TASK-1186). It goes when its agent is deleted, with the
+ *     agent's bindings and threads (agents-deleted.ts, on agents:deleted),
+ *     and nothing else deletes it. Every boot fills it from
  *     the bindings, off when any of the agent's bindings of the channel is
  *     off, and moves a switch already kept only from on to off: an agent's
  *     channel with bindings and no switch kept gets one (phase 1's bindings,
@@ -116,7 +120,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     ran while the switch was off. Thread rows outlive every Disconnect, so
  *     that is how a channel switched off and disconnected before the table
  *     keeps its off; one with no turn there while it was off left no trace,
- *     and its bot starts there on. It holds two opaque ids and a boolean.
+ *     and its bot starts there on. Both fills run before the boot deletes
+ *     the shared install's bindings (TASK-1186), so a shared binding switched
+ *     off leaves its off here, for the agent's own bot. It holds two opaque
+ *     ids and a boolean.
  *
  * No secret is here. They live in the credentials vault (secrets.ts): an
  * install's three under `slack:<install_id>:<name>`, and the configuration
@@ -154,7 +161,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * is refused outright, and store.ts still reads anything but `shared` as a
  * bot, the kind that can do less.
  *
- * Additive-only and idempotent: every boot runs it.
+ * The schema is additive-only, and every step is idempotent: every boot runs
+ * them all. One data step deletes rows: the shared install's channel
+ * bindings, last (TASK-1186).
  */
 export interface ChannelSlackInstallsTable {
   install_id: string;
@@ -440,11 +449,10 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   // rollback) flips the binding alone, so a binding that is off beside a
   // kept on is taken as the newer of the two, off being the side to err on.
   // A kept off beside bindings that are on stays off: a fresh connect makes
-  // that pair (it keeps nothing, and the bot reads a live binding first),
-  // and so does such code switching a binding back on, which fails toward
-  // off. ON CONFLICT DO UPDATE locks every row it meets, moved or not, so
-  // rows go in key order: two boots at once lock in one order and can't
-  // deadlock.
+  // that pair (it keeps nothing), and so does such code switching a binding
+  // back on, which fails toward off. ON CONFLICT DO UPDATE locks every row it
+  // meets, moved or not, so rows go in key order: two boots at once lock in
+  // one order and can't deadlock.
   await sql`
     INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
     SELECT agent_id, channel_id, bool_and(remember)
@@ -472,5 +480,19 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
      WHERE not_remembered
      ORDER BY agent_id, channel_id
     ON CONFLICT (agent_id, channel_id) DO NOTHING
+  `.execute(db);
+  // Last, every boot (TASK-1186): the shared app no longer serves channels
+  // (design §4b.1), so the shared install's bindings are deleted, and nothing
+  // writes one again; a row an older replica writes is gone at the next boot.
+  // After both fills above, so a shared binding switched off leaves its off
+  // as the switch kept for its agent and channel, which that agent's own
+  // bot's first bind reads. Thread rows and kept switches stay: with its
+  // binding gone, the capture veto refuses a thread (capture-veto.ts), so
+  // nothing said there reaches memory. Only the shared install's rows go:
+  // the join needs an install row of kind `shared`, so a bot's bindings stay,
+  // and so does a binding whose install row is missing.
+  await sql`
+    DELETE FROM channel_slack_v1_channels c USING channel_slack_v1_installs i
+     WHERE c.install_id = i.install_id AND i.kind = 'shared'
   `.execute(db);
 }
