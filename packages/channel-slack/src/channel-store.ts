@@ -1,4 +1,4 @@
-import { sql, type Kysely, type Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { cleanChannelName } from './label.js';
 import { THREAD_SPEAKER_NAMES_MAX } from './limits.js';
 import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migrations.js';
@@ -48,7 +48,10 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * (TASK-1182): each takes the switch lock on the agent and channel
  * (`lockSwitch`) as its transaction's first statement and reads only after
  * it, so whichever comes second sees what the other wrote. Any future
- * writer of a binding's `remember` takes it too.
+ * writer that flips a binding's `remember` takes it too. A fresh connect on
+ * the shared app (`upsert`, channels.ts) is the one writer without it, on
+ * purpose: it starts on, which is not a flip, and it is refused once the
+ * agent's own bot answers in that channel.
  */
 export interface ChannelBinding {
   installId: string;
@@ -214,15 +217,19 @@ const SWITCHES = 'channel_slack_v1_memory_switches';
  * while a lock on a key holds for rows that don't exist. A statement of its
  * own, before anything is read: a statement's snapshot is taken as it
  * starts, so one that waited for the lock inside itself would still decide
- * with what it saw before the wait. Transaction-scoped, never
- * session-scoped: commit or rollback releases it, so a pooled connection
- * never keeps it. The seed is this package's: routines use 1842713x,
+ * with what it saw before the wait. That is READ COMMITTED: under
+ * REPEATABLE READ or SERIALIZABLE the transaction's one snapshot is taken by
+ * its first statement, this one, before the wait, so both transactions that
+ * take it set READ COMMITTED themselves rather than trust the server's
+ * default. Transaction-scoped, never session-scoped: commit or rollback
+ * releases it, so a pooled connection never keeps it. The seed is this package's: routines use 1842713x,
  * tool-policy 1842714x, decisions 1842715x, channel-slack 18427161. The key
  * is JSON, so no two (agent, channel) pairs spell the same text; two whose
- * hashes collide only wait for each other. `db` is always a transaction.
+ * hashes collide only wait for each other. Outside a transaction it would
+ * be released as soon as it was taken, so it takes only a transaction.
  */
-async function lockSwitch(db: Kysely<ChannelSlackDatabase>, agentId: string, channelId: string): Promise<void> {
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([agentId, channelId])}, 18427161))`.execute(db);
+async function lockSwitch(trx: Transaction<ChannelSlackDatabase>, agentId: string, channelId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([agentId, channelId])}, 18427161))`.execute(trx);
 }
 
 const COLUMNS = [
@@ -368,7 +375,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // first bind of the channel in progress commits before `flip` runs and
       // takes its snapshot, so the binding it wrote is one this flip reaches
       // (TASK-1182).
-      return db.transaction().execute(async (trx) => {
+      return db.transaction().setIsolationLevel('read committed').execute(async (trx) => {
         await lockSwitch(trx, agentId, channelId);
         const r = await flip.execute(trx);
         return (r.rows[0]?.changed ?? 0) > 0;
@@ -386,7 +393,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     },
 
     async bindBot(b, sharedInstallId) {
-      return db.transaction().execute(async (trx) => {
+      return db.transaction().setIsolationLevel('read committed').execute(async (trx) => {
         // The switch lock first, in a statement of its own (lockSwitch): a
         // flip of the channel in progress commits before anything below reads.
         await lockSwitch(trx, b.agentId, b.channelId);
