@@ -184,10 +184,11 @@ export function createBotRequestClickHandler(d: BotRequestClickDeps): BotRequest
       return;
     }
     if (status === 200) {
-      // A decline with no DM to redraw went through, but on a click real Slack
-      // traffic shouldn't send: worth a look, so a warning.
+      // A click claiming a channel other than an IM went through, without the
+      // DM it names being redrawn (any DM kept for the request still is). Real
+      // Slack traffic shouldn't send one: worth a look, so a warning.
       if (inIm) log('info', 'slack_bot_request_click_declined');
-      else log('warn', 'slack_bot_request_click_declined', { redraw: 'not-im' });
+      else log('warn', 'slack_bot_request_click_declined', { reason: 'clicked-not-im' });
       return;
     }
     if (status === 404) {

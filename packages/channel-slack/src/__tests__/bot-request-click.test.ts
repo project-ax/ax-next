@@ -272,8 +272,9 @@ describe('the Decline gate: an AX admin declines', () => {
     // The redraw of her DM is the answer (bot-request-dms.ts): nothing private.
     expect(w.slack.calls).toStrictEqual([{ method: 'usersInfo', token: BOT_TOKEN, args: { user: ADA } }]);
     expect(w.trail).toEqual(['vault:bot-token', 'slack:usersInfo', 'auth:find-user-by-email', 'auth:get-user', 'requests:decline']);
-    expect(msgs(w.lines, 'slack_bot_request_click_declined')).toEqual([{ installId: INSTALL_ID, requestId: REQUEST_ID }]);
-    expect(w.lines).toHaveLength(1);
+    expect(w.lines).toStrictEqual([
+      { level: 'info', msg: 'slack_bot_request_click_declined', fields: { installId: INSTALL_ID, requestId: REQUEST_ID } },
+    ]);
   });
 
   it("proves who she is from users.info's email and AX, never from the click: the email goes to auth exactly as Slack gave it, and the admin question is about the account it maps to", async () => {
@@ -307,13 +308,14 @@ describe('the Decline gate: an AX admin declines', () => {
       await w.onBotRequestClick(SHARED, decline({ channel, messageTs: '1763000000.000100' }));
 
       expect(w.declines).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
-      // Nothing private, and one line: the decline, marked as one with no DM to redraw (never "refused": it went through).
+      // Nothing private, and one line: the decline, marked as clicked outside an IM (never "refused": it went through).
+      // The DM the click names isn't redrawn; any DM kept for the request still is (bot-request-dms.ts).
       expect(w.slack.calls).toStrictEqual([{ method: 'usersInfo', token: BOT_TOKEN, args: { user: ADA } }]);
       expect(w.lines).toStrictEqual([
         {
           level: 'warn',
           msg: 'slack_bot_request_click_declined',
-          fields: { installId: INSTALL_ID, requestId: REQUEST_ID, redraw: 'not-im' },
+          fields: { installId: INSTALL_ID, requestId: REQUEST_ID, reason: 'clicked-not-im' },
         },
       ]);
     }
@@ -516,6 +518,8 @@ describe('the Decline gate: no bot token, private lines and logs', () => {
       [{ decline: async () => ({ status: 404, body: { error: 'not-found' } }) }, {}],
       [{ ephemeralFails: new Error(`${DM_BEN} ${BEN}`) }, BENS],
       [{ botToken: null }, {}],
+      [{}, { channel: 'C07PUBLIC01' }],
+      [{ decline: async () => ({ status: 404, body: { error: 'not-found' } }) }, { channel: 'C07PUBLIC01' }],
     ];
     for (const [options, who] of runs) {
       const w = world(options);
