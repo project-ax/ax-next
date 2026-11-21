@@ -51,8 +51,8 @@ export interface InstallRow {
    */
   requestedByUserId: string | null;
   /**
-   * A live bot's @handle, as Slack named its bot user, read once at its
-   * Allow. Null before that, when that read failed, and for the shared app.
+   * A live bot's @handle, as Slack named its bot user, read at its
+   * Allow, and again after a rename (TASK-1171). Null before that, when that read failed, and for the shared app.
    */
   botHandle: string | null;
   /** When the row was made, by Connect or a bot's request. Orders `current()` and `listBots()`. */
@@ -176,8 +176,8 @@ export interface InstallStore {
   /**
    * Record an ACTIVE bot's @handle: one UPDATE of that column, nothing else.
    * Throws `install-not-active` when the install is missing, still pending,
-   * or the shared app. `handle` must already have passed the callback's
-   * check; nothing is cleaned here.
+   * or the shared app. `handle` must already have passed `handleFrom`'s
+   * check (bots.ts); nothing is cleaned here.
    */
   setBotHandle(installId: string, handle: string): Promise<void>;
   /**
