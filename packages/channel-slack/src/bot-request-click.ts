@@ -41,8 +41,11 @@ import type { SlackApi } from './slack-api.js';
  *      act at most once: of two clicks (a double click, or two admins), only
  *      one finds the request. A 200 says nothing privately: the redraw of the
  *      DMs, which names who declined, is the answer, and the DM she clicked
- *      is redrawn even when nothing was kept for the request (the records
- *      live in memory: a restart, their TTL or their cap forgets them).
+ *      is redrawn first, even when nothing was kept for the request (the
+ *      records live in memory: a restart, their TTL or their cap forgets
+ *      them). Only a click in an IM (`D…`) names a DM to redraw: the button
+ *      is drawn only in our DMs, so a click claiming any other channel still
+ *      declines but redraws nothing it names (logged as a warning).
  *      Anything else, or a throw, is "try again".
  *   An auth fault at step 3 or 4 is "try again" too: an outage is not a "no".
  *
@@ -64,7 +67,7 @@ export interface BotRequestClickDeps {
   /** users.info for step 2 and postEphemeral for the private lines; the type grants nothing else. */
   api: Pick<SlackApi, 'usersInfo' | 'postEphemeral'>;
   secrets: Pick<SecretStore, 'get'>;
-  /** The one decline Admin › Slack runs (bot-requests.ts), here as the admin who clicked, with the DM she clicked in. */
+  /** The one decline Admin › Slack runs (bot-requests.ts), here as the admin who clicked, with the DM she clicked in when it is an IM. */
   requests: { decline(i: { requestId: string; actorUserId: string; clicked?: PostedDm }): Promise<BotReply> };
   logger: Logger;
 }
@@ -162,10 +165,10 @@ export function createBotRequestClickHandler(d: BotRequestClickDeps): BotRequest
     // 5. The decline Admin › Slack runs, as her, with the DM she clicked in. Only
     // our DMs carry the button, so a click that says it came from anywhere but
     // an IM (`D…`) names no message to redraw: the shared bot never overwrites a
-    // channel message on a click's word. Read inside the try: a reply we can't
+    // channel message on a click's word. Her decision still stands (steps 2-4
+    // proved her without the channel). Read inside the try: a reply we can't
     // read is a fault too.
     const inIm = IM_CHANNEL_RE.test(click.channel);
-    if (!inIm) refused('clicked-not-im');
     let status: number;
     try {
       status = (
@@ -181,7 +184,10 @@ export function createBotRequestClickHandler(d: BotRequestClickDeps): BotRequest
       return;
     }
     if (status === 200) {
-      log('info', 'slack_bot_request_click_declined');
+      // A decline with no DM to redraw went through, but on a click real Slack
+      // traffic shouldn't send: worth a look, so a warning.
+      if (inIm) log('info', 'slack_bot_request_click_declined');
+      else log('warn', 'slack_bot_request_click_declined', { redraw: 'not-im' });
       return;
     }
     if (status === 404) {

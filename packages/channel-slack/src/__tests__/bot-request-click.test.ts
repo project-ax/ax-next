@@ -307,10 +307,15 @@ describe('the Decline gate: an AX admin declines', () => {
       await w.onBotRequestClick(SHARED, decline({ channel, messageTs: '1763000000.000100' }));
 
       expect(w.declines).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
-      expect(msgs(w.lines, 'slack_bot_request_click_refused')).toEqual([
-        { installId: INSTALL_ID, requestId: REQUEST_ID, reason: 'clicked-not-im' },
+      // Nothing private, and one line: the decline, marked as one with no DM to redraw (never "refused": it went through).
+      expect(w.slack.calls).toStrictEqual([{ method: 'usersInfo', token: BOT_TOKEN, args: { user: ADA } }]);
+      expect(w.lines).toStrictEqual([
+        {
+          level: 'warn',
+          msg: 'slack_bot_request_click_declined',
+          fields: { installId: INSTALL_ID, requestId: REQUEST_ID, redraw: 'not-im' },
+        },
       ]);
-      expect(msgs(w.lines, 'slack_bot_request_click_declined')).toEqual([{ installId: INSTALL_ID, requestId: REQUEST_ID }]);
     }
   });
 });
