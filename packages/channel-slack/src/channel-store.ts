@@ -33,8 +33,8 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * install, and the kept switch, in ONE statement, so a flip leaves the kept
  * switch agreeing with every binding it reached; and a bot channel switched
  * off is off on the shared binding too, which the shared bot answers with
- * again once the bot is gone. `keptRemember` reads it for a team agent's own
- * bot's first bind there (router.ts). An install's removal and a disconnect
+ * again once the bot is gone. `bindBot`, a team agent's own bot's first bind
+ * there, reads it. An install's removal and a disconnect
  * keep it; only `removeForAgent` deletes it. Any future writer that flips a
  * binding's `remember` must keep that one-statement rule. `upsert`'s insert
  * is the one exception, on purpose: a new binding's starting switch is not
@@ -43,6 +43,12 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * switch). The two can also differ after a flip by code from before the
  * table (an older replica, or a rollback), which writes the binding alone;
  * the next boot moves the kept switch toward off (migrations.ts).
+ *
+ * A flip and a team agent's own bot's first bind never interleave
+ * (TASK-1182): each takes the switch lock on the agent and channel
+ * (`lockSwitch`) as its transaction's first statement and reads only after
+ * it, so whichever comes second sees what the other wrote. Any future
+ * writer of a binding's `remember` takes it too.
  */
 export interface ChannelBinding {
   installId: string;
@@ -132,7 +138,9 @@ export interface ChannelStore {
    * touched. True when the named binding took it. A Disconnect can delete
    * the named binding while the flip waits on it: then false, though the
    * agent's other bindings of the channel and the kept switch took it,
-   * together.
+   * together. It takes the switch lock first (TASK-1182), so it waits for a
+   * bot's first bind of the channel that is in progress, then reaches the
+   * binding that bind wrote.
    */
   setRemember(installId: string, channelId: string, agentId: string, remember: boolean): Promise<boolean>;
   /**
@@ -141,6 +149,26 @@ export interface ChannelStore {
    * deleted only with the agent. Null when none was ever set or backfilled.
    */
   keptRemember(agentId: string, channelId: string): Promise<boolean | null>;
+  /**
+   * A team agent's own bot's first bind of a channel (TASK-1167): `b` is
+   * written as `upsert` writes it, with the memory switch the team last set
+   * for the agent there: the agent's binding of the channel on the shared
+   * app's install (`sharedInstallId`, null when there is none), else the
+   * switch kept for the agent and channel (keptRemember), else on. Another
+   * agent's binding there is about that agent's memory and is never read.
+   * Read and written in one transaction holding the lock `setRemember`
+   * takes on this agent and channel, so a flip and this bind never
+   * interleave: a flip that came first is what it reads, and one that comes
+   * second reaches the binding it wrote (TASK-1182). It keeps nothing: a new
+   * binding's starting switch is not a flip. It answers the switch it read,
+   * which a new binding is written with; a reconnect keeps the stored one
+   * (as `upsert` does), so the caller reads the binding back. A failed read
+   * throws before anything is written: the switch is never guessed.
+   */
+  bindBot(
+    b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'>,
+    sharedInstallId: string | null,
+  ): Promise<boolean>;
   /**
    * Delete the agent's bindings, thread rows and kept switches on every
    * install, in one transaction (all go, or none does), and say how many
@@ -175,6 +203,27 @@ export interface ChannelStore {
 const CHANNELS = 'channel_slack_v1_channels';
 const THREADS = 'channel_slack_v1_threads';
 const SWITCHES = 'channel_slack_v1_memory_switches';
+
+/**
+ * The switch lock on an agent and channel (TASK-1182), taken by a flip
+ * (`setRemember`) and by a team agent's own bot's first bind (`bindBot`) as
+ * the first statement of their transactions, so the two never interleave.
+ * An advisory lock, not a row's: the switch kept for the agent and channel
+ * may have no row yet (a channel connected since the last boot and never
+ * flipped), and the bot's new binding has none until the bind writes it,
+ * while a lock on a key holds for rows that don't exist. A statement of its
+ * own, before anything is read: a statement's snapshot is taken as it
+ * starts, so one that waited for the lock inside itself would still decide
+ * with what it saw before the wait. Transaction-scoped, never
+ * session-scoped: commit or rollback releases it, so a pooled connection
+ * never keeps it. The seed is this package's: routines use 1842713x,
+ * tool-policy 1842714x, decisions 1842715x, channel-slack 18427161. The key
+ * is JSON, so no two (agent, channel) pairs spell the same text; two whose
+ * hashes collide only wait for each other. `db` is always a transaction.
+ */
+async function lockSwitch(db: Kysely<ChannelSlackDatabase>, agentId: string, channelId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([agentId, channelId])}, 18427161))`.execute(db);
+}
 
 const COLUMNS = [
   'install_id',
@@ -296,7 +345,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // whether the named binding took it: false then, so the caller's page
       // re-reads and finds it gone. A bare parameter in a SELECT list has no
       // type, so each is cast.
-      const r = await sql<{ changed: number }>`
+      const flip = sql<{ changed: number }>`
         WITH flipped AS (
           UPDATE channel_slack_v1_channels
              SET remember = ${remember}, updated_at = now()
@@ -314,8 +363,16 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
           ON CONFLICT (agent_id, channel_id) DO UPDATE SET remember = EXCLUDED.remember, updated_at = now()
         )
         SELECT (SELECT count(*) FROM flipped WHERE install_id = ${installId})::int AS changed
-      `.execute(db);
-      return (r.rows[0]?.changed ?? 0) > 0;
+      `;
+      // The switch lock first, in a statement of its own (lockSwitch): a bot's
+      // first bind of the channel in progress commits before `flip` runs and
+      // takes its snapshot, so the binding it wrote is one this flip reaches
+      // (TASK-1182).
+      return db.transaction().execute(async (trx) => {
+        await lockSwitch(trx, agentId, channelId);
+        const r = await flip.execute(trx);
+        return (r.rows[0]?.changed ?? 0) > 0;
+      });
     },
 
     async keptRemember(agentId, channelId) {
@@ -326,6 +383,30 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         .where('channel_id', '=', channelId)
         .executeTakeFirst();
       return row?.remember ?? null;
+    },
+
+    async bindBot(b, sharedInstallId) {
+      return db.transaction().execute(async (trx) => {
+        // The switch lock first, in a statement of its own (lockSwitch): a
+        // flip of the channel in progress commits before anything below reads.
+        await lockSwitch(trx, b.agentId, b.channelId);
+        // This store on the transaction, so every read and the write below
+        // hold the lock, on the transaction's one connection. Only its get,
+        // keptRemember and upsert: setRemember, bindBot and removeForAgent
+        // each open a transaction, which a transaction can't.
+        const locked = createChannelStore(trx);
+        // The agent's live shared binding comes first: a fresh connect keeps
+        // no switch, so that binding is never staler than the kept one, which
+        // only matters once it is gone. Another agent's binding is about that
+        // agent's memory.
+        const shared = sharedInstallId === null ? null : await locked.get(sharedInstallId, b.channelId);
+        const remember =
+          (shared !== null && shared.agentId === b.agentId ? shared.remember : null) ??
+          (await locked.keptRemember(b.agentId, b.channelId)) ??
+          true;
+        await locked.upsert({ ...b, remember });
+        return remember;
+      });
     },
 
     async removeForAgent(agentId) {

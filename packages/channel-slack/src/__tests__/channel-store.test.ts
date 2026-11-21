@@ -449,7 +449,7 @@ describe('remove and setRemember act only on the named agent', () => {
   TASK-1180. The agent's memory switch for a channel is kept apart from its
   bindings, so a Disconnect (of the channel, of Slack in Admin › Slack, or a
   removed bot) never loses the team's OFF before the agent's own bot first
-  answers there (router.ts reads it). setRemember writes it in the statement
+  answers there (bindBot reads it). setRemember writes it in the statement
   that flips the bindings, and flips every binding of that agent in that
   channel, on any install: a bot channel switched off stays off on the shared
   binding too, which the shared bot answers with again once the bot is gone.
@@ -629,6 +629,48 @@ describe('the switch kept for the agent and channel (TASK-1180)', () => {
     expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
     expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(true);
     expect((await channels.get(INSTALL, GENERAL))?.remember).toBe(true);
+  });
+});
+
+/*
+  TASK-1182. A team agent's own bot's first bind of a channel (bindBot) reads
+  the switch the team last set for the agent there and writes the binding
+  with it, in one transaction under the lock a flip takes: the agent's
+  binding of the channel on the shared app's install, else the kept switch,
+  else on. Another agent's binding there is never read, and the bind keeps
+  nothing: it isn't a flip.
+*/
+describe("a team agent's own bot's first bind (bindBot)", () => {
+  /** The bot's binding goes on its own install, OTHER_INSTALL; INSTALL is the shared app's. */
+  const bind = (shared: string | null) =>
+    channels.bindBot(
+      { installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB, channelName: 'support' },
+      shared,
+    );
+  /** Switched off, then disconnected: the off is kept and there's no shared binding. */
+  const keptOff = async () => {
+    await connect();
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+  };
+
+  it.each([
+    ["this agent's shared binding is off", () => connect({ remember: false }), INSTALL, false],
+    ["this agent's shared binding is on, beside an older off kept", async () => { await keptOff(); await connect(); }, INSTALL, true],
+    ['no shared binding, an off kept', keptOff, INSTALL, false],
+    ['no shared app, an off kept', keptOff, null, false],
+    ["another agent's shared binding is off: that agent's switch, never read", () => connect({ agentId: OTHER_AGENT, remember: false }), INSTALL, true],
+    ['nothing anywhere', async () => {}, INSTALL, true],
+  ] as const)('%s: the bot binds with it', async (_case, setup, shared, want) => {
+    await setup();
+    const kept = await channels.keptRemember(AGENT, SUPPORT);
+    expect(await bind(shared)).toBe(want);
+    expect(await channels.get(OTHER_INSTALL, SUPPORT)).toEqual({
+      installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB,
+      channelName: 'support', remember: want, createdAt: expect.any(Date),
+    });
+    // Not a flip: the bind keeps nothing.
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(kept);
   });
 });
 
