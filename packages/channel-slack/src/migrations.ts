@@ -100,8 +100,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     workspaces. Two things write it: `setRemember` (channel-store.ts), in
  *     the same statement that flips the agent's bindings of the channel, and
  *     every boot's backfill (below). Its one reader is a team agent's own
- *     bot's first bind there (router.ts), which starts from the agent's live
- *     shared binding, else from this, else on. It goes when its agent is
+ *     bot's first bind there (`bindBot`, channel-store.ts), which starts
+ *     from the agent's live shared binding, else from this, else on, under
+ *     the lock a flip takes (TASK-1182). It goes when its agent is
  *     deleted, with the agent's bindings and threads (agents-deleted.ts, on
  *     agents:deleted), and nothing else deletes it. Every boot fills it from
  *     the bindings, off when any of the agent's bindings of the channel is

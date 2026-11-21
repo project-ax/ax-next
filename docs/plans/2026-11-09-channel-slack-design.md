@@ -576,10 +576,12 @@ the requester.
   channel, so the shared bot carries on with it if the bot is disconnected.
   The shared connection's switch is refused (`409 own-bot`) only once the bot
   has answered in that channel. Before that it is the bot's starting value, so
-  a moved channel's row shows it. A flip racing the bot's first answer in that
-  channel can leave the bot on the value from just before the flip. After a
-  flip on a channel still waiting for the bot, the page reads the status
-  again, so it shows where the switch really landed.
+  a moved channel's row shows it. A flip and the bot's first answer in that
+  channel never interleave (TASK-1182). Both take one lock on the agent and
+  channel, so whichever comes second sees what the other wrote, and the bot's
+  binding ends with the switch's last value. After a flip on a channel still
+  waiting for the bot, the page reads the status again, so a channel the bot
+  answered in meanwhile shows on the bot's list.
 - Outsiders in a bot's channels run as the requester, while the requester is
   still a team admin. Otherwise they get a polite line and the bot shows
   "needs a team admin to claim it", until a team admin of the team claims it
