@@ -309,6 +309,8 @@ describe('connectors:describe-tools through the real connectors:resolve (TASK-74
           description: 'Find issues',
           readOnly: true,
           outward: false,
+          // The SDK's McpServer advertises this for a tool registered without one.
+          inputSchema: { type: 'object', properties: {} },
           toolKey: `mcp.${nsPrimary}.search_issues`,
         },
         {
@@ -317,6 +319,8 @@ describe('connectors:describe-tools through the real connectors:resolve (TASK-74
           description: 'Open a new issue',
           readOnly: false,
           outward: true,
+          // The SDK's McpServer advertises this for a tool registered without one.
+          inputSchema: { type: 'object', properties: {} },
           toolKey: `mcp.${nsPrimary}.create_issue`,
         },
         {
@@ -325,6 +329,8 @@ describe('connectors:describe-tools through the real connectors:resolve (TASK-74
           description: 'Ping',
           readOnly: null,
           outward: null,
+          // The SDK's McpServer advertises this for a tool registered without one.
+          inputSchema: { type: 'object', properties: {} },
           toolKey: `mcp.${nsSecondary}.ping`,
         },
       ].sort((a, b) => a.toolKey.localeCompare(b.toolKey)),

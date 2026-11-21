@@ -90,6 +90,7 @@ describe('inventory store (postgres)', () => {
       description: 'd',
       readOnly: true,
       outward: null,
+      inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
       toolKey: 'mcp.c0123456789.a',
     };
     const at = new Date('2026-10-02T12:00:00Z');
@@ -105,6 +106,20 @@ describe('inventory store (postgres)', () => {
     await sql`UPDATE mcp_client_v1_tool_inventory SET tools = '[]', status = 'bogus'`.execute(db);
     expect(await store.get(key)).toBeNull();
   });
+
+  it('a cached tool written without inputSchema reads as null', async () => {
+    const h = await boot(async () => ({ kind: 'ok', dropped: 0, tools: [] }));
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    const key = { userId: 'u', agentId: 'a', connectorId: 'c' };
+    // A row cached before tools carried a schema: no `inputSchema` key at all.
+    const legacy = { name: 'a', title: 'A', description: '', readOnly: null, outward: null, toolKey: 'mcp.c0123456789.a' };
+    const at = new Date('2026-10-02T12:00:00Z');
+    await store.put(key, { status: 'ok', tools: [legacy as never], fingerprint: 'f', checkedAt: at });
+    const row = await store.get(key);
+    expect(row!.tools).toEqual([{ ...legacy, inputSchema: null }]);
+    expect(await store.okInventories('u', ['c'])).toEqual([{ connectorId: 'c', tools: [{ ...legacy, inputSchema: null }] }]);
+  });
 });
 
 describe('plugin wiring', () => {
@@ -115,7 +130,9 @@ describe('plugin wiring', () => {
       return {
         kind: 'ok',
         dropped: 0,
-        tools: [{ name: 'search', title: 'Search', description: '', readOnly: true, outward: false }],
+        tools: [
+          { name: 'search', title: 'Search', description: '', readOnly: true, outward: false, inputSchema: { type: 'object' } },
+        ],
       };
     });
     expect(h.bus.hasService('connectors:describe-tools')).toBe(true);

@@ -41,7 +41,11 @@ The k8s preset turns on `connectorToolInventory`, which makes the host itself li
   - Access is checked through `connectors:resolve` on every call, cache hits included.
 - **Injection:** Tool names, titles, descriptions, and the `readOnlyHint` / `destructiveHint` / `openWorldHint` annotations are untrusted descriptions the server writes about itself.
   - Names must be printable ASCII with no whitespace, at most 128 characters. Titles are capped at 200 and descriptions at 2,000. Control characters and bidi-override characters are stripped.
-  - `inputSchema` and `outputSchema` are dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.
+  - `outputSchema` is dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.
+  - `inputSchema` is kept, as opaque JSON, so `@ax/apps-bridge` can hand an external apps platform each tool's argument schema. It is as untrusted as the description: the server wrote it.
+    - Kept only when it is a plain object whose serialized UTF-8 size is at most 32,768 bytes, and only while that server's kept schemas total at most 1,048,576 bytes. Otherwise it is `null` and the tool is still listed. A schema JSON can't serialize counts as too big.
+    - Stored as the SDK parsed it. Nothing on the host compiles it, validates input against it, or reads it to decide anything. It is never logged.
+    - A row cached before this field reads as `null` until its 15-minute TTL passes.
   - Hints only choose UI defaults and grouping. They are not a security claim, and nothing enforces policy from them. Renderers must still fence descriptions.
   - Errors are reduced to a short reason code. The server's response text is never echoed.
 
@@ -85,6 +89,6 @@ An external apps platform sometimes needs what a connector tool actually said, n
   - A success whose content doesn't fit that schema is `unknown`: the call went out and we couldn't read the answer. A tool error whose content doesn't fit is still a tool error, with no content: the service did say it failed.
   - The bus holds the answer to four shapes: content only on success and on a tool error, closed codes everywhere else.
 - **A JSON-RPC error's message is still never read.** A tool error that came back as a JSON-RPC error object has no content (`content: []`).
-- **Nothing in the log changes.** One `connector_call_tool_result` line per call, codes only. The content is never logged. If the transport's own reading of the reply fails, the answer is `unknown` and the line says `unexpected: true`, so it can't pass for a genuine interruption.
+- **Logging keeps the same shape.** One `connector_call_tool_result` line per call, codes only. The content is never logged. If the transport's own reading of the reply fails, the answer is `unknown` and the line says `unexpected: true`, so it can't pass for a genuine interruption.
 - **Intended caller:** `@ax/apps-bridge`. It checks tool policy first (only `allow` goes ahead) and its own grants, and it relays the content only to the apps platform, never to a model or a screen inside AX. That's why this hook may carry server text when `connectors:call-tool` may not: that hook's answers reach people and models inside AX. As with `connectors:call-tool`, this is a convention, not a check.
 - **Residual (supply chain: third-party host plugin code):** the same as `connectors:call-tool`'s. Any host plugin can call this hook, with no tool-policy check and no proof of a grant, and this one also hands back what the server said. It's still bounded the same way: only where a session of that agent could go, with that agent's own credentials, once. The guard is which plugins we load, not this hook.

@@ -86,7 +86,15 @@ export interface InventoryStore {
 function parseTools(raw: string): InventoryTool[] | null {
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as InventoryTool[]) : null;
+    if (!Array.isArray(parsed)) return null;
+    // A row cached before tools carried `inputSchema` has no such key: it
+    // reads as null (no schema) until the row's TTL passes and it's relisted.
+    return parsed.map((tool: unknown) => {
+      if (tool === null || typeof tool !== 'object' || Array.isArray(tool)) return tool;
+      const schema = (tool as { inputSchema?: unknown }).inputSchema;
+      const plain = schema !== null && typeof schema === 'object' && !Array.isArray(schema);
+      return plain ? tool : { ...tool, inputSchema: null };
+    }) as InventoryTool[];
   } catch {
     return null;
   }

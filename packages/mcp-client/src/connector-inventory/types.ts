@@ -7,6 +7,25 @@
 // tool names, untrusted text, three-valued hints and the canonical toolKey.
 // An alternate impl (a runtime-reported inventory from the sandbox, reporting
 // what the agent's MCP client actually saw) fills the same shape.
+//
+// Boundary review (each tool gains `inputSchema`, for @ax/apps-bridge):
+//   - Alternate impl: the sandbox-reported inventory above relays the schema
+//     its MCP client saw. A REST/OpenAPI connector backend hands over its
+//     operation's request-body schema. Both are JSON Schema for a tool's
+//     arguments, the same opaque object.
+//   - Payload field names that might leak: `inputSchema`. It is MCP's name,
+//     but it means "the JSON Schema for this tool's input", which any tool
+//     backend has; nothing in it names a transport, url, table or server.
+//     Its VALUE is the server's own untrusted JSON: no shape beyond "a plain
+//     object" is promised, and nobody here compiles it.
+//   - Subscriber risk: `connectors:tools-discovered` carries the same tools
+//     and has no subscriber today. Its fingerprint now covers the schema, so
+//     the first refresh of each connector after deploy fires it once, and a
+//     server that only changes a schema fires it too. A subscriber must
+//     treat `inputSchema` as possibly null (absent, not a plain object, over
+//     the caps, or a row cached before this field) and never as a
+//     validated schema.
+//   - Wire surface: none. Neither hook is an IPC action.
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod';
@@ -24,6 +43,16 @@ export interface InventoryTool {
   readOnly: boolean | null;
   /** `destructiveHint || openWorldHint`; null when undecidable. A hint. */
   outward: boolean | null;
+  /**
+   * The server's own JSON Schema for the tool's arguments. UNTRUSTED: the
+   * server wrote it, and nothing compiles or checks it beyond "a plain
+   * object". Null when the server sent none, it isn't a plain object, it is
+   * over 32,768 bytes serialized, or it falls past 1,048,576 bytes for that
+   * server's listing. A row cached before this field reads as null until its
+   * TTL passes. Relay it as data; never render it unfenced or compile it on
+   * the host.
+   */
+  inputSchema: Record<string, unknown> | null;
   /** Canonical permission key: `mcp.<toolNamespace>.<name>`. */
   toolKey: string;
 }
