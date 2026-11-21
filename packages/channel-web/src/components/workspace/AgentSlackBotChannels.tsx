@@ -2,7 +2,9 @@
  * The channels the agent's own Slack bot has answered in (TASK-1180,
  * TASK-1187). Each channel's memory setting lives in that row's ⋯ menu: a
  * manager picks "Don't remember this channel" or "Remember this channel"; a
- * member reads only "Not remembered" and has no ⋯. No Disconnect (the bot
+ * member reads only "Not remembered" and has no ⋯. A private channel
+ * (TASK-1188) is answered but never remembered, whatever its setting: its row
+ * says so and has no ⋯. No Disconnect (the bot
  * answers where it was invited) and no "Connected by" (nobody connected it).
  *
  * Rows live in local state seeded from the status. A re-read remounts this
@@ -79,10 +81,17 @@ export function AgentSlackBotChannels({ agentId, canManage, invite, channels, on
                 <span className="truncate">{row.name}</span>
               </span>
               <span className="flex shrink-0 items-center gap-2">
-                {!row.remember && (
-                  <span className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.notRemembered}</span>
+                {row.isPrivate === true ? (
+                  <span className="text-[12.5px] text-muted-foreground">
+                    {AGENT_SLACK_COPY.privateChannelNotRemembered}
+                  </span>
+                ) : (
+                  !row.remember && (
+                    <span className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.notRemembered}</span>
+                  )
                 )}
-                {canManage && (
+                {/* A private channel is never remembered, whatever its setting: nothing to change, so no ⋯. */}
+                {canManage && row.isPrivate !== true && (
                   <AgentSlackMenu
                     label={`Actions for #${row.name}`}
                     disabled={pending.has(row.channelId)}

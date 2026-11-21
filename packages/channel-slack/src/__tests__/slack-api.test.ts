@@ -848,7 +848,6 @@ describe('conversations', () => {
 
   it('a refusing flag (private, archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
     const flags = [
-      ['is_private', 'isPrivate'],
       ['is_archived', 'isArchived'],
       ['is_ext_shared', 'isExtShared'],
       ['is_pending_ext_shared', 'isPendingExtShared'],
@@ -873,6 +872,26 @@ describe('conversations', () => {
         const out = await api.conversationsInfo(BOT, 'C012AB3CD');
         expect(out[field], `${key}: ${JSON.stringify(value)}`).toBe(set);
       }
+    }
+  });
+
+  // TASK-1188: public is what lets memory learn from a channel, so only Slack's plain `false` is public.
+  it('isPrivate is false only when Slack says literally false: absent, null or anything else is private', async () => {
+    const cases: Array<[unknown, boolean]> = [
+      [false, false],
+      [undefined, true],
+      [null, true],
+      [true, true],
+      ['false', true],
+      [0, true],
+      ['', true],
+      [{}, true],
+    ];
+    for (const [value, isPrivate] of cases) {
+      const channel = { ...GENERAL, is_private: value };
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson({ channel })).fetchImpl });
+      const out = await api.conversationsInfo(BOT, 'C012AB3CD');
+      expect(out.isPrivate, `is_private: ${JSON.stringify(value)}`).toBe(isPrivate);
     }
   });
 

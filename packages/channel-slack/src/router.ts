@@ -110,11 +110,14 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      again. Last, Slack itself is asked about the channel, with the bot's
  *      token (channel-check.ts, which keeps an answer that allows it for a
  *      minute), since a channel can change after it is bound (TASK-1184). A
- *      channel it now says is private, archived or Slack Connect, or can't
- *      find, loses its binding (the memory switch kept for the agent and
+ *      channel it now says is archived or Slack Connect, or can't find, or
+ *      (to a bot Allowed before `groups:read`) can't read, loses its binding (the memory switch kept for the agent and
  *      channel stays). The one turn whose removal took it tells its sender,
  *      privately and once (`channelNoLongerAllowed`); every turn it stops is
- *      dropped (`slack_turns_dropped`, `channel-not-allowed`). Slack not
+ *      dropped (`slack_turns_dropped`, `channel-not-allowed`). A channel
+ *      it says is private runs its turn and is never remembered (TASK-1188):
+ *      the binding says private (written when it changed, and only a fresh
+ *      answer clears it), and the thread is recorded not remembered. Slack not
  *      answering is no turn either: "try again", and the binding stays. Nor
  *      is Slack saying the bot's own token can't read any public channel
  *      (code `token-scope`): the binding stays, and since no retry fixes
@@ -161,12 +164,13 @@ export interface RouterDeps extends TurnDeps {
    * removed when Slack says its channel can't be served any more (`remove`,
    * TASK-1184). The shared app reads and writes none (TASK-1186).
    */
-  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot' | 'remove'>;
+  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot' | 'remove' | 'setPrivate'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
   /**
-   * Slack's word that a bound channel is still public, live and not Slack
-   * Connect, asked when each channel turn starts and kept for a minute
+   * Slack's word that a bound channel is still live and not Slack Connect,
+   * and whether it is private now (answered in, never remembered: TASK-1188),
+   * asked when each channel turn starts and kept for a minute
    * (channel-check.ts, TASK-1184).
    */
   channelCheck: ChannelCheck;
@@ -615,15 +619,18 @@ async function routeMention(
       }
     }
     // 8b. The channel itself, as Slack describes it now (TASK-1184). It was
-    // checked when it was bound, and it may have been made private, archived
-    // or shared with another company since: a mention doesn't say, though
-    // step 1 drops one Slack flags as Slack Connect. Asked last, so a turn
-    // the reads above drop costs no Slack call. A definitive refusal removes
-    // the channel's binding (the switch kept for the agent and channel
-    // stays), so the agent's settings stop listing it and memory stops
-    // learning from its threads. Slack not answering says nothing about the
-    // channel: no turn, and the binding stays.
-    const channelNow = await d.channelCheck.check(installId, botToken, m.channel);
+    // checked when it was bound, and it may have been archived or shared
+    // with another company since: a mention doesn't say, though step 1 drops
+    // one Slack flags as Slack Connect. Asked last, so a turn the reads above
+    // drop costs no Slack call. A definitive refusal removes the channel's
+    // binding (the switch kept for the agent and channel stays), so the
+    // agent's settings stop listing it and memory stops learning from its
+    // threads. Slack not answering says nothing about the channel: no turn,
+    // and the binding stays. A channel made private (or public again) is
+    // still answered in (TASK-1188, design §4b.3): see 8c.
+    // A binding that says private takes no kept public answer (channel-check.ts
+    // `knownPrivate`): only Slack asked after `now` was read may clear it.
+    const channelNow = await d.channelCheck.check(installId, botToken, m.channel, { knownPrivate: now.isPrivate });
     // Only `allowed` goes on to the turn; every other kind returns, and a kind
     // added later fails to compile (the `never` below) rather than run a turn.
     if (channelNow.kind !== 'allowed') {
@@ -663,6 +670,29 @@ async function routeMention(
         }
       }
     }
+    // 8c. Private or public, as Slack says now (TASK-1188). A private
+    // channel's turn runs, and memory never learns from it: the binding
+    // says private from here on, so the capture veto refuses every thread of
+    // the channel while it stays so, and the thread record below marks this
+    // thread for good. Public again: the binding says so, and new threads
+    // are remembered as the switch says; a thread a private turn ran in
+    // stays out. Written before the thread is recorded, and only when it
+    // changed. A write that fails runs no turn: a private channel whose
+    // binding still says public would let a pass learn from it. Public is
+    // written over private only from an answer asked after `now` was read
+    // (the check's `knownPrivate`), and a public answer a private one
+    // overtook is told private (private wins), so a public answer kept on
+    // this replica or another, or overtaken in flight, never clears a newer
+    // private one. (One that lands before a later private answer still can:
+    // channel-check.ts says when.)
+    if (now.isPrivate !== channelNow.isPrivate) {
+      try {
+        await d.channels.setPrivate(installId, m.channel, agentId, channelNow.isPrivate);
+      } catch (err) {
+        await failed('channel-private', err);
+        return;
+      }
+    }
     // 9. The memory switch, before anything is said in the conversation. The
     // store reads the switch in the same statement that records the thread,
     // so it is the switch as it is at that write: not as it was when the
@@ -681,6 +711,8 @@ async function routeMention(
         installId,
         channelId: m.channel,
         agentId,
+        // A private channel's thread is never remembered either (8c).
+        isPrivate: channelNow.isPrivate,
         // An outsiders' thread is never remembered, whatever the switch says
         // (capture-veto.ts), so it keeps no names. A member's keeps the names
         // their label shows, from the same `admission.name` and `m.sender` as
@@ -856,7 +888,8 @@ type BindOutcome =
  * A team agent's own bot binds a channel at its first mention there
  * (TASK-1167): Slack's own conversations.info, read with the bot's token,
  * must be about this channel and show one a bot may bind (channels.ts
- * `connectable`: public, live, not Slack Connect). The binding
+ * `connectable`: live, not Slack Connect; public, or private and never
+ * remembered, TASK-1188, written on the binding as `isPrivate`). The binding
  * is to the bot's one agent, connected by its requester, whom the channel's
  * outsiders run as (channel-store.ts); read back, so it is the one stored.
  * Its memory switch is the one the team last set for the agent in this
@@ -900,6 +933,7 @@ async function bindBotChannel(
     agentId: install.agentId,
     connectedByUserId: install.requestedByUserId,
     channelName: info.name,
+    isPrivate: info.isPrivate,
   };
   // `taken` can't happen here (only this writes a bot's bindings, always
   // for its agent); if it ever did, the read below finds the other agent's

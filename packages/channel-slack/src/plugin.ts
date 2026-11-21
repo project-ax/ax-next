@@ -65,8 +65,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // ---------------------------------------------------------------------------
 // @ax/channel-slack — connect a Slack workspace from AX admin settings, let
 // every AX user DM the shared bot to talk to their own personal agent
-// (TASK-1093), and let a team agent answer @mentions in the public channels
-// its own Slack bot was invited to (TASK-1094, TASK-1167). Design:
+// (TASK-1093), and let a team agent answer @mentions in the channels its own
+// Slack bot was invited to (TASK-1094, TASK-1167), never remembering a
+// private one (TASK-1188). Design:
 // docs/plans/2026-11-09-channel-slack-design.md.
 //
 // It registers one service, `system-prompt:augment:optional:slack`
@@ -393,6 +394,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         const queue = createKeyedQueue({ maxPerKey: MAX_TURNS_PER_CONVERSATION });
         // Outsiders' channel turns, one lane per channel (router.ts).
         const externalQueue = createKeyedQueue({ maxPerKey: MAX_EXTERNAL_TURNS_PER_CHANNEL });
+        // Slack's word on a bound channel (TASK-1184): asked when each channel
+        // turn starts, and again before an Allow carries a held turn on
+        // (answers.ts, TASK-1188). One instance, so both share its kept answers.
+        const channelCheck = createChannelCheck({ api, now, ttlMs: CHANNEL_CHECK_TTL_MS, max: CHANNEL_CHECK_MAX });
 
         // What a turn, and the follow-up to an Allow, run on: one set, so both
         // post prompts into, and stream replies to, the same registries.
@@ -501,7 +506,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 queue,
                 channels: channelStore,
                 externalQueue,
-                channelCheck: createChannelCheck({ api, now, ttlMs: CHANNEL_CHECK_TTL_MS, max: CHANNEL_CHECK_MAX }),
+                channelCheck,
               }),
               logger,
               now,
@@ -526,6 +531,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 secrets,
                 prompts,
                 channels: channelStore,
+                channelCheck,
                 publicOrigin,
                 logger,
                 answers: {

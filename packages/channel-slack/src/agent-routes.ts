@@ -90,12 +90,15 @@ import { checkUser } from './user-auth.js';
 
 /**
  * A channel the agent's own bot has answered in (a binding on its install),
- * with that binding's memory switch (TASK-1180).
+ * with that binding's memory switch (TASK-1180), and whether Slack last
+ * described it as private (TASK-1188): never remembered there, whatever the
+ * switch says, so the settings show that instead of the switch.
  */
 export interface AgentSlackBotChannel {
   channelId: string;
   name: string;
   remember: boolean;
+  isPrivate: boolean;
 }
 
 export type AgentSlackStatus =
@@ -429,7 +432,12 @@ export function createAgentSlackRoutes(
         ? {}
         : {
             botChannels: ownBindings.map(
-              (b): AgentSlackBotChannel => ({ channelId: b.channelId, name: b.channelName, remember: b.remember }),
+              (b): AgentSlackBotChannel => ({
+                channelId: b.channelId,
+                name: b.channelName,
+                remember: b.remember,
+                isPrivate: b.isPrivate,
+              }),
             ),
           };
     if (!sharedActive) {

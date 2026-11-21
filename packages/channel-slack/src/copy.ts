@@ -16,7 +16,8 @@ import type { SkillReach } from './turn-registry.js';
  * The `channel*` lines (with `queueFull`, `turnFailed`, TASK-1167's
  * `botUnavailable` and TASK-1186's `sharedBotInChannel`) can reach a channel
  * mention's sender privately, before its turn starts or in place of one
- * (router.ts), and the `prompt*` and `decision*` lines surround an approval
+ * (router.ts); `botUnavailable` also answers a click on an attended prompt whose bot can't
+ * read channels (answers.ts, TASK-1188). The `prompt*` and `decision*` lines surround an approval
  * prompt (blocks.ts). Both go out as mrkdwn, not Markdown (but for the
  * prompt's two button labels, which are plain_text): a link is a bare URL,
  * and no line holds a `<` or `>` of its own (mrkdwn reads `<…>` as a link).
@@ -213,14 +214,15 @@ export const COPY = {
   /*
     A bound channel Slack no longer allows (TASK-1184): made private,
     archived or shared with another company since a team agent's own bot
-    first answered there. Checked when each turn starts. The turn that finds
+    first answered there, or a private channel a bot Allowed before
+    `groups:read` (TASK-1188) can't read: Rebuild fixes that one. Checked when each turn starts. The turn that finds
     it disconnects the channel and says this once, to its sender. Archived
     and deleted channels take no line at all, so it names the two cases
     someone can read it in. It names nothing else.
   */
   channelNoLongerAllowed:
-    "I've stopped answering in this channel: it's private now, or shared with another organization. " +
-    'I only answer in public channels of this workspace.',
+    "I've stopped answering in this channel: it's shared with another organization now, or I can't read it any more. " +
+    'I only answer in channels of this workspace. If this is a private channel, a team admin may need to set me up again.',
   channelBusy: "I'm busy with other questions in this channel. Try again in a minute.",
   /*
     A team agent's own bot (TASK-1167) whose requester can't vouch for its
@@ -229,7 +231,8 @@ export const COPY = {
     runs until a team admin claims the bot in the web app; members are still
     answered. Every admitted sender reads it when the agent itself is gone,
     or when the bot's own token can't read public channels any more
-    (TASK-1184): no retry fixes either, a team admin must look.
+    (TASK-1184), at a mention or at a click on an attended prompt (TASK-1188): no retry
+    fixes either, a team admin must look.
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
 

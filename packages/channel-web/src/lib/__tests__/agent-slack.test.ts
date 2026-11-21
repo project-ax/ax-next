@@ -152,6 +152,14 @@ describe('fetchAgentSlack', () => {
       expect(((await fetchAgentSlack('a1')) as { botChannels?: unknown }).botChannels).toEqual([BOT_ROW]);
       answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, remember: 'yes' }] }));
       await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+      // A private channel's row says so (TASK-1188), and the settings show it isn't remembered.
+      answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, isPrivate: true }, { ...BOT_ROW, channelId: 'C2', isPrivate: false }] }));
+      expect(((await fetchAgentSlack('a1')) as { botChannels?: unknown }).botChannels).toEqual([
+        { ...BOT_ROW, isPrivate: true },
+        { ...BOT_ROW, channelId: 'C2', isPrivate: false },
+      ]);
+      answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, isPrivate: 'yes' }] }));
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
       answer = () => json(200, make({ botChannels: [{ channelId: 'C1', remember: true }] }));
       await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
       answer = () => json(200, make({ botChannels: {} }));
@@ -722,10 +730,10 @@ describe("the Slack card's words (TASK-1187)", () => {
     expect(C.inviteLead).toBe('In any Slack channel, type ');
     expect(C.inviteNoHandle).toBe('In any Slack channel, type /invite and pick it.');
     expect(C.channelsLead({ botName, handle: 'quill' })).toBe(
-      '@quill has answered in these channels. It remembers what team members say there.',
+      '@quill has answered in these channels. It remembers what team members say in public channels, never in private ones.',
     );
     expect(C.channelsLead({ botName, handle: null })).toBe(
-      'Quill Bot has answered in these channels. It remembers what team members say there.',
+      'Quill Bot has answered in these channels. It remembers what team members say in public channels, never in private ones.',
     );
     expect(C.notRemembered).toBe('Not remembered');
     expect(C.dontRemember).toBe("Don't remember this channel");

@@ -188,7 +188,7 @@ describe("the agent's own bot, in the ready section", () => {
     const heading = await liveTitle('@quill');
     const card = heading.closest('[data-slot="card"]') as HTMLElement;
     expect(
-      within(card).getByText('@quill has answered in these channels. It remembers what team members say there.'),
+      within(card).getByText('@quill has answered in these channels. It remembers what team members say in public channels, never in private ones.'),
     ).toBeInTheDocument();
     const list = within(card).getByRole('list', { name: 'Channels @quill has answered in' });
     expect(within(list).getByText('help')).toBeInTheDocument();
@@ -513,7 +513,7 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
   const withBotChannels = (read: AgentSlackRead, botChannels: BotChannelRow[]) =>
     ({ ...read, botChannels }) as AgentSlackRead;
   const botList = () => screen.findByRole('list', { name: 'Channels @quill has answered in' });
-  const LEAD = '@quill has answered in these channels. It remembers what team members say there.';
+  const LEAD = '@quill has answered in these channels. It remembers what team members say in public channels, never in private ones.';
 
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -597,6 +597,34 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
     expect(within(list).queryByRole('switch')).toBeNull();
   });
 
+  // TASK-1188 (design §4b.3): the agent answers in a private channel and never remembers it, so its row says that
+  // instead of offering a memory setting that would change nothing: no "Not remembered", no ⋯.
+  it.each([
+    ['a manager', true],
+    ['a member', false],
+  ] as const)("%s sees a private channel's row say it isn't remembered, with no ⋯", async (_who, canManage) => {
+    const privateRoom: BotChannelRow = { channelId: 'C0BOTPRV01', name: 'leads', remember: true, isPrivate: true };
+    renderIt(withBotChannels(ready(canManage, LIVE_BOT), [privateRoom, BOT_SUPPORT]));
+    const list = await botList();
+    const rows = within(list).getAllByRole('listitem');
+    expect(within(rows[0]!).getByText("Private channels aren't remembered.")).toBeInTheDocument();
+    expect(within(rows[0]!).queryByText('Not remembered')).toBeNull();
+    expect(within(rows[0]!).queryByRole('button')).toBeNull();
+    // The public row beside it is unchanged: a manager still has its ⋯.
+    expect(within(rows[1]!).queryByText("Private channels aren't remembered.")).toBeNull();
+    if (canManage) expect(within(rows[1]!).getByRole('button', { name: 'Actions for #help' })).toBeInTheDocument();
+    else expect(within(rows[1]!).queryByRole('button')).toBeNull();
+  });
+
+  it("a private channel whose setting is off still says only that it isn't remembered", async () => {
+    const privateOff: BotChannelRow = { channelId: 'C0BOTPRV02', name: 'leads', remember: false, isPrivate: true };
+    renderIt(withBotChannels(ready(true, LIVE_BOT), [privateOff]));
+    const list = await botList();
+    expect(within(list).getByText("Private channels aren't remembered.")).toBeInTheDocument();
+    expect(within(list).queryByText('Not remembered')).toBeNull();
+    expect(within(list).queryByRole('button')).toBeNull();
+  });
+
   it("with Slack not connected, a live bot's channels are still listed, and a manager can change them", async () => {
     rememberBot.mockResolvedValueOnce();
     renderIt(withBotChannels({ state: 'no-workspace', canManage: true, bot: LIVE_BOT }, [BOT_OPS]));
@@ -632,7 +660,7 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
   it('with no handle, the line names the bot', async () => {
     renderIt(withBotChannels(ready(true, { ...LIVE_BOT, handle: null }), [BOT_SUPPORT]));
     expect(
-      await screen.findByText('Quill has answered in these channels. It remembers what team members say there.'),
+      await screen.findByText('Quill has answered in these channels. It remembers what team members say in public channels, never in private ones.'),
     ).toBeInTheDocument();
   });
 });

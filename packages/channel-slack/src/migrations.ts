@@ -28,7 +28,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     `created_at` is still when the row was made, and it orders `current()`.
  *
  *   channel_slack_v1_channels — the bindings (TASK-1094): which team agent a
- *     public channel of an install is connected to. The primary key makes it
+ *     channel of an install is connected to (public, or private since
+ *     TASK-1188: `is_private`, never remembered). The primary key makes it
  *     one agent per channel; an agent may have several channels.
  *     `connected_by_user_id` is the team admin who connected it, the person a
  *     channel's outsiders run as, so every write names the binding's agent and
@@ -46,7 +47,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     (`memory:pre-capture`), so this is how the capture veto
  *     (capture-veto.ts) knows a conversation is a Slack channel thread at
  *     all. `not_remembered` is set by any turn that starts while the
- *     channel's switch is off, and never cleared: memory leaves its cursor
+ *     channel's switch is off, or while it is private (TASK-1188), and
+ *     never cleared: memory leaves its cursor
  *     where a refusal stopped it, so a thread with a turn said while the
  *     switch was off must stay refused after it is turned back on.
  *     `external` marks the conversation outsiders' turns run in (the
@@ -195,6 +197,7 @@ export interface ChannelSlackChannelsTable {
   connected_by_user_id: string;
   channel_name: string;
   remember: ColumnType<boolean, boolean | undefined, boolean>;
+  is_private: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, Date | undefined, never>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
 }
@@ -294,6 +297,16 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE INDEX IF NOT EXISTS channel_slack_v1_channels_agent
       ON channel_slack_v1_channels (agent_id)
+  `.execute(db);
+  // Whether Slack last described the channel as private (TASK-1188, design
+  // §4b.3): a bot answers there and memory never learns from it. Written at
+  // the bind, and again whenever a turn's check (channel-check.ts) finds it
+  // changed. Every binding before this column was bound public (private ones
+  // were refused, channels.ts `connectable`), so false is what they are; a
+  // channel made private since is set at its next turn.
+  await sql`
+    ALTER TABLE channel_slack_v1_channels
+      ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS channel_slack_v1_threads (
