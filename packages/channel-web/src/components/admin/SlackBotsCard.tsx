@@ -25,9 +25,23 @@
  *
  * Each row carries only what an admin reads: a bot's name and @handle, its
  * approver's name (or "A former member"), when it was asked for and whether it
- * is live. The bot's install id is the key Disconnect takes and is never drawn.
+ * is live. The bot's install id is the key Disconnect and Replace take and is
+ * never drawn.
+ *
+ * Replace token (TASK-1173): on a live row the viewer set up, it opens the shared
+ * `BotTokenReplaceDialog`, where the pasted token is write-only. Only the
+ * approver gets it (`viewerIsApprover`), and the server refuses anyone else. A
+ * replace changes nothing the list shows, so it isn't read again: the card says
+ * "Token replaced" and that note outlives a re-read like `leftOver` does. A
+ * refusal that says the row is out of date (rebuilt, claimed or disconnected in
+ * another tab) closes the dialog and reads the list again.
+ *
+ * A live bot whose approver is gone says "Needs rebuilding": nobody can replace
+ * its token any more. Disconnecting it is how it gets rebuilt, and its
+ * Disconnect dialog says so.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -55,9 +69,13 @@ import { logRequestFailure } from '@/lib/http';
 import {
   disconnectTeamBot,
   fetchSlackBots,
+  replaceTeamBotToken,
   teamBotGone,
+  teamBotReplaceErrorCopy,
+  teamBotReplaceStale,
   type AdminSlackBot,
 } from '@/lib/slack-bots-admin';
+import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; bots: AdminSlackBot[] };
 
@@ -90,6 +108,12 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
   const [asking, setAsking] = useState<AdminSlackBot | null>(null);
   // The bot whose Slack app a disconnect couldn't delete. Held here, apart from the list, so it outlasts the re-read.
   const [leftOver, setLeftOver] = useState<string | null>(null);
+  // The bot whose token dialog is open, and the note a replace leaves. Held apart from the list too: a replace doesn't re-read it.
+  const [replacing, setReplacing] = useState<AdminSlackBot | null>(null);
+  const [replaced, setReplaced] = useState<string | null>(null);
+  // The last bot a replace was asked for, so the dialog's words stay put while it closes.
+  const lastReplacing = useRef<AdminSlackBot | null>(null);
+  if (replacing !== null) lastReplacing.current = replacing;
   const seq = useRef(0);
 
   const read = useCallback(async () => {
@@ -124,6 +148,7 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
 
   function staleRow() {
     setAsking(null);
+    setReplacing(null);
     void read();
     // Whoever got there first may have left a Slack app behind: the tab's list of those is out of date too.
     onAppsChanged();
@@ -139,6 +164,11 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
           <AlertDescription>
             {`${leftOver} is disconnected, but we couldn't confirm its Slack app was deleted. It's listed above, with the Slack apps we couldn't delete.`}
           </AlertDescription>
+        </Alert>
+      )}
+      {replaced !== null && (
+        <Alert>
+          <AlertDescription>{BOT_TOKEN_COPY.replaced(replaced)}</AlertDescription>
         </Alert>
       )}
       {load.kind === 'error' && (
@@ -203,20 +233,39 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
                     <TableCell>{shortDate(bot.addedAt)}</TableCell>
                     <TableCell>
                       {bot.state === 'live' ? (
-                        <Badge variant="secondary">Live</Badge>
+                        bot.approver === null ? (
+                          <Badge variant="warning">Needs rebuilding</Badge>
+                        ) : (
+                          <Badge variant="secondary">Live</Badge>
+                        )
                       ) : (
                         <Badge variant="warning">Not finished</Badge>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        aria-label={`Disconnect ${bot.botName}`}
-                        onClick={() => setAsking(bot)}
-                      >
-                        Disconnect
-                      </Button>
+                    <TableCell>
+                      <div className="flex justify-end gap-2">
+                        {bot.state === 'live' && bot.viewerIsApprover && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-label={`Replace token for ${bot.botName}`}
+                            onClick={() => {
+                              setReplaced(null);
+                              setReplacing(bot);
+                            }}
+                          >
+                            Replace token
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          aria-label={`Disconnect ${bot.botName}`}
+                          onClick={() => setAsking(bot)}
+                        >
+                          Disconnect
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -224,13 +273,29 @@ export function SlackBotsCard({ sharedConnected, onAppsChanged }: SlackBotsCardP
             </Table>
             {anyFormerMember && (
               <p className="text-[12.5px] text-muted-foreground">
-                When the person who set up a bot has left, nobody can change its Slack app any more. Disconnect it, and a
-                team admin can set up a new one.
+                When the person who set up a bot has left, nobody can replace its Slack token any more, so it needs
+                rebuilding: disconnect it here, and a team admin of its agent can set up a new one.
               </p>
             )}
           </CardContent>
         </Card>
       )}
+      <BotTokenReplaceDialog
+        open={replacing !== null}
+        onOpenChange={(open) => {
+          if (!open) setReplacing(null);
+        }}
+        botName={lastReplacing.current?.botName ?? ''}
+        replace={(refreshToken) =>
+          lastReplacing.current === null
+            ? Promise.reject(new Error('no bot'))
+            : replaceTeamBotToken(lastReplacing.current.installId, refreshToken)
+        }
+        errorCopy={teamBotReplaceErrorCopy}
+        isStale={teamBotReplaceStale}
+        onReplaced={() => setReplaced(lastReplacing.current?.botName ?? null)}
+        onStale={staleRow}
+      />
       <DisconnectBotDialog
         bot={asking}
         sharedConnected={sharedConnected}
@@ -265,6 +330,7 @@ function DisconnectBotDialog({
   const b = shown.current;
   const pending = b?.state === 'pending';
   const name = b?.botName ?? '';
+  const needsRebuilding = b?.state === 'live' && b.approver === null;
 
   const close = (open: boolean) => {
     if (busy || open) return;
@@ -302,6 +368,10 @@ function DisconnectBotDialog({
               : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
                   sharedConnected
                     ? ' The shared bot answers for its agent again in any channel it was connected to before.'
+                    : ''
+                }${
+                  needsRebuilding
+                    ? " Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again."
                     : ''
                 }`}
           </DialogDescription>
