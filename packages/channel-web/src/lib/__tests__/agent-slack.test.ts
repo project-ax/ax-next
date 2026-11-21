@@ -580,11 +580,6 @@ describe("replacing, and claiming, an agent's own bot", () => {
 });
 
 describe('what an error says', () => {
-  it("the bot channel line names the bot's @handle, or its name when Slack never said one", () => {
-    expect(AGENT_SLACK_COPY.botChannelsNotice({ botName: 'Quill', handle: 'quill' })).toBe('@quill has answered in these channels.');
-    expect(AGENT_SLACK_COPY.botChannelsNotice({ botName: 'Quill', handle: null })).toBe('Quill has answered in these channels.');
-  });
-
   it('a write on a row the server no longer has (403, 404, 409) means the picture is stale; 5xx and network do not', () => {
     for (const status of [403, 404, 409]) {
       expect(agentSlackWriteStale(new AgentSlackError(status, 'not-connected'))).toBe(true);

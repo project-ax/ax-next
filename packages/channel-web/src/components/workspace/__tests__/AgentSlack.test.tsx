@@ -72,6 +72,12 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+async function openMenu(name: string) {
+  const trigger = await screen.findByRole('button', { name: `Actions for ${name}` });
+  fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+  return screen.findByRole('menu');
+}
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -155,8 +161,10 @@ describe("the agent's own bot, in the ready section", () => {
       bot: LIVE_BOT,
       botChannels: [{ channelId: 'C0BOTSUP01', name: 'help', remember: true }],
     });
-    expect(await screen.findByText('@quill has answered in these channels.')).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Channels its own bot has answered in' });
+    expect(
+      await screen.findByText('@quill has answered in these channels. It remembers what team members say there.'),
+    ).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Channels @quill has answered in' });
     expect(within(list).getByText('help')).toBeInTheDocument();
     expect(screen.getByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Disconnect bot' })).toBeInTheDocument();
@@ -476,56 +484,67 @@ describe('a rebuilt bot (TASK-1173)', () => {
   });
 });
 
-describe("the agent's own bot's channels (TASK-1180)", () => {
+describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
   const BOT_SUPPORT: BotChannelRow = { channelId: 'C0BOTSUP01', name: 'help', remember: true };
   const BOT_OPS: BotChannelRow = { channelId: 'C0BOTOPS01', name: 'ops-desk', remember: false };
   const withBotChannels = (read: AgentSlackRead, botChannels: BotChannelRow[]) =>
     ({ ...read, botChannels }) as AgentSlackRead;
-  const botList = () => screen.findByRole('list', { name: 'Channels its own bot has answered in' });
-  const NOTE =
-    'When this is on, Quill remembers what people with access to it say here. It never remembers what anyone else says.';
+  const botList = () => screen.findByRole('list', { name: 'Channels @quill has answered in' });
+  const LEAD = '@quill has answered in these channels. It remembers what team members say there.';
 
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  it('live: the channels its own bot has answered in are listed under one line, each with a memory switch', async () => {
+  it('live: the channels it has answered in are listed under one line, and a channel that is not remembered says so', async () => {
     renderIt(withBotChannels(ready(true, LIVE_BOT), [BOT_SUPPORT, BOT_OPS]));
-    expect(await screen.findByText('@quill has answered in these channels.')).toBeInTheDocument();
+    expect(await screen.findByText(LEAD)).toBeInTheDocument();
     const list = await botList();
     expect(within(list).getByText('help')).toBeInTheDocument();
     expect(within(list).getByText('ops-desk')).toBeInTheDocument();
-    const [first, second] = within(list).getAllByRole('switch', { name: 'Let Quill remember this channel' });
-    expect(first).toBeChecked();
-    expect(second).not.toBeChecked();
-    expect(first).toHaveAccessibleDescription(NOTE);
-    // No Disconnect and no "Connected by" on these rows.
-    expect(within(list).queryByRole('button')).toBeNull();
+    const [help, ops] = within(list).getAllByRole('listitem');
+    expect(within(help!).queryByText('Not remembered')).toBeNull();
+    expect(within(ops!).getByText('Not remembered')).toBeInTheDocument();
+    expect(within(list).queryByRole('switch')).toBeNull();
     expect(within(list).queryByText(/Connected by/)).toBeNull();
   });
 
-  it('a manager flips one: the switch holds its old place while the write is out, then lands', async () => {
+  it('a manager picks "Don\'t remember this channel": nothing moves while the write is out, then the row says Not remembered', async () => {
     const write = deferred<void>();
     rememberBot.mockImplementationOnce(() => write.promise);
     renderIt(withBotChannels(ready(true, LIVE_BOT), [BOT_SUPPORT]));
-    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
-    fireEvent.click(toggle);
+    await botList();
+    await openMenu('#help');
+    fireEvent.click(screen.getByRole('menuitem', { name: "Don't remember this channel" }));
     await waitFor(() => expect(rememberBot).toHaveBeenCalledWith('a1', 'C0BOTSUP01', false));
-    expect(toggle).toBeDisabled();
-    expect(toggle).toBeChecked();
+    const trigger = screen.getByRole('button', { name: 'Actions for #help' });
+    expect(trigger).toBeDisabled();
+    expect(screen.queryByText('Not remembered')).toBeNull();
     write.resolve();
-    await waitFor(() => expect(toggle).not.toBeChecked());
-    expect(toggle).not.toBeDisabled();
+    expect(await screen.findByText('Not remembered')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Actions for #help' })).not.toBeDisabled();
   });
 
-  it('a failed flip leaves the switch where it was and says nothing changed', async () => {
+  it('a manager turns memory back on with "Remember this channel"', async () => {
+    rememberBot.mockResolvedValueOnce();
+    renderIt(withBotChannels(ready(true, LIVE_BOT), [BOT_OPS]));
+    await botList();
+    expect(screen.getByText('Not remembered')).toBeInTheDocument();
+    await openMenu('#ops-desk');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remember this channel' }));
+    await waitFor(() => expect(rememberBot).toHaveBeenCalledWith('a1', 'C0BOTOPS01', true));
+    await waitFor(() => expect(screen.queryByText('Not remembered')).toBeNull());
+  });
+
+  it('a failed change leaves the row where it was and says nothing changed', async () => {
     rememberBot.mockRejectedValueOnce(new AgentSlackError(500, 'internal'));
     renderIt(withBotChannels(ready(true, LIVE_BOT), [BOT_SUPPORT]));
-    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
-    fireEvent.click(toggle);
+    await botList();
+    await openMenu('#help');
+    fireEvent.click(screen.getByRole('menuitem', { name: "Don't remember this channel" }));
     expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't change that, so nothing is different. Try again.");
-    expect(toggle).toBeChecked();
-    expect(toggle).not.toBeDisabled();
+    expect(screen.queryByText('Not remembered')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Actions for #help' })).not.toBeDisabled();
     expect(fetchStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -536,44 +555,49 @@ describe("the agent's own bot's channels (TASK-1180)", () => {
   ])('a refusal that says the page is stale (%i) reads the status again', async (status, code) => {
     rememberBot.mockRejectedValueOnce(new AgentSlackError(status, code));
     renderIt(withBotChannels(ready(true, LIVE_BOT), [BOT_SUPPORT]));
-    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
+    await botList();
+    await openMenu('#help');
     fetchStatus.mockResolvedValueOnce(ready(false, LIVE_BOT));
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('menuitem', { name: "Don't remember this channel" }));
     await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByRole('list', { name: 'Channels its own bot has answered in' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Channels @quill has answered in' })).toBeNull());
     expect(screen.queryByText(/nothing is different/)).toBeNull();
   });
 
-  it('a member sees each channel, and the note only where memory is on; no switch', async () => {
+  it('a member sees each channel and which are not remembered, and no ⋯', async () => {
     renderIt(withBotChannels(ready(false, LIVE_BOT), [BOT_SUPPORT, BOT_OPS]));
     const list = await botList();
     expect(within(list).getByText('help')).toBeInTheDocument();
     expect(within(list).getByText('ops-desk')).toBeInTheDocument();
+    expect(within(list).getAllByText('Not remembered')).toHaveLength(1);
+    expect(within(list).queryByRole('button')).toBeNull();
     expect(within(list).queryByRole('switch')).toBeNull();
-    expect(
-      within(list).getAllByText(
-        'Quill remembers what people with access to it say here. It never remembers what anyone else says.',
-      ),
-    ).toHaveLength(1);
   });
 
-  it("with Slack not connected, a live bot's channels are still listed, and a manager can flip them", async () => {
+  it("with Slack not connected, a live bot's channels are still listed, and a manager can change them", async () => {
     rememberBot.mockResolvedValueOnce();
     renderIt(withBotChannels({ state: 'no-workspace', canManage: true, bot: LIVE_BOT }, [BOT_OPS]));
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
-    expect(screen.getByText('@quill has answered in these channels.')).toBeInTheDocument();
-    const toggle = within(await botList()).getByRole('switch', { name: 'Let Quill remember this channel' });
-    expect(toggle).not.toBeChecked();
-    fireEvent.click(toggle);
+    expect(screen.getByText(LEAD)).toBeInTheDocument();
+    await botList();
+    await openMenu('#ops-desk');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remember this channel' }));
     await waitFor(() => expect(rememberBot).toHaveBeenCalledWith('a1', 'C0BOTOPS01', true));
-    await waitFor(() => expect(toggle).toBeChecked());
+    await waitFor(() => expect(screen.queryByText('Not remembered')).toBeNull());
+  });
+
+  it('the channel menu never locks the page', async () => {
+    renderIt(withBotChannels(ready(true, LIVE_BOT), [BOT_SUPPORT]));
+    await botList();
+    await openMenu('#help');
+    expect(document.body.style.pointerEvents).not.toBe('none');
   });
 
   it('no botChannels (an older host, or no live bot): no list', async () => {
     renderIt(ready(true, LIVE_BOT));
     await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.');
     expect(screen.queryByText(/has answered in these channels/)).toBeNull();
-    expect(screen.queryByRole('list', { name: 'Channels its own bot has answered in' })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Channels @quill has answered in' })).toBeNull();
   });
 
   it('an empty botChannels draws nothing either', async () => {
@@ -584,7 +608,8 @@ describe("the agent's own bot's channels (TASK-1180)", () => {
 
   it('with no handle, the line names the bot', async () => {
     renderIt(withBotChannels(ready(true, { ...LIVE_BOT, handle: null }), [BOT_SUPPORT]));
-    expect(await screen.findByText('Quill has answered in these channels.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Quill has answered in these channels. It remembers what team members say there.'),
+    ).toBeInTheDocument();
   });
-
 });

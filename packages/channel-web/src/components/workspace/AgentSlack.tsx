@@ -119,7 +119,6 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
           {state.bot.state === 'live' && (state.botChannels ?? []).length > 0 && (
             <AgentSlackBotChannels
               agentId={agentId}
-              agentName={agentName}
               canManage={state.canManage}
               invite={{ botName: state.bot.botName, handle: state.bot.handle }}
               channels={state.botChannels ?? []}
@@ -198,7 +197,6 @@ function ReadySection({
       {bot.state === 'live' && botChannels.length > 0 && (
         <AgentSlackBotChannels
           agentId={agentId}
-          agentName={agentName}
           canManage={canManage}
           invite={{ botName: bot.botName, handle: bot.handle }}
           channels={botChannels}

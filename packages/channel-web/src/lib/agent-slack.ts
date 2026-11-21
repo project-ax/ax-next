@@ -438,8 +438,6 @@ export async function setAgentSlackBotPicture(agentId: string, iconPng: string):
 export const AGENT_SLACK_COPY = Object.freeze({
   generic: 'Something went wrong. Try again in a minute.',
   rememberFailed: "We couldn't change that, so nothing is different. Try again.",
-  botChannelsNotice: (t: InviteTarget): string =>
-    t.handle !== null ? `@${t.handle} has answered in these channels.` : `${t.botName} has answered in these channels.`,
 });
 
 /** How the card names a live bot: its @handle, or its name when Slack never said one. */
