@@ -45,6 +45,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { logRequestFailure } from '@/lib/http';
 import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
 import { AgentSlackBotChannels } from './AgentSlackBotChannels';
+import type { RebuildFrom } from './AgentSlackBotLifecycle';
 import { SlackRememberField } from './SlackRememberField';
 import {
   AGENT_SLACK_COPY,
@@ -88,16 +89,24 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   // bot section: a cancel reads the status again, and the loading face replaces
   // everything below this component until it lands.
   const [leftOver, setLeftOver] = useState<BotCancelled | null>(null);
+  // The bot a Rebuild just took away, so the request form that follows can offer its name back (TASK-1173).
+  const [rebuilding, setRebuilding] = useState<RebuildFrom | null>(null);
   const [leftOverFor, setLeftOverFor] = useState(agentId);
   if (leftOverFor !== agentId) {
     // Another agent: the note was about the one before (reset while rendering, so it never flashes).
     setLeftOverFor(agentId);
     setLeftOver(null);
+    setRebuilding(null);
   }
   const botCallbacks = {
     leftOver,
+    rebuilding,
     onCancelled: (cancelled: BotCancelled) => setLeftOver(cancelled.appDeleted ? null : cancelled),
-    onRequesting: () => setLeftOver(null),
+    onRebuilt: (from: RebuildFrom) => setRebuilding(from),
+    onRequesting: () => {
+      setLeftOver(null);
+      setRebuilding(null);
+    },
   };
 
   const read = useCallback(() => {
@@ -218,7 +227,10 @@ function ReadySection({
   agentName: string;
   ready: Ready;
   /** The bot section's cancel note and its setters, held by `AgentSlack` so they outlive a re-read. */
-  botCallbacks: Pick<AgentSlackBotProps, 'leftOver' | 'onCancelled' | 'onRequesting'>;
+  botCallbacks: Pick<
+    AgentSlackBotProps,
+    'leftOver' | 'rebuilding' | 'onCancelled' | 'onRebuilt' | 'onRequesting'
+  >;
   onChange: (next: Ready) => void;
   /** A refusal that says the picture is out of date: read it again. */
   onStale: () => void;

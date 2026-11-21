@@ -9,9 +9,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { SlackBotsCard } from '../SlackBotsCard';
 import { RequestTimeoutError } from '@/lib/http';
 import { SlackAdminError } from '@/lib/slack-admin';
+import { fakeConfigRefreshToken } from '@/test-utils/fake-slack-tokens';
 import {
   disconnectTeamBot,
   fetchSlackBots,
+  replaceTeamBotToken,
   type AdminSlackBot,
   type SlackBotsRead,
 } from '@/lib/slack-bots-admin';
@@ -20,10 +22,12 @@ vi.mock('@/lib/slack-bots-admin', async (original) => ({
   ...(await original<typeof import('@/lib/slack-bots-admin')>()),
   fetchSlackBots: vi.fn(),
   disconnectTeamBot: vi.fn(),
+  replaceTeamBotToken: vi.fn(),
 }));
 
 const list = vi.mocked(fetchSlackBots);
 const disconnect = vi.mocked(disconnectTeamBot);
+const replaceToken = vi.mocked(replaceTeamBotToken);
 
 const ADDED = '2026-11-19T10:00:00.000Z';
 const ADDED_TEXT = new Date(ADDED).toLocaleDateString(undefined, { dateStyle: 'medium' });
@@ -34,6 +38,7 @@ const PENDING: AdminSlackBot = {
   approver: 'Grace Hopper',
   state: 'pending',
   addedAt: ADDED,
+  viewerIsApprover: false,
 };
 const LIVE: AdminSlackBot = {
   installId: 'U2FsZXNCb3RJbnN0YWxsMQ',
@@ -42,8 +47,11 @@ const LIVE: AdminSlackBot = {
   approver: 'Sam Sales',
   state: 'live',
   addedAt: ADDED,
+  viewerIsApprover: false,
 };
 const ORPHAN: AdminSlackBot = { ...LIVE, approver: null };
+const MINE: AdminSlackBot = { ...LIVE, approver: 'Vinay Pulim', viewerIsApprover: true };
+const MINE_PENDING: AdminSlackBot = { ...PENDING, viewerIsApprover: true };
 
 const ready = (...bots: AdminSlackBot[]): SlackBotsRead => ({ state: 'ready', bots });
 
@@ -92,6 +100,7 @@ describe('the list', () => {
     expect(within(live).getByRole('button', { name: 'Disconnect Sales Desk' })).toHaveTextContent('Disconnect');
     // Nobody has left: no line about it.
     expect(screen.queryByText(/has left/)).toBeNull();
+    expect(screen.queryByText('Needs rebuilding')).toBeNull();
     // An install id is how we find a bot, not something to read.
     expect(document.body.textContent).not.toContain(LIVE.installId);
   });
@@ -103,9 +112,22 @@ describe('the list', () => {
     expect(within(rowOf('Support Bot')).queryByText('A former member')).toBeNull();
     expect(
       screen.getByText(
-        'When the person who set up a bot has left, nobody can change its Slack app any more. Disconnect it, and a team admin can set up a new one.',
+        'When the person who set up a bot has left, nobody can replace its Slack token any more, so it needs rebuilding: disconnect it here, and a team admin of its agent can set up a new one.',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('a live bot whose approver is gone says "Needs rebuilding" in its Status; a pending one, or one with an approver, does not', async () => {
+    renderCard(
+      ready(ORPHAN, { ...LIVE, installId: 'T3RoZXJCb3RJbnN0YWxsMg', botName: 'Other Bot' }, { ...PENDING, approver: null }),
+    );
+    await screen.findByRole('table');
+    const orphan = rowOf('Sales Desk');
+    expect(within(orphan).getByText('Needs rebuilding')).toBeInTheDocument();
+    expect(within(orphan).queryByText('Live')).toBeNull();
+    expect(screen.getAllByText('Needs rebuilding')).toHaveLength(1);
+    expect(within(rowOf('Other Bot')).getByText('Live')).toBeInTheDocument();
+    expect(within(rowOf('Support Bot')).getByText('Not finished')).toBeInTheDocument();
   });
 
   it('while the first read is in flight a placeholder says it is loading, so a slow read is not "no bots"', async () => {
@@ -254,6 +276,113 @@ describe('Disconnect', () => {
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('Something went wrong. Try again in a minute.');
     expect(within(dialog).getByRole('button', { name: 'Disconnect' })).toBeEnabled();
     expect(list).toHaveBeenCalledTimes(1);
+  });
+});
+
+const TOKEN = fakeConfigRefreshToken('ADMINREPLACESECRET');
+const REPLACED =
+  "Token replaced. We now use it for Sales Desk and every other Slack app you set up here. Don't revoke the token you just pasted: it's the one we use now.";
+
+function openReplace(botName = 'Sales Desk'): HTMLElement {
+  fireEvent.click(screen.getByRole('button', { name: `Replace token for ${botName}` }));
+  return screen.getByRole('dialog', { name: 'Replace your Slack token' });
+}
+
+function pasteAndSubmit(dialog: HTMLElement) {
+  fireEvent.change(within(dialog).getByLabelText('Refresh token'), { target: { value: TOKEN } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Replace token' }));
+}
+
+describe('Replace token, for the bots the viewer set up (TASK-1173)', () => {
+  it('shows Replace token only on live rows the viewer set up, before Disconnect', async () => {
+    renderCard(
+      ready(
+        MINE,
+        { ...LIVE, installId: 'T3RoZXJCb3RJbnN0YWxsMg', botName: 'Other Bot' },
+        MINE_PENDING,
+        { ...ORPHAN, installId: 'T3JwaGFuQm90SW5zdGFsbDM', botName: 'Orphan Bot' },
+      ),
+    );
+    await screen.findByRole('table');
+    const mine = rowOf('Sales Desk');
+    const buttons = within(mine).getAllByRole('button');
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Replace token for Sales Desk',
+      'Disconnect Sales Desk',
+    ]);
+    expect(within(mine).getByRole('button', { name: 'Replace token for Sales Desk' })).toHaveTextContent('Replace token');
+    expect(screen.queryByRole('button', { name: 'Replace token for Other Bot' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Replace token for Support Bot' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: /^Replace token for/ })).toHaveLength(1);
+  });
+
+  it('a replace posts the install id and the pasted token, closes the dialog and says the token replaced; the token is never drawn', async () => {
+    replaceToken.mockResolvedValueOnce(undefined);
+    renderCard(ready(MINE));
+    await screen.findByRole('table');
+    pasteAndSubmit(openReplace());
+    expect(await screen.findByText(REPLACED)).toBeInTheDocument();
+    expect(replaceToken).toHaveBeenCalledWith(MINE.installId, TOKEN);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.body.innerHTML).not.toContain(TOKEN);
+    // Nothing changed in the list, so it is not read again.
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refused replace says why in the dialog and keeps it open', async () => {
+    replaceToken.mockRejectedValueOnce(new SlackAdminError(502, 'slack-not-app-manager'));
+    renderCard(ready(MINE));
+    await screen.findByRole('table');
+    const dialog = openReplace();
+    pasteAndSubmit(dialog);
+    await waitFor(() => expect(replaceToken).toHaveBeenCalledTimes(1));
+    expect(await within(dialog).findByText(/can't manage this bot/)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Replace your Slack token' })).toBeInTheDocument();
+    expect(screen.queryByText(REPLACED)).toBeNull();
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [403, 'not-approver'],
+    [409, 'not-live'],
+    [409, 'no-bot'],
+  ])('a stale replace (%s %s) closes the dialog and reads the list again, with nothing said', async (status, code) => {
+    replaceToken.mockRejectedValueOnce(new SlackAdminError(status, code));
+    list.mockResolvedValueOnce(ready(MINE));
+    list.mockResolvedValueOnce(ready(ORPHAN));
+    const onAppsChanged = vi.fn();
+    render(<SlackBotsCard sharedConnected onAppsChanged={onAppsChanged} />);
+    await screen.findByRole('table');
+    pasteAndSubmit(openReplace());
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await screen.findByText('Needs rebuilding')).toBeInTheDocument();
+    expect(screen.queryByText(REPLACED)).toBeNull();
+    expect(onAppsChanged).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a bot that needs rebuilding', () => {
+  it("its Disconnect dialog says how it gets rebuilt; no other row's does", async () => {
+    const sentence =
+      "Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again.";
+    renderCard(ready(ORPHAN, { ...LIVE, installId: 'T3RoZXJCb3RJbnN0YWxsMg', botName: 'Other Bot' }, { ...PENDING, approver: null }));
+    await screen.findByRole('table');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
+    let dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(sentence);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Other Bot' }));
+    dialog = await screen.findByRole('dialog');
+    expect(dialog).not.toHaveTextContent(/approver has left/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Support Bot' }));
+    expect(await screen.findByRole('dialog')).not.toHaveTextContent(/approver has left/);
   });
 });
 

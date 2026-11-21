@@ -6,6 +6,8 @@
  *
  *   GET  /admin/slack/bots              → { bots: AdminSlackBot[] }
  *   POST /admin/slack/bots/disconnect   { installId } → { appDeleted }
+ *   POST /admin/slack/bots/replace-token  { installId, refreshToken } → {}
+ *        (TASK-1173: a live bot's approver replaces their configuration token; 403 not-approver for anyone else)
  *
  * Every request carries the session cookie (`httpFetch`, which also notices a
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
@@ -15,7 +17,8 @@
  * it, so a malformed answer is a `bad-response` and never reads as "no bots".
  */
 import { HttpError, httpFetch, REQUEST_TIMEOUT_MS, withRequestTimeout } from './http';
-import { SlackAdminError } from './slack-admin';
+import { SLACK_ERROR_COPY, SlackAdminError } from './slack-admin';
+import { BOT_TOKEN_COPY, SLACK_TOKEN_COPY } from './slack-token-copy';
 
 /** One team agent's own bot, as an admin sees it (mirrors @ax/channel-slack's `AdminSlackBot`). */
 export interface AdminSlackBot {
@@ -29,12 +32,15 @@ export interface AdminSlackBot {
   state: 'pending' | 'live';
   /** When the bot was asked for (ISO 8601). */
   addedAt: string;
+  /** The viewer set this bot up, so they can replace its token. An older host omits it; that reads as false. */
+  viewerIsApprover: boolean;
 }
 
 export type SlackBotsRead = { state: 'ready'; bots: AdminSlackBot[] } | { state: 'unavailable' };
 
 const LIST_PATH = '/admin/slack/bots';
 const DISCONNECT_PATH = '/admin/slack/bots/disconnect';
+const REPLACE_TOKEN_PATH = '/admin/slack/bots/replace-token';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -56,17 +62,18 @@ function codeOf(value: unknown): string | null {
 
 const badResponse = (status: number): SlackAdminError => new SlackAdminError(status, 'bad-response');
 
-/** One bot, with only the six fields we draw; anything malformed is null. */
+/** One bot, with only the seven fields we draw; anything malformed is null. */
 function parseBot(value: unknown): AdminSlackBot | null {
   if (!isRecord(value)) return null;
-  const { installId, botName, handle, approver, state, addedAt } = value;
+  const { installId, botName, handle, approver, state, addedAt, viewerIsApprover = false } = value;
   if (typeof installId !== 'string' || !INSTALL_ID_RE.test(installId)) return null;
   if (typeof botName !== 'string' || botName.length < 1 || botName.length > BOT_NAME_MAX) return null;
   if (handle !== null && typeof handle !== 'string') return null;
   if (approver !== null && typeof approver !== 'string') return null;
   if (state !== 'pending' && state !== 'live') return null;
   if (typeof addedAt !== 'string') return null;
-  return { installId, botName, handle, approver, state, addedAt };
+  if (typeof viewerIsApprover !== 'boolean') return null;
+  return { installId, botName, handle, approver, state, addedAt, viewerIsApprover };
 }
 
 /**
@@ -127,7 +134,53 @@ export async function disconnectTeamBot(installId: string): Promise<{ appDeleted
   return { appDeleted };
 }
 
-/** 409 `no-bot`: someone got there first (or the bot was asked for again). Read the list again. */
+/**
+ * Replace a live bot's configuration token with a new one the person pasted
+ * (TASK-1173; only the person who set the bot up may). Resolves once Slack
+ * accepted the token and the server holds it.
+ */
+export async function replaceTeamBotToken(installId: string, refreshToken: string): Promise<void> {
+  const res = await httpFetch(REPLACE_TOKEN_PATH, {
+    method: 'POST',
+    headers: writeHeaders,
+    body: JSON.stringify({ installId, refreshToken }),
+  });
+  if (res.ok) return;
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    json = undefined;
+  }
+  const fields = isRecord(json) ? json : {};
+  throw new SlackAdminError(res.status, codeOf(fields['error']) ?? 'unknown', codeOf(fields['reason']));
+}
+
+/**
+ * 409 `no-bot` (someone got there first, or the bot was asked for again) or
+ * 409 `not-live` (a reset or rebuild took it away). Read the list again.
+ */
 export function teamBotGone(err: unknown): boolean {
-  return err instanceof SlackAdminError && err.status === 409 && err.code === 'no-bot';
+  return err instanceof SlackAdminError && err.status === 409 && (err.code === 'no-bot' || err.code === 'not-live');
+}
+
+/** A Replace that says the row is out of date: `teamBotGone`, or 403 `not-approver` (the bot was handed on). Read the list again. */
+export function teamBotReplaceStale(err: unknown): boolean {
+  return teamBotGone(err) || (err instanceof SlackAdminError && err.status === 403 && err.code === 'not-approver');
+}
+
+/** The sentence a refused Replace becomes, and where it goes. Never a raw code. */
+export function teamBotReplaceErrorCopy(err: unknown): { field: 'refreshToken' | null; message: string } {
+  if (err instanceof SlackAdminError) {
+    switch (err.code) {
+      case 'invalid-refresh-token':
+      case 'slack-refresh-token':
+        return { field: 'refreshToken', message: SLACK_TOKEN_COPY[err.code] };
+      case 'slack-not-app-manager':
+        return { field: 'refreshToken', message: BOT_TOKEN_COPY['slack-not-app-manager'] };
+      case 'public-origin-not-https':
+        return { field: null, message: SLACK_ERROR_COPY['public-origin-not-https'] };
+    }
+  }
+  return { field: null, message: SLACK_ERROR_COPY.generic };
 }

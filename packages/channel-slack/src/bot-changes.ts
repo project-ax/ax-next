@@ -1,18 +1,19 @@
-import type { Logger } from '@ax/core';
+import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { isBotNameTaken } from './bot-name.js';
 import { handleFrom, type BotReply } from './bots.js';
-import { liveOwnBot } from './channels.js';
+import { checkRights, liveOwnBot, teamAdminAccess, type Rights } from './channels.js';
 import { botUrls, buildBotManifest } from './manifest.js';
 import type { Mutex } from './mutex.js';
 import type { SecretStore } from './secrets.js';
 import type { SlackApi } from './slack-api.js';
-import { createAppSteps, isHttps, namesInUse, type AppChangeRefusal } from './slack-apps.js';
+import { createAppSteps, isHttps, namesInUse, type AppChangeRefusal, type ReplaceRefusal } from './slack-apps.js';
 import { InstallStoreError, type InstallRow, type InstallStore } from './store.js';
 
 /**
- * A team agent's own Slack bot, changed once it is live (TASK-1171; design
- * docs/plans/2026-11-09-channel-slack-design.md §4 "Lifecycle"): a new name,
- * or a new picture. Neither needs a new approval or a reinstall, and the bot
+ * A team agent's own Slack bot, changed once it is live (TASK-1171,
+ * TASK-1173; design docs/plans/2026-11-09-channel-slack-design.md §4
+ * "Lifecycle"): a new name, a new picture, its approver's token replaced, or
+ * a new requester. None needs a new approval or a reinstall, and the bot
  * stays in every channel it's in.
  *
  *   - `rename` refuses a name another bot already has (the shared bot's name,
@@ -25,15 +26,35 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *   - `setPicture` sends Slack the PNG agent-routes.ts already checked
  *     (`parseIconPng`), with `apps.icon.set`, and nothing else: no manifest,
  *     and no row write. AX keeps no copy of it.
+ *   - `replaceToken`, and `replaceTokenForAdmin` from Admin › Slack by install
+ *     id (TASK-1173): the bot's APPROVER replaces their own configuration
+ *     token, which stopped working, with a refresh token they pasted. Through
+ *     the step Admin › Slack's Replace uses (`replaceConfigToken`,
+ *     slack-apps.ts): the PASTED token rotated once, the access token that
+ *     minted checked by sending Slack the bot's whole manifest under its
+ *     stored name, and only once Slack took that is the minted refresh token
+ *     stored, as the approver's. One token per person (TASK-1175), so that
+ *     fixes every app of theirs. The stored token is never read or rotated:
+ *     it is the dead one. No date moves and no leftover pass runs.
+ *   - `claim` (TASK-1173): a team admin of the agent's team takes over a live
+ *     bot whose requester is no longer one, so the bot's outsiders run as the
+ *     claimer from then on. The row's requester and every binding's copy of
+ *     it move in ONE statement (`InstallStore.claimBot`). No vault, no Slack:
+ *     the approver, whose token made the app, doesn't change.
  *
- * Both use the bot's APPROVER's configuration token (`connectedByUserId`),
- * whoever asked: only the token that made a Slack app can manage it (design
- * §8 Q5), and agent-routes.ts let only a team admin of the agent's team
- * through. The methods take no actor, so the asking admin's own token is
- * never read, rotated or written. The token goes through the step Admin ›
- * Slack's Rename uses too (`changeApp`, slack-apps.ts): read, rotated, and
- * its successor saved as the approver's BEFORE the access token minted with
- * it is used. A dead token changes nothing in AX.
+ * Rename and picture use the bot's APPROVER's configuration token
+ * (`connectedByUserId`), whoever asked: only the token that made a Slack app
+ * can manage it (design §8 Q5), and agent-routes.ts let only a team admin of
+ * the agent's team through. They take no actor, so the asking admin's own
+ * token is never read, rotated or written. The token goes through the step
+ * Admin › Slack's Rename uses too (`changeApp`, slack-apps.ts): read,
+ * rotated, and its successor saved as the approver's BEFORE the access token
+ * minted with it is used. A dead token changes nothing in AX. A Replace takes
+ * an actor only to compare it with the approver: anyone else is refused (403
+ * `not-approver`) before the vault or Slack, so nobody's paste lands in the
+ * approver's slot, and the approver's paste in nobody else's. A Claim's actor
+ * becomes the requester, once their manage rights are asked again inside the
+ * lock, before anything is read.
  *
  * Each method takes the one app lock (`lock`, which plugin.ts shares with
  * Admin › Slack and bots.ts) exactly once, and nothing it calls takes it
@@ -42,24 +63,28 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * is done, whatever Slack said, the bot's row is checked: a rename's write
  * finds it gone, and any other outcome (a picture Slack took, or a change
  * Slack refused, perhaps after the rotated token was already saved) reads it
- * again. A row gone answers `not-live`, not Slack's refusal (there is no bot
- * left to fix), and the approver's token goes, unless an install or a
- * leftover app still names them: the successor saved after the reset's sweep
- * would otherwise outlive it. When nothing is stored any more (nothing was
- * saved after the sweep, or the reset's wipe came after the save), there is
- * nothing left to delete, and nothing is: both releases read the token
+ * again; a Replace reads it again once it stored a token (a refused one
+ * stored nothing). A row gone answers `not-live`, not Slack's refusal (there
+ * is no bot left to fix), and the approver's token goes, unless an install or
+ * a leftover app still names them: the successor saved after the reset's
+ * sweep would otherwise outlive it. When nothing is stored any more (nothing
+ * was saved after the sweep, or the reset's wipe came after the save), there
+ * is nothing left to delete, and nothing is: every release reads the token
  * first, as the reset's own does, because the vault deletes by writing an
  * empty row and a reset leaves no credential rows behind. `release` takes no
- * lock.
+ * lock. A claim racing a reset moves nothing (`claimBot` updates a live bot
+ * only) and answers `not-live`.
  *
  * Log lines are code-only: `slack_bot_failed { installId, stage, code }` for
- * a step that failed, and `slack_bot_renamed { installId }` or
- * `slack_bot_picture_changed { installId }` for an outcome. Never a token, a
- * person's or an agent's id, a name, a handle, or a Slack id other than the
- * install's.
+ * a step that failed, and `slack_bot_renamed`, `slack_bot_picture_changed`,
+ * `slack_bot_token_replaced` or `slack_bot_claimed`, each `{ installId }`, for
+ * an outcome. Never a token, a person's or an agent's id, a name, a handle,
+ * or a Slack id other than the install's.
  */
 
 export interface BotChangesDeps {
+  /** A Claim's rights, asked again inside the lock, and whether the bot's requester is still a team admin. */
+  bus: HookBus;
   /** The full store, not a Pick: namesInUse reads the shared install, every bot and (TASK-1169) every open request. */
   installs: InstallStore;
   /** The plugin's one cached secret store, the one bots.ts gets. */
@@ -93,16 +118,58 @@ export interface BotChanges {
    * a reset removed meanwhile is `not-live`, whatever Slack said.
    */
   setPicture(i: { agentId: string; png: Buffer }): Promise<BotReply>;
+  /**
+   * The approver replaces their own configuration token through the agent's
+   * live bot (TASK-1173): `refreshToken` already passed the route's shape
+   * check. 200 `{}`; 409 `not-live`; 403 `not-approver` for anyone but the
+   * bot's approver, before the vault or Slack; 409 `public-origin-not-https`;
+   * 502 `slack-refresh-token` | `slack-not-app-manager` | `slack-error`
+   * (`ReplaceRefusal`), the stored token kept; 500 `internal` when the minted
+   * token couldn't be stored. A vault or store fault throws: the route's
+   * 500. A row a reset removed meanwhile is `not-live`.
+   */
+  replaceToken(i: { actorUserId: string; agentId: string; refreshToken: string }): Promise<BotReply>;
+  /**
+   * The same, from Admin › Slack, naming the bot by its install id: 409
+   * `no-bot` for an id no team bot has (the shared app's included); 409
+   * `not-live` for a bot still pending.
+   */
+  replaceTokenForAdmin(i: { actorUserId: string; installId: string; refreshToken: string }): Promise<BotReply>;
+  /**
+   * A team admin of the agent's team claims its live bot, named by the
+   * install id their page showed, whose requester is no longer a team admin
+   * of that team (TASK-1173): from then on its outsiders run as them. 200
+   * `{}`; 403 `forbidden`, 409 `personal-agent` or 404 `not-found` when the
+   * manage rights asked again say so; 409 `not-live` (no live bot, or one a
+   * reset removed meanwhile); 409 `no-bot` (the agent's live bot has another
+   * id); 409 `claim-not-needed` (the requester is still a team admin); 404
+   * `not-found` for an agent deleted meanwhile. An agents or store fault
+   * throws: the route's 500.
+   */
+  claim(i: { ctx: AgentContext; actorUserId: string; agentId: string; installId: string }): Promise<BotReply>;
 }
 
 const json = (status: number, body: unknown): BotReply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
 /** No live bot to change: none, one still pending, or one a reset removed meanwhile. */
 const NOT_LIVE = json(409, { error: 'not-live' });
+/** An install id no team bot has, or not the agent's live bot's: a stale page's, say. */
+const NO_BOT = json(409, { error: 'no-bot' });
+/** Only the person whose token made the bot's app can replace that token. */
+const NOT_APPROVER = json(403, { error: 'not-approver' });
+/** The bot's requester is still a team admin: there is nothing to claim. */
+const CLAIM_NOT_NEEDED = json(409, { error: 'claim-not-needed' });
 
-/** What a change Slack didn't take answers: a token we couldn't keep is ours (500), the rest Slack's (502). */
-function refused(refusal: AppChangeRefusal | 'token-not-kept'): BotReply {
+/** What a change or a Replace Slack didn't take answers: a token we couldn't keep is ours (500), the rest Slack's (502). */
+function refused(refusal: AppChangeRefusal | ReplaceRefusal | 'token-not-kept'): BotReply {
   return refusal === 'token-not-kept' ? INTERNAL : json(502, { error: refusal });
+}
+
+/** A refused rights re-check, answered as the route answers its own (bots.ts does the same). */
+function rightsRefused(reason: Extract<Rights, { ok: false }>['reason']): BotReply {
+  if (reason === 'forbidden') return json(403, { error: 'forbidden' });
+  if (reason === 'personal-agent') return json(409, { error: 'personal-agent' });
+  return json(404, { error: 'not-found' });
 }
 
 export function createBotChanges(d: BotChangesDeps): BotChanges {
@@ -250,5 +317,99 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
     });
   }
 
-  return { rename, setPicture };
+  /**
+   * The approver's Replace of their own token, through `bot`, a live bot the
+   * caller found under the app lock (TASK-1173). Whoever asks is compared
+   * with the approver and never otherwise used: the minted token goes to
+   * `bot.connectedByUserId`'s slot, through the step, whoever pasted it.
+   */
+  async function replaceFor(bot: InstallRow, actorUserId: string, refreshToken: string): Promise<BotReply> {
+    // Their token made the app, and only theirs can manage it. Asked before
+    // the vault or Slack: anyone else's paste goes nowhere, and theirs never
+    // reaches the approver's slot.
+    if (actorUserId !== bot.connectedByUserId) return NOT_APPROVER;
+    // The check sends the manifest, which carries the URLs Slack calls back on: https only, as at a rename.
+    if (!canConnect) return json(409, { error: 'public-origin-not-https' });
+
+    // The bot's whole manifest under its stored name, built before the paste
+    // is spent: a manifest update is the one change that proves the minted
+    // token manages THIS app, and resending what Slack has changes nothing.
+    const manifest = buildBotManifest(bot.botName, botUrls(d.publicOrigin, bot.installId));
+    const replaced = await steps.replaceConfigToken(bot, refreshToken, (accessToken) =>
+      d.api.updateApp(accessToken, bot.appId, manifest),
+    );
+    // A refusal stored nothing (the step stores only after Slack took the
+    // check), so there is nothing a reset meanwhile would leave behind.
+    if (!replaced.ok) return refused(replaced.refusal);
+    // Stored: a reset meanwhile mustn't keep it.
+    if (await goneMeanwhile(bot)) return NOT_LIVE;
+    log('info', 'slack_bot_token_replaced', { installId: bot.installId });
+    return json(200, {});
+  }
+
+  async function replaceToken(i: { actorUserId: string; agentId: string; refreshToken: string }): Promise<BotReply> {
+    return d.lock.run(async () => {
+      const bot = await liveOwnBot(d.installs, i.agentId);
+      // A pending bot has no channels yet: Cancel and ask again costs nothing.
+      if (bot === null) return NOT_LIVE;
+      return replaceFor(bot, i.actorUserId, i.refreshToken);
+    });
+  }
+
+  async function replaceTokenForAdmin(i: {
+    actorUserId: string;
+    installId: string;
+    refreshToken: string;
+  }): Promise<BotReply> {
+    return d.lock.run(async () => {
+      const row = await d.installs.get(i.installId);
+      // A team agent's bot, and nothing else: the shared app has its own Replace.
+      if (row === null || row.kind !== 'bot' || row.agentId === null) return NO_BOT;
+      // Its agent's live bot, and this one.
+      const bot = await liveOwnBot(d.installs, row.agentId);
+      if (bot === null || bot.installId !== i.installId) return NOT_LIVE;
+      return replaceFor(bot, i.actorUserId, i.refreshToken);
+    });
+  }
+
+  async function claim(i: {
+    ctx: AgentContext;
+    actorUserId: string;
+    agentId: string;
+    installId: string;
+  }): Promise<BotReply> {
+    return d.lock.run(async () => {
+      // The route checked before the lock. Asked again inside it, before
+      // anything is read: a claim changes whose identity the bot's outsiders
+      // borrow, so a team admin demoted, or an agent deleted, while this
+      // waited is refused, and nothing is touched.
+      const rights = await checkRights(d.bus, i.ctx, i.agentId, i.actorUserId, 'manage');
+      if (!rights.ok) return rightsRefused(rights.reason);
+      // Live bots only: a pending bot whose requester left is refused at its
+      // Allow, and Cancel is its way out.
+      const bot = await liveOwnBot(d.installs, i.agentId);
+      if (bot === null) return NOT_LIVE;
+      // The bot the page showed, and no other: a stale page names an old one.
+      if (bot.installId !== i.installId) return NO_BOT;
+      // As things stand now. A bot row always names its requester (the
+      // database's CHECK); with none, nobody vouches for its outsiders.
+      const requester =
+        bot.requestedByUserId === null ? 'no' : await teamAdminAccess(d.bus, i.ctx, i.agentId, bot.requestedByUserId);
+      if (requester === 'yes') return CLAIM_NOT_NEEDED;
+      if (requester === 'agent-gone') return json(404, { error: 'not-found' });
+      if (requester === 'not-team') return json(409, { error: 'personal-agent' });
+      try {
+        // The row and every binding of its install, in one statement.
+        await d.installs.claimBot(bot.installId, i.actorUserId);
+      } catch (err) {
+        // Not a live bot any more: a reset removed it meanwhile (it takes no lock).
+        if (err instanceof InstallStoreError) return NOT_LIVE;
+        throw err;
+      }
+      log('info', 'slack_bot_claimed', { installId: bot.installId });
+      return json(200, {});
+    });
+  }
+
+  return { rename, setPicture, replaceToken, replaceTokenForAdmin, claim };
 }

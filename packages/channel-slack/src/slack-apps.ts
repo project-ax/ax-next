@@ -6,7 +6,7 @@ import { OAUTH_STATE_BYTES, OAUTH_STATE_TTL_MS, SLACK_TOKEN_MAX } from './limits
 import { logCode } from './log-code.js';
 import { buildInstallUrl } from './manifest.js';
 import type { SecretOwner, SecretStore } from './secrets.js';
-import { SlackApiError, type OAuthInstall, type SlackApi } from './slack-api.js';
+import { SlackApiError, type OAuthInstall, type RotatedConfigToken, type SlackApi } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
 
 /**
@@ -20,6 +20,10 @@ import type { InstallRow, InstallStore } from './store.js';
  *   - a change (Admin › Slack's Rename, a team bot's rename or picture,
  *     TASK-1171) goes through `changeApp`, which keeps that rule and tells
  *     the person why Slack said no (`appChangeError`);
+ *   - a Replace (TASK-1128; shared since TASK-1173) goes through
+ *     `replaceConfigToken`, which spends the PASTED token, never the stored
+ *     one, and stores what it mints as the app's person's only after Slack
+ *     took it for that app (`replaceCheckError`);
  *   - a person's token is released only once nothing names them (`release`);
  *   - an app Slack won't delete is remembered with its row, never forgotten
  *     (`undoConnect`, `deleteSlackApp`).
@@ -159,6 +163,37 @@ export function appChangeError(stage: string, err: unknown): AppChangeRefusal {
   return 'slack-error';
 }
 
+/** Why a pasted refresh token didn't replace its person's token, as the person is told it (a 502). */
+export type ReplaceRefusal = 'slack-refresh-token' | 'slack-not-app-manager' | 'slack-error';
+
+/**
+ * Slack refusing Replace's check (TASK-1128): the newly pasted token works,
+ * but its owner can't manage this app (`no_permission`,
+ * `app_not_owned_by_manager_app`) or can't see it (`app_not_found`). With a
+ * new, unproven token, Slack can't tell "can't manage" from "another
+ * workspace" from "gone" here. "Gone" sends the person to Disconnect, which
+ * costs every channel, so none of the three is called gone.
+ */
+const NOT_APP_MANAGER: ReadonlySet<string> = new Set([
+  'no_permission',
+  'app_not_owned_by_manager_app',
+  'app_not_found',
+]);
+
+/**
+ * What a replace's failed check tells the person. `slack-refresh-token`: the
+ * access token the pasted refresh token minted is no good, so only a new
+ * token helps. `slack-not-app-manager`: Slack says the token's owner can't
+ * manage this app (NOT_APP_MANAGER). Anything else is `slack-error`: a retry
+ * soon after may work while Slack still honours the pasted token.
+ */
+function replaceCheckError(err: unknown): ReplaceRefusal {
+  if (!(err instanceof SlackApiError)) return 'slack-error';
+  if (REFRESH_TOKEN_REFUSED.has(err.code)) return 'slack-refresh-token';
+  if (NOT_APP_MANAGER.has(err.code)) return 'slack-not-app-manager';
+  return 'slack-error';
+}
+
 /** Where Slack sends the person back after Allow, and the scopes the install link asks for. */
 export interface InstallLink {
   redirectUrl: string;
@@ -237,6 +272,27 @@ export interface AppSteps {
     stage: 'update-app' | 'icon',
     use: (accessToken: string) => Promise<void>,
   ): Promise<AppChangeRefusal | 'token-not-kept' | null>;
+  /**
+   * Replace `app.connectedByUserId`'s configuration token with a refresh
+   * token someone pasted (Replace, TASK-1128), for when the stored one is
+   * dead: so the stored one is never read or rotated here. The pasted token
+   * is rotated once (stage `try-refresh-token`); the access token that mints
+   * goes once to `check`, which asks Slack to change this app (stage
+   * `check-app`); and only once Slack took that is the minted refresh token
+   * stored, as the app's person's, whoever pasted it.
+   *
+   * `ok` with the minted access token, which the caller may use again for
+   * that person's apps. Else what the person is told (refreshTokenError at
+   * the rotate, replaceCheckError at the check), with the failed step logged
+   * code-only; or `'token-not-kept'` when Slack took it and the store failed
+   * (logged by saveRotatedToken), the caller's 500. Any refusal leaves the
+   * stored token as it was. The caller holds the app lock.
+   */
+  replaceConfigToken(
+    app: SecretOwner,
+    pasted: string,
+    check: (accessToken: string) => Promise<void>,
+  ): Promise<{ ok: true; accessToken: string } | { ok: false; refusal: ReplaceRefusal | 'token-not-kept' }>;
   /**
    * Delete the Slack app with an access token minted from its person's
    * stored refresh token. The minted token is used once. True when the app
@@ -419,6 +475,37 @@ export function createAppSteps(d: AppStepsDeps): AppSteps {
     }
   }
 
+  async function replaceConfigToken(
+    app: SecretOwner,
+    pasted: string,
+    check: (accessToken: string) => Promise<void>,
+  ): Promise<{ ok: true; accessToken: string } | { ok: false; refusal: ReplaceRefusal | 'token-not-kept' }> {
+    let minted: RotatedConfigToken;
+    try {
+      minted = await d.api.rotateConfigToken(pasted);
+    } catch (err) {
+      failed('try-refresh-token', err, app.installId);
+      return { ok: false, refusal: refreshTokenError(err) };
+    }
+    // The check comes BEFORE the store. A change (changeApp) stores first
+    // because the token it spent is the stored one. Here the spent token is
+    // the pasted one, and the stored one stays untouched until Slack has
+    // taken a change to this app from the new token: one whose owner can't
+    // manage the app must never overwrite one that may still work.
+    try {
+      await check(minted.accessToken);
+    } catch (err) {
+      failed('check-app', err, app.installId);
+      return { ok: false, refusal: replaceCheckError(err) };
+    }
+    // Written as the app's person's token, never the paster's: Slack just
+    // took it for their app, so it is their chain. Writing it to whoever
+    // pasted it would put one person's token in another's slot, breaking
+    // every app the paster made.
+    if (!(await saveRotatedToken(app, minted.refreshToken))) return { ok: false, refusal: 'token-not-kept' };
+    return { ok: true, accessToken: minted.accessToken };
+  }
+
   async function deleteSlackApp(install: InstallRow): Promise<boolean> {
     let stage = 'config-token';
     try {
@@ -538,6 +625,7 @@ export function createAppSteps(d: AppStepsDeps): AppSteps {
     release,
     saveRotatedToken,
     changeApp,
+    replaceConfigToken,
     deleteSlackApp,
     undoConnect,
     exchangeCode,

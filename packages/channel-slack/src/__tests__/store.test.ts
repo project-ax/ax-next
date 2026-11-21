@@ -98,14 +98,20 @@ async function rawRow(installId: string) {
 }
 
 /**
- * A channel connected to an agent on an install. Written raw: this file tests
- * the install store, and the bindings' own store has its own tests.
+ * A channel connected to an agent on an install, its outsiders running as
+ * `connectedByUserId`. Written raw: this file tests the install store, and
+ * the bindings' own store has its own tests.
  */
-async function bind(installId: string, channelId: string, agentId = 'agt_support'): Promise<void> {
+async function bind(
+  installId: string,
+  channelId: string,
+  agentId = 'agt_support',
+  connectedByUserId = 'usr_admin1',
+): Promise<void> {
   await sql`
     INSERT INTO channel_slack_v1_channels
       (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
-    VALUES (${installId}, ${channelId}, ${agentId}, 'usr_admin1', 'support')
+    VALUES (${installId}, ${channelId}, ${agentId}, ${connectedByUserId}, 'support')
   `.execute(db);
 }
 
@@ -115,6 +121,16 @@ async function bindings(): Promise<string[]> {
     SELECT install_id, channel_id FROM channel_slack_v1_channels
   `.execute(db);
   return r.rows.map((row) => `${row.install_id}/${row.channel_id}`).sort();
+}
+
+/** Every binding left, whole, by install id then channel id. */
+async function bindingRows() {
+  return db
+    .selectFrom('channel_slack_v1_channels')
+    .selectAll()
+    .orderBy('install_id', 'asc')
+    .orderBy('channel_id', 'asc')
+    .execute();
 }
 
 /**
@@ -162,6 +178,29 @@ async function withLeftoverInsertTrigger(body: string, fn: () => Promise<void>):
       .raw(
         `DROP TRIGGER IF EXISTS channel_slack_store_test_on_leftover ON channel_slack_v1_leftover_apps;
          DROP FUNCTION IF EXISTS channel_slack_store_test_on_leftover();`,
+      )
+      .execute(db);
+  }
+}
+
+/** The same, as a BEFORE UPDATE row trigger on the channel bindings table. */
+async function withBindingUpdateTrigger(body: string, fn: () => Promise<void>): Promise<void> {
+  await sql
+    .raw(
+      `CREATE FUNCTION channel_slack_store_test_on_binding_update() RETURNS trigger LANGUAGE plpgsql AS $fn$
+         BEGIN ${body} END
+       $fn$;
+       CREATE TRIGGER channel_slack_store_test_on_binding_update BEFORE UPDATE ON channel_slack_v1_channels
+         FOR EACH ROW EXECUTE FUNCTION channel_slack_store_test_on_binding_update();`,
+    )
+    .execute(db);
+  try {
+    await fn();
+  } finally {
+    await sql
+      .raw(
+        `DROP TRIGGER IF EXISTS channel_slack_store_test_on_binding_update ON channel_slack_v1_channels;
+         DROP FUNCTION IF EXISTS channel_slack_store_test_on_binding_update();`,
       )
       .execute(db);
   }
@@ -827,6 +866,125 @@ describe("an install's channel bindings go with it", () => {
       expect((await store.removeAll()).map((r) => r.installId)).toEqual([gone]);
       expect(await bindings()).toEqual([`${kept}/C07SUPPORT1`]);
     });
+  });
+});
+
+/*
+  A team agent's own bot runs its channels' outsiders as its requester, and
+  each binding copies the requester at the channel's first mention. When the
+  requester is no longer a team admin, another team admin claims the bot
+  (TASK-1173): the row and every binding of its install must name the
+  claimer together, so outsiders never run as the old requester in one
+  channel and the new one in another. Only a live bot can be claimed: a
+  pending one's requester is read to tell who approved it.
+*/
+describe("a claim moves a live bot's requester and its bindings together (TASK-1173)", () => {
+  /** Long before any claim, so a binding's moved `updated_at` is told apart from a kept one. */
+  const BOUND_AT = new Date('2026-11-01T00:00:00.000Z');
+
+  /** A team agent's own bot, past its Allow. */
+  async function liveBot(o: { agentId: string; connectedByUserId: string; requestedByUserId: string }): Promise<string> {
+    const installId = await pendingBot(o);
+    await store.activate(installId, { ...TEAM, installedAt: new Date('2026-11-20T09:00:00.000Z') });
+    return installId;
+  }
+
+  async function backdateBindings(): Promise<void> {
+    await sql`UPDATE channel_slack_v1_channels SET updated_at = ${BOUND_AT}`.execute(db);
+  }
+
+  it("claimBot moves a live bot's requester and every binding of its install, and nothing else", async () => {
+    // The shared app, with the support agent in channel C1.
+    const shared = await pending();
+    await store.activate(shared, { ...TEAM, installedAt: new Date('2026-11-20T08:00:00.000Z') });
+    await bind(shared, 'C07CHANNEL1', 'agt_support', 'usr_shared');
+    // The support agent's own bot: asked for by Ada, approved by Grace, in C1 and C2.
+    const claimed = await liveBot({ agentId: 'agt_support', connectedByUserId: 'usr_grace', requestedByUserId: 'usr_ada' });
+    await bind(claimed, 'C07CHANNEL1', 'agt_support', 'usr_ada');
+    await bind(claimed, 'C07CHANNEL2', 'agt_support', 'usr_ada');
+    // The sales agent's own bot, Sam's, in C3.
+    const other = await liveBot({ agentId: 'agt_sales', connectedByUserId: 'usr_sam', requestedByUserId: 'usr_sam' });
+    await bind(other, 'C07CHANNEL3', 'agt_sales', 'usr_sam');
+    await backdateBindings();
+    // One of the bot's channels has memory off. A claim writes no memory
+    // switch (so it needs no switch lock, TASK-1182): the bindings check
+    // below compares every column, `remember` included.
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${claimed} AND channel_id = 'C07CHANNEL2'`.execute(db);
+    const before = { shared: await rawRow(shared), claimed: await rawRow(claimed), other: await rawRow(other) };
+    const bindingsBefore = await bindingRows();
+    expect(bindingsBefore).toHaveLength(4);
+
+    await store.claimBot(claimed, 'usr_bob');
+
+    // Only the requester moves: Grace's token still made the app, and the row is still live.
+    expect(await rawRow(claimed)).toEqual({ ...before.claimed!, requested_by_user_id: 'usr_bob' });
+    expect(await store.get(claimed)).toMatchObject({
+      status: 'active',
+      connectedByUserId: 'usr_grace',
+      requestedByUserId: 'usr_bob',
+    });
+    expect(await rawRow(shared)).toEqual(before.shared);
+    expect(await rawRow(other)).toEqual(before.other);
+    // The bot's two bindings now run its outsiders as Bob, and say they changed; no other binding moved.
+    const after = await bindingRows();
+    expect(after).toEqual(
+      bindingsBefore.map((b) =>
+        b.install_id === claimed ? { ...b, connected_by_user_id: 'usr_bob', updated_at: expect.any(Date) } : b,
+      ),
+    );
+    const moved = after.filter((b) => b.install_id === claimed);
+    expect(moved.map((b) => b.channel_id)).toEqual(['C07CHANNEL1', 'C07CHANNEL2']);
+    for (const b of moved) expect(b.updated_at.getTime()).toBeGreaterThan(BOUND_AT.getTime());
+  });
+
+  it('claimBot moves nothing for a pending bot, the shared app or an unknown id: each is install-not-active', async () => {
+    const waiting = await pendingBot({ agentId: 'agt_support', connectedByUserId: 'usr_grace', requestedByUserId: 'usr_ada' });
+    // A pending bot binds no channel; this one is written by SQL to prove it would stay.
+    await bind(waiting, 'C07CHANNEL1', 'agt_support', 'usr_ada');
+    const shared = await pending();
+    await store.activate(shared, { ...TEAM, installedAt: new Date('2026-11-20T08:00:00.000Z') });
+    await bind(shared, 'C07CHANNEL2', 'agt_sales', 'usr_shared');
+    await backdateBindings();
+    const before = { waiting: await rawRow(waiting), shared: await rawRow(shared) };
+    const bindingsBefore = await bindingRows();
+
+    // An unknown id is also what a bot removed by a reset meanwhile looks like.
+    for (const installId of [waiting, shared, newInstallId()]) {
+      const err = await store.claimBot(installId, 'usr_bob').catch((e: unknown) => e);
+      expect(err, installId).toBeInstanceOf(InstallStoreError);
+      expect((err as InstallStoreError).code, installId).toBe('install-not-active');
+    }
+    expect(await rawRow(waiting)).toEqual(before.waiting);
+    expect(await rawRow(shared)).toEqual(before.shared);
+    expect(await bindingRows()).toEqual(bindingsBefore);
+  });
+
+  it('claimBot is one statement: a binding update that fails leaves the requester as it was', async () => {
+    const claimed = await liveBot({ agentId: 'agt_support', connectedByUserId: 'usr_grace', requestedByUserId: 'usr_ada' });
+    await bind(claimed, 'C07CHANNEL1', 'agt_support', 'usr_ada');
+    await backdateBindings();
+    const rowBefore = await rawRow(claimed);
+    const bindingsBefore = await bindingRows();
+
+    await withBindingUpdateTrigger(`RAISE EXCEPTION 'refused in test'; RETURN NEW;`, async () => {
+      // A plain fault, not install-not-active: the caller's 500, never "not live".
+      const err = await store.claimBot(claimed, 'usr_bob').catch((e: unknown) => e);
+      expect(err).not.toBeInstanceOf(InstallStoreError);
+      expect(String(err)).toContain('refused in test');
+    });
+
+    expect(await rawRow(claimed)).toEqual(rowBefore);
+    expect(await bindingRows()).toEqual(bindingsBefore);
+  });
+
+  it('claimBot claims a live bot with no bindings', async () => {
+    const claimed = await liveBot({ agentId: 'agt_support', connectedByUserId: 'usr_grace', requestedByUserId: 'usr_ada' });
+    const before = await rawRow(claimed);
+
+    await store.claimBot(claimed, 'usr_bob');
+
+    expect(await rawRow(claimed)).toEqual({ ...before!, requested_by_user_id: 'usr_bob' });
+    expect(await bindingRows()).toEqual([]);
   });
 });
 

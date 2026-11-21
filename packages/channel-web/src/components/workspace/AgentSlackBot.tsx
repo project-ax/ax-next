@@ -28,6 +28,14 @@
  *            older server) there is no Disconnect. A disconnect whose Slack
  *            app couldn't be deleted leaves the same kind of note a cancel
  *            does
+ *   live, needing attention (TASK-1173): when the person who set it up has
+ *            left, nobody can replace its Slack token, so everyone sees that it
+ *            needs rebuilding and a manager (while the shared app is connected)
+ *            can "Rebuild bot": disconnect it, then ask for a new one with the
+ *            old name offered back. When the person who asked for it is no
+ *            longer a team admin, a manager can "Claim bot" and it answers
+ *            people outside the team with theirs. Both name the bot the page
+ *            showed by its install id (`AgentSlackBotLifecycle`)
  *
  * Asking an AX admin sends the name and nothing else: no token, no picture
  * (the admin's browser draws it at Approve).
@@ -68,6 +76,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Spinner } from '@/components/ui/spinner';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { BotChanges } from './AgentSlackBotChanges';
+import { ClaimBotDialog, RebuildBotDialog, rebuildWho, type RebuildFrom } from './AgentSlackBotLifecycle';
 import {
   agentSlackBotErrorCopy,
   agentSlackBotStale,
@@ -98,6 +107,11 @@ export interface BotCancelled {
   appDeleted: boolean;
   approverIsViewer: boolean;
   approver: string;
+  /**
+   * The approver has left the team, so there is nobody to name: the left-over
+   * note doesn't send anyone to them to delete the app (TASK-1173).
+   */
+  approverGone?: boolean;
 }
 
 export interface AgentSlackBotProps {
@@ -113,6 +127,12 @@ export interface AgentSlackBotProps {
    */
   leftOver: BotCancelled | null;
   /**
+   * The bot a Rebuild just took away, so the request form can offer its name
+   * back and say a replacement is next (TASK-1173). Held by the caller for the
+   * same reason as `leftOver`.
+   */
+  rebuilding: RebuildFrom | null;
+  /**
    * The shared app is connected, so the shared bot answers again in any channel
    * the agent was connected to through it once this bot goes (TASK-1172). Not
    * the listed channels: TASK-1168 drops a channel from that list once this bot
@@ -122,6 +142,8 @@ export interface AgentSlackBotProps {
   sharedConnected?: boolean;
   /** The request was cancelled or the bot disconnected (the status is read again right after). */
   onCancelled: (cancelled: BotCancelled) => void;
+  /** A Rebuild disconnected the bot: remember which one, for the form that follows. */
+  onRebuilt: (from: RebuildFrom) => void;
   /** A new bot is being asked for: whatever an old cancel left to say is moot. */
   onRequesting: () => void;
   /** The picture is out of date, or something changed: read the status again. */
@@ -173,7 +195,7 @@ export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
           <>
             Or delete it yourself: open it in <SlackAppsLink /> and click Delete App at the bottom of the page.
           </>
-        ) : (
+        ) : leftOver.approverGone === true ? null : (
           `${leftOver.approver} set it up and can also delete it in Slack's app settings.`
         )}
       </AlertDescription>
@@ -188,7 +210,9 @@ export function AgentSlackBot({
   canManage,
   sharedConnected = false,
   leftOver,
+  rebuilding,
   onCancelled,
+  onRebuilt,
   onRequesting,
   onChanged,
 }: AgentSlackBotProps) {
@@ -199,7 +223,20 @@ export function AgentSlackBot({
           agentId={agentId}
           agentName={agentName}
           configTokenStored={bot.configTokenStored}
-          notice={leftOver !== null && !leftOver.appDeleted ? <AppLeftOverNote leftOver={leftOver} /> : null}
+          initialBotName={rebuilding?.botName}
+          notice={
+            <>
+              {rebuilding !== null && (
+                <Alert>
+                  <AlertDescription>
+                    {rebuildWho(rebuilding)} is disconnected. Set up its replacement below. It gets a new @handle, so
+                    invite it to each channel again.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {leftOver !== null && !leftOver.appDeleted && <AppLeftOverNote leftOver={leftOver} />}
+            </>
+          }
           onRequesting={onRequesting}
           onChanged={onChanged}
         />
@@ -219,6 +256,7 @@ export function AgentSlackBot({
           canManage={canManage}
           sharedConnected={sharedConnected}
           onCancelled={onCancelled}
+          onRebuilt={onRebuilt}
           onChanged={onChanged}
         />
       );
@@ -229,6 +267,7 @@ function RequestForm({
   agentId,
   agentName,
   configTokenStored,
+  initialBotName,
   notice,
   onRequesting,
   onChanged,
@@ -236,6 +275,8 @@ function RequestForm({
   agentId: string;
   agentName: string;
   configTokenStored: boolean;
+  /** The name to start with: the one a Rebuild took away, else the agent's. */
+  initialBotName?: string | undefined;
   /** Something to say before the form: what a cancel just left behind. */
   notice: ReactNode;
   onRequesting: () => void;
@@ -244,7 +285,7 @@ function RequestForm({
   const tokenRef = useRef<HTMLInputElement>(null);
   // Someone with a token on file has installed apps before; anyone else most likely can't.
   const [way, setWay] = useState<Way>(configTokenStored ? 'self' : 'admin');
-  const [botName, setBotName] = useState(agentName);
+  const [botName, setBotName] = useState(initialBotName ?? agentName);
   const [busy, setBusy] = useState(false);
   // A refusal that says "paste a token" shows the field even when one is stored.
   const [revealed, setRevealed] = useState(false);
@@ -467,8 +508,11 @@ function Pending({
   const [busy, setBusy] = useState<'continue' | 'cancel' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Cancel names the pending bot this page showed, so a stale tab can't take back a newer request (TASK-1173).
+  const { installId } = bot;
+
   async function run(which: 'continue' | 'cancel') {
-    if (busy !== null) return;
+    if (busy !== null || (which === 'cancel' && installId === null)) return;
     setBusy(which);
     setError(null);
     try {
@@ -476,8 +520,8 @@ function Pending({
         const { installUrl } = await continueSlackBot(agentId);
         // The page is leaving for Slack, so it stays busy.
         goToSlack(installUrl);
-      } else {
-        const { appDeleted } = await cancelSlackBot(agentId);
+      } else if (installId !== null) {
+        const { appDeleted } = await cancelSlackBot(agentId, installId);
         onCancelled({ how: 'cancelled', appDeleted, approverIsViewer: bot.canContinue, approver: bot.approver });
         onChanged();
       }
@@ -510,9 +554,11 @@ function Pending({
             {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
           </Button>
         )}
-        <Button variant="outline" disabled={busy !== null} onClick={() => void run('cancel')}>
-          {busy === 'cancel' ? <Busy>Cancelling…</Busy> : 'Cancel request'}
-        </Button>
+        {installId !== null && (
+          <Button variant="outline" disabled={busy !== null} onClick={() => void run('cancel')}>
+            {busy === 'cancel' ? <Busy>Cancelling…</Busy> : 'Cancel request'}
+          </Button>
+        )}
       </div>
     </Section>
   );
@@ -525,6 +571,7 @@ function Live({
   canManage,
   sharedConnected,
   onCancelled,
+  onRebuilt,
   onChanged,
 }: {
   agentId: string;
@@ -533,12 +580,16 @@ function Live({
   canManage: boolean;
   sharedConnected: boolean;
   onCancelled: (cancelled: BotCancelled) => void;
+  onRebuilt: (from: RebuildFrom) => void;
   onChanged: () => void;
 }) {
   const handle = bot.handle;
   const [asking, setAsking] = useState(false);
-  // The key the Disconnect takes: only a manager gets one, and with none there is nothing to name.
+  const [rebuilding, setRebuilding] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  // The key Disconnect, Rebuild and Claim take: only a manager gets one, and with none there is nothing to name.
   const installId = canManage ? bot.installId : null;
+  const canRebuild = installId !== null && sharedConnected;
   return (
     <Section>
       <p className="text-sm">
@@ -546,15 +597,68 @@ function Live({
           ? `@${handle} is live. Invite it to a channel with /invite @${handle}.`
           : `${bot.botName} is live. Invite it to a channel with /invite.`}
       </p>
-      {canManage && <p className="text-[12.5px] text-muted-foreground">Set up by {bot.approver}.</p>}
+      {canManage && (
+        <p className="text-[12.5px] text-muted-foreground">
+          {bot.viewerIsApprover
+            ? 'You set it up.'
+            : bot.approverGone
+              ? 'Set up by someone who has left.'
+              : `Set up by ${bot.approver}.`}
+        </p>
+      )}
+      {bot.approverGone && (
+        <Alert>
+          <AlertDescription>
+            {`${bot.botName} needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more.${
+              canRebuild
+                ? ' Rebuild it to set it up again under your own token.'
+                : canManage
+                  ? ' Once Slack is connected again, you can rebuild it here.'
+                  : ' A team admin can rebuild it.'
+            }`}
+          </AlertDescription>
+        </Alert>
+      )}
       {bot.needsClaim && (
         <p className="text-sm text-muted-foreground">
           {bot.botName} needs a team admin to claim it. Until then it answers team members only.
         </p>
       )}
+      {bot.needsClaim && installId !== null && (
+        <div>
+          <Button variant="outline" onClick={() => setClaiming(true)}>
+            Claim bot
+          </Button>
+          <ClaimBotDialog
+            open={claiming}
+            onClose={() => setClaiming(false)}
+            agentId={agentId}
+            bot={bot}
+            installId={installId}
+            onChanged={onChanged}
+          />
+        </div>
+      )}
       {canManage && <BotChanges agentId={agentId} bot={bot} onChanged={onChanged} />}
       {installId !== null && (
-        <div>
+        <div className="flex flex-wrap gap-2">
+          {canRebuild && (
+            <>
+              <Button variant="outline" onClick={() => setRebuilding(true)}>
+                Rebuild bot
+              </Button>
+              <RebuildBotDialog
+                open={rebuilding}
+                onClose={() => setRebuilding(false)}
+                agentId={agentId}
+                bot={bot}
+                installId={installId}
+                onCancelled={onCancelled}
+                onRebuilt={onRebuilt}
+                onChanged={onChanged}
+              />
+            </>
+          )}
           <Button variant="outline" onClick={() => setAsking(true)}>
             Disconnect bot
           </Button>
@@ -618,7 +722,13 @@ function DisconnectBotDialog({
     try {
       const { appDeleted } = await disconnectSlackBot(agentId, installId);
       // The bot is gone: say how it went before the status is read again and this section goes with it.
-      onCancelled({ how: 'disconnected', appDeleted, approverIsViewer: false, approver: bot.approver });
+      onCancelled({
+        how: 'disconnected',
+        appDeleted,
+        approverIsViewer: bot.viewerIsApprover,
+        approver: bot.approver,
+        approverGone: bot.approverGone,
+      });
       onChanged();
     } catch (err) {
       logRequestFailure(err, 'agent-slack');

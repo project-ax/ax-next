@@ -274,7 +274,12 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
       ),
     installUrl: async (as: string, agentId: string = SUPPORT.id): Promise<Reply> =>
       keep(await bots.installUrl({ actorUserId: as, agentId })),
-    cancel: async (agentId: string = SUPPORT.id): Promise<Reply> => keep(await bots.cancel({ agentId })),
+    /**
+     * A team admin's Cancel (Grace's, unless told otherwise), naming the
+     * pending bot the page showed by its install id (TASK-1173).
+     */
+    cancel: async (installId: string, agentId: string = SUPPORT.id, as: string = GRACE): Promise<Reply> =>
+      keep(await bots.cancel({ ctx: ctxOf(as), actorUserId: as, agentId, installId })),
     /**
      * A team admin's Disconnect, from the agent's settings (TASK-1172), naming
      * the bot the page showed by its install id.
@@ -283,8 +288,8 @@ function world(o: { publicOrigin?: string; lock?: Mutex; getUserFault?: unknown 
       keep(await bots.disconnect({ ctx: ctxOf(as), actorUserId: as, agentId, installId })),
     /** An AX admin's Disconnect, from Admin › Slack, by the bot's install id (TASK-1172). */
     disconnectForAdmin: async (installId: string): Promise<Reply> => keep(await bots.disconnectForAdmin({ installId })),
-    /** Admin › Slack's list of every team bot, read as an AX admin (TASK-1172). */
-    listForAdmin: async (as: string = ADA) => keep(await bots.listForAdmin({ ctx: ctxOf(as) })),
+    /** Admin › Slack's list of every team bot, read as an AX admin (TASK-1172), who is also its viewer. */
+    listForAdmin: async (as: string = ADA) => keep(await bots.listForAdmin({ ctx: ctxOf(as), viewerUserId: as })),
     status: async (s: { as: string; manages: boolean; sharedActive: boolean; agentId?: string }) =>
       keep(
         await bots.status({
@@ -491,6 +496,11 @@ function failRotate(w: World, err: unknown): void {
 
 function methods(w: World): string[] {
   return w.slack.calls.map((c) => c.method);
+}
+
+/** Every vault and Slack call since the last `forget`: a refusal that touches nothing leaves this empty. */
+function reached(w: World): string[] {
+  return w.trail.filter((t) => t.startsWith('vault:') || t.startsWith('slack:'));
 }
 
 /** Nothing of the install `installId` is left in the vault. */
@@ -1500,7 +1510,7 @@ describe('cancel', () => {
     const installId = supportBot(w)!.installId;
     forget(w);
 
-    expect(await w.cancel()).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.cancel(installId)).toEqual({ status: 200, body: { appDeleted: true } });
 
     expect(w.trail).toEqual([
       'store:botForAgent',
@@ -1535,7 +1545,7 @@ describe('cancel', () => {
     await seedShared(a);
     await a.request({ as: ADA });
     forget(a);
-    expect(await a.cancel()).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await a.cancel(supportBot(a)!.installId)).toEqual({ status: 200, body: { appDeleted: true } });
     expect(a.vault.get(configTokenRef(ADA))).toBe(mintedRefresh(2));
     expect(a.trail.at(-1)).toBe('store:personHasApps');
   });
@@ -1548,7 +1558,7 @@ describe('cancel', () => {
     forget(w);
     failRotate(w, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
 
-    expect(await w.cancel()).toEqual({ status: 200, body: { appDeleted: false } });
+    expect(await w.cancel(installId)).toEqual({ status: 200, body: { appDeleted: false } });
 
     expect(w.memory.rows.has(installId)).toBe(false);
     expect([...w.memory.leftovers.values()]).toEqual([
@@ -1562,12 +1572,12 @@ describe('cancel', () => {
     ]);
   });
 
-  it('a live bot gets 409 not-pending', async () => {
+  it('a live bot gets 409 not-pending, even named by its own install id', async () => {
     const w = world();
     await seedShared(w);
-    await addBot(w, { agentId: SUPPORT.id, approver: GRACE, botName: BOT_NAME, live: true });
+    const installId = await addBot(w, { agentId: SUPPORT.id, approver: GRACE, botName: BOT_NAME, live: true });
 
-    expect(await w.cancel()).toEqual({ status: 409, body: { error: 'not-pending' } });
+    expect(await w.cancel(installId)).toEqual({ status: 409, body: { error: 'not-pending' } });
 
     expect(w.slack.calls).toEqual([]);
     expect(w.vaultCalls).toEqual([]);
@@ -1575,7 +1585,104 @@ describe('cancel', () => {
 
     // Nor is there anything to cancel for an agent with no bot.
     const none = world();
-    expect(await none.cancel()).toEqual({ status: 409, body: { error: 'not-pending' } });
+    expect(await none.cancel('A'.repeat(22))).toEqual({ status: 409, body: { error: 'not-pending' } });
+  });
+
+  it("cancel names the pending bot by the install id its page showed: a stale page's, or another agent's bot's, is 409 not-pending and nothing is touched (TASK-1173)", async () => {
+    // Grace's tab shows the pending bot she asked for. It was cancelled
+    // elsewhere, Ada asked for a new one, and only then does Grace's Cancel land.
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const oldId = supportBot(w)!.installId;
+    expect(await w.cancel(oldId)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(await w.request({ as: ADA })).toMatchObject({ status: 200 });
+    const fresh = { ...supportBot(w)! };
+    expect(fresh).toMatchObject({ kind: 'bot', status: 'pending', agentId: SUPPORT.id });
+    expect(fresh.installId).not.toBe(oldId);
+    // Sam's pending bot, for the sales agent: an id the support agent's page never showed.
+    const salesId = await addBot(w);
+    const vaultBefore = new Map(w.vault);
+    forget(w);
+
+    expect(await w.cancel(oldId)).toEqual({ status: 409, body: { error: 'not-pending' } });
+    expect(await w.cancel(salesId)).toEqual({ status: 409, body: { error: 'not-pending' } });
+
+    // One read each, of the agent's own bot: no vault, no Slack, no line.
+    expect(w.trail).toEqual(['store:botForAgent', 'store:botForAgent']);
+    expect(reached(w)).toEqual([]);
+    expect(w.lines).toEqual([]);
+    expect(supportBot(w)).toEqual(fresh);
+    expect(w.memory.rows.get(salesId)).toMatchObject({ status: 'pending', agentId: SALES.id });
+    expect(w.vault).toEqual(vaultBefore);
+
+    // The page read again names the new bot, and that Cancel takes it.
+    expect(await w.cancel(fresh.installId)).toEqual({ status: 200, body: { appDeleted: true } });
+    expect(supportBot(w)).toBeUndefined();
+    expect(w.memory.rows.get(salesId)).toMatchObject({ status: 'pending' });
+  });
+
+  it('cancel: rights are asked again inside the lock: a team admin demoted while it was held gets 403, an agent deleted meanwhile 404, and nothing is touched (TASK-1173)', async () => {
+    // Demoted to member while another Slack-app step held the one app lock.
+    const lock = createMutex();
+    const w = world({ lock });
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const pending = { ...supportBot(w)! };
+    forget(w);
+    const hold = await holdLock(lock);
+    const asked = w.cancel(pending.installId, SUPPORT.id, ADA);
+    w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    hold.free();
+    await hold.done;
+
+    expect(await asked).toEqual({ status: 403, body: { error: 'forbidden' } });
+    // Not even the agent's bot was read: no vault, no Slack, no line.
+    expect(w.trail).toEqual([]);
+    expect(reached(w)).toEqual([]);
+    expect(w.lines).toEqual([]);
+    expect(supportBot(w)).toEqual(pending);
+    // Asked as a non-admin, as every manage question is.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([
+      { agentId: SUPPORT.id, actor: { userId: ADA, isAdmin: false } },
+    ]);
+
+    // The agent deleted while it waited.
+    const lock2 = createMutex();
+    const g = world({ lock: lock2 });
+    await seedShared(g);
+    await g.request({ as: GRACE, refreshToken: PASTED });
+    const gPending = { ...supportBot(g)! };
+    forget(g);
+    const held = await holdLock(lock2);
+    const gone = g.cancel(gPending.installId);
+    g.people.agents.delete(SUPPORT.id);
+    held.free();
+    await held.done;
+
+    expect(await gone).toEqual({ status: 404, body: { error: 'not-found' } });
+    expect(g.trail).toEqual([]);
+    expect(reached(g)).toEqual([]);
+    expect(supportBot(g)).toEqual(gPending);
+  });
+
+  it('cancel: rights that cannot be answered throw before anything is read (TASK-1173)', async () => {
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const pending = { ...supportBot(w)! };
+    forget(w);
+    w.people.faults.set(
+      'agents:resolve',
+      new PluginError({ code: 'unavailable', plugin: '@ax/agents', message: `db down ${FAILURE_CANARY}` }),
+    );
+
+    // An outage is no refusal: the route's 500.
+    await expect(w.cancel(pending.installId)).rejects.toMatchObject({ code: 'unavailable' });
+
+    expect(w.trail).toEqual([]);
+    expect(reached(w)).toEqual([]);
+    expect(supportBot(w)).toEqual(pending);
   });
 });
 
@@ -2000,6 +2107,7 @@ describe('listForAdmin', () => {
     const listed = await w.listForAdmin();
 
     // Both rows share the fake clock, so their order is the store's tie-break (store.test.ts).
+    // Ada reads it, and approved neither.
     expect(listed).toHaveLength(2);
     expect(listed).toEqual(
       expect.arrayContaining([
@@ -2010,6 +2118,7 @@ describe('listForAdmin', () => {
           approver: 'Grace Hopper',
           state: 'pending',
           addedAt: new Date(NOW_MS).toISOString(),
+          viewerIsApprover: false,
         },
         {
           installId: 'U2FsZXNCb3RJbnN0YWxsMQ',
@@ -2018,6 +2127,7 @@ describe('listForAdmin', () => {
           approver: 'Sam Sales',
           state: 'live',
           addedAt: new Date(NOW_MS).toISOString(),
+          viewerIsApprover: false,
         },
       ]),
     );
@@ -2105,17 +2215,27 @@ describe('listForAdmin', () => {
     expect(w.authAsked).toEqual([]);
   });
 
-  it('listForAdmin: each item holds exactly the six fields, and no person id, token, app id or agent id', async () => {
+  it('listForAdmin: each item holds exactly the seven fields, and no person id, token, app id or agent id', async () => {
     const w = world();
     await seedShared(w);
     await w.request({ as: GRACE, refreshToken: PASTED });
     await addBot(w, { handle: 'salesdesk' });
 
-    const answer = await w.listForAdmin();
+    // Read by Grace's approver self too, so one row carries a true mark.
+    const answer = [...(await w.listForAdmin()), ...(await w.listForAdmin(GRACE))];
 
-    expect(answer).toHaveLength(2);
+    expect(answer).toHaveLength(4);
+    expect(answer.filter((item) => item.viewerIsApprover)).toHaveLength(1);
     for (const item of answer) {
-      expect(Object.keys(item).sort()).toEqual(['addedAt', 'approver', 'botName', 'handle', 'installId', 'state']);
+      expect(Object.keys(item).sort()).toEqual([
+        'addedAt',
+        'approver',
+        'botName',
+        'handle',
+        'installId',
+        'state',
+        'viewerIsApprover',
+      ]);
     }
     const text = JSON.stringify(answer);
     for (const leak of [GRACE, SAM, ADA, 'usr_', SUPPORT.id, SALES.id, ADDED_BOT_APP, APP.appId, SHARED_APP, SHARED_INSTALL]) {
@@ -2124,6 +2244,31 @@ describe('listForAdmin', () => {
     // The vault holds tokens and secrets enough to make the scan mean something.
     expect(w.vault.size).toBeGreaterThan(4);
     for (const [ref, value] of w.vault) expect(text, ref).not.toContain(value);
+  });
+
+  it("listForAdmin: viewerIsApprover marks the viewing admin's own bots only, pending or live, never one they only asked for (TASK-1173)", async () => {
+    const w = world();
+    await seedShared(w);
+    // Hedy, an AX admin, approved Grace's request: Hedy is its approver, Grace its requester.
+    const { installId: hedys } = await approvedBot(w);
+    // Sam's own live bot for the sales agent.
+    const sams = await addBot(w, { handle: 'salesdesk' });
+    const marks = async (as: string) =>
+      Object.fromEntries((await w.listForAdmin(as)).map((b) => [b.installId, b.viewerIsApprover]));
+
+    expect(await marks(HEDY)).toEqual({ [hedys]: true, [sams]: false });
+    // Ada connected the shared app, which this list never shows, and approved neither bot.
+    expect(await marks(ADA)).toEqual({ [hedys]: false, [sams]: false });
+    // The mark follows the approver, never the requester (the route lets only AX admins read the list).
+    expect(await marks(GRACE)).toEqual({ [hedys]: false, [sams]: false });
+    // Live too: once Hedy's Allow finishes it, it is still hers.
+    expect(await w.finish(HEDY, hedys)).toEqual({ outcome: 'connected' });
+    expect(await marks(HEDY)).toEqual({ [hedys]: true, [sams]: false });
+    expect((await w.listForAdmin(HEDY)).find((b) => b.installId === hedys)).toMatchObject({ state: 'live' });
+    // Reading it never writes, rotates or asks Slack.
+    forget(w);
+    await w.listForAdmin(HEDY);
+    expect(reached(w)).toEqual([]);
   });
 
   it('listForAdmin: takes no lock, reads no vault and asks Slack nothing', async () => {
@@ -2216,11 +2361,14 @@ describe('status', () => {
     await addBot(w, { agentId: SUPPORT.id, approver: GRACE, botName: BOT_NAME, handle: 'supporthelper' });
     const installId = supportBot(w)!.installId;
     // The install id only for those who manage the agent: the key its Disconnect takes.
-    const live = (o: { approver?: string; needsClaim?: boolean; manages?: boolean } = {}) => ({
+    // Grace approved it, and her account is still there; Ada reads it unless told otherwise.
+    const live = (o: { approver?: string; needsClaim?: boolean; manages?: boolean; viewerIsApprover?: boolean } = {}) => ({
       state: 'live',
       botName: BOT_NAME,
       handle: 'supporthelper',
       approver: o.approver ?? 'Grace Hopper',
+      approverGone: false,
+      viewerIsApprover: o.viewerIsApprover ?? false,
       needsClaim: o.needsClaim ?? false,
       installId: (o.manages ?? true) ? installId : null,
     });
@@ -2230,7 +2378,7 @@ describe('status', () => {
       [ADA, true],
       [MEL, false],
     ] as const) {
-      expect(await w.status({ as, manages, sharedActive: true }), as).toEqual(live({ manages }));
+      expect(await w.status({ as, manages, sharedActive: true }), as).toEqual(live({ manages, viewerIsApprover: as === GRACE }));
     }
     // A live bot outlives the shared install (Disconnect leaves it alone).
     expect(await w.status({ as: MEL, manages: false, sharedActive: false })).toEqual(live({ manages: false }));
@@ -2273,6 +2421,145 @@ describe('status', () => {
       ...live({ manages: false }),
       handle: null,
     });
+  });
+
+  it('live: approverGone only when auth itself says the approver has no account; an outage reads false, logged once at warn and code-only (TASK-1173)', async () => {
+    const w = world();
+    await seedShared(w);
+    const installId = await seedSupportBot(w, { handle: 'supporthelper' });
+    const viewers = [
+      [ADA, true],
+      [MEL, false],
+    ] as const;
+
+    // Grace is still an AX user: nothing needs rebuilding.
+    for (const [as, manages] of viewers) {
+      expect(await w.status({ as, manages, sharedActive: true }), as).toMatchObject({
+        state: 'live',
+        approver: 'Grace Hopper',
+        approverGone: false,
+      });
+    }
+
+    // An account with no display name is still an account: "A teammate", not gone.
+    w.users.get(GRACE)!.displayName = null;
+    expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toMatchObject({
+      approver: 'A teammate',
+      approverGone: false,
+    });
+
+    // Nor is an answer that isn't an account: only auth's own null says someone left.
+    w.auth.answer = { value: 'not an account' };
+    expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toMatchObject({
+      approver: 'A teammate',
+      approverGone: false,
+    });
+    delete w.auth.answer;
+
+    // Grace has left: auth has no account for her. Everyone reading the agent's
+    // settings learns the bot needs rebuilding, managers and members alike.
+    w.users.delete(GRACE);
+    forget(w);
+    for (const [as, manages] of viewers) {
+      expect(await w.status({ as, manages, sharedActive: true }), as).toEqual({
+        state: 'live',
+        botName: BOT_NAME,
+        handle: 'supporthelper',
+        approver: 'A teammate',
+        approverGone: true,
+        viewerIsApprover: false,
+        needsClaim: false,
+        installId: manages ? installId : null,
+      });
+    }
+    // An account that's gone is an answer, not a fault: nothing logged, and nothing read but the row.
+    expect(w.lines).toEqual([]);
+    expect(reached(w)).toEqual([]);
+    expect(w.authAsked).toEqual([GRACE, GRACE]);
+
+    // Auth is down. An outage must never tell a team to rebuild a working bot:
+    // the approver reads "A teammate", not gone, and one warn line says why, by code alone.
+    w.auth.fault = new PluginError({ code: 'session-store-down', plugin: '@ax/auth-better', message: `down ${FAILURE_CANARY}` });
+    forget(w);
+    for (const [as, manages] of viewers) {
+      expect(await w.status({ as, manages, sharedActive: true }), as).toMatchObject({
+        state: 'live',
+        approver: 'A teammate',
+        approverGone: false,
+      });
+    }
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_failed', fields: { installId, stage: 'approver', code: 'session-store-down' } },
+      { level: 'warn', msg: 'slack_bot_failed', fields: { installId, stage: 'approver', code: 'session-store-down' } },
+    ]);
+    // The page still renders: the claim check and the install id answer as usual.
+    expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toMatchObject({ needsClaim: false, installId });
+  });
+
+  it('live: viewerIsApprover is true only for the person whose token made the bot, never its requester (TASK-1173)', async () => {
+    // The self path: Grace asked and approved.
+    const w = world();
+    await seedShared(w);
+    await seedSupportBot(w);
+    for (const [as, manages, mine] of [
+      [GRACE, true, true],
+      [ADA, true, false],
+      [MEL, false, false],
+    ] as const) {
+      expect(await w.status({ as, manages, sharedActive: true }), as).toMatchObject({ state: 'live', viewerIsApprover: mine });
+    }
+    // Hers whether or not the shared app is live.
+    expect(await w.status({ as: GRACE, manages: true, sharedActive: false })).toMatchObject({ viewerIsApprover: true });
+
+    // An AX admin's approve (TASK-1169): Hedy approved Grace's request. Grace
+    // asked for it and manages the agent, yet only Hedy set it up.
+    const a = world();
+    await seedShared(a);
+    const { installId } = await approvedBot(a);
+    expect(await a.finish(HEDY, installId)).toEqual({ outcome: 'connected' });
+    expect(await a.status({ as: GRACE, manages: true, sharedActive: true })).toMatchObject({
+      state: 'live',
+      approver: 'Hedy Lamarr',
+      viewerIsApprover: false,
+    });
+    // Hedy isn't on the agent's team, so she doesn't manage it, and it is still hers.
+    expect(await a.status({ as: HEDY, manages: false, sharedActive: true })).toMatchObject({
+      state: 'live',
+      viewerIsApprover: true,
+      installId: null,
+    });
+  });
+
+  it("pending: the shape is unchanged, approverGone and viewerIsApprover are a live bot's alone; a gone or unreadable approver reads \"A teammate\" (TASK-1173)", async () => {
+    const w = world();
+    await seedShared(w);
+    await w.request({ as: GRACE, refreshToken: PASTED });
+    const installId = supportBot(w)!.installId;
+    const pending = (approver: string, canContinue: boolean) => ({
+      state: 'pending',
+      botName: BOT_NAME,
+      approver,
+      canContinue,
+      installId,
+    });
+
+    // Exactly the five keys it had, for the approver and for another manager.
+    expect(await w.status({ as: GRACE, manages: true, sharedActive: true })).toEqual(pending('Grace Hopper', true));
+    expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toEqual(pending('Grace Hopper', false));
+
+    // Grace has left: the name falls back, and nothing more is said (Cancel covers a pending bot).
+    w.users.delete(GRACE);
+    forget(w);
+    expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toEqual(pending('A teammate', false));
+    expect(w.lines).toEqual([]);
+
+    // Auth is down: the same fallback, and the same warn line a live bot's outage gets.
+    w.auth.fault = connectionReset();
+    forget(w);
+    expect(await w.status({ as: ADA, manages: true, sharedActive: true })).toEqual(pending('A teammate', false));
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_failed', fields: { installId, stage: 'approver', code: 'ECONNRESET' } },
+    ]);
   });
 
   it("the bot's install id, the key its Disconnect takes, reaches only those who manage the agent: pending (which only they see) and live, with or without the shared app; anyone else reads null", async () => {
@@ -2452,7 +2739,7 @@ describe('answers and logs', () => {
     await w.status({ as: ADA, manages: true, sharedActive: true });
     await w.status({ as: MEL, manages: false, sharedActive: true });
     await w.request({ as: ADA, refreshToken: PASTED });
-    await w.cancel();
+    await w.cancel(supportBot(w)!.installId);
     await w.status({ as: ADA, manages: true, sharedActive: true });
 
     // Each failure in its own world.
@@ -2496,7 +2783,7 @@ describe('answers and logs', () => {
     await seedShared(deadCancel);
     await deadCancel.request({ as: GRACE, refreshToken: PASTED });
     failRotate(deadCancel, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
-    await deadCancel.cancel();
+    await deadCancel.cancel(supportBot(deadCancel)!.installId);
 
     // TASK-1169: an open request as its managers see it, an AX admin's
     // approve and her Allow, a refused self request, and the agent's deletion.
@@ -2543,6 +2830,23 @@ describe('answers and logs', () => {
     const deadId = await seedSupportBot(deadDisconnect);
     failRotate(deadDisconnect, new SlackApiError('tooling.tokens.rotate', 'token_revoked'));
     await deadDisconnect.disconnect(GRACE, deadId);
+
+    // TASK-1173: the approver's own views (the live status and Admin › Slack's
+    // marked row), a stale Cancel, an approver who has left, and an auth outage's warn line.
+    const approverViews = add(world());
+    await seedShared(approverViews);
+    const viewedId = await seedSupportBot(approverViews);
+    await approverViews.status({ as: GRACE, manages: true, sharedActive: true });
+    await approverViews.listForAdmin(GRACE);
+    await approverViews.cancel(viewedId);
+    approverViews.users.delete(GRACE);
+    await approverViews.status({ as: MEL, manages: false, sharedActive: true });
+    approverViews.auth.fault = new PluginError({
+      code: 'session-store-down',
+      plugin: '@ax/auth-better',
+      message: `down ${GRACE} ${FAILURE_CANARY}`,
+    });
+    await approverViews.status({ as: ADA, manages: true, sharedActive: true });
 
     // Every world said something, so the scan below reads real output.
     for (const x of worlds) {

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HookBus, type Logger } from '@ax/core';
+import { HookBus, makeAgentContext, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { createBotChanges } from '../bot-changes.js';
 import { logCode } from '../log-code.js';
@@ -7,6 +7,8 @@ import { botUrls, buildBotManifest } from '../manifest.js';
 import { createMutex, type Mutex } from '../mutex.js';
 import { configTokenRef, createSecretStore, secretRef } from '../secrets.js';
 import { SlackApiError } from '../slack-api.js';
+import { InstallStoreError } from '../store.js';
+import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { pngHeader } from './fake-png.js';
 import {
   BOT_USER,
@@ -29,17 +31,25 @@ import { memoryStore, type Row } from './memory-install-store.js';
 
 /*
   A team agent's live Slack bot, renamed or given a new picture after its Allow
-  (TASK-1171). The domain (bot-changes.ts) on the in-memory install store
-  (memory-install-store.ts), the real secret store over a fake vault on the bus
-  (fake-vault.ts), and a fake Slack that retires a rotated refresh token at once
-  (fake-slack-config.ts). The routes in front of it are agent-routes.test.ts.
+  (TASK-1171); its approver's token replaced, or the bot claimed by a team
+  admin once its requester left (TASK-1173). The domain (bot-changes.ts) on the
+  in-memory install store (memory-install-store.ts), the real secret store over
+  a fake vault on the bus (fake-vault.ts), @ax/agents' rights over a model of
+  agents and team roles (fake-agents.ts), and a fake Slack that retires a
+  rotated refresh token at once (fake-slack-config.ts). The routes in front of
+  it are agent-routes.test.ts and admin-bot-routes.test.ts.
 
   The rules pinned here are about whose token: always the bot's APPROVER's
-  (`connectedByUserId`), whoever asked. The domain takes no actor, so a team
-  admin's own token, live and stored, is never read, rotated or written. That
-  token is rotated under the one app lock, and its successor saved BEFORE the
-  access token minted with it is used. Every refusal that needs no Slack call
-  comes first. AX's row changes only once Slack took the change.
+  (`connectedByUserId`), whoever asked. A rename and a picture take no actor,
+  so a team admin's own token, live and stored, is never read, rotated or
+  written. That token is rotated under the one app lock, and its successor
+  saved BEFORE the access token minted with it is used. A Replace takes an
+  actor only to refuse anyone but the approver, before the vault or Slack; it
+  spends the PASTED token, never the stored one, and stores what that mints as
+  the approver's only once Slack took it for the bot's app. A Claim asks the
+  claimer's rights again inside the lock, first, and moves only whom the bot's
+  outsiders run as. Every refusal that needs no Slack call comes first. AX's
+  row changes only once Slack took the change.
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -67,17 +77,37 @@ const LEFTOVER = 'TGVmdG92ZXJBcHBPZkdyYWNl';
 
 const SUPPORT = 'agt_support';
 const SALES = 'agt_sales';
+const SUPPORT_TEAM = 'team_support';
+const SALES_TEAM = 'team_sales';
+/** The two team agents, as @ax/agents knows them (fake-agents.ts). */
+const AGENTS: FakeAgent[] = [
+  { id: SUPPORT, displayName: 'Support', visibility: 'team', ownerType: 'team', ownerId: SUPPORT_TEAM },
+  { id: SALES, displayName: 'Sales', visibility: 'team', ownerType: 'team', ownerId: SALES_TEAM },
+];
 
 /** Connected the shared app, and asked for the support bot; a team admin of the support team, with her own live token stored. */
 const ADA = 'usr_ada';
-/** The support bot's approver: her token made its app. */
+/**
+ * The support bot's approver: her token made its app. On no team: an AX
+ * admin approved Ada's ask (TASK-1169's shape), so Admin › Slack is her way in.
+ */
 const GRACE = 'usr_grace';
-/** The sales bot's approver and requester. */
+/** The sales bot's approver and requester; a team admin of the sales team. */
 const SAM = 'usr_sam';
+/** A team admin of the support team who neither asked for its bot nor approved it: the one who claims it. */
+const BOB = 'usr_bob';
+/** A plain member of the support team. */
+const MEL = 'usr_mel';
+/** On no team at all. */
+const STRANGER = 'usr_stranger';
 
 /** Each person's own configuration token (TASK-1175), as their last use of it left it. */
 const ADA_STORED = fakeConfigRefreshToken('ADASTOREDSECRET');
 const GRACE_STORED = fakeConfigRefreshToken('GRACESTOREDSECRET');
+/** The refresh token Grace pastes to replace her stored one, which stopped working (TASK-1173). */
+const PASTED = fakeConfigRefreshToken('GRACEPASTEDSECRET');
+/** Another she pastes later. */
+const PASTED_AGAIN = fakeConfigRefreshToken('GRACEPASTEDAGAINSECRET');
 
 const OLD_NAME = 'Support Helper';
 /** The support bot user's @handle, as Slack named it at the Allow. The fake's users.info keeps it. */
@@ -127,6 +157,25 @@ const ONE_PICTURE = [
 
 const RENAMED = { level: 'info', msg: 'slack_bot_renamed', fields: { installId: SUPPORT_BOT } };
 
+/**
+ * Everything one Replace from the agent's settings touches, in order
+ * (TASK-1173): the bot, the PASTED token rotated (the stored one is never
+ * read), Slack's check of what that minted, the minted refresh token stored
+ * as the approver's only after it, then the row read again, to see a reset
+ * meanwhile. Admin › Slack's way in reads the row by its id first.
+ */
+const ONE_REPLACE = [
+  'store:botForAgent',
+  'slack:rotateConfigToken',
+  'slack:updateApp',
+  'vault:set config-refresh-token',
+  'store:get',
+];
+const REPLACED = { level: 'info', msg: 'slack_bot_token_replaced', fields: { installId: SUPPORT_BOT } };
+const CLAIMED = { level: 'info', msg: 'slack_bot_claimed', fields: { installId: SUPPORT_BOT } };
+/** An install id nothing has: 22 base64url characters, as ours are. */
+const NOBODYS_ID = 'Tm9Cb3RIYXNUaGlzSWQwMA';
+
 // ── The world ───────────────────────────────────────────────────────────────
 
 interface Line {
@@ -146,9 +195,18 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
 
   const bus = new HookBus();
   const { vault, vaultCalls, vaultAs, vaultFailures } = busVault(bus, trail);
+  // Who may manage which agent (TASK-1173's Claim asks): the support team has
+  // Ada and Bob as team admins and Mel as a member; the sales team, Sam.
+  const people = fakeAgents(bus);
+  for (const agent of AGENTS) people.addAgent(agent);
+  people.setRole(SUPPORT_TEAM, ADA, 'admin');
+  people.setRole(SUPPORT_TEAM, BOB, 'admin');
+  people.setRole(SUPPORT_TEAM, MEL, 'member');
+  people.setRole(SALES_TEAM, SAM, 'admin');
   const memory = memoryStore(() => NOW_MS, trail);
   const slack = fakeSlack(trail);
   const changes = createBotChanges({
+    bus,
     installs: memory.store,
     secrets: createSecretStore(bus, { logger }),
     api: slack.api,
@@ -165,12 +223,15 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
     replies.push(reply);
     return reply;
   };
+  /** The ctx a settings route hands the domain: no agent, the person asking. */
+  const ctxOf = (userId: string) => makeAgentContext({ sessionId: 'channel-slack', agentId: '', userId, logger });
 
   return {
     vault,
     vaultCalls,
     vaultAs,
     vaultFailures,
+    people,
     memory,
     slack,
     trail,
@@ -179,6 +240,15 @@ function world(o: { publicOrigin?: string; lock?: Mutex } = {}) {
     rename: async (botName: string, agentId: string = SUPPORT) => keep(await changes.rename({ agentId, botName })),
     setPicture: async (png: Buffer = PNG, agentId: string = SUPPORT) =>
       keep(await changes.setPicture({ agentId, png })),
+    /** A Replace from the agent's settings: `actor` pasted `refreshToken`. */
+    replace: async (actor: string, refreshToken: string, agentId: string = SUPPORT) =>
+      keep(await changes.replaceToken({ actorUserId: actor, agentId, refreshToken })),
+    /** A Replace from Admin › Slack, naming the bot by its install id. */
+    replaceForAdmin: async (actor: string, installId: string, refreshToken: string) =>
+      keep(await changes.replaceTokenForAdmin({ actorUserId: actor, installId, refreshToken })),
+    /** `actor` claims the bot their page showed, by its install id. */
+    claim: async (actor: string, installId: string, agentId: string = SUPPORT) =>
+      keep(await changes.claim({ ctx: ctxOf(actor), actorUserId: actor, agentId, installId })),
   };
 }
 
@@ -191,6 +261,7 @@ function forget(w: World): void {
   w.slack.calls.length = 0;
   w.vaultCalls.length = 0;
   w.vaultAs.length = 0;
+  w.people.calls.length = 0;
   w.lines.length = 0;
 }
 
@@ -273,6 +344,27 @@ function methods(w: World): string[] {
 /** The trail's vault and Slack entries: what a refusal must never reach. */
 function reached(w: World): string[] {
   return w.trail.filter((t) => t.startsWith('vault:') || t.startsWith('slack:'));
+}
+
+/** Each question @ax/agents was asked, in order, with the person it was about. */
+function asked(w: World): Array<[hook: string, userId: unknown]> {
+  return w.people.calls.map((c) => {
+    const actor = c.input['actor'] as { userId?: unknown } | undefined;
+    return [c.hook, actor?.userId ?? c.input['userId']];
+  });
+}
+
+/**
+ * Run `then` just after the domain reads the agent's bot: for a Claim, after
+ * the claimer's rights were asked and before anything about the requester.
+ */
+function afterBotRead(w: World, then: () => void | Promise<void>): void {
+  const read = w.memory.store.botForAgent;
+  w.memory.store.botForAgent = async (agentId) => {
+    const bot = await read(agentId);
+    await then();
+    return bot;
+  };
 }
 
 /** users.info answering about the bot user, with `fields` in place of its own. */
@@ -1047,6 +1139,473 @@ describe('setPicture', () => {
   });
 });
 
+// ── replaceToken, replaceTokenForAdmin (TASK-1173) ──────────────────────────
+
+describe('replaceToken and replaceTokenForAdmin (TASK-1173)', () => {
+  it("RT1 the approver replaces: one rotate of the PASTED token, Slack gets the bot's whole manifest under its stored name, then the minted refresh token is hers; nothing else moves", async () => {
+    const w = await seeded();
+    const before = structuredClone(supportRow(w));
+
+    expect(await w.replace(GRACE, PASTED)).toEqual({ status: 200, body: {} });
+
+    // Slack's check first, the store after: no unproven token overwrites one.
+    expect(w.trail).toEqual(ONE_REPLACE);
+    // The pasted token is the one rotated, once. The stored one, dead, is never read or rotated.
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args)).toEqual([[PASTED]]);
+    // The bot's whole manifest under its stored name (Slack keeps nothing it
+    // isn't sent), with the access token that rotate minted, and nothing else.
+    const update = w.slack.calls.find((c) => c.method === 'updateApp')!;
+    expect(update.args).toEqual([MINTED_ACCESS, SUPPORT_APP, buildBotManifest(OLD_NAME, botUrls(ORIGIN, SUPPORT_BOT))]);
+    expect(w.slack.calls.filter((c) => c.args.includes(MINTED_ACCESS)).map((c) => c.method)).toEqual(['updateApp']);
+    // Stored once, in Grace's own slot, written as herself.
+    expect(w.vaultAs).toEqual([{ hook: 'credentials:set', name: 'config-refresh-token', userId: GRACE }]);
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+    // Nothing else moves: Ada's token, the bot's token, the row (no date either).
+    expect(w.vault.get(configTokenRef(ADA))).toBe(ADA_STORED);
+    expect(w.vault.get(secretRef(SUPPORT_BOT, 'bot-token'))).toBe(SUPPORT_BOT_TOKEN);
+    expect(supportRow(w)).toEqual(before);
+    expect(w.lines).toEqual([REPLACED]);
+  });
+
+  it('RT2 anyone but the approver is refused before the vault or Slack: 403 not-approver, the paste sent nowhere, on either way in', async () => {
+    // Ada asked for the bot, is a team admin of its team and has her own live
+    // token stored; Bob is another team admin; Sam has a bot of his own; a stranger has nothing.
+    for (const actor of [ADA, BOB, SAM, STRANGER]) {
+      const w = await seeded();
+
+      expect(await w.replace(actor, PASTED), actor).toEqual({ status: 403, body: { error: 'not-approver' } });
+      expect(await w.replaceForAdmin(actor, SUPPORT_BOT, PASTED), actor).toEqual({
+        status: 403,
+        body: { error: 'not-approver' },
+      });
+
+      expect(w.trail, actor).toEqual(['store:botForAgent', 'store:get', 'store:botForAgent']);
+      expect(reached(w), actor).toEqual([]);
+      expect(JSON.stringify(w.slack.calls), actor).not.toContain(PASTED);
+      expect(w.vault.get(configTokenRef(GRACE)), actor).toBe(GRACE_STORED);
+      expect(w.vault.get(configTokenRef(ADA)), actor).toBe(ADA_STORED);
+      expect(w.lines, actor).toEqual([]);
+    }
+  });
+
+  it('RT3 no live bot → 409 not-live, nothing reached: none, or one still pending (Cancel is its way out)', async () => {
+    for (const support of ['none', 'pending'] as const) {
+      const w = await seeded({ support });
+
+      // Grace is even the pending bot's approver.
+      expect(await w.replace(GRACE, PASTED), support).toEqual({ status: 409, body: { error: 'not-live' } });
+
+      expect(w.trail, support).toEqual(['store:botForAgent']);
+      expect(reached(w), support).toEqual([]);
+      expect(w.lines, support).toEqual([]);
+    }
+  });
+
+  it('RT4 an http origin → 409 public-origin-not-https for the approver, before the vault or Slack; anyone else still gets not-approver', async () => {
+    const w = await seeded({ publicOrigin: HTTP_ORIGIN });
+
+    // The check sends the manifest, which carries the URLs Slack calls back on.
+    expect(await w.replace(GRACE, PASTED)).toEqual({ status: 409, body: { error: 'public-origin-not-https' } });
+    expect(await w.replaceForAdmin(GRACE, SUPPORT_BOT, PASTED)).toEqual({
+      status: 409,
+      body: { error: 'public-origin-not-https' },
+    });
+    expect(await w.replace(ADA, PASTED)).toEqual({ status: 403, body: { error: 'not-approver' } });
+
+    expect(reached(w)).toEqual([]);
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(GRACE_STORED);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('RT5 Slack refuses the pasted token at its rotate → 502 slack-refresh-token (slack-error for a refusal a retry may fix); Slack is never asked to change the app, and the stored token stays', async () => {
+    const cases: Array<[code: string, error: string]> = [
+      ['invalid_refresh_token', 'slack-refresh-token'],
+      ['token_revoked', 'slack-refresh-token'],
+      ['ratelimited', 'slack-error'],
+    ];
+    for (const [code, error] of cases) {
+      const w = await seeded();
+      failRotate(w, code);
+
+      expect(await w.replace(GRACE, PASTED), code).toEqual({ status: 502, body: { error } });
+
+      // Nothing was stored, so there is nothing for a reset meanwhile to take back: no re-read.
+      expect(w.trail, code).toEqual(ONE_REPLACE.slice(0, 2));
+      expect(methods(w), code).toEqual(['rotateConfigToken']);
+      expect(w.vault.get(configTokenRef(GRACE)), code).toBe(GRACE_STORED);
+      expect(w.lines, code).toEqual([
+        { level: 'warn', msg: 'slack_bot_failed', fields: { installId: SUPPORT_BOT, stage: 'try-refresh-token', code } },
+      ]);
+    }
+  });
+
+  it("RT6 Slack refuses the check → 502 slack-not-app-manager when the token's owner can't manage (or see) the bot's app; slack-refresh-token for a dead one; slack-error otherwise; nothing stored", async () => {
+    const cases: Array<[code: string, error: string]> = [
+      ['no_permission', 'slack-not-app-manager'],
+      ['app_not_owned_by_manager_app', 'slack-not-app-manager'],
+      ['app_not_found', 'slack-not-app-manager'],
+      ['invalid_auth', 'slack-refresh-token'],
+      ['ratelimited', 'slack-error'],
+    ];
+    for (const [code, error] of cases) {
+      const w = await seeded();
+      failUpdate(w, code);
+
+      expect(await w.replace(GRACE, PASTED), code).toEqual({ status: 502, body: { error } });
+
+      expect(w.trail, code).toEqual(ONE_REPLACE.slice(0, 3));
+      expect(w.trail, code).not.toContain('vault:set config-refresh-token');
+      // The token that can't manage the bot never overwrites hers.
+      expect(w.vault.get(configTokenRef(GRACE)), code).toBe(GRACE_STORED);
+      expect(w.lines, code).toEqual([
+        { level: 'warn', msg: 'slack_bot_failed', fields: { installId: SUPPORT_BOT, stage: 'check-app', code } },
+      ]);
+    }
+  });
+
+  it("RT7 the minted refresh token won't save → 500 internal; the stored token is left as it was", async () => {
+    const w = await seeded();
+    w.vaultFailures.set(`credentials:set ${configTokenRef(GRACE)}`, connectionReset());
+
+    expect(await w.replace(GRACE, PASTED)).toEqual({ status: 500, body: { error: 'internal' } });
+
+    expect(w.trail).toEqual(ONE_REPLACE.slice(0, 4));
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(GRACE_STORED);
+    expect(w.lines).toEqual([
+      {
+        level: 'error',
+        msg: 'slack_bot_failed',
+        fields: { installId: SUPPORT_BOT, stage: 'save-config-token', code: 'ECONNRESET' },
+      },
+    ]);
+  });
+
+  it("RT8 a reset meanwhile (it takes no lock) → 409 not-live: the token just stored goes unless something still names the approver, and one the reset's wipe already took leaves no empty row", async () => {
+    // (a) A reset removes every row while Slack takes the check: the minted
+    // token is stored after its sweep, and nothing names Grace any more.
+    const w = await seeded();
+    w.slack.on.updateApp = async () => {
+      await w.memory.store.removeAll();
+    };
+
+    expect(await w.replace(GRACE, PASTED)).toEqual({ status: 409, body: { error: 'not-live' } });
+
+    expect(w.trail.slice(-4)).toEqual([
+      'store:get',
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+      'vault:delete config-refresh-token',
+    ]);
+    expect(w.vault.has(configTokenRef(GRACE))).toBe(false);
+    expect(w.lines).toEqual([]);
+
+    // (b) An app of Grace's is left over: it names her, so her new token stays, for it.
+    const kept = await seeded();
+    await kept.memory.store.rememberLeftoverApp({
+      installId: LEFTOVER,
+      appId: 'A07LEFTOVER1',
+      botName: 'Old Helper',
+      connectedByUserId: GRACE,
+    });
+    forget(kept);
+    kept.slack.on.updateApp = async () => {
+      await kept.memory.store.removeAll();
+    };
+    expect(await kept.replace(GRACE, PASTED)).toEqual({ status: 409, body: { error: 'not-live' } });
+    expect(kept.trail.at(-1)).toBe('store:personHasApps');
+    expect(kept.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+
+    // (c) The whole reset lands after the store, before the re-read: its wipe
+    // already took the token, so nothing is deleted (the vault deletes by
+    // writing an empty row, and a reset leaves no rows behind).
+    const wiped = await seeded();
+    const get = wiped.memory.store.get;
+    wiped.memory.store.get = async (installId) => {
+      wiped.vault.clear();
+      await wiped.memory.store.removeAll();
+      return get(installId);
+    };
+    expect(await wiped.replace(GRACE, PASTED)).toEqual({ status: 409, body: { error: 'not-live' } });
+    expect(wiped.trail.slice(-3)).toEqual(['store:get', 'store:personHasApps', 'vault:get config-refresh-token']);
+    expect(wiped.trail).not.toContain('vault:delete config-refresh-token');
+    expect(wiped.vault.size).toBe(0);
+    expect(wiped.lines).toEqual([]);
+
+    // Our own store failing at that re-read is no reset: it rejects (the
+    // route's 500), nothing asks whether anything names Grace, and her new token stays.
+    const broken = await seeded();
+    broken.memory.failures.set('get', connectionReset());
+    expect(logCode(await rejection(broken.replace(GRACE, PASTED)))).toBe('ECONNRESET');
+    expect(broken.trail.at(-1)).toBe('store:get');
+    expect(broken.trail).not.toContain('store:personHasApps');
+    expect(broken.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+  });
+
+  it("RT9 Admin › Slack's way in, by install id: the approver's own live bot is replaced; another person's bot is not-approver; an id no team bot has is no-bot; a pending bot is not-live; no refusal reaches the vault or Slack", async () => {
+    const w = await seeded();
+    expect(await w.replaceForAdmin(GRACE, SUPPORT_BOT, PASTED)).toEqual({ status: 200, body: {} });
+    expect(w.trail).toEqual(['store:get', ...ONE_REPLACE]);
+    expect(w.slack.calls.find((c) => c.method === 'rotateConfigToken')!.args).toEqual([PASTED]);
+    expect(w.slack.calls.find((c) => c.method === 'updateApp')!.args).toEqual([
+      MINTED_ACCESS,
+      SUPPORT_APP,
+      buildBotManifest(OLD_NAME, botUrls(ORIGIN, SUPPORT_BOT)),
+    ]);
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(1));
+    expect(w.lines).toEqual([REPLACED]);
+
+    const refusals: World[] = [];
+    // Sam's bot: Grace didn't set it up, so her paste can't go to his slot (nor hers).
+    const other = await seeded();
+    expect(await other.replaceForAdmin(GRACE, SALES_BOT, PASTED)).toEqual({ status: 403, body: { error: 'not-approver' } });
+    expect(other.trail).toEqual(['store:get', 'store:botForAgent']);
+    refusals.push(other);
+
+    // The shared app (Admin › Slack's own Replace is for that), even as its
+    // connector, and an id nothing has.
+    for (const installId of [SHARED_INSTALL, NOBODYS_ID]) {
+      const x = await seeded();
+      expect(await x.replaceForAdmin(ADA, installId, PASTED), installId).toEqual({ status: 409, body: { error: 'no-bot' } });
+      expect(x.trail, installId).toEqual(['store:get']);
+      refusals.push(x);
+    }
+
+    // A bot still waiting for its Allow, even its approver's.
+    const pending = await seeded({ support: 'pending' });
+    expect(await pending.replaceForAdmin(GRACE, SUPPORT_BOT, PASTED)).toEqual({ status: 409, body: { error: 'not-live' } });
+    expect(pending.trail).toEqual(['store:get', 'store:botForAgent']);
+    refusals.push(pending);
+
+    for (const x of refusals) {
+      expect(reached(x)).toEqual([]);
+      expect(x.vault.get(configTokenRef(GRACE))).toBe(GRACE_STORED);
+      expect(x.lines).toEqual([]);
+    }
+  });
+
+  it('RT10 a Replace (either way in) and a Claim wait for the one app lock: nothing is read until it is let go, then each runs whole, in turn', async () => {
+    const lock = createMutex();
+    const w = await seeded({ lock });
+    w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    const other = await holdLock(lock);
+
+    const replacing = w.replace(GRACE, PASTED);
+    const fromAdmin = w.replaceForAdmin(GRACE, SUPPORT_BOT, PASTED_AGAIN);
+    const claiming = w.claim(BOB, SUPPORT_BOT);
+    await settle();
+    expect(w.trail).toEqual([]);
+    expect(w.people.calls).toEqual([]);
+    other.free();
+    await other.done;
+
+    expect(await replacing).toEqual({ status: 200, body: {} });
+    expect(await fromAdmin).toEqual({ status: 200, body: {} });
+    expect(await claiming).toEqual({ status: 200, body: {} });
+    expect(w.trail).toEqual([...ONE_REPLACE, 'store:get', ...ONE_REPLACE, 'store:botForAgent', 'store:claimBot']);
+    // Each Replace spent its own paste; the later one's successor is the one kept.
+    expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args[0])).toEqual([
+      PASTED,
+      PASTED_AGAIN,
+    ]);
+    expect(w.vault.get(configTokenRef(GRACE))).toBe(mintedRefresh(2));
+    expect(supportRow(w).requestedByUserId).toBe(BOB);
+  });
+});
+
+// ── claim (TASK-1173) ───────────────────────────────────────────────────────
+
+describe('claim (TASK-1173)', () => {
+  it('CL1 a team admin claims a live bot whose requester is no longer a team admin: their rights, then the requester, then one claimBot naming them; no vault or Slack', async () => {
+    const w = await seeded();
+    // Ada asked for the bot, and is a team admin no more.
+    w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    const before = structuredClone(supportRow(w));
+
+    expect(await w.claim(BOB, SUPPORT_BOT)).toEqual({ status: 200, body: {} });
+
+    // Bob's rights first, inside the lock; then whether Ada still stands.
+    expect(asked(w)).toEqual([
+      ['agents:resolve', BOB],
+      ['agents:can-set-shared-credential', BOB],
+      ['agents:resolve', ADA],
+      ['agents:can-set-shared-credential', ADA],
+    ]);
+    expect(w.memory.calls).toEqual([
+      { method: 'botForAgent', args: [SUPPORT] },
+      { method: 'claimBot', args: [SUPPORT_BOT, BOB] },
+    ]);
+    // Only whom its outsiders run as moved: Grace, whose token made the app, still manages it.
+    expect(supportRow(w)).toEqual({ ...before, requestedByUserId: BOB });
+    expect(reached(w)).toEqual([]);
+    expect(w.lines).toEqual([CLAIMED]);
+  });
+
+  it('CL2 a requester taken off the team counts too, and so does a row with no requester (never, by the database\'s CHECK)', async () => {
+    const w = await seeded();
+    w.people.setRole(SUPPORT_TEAM, ADA, null);
+
+    expect(await w.claim(BOB, SUPPORT_BOT)).toEqual({ status: 200, body: {} });
+
+    // agents:resolve refuses her, so nobody asks whether she manages it.
+    expect(asked(w).slice(2)).toEqual([['agents:resolve', ADA]]);
+    expect(supportRow(w).requestedByUserId).toBe(BOB);
+    expect(w.lines).toEqual([CLAIMED]);
+
+    const nobody = await seeded();
+    supportRow(nobody).requestedByUserId = null;
+    expect(await nobody.claim(BOB, SUPPORT_BOT)).toEqual({ status: 200, body: {} });
+    // Nobody to ask about.
+    expect(asked(nobody)).toEqual([
+      ['agents:resolve', BOB],
+      ['agents:can-set-shared-credential', BOB],
+    ]);
+    expect(supportRow(nobody).requestedByUserId).toBe(BOB);
+  });
+
+  it('CL3 a requester still a team admin → 409 claim-not-needed: nothing written, for another team admin or the requester herself', async () => {
+    for (const actor of [BOB, ADA]) {
+      const w = await seeded();
+      const before = structuredClone(supportRow(w));
+
+      expect(await w.claim(actor, SUPPORT_BOT), actor).toEqual({ status: 409, body: { error: 'claim-not-needed' } });
+
+      expect(w.memory.calls.map((c) => c.method), actor).toEqual(['botForAgent']);
+      expect(supportRow(w), actor).toEqual(before);
+      expect(w.lines, actor).toEqual([]);
+    }
+  });
+
+  it('CL4 rights first, inside the lock: a member is 403 forbidden, anyone who can\'t see the agent 404 not-found, a personal agent 409 personal-agent; nothing is read', async () => {
+    const cases: Array<[actor: string, agentId: string, status: number, error: string]> = [
+      [MEL, SUPPORT, 403, 'forbidden'],
+      [SAM, SUPPORT, 404, 'not-found'],
+      [STRANGER, SUPPORT, 404, 'not-found'],
+      // She approved the bot, but isn't on its agent's team.
+      [GRACE, SUPPORT, 404, 'not-found'],
+      [BOB, 'agt_bobs_own', 409, 'personal-agent'],
+    ];
+    for (const [actor, agentId, status, error] of cases) {
+      const w = await seeded();
+      w.people.addAgent({ id: 'agt_bobs_own', displayName: 'Mine', visibility: 'personal', ownerType: 'user', ownerId: BOB });
+      // A claim that would otherwise go through.
+      w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+
+      expect(await w.claim(actor, SUPPORT_BOT, agentId), actor).toEqual({ status, body: { error } });
+
+      expect(w.memory.calls, actor).toEqual([]);
+      expect(asked(w).every(([, userId]) => userId === actor), actor).toBe(true);
+      expect(supportRow(w).requestedByUserId, actor).toBe(ADA);
+      expect(w.lines, actor).toEqual([]);
+    }
+  });
+
+  it("CL5 the bot the page showed, and only while it is live: another bot's id → 409 no-bot; no bot, or one still pending → 409 not-live; the requester isn't asked about", async () => {
+    // Sam's bot, and the id of a bot rebuilt since (a stale page).
+    for (const installId of [SALES_BOT, NOBODYS_ID]) {
+      const w = await seeded();
+      w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+
+      expect(await w.claim(BOB, installId), installId).toEqual({ status: 409, body: { error: 'no-bot' } });
+
+      expect(w.memory.calls.map((c) => c.method), installId).toEqual(['botForAgent']);
+      expect(asked(w).map(([, userId]) => userId), installId).toEqual([BOB, BOB]);
+      expect(supportRow(w).requestedByUserId, installId).toBe(ADA);
+    }
+    for (const support of ['none', 'pending'] as const) {
+      const w = await seeded({ support });
+      w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+
+      expect(await w.claim(BOB, SUPPORT_BOT), support).toEqual({ status: 409, body: { error: 'not-live' } });
+
+      expect(w.memory.calls.map((c) => c.method), support).toEqual(['botForAgent']);
+      expect(asked(w).map(([, userId]) => userId), support).toEqual([BOB, BOB]);
+      expect(w.lines, support).toEqual([]);
+    }
+  });
+
+  it("CL6 a claim racing a reset → 409 not-live (claimBot moved nothing); our own store failing rejects (the route's 500)", async () => {
+    // A reset removes every row after the bot was read: claimBot finds no live bot.
+    const w = await seeded();
+    w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    afterBotRead(w, async () => {
+      await w.memory.store.removeAll();
+    });
+    expect(await w.claim(BOB, SUPPORT_BOT)).toEqual({ status: 409, body: { error: 'not-live' } });
+    expect(w.memory.calls.at(-1)).toEqual({ method: 'claimBot', args: [SUPPORT_BOT, BOB] });
+    expect(w.lines).toEqual([]);
+
+    // The store's own word for it.
+    const refused = await seeded();
+    refused.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    refused.memory.failures.set('claimBot', new InstallStoreError('install-not-active'));
+    expect(await refused.claim(BOB, SUPPORT_BOT)).toEqual({ status: 409, body: { error: 'not-live' } });
+    expect(refused.lines).toEqual([]);
+
+    // Anything else is no reset.
+    const broken = await seeded();
+    broken.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    broken.memory.failures.set('claimBot', connectionReset());
+    expect(logCode(await rejection(broken.claim(BOB, SUPPORT_BOT)))).toBe('ECONNRESET');
+    expect(supportRow(broken).requestedByUserId).toBe(ADA);
+    expect(broken.lines).toEqual([]);
+  });
+
+  it('CL7 asked as things stand once the lock is free: a team admin demoted while the claim waited is refused 403 with nothing read; a requester promoted again meanwhile makes it claim-not-needed', async () => {
+    const lock = createMutex();
+    const w = await seeded({ lock });
+    w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    const other = await holdLock(lock);
+    const claiming = w.claim(BOB, SUPPORT_BOT);
+    await settle();
+    expect(w.people.calls).toEqual([]);
+    w.people.setRole(SUPPORT_TEAM, BOB, 'member');
+    other.free();
+    await other.done;
+
+    expect(await claiming).toEqual({ status: 403, body: { error: 'forbidden' } });
+    expect(w.memory.calls).toEqual([]);
+    expect(supportRow(w).requestedByUserId).toBe(ADA);
+
+    const again = await seeded({ lock });
+    again.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    const held = await holdLock(lock);
+    const waiting = again.claim(BOB, SUPPORT_BOT);
+    await settle();
+    again.people.setRole(SUPPORT_TEAM, ADA, 'admin');
+    held.free();
+    await held.done;
+
+    expect(await waiting).toEqual({ status: 409, body: { error: 'claim-not-needed' } });
+    expect(again.memory.calls.map((c) => c.method)).toEqual(['botForAgent']);
+  });
+
+  it("CL8 an outage asking about the requester throws (the route's 500) and writes nothing; the agent deleted meanwhile is 404 not-found", async () => {
+    // The outage starts once Bob's rights are through, so it hits the question about Ada.
+    for (const hook of ['agents:resolve', 'agents:can-set-shared-credential']) {
+      const w = await seeded();
+      w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+      afterBotRead(w, () => {
+        w.people.faults.set(hook, connectionReset());
+      });
+
+      expect(logCode(await rejection(w.claim(BOB, SUPPORT_BOT))), hook).toBe('ECONNRESET');
+
+      expect(w.memory.calls.map((c) => c.method), hook).toEqual(['botForAgent']);
+      expect(supportRow(w).requestedByUserId, hook).toBe(ADA);
+      expect(w.lines, hook).toEqual([]);
+    }
+
+    const gone = await seeded();
+    gone.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    afterBotRead(gone, () => {
+      gone.people.agents.delete(SUPPORT);
+    });
+    expect(await gone.claim(BOB, SUPPORT_BOT)).toEqual({ status: 404, body: { error: 'not-found' } });
+    expect(gone.memory.calls.map((c) => c.method)).toEqual(['botForAgent']);
+    expect(supportRow(gone).requestedByUserId).toBe(ADA);
+  });
+});
+
 // ── What leaves the domain ──────────────────────────────────────────────────
 
 describe('answers and logs', () => {
@@ -1117,14 +1676,43 @@ describe('answers and logs', () => {
       })
     ).setPicture();
 
+    // TASK-1173. RT1 and RT9: Grace replaces, either way in; then RT2's
+    // refusals, and a reset during her next one (RT8).
+    const replaced = await add();
+    await replaced.replace(GRACE, PASTED);
+    await replaced.replaceForAdmin(GRACE, SUPPORT_BOT, PASTED_AGAIN);
+    await replaced.replace(ADA, PASTED);
+    await replaced.replaceForAdmin(ADA, SUPPORT_BOT, PASTED);
+    replaced.slack.on.updateApp = async () => {
+      await replaced.memory.store.removeAll();
+    };
+    await replaced.replace(GRACE, fakeConfigRefreshToken('GRACEPASTEDTHIRDSECRET'));
+    // RT5 and RT6: Slack refusing the paste at its rotate, or at the check.
+    await (await add((w) => failRotate(w, 'invalid_refresh_token'))).replace(GRACE, PASTED);
+    await (await add((w) => failUpdate(w, 'no_permission'))).replace(GRACE, PASTED);
+    // RT7: the minted token won't save.
+    await (
+      await add((w) => {
+        w.vaultFailures.set(`credentials:set ${configTokenRef(GRACE)}`, connectionReset());
+      })
+    ).replaceForAdmin(GRACE, SUPPORT_BOT, PASTED);
+    // CL1, then CL3 and CL4: a claim, then one not needed, then one refused.
+    const claimed = await add((w) => {
+      w.people.setRole(SUPPORT_TEAM, ADA, 'member');
+    });
+    await claimed.claim(BOB, SUPPORT_BOT);
+    await claimed.claim(ADA, SUPPORT_BOT);
+    await claimed.claim(MEL, SUPPORT_BOT);
+
     // Every world said something, so the scan below reads real output.
     for (const x of worlds) {
       expect(x.replies.length).toBeGreaterThan(0);
       expect(x.lines.length).toBeGreaterThan(0);
     }
+    // The prefixes cover every token: the pasted ones, the minted ones, the stored ones.
     const tokens = [CONFIG_ACCESS_PREFIX, CONFIG_REFRESH_PREFIX, BOT_PREFIX];
-    const people = [ADA, GRACE, SAM, 'usr_'];
-    const agents = [SUPPORT, SALES, 'agt_'];
+    const people = [ADA, GRACE, SAM, BOB, MEL, 'usr_'];
+    const agents = [SUPPORT, SALES, 'agt_', SUPPORT_TEAM, 'team_'];
     const handles = [OLD_HANDLE, 'quilldesk', 'deskbot'];
     const slackIds = [SUPPORT_APP, SALES_APP, SHARED_APP, GRANT.botUserId, 'U07SOMEONE1', TEAM_ID];
     const neverAnywhere = [...tokens, ...people, ...agents, ...handles, ...slackIds, FAILURE_CANARY];

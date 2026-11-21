@@ -45,9 +45,10 @@ export interface InstallRow {
   /** A bot's agent, the one team agent its mentions run. Null for the shared app. */
   agentId: string | null;
   /**
-   * The team admin who asked for a bot, whom its channels' outsiders run as.
-   * Each of its bindings copies it at the first mention there. Null for the
-   * shared app.
+   * The team admin who asked for a bot, or the team admin who claimed it
+   * since (TASK-1173), whom its channels' outsiders run as. Each of its
+   * bindings copies it at the first mention there; a claim moves it and
+   * every binding's copy together (`claimBot`). Null for the shared app.
    */
   requestedByUserId: string | null;
   /**
@@ -62,8 +63,9 @@ export interface InstallRow {
    * that is the same instant as `createdAt`; after a Replace it is the latest
    * replace (TASK-1128). A bot's row keeps the time it was asked for instead:
    * one person's token serves all their apps (TASK-1175) and has no date of its
-   * own, so a Replace or a paste through another of their apps changes the
-   * token without moving this date.
+   * own, so a Replace (Admin › Slack's, or the bot's own, TASK-1173) or a
+   * paste through another of their apps changes the token without moving
+   * this date.
    */
   configTokenAddedAt: Date;
   installedAt: Date | null;
@@ -244,6 +246,16 @@ export interface InstallStore {
    * `install-not-active` when the install is missing or still pending.
    */
   setConfigTokenAddedAt(installId: string, addedAt: Date): Promise<void>;
+  /**
+   * Hand a LIVE team bot to the team admin who claims it (TASK-1173): its
+   * `requested_by_user_id`, and the `connected_by_user_id` of every channel
+   * binding of its install, become `userId`, in ONE statement. Only a
+   * `kind 'bot'`, `status 'active'` row; otherwise nothing moves and it
+   * throws `install-not-active` (missing, pending, the shared app, or
+   * removed by a reset meanwhile). The row's `connected_by_user_id`, whose
+   * token made the app, never moves.
+   */
+  claimBot(installId: string, userId: string): Promise<void>;
   /**
    * Delete the install and its channel bindings in ONE statement: both go,
    * or (when the install's delete fails or skips the row) neither does.
@@ -671,6 +683,34 @@ export function createInstallStore(db: Kysely<ChannelSlackDatabase>): InstallSto
         .where('status', '=', 'active')
         .executeTakeFirst();
       if (r.numUpdatedRows !== 1n) throw new InstallStoreError('install-not-active');
+    },
+
+    // The bindings move in the same statement as their install's requester,
+    // keyed on what the install update RETURNED (data-modifying CTEs share one
+    // snapshot and see each other only through RETURNING): a binding update
+    // that fails rolls the whole statement back, and an install the WHERE
+    // skips (missing, pending, the shared app, or removed by a reset
+    // meanwhile) moves no binding. Postgres runs the bindings' CTE to
+    // completion even though nothing reads it. channel-store.ts owns every
+    // other query against the bindings.
+    async claimBot(installId, userId) {
+      const r = await sql<{ claimed: number }>`
+        WITH claimed AS (
+          UPDATE channel_slack_v1_installs
+             SET requested_by_user_id = ${userId}
+           WHERE install_id = ${installId}
+             AND kind = 'bot'
+             AND status = 'active'
+          RETURNING install_id
+        ), moved AS (
+          UPDATE channel_slack_v1_channels
+             SET connected_by_user_id = ${userId},
+                 updated_at = now()
+           WHERE install_id IN (SELECT install_id FROM claimed)
+        )
+        SELECT count(*)::int AS claimed FROM claimed
+      `.execute(db);
+      if ((r.rows[0]?.claimed ?? 0) === 0) throw new InstallStoreError('install-not-active');
     },
 
     // Bindings go in the same statement as their install, keyed on what the

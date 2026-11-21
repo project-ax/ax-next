@@ -28,3 +28,16 @@ export const BOT_NAME_COPY: Readonly<Record<string, string>> = Object.freeze({
   reserved: 'Slack keeps that name for itself. Pick another.',
 });
 export const BOT_NAME_FALLBACK = "Slack can't use that name. Try another.";
+
+/**
+ * The sentences about replacing a team bot's configuration token that agent
+ * settings (agent-slack.ts) and Admin › Slack (slack-bots-admin.ts) both show
+ * (TASK-1173). Security copy: plain, no jokes.
+ */
+export const BOT_TOKEN_COPY = Object.freeze({
+  // The pasted token works, but its owner can't manage this bot's app: a colleague's, or another workspace's.
+  'slack-not-app-manager':
+    "Slack says that token can't manage this bot. Only the person who set a bot up can replace its token, with a new token of their own from this Slack workspace.",
+  replaced: (botName: string): string =>
+    `Token replaced. We now use it for ${botName} and every other Slack app you set up here. Don't revoke the token you just pasted: it's the one we use now.`,
+});

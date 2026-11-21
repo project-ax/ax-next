@@ -11,7 +11,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     operations run one at a time). `bot` is a team agent's own bot
  *     (TASK-1167): at most one per agent, pending included (a partial unique
  *     index). A bot row names its `agent_id`, the one agent its mentions run,
- *     and its `requested_by_user_id`, the team admin who asked for it, whom
+ *     and its `requested_by_user_id`, the team admin who asked for it (or who claimed it
+ *     since, TASK-1173), whom
  *     its channels' outsiders run as (each of its bindings copies it at the
  *     first mention there). `bot_handle` is the @handle Slack gave its bot
  *     user, read at its Allow, and again after a rename (TASK-1171). The shared row has none of these three,

@@ -79,10 +79,12 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /admin/slack, POST /admin/slack/{connect,install-url,rename,
 //        replace-token,disconnect,forget-leftover-app},
 //   GET  /admin/slack/oauth/callback  — admin only, CSRF-checked (admin-routes.ts)
-//   GET  /admin/slack/bots, POST /admin/slack/bots/disconnect  — Admin › Slack's
-//        list of the team agents' own bots and its Disconnect for one
-//        (TASK-1172): admin only, CSRF-checked (admin-bot-routes.ts), the only
-//        callers of the two bots.ts methods that ask no one's rights
+//   GET  /admin/slack/bots, POST /admin/slack/bots/{disconnect,replace-token}
+//        — Admin › Slack's list of the team agents' own bots, its Disconnect
+//        for one (TASK-1172), and a bot approver's Replace of their own token
+//        (TASK-1173): admin only, CSRF-checked (admin-bot-routes.ts), the only
+//        callers of the two bots.ts methods that ask no one's rights and of
+//        bot-changes.ts's Replace by install id
 //   GET  /admin/slack/bot-requests, POST /admin/slack/bot-requests/:requestId/
 //        {approve,decline}  — the team admins' asks for their agents' own bots,
 //        which an AX admin approves with their own configuration token or
@@ -99,12 +101,14 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
 //   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,/rename,/icon,
-//        /remember} — the agent's own Slack bot (TASK-1167, bots.ts): a team
-//        admin of its team asks for it, picks it back up in Slack, cancels it,
-//        or disconnects it (TASK-1172), and once it's live renames it or
-//        changes its picture (TASK-1171, bot-changes.ts) with its approver's
-//        token, or flips the memory switch of a channel it has answered in
-//        (TASK-1180); CSRF-checked
+//        /remember,/replace-token,/claim} — the agent's own Slack bot
+//        (TASK-1167, bots.ts): a team admin of its team asks for it, picks it
+//        back up in Slack, cancels it, or disconnects it (TASK-1172), and once
+//        it's live renames it or changes its picture (TASK-1171,
+//        bot-changes.ts) with its approver's token, flips the memory switch of
+//        a channel it has answered in (TASK-1180), replaces their own token if
+//        they are its approver, or claims it once its requester is no longer
+//        a team admin (TASK-1173); CSRF-checked
 //   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
 //        to approve it, without a token, and takes that ask back (TASK-1169,
 //        bot-requests.ts); CSRF-checked
@@ -445,10 +449,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           logger,
           randomBytes,
         });
-        // Renaming a live bot or changing its picture (TASK-1171) uses its
-        // approver's configuration token, so it takes the same lock as every
-        // other use of a person's token, on the same cached secret store.
+        // Renaming a live bot or changing its picture (TASK-1171), and its
+        // approver's Replace (TASK-1173), use the approver's configuration
+        // token, so they take the same lock as every other use of a person's
+        // token, on the same cached secret store. A Claim (TASK-1173) asks the
+        // claimer's rights again on the bus, under that lock too.
         const botChanges = createBotChanges({
+          bus,
           installs: store,
           secrets,
           api,
@@ -472,9 +479,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             randomBytes,
           }),
           // Admin › Slack's list of the team agents' own bots and its Disconnect
-          // (TASK-1172): behind the same admin gate, on the same `bots`, which
-          // takes the one app lock itself.
-          ...createAdminBotRoutes({ bus, bots, logger }),
+          // (TASK-1172), and a bot approver's Replace (TASK-1173): behind the
+          // same admin gate, on the same `bots` and `botChanges`, which take the
+          // one app lock themselves.
+          ...createAdminBotRoutes({ bus, bots, changes: botChanges, logger }),
           // Admin › Slack's bot requests: the same admin gate and CSRF check.
           ...createBotRequestAdminRoutes({ bus, requests: botRequests, logger }),
           {
