@@ -551,7 +551,8 @@ the requester.
   disconnected instead (TASK-1172).
 - Names are unique across the shared bot and every team bot, by a key of 21
   letters and digits (lowercased, everything else dropped), which is how far
-  Slack's handle goes. `Ada Bot` and `ada-bot` are the same name to us.
+  Slack's legacy username goes (the @handle people type is the display name
+  itself, TASK-1185). `Ada Bot` and `ada-bot` are the same name to us.
 - A channel binding is written on the bot's first mention there, after the
   channel check (public, live, not Slack Connect). It's bound only to the bot's
   own agent.

@@ -635,4 +635,19 @@ describe("COPY: a bot's @handle is its display name, shown as people type it (TA
     expect(COPY.slashOwnBot('Fern', bot)).toContain(`with /invite @${handle} instead.`);
     expect(COPY.botLiveForOwner(bot, [], 0)).toBe(`@${handle} is live. Invite it to a channel with /invite @${handle}.`);
   });
+
+  // New with display names: upper case and spaces. A display name that starts
+  // with a broadcast word, in any case, still gets its mark after the line's `@`.
+  it.each(['Here Now', 'channel x', 'EVERYONE-else'])('%s is marked after the @', (handle) => {
+    const bot = { botName: 'Fern', handle };
+    for (const line of [
+      COPY.answersAsOwnBot('Fern', handle),
+      COPY.slashDisconnectedOwnBot(bot),
+      COPY.slashOwnBot('Fern', bot),
+      COPY.botLiveForOwner(bot, [], 0),
+    ]) {
+      expect(line).toContain(`@${ZWSP}${handle}`);
+      expect(line).not.toContain(`@${handle}`);
+    }
+  });
 });

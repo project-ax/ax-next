@@ -21,7 +21,7 @@ import { BOT_HANDLE_MAX, BOT_NAME_MAX } from './limits.js';
 
 /**
  * Compared against a name's handle key (handleKey below), so a name whose
- * @handle would come out as one of these is refused too.
+ * legacy username would come out as one of these is refused too.
  */
 export const RESERVED_BOT_NAMES: ReadonlySet<string> = new Set([
   'slackbot',
@@ -47,9 +47,9 @@ const SEPARATORS = new Set(['-', '.', '_']);
 const HANDLE_DROPPED = /[-._ ]/g;
 
 /**
- * The name as its @handle reads, for the reserved-word check: lowercased,
- * with every space, `-`, `.` and `_` gone. Slack drops the hyphens itself, so
- * `slack-bot` would become the handle `slackbot`. Dots and underscores go too:
+ * The name as its legacy username reads, for the reserved-word check:
+ * lowercased, with every space, `-`, `.` and `_` gone. Slack drops the
+ * hyphens itself, so `slack-bot` would become the username `slackbot`. Dots and underscores go too:
  * a near-miss refused here costs an admin one retype, while a reserved handle
  * that slips through costs a failed install.
  */
@@ -58,9 +58,9 @@ function handleKey(name: string): string {
 }
 
 /**
- * How Slack's handle collides: the name lowercased and cut to its ASCII
- * letters and digits (so `Ada Bot`, `ada-bot` and `ADA_BOT` match), then cut
- * to the handle's 21 characters. Only for comparing names.
+ * How Slack's legacy username collides: the name lowercased and cut to its
+ * ASCII letters and digits (so `Ada Bot`, `ada-bot` and `ADA_BOT` match), then
+ * cut to the username's 21 characters. Only for comparing names.
  */
 export function botNameKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, BOT_HANDLE_MAX);

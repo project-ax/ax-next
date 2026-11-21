@@ -874,7 +874,8 @@ describe('GET /slack/bots/oauth/callback', () => {
     unusable('a display name of 36 characters', allShownAs('a'.repeat(36)));
     unusable('a display name with no letter or digit', allShownAs('-._'));
     unusable('a display name not a string', allShownAs(42));
-    unusable('a profile not an object', { name: '', profile: 'fern-walk' });
+    // null, not a string: reading a field of a string doesn't throw, of null it would.
+    unusable('a profile that is null', { name: '', profile: null });
     // An answer about some other user is no answer about the bot.
     unusable('another user', { id: 'U07SOMEONE1' }, 'user-mismatch');
 
@@ -935,6 +936,14 @@ describe('GET /slack/bots/oauth/callback', () => {
 
       expect(await w.callback({ code: CODE, state }), label).toStrictEqual(redirect(toAgent('connected')));
       expect(w.row(installId).botHandle, label).toBe(handle);
+      // Falling back to the legacy username is kept, but never silent: which
+      // users.info field holds a bot's display name is inferred, not probed,
+      // so a wrong guess must show in the logs. Code-only: no name.
+      const fellBack = handle === 'fernwalk';
+      expect(w.lines, label).toEqual([
+        ...(fellBack ? [{ level: 'warn', msg: 'slack_bot_handle_legacy', fields: { installId } }] : []),
+        { level: 'info', msg: 'slack_bot_connected', fields: { installId } },
+      ]);
     }
   });
 
@@ -1275,6 +1284,7 @@ describe('GET /slack/bots/oauth/callback', () => {
       ADA,
       GRACE,
       HANDLE,
+      BOT_USER.name,
       BOT_NAME,
       FAILURE_CANARY,
       'server_error',

@@ -616,6 +616,17 @@ describe('rename', () => {
     expect(w.memory.calls.filter((c) => c.method === 'setBotHandle')).toEqual([
       { method: 'setBotHandle', args: [SUPPORT_BOT, 'fern-two'] },
     ]);
+    expect(w.lines).toEqual([RENAMED]);
+
+    // No display name anywhere: the legacy username is kept, and the fallback is logged code-only.
+    const legacy = await seeded();
+    legacy.slack.on.usersInfo = noDisplayName({ name: 'fernwalk' });
+    expect(await legacy.rename('fern-two')).toEqual({ status: 200, body: { botName: 'fern-two' } });
+    expect(supportRow(legacy)).toMatchObject({ botName: 'fern-two', botHandle: 'fernwalk' });
+    expect(legacy.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_handle_legacy', fields: { installId: SUPPORT_BOT } },
+      RENAMED,
+    ]);
   });
 
   it("R3 refuses a name the shared bot, another bot, another bot's handle, or an open bot request has, by the 21-char key, before the vault or Slack; its own name in another case is fine", async () => {
@@ -1741,7 +1752,7 @@ describe('answers and logs', () => {
     const tokens = [CONFIG_ACCESS_PREFIX, CONFIG_REFRESH_PREFIX, BOT_PREFIX];
     const people = [ADA, GRACE, SAM, BOB, MEL, 'usr_'];
     const agents = [SUPPORT, SALES, 'agt_', SUPPORT_TEAM, 'team_'];
-    const handles = [OLD_HANDLE, 'quilldesk', 'deskbot'];
+    const handles = [OLD_HANDLE, BOT_USER.name, 'quilldesk', 'deskbot'];
     const slackIds = [SUPPORT_APP, SALES_APP, SHARED_APP, GRANT.botUserId, 'U07SOMEONE1', TEAM_ID];
     const neverAnywhere = [...tokens, ...people, ...agents, ...handles, ...slackIds, FAILURE_CANARY];
     for (const x of worlds) {

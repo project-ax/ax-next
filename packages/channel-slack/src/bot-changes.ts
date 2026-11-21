@@ -236,6 +236,7 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
       log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: read.code });
       return;
     }
+    if (read.legacy) log('warn', 'slack_bot_handle_legacy', { installId });
     if (read.handle === bot.botHandle) return;
     try {
       await d.installs.setBotHandle(installId, read.handle);

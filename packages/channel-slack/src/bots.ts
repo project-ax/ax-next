@@ -461,7 +461,9 @@ function isDisplayHandle(s: unknown): s is string {
  * stayed `fernwalk`). So the display name wins: `profile.display_name`, else
  * `profile.real_name`, else `real_name` (a bot user's display_name may be
  * empty, and its real_name follows a rename: the TASK-1090 spike), and `name`
- * only when none of those is usable.
+ * only when none of those is usable. `legacy` says it came to that: which
+ * field holds a bot's display name is inferred, not probed, so the callers log
+ * the fallback (code-only) and a wrong guess shows.
  *
  * It is Slack's text, so this is its one check before it is stored, and it is
  * never cleaned into something else: an answer about anyone but the bot is
@@ -470,17 +472,17 @@ function isDisplayHandle(s: unknown): s is string {
 export function handleFrom(
   user: unknown,
   botUserId: string,
-): { ok: true; handle: string } | { ok: false; code: 'user-mismatch' | 'unusable-handle' } {
+): { ok: true; handle: string; legacy: boolean } | { ok: false; code: 'user-mismatch' | 'unusable-handle' } {
   if (!isRecord(user) || user['id'] !== botUserId) return { ok: false, code: 'user-mismatch' };
   const profile = isRecord(user['profile']) ? user['profile'] : {};
   for (const displayed of [profile['display_name'], profile['real_name'], user['real_name']]) {
-    if (isDisplayHandle(displayed)) return { ok: true, handle: displayed };
+    if (isDisplayHandle(displayed)) return { ok: true, handle: displayed, legacy: false };
   }
   const legacy = user['name'];
   if (typeof legacy !== 'string' || !HANDLE_RE.test(legacy) || RESERVED_BOT_NAMES.has(legacy)) {
     return { ok: false, code: 'unusable-handle' };
   }
-  return { ok: true, handle: legacy };
+  return { ok: true, handle: legacy, legacy: true };
 }
 
 const json = (status: number, body: unknown): BotReply => ({ status, body });
@@ -796,12 +798,13 @@ export function createBots(d: BotDeps): Bots {
   }
 
   /**
-   * Slack's @handle for the new bot user, kept only when a copy line can show
-   * it (HANDLE_RE, and no reserved word). It is Slack's text, so it is checked
-   * here, before it is stored, and never cleaned into something else.
-   * Best-effort: a failed read, an answer about anyone but the bot, or a name
-   * outside the rule leaves it null, logged code-only, and never fails the
-   * Allow. The caller holds the app lock.
+   * Slack's @handle for the new bot user: its display name, else its legacy
+   * username (`handleFrom`), kept only when a copy line can show it. It is
+   * Slack's text, so it is checked here, before it is stored, and never
+   * cleaned into something else. Best-effort: a failed read, an answer about
+   * anyone but the bot, or no usable field leaves it null, logged code-only,
+   * and never fails the Allow. A legacy username is kept and logged. The
+   * caller holds the app lock.
    */
   async function keepHandle(installId: string, granted: OAuthInstall): Promise<void> {
     let user: unknown;
@@ -816,6 +819,7 @@ export function createBots(d: BotDeps): Bots {
       log('warn', 'slack_bot_failed', { installId, stage: 'bot-handle', code: read.code });
       return;
     }
+    if (read.legacy) log('warn', 'slack_bot_handle_legacy', { installId });
     try {
       await d.installs.setBotHandle(installId, read.handle);
     } catch (err) {
