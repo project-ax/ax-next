@@ -1260,8 +1260,17 @@ connectors. The protections are:
   turn that starts inside that minute still runs, and a turn already running
   finishes. A refusal or a failure is never kept, and an allowed answer that a
   refusal overtook is dropped, so nothing stays open past the minute.
-- **Continuations aren't checked again.** After an Allow, the continuation
-  streams into the thread of the turn that asked.
+- **Continuations aren't checked again, for up to a day.** After an Allow,
+  the continuation streams into the thread of the turn that asked. The
+  Allow's own gate (`answers.ts`) only checks that the channel is still
+  connected to the agent, and a prompt can be answered for 24 hours
+  (`PROMPT_TTL_MS`; a restart ends it sooner). So a channel made private
+  after its prompt was posted still gets the reply, unless a turn there has
+  disconnected it first. It's worse for a channel shared with another
+  company: it mostly stays connected (below), and the click path has no
+  Slack Connect screen, so an Allow within those 24 hours can stream a reply
+  in front of the other company. This was already so before TASK-1184; a
+  follow-up card owns it.
 - **Memory may learn from window turns.** Turns that ran inside the minute can
   feed memory until the binding goes. After that, the veto refuses the
   channel's threads.
