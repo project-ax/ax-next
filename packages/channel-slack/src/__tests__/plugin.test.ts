@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import {
   HookBus,
@@ -30,6 +30,8 @@ import {
   COMMANDS_MAX_BODY_BYTES,
   EVENTS_MAX_BODY_BYTES,
   INTERACTIONS_MAX_BODY_BYTES,
+  OAUTH_STATE_BYTES,
+  OAUTH_STATE_TTL_MS,
 } from '../limits.js';
 import { botUrls, buildBotManifest } from '../manifest.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
@@ -40,6 +42,7 @@ import {
   type ChannelSlackConfig,
 } from '../plugin.js';
 import { configTokenRef, secretRef } from '../secrets.js';
+import { sha256Hex } from '../slack-apps.js';
 import { createInstallStore } from '../store.js';
 import { slackTurnNote } from '../turn-note.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
@@ -97,6 +100,20 @@ const DM_CHANNEL = 'D07DMCHANNEL';
 const DM_TS = '1763035200.000100';
 const TEAM_AGENT = { id: 'agt_support', displayName: 'Support', visibility: 'team', ownerType: 'team', ownerId: 'team_support' };
 const SUPPORT_CH = 'C07SUPPORT1';
+/**
+ * A bot request's DMs (TASK-1170): Meg, a team admin of the team agent but no
+ * AX admin, asks an AX admin (Ada) for its own bot. Her Slack user, and the
+ * shared bot's DM with each of them, where Slack puts a message posted to
+ * their user id. Every chat.postMessage answers POSTED_TS.
+ */
+const MEG = { id: 'usr_meg', displayName: 'Meg Requester', email: 'meg@canopyworks.com' };
+const MEG_SLACK = 'U07MEG00001';
+const ADA_DM = 'D07ADADM001';
+const MEG_DM = 'D07MEGDM001';
+const POSTED_TS = '1763039999.000002';
+/** The bot Ada approved for Meg: its bot user, and the token its Allow mints. */
+const HELPER_BOT_USER = 'U07HELPERBOT';
+const HELPER_BOT_TOKEN = fakeBotToken('HELPERLIVESECRET');
 
 // ── Fakes for the hooks channel-slack calls, other than the database ───────
 
@@ -154,6 +171,7 @@ function fakeServices(s: Services) {
     },
     'auth:get-user': async (_ctx: unknown, input: unknown) => {
       const { userId } = input as { userId: string };
+      if (userId === MEG.id) return { ...MEG, isAdmin: false };
       return userId === ADMIN.id ? { ...ADMIN, email: 'ada@example.com' } : null;
     },
     'credentials:get': async (_ctx: unknown, input: unknown) => {
@@ -180,15 +198,18 @@ function fakeServices(s: Services) {
       s.vault.delete(ref);
     },
     // The DM path: Alice's verified email maps, to one personal agent. Ada's maps to her
-    // account, so her mention in #support runs attended.
+    // account, so her mention in #support runs attended. Meg's maps to hers (TASK-1170).
     'auth:find-user-by-email': async (_ctx: unknown, input: unknown) => {
       const { email } = input as { email: string };
+      if (email === MEG.email) return { userId: MEG.id };
       return email === 'alice@canopyworks.com' ? { userId: 'usr_alice' } : email === 'ada@canopyworks.com' ? { userId: ADMIN.id } : null;
     },
     // A channel mention from someone with no account: canopyworks.com is the approved domain.
     'auth:is-approved-email': async (_ctx: unknown, input: unknown) => ({
       approved: (input as { email: string }).email.toLowerCase().endsWith('@canopyworks.com'),
     }),
+    // A bot request's DMs (TASK-1170): the AX admins with a verified email. Ada is the one.
+    'auth:list-admins': async () => ({ admins: [{ userId: ADMIN.id, email: 'ada@canopyworks.com' }] }),
     'agents:list-for-user': async (_ctx: unknown, input: unknown) => ({
       agents:
         (input as { userId: string }).userId === 'usr_alice'
@@ -203,8 +224,8 @@ function fakeServices(s: Services) {
             ]
           : [],
     }),
-    // The agent settings path. Ada is a team admin of the one team agent;
-    // everyone else is outside it.
+    // The agent settings path. Ada and Meg are team admins of the one team
+    // agent; everyone else is outside it.
     'agents:resolve': async (_ctx: unknown, input: unknown) => {
       const { agentId, userId } = input as { agentId: string; userId: string };
       // Alice's own personal agent, as her DM turns use it (the click gate asks again).
@@ -214,14 +235,15 @@ function fakeServices(s: Services) {
       if (agentId !== TEAM_AGENT.id) {
         throw new PluginError({ code: 'not-found', plugin: 'mock', message: 'no such agent' });
       }
-      if (userId !== ADMIN.id) {
+      if (userId !== ADMIN.id && userId !== MEG.id) {
         throw new PluginError({ code: 'forbidden', plugin: 'mock', message: 'not yours' });
       }
       return { agent: TEAM_AGENT };
     },
-    'agents:can-set-shared-credential': async (_ctx: unknown, input: unknown) => ({
-      allowed: (input as { actor: { userId: string } }).actor.userId === ADMIN.id,
-    }),
+    'agents:can-set-shared-credential': async (_ctx: unknown, input: unknown) => {
+      const { userId } = (input as { actor: { userId: string } }).actor;
+      return { allowed: userId === ADMIN.id || userId === MEG.id };
+    },
     'conversations:find-or-create': async (_ctx: unknown, input: unknown) => {
       s.found = (s.found ?? 0) + 1;
       return {
@@ -247,9 +269,11 @@ function fakeServices(s: Services) {
 }
 
 /**
- * Slack, behind the plugin's own client: answers users.info for Alice and
- * Ada and every chat.* call, and records each method with its auth header
- * and body.
+ * Slack, behind the plugin's own client: answers users.info for Alice, Ada
+ * and Meg, users.lookupByEmail for Ada and Meg (TASK-1170), and every chat.*
+ * call (a chat.postMessage to a person's user id lands in the shared bot's DM
+ * with them, which the answer names), and records each method with its auth
+ * header and body.
  */
 function fakeSlackFetch() {
   const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
@@ -284,13 +308,63 @@ function fakeSlackFetch() {
                   profile: { email: 'ada@canopyworks.com', real_name: 'Ada' },
                 },
               }
-            : { ok: false, error: 'user_not_found' };
+            : body['user'] === MEG_SLACK
+              ? {
+                  ok: true,
+                  user: {
+                    id: MEG_SLACK,
+                    team_id: TEAM_ID,
+                    is_email_confirmed: true,
+                    profile: { email: MEG.email, real_name: 'Meg' },
+                  },
+                }
+              : { ok: false, error: 'user_not_found' };
+    }
+    if (method === 'users.lookupByEmail') {
+      const id = { 'ada@canopyworks.com': ADA_SLACK, [MEG.email]: MEG_SLACK }[String(body['email'])];
+      answer = id === undefined ? { ok: false, error: 'users_not_found' } : { ok: true, user: { id } };
     }
     if (method === 'chat.startStream') answer = { ok: true, ts: '1763039999.000001' };
-    if (method === 'chat.postMessage') answer = { ok: true, ts: '1763039999.000002' };
+    if (method === 'chat.postMessage') {
+      const to = String(body['channel']);
+      answer = { ok: true, channel: { [ADA_SLACK]: ADA_DM, [MEG_SLACK]: MEG_DM }[to] ?? to, ts: POSTED_TS };
+    }
     return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   return { fetchImpl, calls };
+}
+
+/**
+ * fakeSlackFetch, plus what an approver's Allow on Meg's bot asks (TASK-1170):
+ * `oauth.v2.access` grants it in Ada's workspace, and `users.info` with its
+ * own token names its bot user. Every call is still recorded in `calls`.
+ */
+function allowSlackFetch() {
+  const slack = fakeSlackFetch();
+  const reply = (answer: Record<string, unknown>): Response =>
+    new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const answered = await slack.fetchImpl(input, init);
+    const method = String(input).replace('https://slack.com/api/', '');
+    // Both methods below send a form.
+    const body = Object.fromEntries(new URLSearchParams(typeof init?.body === 'string' ? init.body : ''));
+    if (method === 'oauth.v2.access') {
+      return reply({
+        ok: true,
+        token_type: 'bot',
+        access_token: HELPER_BOT_TOKEN,
+        bot_user_id: HELPER_BOT_USER,
+        app_id: BOT_APP_ID,
+        team: { id: TEAM_ID, name: 'Canopy Works' },
+        is_enterprise_install: false,
+      });
+    }
+    if (method === 'users.info' && body['user'] === HELPER_BOT_USER) {
+      return reply({ ok: true, user: { id: HELPER_BOT_USER, name: 'supporthelper', is_bot: true } });
+    }
+    return answered;
+  };
+  return { fetchImpl, calls: slack.calls };
 }
 
 /**
@@ -438,7 +512,7 @@ afterEach(async () => {
   try {
     await sql`
       TRUNCATE channel_slack_v1_installs, channel_slack_v1_channels, channel_slack_v1_threads,
-        channel_slack_v1_leftover_apps, channel_slack_v1_memory_switches
+        channel_slack_v1_leftover_apps, channel_slack_v1_memory_switches, channel_slack_v1_bot_requests
     `.execute(probe);
   } catch {
     // Not created yet.
@@ -701,6 +775,8 @@ describe('@ax/channel-slack plugin', () => {
         'credentials:delete',
         'auth:find-user-by-email',
         'auth:is-approved-email',
+        // A bot request's DMs (TASK-1170): who the AX admins are, with a verified email.
+        'auth:list-admins',
         'agents:list-for-user',
         'agents:resolve',
         'agents:can-set-shared-credential',
@@ -2716,6 +2792,248 @@ describe('@ax/channel-slack plugin', () => {
     expect(await installCount()).toBe(1);
     expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(adas);
     expect(s.vault.has(configTokenRef(GRACE))).toBe(false);
+  });
+
+  it('a bot request DMs the AX admin through the wiring, and her Decline click in that DM declines it, as her (TASK-1170)', async () => {
+    const slack = fakeSlackFetch();
+    const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+
+    // Meg, a team admin of the support agent, asks an AX admin for its own bot.
+    const askPath = `/settings/slack/${TEAM_AGENT.id}/bot-request`;
+    const asked = await call(
+      'POST',
+      '/settings/slack/:agentId/bot-request',
+      request('POST', askPath, {
+        as: MEG.id,
+        params: { agentId: TEAM_AGENT.id },
+        body: Buffer.from(JSON.stringify({ botName: 'Support Helper' })),
+      }),
+    );
+    expect(asked).toEqual({ status: 200, body: {}, done: true });
+
+    // After the 200, the shared bot DMs Ada, the one AX admin: found by her
+    // verified email, admitted from users.info, and mapped back to her.
+    await vi.waitFor(() => expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    expect(slack.calls.map((c) => c.method)).toEqual(['users.lookupByEmail', 'users.info', 'chat.postMessage']);
+    for (const c of slack.calls) expect(c.auth).toBe(`Bearer ${BOT_TOKEN}`);
+    const dm = slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    expect(dm.body['channel']).toBe(ADA_SLACK);
+    expect(dm.body['text']).toBe(COPY.botRequestAsked);
+    const blocks = dm.body['blocks'] as Array<Record<string, unknown>>;
+    // Meg by her display name, the bot, and the agent as she sees it.
+    expect(blocks[0]).toMatchObject({
+      type: 'section',
+      text: { type: 'plain_text', text: 'Meg Requester wants to add @Support Helper (Support agent).' },
+    });
+    const [approve, decline] = blocks.find((b) => b['type'] === 'actions')!['elements'] as Array<Record<string, unknown>>;
+    expect(approve).toMatchObject({ url: `${HTTPS_ORIGIN}/?admin=slack` });
+    const requestId = String(decline!['value']);
+    expect(requestId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+
+    // Ada clicks Decline in that DM, signed as Slack signs a click.
+    const payload = {
+      type: 'block_actions',
+      api_app_id: APP_ID,
+      team: { id: TEAM_ID },
+      user: { id: ADA_SLACK },
+      channel: { id: ADA_DM },
+      container: { type: 'message', message_ts: POSTED_TS, channel_id: ADA_DM },
+      message: { ts: POSTED_TS },
+      actions: [{ type: 'button', action_id: decline!['action_id'], value: requestId }],
+    };
+    const clickBody = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString());
+    const mark = slack.calls.length;
+    const clicked = await call(
+      'POST',
+      '/slack/interactions/:installId',
+      request('POST', `/slack/interactions/${INSTALL_ID}`, {
+        params: { installId: INSTALL_ID },
+        body: clickBody,
+        headers: { ...signed(clickBody), 'content-type': 'application/x-www-form-urlencoded' },
+      }),
+    );
+    expect(clicked).toEqual({ status: 200, body: undefined, done: true });
+
+    // The decline ran as her: her DM is redrawn naming her where the buttons
+    // were, and Meg hears from the shared bot that an admin declined it.
+    await vi.waitFor(() => expect(slack.calls.slice(mark).filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const after = slack.calls.slice(mark);
+    const redrawn = after.filter((c) => c.method === 'chat.update');
+    expect(redrawn.map((c) => c.body)).toEqual([
+      {
+        channel: ADA_DM,
+        ts: POSTED_TS,
+        text: 'Ada Admin declined this.',
+        blocks: [blocks[0], { type: 'context', elements: [{ type: 'mrkdwn', text: 'Ada Admin declined this.' }] }],
+      },
+    ]);
+    const told = after.find((c) => c.method === 'chat.postMessage')!;
+    expect(told.body).toEqual({
+      channel: MEG_SLACK,
+      text: COPY.botDeclinedForOwner('Support Helper'),
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    // A Decline that worked says nothing privately: the redraw is the answer.
+    expect(after.map((c) => c.method)).not.toContain('chat.postEphemeral');
+
+    // The request is gone from Admin › Slack.
+    expect(await call('GET', '/admin/slack/bot-requests', request('GET', '/admin/slack/bot-requests', { as: ADMIN.id }))).toEqual({
+      status: 200,
+      body: { requests: [], truncated: false, configTokenStored: false },
+      done: true,
+    });
+  });
+
+  it("after a restart, her Decline in the DM the old process sent still declines the open request and redraws that DM, through the wiring (TASK-1170)", async () => {
+    const slack = fakeSlackFetch();
+    const seed = (s: Services): void => {
+      s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+      s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    };
+    const first = await boot({ fetchImpl: slack.fetchImpl }, { seed });
+    await insertActiveInstall();
+
+    // Meg asks; the shared bot DMs Ada.
+    const askPath = `/settings/slack/${TEAM_AGENT.id}/bot-request`;
+    expect(
+      await first.call(
+        'POST',
+        '/settings/slack/:agentId/bot-request',
+        request('POST', askPath, {
+          as: MEG.id,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify({ botName: 'Support Helper' })),
+        }),
+      ),
+    ).toEqual({ status: 200, body: {}, done: true });
+    await vi.waitFor(() => expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const dm = slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    const blocks = dm.body['blocks'] as Array<Record<string, unknown>>;
+    const decline = (blocks.find((b) => b['type'] === 'actions')!['elements'] as Array<Record<string, unknown>>)[1]!;
+
+    // A restart: where that DM went is gone with the old process. The request isn't: it's on Postgres.
+    await first.harness.close({ onError: () => {} });
+    const second = await boot({ fetchImpl: slack.fetchImpl }, { seed });
+
+    // Ada clicks Decline in that DM, signed as Slack signs a click.
+    const payload = {
+      type: 'block_actions',
+      api_app_id: APP_ID,
+      team: { id: TEAM_ID },
+      user: { id: ADA_SLACK },
+      channel: { id: ADA_DM },
+      container: { type: 'message', message_ts: POSTED_TS, channel_id: ADA_DM },
+      message: { ts: POSTED_TS },
+      actions: [{ type: 'button', action_id: decline['action_id'], value: decline['value'] }],
+    };
+    const clickBody = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString());
+    const mark = slack.calls.length;
+    expect(
+      await second.call(
+        'POST',
+        '/slack/interactions/:installId',
+        request('POST', `/slack/interactions/${INSTALL_ID}`, {
+          params: { installId: INSTALL_ID },
+          body: clickBody,
+          headers: { ...signed(clickBody), 'content-type': 'application/x-www-form-urlencoded' },
+        }),
+      ),
+    ).toEqual({ status: 200, body: undefined, done: true });
+
+    // The DM she clicked is redrawn naming her where the buttons were: under
+    // the plain ask, since the subject it was drawn with went with the old
+    // process. Meg hears too, and Ada is told nothing privately.
+    await vi.waitFor(() => expect(slack.calls.slice(mark).filter((c) => c.method === 'chat.update')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    await vi.waitFor(() => expect(slack.calls.slice(mark).filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const after = slack.calls.slice(mark);
+    expect(after.filter((c) => c.method === 'chat.update').map((c) => c.body)).toEqual([
+      {
+        channel: ADA_DM,
+        ts: POSTED_TS,
+        text: 'Ada Admin declined this.',
+        blocks: [
+          { type: 'section', text: { type: 'plain_text', text: COPY.botRequestAsked, emoji: false } },
+          { type: 'context', elements: [{ type: 'mrkdwn', text: 'Ada Admin declined this.' }] },
+        ],
+      },
+    ]);
+    expect(after.find((c) => c.method === 'chat.postMessage')!.body['channel']).toBe(MEG_SLACK);
+    expect(after.map((c) => c.method)).not.toContain('chat.postEphemeral');
+    expect(
+      await second.call('GET', '/admin/slack/bot-requests', request('GET', '/admin/slack/bot-requests', { as: ADMIN.id })),
+    ).toEqual({ status: 200, body: { requests: [], truncated: false, configTokenStored: false }, done: true });
+  });
+
+  it("an AX admin's Allow on the bot she approved for a team admin tells that team admin it is live, from the shared bot, through the wiring (TASK-1170)", async () => {
+    const slack = allowSlackFetch();
+    const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    // Ada approved Meg's request in Admin › Slack: the pending bot her token
+    // made, its client secret, and the state her install link carries.
+    const store = createInstallStore(probe);
+    await store.insertPendingBot({
+      installId: BOT_INSTALL_ID,
+      appId: BOT_APP_ID,
+      clientId: '7512345678901.7522222222222',
+      botName: 'Support Helper',
+      connectedByUserId: ADMIN.id,
+      agentId: TEAM_AGENT.id,
+      requestedByUserId: MEG.id,
+    });
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-04');
+    const state = randomBytes(OAUTH_STATE_BYTES).toString('hex');
+    await store.setOAuthState(BOT_INSTALL_ID, {
+      stateHash: sha256Hex(state),
+      userId: ADMIN.id,
+      expiresAt: new Date(NOW_MS + OAUTH_STATE_TTL_MS),
+    });
+    // #support, which the agent had through the shared bot: its own bot isn't in it yet.
+    expect(
+      await createChannelStore(probe).upsert({
+        installId: INSTALL_ID,
+        channelId: SUPPORT_CH,
+        agentId: TEAM_AGENT.id,
+        channelName: 'support',
+        connectedByUserId: ADMIN.id,
+      }),
+    ).toBe('connected');
+
+    const path = '/slack/bots/oauth/callback';
+    const code = '7512345678901.7598765432109.0123456789abcdef';
+    expect(await call('GET', path, request('GET', path, { as: ADMIN.id, query: { code, state } }))).toEqual({
+      status: 302,
+      body: `${HTTPS_ORIGIN}/?slack-bot=connected&from=admin`,
+      done: true,
+    });
+
+    // After the redirect, Meg hears it is live from the shared bot (the DM
+    // she has is with it), with its @handle and the channel that needs it.
+    await vi.waitFor(() => expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const told = slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    expect(told.auth).toBe(`Bearer ${BOT_TOKEN}`);
+    expect(told.body).toEqual({
+      channel: MEG_SLACK,
+      text: COPY.botLiveForOwner({ botName: 'Support Helper', handle: 'supporthelper' }, ['support'], 0),
+      unfurl_links: false,
+      unfurl_media: false,
+    });
   });
 
   it('the memory switch through the wiring: a turn while it is off keeps its thread out of memory for good; a new thread is remembered', async () => {

@@ -5,6 +5,8 @@ import type { RouteRequest, RouteResponse } from '../http-types.js';
 import {
   INTERACTIONS_ROUTE_PATH,
   createInteractionsHandler,
+  type BotRequestClick,
+  type BotRequestClickHandler,
   type ButtonClick,
   type ClickHandler,
 } from '../interactions.js';
@@ -19,9 +21,10 @@ import type { InstallRow } from '../store.js';
   `POST /slack/interactions/:installId`, through its route handler. The rules
   pinned here: the route checks what the events and `/ax` routes check (the
   same 404, 401, 413 and 503); a click is read only from Slack's signed
-  payload, and only a click on one of our prompt buttons, on a message, by a
-  Slack user, is handed on; the 200 goes out before the click is handled,
-  and nothing about the click is ever logged but a code.
+  payload, and only a click on one of our prompt buttons, or on a bot request
+  DM's Decline from the shared bot (TASK-1170), on a message, by a Slack user,
+  is handed on, each to its own gate; the 200 goes out before the click is
+  handled, and nothing about the click is ever logged but a code.
 */
 
 // ── Fixtures, shaped like what Slack really sends ───────────────────────────
@@ -47,8 +50,10 @@ const PROMPT_ID = 'Rk2pX9vQ_mL4wT7nB1cZ-A';
 const LEGACY_TOKEN = 'Jhj5dZrVaK7ZwHHjRyZWjbDl';
 const RESPONSE_URL = 'https://hooks.slack.com/actions/T07ABCDEF12/7712345678901/7RxQYH2mRuSampleOnly';
 
+/** The shared app's install: the bot every member DMs. */
 const ACTIVE: InstallRow = {
   installId: INSTALL_ID,
+  kind: 'shared',
   status: 'active',
   appId: APP_ID,
   clientId: '7512345678901.7598765432109',
@@ -57,6 +62,9 @@ const ACTIVE: InstallRow = {
   teamName: 'Canopy Works',
   botUserId: BOT_USER_ID,
   connectedByUserId: 'usr_admin1',
+  agentId: null,
+  requestedByUserId: null,
+  botHandle: null,
   createdAt: new Date('2026-11-13T11:00:00.000Z'),
   configTokenAddedAt: new Date('2026-11-13T11:00:00.000Z'),
   installedAt: new Date('2026-11-13T11:05:00.000Z'),
@@ -74,6 +82,21 @@ const NO_SECRET: InstallRow = { ...ACTIVE, installId: NO_SECRET_ID };
 /** An active row with no workspace on record: activation sets both, so only a damaged row looks like this. */
 const NO_TEAM_ID = 'Wd3sQ8nLz1Kc6Vb0Xp4TrA';
 const NO_TEAM: InstallRow = { ...ACTIVE, installId: NO_TEAM_ID, teamId: null, teamName: null };
+/** A team agent's own bot, live in the same workspace: its own app, and a bot's kind. */
+const BOT_ID = 'Ty6uI1oPa3Sd8Fg2Hj5KlQ';
+const BOT_APP_ID = 'A07BOTAPP01';
+const BOT: InstallRow = {
+  ...ACTIVE,
+  installId: BOT_ID,
+  kind: 'bot',
+  appId: BOT_APP_ID,
+  clientId: '7512345678901.7598765439999',
+  botName: 'Support Helper',
+  botUserId: 'U07BOTSUPP1',
+  agentId: 'agt_support',
+  requestedByUserId: 'usr_mel',
+  botHandle: 'supporthelper',
+};
 
 // A `block_actions` payload for a click on Allow, in a prompt our bot posted
 // in Mel's thread (docs.slack.dev, "block_actions payloads").
@@ -164,6 +187,78 @@ const MELS_ALLOW: ButtonClick = {
   threadTs: THREAD_TS,
   action: 'allow',
   promptId: PROMPT_ID,
+};
+
+// A click on Decline, in the shared bot's DM to Ada (an AX admin) about Mel's
+// request for her team agent's own bot (TASK-1170): a top-level message in
+// the DM, with no thread.
+const DM_ADA = 'D07DMADA001';
+const DM_TS = '1763121720.000300';
+/** A bot request's id, as bot-requests.ts mints it: 22 base64url characters. */
+const REQUEST_ID = 'Hn5tY2wQ_aB8zK3vM6pR-g';
+const ADA_USER = { id: ADA, username: 'ada.admin', name: 'ada.admin', team_id: TEAM_ID };
+const DM_CONTAINER = { type: 'message', message_ts: DM_TS, channel_id: DM_ADA, is_ephemeral: false };
+const DM_CHANNEL_REF = { id: DM_ADA, name: 'directmessage' };
+const DECLINE = {
+  action_id: 'ax_bot_request_decline',
+  block_id: 'Vb2Nq',
+  text: { type: 'plain_text', text: 'Decline', emoji: false },
+  value: REQUEST_ID,
+  type: 'button',
+  action_ts: '1763121780.123456',
+};
+/** A URL button: Slack still tells the app about the click, with the url and no value. */
+const APPROVE = {
+  action_id: 'ax_bot_request_approve',
+  block_id: 'Vb2Nq',
+  text: { type: 'plain_text', text: 'Approve', emoji: false },
+  url: 'https://ax.example/?admin=slack',
+  style: 'primary',
+  type: 'button',
+  action_ts: '1763121780.123456',
+};
+const DM_MESSAGE = {
+  user: BOT_USER_ID,
+  type: 'message',
+  ts: DM_TS,
+  bot_id: 'B07BOTID123',
+  app_id: APP_ID,
+  text: 'A team asked for its own Slack bot.',
+  team: TEAM_ID,
+  blocks: [
+    {
+      type: 'section',
+      block_id: 'n4Rt8',
+      text: { type: 'plain_text', text: 'Mel wants to add @Support Helper (Support agent).', emoji: false },
+    },
+    {
+      type: 'actions',
+      block_id: 'Vb2Nq',
+      elements: [
+        { type: 'button', action_id: APPROVE.action_id, text: APPROVE.text, style: 'primary', url: APPROVE.url },
+        { type: 'button', action_id: DECLINE.action_id, text: DECLINE.text, value: REQUEST_ID },
+      ],
+    },
+  ],
+};
+
+/** Ada's click on Decline in her DM: valid on every rule. */
+const declineClick = (over: Record<string, unknown> = {}): Record<string, unknown> =>
+  blockActions({
+    user: ADA_USER,
+    container: DM_CONTAINER,
+    channel: DM_CHANNEL_REF,
+    message: DM_MESSAGE,
+    actions: [DECLINE],
+    ...over,
+  });
+
+/** What the handler should hand on for `declineClick()`, written out by hand. */
+const ADAS_DECLINE: BotRequestClick = {
+  slackUserId: ADA,
+  channel: DM_ADA,
+  messageTs: DM_TS,
+  requestId: REQUEST_ID,
 };
 
 /** A form with exactly these fields, in this order. */
@@ -270,9 +365,9 @@ interface Line {
   fields: Record<string, unknown> | undefined;
 }
 
-interface Clicked {
+interface Clicked<C = ButtonClick> {
   install: InstallRow;
-  click: ButtonClick;
+  click: C;
   /**
    * Had the handler already called the response's finishing method when
    * onClick started? An in-process ordering only (the handler finishes the
@@ -287,6 +382,7 @@ function world(
     installs?: InstallRow[];
     signingSecrets?: Record<string, string>;
     onClick?: ClickHandler;
+    onBotRequestClick?: BotRequestClickHandler;
     storeFails?: unknown;
     secretFails?: unknown;
     /** Every log call throws after recording its line. */
@@ -305,6 +401,7 @@ function world(
   const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
   const lifetime = createLifetime();
   const clicks: Clicked[] = [];
+  const botRequestClicks: Array<Clicked<BotRequestClick>> = [];
   let current: Answered | null = null;
   let nowMs = NOW_MS;
 
@@ -330,6 +427,10 @@ function world(
       clicks.push({ install, click: c, endedBeforeClick: current !== null && current.how !== null });
       if (o.onClick !== undefined) await o.onClick(install, c);
     },
+    onBotRequestClick: async (install, c) => {
+      botRequestClicks.push({ install, click: c, endedBeforeClick: current !== null && current.how !== null });
+      if (o.onBotRequestClick !== undefined) await o.onBotRequestClick(install, c);
+    },
   });
 
   async function send(req: RouteRequest): Promise<Answered> {
@@ -344,6 +445,7 @@ function world(
   return {
     send,
     clicks,
+    botRequestClicks,
     lines,
     lookups,
     secretReads,
@@ -445,6 +547,123 @@ describe('a click on a prompt button', () => {
     expect(await w2.send(click())).toStrictEqual(OK);
     expect(w2.lines).toEqual([
       { level: 'error', msg: 'slack_interaction_failed', fields: { installId: INSTALL_ID, stage: 'click', code: 'unknown' } },
+    ]);
+  });
+});
+
+// ── A Decline in a bot request's DM (TASK-1170) ─────────────────────────────
+
+describe("a click on a bot request DM's Decline (TASK-1170)", () => {
+  it("a Decline on the shared install's DM → an empty 200, then onBotRequestClick once with who, where and which request, and onClick never", async () => {
+    const w = world();
+    expect(await w.send(click(declineClick()))).toStrictEqual(OK);
+    expect(w.botRequestClicks).toStrictEqual([{ install: ACTIVE, click: ADAS_DECLINE, endedBeforeClick: true }]);
+    expect(w.clicks).toEqual([]);
+    // Only the signing secret is read here: whatever the click needs next is its gate's.
+    expect(w.secretReads).toEqual(['signing-secret']);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('reads the DM and the message from wherever Slack put them', async () => {
+    const w = world();
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['no channel: the container names it', without(declineClick(), 'channel')],
+      ['no channel_id in the container: the channel names it', declineClick({ container: without(DM_CONTAINER, 'channel_id') })],
+      ['no message_ts in the container: the message names it', declineClick({ container: without(DM_CONTAINER, 'message_ts') })],
+      ['no message: the container names it', without(declineClick(), 'message')],
+      // Once someone replies under it, the DM's message has a thread of its own.
+      ['a message with a thread', declineClick({ message: { ...DM_MESSAGE, thread_ts: DM_TS } })],
+    ];
+    for (const [name, payload] of cases) {
+      expect(await w.send(click(payload)), name).toStrictEqual(OK);
+      expect(w.botRequestClicks.at(-1)?.click, name).toStrictEqual(ADAS_DECLINE);
+    }
+    expect(w.botRequestClicks).toHaveLength(cases.length);
+    expect(w.clicks).toEqual([]);
+  });
+
+  it("Decline on a team agent's own bot, a value that isn't a request id, or Approve's URL click → an empty 200, ignored 'action', nothing handed on", async () => {
+    const w = world({
+      installs: [ACTIVE, BOT],
+      signingSecrets: { [INSTALL_ID]: SIGNING_SECRET, [BOT_ID]: SIGNING_SECRET },
+    });
+    const withValue = (value: unknown): Record<string, unknown> => declineClick({ actions: [{ ...DECLINE, value }] });
+    // Each is a valid Decline on every rule but the one its name says.
+    const cases: Array<[string, RouteRequest, string]> = [
+      // Only the shared bot DMs anyone about a bot request.
+      ["a Decline on a team agent's own bot", click(declineClick({ api_app_id: BOT_APP_ID }), { installId: BOT_ID }), BOT_ID],
+      ['a 21-character value', click(withValue(REQUEST_ID.slice(1))), INSTALL_ID],
+      ['a 23-character value', click(withValue(`${REQUEST_ID}A`)), INSTALL_ID],
+      ['a value with padding', click(withValue(`${REQUEST_ID.slice(0, 21)}=`)), INSTALL_ID],
+      ['a value with a character base64url never uses', click(withValue(`${REQUEST_ID.slice(0, 21)}.`)), INSTALL_ID],
+      ['a value that is not a string', click(withValue(1234)), INSTALL_ID],
+      ['no value', click(declineClick({ actions: [without(DECLINE, 'value')] })), INSTALL_ID],
+      ['an action id in another case', click(declineClick({ actions: [{ ...DECLINE, action_id: 'AX_BOT_REQUEST_DECLINE' }] })), INSTALL_ID],
+      // A URL button: the link does what it does, and its click asks nothing of the bot.
+      ["Approve's URL click", click(declineClick({ actions: [APPROVE] })), INSTALL_ID],
+      ["Approve's URL click, with a request id for a value", click(declineClick({ actions: [{ ...APPROVE, value: REQUEST_ID }] })), INSTALL_ID],
+    ];
+    for (const [name, req, installId] of cases) {
+      expect(await w.send(req), name).toStrictEqual(OK);
+      expect(w.lines.at(-1), name).toEqual({ level: 'info', msg: 'slack_interaction_ignored', fields: { installId, reason: 'action' } });
+    }
+    expect(w.lines).toHaveLength(cases.length);
+    expect(w.botRequestClicks).toEqual([]);
+    expect(w.clicks).toEqual([]);
+
+    // A prompt's buttons still work on a team agent's own bot: only Decline is the shared bot's.
+    expect(await w.send(click(blockActions({ api_app_id: BOT_APP_ID }), { installId: BOT_ID }))).toStrictEqual(OK);
+    expect(w.clicks.map((c) => [c.install, c.click])).toStrictEqual([[BOT, MELS_ALLOW]]);
+  });
+
+  it('a Decline whose user, channel or message is malformed → 400, and nothing handed on', async () => {
+    const w = world();
+    // Each is a valid Decline on every rule but the one its name says.
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['no user', without(declineClick(), 'user')],
+      ['a user.id with a space', declineClick({ user: { ...ADA_USER, id: 'U07 ADA0001' } })],
+      ['no channel anywhere', without(declineClick({ container: without(DM_CONTAINER, 'channel_id') }), 'channel')],
+      ['channel and container naming two channels', declineClick({ channel: { ...DM_CHANNEL_REF, id: 'D07DMOTHER1' } })],
+      ['no message ts anywhere', declineClick({ container: without(DM_CONTAINER, 'message_ts'), message: without(DM_MESSAGE, 'ts') })],
+      ['container and message naming two messages', declineClick({ message: { ...DM_MESSAGE, ts: '1763121999.000900' } })],
+      ['a message that is not an object', declineClick({ message: 'A team asked for its own Slack bot.' })],
+      ['a thread_ts with a space', declineClick({ message: { ...DM_MESSAGE, thread_ts: '1763121720 000300' } })],
+    ];
+    for (const [name, payload] of cases) expect(await w.send(click(payload)), name).toStrictEqual(BAD_REQUEST);
+    expect(w.botRequestClicks).toEqual([]);
+    expect(w.clicks).toEqual([]);
+    expect(fieldsOf(w.lines, 'slack_interaction_refused')).toEqual(cases.map(() => ({ installId: INSTALL_ID, reason: 'malformed' })));
+  });
+
+  it('the answer never waits for a Decline, and one in flight holds drain open', async () => {
+    const gate = deferred();
+    const w = world({ onBotRequestClick: () => gate.promise });
+    const stillWaiting = new Promise<string>((resolve) => {
+      setTimeout(() => resolve('the handler is still waiting on the click'), 1_000).unref();
+    });
+    expect(await Promise.race([w.send(click(declineClick())), stillWaiting])).toStrictEqual(OK);
+    expect(w.botRequestClicks).toHaveLength(1);
+
+    let drained = false;
+    const draining = w.lifetime.drain().then(() => {
+      drained = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(drained).toBe(false);
+    gate.resolve();
+    await draining;
+    expect(drained).toBe(true);
+  });
+
+  it('a Decline that fails after the answer: still 200, and slack_interaction_failed carries its stage and code alone', async () => {
+    const w = world({
+      onBotRequestClick: async () => {
+        throw new Error(`could not decline ${REQUEST_ID} for ${ADA} in ${DM_ADA} at ${DM_TS}`);
+      },
+    });
+    expect(await w.send(click(declineClick()))).toStrictEqual(OK);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_interaction_failed', fields: { installId: INSTALL_ID, stage: 'bot-request', code: 'unknown' } },
     ]);
   });
 });

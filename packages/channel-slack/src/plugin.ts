@@ -18,6 +18,8 @@ import { subscribeAgentsDeleted } from './agents-deleted.js';
 import { createClickHandler } from './answers.js';
 import { createBotCallbackRoute } from './bot-callback.js';
 import { createBotChanges } from './bot-changes.js';
+import { createBotRequestClickHandler } from './bot-request-click.js';
+import { createBotRequestDms } from './bot-request-dms.js';
 import { createBotRequestAdminRoutes } from './bot-request-routes.js';
 import { createBotRequests } from './bot-requests.js';
 import { createBots } from './bots.js';
@@ -88,7 +90,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   POST /slack/events/:installId     — Slack's deliveries,
 //   POST /slack/commands/:installId   — the `/ax` slash command (commands.ts), and
 //   POST /slack/interactions/:installId — a click on an approval prompt's
-//        Allow or Deny (interactions.ts, TASK-1095):
+//        Allow or Deny (interactions.ts, TASK-1095), or on Decline in the
+//        shared bot's DM to an AX admin about a bot request (TASK-1170):
 //        the THREE routes that bypass CSRF, because their caller is Slack,
 //        authenticated by the signature over the raw body and the install id
 //        in the path (ingress.ts)
@@ -152,6 +155,17 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // speaker's name (TASK-1146). A team agent's own bot's channels have the
 // switch too, and the agent's switch for a channel is kept after a
 // Disconnect, so the bot starts where the team left it (TASK-1180).
+//
+// TASK-1170: a team admin's ask for their agent's own bot has the shared bot
+// DM every AX admin it can find in the workspace (`auth:list-admins`, each
+// re-proved through Slack and mapped back, bot-request-dms.ts): Approve is a
+// link to Admin › Slack, and Decline a button that only a current AX admin's
+// click acts on (bot-request-click.ts, the same decline Admin › Slack runs).
+// Once the request is approved or declined, each DM is redrawn with who did
+// it, and its requester hears from the shared bot when someone else declined
+// it, or when the bot an AX admin approved for them goes live (bot-callback.ts).
+// All of it runs after the app lock is free, tracked by the lifetime, and
+// never changes an answer; the records for the redraw live in memory.
 //
 // TASK-1095: when a DM or an attended turn's agent has a call held for the
 // sender's OK, the reply ends with the ask and a prompt follows it in the
@@ -264,6 +278,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         'credentials:delete',
         'auth:find-user-by-email',
         'auth:is-approved-email',
+        // A bot request's DMs (TASK-1170): who the AX admins are, with a verified email.
+        'auth:list-admins',
         'agents:list-for-user',
         'agents:resolve',
         'agents:can-set-shared-credential',
@@ -401,6 +417,21 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           now,
           randomBytes,
         });
+        // A bot request's Slack DMs (TASK-1170): the shared bot DMs the AX
+        // admins when one opens, redraws their DMs when it is approved or
+        // declined, and tells its requester. Told only once the app lock is
+        // free, tracked by the lifetime (shutdown drains it), never awaited.
+        const botRequestDms = createBotRequestDms({
+          bus,
+          api,
+          installs: store,
+          channels: channelStore,
+          secrets,
+          lifetime: life,
+          publicOrigin,
+          logger,
+          now,
+        });
         // Asking an AX admin to approve such a bot (TASK-1169): its approve
         // makes the bot through `bots`' one create path, under the same lock.
         const botRequests = createBotRequests({
@@ -408,6 +439,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           installs: store,
           secrets,
           bots,
+          dms: botRequestDms,
           lock: appLock,
           publicOrigin,
           logger,
@@ -515,6 +547,15 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                   skill: createSkillAnswer({ bus, publicOrigin }),
                 },
               }),
+              // Decline in a bot request's DM (TASK-1170): the clicker re-proved
+              // as an AX admin, then the same decline Admin › Slack runs, as her.
+              onBotRequestClick: createBotRequestClickHandler({
+                bus,
+                api,
+                secrets,
+                requests: botRequests,
+                logger,
+              }),
             }),
           },
           // These keep http-server's CSRF check: the caller is a signed-in browser.
@@ -524,7 +565,17 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           ...createAgentSlackRoutes(channelDeps, bots, botRequests, botChanges),
           // Where Slack sends a bot's approver back after Allow: signed in, the
           // OAuth state bound to them, and the bot finished under the same lock.
-          createBotCallbackRoute({ bus, installs: store, lock: appLock, bots, publicOrigin, logger, now }),
+          // A bot that went live is handed to its request's DMs once the lock is free.
+          createBotCallbackRoute({
+            bus,
+            installs: store,
+            lock: appLock,
+            bots,
+            dms: botRequestDms,
+            publicOrigin,
+            logger,
+            now,
+          }),
         ];
 
         for (const route of routes) {

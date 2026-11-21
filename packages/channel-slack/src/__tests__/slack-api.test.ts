@@ -156,6 +156,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
         }),
     ],
     ['users.info', () => api.usersInfo(BOT, 'U1')],
+    ['users.lookupByEmail', () => api.usersLookupByEmail(BOT, 'ada@example.com')],
     [
       'chat.postMessage',
       () => api.postMessage(BOT, { channel: 'D1', threadTs: '1.2', markdownText: 'hi' }),
@@ -164,6 +165,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
       'chat.postMessage',
       () => api.postBlocks(BOT, { channel: 'D1', threadTs: '1.2', text: 'hi', blocks: [] }),
     ],
+    ['chat.postMessage', () => api.postDirect(BOT, { user: 'U07ADA00001', text: 'hi' })],
     ['chat.update', () => api.updateMessage(BOT, { channel: 'D1', ts: '1.3', text: 'hi', blocks: [] })],
     ['chat.postEphemeral', () => api.postEphemeral(BOT, { channel: 'C1', user: 'U1', text: 'hi' })],
     [
@@ -194,6 +196,7 @@ const FORM_METHODS = [
   'apps.manifest.delete',
   'oauth.v2.access',
   'users.info',
+  'users.lookupByEmail',
   'conversations.info',
   'conversations.list',
   'conversations.join',
@@ -230,7 +233,10 @@ afterEach(() => {
 
 describe('requests', () => {
   it('every method POSTs to https://slack.com/api/<method> with redirect manual and a signal', async () => {
-    const slack = fakeSlack(() => okJson(EVERY_FIELD));
+    // chat.postMessage answers a DM's channel id as a string (conversations.info's is an object).
+    const slack = fakeSlack((req) =>
+      okJson(req.method === 'chat.postMessage' ? { ...EVERY_FIELD, channel: 'D07ADA00001' } : EVERY_FIELD),
+    );
     const api = createSlackApi({ fetchImpl: slack.fetchImpl });
     const methods = everyMethod(api);
     for (const [, run] of methods) await run();
@@ -418,6 +424,66 @@ describe('requests', () => {
     for (const fields of [{}, { ts: 5 }, { ts: '' }]) {
       const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(fields)).fetchImpl });
       const err = await failure(api.postBlocks(BOT, { channel: 'D1', threadTs: '1.2', text: 'x', blocks: [] }));
+      expect(err.code).toBe('bad-response');
+    }
+  });
+
+  it('usersLookupByEmail sends the email as a form field and answers the user id', async () => {
+    const slack = fakeSlack(() => okJson({ user: { id: 'U07ADA00001', profile: { email: 'ada@example.com' } } }));
+    const id = await createSlackApi({ fetchImpl: slack.fetchImpl }).usersLookupByEmail(BOT, 'ada+x@example.com');
+
+    expect(id).toBe('U07ADA00001');
+    const [req] = slack.sent;
+    expect(req!.url).toBe('https://slack.com/api/users.lookupByEmail');
+    expect(req!.headers.get('content-type')).toMatch(/^application\/x-www-form-urlencoded/);
+    expect(req!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(req!.body).toBe('email=ada%2Bx%40example.com');
+  });
+
+  it('usersLookupByEmail: no usable id is bad-response; users_not_found keeps its code; the error never holds the address', async () => {
+    for (const bad of [{}, { user: null }, { user: 'U1' }, { user: [] }, { user: {} }, { user: { id: 5 } }, { user: { id: '' } }]) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(bad)).fetchImpl });
+      const err = await failure(api.usersLookupByEmail(BOT, 'ada@example.com'));
+      expect(err.code).toBe('bad-response');
+      expect(err.message).not.toContain('ada@example.com');
+    }
+    const missing = createSlackApi({
+      fetchImpl: fakeSlack(() => okJson({ ok: false, error: 'users_not_found' })).fetchImpl,
+    });
+    const err = await failure(missing.usersLookupByEmail(BOT, 'ada@example.com'));
+    expect(err.code).toBe('users_not_found');
+    expect(err.message).toBe('slack users.lookupByEmail: users_not_found');
+  });
+
+  it('postDirect posts to the user id at the top level with unfurls off, and answers the DM channel and ts', async () => {
+    const slack = fakeSlack(() => okJson({ channel: 'D07ADA00001', ts: '1700000000.000300' }));
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    const blocks = [{ type: 'section', text: { type: 'plain_text', text: 'ok?' } }];
+
+    const out = await api.postDirect(BOT, { user: 'U07ADA00001', text: 'ok?', blocks });
+    expect(out).toStrictEqual({ channel: 'D07ADA00001', ts: '1700000000.000300' });
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(slack.sent[0]!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(slack.sent[0]!.body).not.toContain(BOT);
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'U07ADA00001',
+      text: 'ok?',
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+
+    await api.postDirect(BOT, { user: 'U07ADA00001', text: 'plain' });
+    const plain = JSON.parse(slack.sent[1]!.body) as Record<string, unknown>;
+    expect(plain).not.toHaveProperty('blocks');
+    expect(plain).not.toHaveProperty('thread_ts');
+  });
+
+  it('postDirect: an answer missing the channel or the ts is bad-response', async () => {
+    const goodTs = '1700000000.000300';
+    for (const fields of [{}, { ts: goodTs }, { channel: 'D07ADA00001' }, { channel: GENERAL, ts: goodTs }, { channel: '', ts: goodTs }, { channel: 'D07ADA00001', ts: 5 }]) {
+      const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson(fields)).fetchImpl });
+      const err = await failure(api.postDirect(BOT, { user: 'U07ADA00001', text: 'x' }));
       expect(err.code).toBe('bad-response');
     }
   });

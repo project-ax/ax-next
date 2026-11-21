@@ -1,10 +1,10 @@
 /**
  * channel-slack's only egress: a small Slack Web API client over an injected
- * `fetch`. No Slack SDK: about eighteen methods don't earn a dependency tree,
+ * `fetch`. No Slack SDK: about nineteen methods don't earn a dependency tree,
  * or retries and logging we don't control.
  *
  * The capability is as small as we could make it (invariant 5):
- *   - one destination, `https://slack.com/api/<method>`, POST, for the eighteen
+ *   - one destination, `https://slack.com/api/<method>`, POST, for the nineteen
  *     methods below and no others. Nothing a caller passes reaches the URL;
  *   - redirects are refused (`redirect: 'manual'`; any 3xx, or an answer a
  *     fetch followed a redirect to anyway, is `redirect`), so no token is
@@ -18,8 +18,8 @@
  *     closed: any value but absent, null or `false` counts as set.
  *
  * Encoding, per method (MEASURED from docs.slack.dev, 2026-11-12):
- * `tooling.tokens.rotate`, `oauth.v2.access` and `users.info` take ONLY form
- * bodies ("arguments sent in a JSON body are ignored by methods that don't
+ * `tooling.tokens.rotate`, `oauth.v2.access`, `users.info` and
+ * `users.lookupByEmail` take ONLY form bodies ("arguments sent in a JSON body are ignored by methods that don't
  * list application/json"), and so do `conversations.info` and
  * `conversations.list` (read 2026-11-13). `conversations.join` and the
  * `apps.manifest.*` calls list both (the `apps.*` pages read 2026-11-15) and
@@ -178,6 +178,13 @@ export interface SlackApi {
   }): Promise<OAuthInstall>;
   /** The raw `user` object, unvalidated beyond being an object: admission checks it. */
   usersInfo(botToken: string, userId: string): Promise<unknown>;
+  /**
+   * The Slack user id `email` belongs to in the token's workspace
+   * (`users.lookupByEmail`, `users:read.email`). Only the id is read: who that
+   * is (a full member? a confirmed email?) is users.info's to say. Slack's
+   * `users_not_found` is a SlackApiError with that code.
+   */
+  usersLookupByEmail(botToken: string, email: string): Promise<string>;
   postMessage(
     botToken: string,
     a: { channel: string; threadTs: string; markdownText: string },
@@ -187,6 +194,15 @@ export interface SlackApi {
     botToken: string,
     a: { channel: string; threadTs: string; text: string; blocks: readonly SlackBlock[] },
   ): Promise<{ ts: string }>;
+  /**
+   * A top-level message to one person by their user id: Slack posts it in the
+   * bot's DM with them (`chat.postMessage`). Answers that DM's channel id
+   * (`chat.update` needs it; a user id won't do) and the message's ts.
+   */
+  postDirect(
+    botToken: string,
+    a: { user: string; text: string; blocks?: readonly SlackBlock[] },
+  ): Promise<{ channel: string; ts: string }>;
   /** Replace a message the bot posted (`chat.update`), e.g. to close a prompt's buttons. */
   updateMessage(
     botToken: string,
@@ -239,6 +255,7 @@ type SlackMethod =
   | 'apps.icon.set'
   | 'oauth.v2.access'
   | 'users.info'
+  | 'users.lookupByEmail'
   | 'chat.postMessage'
   | 'chat.postEphemeral'
   | 'chat.update'
@@ -572,6 +589,15 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       return user;
     },
 
+    async usersLookupByEmail(botToken, email) {
+      const method = 'users.lookupByEmail';
+      const r = await call(method, bearer(botToken), form({ email }));
+      const user = r['user'];
+      const id = isRecord(user) ? idOf(user['id']) : null;
+      if (id === null) throw badResponse(method);
+      return id;
+    },
+
     async conversationsInfo(botToken, channel) {
       const method = 'conversations.info';
       const r = await call(method, bearer(botToken), form({ channel }));
@@ -645,6 +671,25 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       const ts = idOf(r['ts']);
       if (ts === null) throw badResponse(method);
       return { ts };
+    },
+
+    async postDirect(botToken, a) {
+      const method = 'chat.postMessage';
+      const r = await call(
+        method,
+        bearer(botToken),
+        json({
+          channel: a.user,
+          text: a.text,
+          ...(a.blocks !== undefined ? { blocks: a.blocks } : {}),
+          unfurl_links: false,
+          unfurl_media: false,
+        }),
+      );
+      const channel = idOf(r['channel']);
+      const ts = idOf(r['ts']);
+      if (channel === null || ts === null) throw badResponse(method);
+      return { channel, ts };
     },
 
     async updateMessage(botToken, a) {

@@ -61,7 +61,8 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor),
 // `auth:get-user`, `auth:find-user-by-email` (the people in AX_USERS and
-// nobody else), `auth:is-approved-email` (APPROVED_DOMAINS), `agent:invoke`
+// nobody else), `auth:is-approved-email` (APPROVED_DOMAINS), `auth:list-admins`
+// (nobody: no bot request here DMs anyone, TASK-1170), `agent:invoke`
 // (records the turn, then streams one line and ends it on the bus, the way
 // the orchestrator does), `branding:get`, and the two services a permission
 // prompt's Allow calls (`proxy:add-host`, `agent:apply-capability-grant`: they
@@ -210,6 +211,7 @@ function createStubsPlugin(): Plugin {
         'auth:get-user',
         'auth:find-user-by-email',
         'auth:is-approved-email',
+        'auth:list-admins',
         'agent:invoke',
         'branding:get',
         // The two services a permission prompt's Allow calls. Their real producers (the egress
@@ -251,6 +253,12 @@ function createStubsPlugin(): Plugin {
         'auth:is-approved-email',
         name,
         async (_ctx, { email }) => ({ approved: APPROVED_DOMAINS.has(email.slice(email.lastIndexOf('@') + 1).toLowerCase()) }),
+      );
+      // A bot request's DMs (TASK-1170): no AX admin here has a verified email, so nobody is DMed.
+      bus.registerService<Record<string, never>, { admins: Array<{ userId: string; email: string }> }>(
+        'auth:list-admins',
+        name,
+        async () => ({ admins: [] }),
       );
       // The orchestrator's: a turn streams on the bus for its own reqId and
       // ends with chat:turn-end carrying the turn's conversation. No deadline,

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { ACTION_ALLOW, ACTION_DENY, actionOf, linkOnlyBlocks, outcomeBlocks, promptBlocks } from '../blocks.js';
+import {
+  ACTION_ALLOW,
+  ACTION_BOT_REQUEST_APPROVE,
+  ACTION_BOT_REQUEST_DECLINE,
+  ACTION_DENY,
+  actionOf,
+  botRequestBlocks,
+  botRequestOutcomeBlocks,
+  linkOnlyBlocks,
+  outcomeBlocks,
+  promptBlocks,
+} from '../blocks.js';
 import { COPY } from '../copy.js';
 import { cleanPromptSubject } from '../format.js';
 import { PROMPT_SUBJECT_MAX } from '../limits.js';
@@ -321,6 +332,83 @@ describe('actionOf: which button a click names', () => {
       'constructor',
     ]) {
       expect(actionOf(id), JSON.stringify(id)).toBeNull();
+    }
+  });
+});
+
+describe("a bot request's DM (TASK-1170)", () => {
+  const REQUEST_ID = 'req_AbCdEf123';
+  const APPROVE_URL = 'https://canopyworks.ai/?admin=slack';
+  const SUB = 'Sam wants to add @Support Bot (Support agent).';
+  const HOSTILE_SUB = 'Sam wants to add @<!channel> *bold* <https://evil.example|click> (<@U1> agent).';
+
+  it('draws the subject as plain_text, then Approve and Decline, then how Approve works; text names nobody', () => {
+    const { text, blocks } = botRequestBlocks({ subject: SUB, requestId: REQUEST_ID, approveUrl: APPROVE_URL });
+    expect(text).toBe(COPY.botRequestAsked);
+    expect(blocks).toEqual([
+      { type: 'section', text: { type: 'plain_text', text: SUB, emoji: false } },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: COPY.botRequestApprove, emoji: false },
+            style: 'primary',
+            url: APPROVE_URL,
+            action_id: ACTION_BOT_REQUEST_APPROVE,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: COPY.botRequestDecline, emoji: false },
+            action_id: ACTION_BOT_REQUEST_DECLINE,
+            value: REQUEST_ID,
+          },
+        ],
+      },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: COPY.botRequestHow }] },
+    ]);
+    expect(ACTION_BOT_REQUEST_APPROVE).toBe('ax_bot_request_approve');
+    expect(ACTION_BOT_REQUEST_DECLINE).toBe('ax_bot_request_decline');
+  });
+
+  it('the Approve button carries a url and no value; actionOf still knows only the prompt buttons', () => {
+    const { blocks } = botRequestBlocks({ subject: SUB, requestId: REQUEST_ID, approveUrl: APPROVE_URL });
+    const approve = objectsIn(blocks).find((o) => o.action_id === ACTION_BOT_REQUEST_APPROVE);
+    expect(approve).toBeDefined();
+    expect(approve).not.toHaveProperty('value');
+    expect(actionOf(ACTION_BOT_REQUEST_APPROVE)).toBeNull();
+    expect(actionOf(ACTION_BOT_REQUEST_DECLINE)).toBeNull();
+  });
+
+  it('a hostile subject stays as typed in plain_text and never reaches the notification text', () => {
+    const { text, blocks } = botRequestBlocks({ subject: HOSTILE_SUB, requestId: REQUEST_ID, approveUrl: APPROVE_URL });
+    expect(text).toBe(COPY.botRequestAsked);
+    const section = blocks[0] as { text: { type: string; text: string; emoji: boolean } };
+    expect(section.text.type).toBe('plain_text');
+    expect(section.text.emoji).toBe(false);
+    expect(section.text.text).toBe(cleanPromptSubject(HOSTILE_SUB));
+    expect(section.text.text.split(ZWSP).join('')).toContain('<!channel>');
+    for (const m of objectsIn(blocks).filter((o) => o.type === 'mrkdwn')) expect(String(m.text)).not.toContain('channel>');
+  });
+
+  it('the answered DM keeps the same subject and puts the line where the buttons were', () => {
+    const line = COPY.botRequestApproved('Sam');
+    const open = botRequestBlocks({ subject: SUB, requestId: REQUEST_ID, approveUrl: APPROVE_URL });
+    const done = botRequestOutcomeBlocks({ subject: SUB, line });
+    expect(done.text).toBe(line);
+    expect(done.blocks).toEqual([open.blocks[0], { type: 'context', elements: [{ type: 'mrkdwn', text: line }] }]);
+    expect(objectsIn(done.blocks).some((o) => o.type === 'button' || o.type === 'actions')).toBe(false);
+  });
+
+  it('a subject with nothing printable left reads as the bot request ask, never the prompt ask', () => {
+    for (const draw of [
+      botRequestBlocks({ subject: INVISIBLE_ONLY, requestId: REQUEST_ID, approveUrl: APPROVE_URL }),
+      botRequestOutcomeBlocks({ subject: INVISIBLE_ONLY, line: COPY.botRequestDeclined('Sam') }),
+    ]) {
+      expect(draw.blocks[0]).toEqual({
+        type: 'section',
+        text: { type: 'plain_text', text: COPY.botRequestAsked, emoji: false },
+      });
     }
   });
 });
