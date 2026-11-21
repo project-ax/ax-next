@@ -39,13 +39,15 @@
  * and underscores, at most 64 characters), else `slack-error`; or one of
  * ours: `ratelimited` (with `retryAfterMs`), `redirect`, `http-<status>`,
  * `too-large`, `bad-response`, `timeout`, `network`. No digits: a secret
- * Slack echoed back as its error would be lowercase hex. A refusal that
- * names the scopes the call needed (`missing_scope`'s `needed`) keeps them
- * as `needed` when they read as scope names (lowercase letters, `_`, `.`,
- * `:` and `,`, at most 200 characters: no digits either), and drops them
- * otherwise; the message never holds them. An error never carries a token,
- * a URL, a header, an underlying error, or any byte of the answer but those
- * two, so it is safe to log as it is.
+ * Slack echoed back as its error would be lowercase hex. Any refusal (an
+ * `ok: false` answer, whatever its code) that names the scopes the call
+ * needed keeps them as `needed` when they read as scope names (lowercase
+ * letters, `_`, `.`, `:` and `,`, at most 200 characters: no digits
+ * either), and drops them otherwise. Slack's documented case is
+ * `missing_scope`, but nothing here checks the code first. The message
+ * never holds them. An error never carries a token, a URL, a header, an
+ * underlying error, or any byte of the answer but those two, so it is safe
+ * to log as it is.
  *
  * `rotateConfigToken` hands back the refresh token Slack mints with the
  * access token. Slack retires the refresh token it was sent some time after
@@ -76,9 +78,10 @@ export class SlackApiError extends Error {
   /** Only on `ratelimited`: how long to wait before asking again. */
   declare readonly retryAfterMs?: number;
   /**
-   * Only on a refusal that names them (`missing_scope`): the scopes Slack
-   * says the call needed, comma-separated (`channels:read`), kept only when
-   * they read as scope names (createSlackApi). Never in the message.
+   * The scopes Slack says the call needed, comma-separated (`channels:read`),
+   * on any refusal whose answer names them, whatever its code (Slack's
+   * documented case is `missing_scope`). Kept only when they read as scope
+   * names (createSlackApi). Never in the message.
    */
   declare readonly needed?: string;
 
