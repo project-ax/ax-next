@@ -1097,9 +1097,10 @@ describe('failures', () => {
     }
   });
 
-  it("Slack's `needed` is kept only when it reads as scope names: lowercase letters, _ . : and commas, at most 200", async () => {
+  it("Slack's `needed` is kept only when it reads as scope names: lowercase letters, _ - . : and commas, at most 200", async () => {
     const cases: Array<[unknown, string | null]> = [
       ['channels:read', 'channels:read'],
+      ['incoming-webhook', 'incoming-webhook'],
       ['channels:read,groups:read', 'channels:read,groups:read'],
       ['users:read.email', 'users:read.email'],
       ['a'.repeat(200), 'a'.repeat(200)],
@@ -1130,26 +1131,27 @@ describe('failures', () => {
     }
   });
 
-  it("Slack's `provided` is kept only when it reads as scope names: lowercase letters, _ . : and commas, at most 1000", async () => {
+  it("Slack's `provided` is kept when it reads as scope names (lowercase letters, _ - . : and commas, at most 1000); one Slack sent that doesn't is kept as ''", async () => {
     // Every scope the shared app's token holds, as Slack lists them.
     const shared = BOT_SCOPES.join(',');
+    // '' marks a `provided` Slack sent in a form we can't read (TASK-1184): channel-check.ts reads it as unknown.
     const cases: Array<[unknown, string | null]> = [
       ['channels:read', 'channels:read'],
       [shared, shared],
       ['a'.repeat(1000), 'a'.repeat(1000)],
-      ['a'.repeat(1001), null],
-      ['', null],
-      ['Channels:read', null],
-      ['chat:write, channels:read', null],
-      ['channels:read\n', null],
-      ['channels:read2', null],
-      // A hyphen isn't in the alphabet (neither manifest asks for incoming-webhook): the whole list goes.
-      ['incoming-webhook,channels:read', null],
-      ['<script>', null],
-      [['channels:read'], null],
-      [{ scope: 'channels:read' }, null],
-      [42, null],
-      [true, null],
+      // A hyphenated scope (incoming-webhook) is a scope name like any other.
+      ['incoming-webhook,channels:read', 'incoming-webhook,channels:read'],
+      ['a'.repeat(1001), ''],
+      ['', ''],
+      ['Channels:read', ''],
+      ['chat:write, channels:read', ''],
+      ['channels:read\n', ''],
+      ['channels:read2', ''],
+      ['<script>', ''],
+      [['channels:read'], ''],
+      [{ scope: 'channels:read' }, ''],
+      [42, ''],
+      [true, ''],
       [null, null],
       [undefined, null],
     ];
@@ -1184,7 +1186,8 @@ describe('failures', () => {
       });
       const err = await failure(api.conversationsInfo(BOT, 'C012AB3CD'));
       expect('needed' in err, echoed).toBe(false);
-      expect('provided' in err, echoed).toBe(false);
+      // Sent but unreadable: kept as '' (never the echo itself).
+      expect(err.provided, echoed).toBe('');
       expect(JSON.stringify(err) + String(err) + (err.stack ?? '')).not.toContain(echoed);
     }
   });

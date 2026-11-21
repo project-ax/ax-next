@@ -15,7 +15,7 @@ const OTHER_TOKEN = fakeBotToken('OTHERCHECKSECRET');
 const TTL = 60_000;
 /** The clock when each test starts. */
 const START = 1_000_000;
-/** Slack's `provided`: every scope a team agent's own bot holds (all the shared app's too), with and without channels:read. */
+/** Slack's `provided`: every scope a team agent's own bot holds (all of them are the shared app's too), with and without channels:read. */
 const HOLDS = DEDICATED_BOT_SCOPES.join(',');
 const LACKS = DEDICATED_BOT_SCOPES.filter((s) => s !== 'channels:read').join(',');
 /** Every scope conversations.info takes: what Slack may say is `needed` from a token that holds none of them (unmeasured). */
@@ -174,6 +174,10 @@ describe('createChannelCheck', () => {
     ["the token's own scopes lack channels:read, and Slack needs groups:read", { needed: 'groups:read', provided: LACKS }],
     ["the token's own scopes lack channels:read, and Slack names nothing needed", { provided: LACKS }],
     ['Slack says nothing of the scopes the token holds, and needs exactly channels:read', { needed: 'channels:read' }],
+    // A scope that merely contains channels:read is not it: the list is read scope by scope.
+    ["the token's own scopes hold only a longer scope containing channels:read", { needed: EVERY_INFO_SCOPE, provided: `${LACKS},channels:read.extra` }],
+    // A hyphenated scope in the list doesn't make it unreadable.
+    ["the token's own scopes lack channels:read and include incoming-webhook", { needed: EVERY_INFO_SCOPE, provided: `${LACKS},incoming-webhook` }],
   ] as const)("a missing_scope where %s is the token's, not the channel's: token-scope, never kept", async (_n, scopes) => {
     const { calls, check } = setup(() => missingScope(scopes));
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'token-scope' });
@@ -195,6 +199,13 @@ describe('createChannelCheck', () => {
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'missing_scope' });
   });
 
+  it("a missing_scope whose `provided` Slack sent but slack-api couldn't read is unknown: neither a refusal nor the token's, and never kept", async () => {
+    const { calls, check } = setup(() => missingScope({ needed: EVERY_INFO_SCOPE, provided: '' }));
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'unknown', code: 'missing_scope' });
+    await check.check(INSTALL, TOKEN, CH);
+    expect(calls).toHaveLength(2);
+  });
+
   it("only missing_scope reads the scopes: a channel_not_found from a token without channels:read is still a refusal", async () => {
     const { check } = setup(
       () => new SlackApiError('conversations.info', 'channel_not_found', undefined, { needed: 'channels:read', provided: LACKS }),
@@ -207,7 +218,8 @@ describe('createChannelCheck', () => {
     expect(DEDICATED_BOT_SCOPES).toContain('channels:read');
   });
 
-  // router.ts `bindBotChannel` reads a failure with channelInfoFailure too: a bind and every later turn agree.
+  // The check reads every failure through channelInfoFailure, the one reading router.ts `bindBotChannel`
+  // also uses. This pins the check's side only; the bot's first-bind router tests pin the bind's.
   it("channelInfoFailure is exactly the check's reading of every failure", async () => {
     const failures: Error[] = [
       new SlackApiError('conversations.info', 'channel_not_found'),
@@ -216,6 +228,7 @@ describe('createChannelCheck', () => {
       missingScope({ needed: 'channels:read', provided: HOLDS }),
       missingScope({ needed: EVERY_INFO_SCOPE, provided: LACKS }),
       missingScope({ needed: 'channels:read' }),
+      missingScope({ needed: EVERY_INFO_SCOPE, provided: '' }),
       new SlackApiError('conversations.info', 'ratelimited'),
       new SlackApiError('conversations.info', 'token_revoked'),
       new Error('socket hang up'),

@@ -118,6 +118,9 @@ function isTokensOwn(err: SlackApiError): boolean {
  */
 export function channelInfoFailure(err: unknown): ChannelInfoFailure {
   if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
+    // Slack named the token's scopes in a form slack-api.ts couldn't read:
+    // which of the two it is can't be told, and a refusal deletes a binding.
+    if (err.code === 'missing_scope' && err.provided === '') return { kind: 'unknown', code: err.code };
     if (err.code === 'missing_scope' && isTokensOwn(err)) return { kind: 'token-scope' };
     return { kind: 'refused', code: err.code };
   }
