@@ -3697,7 +3697,8 @@ describe('createEventRouter: a private channel is answered in and never remember
     await w.dispatch(OWN_BOT, botMention({ user: ALICE }));
     await new Promise((resolve) => setImmediate(resolve));
     await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035301.000301' }));
-    for (let i = 0; i < 20 && w.invokes.length < 1; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    // Bob's turn heard private and ran while Alice's answer is still on its way.
+    await vi.waitFor(() => expect(w.invokes).toHaveLength(1), { timeout: 2_000, interval: 5 });
     first.release();
     await w.idle();
 
