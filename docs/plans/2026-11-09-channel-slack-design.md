@@ -307,8 +307,12 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
   person made through AX: each app row records whose token manages it
   (`connected_by_user_id`). Every rotate, through any of those apps, saves the
   new token back to that one place, so the others keep working.
-- Admin settings shows whose token it is and when it was last added (an AX admin; configuration tokens
-  belong to one person). The token AX holds changes with every rotate whose new token it manages to save (step 5), and with **Replace** (above), which changes when it was added but never whose it is.
+- Admin settings shows whose token it is and when it was added through Admin ›
+  Slack (an AX admin; configuration tokens belong to one person). That date
+  moves only with Admin › Slack's Connect or Replace. The token AX holds
+  changes with every rotate whose new token it manages to save (step 5), and
+  with **Replace** (above), which never changes whose it is. A paste, or a
+  Replace through a team bot, changes the same token without moving the date.
 - **Disconnect Slack** deletes the apps (which kills their bot tokens) and then
   tells whoever generated the token to click **Revoke** on Slack's configuration-tokens page,
   but only when nothing else needs the token. While a team bot or a leftover
@@ -491,8 +495,10 @@ only mentions, so a channel the bot was later removed from stays on that list.
   (TASK-1128's flow, per bot). If the approver is gone, no other token can
   touch the app: the bot can only be **rebuilt**, meaning a new request,
   approved under the new approver's token, with a new app and a new handle that
-  channels must `/invite` again. The old app goes on the leftover-apps list for
-  someone to delete by hand on api.slack.com. Admin › Slack lists each bot with
+  channels must `/invite` again. Rebuild first tries to delete the old app with
+  the approver's stored token, which can still work after they leave AX. Only
+  when Slack won't does the old app go on the leftover-apps list for someone to
+  delete by hand on api.slack.com. Admin › Slack lists each bot with
   its approver, and marks an approver who has left AX, so an offboarding admin
   can see which bots need rebuilding (TASK-1172).
 
@@ -501,7 +507,8 @@ only mentions, so a channel the bot was later removed from stays on that list.
   requester**, the team admin who asked for it (2026-11-20; a team agent's owner
   is the team, not a person). If the requester is no longer an admin of that
   team, outsider turns are refused politely, members' turns still work, and the
-  bot shows "needs a team admin to claim it" until one does.
+  bot shows "needs a team admin to claim it" until a team admin of that team
+  claims it (TASK-1173, see "As built (TASK-1173)" below).
 - **Dedicated bots are channels only:** no DM scopes, and the Messages tab is
   off. DMs would be unwatched, would leak into team memory, and would have no
   one suitable to approve held actions. Adding DM scopes later would make Slack
@@ -569,7 +576,8 @@ the requester.
   again, so it shows where the switch really landed.
 - Outsiders in a bot's channels run as the requester, while the requester is
   still a team admin. Otherwise they get a polite line and the bot shows
-  "needs a team admin to claim it".
+  "needs a team admin to claim it", until a team admin of the team claims it
+  (TASK-1173).
 - The shared bot steps aside for that agent only once its own bot is live. A
   pending bot answers nobody, so until then the shared bot still does.
 - Deleting the agent deletes its bot and its app.
@@ -635,6 +643,46 @@ no reinstall.
   `not-live`, and so does one whose bot a reset removed while Slack was
   being asked, whatever Slack answered; the approver's token then goes
   unless something else of theirs still needs it.
+
+**As built (TASK-1173).** Replace, Rebuild and Claim.
+- **Replace** a live bot's token, from agent settings or Admin › Slack, is
+  the shared Replace's check-then-store step: the pasted token is rotated once,
+  checked against Slack with the bot's own manifest, and only then stored. Only
+  the bot's approver may do it; anyone else is 403 `not-approver` inside the one
+  app lock, before the vault or Slack is touched, so nobody's paste lands in the
+  approver's slot. Live bots only (409 `not-live`). It stores the approver's one
+  per-person token, so it fixes every app of theirs. It moves no date (a bot
+  shows none) and runs no leftover-apps pass: the next Admin › Slack Connect or
+  Replace does that.
+- **`approverGone`.** A live bot's status says its approver is gone only when
+  auth answers that they no longer exist. If auth can't answer, it says
+  nothing, so an outage never tells a team to rebuild. Nothing is stored. A dead
+  token, by contrast, is told at the change that finds it ("Your Slack token
+  stopped working", or the approver's name for everyone else), not before.
+- **Rebuild** is client-side. A team admin's dialog calls the existing bot
+  Disconnect (delete the app with the approver's stored token, else the
+  leftover list), re-reads the status, and opens the request form prefilled with
+  the old name. No new route or storage. In Admin › Slack the row says "Needs
+  rebuilding", and its Disconnect dialog says a team admin sets up the
+  replacement from the agent's settings.
+- **Claim.** A team admin of the agent's team claims a live bot whose requester
+  is no longer a team admin (or no longer exists):
+  `POST /settings/slack/:agentId/bot/claim { installId }`. Inside the one app
+  lock, rights are asked again first, then live-only (409 `not-live`), the
+  page's install id (409 `no-bot`), and the requester still being a team admin
+  (409 `claim-not-needed`). Then ONE statement moves the row's requester and
+  every binding's copy, only on an active bot. The approver, whose token made
+  the app, doesn't change. A later-demoted claimer is refused per mention and
+  per queued turn by the existing team-admin checks.
+- **Cancel** names the pending bot by the install id its page showed, and
+  answers 409 `not-pending` for any other, so a stale tab can't take back a
+  newer request. It now also asks for the team admin's rights again inside the
+  app lock, like Disconnect.
+- Admin › Slack's Rename and Replace releases of a gone row read first
+  (`onlyIfStored`), so a reset's wipe isn't answered with a stray vault delete.
+- **Residual, not built.** A claim racing an outsider's first mention in a
+  channel can leave that one binding with the old requester. Handed to a
+  follow-up.
 
 **As built (TASK-1172).** Disconnect runs the same removal as deleting the
 agent, under the one app lock. A team admin's Disconnect (from the agent's
@@ -1222,7 +1270,8 @@ approving a second app never breaks the first).
   *Progress:* TASK-1167 built the self path: a team admin requests the bot
   and approves it with their own token, the shared bot steps aside once it's
   live, and deleting the agent deletes it. TASK-1169 built asking an AX admin
-  to approve (see "As built (TASK-1169)" in section 4). Replace of a live bot is still to do.
+  to approve (see "As built (TASK-1169)" in section 4). TASK-1173 built Replace of a live
+  bot, Rebuild, and Claim (see "As built (TASK-1173)" in section 4).
   TASK-1171 built rename and picture change (see "As built (TASK-1171)" in
   section 4).
   TASK-1168 lists the already-connected channels that still need the new
