@@ -881,6 +881,38 @@ describe('GET /slack/bots/oauth/callback', () => {
     ]);
   });
 
+  it('keeps the display name people type (@fern-walk), never the legacy username Slack derived from it (fernwalk) (TASK-1185)', async () => {
+    // Measured on real Slack (TASK-1174 walk): asking for `fern-walk` gave
+    // users.info `name` = `fernwalk`, while the @-mention, the autocomplete and
+    // `/invite` all use `fern-walk`.
+    const fern = (profile: Record<string, unknown>, realName = 'fern-walk'): SlackBehaviour['usersInfo'] =>
+      async () => ({
+        ...structuredClone(BOT_USER),
+        name: 'fernwalk',
+        real_name: realName,
+        profile: { ...structuredClone(BOT_USER.profile), ...profile },
+      });
+    const cases: Array<[label: string, usersInfo: SlackBehaviour['usersInfo'], handle: string]> = [
+      ['the profile display name', fern({ display_name: 'fern-walk', real_name: 'fern-walk' }), 'fern-walk'],
+      // A bot user's display_name may be empty: its real_name carries the name.
+      ['no display name: the profile real name', fern({ display_name: '', real_name: 'fern-walk' }), 'fern-walk'],
+      ['only the top-level real name', fern({ display_name: '', real_name: '' }), 'fern-walk'],
+      // Upper case and a space are a bot name Slack takes, so they are a handle too.
+      ['a name with a space', fern({ display_name: '', real_name: 'Fern Walk' }, 'Fern Walk'), 'Fern Walk'],
+      // A display name a copy line can't show falls through to the next field, never cleaned.
+      ['an unusable display name', fern({ display_name: '@here', real_name: 'fern-walk' }), 'fern-walk'],
+      // Nothing but the legacy username: the last resort.
+      ['no display name anywhere', fern({ display_name: '', real_name: '' }, ''), 'fernwalk'],
+    ];
+    for (const [label, usersInfo, handle] of cases) {
+      const { w, installId, state } = await requested();
+      w.slack.on.usersInfo = usersInfo;
+
+      expect(await w.callback({ code: CODE, state }), label).toStrictEqual(redirect(toAgent('connected')));
+      expect(w.row(installId).botHandle, label).toBe(handle);
+    }
+  });
+
   it('a handle inside the pattern is kept as Slack gave it', async () => {
     for (const name of ['a', '0bot', 'support.helper_2-x', 'a'.repeat(80)]) {
       const { w, installId, state } = await requested();

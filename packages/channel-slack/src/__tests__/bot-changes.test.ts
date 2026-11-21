@@ -590,6 +590,24 @@ describe('rename', () => {
     }
   });
 
+  it('R2b after a rename keeps the display name Slack now reports, though the legacy username stayed (fern-walk → fern-two, TASK-1185)', async () => {
+    // Measured on real Slack (TASK-1174 walk): after the rename the
+    // autocomplete offered `@fern-two`, while users.info `name` stayed `fernwalk`.
+    const w = await seeded();
+    w.slack.on.usersInfo = answer({
+      name: 'fernwalk',
+      real_name: 'fern-two',
+      profile: { ...structuredClone(BOT_USER.profile), display_name: '', real_name: 'fern-two' },
+    });
+
+    expect(await w.rename('fern-two')).toEqual({ status: 200, body: { botName: 'fern-two' } });
+
+    expect(supportRow(w)).toMatchObject({ botName: 'fern-two', botHandle: 'fern-two' });
+    expect(w.memory.calls.filter((c) => c.method === 'setBotHandle')).toEqual([
+      { method: 'setBotHandle', args: [SUPPORT_BOT, 'fern-two'] },
+    ]);
+  });
+
   it("R3 refuses a name the shared bot, another bot, another bot's handle, or an open bot request has, by the 21-char key, before the vault or Slack; its own name in another case is fine", async () => {
     // The shared bot's name; the sales bot's name, as typed two ways; the sales bot's HANDLE (`deskbot`).
     for (const name of ['Canopy Works', 'sales desk', 'Sales-Desk', 'Desk Bot']) {
