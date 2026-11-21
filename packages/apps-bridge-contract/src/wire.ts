@@ -14,6 +14,13 @@
  * Any refusal is a Refusal body with status REFUSAL_STATUS[code]. Key on
  * `code`, not on the status.
  *
+ * The v1 surface is every export of this file, including the id schemas
+ * (AppIdSchema, ConnectorIdSchema, ToolNameSchema, AppModeSchema).
+ *
+ * A call's `input` must be a plain JSON object, and it is passed through as
+ * parsed: own `__proto__` and `constructor` keys reach the connector exactly
+ * as the app sent them, and touch no prototype.
+ *
  * Untrusted at every hop: `input`, `viewerAssertion`, `appName`, the link
  * code, `content`, `description` and `inputSchema`.
  */
@@ -50,7 +57,8 @@ export const MAX_APP_NAME_CHARS = 80;
  * In this order: Unicode NFC; every whitespace run becomes one space; Unicode
  * Cc, Cf and Cs characters (controls, invisible format characters including
  * bidi controls, lone surrogates) are removed; space runs collapse again;
- * trim; keep the first 80 code points; trim the end again.
+ * NFC again (a removed character may have kept a letter from its combining
+ * mark); trim; keep the first 80 code points; trim the end again.
  *
  * Whitespace goes to a space before controls are removed, so "a\nb" keeps its
  * word break and becomes "a b". An empty result is refused by the caller.
@@ -61,6 +69,7 @@ export function normalizeAppName(raw: string): string {
     .replace(/\s+/gu, ' ')
     .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, '')
     .replace(/ {2,}/g, ' ')
+    .normalize('NFC')
     .trim();
   return Array.from(cleaned).slice(0, MAX_APP_NAME_CHARS).join('').trimEnd();
 }
@@ -96,11 +105,21 @@ export type LinkClaimResponse = z.infer<typeof LinkClaimResponseSchema>;
 // POST /call
 // ---------------------------------------------------------------------------
 
+/**
+ * A plain object (what JSON.parse makes for `{...}`), returned as is. Not
+ * z.record: that rebuilds the object and drops an own `__proto__` key, so the
+ * connector would get a different call than the app sent.
+ */
+const PlainObjectSchema = z.custom<Record<string, unknown>>(
+  (v) => typeof v === 'object' && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype,
+  { message: 'Expected a plain object' },
+);
+
 const callFields = {
   appId: AppIdSchema,
   connectorId: ConnectorIdSchema,
   tool: ToolNameSchema,
-  input: z.record(z.unknown()),
+  input: PlainObjectSchema,
 };
 
 export const CallRequestSchema = z.discriminatedUnion('mode', [
@@ -168,9 +187,26 @@ export type RefusalCode = keyof typeof REFUSAL_STATUS;
 
 const REFUSAL_CODES = Object.keys(REFUSAL_STATUS) as [RefusalCode, ...RefusalCode[]];
 
-/** `approveUrl` (an AX page, path-only) rides on viewer_approval_required alone. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === 'https:' || protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `approveUrl` rides on viewer_approval_required alone: an absolute http(s)
+ * URL of an AX page, with no query string or fragment.
+ */
 export const RefusalSchema = z.union([
-  z.object({ code: z.literal('viewer_approval_required'), approveUrl: z.string().url().max(2048) }).strict(),
+  z
+    .object({
+      code: z.literal('viewer_approval_required'),
+      approveUrl: z.string().url().max(2048).refine(isHttpUrl, { message: 'Expected an http(s) URL' }),
+    })
+    .strict(),
   z.object({ code: z.enum(REFUSAL_CODES).exclude(['viewer_approval_required']) }).strict(),
 ]);
 export type Refusal = z.infer<typeof RefusalSchema>;

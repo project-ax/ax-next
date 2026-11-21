@@ -13,7 +13,7 @@ const WIRE_URL = new URL('../wire.ts', import.meta.url);
 // The vendoring alarm. The apps platform vendors wire.ts byte for byte from a
 // pinned ax-next commit. Editing wire.ts means: update this pin, decide whether
 // CONTRACT_VERSION bumps, and tell the platform side.
-const WIRE_SHA256 = '6eebe19795816c1264b32800839b286ee72ed1d28f8aee1553c41cace09d1b04';
+const WIRE_SHA256 = '42054b732c73ff69b0d86e5ec97502ca02d0f4e84fb9bda32523dfda06aa52b8';
 
 const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
 const CODE = `axl_${'abcdefghijklmnopqrstuvwxyz234567'}`;
@@ -79,6 +79,9 @@ describe('wire contract v1', () => {
     expect(normalizeAppName('a\ud800b')).toBe('ab');
     // F13: whitespace collapses to a space BEFORE Cc is removed, so a newline keeps the word break.
     expect(normalizeAppName('a\nb')).toBe('a b');
+    // a format character between a base and its combining mark: removing it lets them compose,
+    // so the closing NFC pass gives the precomposed letter.
+    expect(normalizeAppName('e\u200b\u0301')).toBe('\u00e9');
     // removing a format character between two spaces leaves one space.
     expect(normalizeAppName('a \u200b b')).toBe('a b');
     // the cut can land on a space; the result is trimmed again.
@@ -129,6 +132,21 @@ describe('wire contract v1', () => {
     expect(CallRequestSchema.safeParse({ ...builder, appId: '' }).success).toBe(false);
   });
 
+  it('input reaches the connector byte-faithfully: own __proto__ and constructor keys survive and touch no prototype', () => {
+    const rawInput = '{"__proto__":{"x":1},"constructor":{"y":2},"a":{"__proto__":{"z":3}}}';
+    const raw = `{"appId":"${APP}","connectorId":"linear","tool":"list_issues","input":${rawInput},"mode":"builder"}`;
+    const result = CallRequestSchema.parse(JSON.parse(raw));
+    expect(JSON.stringify(result.input)).toBe(rawInput);
+    expect(Object.getPrototypeOf(result.input)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(result.input, '__proto__')).toBe(true);
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
+    expect(({} as Record<string, unknown>).z).toBeUndefined();
+    // not a plain object: a class instance, a Date, a Map
+    for (const input of [new Date(0), new Map(), new (class Box {})()]) {
+      expect(CallRequestSchema.safeParse({ ...builder, input }).success).toBe(false);
+    }
+  });
+
   it('responses are closed shapes', () => {
     const block = { type: 'text', text: 'hi', annotations: { audience: ['user'] } };
     expect(CallResponseSchema.parse({ outcome: 'succeeded', content: [block] })).toEqual({ outcome: 'succeeded', content: [block] });
@@ -158,6 +176,10 @@ describe('wire contract v1', () => {
     expect(RefusalSchema.safeParse({ code: 'viewer_approval_required', approveUrl: url }).success).toBe(true);
     expect(RefusalSchema.safeParse({ code: 'viewer_approval_required' }).success).toBe(false);
     expect(RefusalSchema.safeParse({ code: 'viewer_approval_required', approveUrl: 'not a url' }).success).toBe(false);
+    expect(RefusalSchema.safeParse({ code: 'viewer_approval_required', approveUrl: 'http://127.0.0.1:8080/apps/approve/canopy/app_1/linear' }).success).toBe(true);
+    for (const bad of ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd', 'ftp://ax.example/x']) {
+      expect(RefusalSchema.safeParse({ code: 'viewer_approval_required', approveUrl: bad }).success, bad).toBe(false);
+    }
     expect(RefusalSchema.safeParse({ code: 'viewer_approval_required', approveUrl: `https://a.example/${'x'.repeat(2048)}` }).success).toBe(false);
     for (const code of Object.keys(REFUSAL_STATUS).filter((c) => c !== 'viewer_approval_required')) {
       expect(RefusalSchema.safeParse({ code }).success, code).toBe(true);
