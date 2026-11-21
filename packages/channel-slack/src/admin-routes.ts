@@ -17,7 +17,6 @@ import {
   ACCESS_TOKEN_PREFIX,
   OAUTH_CODE_RE,
   REFRESH_TOKEN_PREFIX,
-  REFRESH_TOKEN_REFUSED,
   STATE_RE,
   TOKEN_ERRORS,
   UNCONFIRMED_CODES,
@@ -219,19 +218,6 @@ type Reply = { status: number; body: unknown } | { location: string };
 
 const PLUGIN = '@ax/channel-slack';
 /**
- * Slack refusing Replace's check (TASK-1128): the newly pasted token works,
- * but its owner can't manage this app (`no_permission`,
- * `app_not_owned_by_manager_app`) or can't see it (`app_not_found`). With a
- * new, unproven token, Slack can't tell "can't manage" from "another
- * workspace" from "gone" here. "Gone" sends the admin to Disconnect, which
- * costs every channel, so none of the three is called gone.
- */
-const NOT_APP_MANAGER: ReadonlySet<string> = new Set([
-  'no_permission',
-  'app_not_owned_by_manager_app',
-  'app_not_found',
-]);
-/**
  * A failure in the leftover pass that is about Slack itself, not one app or
  * one token: no answer in time, one we couldn't read, a 5xx from its edge, or
  * `ratelimited`. Every later call in the same pass, a rotate or a delete,
@@ -262,20 +248,6 @@ const QUIET_REFUSALS: ReadonlySet<string> = new Set([
 
 const json = (status: number, body: unknown): Reply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
-
-/**
- * What a replace's failed check tells the admin. `slack-refresh-token`: the
- * access token the pasted refresh token minted is no good, so only a new
- * token helps. `slack-not-app-manager`: Slack says the token's owner can't
- * manage this app (NOT_APP_MANAGER). Anything else is `slack-error`: a retry
- * soon after may work while Slack still honours the pasted token.
- */
-function replaceCheckError(err: unknown): 'slack-refresh-token' | 'slack-not-app-manager' | 'slack-error' {
-  if (!(err instanceof SlackApiError)) return 'slack-error';
-  if (REFRESH_TOKEN_REFUSED.has(err.code)) return 'slack-refresh-token';
-  if (NOT_APP_MANAGER.has(err.code)) return 'slack-not-app-manager';
-  return 'slack-error';
-}
 
 export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   const ctx = makeAgentContext({
@@ -769,33 +741,17 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       if (!canConnect) return json(409, { error: 'public-origin-not-https' });
       const { installId } = install;
 
-      let minted: RotatedConfigToken;
-      try {
-        minted = await d.api.rotateConfigToken(refreshToken);
-      } catch (err) {
-        failed('try-refresh-token', err, installId);
-        return json(502, { error: refreshTokenError(err) });
-      }
-      // The check comes BEFORE the store. Rename stores first because the
-      // token it spent is the stored one. Here the spent token is the pasted
-      // one, and the stored one stays untouched until Slack has taken this
-      // app's manifest from the new token: one whose owner can't manage the
-      // app must never overwrite one that may still work.
-      try {
-        await d.api.updateApp(
-          minted.accessToken,
+      // The shared step (slack-apps.ts): the pasted token rotated once, its
+      // access token checked with this app's whole manifest, and only then
+      // the minted refresh token stored, as the install's person's.
+      const tried = await steps.replaceConfigToken(install, refreshToken, (accessToken) =>
+        d.api.updateApp(
+          accessToken,
           install.appId,
           buildAppManifest(install.botName, slackUrls(d.publicOrigin, installId)),
-        );
-      } catch (err) {
-        failed('check-app', err, installId);
-        return json(502, { error: replaceCheckError(err) });
-      }
-      // Written as the install's person's token, never the pasting admin's:
-      // Slack just took it for their app, so it is their chain. Writing it to
-      // whoever pasted it would put one person's token in another's slot,
-      // breaking every app the paster made.
-      if (!(await saveRotatedToken(install, minted.refreshToken))) return INTERNAL;
+        ),
+      );
+      if (!tried.ok) return tried.refusal === 'token-not-kept' ? INTERNAL : json(502, { error: tried.refusal });
       try {
         await d.store.setConfigTokenAddedAt(installId, new Date(d.now()));
       } catch (err) {
@@ -819,7 +775,7 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       // install's person's, whoever pasted it: Slack just took it for their
       // app. A fault reading the list changes nothing.
       try {
-        await deleteLeftoverApps({ userId: install.connectedByUserId, accessToken: minted.accessToken });
+        await deleteLeftoverApps({ userId: install.connectedByUserId, accessToken: tried.accessToken });
       } catch (err) {
         failed('leftover-apps', err, installId);
       }
