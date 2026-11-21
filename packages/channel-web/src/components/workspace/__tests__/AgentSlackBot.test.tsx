@@ -800,11 +800,15 @@ describe('live: needs attention (TASK-1173)', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} Once Slack is connected again, you can rebuild it here.`);
     expect(screen.getByRole('alert')).not.toHaveTextContent('A team admin can rebuild it.');
     waiting.unmount();
-    // A member: no Rebuild button, so point at the people who have one.
-    render(
-      <AgentSlackBot agentId="a1" agentName="Quill" bot={GONE} canManage={false} sharedConnected {...QUIET} onChanged={vi.fn()} />,
-    );
-    expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} A team admin can rebuild it.`);
+    // A member, with or without the shared app: no Rebuild button, so point at the people who have one.
+    for (const sharedConnected of [true, false]) {
+      const member = render(
+        <AgentSlackBot agentId="a1" agentName="Quill" bot={GONE} canManage={false} sharedConnected={sharedConnected} {...QUIET} onChanged={vi.fn()} />,
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} A team admin can rebuild it.`);
+      expect(screen.getByRole('alert')).not.toHaveTextContent('Once Slack is connected');
+      member.unmount();
+    }
   });
 
   it('an approver who is still here gets no alert', () => {

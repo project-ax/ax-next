@@ -695,8 +695,9 @@ no reinstall.
   admin again, outsiders there quietly run as them, while the settings and
   the Claim dialog say the claimer. It is also a dead end while it lasts:
   `needsClaim` reads only the install row, so the settings show nothing
-  wrong and Claim answers `claim-not-needed`; only Disconnect or Rebuild
-  clears it. Handed to a follow-up (take the app lock around re-reading the
+  wrong and Claim answers `claim-not-needed`; it clears only with Disconnect, Rebuild,
+  or a later Claim (one that becomes possible once the claimer stops being a
+  team admin, since `claimBot` rewrites every binding of the install). Handed to a follow-up (take the app lock around re-reading the
   bot row and writing the binding; one replica today).
 
 **As built (TASK-1172).** Disconnect runs the same removal as deleting the
