@@ -14,8 +14,9 @@
  * and ignores close requests while Slack answers, the form under
  * `DialogContent` remounts on every opening (prefilled, no leftover error), and
  * the dialog closes itself before it calls back. A rename that lands reads the
- * status again; the "Bot name" row then shows the new name, which matters
- * because Slack may keep the old @handle.
+ * status again; the "Bot name" row then shows the new name, and the @handle
+ * the server read again after the rename (the display name people type,
+ * which follows it: TASK-1185).
  *
  * Change picture is modelled on BrandingTab's hidden file input. The browser
  * draws the pick on a white square (`drawPickedSlackAvatar`) and shows exactly

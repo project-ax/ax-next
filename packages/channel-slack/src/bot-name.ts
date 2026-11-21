@@ -5,9 +5,14 @@
  * and two real installs (`.claude/memory/decisions/2026-11-12-TASK-1090.md`):
  * ASCII letters, digits, space, `-`, `_` and `.` only (`Café` is refused as
  * `bad_username`); the words `slackbot`, `here`, `channel` and `everyone` are
- * reserved; the app name holds at most 35 characters, and the @handle Slack
- * derives from it is lowercased, loses its hyphens (`ax-spike-a` became
- * `axspikea`) and is cut to 21. Slack accepts duplicate names
+ * reserved; the app name holds at most 35 characters, and the legacy username
+ * (users.info `name`) Slack derives from it once, at the install, is
+ * lowercased, loses its hyphens (`ax-spike-a` became `axspikea`) and is cut
+ * to 21. That username is NOT the @handle people type: the @-mention, the
+ * autocomplete and `/invite` use the bot's display name, which is this name
+ * as given and follows a rename (TASK-1185, measured in the TASK-1174 walk:
+ * `fern-walk` gave the username `fernwalk`, and people type `@fern-walk`).
+ * Slack accepts duplicate names
  * silently, so uniqueness is ours to enforce, and is (TASK-1167): one name per
  * bot across the shared bot and every team agent's bot, compared by
  * `botNameKey`, so a name that would collide on Slack's handle is refused too.
@@ -16,7 +21,7 @@ import { BOT_HANDLE_MAX, BOT_NAME_MAX } from './limits.js';
 
 /**
  * Compared against a name's handle key (handleKey below), so a name whose
- * @handle would come out as one of these is refused too.
+ * legacy username would come out as one of these is refused too.
  */
 export const RESERVED_BOT_NAMES: ReadonlySet<string> = new Set([
   'slackbot',
@@ -42,9 +47,9 @@ const SEPARATORS = new Set(['-', '.', '_']);
 const HANDLE_DROPPED = /[-._ ]/g;
 
 /**
- * The name as its @handle reads, for the reserved-word check: lowercased,
- * with every space, `-`, `.` and `_` gone. Slack drops the hyphens itself, so
- * `slack-bot` would become the handle `slackbot`. Dots and underscores go too:
+ * The name as its legacy username reads, for the reserved-word check:
+ * lowercased, with every space, `-`, `.` and `_` gone. Slack drops the
+ * hyphens itself, so `slack-bot` would become the username `slackbot`. Dots and underscores go too:
  * a near-miss refused here costs an admin one retype, while a reserved handle
  * that slips through costs a failed install.
  */
@@ -53,9 +58,9 @@ function handleKey(name: string): string {
 }
 
 /**
- * How Slack's handle collides: the name lowercased and cut to its ASCII
- * letters and digits (so `Ada Bot`, `ada-bot` and `ADA_BOT` match), then cut
- * to the handle's 21 characters. Only for comparing names.
+ * How Slack's legacy username collides: the name lowercased and cut to its
+ * ASCII letters and digits (so `Ada Bot`, `ada-bot` and `ADA_BOT` match), then
+ * cut to the username's 21 characters. Only for comparing names.
  */
 export function botNameKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, BOT_HANDLE_MAX);

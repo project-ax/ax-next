@@ -33,8 +33,10 @@ export const GRANT: OAuthInstall = {
 };
 /**
  * The bot user GRANT names, as `users.info` describes it: a team agent's own
- * bot reads its @handle (`name`) once, at its Allow (TASK-1167). Slack's own
- * shape for a bot user, trimmed to the fields it always sends.
+ * bot reads its @handle at its Allow (TASK-1167) and again after a rename
+ * (TASK-1171). The handle is its display name, here `real_name`; `name` is the
+ * legacy username, kept only when no display name is usable (TASK-1185).
+ * Slack's own shape for a bot user, trimmed to the fields it always sends.
  */
 export const BOT_USER = {
   id: GRANT.botUserId,
@@ -63,7 +65,7 @@ export interface SlackBehaviour {
     code: string;
     redirectUri: string;
   }): Promise<OAuthInstall>;
-  /** Only a team bot's callback asks, for its new bot user's handle. */
+  /** Only a team bot asks, for its bot user's handle: at its callback and after a rename. */
   usersInfo(botToken: string, userId: string): Promise<unknown>;
 }
 
