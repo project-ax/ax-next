@@ -1,22 +1,29 @@
 /**
- * "Its own Slack bot" in a team agent's Slack settings (TASK-1167): give the
- * agent its own name in Slack, so people mention it directly instead of going
- * through the shared bot.
+ * An agent's Slack card (TASK-1167, TASK-1187): one card in a team agent's
+ * Slack settings for the agent's own bot, the one people mention directly in
+ * Slack. Its title says where things stand, in a sentence; what a person can
+ * do about it is the one button for the next step, or an item in the card's ⋯
+ * (`AgentSlackMenu`).
  *
  * What `bot` says (the status `GET /settings/slack/:agentId` carries) decides
- * what shows:
- *   none     a manager sees the form: first a choice of who sets it up in
- *            Slack ("Ask an AX admin" for someone who can't install apps, or
- *            "I can install apps in Slack"), then the bot's name, and, on the
- *            self path only and only if the server holds no configuration
- *            token for them, the steps and the field to paste one into;
- *            everyone else sees nothing. The choice opens on "self" when a
- *            token is stored and on "admin" when it isn't.
- *   requested a manager sees that an AX admin hasn't approved it yet, with
- *            "Cancel request" (no Slack app exists, so nothing is left over)
- *   pending  a manager sees where it stands, with "Continue in Slack" for the
- *            person who started it, and "Cancel request"; a cancel whose Slack
- *            app couldn't be deleted leaves a note saying where to find it
+ * the state:
+ *   none     Not in Slack. A manager reads "<agent> isn't in Slack yet" and
+ *            gets the bot's name (the agent's, or the one a Rebuild took
+ *            away) and "Add to Slack", which by default asks an admin. A quiet
+ *            link, "I can install Slack apps myself", switches to the
+ *            install-it-myself path: the steps and the field to paste a
+ *            configuration token into, unless the server holds one for the
+ *            person. The form opens on that path when it does (they have
+ *            installed Slack apps here before, and asking an admin could mean
+ *            asking themselves); "Ask an admin instead" switches back.
+ *   requested Waiting for an admin to approve it. The ⋯ holds "Cancel
+ *            request" (no Slack app exists yet, so nothing is left over).
+ *   pending  Almost there: the person who started it finishes it with
+ *            "Continue in Slack", and any other manager reads who is finishing
+ *            it. The ⋯ holds "Cancel request", which names the pending bot by
+ *            its install id (with none, from an older server, there is no ⋯).
+ *            A cancel whose Slack app couldn't be deleted leaves a note
+ *            saying where to find it.
  *   live     everyone sees the @handle and how to invite it; a manager also
  *            sees who set it up, can rename it or change its picture
  *            (TASK-1171, `AgentSlackBotChanges`), and can disconnect it
@@ -37,17 +44,25 @@
  *            people outside the team with theirs. Both name the bot the page
  *            showed by its install id (`AgentSlackBotLifecycle`)
  *
- * Asking an AX admin sends the name and nothing else: no token, no picture
- * (the admin's browser draws it at Approve).
+ * Until the bot is live, anyone who doesn't manage the agent sees only that it
+ * isn't in Slack yet and that a team admin can add it: a request is the
+ * managers' business.
+ *
+ * Asking an admin sends the name and nothing else: no token, no picture (the
+ * admin's browser draws it at Approve).
  *
  * THE PASTED TOKEN NEVER LIVES IN REACT STATE. It is an uncontrolled password
  * input (as in Admin › Slack), read once on submit and cleared as the request
- * goes out, whatever Slack says. Nothing on the page ever shows a stored one:
- * the only fact the server gives is whether the viewer has one.
+ * goes out, whatever Slack says; switching to asking an admin unmounts it with
+ * whatever was pasted. Nothing on the page ever shows a stored one: the only
+ * fact the server gives is whether the viewer has one.
  *
- * Every sentence comes from `lib/agent-slack.ts` or the pinned copy below;
- * nothing from a response is shown but names (the bot's, its approver's) and
- * the handle Slack gave the bot.
+ * Every sentence comes from `lib/agent-slack.ts` (the card's own are
+ * `AGENT_SLACK_CARD_COPY`) or the pinned copy below; nothing from a response
+ * is shown but names (the bot's, its approver's) and the handle Slack gave the
+ * bot. Not in Slack and Waiting never name a role, the plumbing or the product;
+ * the install-it-myself path is where the token words belong (the words scan
+ * is in `AgentSlack.test.tsx`).
  */
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -61,23 +76,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-} from '@/components/ui/field';
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Spinner } from '@/components/ui/spinner';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
+import { AgentSlackMenu } from './AgentSlackMenu';
 import { BotChanges } from './AgentSlackBotChanges';
 import { ClaimBotDialog, RebuildBotDialog, rebuildWho, type RebuildFrom } from './AgentSlackBotLifecycle';
 import {
+  AGENT_SLACK_CARD_COPY,
   agentSlackBotErrorCopy,
   agentSlackBotStale,
   askSlackBotApproval,
@@ -128,8 +135,8 @@ export interface AgentSlackBotProps {
   leftOver: BotCancelled | null;
   /**
    * The bot a Rebuild just took away, so the request form can offer its name
-   * back and say a replacement is next (TASK-1173). Held by the caller for the
-   * same reason as `leftOver`.
+   * back and say it was removed from Slack (TASK-1173). Held by the caller for
+   * the same reason as `leftOver`.
    */
   rebuilding: RebuildFrom | null;
   /**
@@ -147,7 +154,7 @@ export interface AgentSlackBotProps {
   onChanged: () => void;
 }
 
-/** Who sets the bot up in Slack: an AX admin for the person, or the person themselves. */
+/** Who adds the bot in Slack: an admin, asked for the person, or the person themselves (the install-it-myself path). */
 type Way = 'admin' | 'self';
 
 /** A button's busy face: a spinner and what it's doing. */
@@ -160,17 +167,45 @@ function Busy({ children }: { children: ReactNode }) {
   );
 }
 
-function Section({ description, children }: { description?: ReactNode; children: ReactNode }) {
+/**
+ * The frame every state draws (TASK-1187). The title is where things stand, in
+ * a sentence and as a heading, so a screen reader hears the state when it moves
+ * by heading; the ⋯, when there is one, sits on its right.
+ */
+function SlackCard({
+  title,
+  description,
+  menu,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  menu?: ReactNode;
+  children?: ReactNode;
+}) {
   return (
     <Card variant="settings">
-      <CardHeader>
-        <CardTitle role="heading" aria-level={3} className="text-base">
-          Its own Slack bot
-        </CardTitle>
-        {description !== undefined && <CardDescription>{description}</CardDescription>}
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
+          <CardTitle role="heading" aria-level={3} className="text-base">
+            {title}
+          </CardTitle>
+          {description !== undefined && <CardDescription>{description}</CardDescription>}
+        </div>
+        {menu}
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">{children}</CardContent>
+      {children !== undefined && <CardContent className="flex flex-col gap-4">{children}</CardContent>}
     </Card>
+  );
+}
+
+/** A cancel on its way: a quiet status line. The spinner is decoration, so its own status role stays hidden. */
+function Cancelling() {
+  return (
+    <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+      <Spinner aria-hidden="true" />
+      {AGENT_SLACK_CARD_COPY.cancelling}
+    </p>
   );
 }
 
@@ -185,7 +220,7 @@ export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
   return (
     <Alert>
       <AlertDescription>
-        {leftOver.how === 'disconnected' ? 'We disconnected the bot' : 'We cancelled the request'}, but we
+        {leftOver.how === 'disconnected' ? 'We removed the bot from Slack' : 'We cancelled the request'}, but we
         couldn&apos;t confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete.{' '}
         {/* Slack's app page lists only your own apps, so the link is only any use to the one who made it. */}
         {leftOver.approverIsViewer ? (
@@ -213,9 +248,15 @@ export function AgentSlackBot({
   onRequesting,
   onChanged,
 }: AgentSlackBotProps) {
+  // Until it's live, someone who doesn't manage the agent learns only that, and who can change it.
+  if (!canManage && bot.state !== 'live') {
+    return (
+      <SlackCard title={AGENT_SLACK_CARD_COPY.notInSlack(agentName)} description={AGENT_SLACK_CARD_COPY.teamAdminCanAdd} />
+    );
+  }
   switch (bot.state) {
     case 'none':
-      return canManage ? (
+      return (
         <RequestForm
           agentId={agentId}
           agentName={agentName}
@@ -225,10 +266,7 @@ export function AgentSlackBot({
             <>
               {rebuilding !== null && (
                 <Alert>
-                  <AlertDescription>
-                    {rebuildWho(rebuilding)} is disconnected. Set up its replacement below. It gets a new @handle, so
-                    invite it to each channel again.
-                  </AlertDescription>
+                  <AlertDescription>{AGENT_SLACK_CARD_COPY.removedNotice(rebuildWho(rebuilding))}</AlertDescription>
                 </Alert>
               )}
               {leftOver !== null && !leftOver.appDeleted && <AppLeftOverNote leftOver={leftOver} />}
@@ -237,13 +275,11 @@ export function AgentSlackBot({
           onRequesting={onRequesting}
           onChanged={onChanged}
         />
-      ) : null;
+      );
     case 'requested':
-      return canManage ? <Requested agentId={agentId} bot={bot} onChanged={onChanged} /> : null;
+      return <Requested agentId={agentId} bot={bot} onChanged={onChanged} />;
     case 'pending':
-      return canManage ? (
-        <Pending agentId={agentId} bot={bot} onCancelled={onCancelled} onChanged={onChanged} />
-      ) : null;
+      return <Pending agentId={agentId} bot={bot} onCancelled={onCancelled} onChanged={onChanged} />;
     case 'live':
       return (
         <Live
@@ -338,70 +374,9 @@ function RequestForm({
 
   return (
     <form onSubmit={(e) => void submit(e)}>
-      <Section
-        description={`Give ${agentName} its own name in Slack. People mention it directly, and you add it to a channel with /invite. When someone outside the team mentions it, it answers them with your access.`}
-      >
+      <SlackCard title={AGENT_SLACK_CARD_COPY.notInSlack(agentName)} description={AGENT_SLACK_CARD_COPY.addItLead}>
         {notice}
-        <FieldSet>
-          <FieldLegend variant="label">Who sets it up in Slack?</FieldLegend>
-          <RadioGroup
-            value={way}
-            disabled={busy}
-            onValueChange={(v) => {
-              if (v === 'admin' || v === 'self') setWay(v);
-            }}
-          >
-            <Field orientation="horizontal" data-disabled={busy || undefined}>
-              <RadioGroupItem value="admin" id="slack-bot-way-admin" />
-              <FieldContent>
-                <FieldLabel htmlFor="slack-bot-way-admin">Ask an AX admin</FieldLabel>
-                <FieldDescription>
-                  We&apos;ll ask your AX admins. One of them approves it and finishes it in Slack, so you don&apos;t
-                  need a token.
-                </FieldDescription>
-              </FieldContent>
-            </Field>
-            <Field orientation="horizontal" data-disabled={busy || undefined}>
-              <RadioGroupItem value="self" id="slack-bot-way-self" />
-              <FieldContent>
-                <FieldLabel htmlFor="slack-bot-way-self">I can install apps in Slack</FieldLabel>
-                <FieldDescription>
-                  You set it up with your own Slack configuration token, then click Allow in Slack.
-                </FieldDescription>
-              </FieldContent>
-            </Field>
-          </RadioGroup>
-          <FieldDescription>
-            Either way, Slack has the final say: only someone allowed to install apps in your Slack workspace can add
-            it.
-          </FieldDescription>
-        </FieldSet>
-        {way === 'admin' ? null : showToken ? (
-          <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
-            <li>
-              Open <SlackAppsLink />. Under <strong>Your App Configuration Tokens</strong>, click{' '}
-              <strong>Generate Token</strong> for your workspace.
-            </li>
-            <li>
-              Paste the refresh token below. We keep it for every Slack app you set up here, so you only do this
-              once.
-            </li>
-          </ol>
-        ) : (
-          <p className="text-sm text-muted-foreground">We&apos;ll use the configuration token you gave us before.</p>
-        )}
-        <FieldGroup>
-          {showToken && (
-            <TokenField
-              id="slack-bot-refresh-token"
-              label="Refresh token"
-              hint="Starts with xoxe-"
-              inputRef={tokenRef}
-              error={tokenError}
-              disabled={busy}
-              required
-            />
-          )}
+        <FieldGroup className="gap-4">
           <Field data-invalid={nameError !== null || undefined}>
             <FieldLabel htmlFor="slack-agent-bot-name">Bot name</FieldLabel>
             <Input
@@ -415,33 +390,64 @@ function RequestForm({
             />
             {nameError !== null && <FieldError id="slack-agent-bot-name-error">{nameError}</FieldError>}
           </Field>
+          {/* The install-it-myself path: the one place on the card the token words belong. */}
+          {way === 'self' &&
+            (showToken ? (
+              <>
+                <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
+                  <li>
+                    Open <SlackAppsLink />. Under <strong>Your App Configuration Tokens</strong>, click{' '}
+                    <strong>Generate Token</strong> for your workspace.
+                  </li>
+                  <li>
+                    Paste the refresh token below. We keep it for every Slack app you set up here, so you only do
+                    this once.
+                  </li>
+                </ol>
+                <TokenField
+                  id="slack-bot-refresh-token"
+                  label="Refresh token"
+                  hint="Starts with xoxe-"
+                  inputRef={tokenRef}
+                  error={tokenError}
+                  disabled={busy}
+                  required
+                />
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                We&apos;ll use the configuration token you gave us before.
+              </p>
+            ))}
+          {way === 'self' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.slackHasFinalSay}</p>}
         </FieldGroup>
         {formError !== null && (
           <Alert variant="destructive">
             <AlertDescription>{formError}</AlertDescription>
           </Alert>
         )}
-        <div>
-          <Button type="submit" disabled={busy}>
-            {way === 'admin' ? (
-              busy ? (
-                <Busy>Asking…</Busy>
-              ) : (
-                'Ask an AX admin'
-              )
-            ) : busy ? (
-              <Busy>Creating…</Busy>
-            ) : (
-              'Create the Slack bot'
-            )}
-          </Button>
-        </div>
-      </Section>
+        <Button type="submit" className="self-start" disabled={busy}>
+          {busy ? <Busy>{way === 'admin' ? 'Asking…' : 'Adding…'}</Busy> : 'Add to Slack'}
+        </Button>
+        {way === 'admin' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.adminWillApprove}</p>}
+        {/* One link that flips the way, so focus stays on it when its words change. Not a submit: type="button". */}
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto self-start p-0"
+          disabled={busy}
+          onClick={() => setWay(way === 'admin' ? 'self' : 'admin')}
+        >
+          {way === 'admin' ? AGENT_SLACK_CARD_COPY.selfPathLink : AGENT_SLACK_CARD_COPY.adminPathLink}
+        </Button>
+        <p className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.helpLine(agentName)}</p>
+      </SlackCard>
     </form>
   );
 }
 
-/** Waiting for an AX admin. Nothing exists in Slack yet, so a cancel leaves nothing behind. */
+/** Waiting for an admin. Nothing exists in Slack yet, so a cancel leaves nothing behind. */
 function Requested({
   agentId,
   bot,
@@ -473,20 +479,24 @@ function Requested({
   }
 
   return (
-    <Section>
-      <p className="text-sm">Waiting for an AX admin to approve {bot.botName}.</p>
-      <p className="text-[12.5px] text-muted-foreground">Asked on {slackShortDate(bot.requestedAt)}.</p>
+    <SlackCard
+      title={AGENT_SLACK_CARD_COPY.waitingForAdmin(bot.botName)}
+      description={AGENT_SLACK_CARD_COPY.askedOn(slackShortDate(bot.requestedAt))}
+      menu={
+        <AgentSlackMenu
+          label={`Actions for ${bot.botName}`}
+          disabled={busy}
+          items={[{ label: 'Cancel request', onSelect: () => void cancel() }]}
+        />
+      }
+    >
       {error !== null && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div>
-        <Button variant="outline" disabled={busy} onClick={() => void cancel()}>
-          {busy ? <Busy>Cancelling…</Busy> : 'Cancel request'}
-        </Button>
-      </div>
-    </Section>
+      {busy && <Cancelling />}
+    </SlackCard>
   );
 }
 
@@ -533,30 +543,33 @@ function Pending({
   }
 
   return (
-    <Section>
-      <p className="text-sm">
-        {bot.canContinue
-          ? `Almost there: finish adding ${bot.botName} in Slack.`
-          : `${bot.approver} is finishing this in Slack.`}
-      </p>
+    <SlackCard
+      title={
+        bot.canContinue
+          ? AGENT_SLACK_CARD_COPY.finishInSlack(bot.botName)
+          : AGENT_SLACK_CARD_COPY.waitingForPerson(bot.approver, bot.botName)
+      }
+      menu={
+        <AgentSlackMenu
+          label={`Actions for ${bot.botName}`}
+          disabled={busy !== null}
+          // No install id (an older server): nothing to name, so no Cancel request, and so no ⋯.
+          items={installId !== null ? [{ label: 'Cancel request', onSelect: () => void run('cancel') }] : []}
+        />
+      }
+    >
+      {bot.canContinue && (
+        <Button className="self-start" disabled={busy !== null} onClick={() => void run('continue')}>
+          {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
+        </Button>
+      )}
       {error !== null && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div className="flex flex-wrap gap-2">
-        {bot.canContinue && (
-          <Button disabled={busy !== null} onClick={() => void run('continue')}>
-            {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
-          </Button>
-        )}
-        {installId !== null && (
-          <Button variant="outline" disabled={busy !== null} onClick={() => void run('cancel')}>
-            {busy === 'cancel' ? <Busy>Cancelling…</Busy> : 'Cancel request'}
-          </Button>
-        )}
-      </div>
-    </Section>
+      {busy === 'cancel' && <Cancelling />}
+    </SlackCard>
   );
 }
 
@@ -585,7 +598,7 @@ function Live({
   const installId = canManage ? bot.installId : null;
   const canRebuild = installId !== null && sharedConnected;
   return (
-    <Section>
+    <SlackCard title="Its own Slack bot">
       <p className="text-sm">
         {handle !== null
           ? `@${handle} is live. Invite it to a channel with /invite @${handle}.`
@@ -667,7 +680,7 @@ function Live({
           />
         </div>
       )}
-    </Section>
+    </SlackCard>
   );
 }
 

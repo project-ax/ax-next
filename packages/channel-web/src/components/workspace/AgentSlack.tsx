@@ -1,17 +1,20 @@
 /**
- * An agent's Slack section in its settings (TASK-1094): the channels its own
- * bot has answered in, each with its "remember this channel" switch
- * (TASK-1180), and the bot itself (TASK-1168). A team agent reaches channels
- * only through its own bot (TASK-1186), so nothing is connected here through
- * the shared Slack app.
+ * An agent's Slack section in its settings (TASK-1094): one card for the
+ * agent's own bot (`AgentSlackBot`, TASK-1168, TASK-1187), whose title says
+ * which of three states it is in (not in Slack, waiting, live), and the
+ * channels the bot has answered in, each with its memory setting in the row's
+ * ⋯ (`AgentSlackBotChannels`, TASK-1180). A team agent reaches channels only
+ * through its own bot (TASK-1186), so nothing is connected here through the
+ * shared Slack app. Everyone gets the card: someone who can't manage the agent
+ * reads that it isn't in Slack yet, until it is.
  *
  * Claude-simple on purpose. No ids, scopes or install words: a channel is
  * `#name`, a person is a name, and a problem shows up only when there is one.
  * Slack itself is set up once, in Admin settings; this page never asks for it.
  *
- * The "remember" switch is never optimistic (the `lib/agent-abilities.ts`
- * rule): while a write is in flight it is disabled at its old position, and a
- * failed write leaves it there with a sentence saying nothing changed.
+ * A memory change is never optimistic (the `lib/agent-abilities.ts` rule):
+ * while a write is in flight the row keeps its old state, and a failed write
+ * leaves it there with a sentence saying nothing changed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -183,15 +186,6 @@ function ReadySection({
 }) {
   const { canManage, bot } = ready;
   const botChannels = ready.botChannels ?? [];
-  // A member who can't manage the agent sees nothing from the bot card until its
-  // bot is live, so say where things stand instead of an empty section.
-  if (!canManage && bot.state !== 'live') {
-    return (
-      <p className="text-[13px] text-muted-foreground">
-        {agentName} isn&apos;t in Slack yet. A team admin can add it.
-      </p>
-    );
-  }
   return (
     <div className="flex flex-col gap-5">
       {bot.state === 'live' && botChannels.length > 0 && (

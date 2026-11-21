@@ -20,6 +20,7 @@ import {
   type BotChannelRow,
 } from '@/lib/agent-slack';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
+import { slackCardText, slackCardWordsFound } from '@/test-utils/slack-card-words';
 
 vi.mock('@/lib/agent-slack', async (original) => ({
   ...(await original<typeof import('@/lib/agent-slack')>()),
@@ -92,7 +93,8 @@ describe('the states', () => {
     renderIt({ state: 'no-workspace', canManage: false, bot: NO_BOT });
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.queryByText('Its own Slack bot')).toBeNull();
+    // No bot card: nothing can be asked for while Slack isn't connected.
+    expect(screen.queryByRole('heading')).toBeNull();
   });
 
   it("no workspace, but the agent's own bot is live: the live line still shows", async () => {
@@ -102,16 +104,22 @@ describe('the states', () => {
   });
 
   it('no workspace, with a pending request: it can still be cancelled (only a manager is told of it)', async () => {
+    cancel.mockResolvedValueOnce({ appDeleted: true });
     renderIt({
       state: 'no-workspace',
       canManage: true,
       bot: { state: 'pending', botName: 'Quill', approver: 'Ada Lovelace', canContinue: false, installId: BOT_ID },
     });
-    expect(await screen.findByRole('button', { name: 'Cancel request' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 3, name: 'Waiting for Ada Lovelace to finish adding Quill in Slack' }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Continue in Slack' })).toBeNull();
+    fireEvent.click(within(await openMenu('Quill')).getByRole('menuitem', { name: 'Cancel request' }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith('a1', BOT_ID));
+    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
   });
 
-  it('no workspace, with a request waiting for an AX admin: a manager can still cancel it', async () => {
+  it('no workspace, with a request waiting for an admin: a manager can still cancel it', async () => {
     const cancelAsk = vi.mocked(cancelSlackBotRequest);
     cancelAsk.mockResolvedValue(undefined);
     // A request reaches only those who manage the agent, so the server says they do (TASK-1172's `canManage`).
@@ -120,8 +128,10 @@ describe('the states', () => {
       canManage: true,
       bot: { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' },
     });
-    expect(await screen.findByText('Waiting for an AX admin to approve Quill Bot.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
+    expect(
+      await screen.findByRole('heading', { level: 3, name: 'Waiting for an admin to approve Quill Bot' }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(await openMenu('Quill Bot')).getByRole('menuitem', { name: 'Cancel request' }));
     await waitFor(() => expect(cancelAsk).toHaveBeenCalledWith('a1'));
     await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
   });
@@ -184,14 +194,19 @@ describe("the agent's own bot, in the ready section", () => {
           ? NO_BOT
           : ({ ...LIVE_BOT, state: botState } as unknown as AgentSlackBot);
       renderIt(ready(false, bot));
-      expect(await screen.findByText("Quill isn't in Slack yet. A team admin can add it.")).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { level: 3, name: "Quill isn't in Slack yet" })).toBeInTheDocument();
+      expect(screen.getByText('A team admin can add it.')).toBeInTheDocument();
+      expect(screen.queryByRole('button')).toBeNull();
     },
   );
 
-  it('a manager with no bot sees the setup form, not the "not in Slack yet" line', async () => {
+  it('a manager with no bot sees Add to Slack, not "A team admin can add it."', async () => {
     renderIt(ready(true, NO_BOT));
-    await screen.findByRole('button', { name: /./ });
-    expect(screen.queryByText(/isn't in Slack yet/)).toBeNull();
+    // No token on file, so it opens on asking an admin.
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: "Quill isn't in Slack yet" })).toBeInTheDocument();
+    expect(screen.getByText("We'll ask an admin to approve it.")).toBeInTheDocument();
+    expect(screen.queryByText('A team admin can add it.')).toBeNull();
   });
 
   it.each([true, false])(
@@ -205,17 +220,6 @@ describe("the agent's own bot, in the ready section", () => {
     },
   );
 
-  it("a manager sees the request form; a member sees nothing of the bot until it is live", async () => {
-    const { unmount } = renderIt(ready(true));
-    // No token on file, so it opens on asking an AX admin.
-    expect(await screen.findByRole('button', { name: 'Ask an AX admin' })).toBeInTheDocument();
-    unmount();
-    renderIt(ready(false));
-    await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText('Loading Slack settings…')).toBeNull());
-    expect(screen.queryByText('Its own Slack bot')).toBeNull();
-    expect(screen.queryByRole('button')).toBeNull();
-  });
 });
 
 describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
@@ -247,16 +251,16 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     fetchStatus.mockResolvedValueOnce(first).mockReturnValueOnce(reRead.promise);
     cancel.mockResolvedValueOnce({ appDeleted });
     const view = render(<AgentSlack agentId="a1" agentName="Quill" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel request' }));
+    fireEvent.click(within(await openMenu('Quill Bot')).getByRole('menuitem', { name: 'Cancel request' }));
     expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cancel request' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Actions for Quill Bot' })).toBeNull();
     reRead.resolve(after);
     return view;
   }
 
   it('ready: the note is above the request form once the status is read again', async () => {
     await cancelThroughReRead(ready(true, PENDING_BOT), ready(true, NONE_STORED));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     const note = screen.getByText(LEFT_OVER);
     expect(note).toHaveTextContent(
       "We cancelled the request, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete.",
@@ -290,12 +294,12 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     );
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
     expect(screen.getByText(LEFT_OVER)).toHaveTextContent('Ada Lovelace set it up and can also delete it');
-    expect(screen.queryByRole('button', { name: 'Create the Slack bot' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add to Slack' })).toBeNull();
   });
 
   it('a cancel that deleted its Slack app leaves no note', async () => {
     await cancelThroughReRead(ready(true, PENDING_BOT), ready(true, NONE_STORED), true);
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
   });
 
@@ -316,7 +320,7 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     fetchStatus.mockResolvedValueOnce(ready(true, NONE_STORED));
     rerender(<AgentSlack agentId="a2" agentName="Rook" />);
     await waitFor(() => expect(fetchStatus).toHaveBeenLastCalledWith('a2'));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
   });
 
@@ -324,7 +328,7 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     request.mockRejectedValueOnce(new AgentSlackError(502, 'slack-error'));
     await cancelThroughReRead(ready(true, PENDING_BOT), ready(true, NONE_STORED));
     expect(await screen.findByText(LEFT_OVER)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Create the Slack bot' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Slack' }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong talking to Slack.');
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
@@ -354,10 +358,10 @@ describe("a team agent's own live bot", () => {
     expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Disconnect bot' })).toBeNull();
     reRead.resolve(ready(true, NONE_STORED));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     const note = screen.getByText(LEFT_OVER);
     expect(note).toHaveTextContent(
-      "We disconnected the bot, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Ada Lovelace set it up and can also delete it in Slack's app settings.",
+      "We removed the bot from Slack, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete. Ada Lovelace set it up and can also delete it in Slack's app settings.",
     );
     expect(note.compareDocumentPosition(screen.getByLabelText('Bot name')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(disconnectBot).toHaveBeenCalledWith('a1', BOT_ID);
@@ -388,7 +392,7 @@ describe("a team agent's own live bot", () => {
     const dialog = await screen.findByRole('dialog');
     expect(dialog).not.toHaveTextContent(/The shared bot answers/);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
   });
 
@@ -411,7 +415,7 @@ describe('a rebuilt bot (TASK-1173)', () => {
   const NONE_STORED: AgentSlackBot = { state: 'none', configTokenStored: true };
   const LEFT_OVER = /couldn.t confirm its Slack app was deleted/;
   const NOTICE =
-    '@quill_bot is disconnected. Set up its replacement below. It gets a new @handle, so invite it to each channel again.';
+    "@quill_bot was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.";
 
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -432,7 +436,7 @@ describe('a rebuilt bot (TASK-1173)', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Rebuild' }));
     expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
     reRead.resolve(ready(true, NONE_STORED));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     return view;
   }
 
@@ -451,7 +455,7 @@ describe('a rebuilt bot (TASK-1173)', () => {
     const note = screen.getByText(LEFT_OVER);
     expect(notice.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(note).toHaveTextContent(
-      "We disconnected the bot, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete.",
+      "We removed the bot from Slack, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete.",
     );
     expect(note).not.toHaveTextContent(/Ada Lovelace/);
   });
@@ -459,7 +463,7 @@ describe('a rebuilt bot (TASK-1173)', () => {
   it('asking for a new bot clears the notice', async () => {
     request.mockRejectedValueOnce(new AgentSlackError(502, 'slack-error'));
     await rebuildThroughReRead(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Create the Slack bot' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Slack' }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong talking to Slack.');
     expect(screen.queryByText(NOTICE)).toBeNull();
@@ -470,7 +474,7 @@ describe('a rebuilt bot (TASK-1173)', () => {
     fetchStatus.mockResolvedValueOnce(ready(true, NONE_STORED));
     rerender(<AgentSlack agentId="a2" agentName="Rook" />);
     await waitFor(() => expect(fetchStatus).toHaveBeenLastCalledWith('a2'));
-    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     expect(screen.queryByText(NOTICE)).toBeNull();
     expect(screen.getByLabelText('Bot name')).toHaveValue('Rook');
   });
@@ -611,5 +615,70 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
     expect(
       await screen.findByText('Quill has answered in these channels. It remembers what team members say there.'),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Design §4b.2: the card never names a role, the plumbing or the product. Each
+ * view is scanned as a person reads it, every aria-label included. The
+ * install-it-myself path is the one exception, so no scan here opens it.
+ */
+describe('words (TASK-1187): no plumbing word and no product name on the card', () => {
+  const REQUESTED_BOT: AgentSlackBot = { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' };
+  const pendingBot = (canContinue: boolean): AgentSlackBot => ({
+    state: 'pending',
+    botName: 'Quill Bot',
+    approver: 'Ada Lovelace',
+    canContinue,
+    installId: BOT_ID,
+  });
+  const expectClean = () => expect(slackCardWordsFound(slackCardText())).toEqual([]);
+
+  it('a manager with no bot and no stored token', async () => {
+    renderIt(ready(true, NO_BOT));
+    await screen.findByRole('button', { name: 'Add to Slack' });
+    expectClean();
+  });
+
+  it('a manager with a stored token, once they choose to ask an admin', async () => {
+    renderIt(ready(true, { state: 'none', configTokenStored: true }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask an admin instead' }));
+    await screen.findByText("We'll ask an admin to approve it.");
+    expectClean();
+  });
+
+  it('a member, with no bot', async () => {
+    renderIt(ready(false, NO_BOT));
+    await screen.findByText('A team admin can add it.');
+    expectClean();
+  });
+
+  it('a manager waiting for an admin, and again with its menu open', async () => {
+    renderIt(ready(true, REQUESTED_BOT));
+    await screen.findByRole('heading', { level: 3, name: 'Waiting for an admin to approve Quill Bot' });
+    expectClean();
+    await openMenu('Quill Bot');
+    expectClean();
+  });
+
+  it.each([true, false])('pending (the viewer finishes it in Slack: %s), and again with its menu open', async (canContinue) => {
+    renderIt(ready(true, pendingBot(canContinue)));
+    await screen.findByRole('button', { name: 'Actions for Quill Bot' });
+    expectClean();
+    await openMenu('Quill Bot');
+    expectClean();
+  });
+
+  it('no workspace: a manager waiting for an admin', async () => {
+    renderIt({ state: 'no-workspace', canManage: true, bot: REQUESTED_BOT });
+    await screen.findByRole('heading', { level: 3, name: 'Waiting for an admin to approve Quill Bot' });
+    expectClean();
+  });
+
+  it('the install-it-myself path is the one place the token words show', async () => {
+    renderIt(ready(true, NO_BOT));
+    fireEvent.click(await screen.findByRole('button', { name: 'I can install Slack apps myself' }));
+    await screen.findByLabelText('Refresh token');
+    expect(slackCardWordsFound(slackCardText())).not.toEqual([]);
   });
 });
