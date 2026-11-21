@@ -1172,6 +1172,19 @@ describe('live: problems, one action each', () => {
     expect(document.body.innerHTML).not.toContain(TOKEN);
   });
 
+  it('a reconnect moves focus to the saved notice, not the page: the Reconnect button it came from is gone', async () => {
+    replaceToken.mockResolvedValueOnce(undefined);
+    renderIt(MINE);
+    await findDeadToken();
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Reconnect' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Replace your Slack token' });
+    fireEvent.change(within(dialog).getByLabelText('Refresh token'), { target: { value: TOKEN } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace token' }));
+    const notice = (await screen.findByText(BOT_TOKEN_COPY.replaced('Quill Bot'))).closest('[role="alert"]');
+    expect(notice).not.toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(notice));
+  });
+
   it('a dead token found by Change picture: another team admin is told whom to ask, with no button', async () => {
     setPicture.mockRejectedValueOnce(refusal(502, 'slack-config-token'));
     draw.mockResolvedValueOnce('UE5H');

@@ -84,6 +84,7 @@ export function ReconnectDialog({
   agentId,
   bot,
   onReconnected,
+  onCloseAutoFocus,
   onStale,
 }: {
   open: boolean;
@@ -92,6 +93,8 @@ export function ReconnectDialog({
   bot: Live;
   /** The token was replaced: nothing in the status changes, so the card says so itself. */
   onReconnected: () => void;
+  /** Where focus goes when the dialog closes; `preventDefault()` keeps it from going back to the opener. */
+  onCloseAutoFocus?: (event: Event) => void;
   /** A refusal that says the page is out of date: read the status again. */
   onStale: () => void;
 }) {
@@ -104,6 +107,7 @@ export function ReconnectDialog({
       errorCopy={agentSlackBotReplaceErrorCopy}
       isStale={agentSlackBotReplaceStale}
       onReplaced={onReconnected}
+      {...(onCloseAutoFocus !== undefined ? { onCloseAutoFocus } : {})}
       onStale={onStale}
     />
   );

@@ -678,6 +678,13 @@ function Live({
     setSaved(null);
     setDialog(d);
   };
+  // A reconnect unmounts the token row that held the Reconnect button the dialog would return focus to, so the notice takes it.
+  const savedNotice = useRef<HTMLDivElement>(null);
+  const focusSavedNotice = (e: Event) => {
+    if (savedNotice.current === null) return;
+    e.preventDefault();
+    savedNotice.current.focus();
+  };
   const closeDialog = (next: boolean) => {
     if (!next) setDialog(null);
   };
@@ -729,7 +736,7 @@ function Live({
         );
       })}
       {saved !== null && (
-        <Alert>
+        <Alert ref={savedNotice} tabIndex={-1} className="focus-visible:outline-none">
           <AlertDescription>
             {saved === 'picture' ? AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged : BOT_TOKEN_COPY.replaced(bot.botName)}
           </AlertDescription>
@@ -767,6 +774,7 @@ function Live({
               setTokenDead(false);
               setSaved('token');
             }}
+            onCloseAutoFocus={focusSavedNotice}
             onStale={onChanged}
           />
         </>

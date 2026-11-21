@@ -49,6 +49,8 @@ export interface BotTokenReplaceDialogProps {
   isStale: (err: unknown) => boolean;
   /** Slack accepted the token and the server holds it. The dialog has closed. */
   onReplaced: () => void;
+  /** Where focus goes once the dialog has closed (`preventDefault()` to take it from the opener). */
+  onCloseAutoFocus?: (event: Event) => void;
   /** The page is out of date: read it again. The dialog has closed. */
   onStale: () => void;
 }
@@ -71,6 +73,7 @@ export function BotTokenReplaceDialog({
   errorCopy,
   isStale,
   onReplaced,
+  onCloseAutoFocus,
   onStale,
 }: BotTokenReplaceDialogProps) {
   const [busy, setBusy] = useState(false);
@@ -88,7 +91,7 @@ export function BotTokenReplaceDialog({
   };
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent>
+      <DialogContent {...(onCloseAutoFocus !== undefined ? { onCloseAutoFocus } : {})}>
         <ReplaceForm
           botName={botName}
           replace={replace}
