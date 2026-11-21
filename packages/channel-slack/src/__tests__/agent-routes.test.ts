@@ -935,6 +935,8 @@ describe('the section', () => {
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
+      approverGone: false,
+      viewerIsApprover: false,
       needsClaim: false,
       installId: OWN_BOT.installId,
     };
@@ -1038,6 +1040,8 @@ describe('the section', () => {
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
+      approverGone: false,
+      viewerIsApprover: false,
       needsClaim: false,
       installId: null,
     };
@@ -1478,7 +1482,8 @@ describe('the bot routes', () => {
     });
     expect(w.bots.calls).toEqual([
       { method: 'installUrl', input: { actorUserId: GRACE.id, agentId: SUPPORT.id } },
-      { method: 'cancel', input: { agentId: SUPPORT.id } },
+      // TASK-1173: no install id until the route reads the body the page sends (the PR's routes task).
+      { method: 'cancel', input: { agentId: SUPPORT.id, installId: '' } },
     ]);
   });
 
@@ -1573,6 +1578,8 @@ describe('the bot routes', () => {
       botName: 'Support Helper',
       handle: 'supporthelper',
       approver: 'Grace Hopper',
+      approverGone: false,
+      viewerIsApprover: false,
       needsClaim: false,
       installId: OWN_BOT.installId,
     };
@@ -2076,6 +2083,8 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
     botName: 'Support Helper',
     handle: 'supporthelper',
     approver: 'Grace Hopper',
+    approverGone: false,
+    viewerIsApprover: false,
     needsClaim: false,
     installId: null,
   };

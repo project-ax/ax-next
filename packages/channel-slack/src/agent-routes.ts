@@ -619,7 +619,11 @@ export function createAgentSlackRoutes(
   async function cancelBot(a: Asked): Promise<Reply> {
     const rights = await manages(a);
     if (!rights.ok) return refused(rights.reason);
-    return bots.cancel({ agentId: a.agentId });
+    // TASK-1173: the domain takes the install id the page showed, which this
+    // route reads from the body in the PR's routes task. Until then it names
+    // none ('' is no install's id), so Cancel answers 409 not-pending and
+    // touches nothing.
+    return bots.cancel({ agentId: a.agentId, installId: '' });
   }
 
   /** Ask an AX admin to approve the agent's own bot (TASK-1169): the person asking becomes its requester. */

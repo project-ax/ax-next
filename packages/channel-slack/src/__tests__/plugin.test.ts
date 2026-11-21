@@ -2688,6 +2688,8 @@ describe('@ax/channel-slack plugin', () => {
             approver: null,
             state: 'live',
             addedAt: expect.any(String),
+            // Ada reads the list; Grace's token made the bot (TASK-1173).
+            viewerIsApprover: false,
           },
         ],
       },

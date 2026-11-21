@@ -77,7 +77,8 @@ export function createAdminBotRoutes(d: AdminBotRoutesDeps): RouteSpec[] {
   async function list(_req: RouteRequest, actor: AdminActor): Promise<Reply> {
     // No agent in the ctx: the approvers' names are looked up for nobody's agent.
     const ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: '', userId: actor.id, logger: d.logger });
-    return json(200, { bots: await d.bots.listForAdmin({ ctx }) });
+    // The admin reading is the viewer each row's `viewerIsApprover` is about (TASK-1173).
+    return json(200, { bots: await d.bots.listForAdmin({ ctx, viewerUserId: actor.id }) });
   }
 
   /** Take one team agent's bot away, by its install id. */

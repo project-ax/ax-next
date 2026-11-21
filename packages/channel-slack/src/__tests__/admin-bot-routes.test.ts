@@ -37,6 +37,7 @@ const LISTED: AdminSlackBot = {
   approver: 'Grace Hopper',
   state: 'live',
   addedAt: '2026-11-13T12:00:00.000Z',
+  viewerIsApprover: false,
 };
 /** Text a fault's message carries, which no log line or answer may repeat. */
 const FAILURE_CANARY = 'failure-text-canary-5b2d';
@@ -232,8 +233,8 @@ describe('the admin bot routes', () => {
     w.bots.answers.listForAdmin = [];
     expect(await w.list(GRACE)).toEqual({ status: 200, body: { bots: [] } });
     expect(w.bots.calls).toEqual([
-      { method: 'listForAdmin', input: { ctxUserId: ADA.id } },
-      { method: 'listForAdmin', input: { ctxUserId: GRACE.id } },
+      { method: 'listForAdmin', input: { ctxUserId: ADA.id, viewerUserId: ADA.id } },
+      { method: 'listForAdmin', input: { ctxUserId: GRACE.id, viewerUserId: GRACE.id } },
     ]);
     expect(w.lines).toEqual([]);
   });

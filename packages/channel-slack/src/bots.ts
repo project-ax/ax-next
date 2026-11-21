@@ -6,7 +6,7 @@ import type { ParsedIcon } from './icon.js';
 import { INSTALL_ID_BYTES } from './limits.js';
 import { DEDICATED_BOT_SCOPES, botUrls, buildBotManifest } from './manifest.js';
 import type { Mutex } from './mutex.js';
-import { accountName, personName } from './person-name.js';
+import { accountName } from './person-name.js';
 import { configTokenRef, type SecretOwner, type SecretStore } from './secrets.js';
 import {
   SlackApiError,
@@ -33,7 +33,8 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * at most one per agent, pending until its approver clicks Allow in Slack.
  *
  * Its row names two people. `requestedByUserId` is the team admin who asked
- * for it, whom its channels' outsiders run as. `connectedByUserId` is its
+ * for it, or the team admin who claimed it since (TASK-1173, bot-changes.ts
+ * `claim`), whom its channels' outsiders run as. `connectedByUserId` is its
  * approver, whose configuration token made the app (TASK-1175: one token per
  * person, shared by every Slack app they made through AX). On the self path
  * (`request`) they are one person: a team admin who can install Slack apps
@@ -83,11 +84,11 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * A bot goes, pending or live, only through `removeBot`: Cancel (a team
  * admin, a pending bot only), Disconnect (TASK-1172: a team admin from the
  * agent's settings, their rights asked again inside the lock; or an AX admin
- * from Admin › Slack, never the shared app; either names the bot by the
- * install id its page showed, so a stale page can't take a bot asked for
- * since), and its agent's deletion. The shared bot's channel bindings are
- * never touched, so it answers in the agent's channels again once the
- * agent's bot is gone.
+ * from Admin › Slack, never the shared app), and its agent's deletion. Cancel
+ * and Disconnect name the bot by the install id their page showed (Cancel
+ * since TASK-1173), so a stale page can't take a bot asked for since. The
+ * shared bot's channel bindings are never touched, so it answers in the
+ * agent's channels again once the agent's bot is gone.
  *
  * Every step that touches a Slack app or a configuration token runs under the
  * one app lock (`lock`), which plugin.ts creates once and shares with Admin ›
@@ -102,7 +103,8 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * A bot has three secrets of its own, under its install (bot token, signing
  * secret, client secret), and never a configuration token. No answer carries
  * a token or a person's id: the one token fact any of them gives is
- * `configTokenStored`, about the viewer's own. Log lines are code-only:
+ * `configTokenStored`, about the viewer's own, and `viewerIsApprover` tells a
+ * viewer only whether they set the bot up themselves. Log lines are code-only:
  * `slack_bot_failed { installId?, stage, code }` for a step that failed, and
  * one line naming the install (and an approved request, by our own id) for
  * each outcome. Never a token, a person's or an agent's id, a name, or a
@@ -116,10 +118,11 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * this too.
  *
  * `installId` is the bot's own install id (opaque, ours), the key its
- * Disconnect takes, so a page can only ever take away the bot it showed: a
- * stale page whose bot was disconnected, and asked for again since, names
- * the old one and gets 409 `no-bot` (TASK-1172). Only those who manage the
- * agent get it, since nobody else may disconnect the bot. A `requested` bot
+ * Disconnect, Cancel and Claim take, so a page can only ever act on the bot
+ * it showed: a stale page whose bot was disconnected, and asked for again
+ * since, names the old one and gets 409 `no-bot` (TASK-1172), or
+ * `not-pending` from Cancel (TASK-1173). Only those who manage the agent get
+ * it, since nobody else may take the bot away or claim it. A `requested` bot
  * has no install yet, so no `installId`.
  */
 export type AgentSlackBot =
@@ -134,15 +137,22 @@ export type AgentSlackBot =
   | { state: 'pending'; botName: string; approver: string; canContinue: boolean; installId: string }
   /**
    * `handle`: the bot user's @handle as Slack named it, or null when Slack
-   * never said. `needsClaim`: its requester is no longer a team admin of the
-   * agent's team, so its outsiders are turned away until one claims it.
-   * `installId`: null for a viewer who doesn't manage the agent.
+   * never said. `approverGone` (TASK-1173): auth itself says it has no
+   * account for the approver, so nobody can replace the bot's token any more
+   * and it needs rebuilding; an auth fault reads false, never "rebuild it".
+   * `viewerIsApprover` (TASK-1173): the viewer is the person whose token made
+   * the bot, the only one who may replace it. `needsClaim`: its requester is
+   * no longer a team admin of the agent's team, so its outsiders are turned
+   * away until one claims it. `installId`: null for a viewer who doesn't
+   * manage the agent.
    */
   | {
       state: 'live';
       botName: string;
       handle: string | null;
       approver: string;
+      approverGone: boolean;
+      viewerIsApprover: boolean;
       needsClaim: boolean;
       installId: string | null;
     };
@@ -162,6 +172,12 @@ export interface AdminSlackBot {
   state: 'pending' | 'live';
   /** When the bot was asked for: its row's `createdAt`, ISO 8601. */
   addedAt: string;
+  /**
+   * The admin reading the list is this bot's approver, the person whose
+   * token made it (TASK-1173), so its Replace is theirs to offer. Never its
+   * requester: asking for a bot isn't setting it up.
+   */
+  viewerIsApprover: boolean;
 }
 
 /** A route's answer, as agent-routes.ts writes it. */
@@ -303,11 +319,15 @@ export interface Bots {
    * Take back the agent's PENDING bot (one failed or cancelled Allow would
    * otherwise block the agent's bot for good), as `removeBot` does: with its
    * approver's token, whoever asks (the route let only a team admin of the
-   * agent through). A live bot isn't cancelled here. Takes the app lock.
-   * 200 `{ appDeleted }`, logged `slack_bot_cancelled { installId,
-   * appDeleted }`; 409 `not-pending`.
+   * agent through). A live bot isn't cancelled here. `installId` is the
+   * pending bot the page showed (its status's `installId`, TASK-1173): an
+   * agent whose pending bot is another one (a stale page whose bot was
+   * cancelled, and asked for again since) is 409 `not-pending`, as one with
+   * no pending bot is, and nothing is touched. Takes the app lock. 200
+   * `{ appDeleted }`, logged `slack_bot_cancelled { installId, appDeleted }`;
+   * 409 `not-pending`.
    */
-  cancel(i: { agentId: string }): Promise<BotReply>;
+  cancel(i: { agentId: string; installId: string }): Promise<BotReply>;
   /**
    * A team admin takes the agent's own bot away, pending or live (TASK-1172),
    * as `removeBot` does: its app deleted with its approver's token, whoever
@@ -368,7 +388,9 @@ export interface Bots {
    * open request (TASK-1169) is read only for someone who manages the agent.
    * Takes no lock and never rotates or writes: the one vault read is whether
    * the viewer's own token is there. Faults in that read, the claim check or
-   * the approver's name are logged and shown as the safe answer.
+   * the approver's account are logged and shown as the safe answer. For the
+   * approver, an auth outage reads as "A teammate" and, on a live bot, as
+   * not gone (TASK-1173), so it never asks a team to rebuild a working bot.
    */
   status(i: {
     ctx: AgentContext;
@@ -382,13 +404,15 @@ export interface Bots {
    * the shared app (TASK-1172), in the store's order (oldest first). Each
    * approver as auth knows them now (`accountName`): their display name, else
    * their email (only admins read this list); null when auth has no such
-   * account, so the page can say they've left. Takes no lock, reads no vault
-   * and asks Slack nothing. A store fault throws, and so does a fault in
-   * auth, for any approver: the route's 500, which the page shows as an error
-   * with Try again. An offboarding admin reads this list for who has left, so
-   * an outage must never read as "A teammate" for everyone (nobody left).
+   * account, so the page can say they've left. Each row marks whether
+   * `viewerUserId`, the admin reading, is its approver (TASK-1173). Takes no
+   * lock, reads no vault and asks Slack nothing. A store fault throws, and so
+   * does a fault in auth, for any approver: the route's 500, which the page
+   * shows as an error with Try again. An offboarding admin reads this list for
+   * who has left, so an outage must never read as "A teammate" for everyone
+   * (nobody left).
    */
-  listForAdmin(i: { ctx: AgentContext }): Promise<AdminSlackBot[]>;
+  listForAdmin(i: { ctx: AgentContext; viewerUserId: string }): Promise<AdminSlackBot[]>;
 }
 
 /**
@@ -680,11 +704,13 @@ export function createBots(d: BotDeps): Bots {
     });
   }
 
-  async function cancel(i: { agentId: string }): Promise<BotReply> {
+  async function cancel(i: { agentId: string; installId: string }): Promise<BotReply> {
     return d.lock.run(async () => {
       const bot = await d.installs.botForAgent(i.agentId);
-      // A live bot isn't cancelled here: its channels would go with it.
-      if (bot === null || bot.status !== 'pending') return NOT_PENDING;
+      // A live bot isn't cancelled here: its channels would go with it. And
+      // only the pending bot the page showed: a stale page whose bot was
+      // cancelled, and asked for again since, names the old one.
+      if (bot === null || bot.status !== 'pending' || bot.installId !== i.installId) return NOT_PENDING;
       const appDeleted = await removeBot(bot);
       log('info', 'slack_bot_cancelled', { installId: bot.installId, appDeleted });
       return json(200, { appDeleted });
@@ -819,8 +845,9 @@ export function createBots(d: BotDeps): Bots {
 
   /**
    * Whether the bot's requester is no longer a team admin of the agent's
-   * team, so its outsiders are turned away until someone claims it. Shown
-   * only: the router asks on every mention. A fault reads false.
+   * team, so its outsiders are turned away until a team admin claims it
+   * (bot-changes.ts `claim`, TASK-1173). Shown only: the router asks on every
+   * mention. A fault reads false.
    */
   async function needsClaim(i: { ctx: AgentContext; agentId: string }, bot: InstallRow): Promise<boolean> {
     // A bot row always has its requester (the database's CHECK); with none, nobody can vouch for its outsiders.
@@ -830,6 +857,28 @@ export function createBots(d: BotDeps): Bots {
     } catch (err) {
       steps.failed('status-claim', err, bot.installId, 'warn');
       return false;
+    }
+  }
+
+  /**
+   * The bot's approver as auth knows them now (the row keeps only the id,
+   * invariant 4): their display name, never the email (members read this
+   * too), else "A teammate". `gone` only when auth itself answers that it has
+   * no such account (`accountName`'s null; TASK-1173): nobody can replace the
+   * bot's token then, so it needs rebuilding. A fault in auth is logged at
+   * warn, code-only, and reads as not gone: an outage must never tell a team
+   * to rebuild a working bot.
+   */
+  async function approverOf(i: { ctx: AgentContext }, bot: InstallRow): Promise<{ name: string; gone: boolean }> {
+    try {
+      const name = await accountName(d.bus, i.ctx, bot.connectedByUserId, {
+        allowEmail: false,
+        fallback: APPROVER_FALLBACK,
+      });
+      return name === null ? { name: APPROVER_FALLBACK, gone: true } : { name, gone: false };
+    } catch (err) {
+      steps.failed('approver', err, bot.installId, 'warn');
+      return { name: APPROVER_FALLBACK, gone: false };
     }
   }
 
@@ -853,17 +902,13 @@ export function createBots(d: BotDeps): Bots {
     if (bot.status === 'pending' && !i.manages) {
       return { state: 'none', configTokenStored: await viewerTokenStored(i) };
     }
-    // As auth knows them now: the row keeps only the id (invariant 4).
-    const approver = await personName(d.bus, i.ctx, bot.connectedByUserId, {
-      allowEmail: false,
-      fallback: APPROVER_FALLBACK,
-      onFault: (err) => steps.failed('approver', err, bot.installId, 'warn'),
-    });
+    const approver = await approverOf(i, bot);
     if (bot.status === 'pending') {
+      // A pending bot whose approver left is Cancel's to fix: it shows only the name.
       return {
         state: 'pending',
         botName: bot.botName,
-        approver,
+        approver: approver.name,
         canContinue: i.viewerUserId === bot.connectedByUserId && i.sharedActive,
         // Only those who manage the agent ever see a pending bot.
         installId: bot.installId,
@@ -873,14 +918,17 @@ export function createBots(d: BotDeps): Bots {
       state: 'live',
       botName: bot.botName,
       handle: bot.botHandle,
-      approver,
+      approver: approver.name,
+      approverGone: approver.gone,
+      // The approver, never the requester: their token made the bot.
+      viewerIsApprover: i.viewerUserId === bot.connectedByUserId,
       needsClaim: await needsClaim(i, bot),
-      // The key its Disconnect takes, for those who may disconnect it.
+      // The key its Disconnect and Claim take, for those who may use them.
       installId: i.manages ? bot.installId : null,
     };
   }
 
-  async function listForAdmin(i: { ctx: AgentContext }): Promise<AdminSlackBot[]> {
+  async function listForAdmin(i: { ctx: AgentContext; viewerUserId: string }): Promise<AdminSlackBot[]> {
     const listed: AdminSlackBot[] = [];
     for (const bot of await d.installs.listBots()) {
       listed.push({
@@ -896,6 +944,8 @@ export function createBots(d: BotDeps): Bots {
         }),
         state: bot.status === 'active' ? 'live' : 'pending',
         addedAt: bot.createdAt.toISOString(),
+        // The approver, never the requester: their token made the bot.
+        viewerIsApprover: bot.connectedByUserId === i.viewerUserId,
       });
     }
     return listed;
