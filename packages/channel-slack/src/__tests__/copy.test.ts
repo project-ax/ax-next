@@ -428,7 +428,7 @@ describe('COPY: what a channel mention can get privately, before its turn (mrkdw
     expect(new Set([COPY.channelUnavailable, COPY.channelBusy, COPY.turnFailed, COPY.queueFull]).size).toBe(4);
   });
 
-  it('a channel Slack no longer allows: says it stopped and why, and names nothing', () => {
+  it('a channel Slack no longer allows: says it stopped and why, in a line of its own', () => {
     expect(COPY.channelNoLongerAllowed).toMatch(/stopped answering/);
     expect(COPY.channelNoLongerAllowed).toMatch(/private/);
     expect(COPY.channelNoLongerAllowed).toMatch(/another organization/);
