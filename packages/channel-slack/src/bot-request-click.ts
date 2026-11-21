@@ -65,11 +65,14 @@ export interface BotRequestClickDeps {
   api: Pick<SlackApi, 'usersInfo' | 'postEphemeral'>;
   secrets: Pick<SecretStore, 'get'>;
   /** The one decline Admin › Slack runs (bot-requests.ts), here as the admin who clicked, with the DM she clicked in. */
-  requests: { decline(i: { requestId: string; actorUserId: string; clicked: PostedDm }): Promise<BotReply> };
+  requests: { decline(i: { requestId: string; actorUserId: string; clicked?: PostedDm }): Promise<BotReply> };
   logger: Logger;
 }
 
 const SESSION = 'channel-slack';
+
+/** A DM's channel id: the only place a bot request's Decline button is drawn. */
+const IM_CHANNEL_RE = /^D[A-Z0-9]+$/;
 
 /** A ctx for a lookup about a person: no agent, and the AX user once known. */
 const lookupCtx = (userId: string, logger: Logger): AgentContext =>
@@ -156,11 +159,21 @@ export function createBotRequestClickHandler(d: BotRequestClickDeps): BotRequest
       return;
     }
 
-    // 5. The decline Admin › Slack runs, as her, with the DM she clicked in. Read inside the try: a reply we can't read is a fault too.
+    // 5. The decline Admin › Slack runs, as her, with the DM she clicked in. Only
+    // our DMs carry the button, so a click that says it came from anywhere but
+    // an IM (`D…`) names no message to redraw: the shared bot never overwrites a
+    // channel message on a click's word. Read inside the try: a reply we can't
+    // read is a fault too.
+    const inIm = IM_CHANNEL_RE.test(click.channel);
+    if (!inIm) refused('clicked-not-im');
     let status: number;
     try {
       status = (
-        await d.requests.decline({ requestId, actorUserId: userId, clicked: { channel: click.channel, ts: click.messageTs } })
+        await d.requests.decline({
+          requestId,
+          actorUserId: userId,
+          ...(inIm ? { clicked: { channel: click.channel, ts: click.messageTs } } : {}),
+        })
       ).status;
     } catch (err) {
       failed('decline', logCode(err));

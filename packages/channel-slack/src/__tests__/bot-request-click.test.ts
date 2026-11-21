@@ -243,7 +243,7 @@ function world(o: WorldOptions = {}) {
   // The domain's own rule (bot-requests.ts): the request is deleted under the
   // app lock, so of two declines only the first finds it.
   const open = new Set([REQUEST_ID]);
-  type Decline = { requestId: string; actorUserId: string; clicked: { channel: string; ts: string } };
+  type Decline = { requestId: string; actorUserId: string; clicked?: { channel: string; ts: string } };
   const declines: Decline[] = [];
   const requests = {
     async decline(i: Decline): Promise<BotReply> {
@@ -298,6 +298,20 @@ describe('the Decline gate: an AX admin declines', () => {
     expect(w.declines).toStrictEqual([
       { requestId: REQUEST_ID, actorUserId: 'usr_ada', clicked: { channel: 'D07DMADA002', ts: '1763000000.000100' } },
     ]);
+  });
+
+  it('a Decline that says it was clicked outside a DM still declines, but names no message to redraw: only our DMs carry the button', async () => {
+    // Defense in depth: a forged click naming a channel message must never get the shared bot to overwrite it.
+    for (const channel of ['C07PUBLIC01', 'G07PRIVATE1']) {
+      const w = world();
+      await w.onBotRequestClick(SHARED, decline({ channel, messageTs: '1763000000.000100' }));
+
+      expect(w.declines).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
+      expect(msgs(w.lines, 'slack_bot_request_click_refused')).toEqual([
+        { installId: INSTALL_ID, requestId: REQUEST_ID, reason: 'clicked-not-im' },
+      ]);
+      expect(msgs(w.lines, 'slack_bot_request_click_declined')).toEqual([{ installId: INSTALL_ID, requestId: REQUEST_ID }]);
+    }
   });
 });
 
