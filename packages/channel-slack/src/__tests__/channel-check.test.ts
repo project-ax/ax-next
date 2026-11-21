@@ -176,7 +176,7 @@ describe('createChannelCheck', () => {
     ['Slack says nothing of the scopes the token holds, and needs exactly channels:read', { needed: 'channels:read' }],
     // A scope that merely contains channels:read is not it: the list is read scope by scope.
     ["the token's own scopes hold only a longer scope containing channels:read", { needed: EVERY_INFO_SCOPE, provided: `${LACKS},channels:read.extra` }],
-    // A hyphenated scope in the list doesn't make it unreadable.
+    // The list is read scope by scope, whatever else it names (slack-api.test pins that a hyphen parses).
     ["the token's own scopes lack channels:read and include incoming-webhook", { needed: EVERY_INFO_SCOPE, provided: `${LACKS},incoming-webhook` }],
   ] as const)("a missing_scope where %s is the token's, not the channel's: token-scope, never kept", async (_n, scopes) => {
     const { calls, check } = setup(() => missingScope(scopes));
@@ -209,6 +209,13 @@ describe('createChannelCheck', () => {
   it("only missing_scope reads the scopes: a channel_not_found from a token without channels:read is still a refusal", async () => {
     const { check } = setup(
       () => new SlackApiError('conversations.info', 'channel_not_found', undefined, { needed: 'channels:read', provided: LACKS }),
+    );
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'channel_not_found' });
+  });
+
+  it("only missing_scope reads the scopes: a channel_not_found whose provided Slack sent but slack-api couldn't read is still a refusal", async () => {
+    const { check } = setup(
+      () => new SlackApiError('conversations.info', 'channel_not_found', undefined, { needed: 'channels:read', provided: '' }),
     );
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'channel_not_found' });
   });
