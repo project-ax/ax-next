@@ -393,10 +393,15 @@ Rules, the same on both sides:
   (including a pending one) are refused. The bot joins the channel itself, after
   those checks pass.
   Slack is asked again when each turn starts, and its answer is trusted for a
-  minute (TASK-1184). A connected channel that has since become private,
-  archived or Slack Connect is disconnected, as a team admin's Disconnect would
-  do it. The person whose turn found it is told once, privately, and no turn
-  runs. If Slack can't answer, no turn runs either.
+  minute (TASK-1184). A turn that finds its connected channel has since become
+  private, archived or Slack Connect never runs, and the channel is
+  disconnected, as a team admin's Disconnect would do it. The person whose turn
+  found it is told once, privately. If Slack can't answer, no turn runs either.
+  A channel shared with another company seldom gets that far: Slack flags its
+  events as Slack Connect, and those are dropped before any turn (§1 rule 6,
+  `admission.ts screenEvent`). So it is never answered, but its connection
+  mostly stays: only a turn already waiting when it was shared, or a mention
+  while the share is still pending, reaches the check.
 - **Shape:** one agent per channel; one agent may serve several channels. The
   binding belongs to `@ax/channel-slack`; agents get no Slack-specific fields.
 - **Reconnecting** a connected channel (by another team admin) takes over as
@@ -1271,6 +1276,10 @@ connectors. The protections are:
 - **The stored channel name isn't refreshed** from the new answer.
 - **Cold turns each ask.** Two turns in one channel with nothing kept each ask
   Slack.
+- **A channel shared with another company mostly stays connected.** Its events
+  are dropped before any turn (§1 rule 6), so it is never answered, but only a
+  turn already waiting when it was shared, or a mention while the share is
+  pending, reaches the check that disconnects it. Settings go on listing it.
 - **Slack's conversion, archive and share events aren't subscribed.** We learn
   at the next turn, not when it happens.
 

@@ -11,7 +11,11 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * `bindBotChannel`), but it can change after that: made private, archived,
  * or shared with another company. An `app_mention` carries no channel type
  * to notice that by, so the router asks Slack's `conversations.info` again,
- * with the install's own bot token, when each channel turn starts.
+ * with the install's own bot token, when each channel turn starts. (Slack
+ * does flag an event in a channel shared with another company, and
+ * admission.ts `screenEvent` drops it before any turn, so a shared channel
+ * reaches this check only through a turn already waiting when it was shared,
+ * or a mention while its share is still pending.)
  *
  * What Slack's untrusted answer becomes:
  *   - allowed: an answer about this channel that channels.ts `connectable`

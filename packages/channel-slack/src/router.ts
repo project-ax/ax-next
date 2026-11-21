@@ -92,7 +92,9 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      tells its sender, privately and once (`channelNoLongerAllowed`); every
  *      turn it stops is dropped (`slack_turns_dropped`,
  *      `channel-not-allowed`). Slack not answering is no turn either: "try
- *      again", and the binding stays.
+ *      again", and the binding stays. A Slack Connect channel seldom gets
+ *      this far: step 1 drops its events, so only a turn that was waiting
+ *      when it was shared, or one while its share is still pending, finds it.
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads, with the channel's memory switch as it is NOW
  *      (channel-store.ts `recordThread`): a turn that starts while the switch
@@ -629,11 +631,12 @@ async function routeMention(
     }
     // 8b. The channel itself, as Slack describes it now (TASK-1184). It was
     // checked when it was bound, and it may have been made private, archived
-    // or shared with another company since: a mention doesn't say. Asked
-    // last, so a turn the reads above drop costs no Slack call. A definitive
-    // refusal disconnects the channel, as a team admin's Disconnect would (the
-    // switch kept for the agent and channel stays), so the agent's settings
-    // stop listing it and memory stops learning from its threads. Slack not
+    // or shared with another company since: a mention doesn't say, though
+    // step 1 drops one Slack flags as Slack Connect. Asked last, so a turn
+    // the reads above drop costs no Slack call. A definitive refusal
+    // disconnects the channel, as a team admin's Disconnect would (the switch
+    // kept for the agent and channel stays), so the agent's settings stop
+    // listing it and memory stops learning from its threads. Slack not
     // answering says nothing about the channel: no turn, and the binding stays.
     const channel = await d.channelCheck.check(installId, botToken, m.channel);
     if (channel.kind === 'unknown') {
