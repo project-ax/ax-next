@@ -17,7 +17,7 @@ describe('defaultBotName (the handle form of the branding name)', () => {
     expect(defaultBotName(null)).toBe('ax');
   });
 
-  it('a 40-letter name is cut to 21 characters, the handle cap', () => {
+  it('a 40-letter name is cut to 21 characters, the legacy username cap', () => {
     expect(BOT_HANDLE_MAX).toBe(21);
     const out = defaultBotName('A'.repeat(40));
     expect(out).toBe('a'.repeat(21));
@@ -38,9 +38,9 @@ describe('defaultBotName (the handle form of the branding name)', () => {
     ['Every One', 'every-one'],
     ['every_one', 'every_one'],
     ['Chan.Nel', 'chan.nel'],
-  ])('%j has the handle form %j, whose Slack handle is reserved → ax', (name, handleForm) => {
-    // Slack's handle drops `-` (spike: `ax-spike-a` → `axspikea`), so these
-    // would all derive a reserved @handle.
+  ])('%j has the handle form %j, whose Slack username is reserved → ax', (name, handleForm) => {
+    // Slack's legacy username drops `-` (spike: `ax-spike-a` → `axspikea`), so
+    // these would all derive a reserved username.
     expect(defaultBotName(name)).toBe('ax');
     expect(checkBotName(handleForm)).toEqual({ ok: false, reason: 'reserved' });
   });

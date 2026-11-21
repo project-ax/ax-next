@@ -11,7 +11,11 @@
 
 /** Slack's cap on the app name (`display_information.name`). */
 export const BOT_NAME_MAX = 35;
-/** Slack cuts the bot's @handle, derived from its display name, to this many characters. */
+/**
+ * Slack cuts the bot's legacy username (users.info `name`), derived from its
+ * display name, to this many characters. The @handle people type is the
+ * display name itself (bots.ts `handleFrom`).
+ */
 export const BOT_HANDLE_MAX = 21;
 
 // ── The bot's picture ───────────────────────────────────────────────────────
