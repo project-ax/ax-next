@@ -6,7 +6,7 @@
 
 - **Source:** `main` at `8f0aeb7f0` (every phase 2 card: TASK-1167..1173, 1175, 1179, 1180, 1182). Kind host rebuilt with `make image`.
 - **Public address:** a cloudflared quick tunnel to a port-forward of the host's **public-http port 9090**, with `AX_PUBLIC_BASE_URL` set to it. (The service's port 80 is IPC, not the web UI. Forwarding it gives `SESSION_INVALID` on every page.)
-- **Sign-in:** Google sign-in isn't configured on kind (`Provider not found: google`), so each person got an 8-hour session from `scripts/kind-login.sh`, pasted as the `ax_auth_session` cookie for the tunnel domain. The second person was `test@canopyworks.com`, created with a verified email so they'd get bot-request DMs.
+- **Sign-in:** Google sign-in isn't configured on kind (`Provider not found: google`), so each person got an 8-hour session minted by a local, untracked kind-login helper, pasted as the `ax_auth_session` cookie for the tunnel domain. The second person was `test@canopyworks.com`, created with a verified email so they'd get bot-request DMs.
 - **Slack:** the Canopy workspace. Vinay and test@ generated and revoked every configuration token themselves and pasted them straight into AX. No token passed through the agent.
 - **Evidence:** the host's `slack_*` log lines and the `channel_slack_v1_*` rows. No token values were logged or read.
 - **Test fixtures on kind:** team "Walk Team" with agents Fern and Moss. Team roles and test@'s AX account were changed in the database to set up Claim and Rebuild (below).
@@ -43,7 +43,7 @@
 - **Not filed:** the first click on Delete for Fern showed an error and the second succeeded. The host logged one delete, which took about 5 seconds to purge (20 sessions, 19 conversations), so the first click probably stopped waiting while the server finished. The error text wasn't kept.
 - **Walk mechanics, not product:**
   - An Approve link clicked in Slack opens a browser window that may not hold the walk's hand-made session cookie, so it lands on sign-in. On a real deployment the person just signs in.
-  - Only AX admins with a verified email get bot-request DMs (TASK-1170). On kind, `kind-login.sh` creates users as verified.
+  - Only AX admins with a verified email get bot-request DMs (TASK-1170). On kind, the local kind-login helper creates users as verified.
 - **What Slack did that §7 doesn't already say:**
   - A bot's legacy `name` drops the hyphen from the requested name and does not follow a rename. The display name does both.
   - `conversations.info` on a private channel with the dedicated bot's channels-only scopes answers `missing_scope`, which AX treats as a refusal. That's correct, and it fails closed.
