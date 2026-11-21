@@ -409,18 +409,48 @@ describe('createChannelCheck', () => {
     turns ask: the private answer lands first, then the public one that left
     before it. That public answer is its own turn's, and is not kept.
   */
-  it('a public answer still on its way when a private one for that channel lands is not kept; the private one is', async () => {
+  it('a public answer still on its way when a private one for that channel lands is not kept, and its turn is told private (private wins)', async () => {
     const { asks, check } = held();
     const first = check.check(INSTALL, TOKEN, CH);
     const second = check.check(INSTALL, TOKEN, CH);
     asks[1]!.answer(live(CH, { isPrivate: true }));
     expect(await second).toEqual(PRIVATE);
     asks[0]!.answer(live(CH));
-    expect(await first).toEqual(PUBLIC);
+    // It may be from before the private one: told public, its turn would write public over it.
+    expect(await first).toEqual(PRIVATE);
 
     // What is kept is the private answer: no third ask.
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PRIVATE);
     expect(asks).toHaveLength(2);
+  });
+
+  /*
+    A binding another turn (on this replica or another) wrote private must
+    never be cleared by a public answer kept from before that write: with
+    `knownPrivate`, a kept public answer is not used, and Slack is asked.
+  */
+  it('knownPrivate: a kept public answer is not used; Slack is asked, and its answer kept', async () => {
+    let answer = live(CH);
+    const { calls, check } = setup(() => answer);
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
+    answer = live(CH, { isPrivate: true });
+    expect(await check.check(INSTALL, TOKEN, CH, { knownPrivate: true })).toEqual(PRIVATE);
+    expect(calls).toHaveLength(2);
+    // The private answer is kept now, and used either way.
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PRIVATE);
+    expect(await check.check(INSTALL, TOKEN, CH, { knownPrivate: true })).toEqual(PRIVATE);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('knownPrivate: a fresh public answer, asked after the caller read its binding, is public', async () => {
+    const { calls, check } = setup((c) => live(c));
+    expect(await check.check(INSTALL, TOKEN, CH, { knownPrivate: true })).toEqual(PUBLIC);
+    expect(await check.check(INSTALL, TOKEN, CH, { knownPrivate: true })).toEqual(PUBLIC);
+    // Asked each time: a kept public answer is never good enough for a binding that says private.
+    expect(calls).toHaveLength(2);
+    // Without it, the kept answer serves.
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual(PUBLIC);
+    expect(calls).toHaveLength(2);
   });
 
   it('a private answer still on its way when a refusal lands is not kept either', async () => {

@@ -110,11 +110,14 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      again. Last, Slack itself is asked about the channel, with the bot's
  *      token (channel-check.ts, which keeps an answer that allows it for a
  *      minute), since a channel can change after it is bound (TASK-1184). A
- *      channel it now says is private, archived or Slack Connect, or can't
- *      find, loses its binding (the memory switch kept for the agent and
+ *      channel it now says is archived or Slack Connect, or can't find, or
+ *      (to a bot Allowed before `groups:read`) can't read, loses its binding (the memory switch kept for the agent and
  *      channel stays). The one turn whose removal took it tells its sender,
  *      privately and once (`channelNoLongerAllowed`); every turn it stops is
- *      dropped (`slack_turns_dropped`, `channel-not-allowed`). Slack not
+ *      dropped (`slack_turns_dropped`, `channel-not-allowed`). A channel
+ *      it says is private runs its turn and is never remembered (TASK-1188):
+ *      the binding says private (written when it changed, and only a fresh
+ *      answer clears it), and the thread is recorded not remembered. Slack not
  *      answering is no turn either: "try again", and the binding stays. Nor
  *      is Slack saying the bot's own token can't read any public channel
  *      (code `token-scope`): the binding stays, and since no retry fixes
@@ -625,7 +628,9 @@ async function routeMention(
     // threads. Slack not answering says nothing about the channel: no turn,
     // and the binding stays. A channel made private (or public again) is
     // still answered in (TASK-1188, design §4b.3): see 8c.
-    const channelNow = await d.channelCheck.check(installId, botToken, m.channel);
+    // A binding that says private takes no kept public answer (channel-check.ts
+    // `knownPrivate`): only Slack asked after `now` was read may clear it.
+    const channelNow = await d.channelCheck.check(installId, botToken, m.channel, { knownPrivate: now.isPrivate });
     // Only `allowed` goes on to the turn; every other kind returns, and a kind
     // added later fails to compile (the `never` below) rather than run a turn.
     if (channelNow.kind !== 'allowed') {
@@ -673,7 +678,11 @@ async function routeMention(
     // are remembered as the switch says; a thread a private turn ran in
     // stays out. Written before the thread is recorded, and only when it
     // changed. A write that fails runs no turn: a private channel whose
-    // binding still says public would let a pass learn from it.
+    // binding still says public would let a pass learn from it. Public is
+    // written over private only from an answer asked after `now` was read
+    // (the check's `knownPrivate`), and a public answer a private one
+    // overtook is told private (private wins), so a stale public answer,
+    // kept on this replica or another, never clears a newer private one.
     if (now.isPrivate !== channelNow.isPrivate) {
       try {
         await d.channels.setPrivate(installId, m.channel, agentId, channelNow.isPrivate);

@@ -228,9 +228,11 @@ function parseBotChannels(value: unknown): BotChannelRow[] | undefined | null {
   const rows: BotChannelRow[] = [];
   for (const c of value) {
     if (!isRecord(c)) return null;
-    const { channelId, name, remember } = c;
+    const { channelId, name, remember, isPrivate } = c;
     if (typeof channelId !== 'string' || typeof name !== 'string' || typeof remember !== 'boolean') return null;
-    rows.push({ channelId, name, remember });
+    // Absent: an older host, which binds public channels only. Anything but a boolean is a bad answer.
+    if (isPrivate !== undefined && typeof isPrivate !== 'boolean') return null;
+    rows.push({ channelId, name, remember, ...(isPrivate !== undefined ? { isPrivate } : {}) });
   }
   return rows;
 }

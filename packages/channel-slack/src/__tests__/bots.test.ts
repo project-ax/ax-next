@@ -63,7 +63,7 @@ const ORIGIN = 'https://ax.example';
 const HTTP_ORIGIN = 'http://ax.internal:8080';
 /** Where Slack sends the approver back after Allow: the bot's own callback, never Admin › Slack's. */
 const BOT_CALLBACK = 'https://ax.example/slack/bots/oauth/callback';
-/** The six scopes a team agent's own bot asks for, as its install link carries them. */
+/** The seven scopes a team agent's own bot asks for, as its install link carries them (groups:read since TASK-1188). */
 const BOT_SCOPES_ASKED = 'app_mentions:read,chat:write,reactions:write,users:read,users:read.email,channels:read,groups:read';
 
 /** The shared app (Admin › Slack), connected by Ada with her own configuration token. */
@@ -603,7 +603,7 @@ describe('request', () => {
       botHandle: null,
     });
 
-    // Slack's authorize page, for the six scopes, back to the bot's own callback, with a state bound to Grace.
+    // Slack's authorize page, for the seven scopes, back to the bot's own callback, with a state bound to Grace.
     const link = linkOf(reply);
     expect(`${link.origin}${link.pathname}`).toBe('https://slack.com/oauth/v2/authorize');
     const state = stateOf(reply);

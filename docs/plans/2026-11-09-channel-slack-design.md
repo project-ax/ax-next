@@ -364,6 +364,9 @@ retired three of them, marked below.)
   nobody has to invite it (TASK-1094). *Retired by §4b.1 (TASK-1186).*
 - `commands`: the `/ax` slash command (TASK-1094). *Retired by §4b.1
   (TASK-1186).*
+- `groups:read` (team bot only, TASK-1188): read a private channel's flags,
+  so the bot answers there and never remembers it (§4b.3). The shared app
+  doesn't ask for it.
 
 Events stay `app_mention` and `message.im`; the App Home messages tab is on
 (without it nobody can DM the app). Interactivity is on (TASK-1095): the
@@ -962,10 +965,15 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
 - `connectable()` (`channels.ts`) no longer tests `is_private`. It still needs
   Slack's `is_channel`, so a group DM, and a private group from before March
   2021 (Slack still describes those with `is_channel` false), stay refused.
-- The turn-start check (`channel-check.ts`) answers `allowed` with `isPrivate`.
+- The turn-start check (`channel-check.ts`) answers `allowed` with `isPrivate`
+  (only Slack's literal `false` is public: absent or unreadable is private).
   The binding stores it (`channel_slack_v1_channels.is_private`): written at
   the bind, and again by any turn whose check finds it changed, before the
-  thread is recorded. The thread record ORs privacy into its sticky
+  thread is recorded. **Private wins:** a binding that says private never
+  takes a kept public answer (the check's `knownPrivate`, so only Slack asked
+  after the binding was read can clear it, whichever replica kept the old
+  answer), and a public answer a private one overtook in flight is reported
+  private to its own turn. The thread record ORs privacy into its sticky
   `not_remembered`, the same flag a switch that is off sets.
 - The capture veto refuses a thread whose binding says private now, or whose
   turn ran while it was private (`channel-not-remembered`, the switch's
@@ -990,6 +998,11 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
   public by the time the bot binds it again, it starts off: the safe side.
   Whether `conversations.info` needs exactly `groups:read` for a private
   channel is from Slack's docs; the TASK-1189 walk measures it.
+  **Outsiders' turns in a private channel** run as the bot's requester, in a
+  conversation the requester owns (as in any channel), so a team admin who
+  isn't in the private channel can read those turns in the web app. Accepted
+  for now and filed as a follow-up for a product decision (answer only
+  members there, or hide those conversations).
 
 ### 4. Permission, in one sentence
 

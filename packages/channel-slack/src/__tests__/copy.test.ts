@@ -383,9 +383,10 @@ describe('COPY: what a channel mention can get privately, in place of its turn o
 
   it('a channel Slack no longer allows: says it stopped and why, in a line of its own', () => {
     expect(COPY.channelNoLongerAllowed).toMatch(/stopped answering/);
-    expect(COPY.channelNoLongerAllowed).toMatch(/private/);
     expect(COPY.channelNoLongerAllowed).toMatch(/another organization/);
-    expect(COPY.channelNoLongerAllowed).toMatch(/public channels/);
+    // A private channel is answered in now (TASK-1188): the line never says the bot answers public channels only.
+    expect(COPY.channelNoLongerAllowed).not.toMatch(/public channels/);
+    expect(COPY.channelNoLongerAllowed).toMatch(/set me up again/);
   });
 
   it("an outsider whose bot's requester can no longer vouch for them is told politely, and told nothing else (TASK-1167)", () => {

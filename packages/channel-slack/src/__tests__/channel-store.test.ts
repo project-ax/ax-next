@@ -1253,6 +1253,20 @@ describe('a private channel (TASK-1188)', () => {
     expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);
   });
 
+  it("a caller that doesn't say whether the channel is private is recorded not remembered: anything but false fails closed", async () => {
+    await connect();
+    const unsaid = {
+      installId: INSTALL,
+      channelId: SUPPORT,
+      agentId: AGENT,
+      conversationId: CONV,
+      mode: 'attended',
+      speakerNames: MEL,
+    } as unknown as Parameters<ChannelStore['recordThread']>[0];
+    expect(await channels.recordThread(unsaid)).toBe('recorded');
+    expect((await channels.getThread(CONV))?.notRemembered).toBe(true);
+  });
+
   it('markNotRemembered marks a thread for good, and a conversation that is no thread is left alone', async () => {
     await connect();
     expect(await record(CONV)).toBe('recorded');

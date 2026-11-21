@@ -429,7 +429,9 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         // 8b. The channel as Slack describes it now (TASK-1184's check, TASK-1188).
         let channelNow: ChannelCheckResult;
         try {
-          channelNow = await bounded(() => d.channelCheck.check(installId, token, prompt.channel));
+          // A binding that says private takes no kept public answer: as at a turn's start (router.ts 8c).
+          const knownPrivate = binding.isPrivate;
+          channelNow = await bounded(() => d.channelCheck.check(installId, token, prompt.channel, { knownPrivate }));
         } catch (err) {
           await failed('channel-check', err);
           return;
@@ -438,21 +440,35 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
           await close('channel-not-allowed');
           return;
         }
+        if (channelNow.kind === 'token-scope') {
+          // The bot's own token reads no channel: no retry fixes that, a team
+          // admin must (the router's reading, step 8b). The prompt stays open
+          // for when they have.
+          letGo('release');
+          log('error', 'slack_prompt_failed', { kind, stage: 'channel-check', code: 'token-scope' });
+          await tell(COPY.botUnavailable, prompt.threadTs, kind);
+          return;
+        }
         if (channelNow.kind !== 'allowed') {
-          const code = channelNow.kind === 'token-scope' ? 'token-scope' : channelNow.code;
-          await failed('channel-check', Object.assign(new Error(`channel check: ${code}`), { code }));
+          await failed('channel-check', Object.assign(new Error(`channel check: ${channelNow.code}`), { code: channelNow.code }));
           return;
         }
         // Private now: memory stays out of this thread for good, and of the
         // channel while it stays private, before the answer runs on.
+        let stillBound = true;
         try {
           if (binding.isPrivate !== channelNow.isPrivate) {
             const isPrivate = channelNow.isPrivate;
-            await bounded(() => d.channels.setPrivate(installId, prompt.channel, prompt.agentId, isPrivate));
+            stillBound = await bounded(() => d.channels.setPrivate(installId, prompt.channel, prompt.agentId, isPrivate));
           }
           if (channelNow.isPrivate) await bounded(() => d.channels.markNotRemembered(prompt.conversationId));
         } catch (err) {
           await failed('channel-private', err);
+          return;
+        }
+        // The binding went between its read and the write: disconnected, as above.
+        if (!stillBound) {
+          await close('disconnected');
           return;
         }
       }

@@ -3652,6 +3652,67 @@ describe('createEventRouter: a private channel is answered in and never remember
     expect(await memoryAsks(w.channels.store, privateThread)).toEqual({ observer: NOT_REMEMBERED, note: NOT_REMEMBERED });
   });
 
+  /*
+    A stale public answer must never clear a newer private one (security
+    review, TASK-1188). Two ways one could arrive: a public answer kept on
+    this replica from before another replica wrote the binding private, and a
+    public answer a private one overtook while both were on their way.
+  */
+  it('a public answer kept from before another replica wrote the binding private is not used: the row stays private, the turn is not remembered', async () => {
+    let answer: SlackChannel = PUBLIC_SUPPORT;
+    const w = botWorld({ channelInfo: () => answer });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    // This replica keeps the public answer for a minute. Another replica saw the channel go private and wrote it.
+    answer = PRIVATE_SUPPORT;
+    expect(await w.channels.store.setPrivate(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, true)).toBe(true);
+
+    const later = '1763035301.000301';
+    await w.dispatch(OWN_BOT, botMention({ ts: later }));
+    await w.idle();
+
+    expect(w.invokes).toHaveLength(2);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.isPrivate).toBe(true);
+    expect(w.channels.threads.get(`conv:${botKey(later)}`)?.notRemembered).toBe(true);
+    const conversationId = `conv:${botKey(later)}`;
+    expect(await memoryAsks(w.channels.store, conversationId)).toEqual({ observer: NOT_REMEMBERED, note: NOT_REMEMBERED });
+  });
+
+  it('a public answer a private one overtook is told private: the row stays private, and neither turn is remembered', async () => {
+    // Bound private. Slack is asked twice at once: the first answer (public, from a moment when it was) lands last.
+    const first = deferred();
+    let asked = 0;
+    const w = botWorld({
+      channelInfo: async () => {
+        asked += 1;
+        if (asked === 1) {
+          await first.promise;
+          return PUBLIC_SUPPORT;
+        }
+        return PRIVATE_SUPPORT;
+      },
+    });
+    w.channels.rows.get(`${OWN_BOT_ID}/${SUPPORT}`)!.isPrivate = true;
+    // Alice's turn in her conversation's lane, Bob's in the channel's outsiders' lane: side by side.
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035301.000301' }));
+    for (let i = 0; i < 20 && w.invokes.length < 1; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    first.release();
+    await w.idle();
+
+    expect(asked).toBe(2);
+    expect(w.invokes).toHaveLength(2);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.isPrivate).toBe(true);
+    expect(w.channels.calls).not.toContain('setPrivate');
+    expect(w.threadWrites.map((t) => [t.mode, t.isPrivate, t.notRemembered])).toEqual(
+      expect.arrayContaining([
+        ['external', true, true],
+        ['attended', true, true],
+      ]),
+    );
+  });
+
   it("the privacy write fails: no turn, the sender is told to try again, logged by code only", async () => {
     const w = botWorld({ channelInfo: () => PRIVATE_SUPPORT, privateWriteFails: true });
     await w.dispatch(OWN_BOT, botMention());

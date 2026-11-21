@@ -66,7 +66,9 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * for them lands is not kept: it may describe the channel as it was before.
  * Private is the stricter allowed answer, so in the same way a public answer
  * still on its way when a private one lands is not kept (the private one
- * is). Its own turn still gets it, as every turn gets its own answer.
+ * is), and its own turn is told private instead (private wins): a turn
+ * that heard public would write public over the private one. Otherwise its
+ * own turn still gets it, as every turn gets its own answer.
  *
  * In-process and bounded (`max` channels, the oldest forgotten first), like
  * the event-id dedupe and the signing-secret cache; an install and channel
@@ -140,8 +142,15 @@ export function channelInfoFailure(err: unknown): ChannelInfoFailure {
 }
 
 export interface ChannelCheck {
-  /** Never rejects. Asks Slack only when no allowed answer younger than ttlMs is kept. */
-  check(installId: string, botToken: string, channelId: string): Promise<ChannelCheckResult>;
+  /**
+   * Never rejects. Asks Slack only when no allowed answer younger than ttlMs
+   * is kept. `knownPrivate`: the caller's binding says private, so a kept
+   * public answer is not used (it may be older than the write that made the
+   * binding private, on this replica or another): Slack is asked again, and
+   * only an answer asked after the caller read its binding can say public.
+   * A kept private answer is used as ever.
+   */
+  check(installId: string, botToken: string, channelId: string, opts?: { knownPrivate?: boolean }): Promise<ChannelCheckResult>;
 }
 
 /** Why `connectable` refused a channel: the first of its tests that failed, in its order. */
@@ -203,12 +212,14 @@ export function createChannelCheck(o: {
   };
 
   return {
-    async check(installId, botToken, channelId) {
+    async check(installId, botToken, channelId, opts) {
       // `/` is in neither an install id (INSTALL_ID_RE) nor a Slack id (SLACK_ID_RE).
       const key = `${installId}/${channelId}`;
       const kept = allowedUntil.get(key);
-      if (kept !== undefined && now() < kept.until) return { kind: 'allowed', isPrivate: kept.isPrivate };
-      allowedUntil.delete(key);
+      if (kept !== undefined && now() < kept.until && (kept.isPrivate || opts?.knownPrivate !== true)) {
+        return { kind: 'allowed', isPrivate: kept.isPrivate };
+      }
+      if (kept === undefined || now() >= kept.until) allowedUntil.delete(key);
 
       const flight = asking.get(key) ?? { inFlight: 0, refusals: 0, privates: 0 };
       asking.set(key, flight);
@@ -228,6 +239,11 @@ export function createChannelCheck(o: {
             keep(key, true);
           } else if (flight.privates === privatesBefore) {
             keep(key, false);
+          } else {
+            // Private wins: a private answer landed while this one was on
+            // its way, so this one may describe the channel as it was
+            // before. Its turn is told private, and so writes no public.
+            return { kind: 'allowed', isPrivate: true };
           }
         }
         return result;

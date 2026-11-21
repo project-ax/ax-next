@@ -250,6 +250,8 @@ interface Run {
   prompt: Prompt;
   action: PromptAction;
   extra: { install: InstallRow; botToken: string; messageTs: string | null };
+  /** The prompt's binding and thread as they stood when the answer ran (TASK-1188). */
+  seen: { bindingPrivate: boolean | undefined; threadNotRemembered: boolean | undefined };
 }
 
 type Fault = 'fails' | 'hang';
@@ -282,6 +284,8 @@ interface WorldOptions {
   channelNow?: ChannelCheckResult | 'hang';
   /** The binding's privacy write fails. */
   privateWrite?: Fault;
+  /** Runs just before the binding's privacy write (the binding removed meanwhile, say). */
+  beforePrivateWrite?: (store: ChannelStore) => Promise<void>;
 }
 
 const fault = (plugin: string) =>
@@ -352,6 +356,7 @@ async function world(o: WorldOptions = {}) {
     async setPrivate(installId, channelId, agentId, isPrivate) {
       if (o.privateWrite === 'hang') return never();
       if (o.privateWrite === 'fails') throw new Error(`database down writing ${channelId}`);
+      await o.beforePrivateWrite?.(channels.store);
       return channels.store.setPrivate(installId, channelId, agentId, isPrivate);
     },
     async markNotRemembered(conversationId) {
@@ -360,9 +365,11 @@ async function world(o: WorldOptions = {}) {
   };
   /** Every channel check the gate asked: install, token, channel. */
   const channelChecks: Array<[string, string, string]> = [];
+  const channelCheckOpts: unknown[] = [];
   const channelCheck = {
-    async check(installId: string, botToken: string, channelId: string): Promise<ChannelCheckResult> {
+    async check(installId: string, botToken: string, channelId: string, opts?: unknown): Promise<ChannelCheckResult> {
       channelChecks.push([installId, botToken, channelId]);
+      channelCheckOpts.push(opts);
       if (o.channelNow === 'hang') return never();
       return o.channelNow ?? { kind: 'allowed', isPrivate: false };
     },
@@ -398,7 +405,15 @@ async function world(o: WorldOptions = {}) {
 
   const runs: Run[] = [];
   const decision: SubjectAnswer = async (ctx, prompt, action, extra) => {
-    runs.push({ ctx, prompt, action, extra });
+    const binding = channels.rows.get(`${prompt.installId}/${prompt.channel}`);
+    const thread = channels.threads.get(prompt.conversationId);
+    runs.push({
+      ctx,
+      prompt,
+      action,
+      extra,
+      seen: { bindingPrivate: binding?.isPrivate, threadNotRemembered: thread?.notRemembered },
+    });
     if (o.answer !== undefined) return o.answer(runs.length);
     return { line: action === 'deny' ? COPY.decisionDenied : COPY.decisionAllowed, settle: true };
   };
@@ -424,6 +439,7 @@ async function world(o: WorldOptions = {}) {
     resolved,
     bindingReads,
     channelChecks,
+    channelCheckOpts,
     vault,
     agents,
     channels,
@@ -909,9 +925,10 @@ describe('the click gate: each step refuses on its own (each case valid on every
   });
 
   it.each([
-    ['Slack could not say', { kind: 'unknown', code: 'ratelimited' } as const, 'ratelimited'],
-    ["the bot's token reads no channel", { kind: 'token-scope' } as const, 'token-scope'],
-  ])("step 8: %s: 'try again', privately; the prompt stays open, and nothing runs", async (_name, channelNow, code) => {
+    ['Slack could not say: try again', { kind: 'unknown', code: 'ratelimited' } as const, 'ratelimited', COPY.promptFailed],
+    // No retry fixes the bot's own token: a team admin must (the router's reading).
+    ["the bot's token reads no channel: a team admin must look", { kind: 'token-scope' } as const, 'token-scope', COPY.botUnavailable],
+  ])("step 8: %s, privately; the prompt stays open, and nothing runs", async (_name, channelNow, code, line) => {
     const w = await world({ channelNow });
     const prompt = w.open(MEL_SUPPORT);
 
@@ -922,6 +939,28 @@ describe('the click gate: each step refuses on its own (each case valid on every
     expect(w.logged('slack_prompt_failed')).toEqual([
       { installId: INSTALL_ID, kind: 'decision', stage: 'channel-check', code },
     ]);
+    const told = w.slack.calls.filter((c) => c.method === 'postEphemeral').map((c) => c.args['text']);
+    expect(told).toEqual([line]);
+  });
+
+  it('step 8: a binding that says private asks the check not to take a kept public answer', async () => {
+    const w = await world({ channelNow: { kind: 'allowed', isPrivate: true } });
+    await w.channels.store.setPrivate(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, true);
+    const prompt = w.open(MEL_SUPPORT);
+    await w.onClick(INSTALL, w.clickOn(prompt));
+    expect(w.channelCheckOpts).toEqual([{ knownPrivate: true }]);
+  });
+
+  it('step 8: the binding goes between its read and the privacy write: the prompt closes as disconnected, and nothing runs', async () => {
+    const w = await world({
+      channelNow: { kind: 'allowed', isPrivate: true },
+      beforePrivateWrite: (store) => store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id).then(() => undefined),
+    });
+    const prompt = w.open(MEL_SUPPORT);
+    await w.onClick(INSTALL, w.clickOn(prompt));
+    expect(w.runs).toEqual([]);
+    expect(w.state(prompt)).toBe('gone');
+    expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).toEqual(['disconnected']);
   });
 
   it('step 8: #support was made private since the turn: the answer runs, and memory stays out of the thread for good', async () => {
@@ -942,10 +981,8 @@ describe('the click gate: each step refuses on its own (each case valid on every
     await w.onClick(INSTALL, w.clickOn(prompt));
 
     expect(w.runs.map((r) => r.action)).toEqual(['allow']);
-    expect(w.channels.row(INSTALL_ID, SUPPORT)?.isPrivate).toBe(true);
-    expect(w.channels.threads.get(MEL_SUPPORT.conversationId)?.notRemembered).toBe(true);
-    // Both written before the answer ran.
-    expect(w.channels.calls.indexOf('markNotRemembered')).toBeGreaterThan(w.channels.calls.indexOf('setPrivate'));
+    // Both written before the answer ran: as the answer saw them when it was called.
+    expect(w.runs[0]!.seen).toEqual({ bindingPrivate: true, threadNotRemembered: true });
     expect(w.state(prompt)).toBe('gone');
   });
 
