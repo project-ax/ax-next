@@ -66,14 +66,16 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * for them lands is not kept: it may describe the channel as it was before.
  * Private is the stricter allowed answer, so in the same way a public answer
  * still on its way when a private one lands is not kept (the private one
- * is), and its own turn is told private instead (private wins): a turn
+ * is, unless a refusal overtook it), and its own turn is told private instead (private wins): a turn
  * that heard public would write public over the private one; this holds
  * whether or not a refusal also landed. Otherwise its own turn still gets
  * it, as every turn gets its own answer. What this can't see: a public
- * answer that lands BEFORE a private one asked later (the channel made
- * public and private again within one ask, or Slack answering from stale
- * data). That turn writes public, and the binding says so until the next
- * turn's check (the design's §4b.3 known gaps).
+ * answer that lands BEFORE a private one (Slack answering from stale data,
+ * or the channel made public and private again while turns that read the
+ * binding as private were in flight: they write nothing, as nothing changed
+ * for them). That turn writes public, and the binding says so until a turn
+ * that read it public hears private, which may wait up to `ttlMs` on a
+ * replica that kept the public answer (the design's §4b.3 known gaps).
  *
  * In-process and bounded (`max` channels, the oldest forgotten first), like
  * the event-id dedupe and the signing-secret cache; an install and channel
@@ -224,8 +226,8 @@ export function createChannelCheck(o: {
       if (kept !== undefined && now() < kept.until && (kept.isPrivate || opts?.knownPrivate !== true)) {
         return { kind: 'allowed', isPrivate: kept.isPrivate };
       }
-      // Expired, or a public answer a private binding won't take: the answer
-      // this ask brings replaces it either way.
+      // Expired, or a public answer a private binding won't take: forgotten
+      // either way; what this ask brings, if kept, takes its place.
       allowedUntil.delete(key);
 
       const flight = asking.get(key) ?? { inFlight: 0, refusals: 0, privates: 0 };

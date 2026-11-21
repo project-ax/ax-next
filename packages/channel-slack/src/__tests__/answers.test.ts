@@ -946,7 +946,7 @@ describe('the click gate: each step refuses on its own (each case valid on every
   it.each([
     ['private', true],
     ['public', false],
-  ] as const)("step 8: the check is told the binding's privacy (%s), so only a private one refuses a kept public answer", async (_n, isPrivate) => {
+  ] as const)("step 8: the check is told the binding's privacy (%s): channel-check.ts decides what a private one refuses", async (_n, isPrivate) => {
     const w = await world({ channelNow: { kind: 'allowed', isPrivate } });
     await w.channels.store.setPrivate(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, isPrivate);
     const prompt = w.open(MEL_SUPPORT);

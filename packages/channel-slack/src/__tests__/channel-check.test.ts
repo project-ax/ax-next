@@ -442,6 +442,20 @@ describe('createChannelCheck', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('knownPrivate forgets the kept public answer it skips: a caller without it asks too, and private wins', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    asks[0]!.answer(live(CH));
+    expect(await first).toEqual(PUBLIC);
+    const second = check.check(INSTALL, TOKEN, CH, { knownPrivate: true });
+    const third = check.check(INSTALL, TOKEN, CH);
+    expect(asks).toHaveLength(3);
+    asks[1]!.answer(live(CH, { isPrivate: true }));
+    expect(await second).toEqual(PRIVATE);
+    asks[2]!.answer(live(CH));
+    expect(await third).toEqual(PRIVATE);
+  });
+
   it('knownPrivate: a fresh public answer, asked after the caller read its binding, is public', async () => {
     const { calls, check } = setup((c) => live(c));
     expect(await check.check(INSTALL, TOKEN, CH, { knownPrivate: true })).toEqual(PUBLIC);

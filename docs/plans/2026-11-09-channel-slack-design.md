@@ -974,10 +974,14 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
   after the binding was read can clear it, whichever replica kept the old
   answer), and a public answer a private one overtook in flight is reported
   private to its own turn, even when a refusal also landed. One order it
-  can't see: a public answer landing before a private one asked after it (the
-  channel made public and private again within one Slack call, or Slack
-  answering from stale data). That turn writes public, until the next turn's
-  check sets it private again. Accepted. The thread record ORs privacy into its sticky
+  can't see: a public answer landing before a private one (Slack answering
+  from stale data, or the channel made public and private again while turns
+  that read the binding as private were in flight; those write nothing). That
+  turn writes public, and the binding stays public until a turn that read it
+  public hears private, up to a minute on a replica that kept the public
+  answer. The same kind of window as TASK-1184's minute, and part of the
+  human follow-up below. (Writing private on every private turn, not only
+  when it changed, would close most of it at one no-op write per turn.) The thread record ORs privacy into its sticky
   `not_remembered`, the same flag a switch that is off sets.
 - The capture veto refuses a thread whose binding says private now, or whose
   turn ran while it was private (`channel-not-remembered`, the switch's
