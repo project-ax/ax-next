@@ -50,8 +50,9 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * it, so whichever comes second sees what the other wrote. Any future
  * writer that flips a binding's `remember` takes it too. A fresh connect on
  * the shared app (`upsert`, channels.ts) is the one writer without it, on
- * purpose: it starts on, which is not a flip, and it is refused once the
- * agent's own bot answers in that channel.
+ * purpose: a new binding starts on, which is not a flip; a reconnect never
+ * writes `remember`; and a connect is refused once the agent's own bot is
+ * live (channels.ts `liveOwnBot`).
  */
 export interface ChannelBinding {
   installId: string;
@@ -222,11 +223,12 @@ const SWITCHES = 'channel_slack_v1_memory_switches';
  * its first statement, this one, before the wait, so both transactions that
  * take it set READ COMMITTED themselves rather than trust the server's
  * default. Transaction-scoped, never session-scoped: commit or rollback
- * releases it, so a pooled connection never keeps it. The seed is this package's: routines use 1842713x,
- * tool-policy 1842714x, decisions 1842715x, channel-slack 18427161. The key
- * is JSON, so no two (agent, channel) pairs spell the same text; two whose
- * hashes collide only wait for each other. Outside a transaction it would
- * be released as soon as it was taken, so it takes only a transaction.
+ * releases it, so a pooled connection never keeps it. The seed is this
+ * package's: routines use 1842713x, tool-policy 1842714x, decisions
+ * 1842715x, channel-slack 18427161. The key is JSON, so no two (agent,
+ * channel) pairs spell the same text; two whose hashes collide only wait
+ * for each other. Outside a transaction it would be released as soon as
+ * it was taken, so it takes only a transaction.
  */
 async function lockSwitch(trx: Transaction<ChannelSlackDatabase>, agentId: string, channelId: string): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([agentId, channelId])}, 18427161))`.execute(trx);

@@ -672,6 +672,48 @@ describe("a team agent's own bot's first bind (bindBot)", () => {
     // Not a flip: the bind keeps nothing.
     expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(kept);
   });
+
+  it("reads a flip that ends while it waits for the switch lock, whatever the server's default isolation", async () => {
+    // Under REPEATABLE READ a transaction's one snapshot is taken by its first
+    // statement, the lock itself, before the wait: a bind that didn't ask for
+    // READ COMMITTED would bind with the switch from before the flip.
+    await connect();
+    const repeatable = new pg.Pool({ connectionString: container.getConnectionUri(), max: 2 });
+    repeatable.on('connect', (client) => {
+      void client.query('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    });
+    const onRepeatable = new Kysely<ChannelSlackDatabase>({ dialect: new PostgresDialect({ pool: repeatable }) });
+    const holder = await pool.connect();
+    let binding: Promise<boolean> | undefined;
+    try {
+      // The session default really is REPEATABLE READ here.
+      expect((await sql<{ level: string }>`SELECT current_setting('transaction_isolation') AS level`.execute(onRepeatable)).rows[0]?.level).toBe('repeatable read');
+      // A flip holding the switch lock, as setRemember does, not yet committed.
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 18427161))', [JSON.stringify([AGENT, SUPPORT])]);
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      binding = createChannelStore(onRepeatable).bindBot(
+        { installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB, channelName: 'support' },
+        INSTALL,
+      );
+      await vi.waitFor(async () => {
+        const r = await pool.query<{ pid: number }>(
+          'SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))',
+          [holderPid],
+        );
+        expect(r.rows).toHaveLength(1);
+      }, { timeout: 10_000 });
+      await holder.query('UPDATE channel_slack_v1_channels SET remember = false WHERE channel_id = $1 AND agent_id = $2', [SUPPORT, AGENT]);
+      await holder.query('COMMIT');
+      expect(await binding).toBe(false);
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      holder.release();
+      await binding?.catch(() => {});
+      await onRepeatable.destroy();
+    }
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
+  });
 });
 
 describe('lists', () => {
