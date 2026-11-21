@@ -435,25 +435,16 @@ describe("COPY: a bot request's DMs (TASK-1170)", () => {
     expect(COPY.botRequestDeclined('Sam')).toBe('Sam declined this.');
   });
 
-  it('the live line names the @handle, or the bot without one, and lists the channels that need it (TASK-1170)', () => {
-    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: 'supportbot' }, [], 0)).toBe(
+  it('the live line names the @handle, or the bot without one, and names no channel (TASK-1170)', () => {
+    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: 'supportbot' })).toBe(
       '@supportbot is live. Invite it to a channel with /invite @supportbot.',
     );
-    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: null }, [], 0)).toBe(
+    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: null })).toBe(
       'Support Bot is live. Invite it to a channel with /invite.',
     );
-    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: 'supportbot' }, ['a'], 0)).toBe(
-      '@supportbot is live. Invite it to a channel with /invite @supportbot. These channels still need it: #a. Run /invite in each one.',
-    );
-    expect(COPY.botLiveForOwner({ botName: 'B', handle: 'b' }, ['a', 'c', 'd'], 0)).toContain(
-      'still need it: #a, #c and #d. Run /invite',
-    );
-    expect(COPY.botLiveForOwner({ botName: 'B', handle: 'b' }, ['a', 'c', 'd'], 4)).toContain(
-      'still need it: #a, #c, #d and 4 more. Run /invite',
-    );
     // After the line's own `@`, a broadcast word gets its mark.
-    expect(COPY.botLiveForOwner({ botName: 'Ops', handle: 'here' }, [], 0)).toContain(`@${ZWSP}here is live`);
-    expect(COPY.botLiveForOwner({ botName: HOSTILE, handle: null }, [HOSTILE], 0).split(ZWSP).join('')).toContain(
+    expect(COPY.botLiveForOwner({ botName: 'Ops', handle: 'here' })).toContain(`@${ZWSP}here is live`);
+    expect(COPY.botLiveForOwner({ botName: HOSTILE, handle: null }).split(ZWSP).join('')).toContain(
       '&lt;!channel&gt; &amp; &lt;@U1&gt; @here is live',
     );
   });
@@ -491,14 +482,14 @@ describe("COPY: a bot's @handle is its display name, shown as people type it (TA
   // and every line that names the bot by its handle shows it after `@` unchanged.
   it.each(['fern-walk', 'Fern Walk'])('%s', (handle) => {
     const bot = { botName: 'Fern', handle };
-    expect(COPY.botLiveForOwner(bot, [], 0)).toBe(`@${handle} is live. Invite it to a channel with /invite @${handle}.`);
+    expect(COPY.botLiveForOwner(bot)).toBe(`@${handle} is live. Invite it to a channel with /invite @${handle}.`);
   });
 
   // New with display names: upper case and spaces. A display name that starts
   // with a broadcast word, in any case, still gets its mark after the line's `@`.
   it.each(['Here Now', 'channel x', 'EVERYONE-else'])('%s is marked after the @', (handle) => {
     const bot = { botName: 'Fern', handle };
-    const line = COPY.botLiveForOwner(bot, [], 0);
+    const line = COPY.botLiveForOwner(bot);
     expect(line).toContain(`@${ZWSP}${handle}`);
     expect(line).not.toContain(`@${handle}`);
   });

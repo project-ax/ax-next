@@ -3036,17 +3036,6 @@ describe('@ax/channel-slack plugin', () => {
       userId: ADMIN.id,
       expiresAt: new Date(NOW_MS + OAUTH_STATE_TTL_MS),
     });
-    // #support, which the agent had through the shared bot: its own bot isn't in it yet.
-    expect(
-      await createChannelStore(probe).upsert({
-        installId: INSTALL_ID,
-        channelId: SUPPORT_CH,
-        agentId: TEAM_AGENT.id,
-        channelName: 'support',
-        connectedByUserId: ADMIN.id,
-      }),
-    ).toBe('connected');
-
     const path = '/slack/bots/oauth/callback';
     const code = '7512345678901.7598765432109.0123456789abcdef';
     expect(await call('GET', path, request('GET', path, { as: ADMIN.id, query: { code, state } }))).toEqual({
@@ -3056,7 +3045,7 @@ describe('@ax/channel-slack plugin', () => {
     });
 
     // After the redirect, Meg hears it is live from the shared bot (the DM
-    // she has is with it), with its @handle and the channel that needs it.
+    // she has is with it), with its @handle.
     await vi.waitFor(() => expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
       timeout: 10_000,
     });
@@ -3064,7 +3053,7 @@ describe('@ax/channel-slack plugin', () => {
     expect(told.auth).toBe(`Bearer ${BOT_TOKEN}`);
     expect(told.body).toEqual({
       channel: MEG_SLACK,
-      text: COPY.botLiveForOwner({ botName: 'Support Helper', handle: 'supporthelper' }, ['support'], 0),
+      text: COPY.botLiveForOwner({ botName: 'Support Helper', handle: 'supporthelper' }),
       unfurl_links: false,
       unfurl_media: false,
     });

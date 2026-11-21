@@ -200,7 +200,6 @@ function slackChannel(id: string, name: string, over: Partial<SlackChannel> = {}
     isArchived: false,
     isExtShared: false,
     isPendingExtShared: false,
-    isMember: true,
     ...over,
   };
 }

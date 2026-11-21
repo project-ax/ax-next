@@ -151,8 +151,8 @@ export interface OAuthInstall {
  * A channel as `conversations.info` describes it, narrowed. `name` is
  * Slack's raw text: whoever shows or stores it cleans it first. The flags
  * that refuse a channel (`isPrivate`, `isArchived`, `isExtShared`,
- * `isPendingExtShared`) fail closed; `isChannel` and `isMember` are true
- * only when Slack says literally `true`.
+ * `isPendingExtShared`) fail closed; `isChannel` is true only when Slack says
+ * literally `true`.
  */
 export interface SlackChannel {
   id: string;
@@ -162,7 +162,6 @@ export interface SlackChannel {
   isArchived: boolean;
   isExtShared: boolean;
   isPendingExtShared: boolean;
-  isMember: boolean;
 }
 
 export interface SlackApi {
@@ -360,7 +359,6 @@ function channelOf(raw: unknown): SlackChannel | null {
     isArchived: flagged(raw, 'is_archived'),
     isExtShared: flagged(raw, 'is_ext_shared'),
     isPendingExtShared: flagged(raw, 'is_pending_ext_shared'),
-    isMember: raw['is_member'] === true,
   };
 }
 

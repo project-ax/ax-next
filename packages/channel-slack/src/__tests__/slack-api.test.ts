@@ -104,7 +104,6 @@ const GENERAL_OUT: SlackChannel = {
   isArchived: false,
   isExtShared: false,
   isPendingExtShared: false,
-  isMember: true,
 };
 
 /** Enough fields for every method's success path. */
@@ -877,11 +876,8 @@ describe('conversations', () => {
     }
   });
 
-  it('isChannel and isMember are true only when Slack says literally true', async () => {
-    const fields = [
-      ['is_channel', 'isChannel'],
-      ['is_member', 'isMember'],
-    ] as const;
+  it('isChannel is true only when Slack says literally true', async () => {
+    const fields = [['is_channel', 'isChannel']] as const;
     const cases: Array<[unknown, boolean]> = [
       [true, true],
       [undefined, false],

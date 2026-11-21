@@ -2,11 +2,9 @@ import { makeAgentContext, type AgentContext, type HookBus, type Logger } from '
 import { admitSender, findSenderUser, isTemporaryLookupFailure, isTemporarySlackCode } from './admission.js';
 import { botRequestBlocks, botRequestOutcomeBlocks } from './blocks.js';
 import { agentSeenBy } from './bot-requests.js';
-import type { ChannelStore } from './channel-store.js';
 import { COPY } from './copy.js';
 import type { Lifetime } from './lifetime.js';
 import {
-  BOT_LIVE_DM_CHANNELS_MAX,
   BOT_REQUEST_DMS_MAX,
   BOT_REQUEST_DM_RECORDS_MAX,
   BOT_REQUEST_DM_TTL_MS,
@@ -36,8 +34,7 @@ import type { InstallRow, InstallStore } from './store.js';
  * The requester hears from the shared bot only when someone else answered
  * (D9; the self path's own browser saw how it went): that their request was
  * declined (`closed`), or, at the approver's Allow (bot-callback.ts →
- * `live`), that the bot is live, how to invite it, and which of the agent's
- * shared-app channels now need it (at most BOT_LIVE_DM_CHANNELS_MAX named).
+ * `live`), that the bot is live and how to invite it.
  * An approve itself tells them nothing yet. The rule lives here only: the
  * callers call unconditionally.
  *
@@ -112,8 +109,6 @@ export interface BotRequestDmsDeps {
   /** The shared bot's calls: find a person by email, admit them (users.info), DM them, redraw a DM. No others. */
   api: Pick<SlackApi, 'usersLookupByEmail' | 'usersInfo' | 'postDirect' | 'updateMessage'>;
   installs: Pick<InstallStore, 'current' | 'get'>;
-  /** For `live`: the agent's channels on the shared app, and the ones its own bot has. */
-  channels: Pick<ChannelStore, 'listForAgent'>;
   secrets: Pick<SecretStore, 'get'>;
   /** Every DM runs tracked: shutdown drains it. */
   lifetime: Pick<Lifetime, 'track'>;
@@ -525,22 +520,6 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     await notifyOwner(key, ws, i.requesterUserId, 'declined', COPY.botDeclinedForOwner(i.botName));
   }
 
-  /**
-   * The agent's channels on the shared app that its own bot doesn't answer in
-   * yet, by their stored names, oldest first. A fault reads as none, logged:
-   * the bot being live is the news.
-   */
-  async function stillWaiting(key: LogKey, sharedInstallId: string, bot: InstallRow, agentId: string): Promise<string[]> {
-    try {
-      const answered = new Set((await d.channels.listForAgent(bot.installId, agentId)).map((b) => b.channelId));
-      const shared = await d.channels.listForAgent(sharedInstallId, agentId);
-      return shared.filter((b) => !answered.has(b.channelId)).map((b) => b.channelName);
-    } catch (err) {
-      failed(key, 'channels', logCode(err));
-      return [];
-    }
-  }
-
   async function announce(installId: string): Promise<void> {
     const key = { installId };
     const bot = await d.installs.get(installId);
@@ -551,13 +530,7 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     if (requester === null || requester === bot.connectedByUserId) return;
     const ws = await liveInstall(key, () => d.installs.current());
     if (ws === null) return;
-    const waiting = await stillWaiting(key, ws.installId, bot, bot.agentId);
-    const named = waiting.slice(0, BOT_LIVE_DM_CHANNELS_MAX);
-    const text = COPY.botLiveForOwner(
-      { botName: bot.botName, handle: bot.botHandle },
-      named,
-      waiting.length - named.length,
-    );
+    const text = COPY.botLiveForOwner({ botName: bot.botName, handle: bot.botHandle });
     await notifyOwner(key, ws, requester, 'live', text);
   }
 

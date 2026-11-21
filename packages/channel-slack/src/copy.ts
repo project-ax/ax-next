@@ -265,24 +265,15 @@ export const COPY = {
   botRequestRequesterFallback: 'A team admin',
   botRequestAdminFallback: 'An admin',
   /*
-    To the agent's owner when someone else approved the bot: it is live, how to
-    invite it, and the channels the shared app served that now need it
-    (`channels` is already capped by the caller; `more` is how many it left
-    out). The bot is named by its @handle, through `shown(handle, '@')` after
-    the line's own `@`, or by its name when it has none (the Allow kept no
-    handle: bots.ts `keepHandle`).
+    To the agent's owner when someone else approved the bot: it is live and
+    how to invite it. The bot is named by its @handle, through
+    `shown(handle, '@')` after the line's own `@`, or by its name when it has
+    none (the Allow kept no handle: bots.ts `keepHandle`).
   */
-  botLiveForOwner: (bot: { botName: string; handle: string | null }, channels: readonly string[], more: number) => {
-    const head =
-      bot.handle === null
-        ? `${shown(bot.botName)} is live. Invite it to a channel with /invite.`
-        : `@${shown(bot.handle, '@')} is live. Invite it to a channel with /invite @${shown(bot.handle, '@')}.`;
-    if (channels.length === 0) return head;
-    const items = channels.map((c) => `#${shown(c)}`);
-    if (more > 0) items.push(`${more} more`);
-    const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-    return `${head} These channels still need it: ${list}. Run /invite in each one.`;
-  },
+  botLiveForOwner: (bot: { botName: string; handle: string | null }) =>
+    bot.handle === null
+      ? `${shown(bot.botName)} is live. Invite it to a channel with /invite.`
+      : `@${shown(bot.handle, '@')} is live. Invite it to a channel with /invite @${shown(bot.handle, '@')}.`,
   botDeclinedForOwner: (botName: string) =>
     `An admin declined your request for @${shown(botName, '@')}. ` +
     "You can ask again from the agent's Slack settings in the web app.",

@@ -94,13 +94,6 @@ export const BOT_REQUEST_FANOUT_WINDOW_MS = 600_000;
 export const BOT_REQUEST_DM_RECORDS_MAX = 200;
 /** How long a request's DMs are remembered for their redraw: 7 days. */
 export const BOT_REQUEST_DM_TTL_MS = 604_800_000;
-/**
- * The most channels a requester's "your bot is live" DM names: the agent's
- * shared-app channels that now need the bot invited. The rest are counted
- * ("and 3 more"); the agent's Slack settings list every one.
- */
-export const BOT_LIVE_DM_CHANNELS_MAX = 10;
-
 // ── Events ingress ──────────────────────────────────────────────────────────
 
 /** How far a request's timestamp may be from our clock, either way. */

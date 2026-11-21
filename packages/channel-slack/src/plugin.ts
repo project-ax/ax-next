@@ -427,7 +427,6 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           bus,
           api,
           installs: store,
-          channels: channelStore,
           secrets,
           lifetime: life,
           publicOrigin,

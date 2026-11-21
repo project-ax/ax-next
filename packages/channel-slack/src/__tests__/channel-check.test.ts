@@ -36,7 +36,6 @@ function live(id: string, over: Partial<SlackChannel> = {}): SlackChannel {
     isArchived: false,
     isExtShared: false,
     isPendingExtShared: false,
-    isMember: true,
     ...over,
   };
 }
