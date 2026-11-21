@@ -340,7 +340,8 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 
 ### Scopes (smallest set)
 
-Nine bot scopes, each for one job:
+Six bot scopes, each for one job. (This list was nine before TASK-1186
+retired three of them, marked below.)
 
 - `app_mentions:read`: hear an @mention in a channel.
 - `chat:write`: reply in the thread. It also DMs people about a bot request
@@ -351,10 +352,12 @@ Nine bot scopes, each for one job:
   that email an AX account). They also find an AX admin, or a bot's requester,
   by email (TASK-1170). No new scope.
 - `channels:read`: look up a channel's flags and list the public ones to pick
-  from (TASK-1094).
+  from (TASK-1094). *Retired by §4b.1 (TASK-1186) for the shared app. Only a
+  team bot's manifest keeps it, for the turn-start channel check.*
 - `channels:join`: the bot joins the public channel itself at connect, so
-  nobody has to invite it (TASK-1094).
-- `commands`: the `/ax` slash command (TASK-1094).
+  nobody has to invite it (TASK-1094). *Retired by §4b.1 (TASK-1186).*
+- `commands`: the `/ax` slash command (TASK-1094). *Retired by §4b.1
+  (TASK-1186).*
 
 Events stay `app_mention` and `message.im`; the App Home messages tab is on
 (without it nobody can DM the app). Interactivity is on (TASK-1095): the
@@ -378,6 +381,11 @@ adds the last three. An existing install has none of them, so it reconnects:
 Disconnect, then Connect, in Admin › Slack.
 
 ### Connecting a channel to a team agent
+
+**Retired by §4b.1 (TASK-1186): the shared app no longer connects channels.**
+The picker, `/ax`, the connect routes and the shared app's channel turns are
+gone, and a team agent reaches a channel only through its own bot (§4). The
+text below stays as history.
 
 Two ways in, one stored record:
 
@@ -484,7 +492,8 @@ passes, the body's `api_app_id` must match the app stored for that install, or
 the request is dropped. The id stays an opaque one we choose, not Slack's app id
 or name, so the route still never handles a Slack id before the signature check.
 
-**Channels it was already in (decided 2026-11-18).** When an agent gets its own
+**Channels it was already in (decided 2026-11-18; retired by §4b.1, TASK-1186,
+which deletes the shared connections instead).** When an agent gets its own
 bot, any channel already connected to it through the shared app stays
 connected, but the agent answers only its new `@ada` handle from then on.
 Mentioning the shared `@ax` there no longer reaches it, although other agents
@@ -492,7 +501,7 @@ on the shared app in that channel carry on as before. So two bots can't both
 answer for one agent. The owner is told which channels changed, and that
 `/invite @ada` is needed in each one before `@ada` can hear anything there.
 
-**As built (TASK-1168).** The agent's settings list each of those channels
+**As built (TASK-1168; retired by §4b.1, TASK-1186).** The agent's settings list each of those channels
 under "These channels still need @ada: run /invite @ada in each one." A channel
 leaves the list once @ada has answered there: AX hears only mentions, and the
 first one binds the channel to the bot. The old shared connection stays,
@@ -570,7 +579,8 @@ the requester.
   turn starts, as on the shared app (section 3, TASK-1184). It's bound only to
   the bot's own agent.
 - That binding starts with the switch the team last set for the agent in that
-  channel: the shared app's binding of it while there is one (TASK-1179), else
+  channel: the shared app's binding of it while there is one (TASK-1179; retired by
+  TASK-1186, which deletes those bindings), else
   the switch AX keeps for the agent and channel, which outlives a Disconnect
   (of the channel, or of Slack in Admin › Slack) and a rebuilt bot (TASK-1180).
   With neither, it starts on, like any new connection. If the switch can't be
@@ -835,6 +845,36 @@ paths exist, not who may do what.
   needs its own approved bot first. The admin-request DM (TASK-1170) keeps
   that to one Approve click for an AX admin, and a team admin who can install
   Slack apps approves it themselves.
+
+**As built (TASK-1186).**
+
+- A shared-bot mention in a channel gets one private line, `COPY.sharedBotInChannel`
+  ("I don't answer in channels. To talk to your own agent, send me a direct
+  message. To bring a team agent into this channel, invite its own bot with
+  /invite."). Only an admitted sender sees it; a refused sender gets silence.
+  No turn runs and no binding is read.
+- `/ax` and its route are gone. Slack's POST to `/slack/commands/<id>` carries no
+  CSRF header, so the host refuses it with 403 before any routing (not 405).
+- The shared manifest has six scopes. A team bot's manifest keeps `channels:read`
+  for the turn-start check (TASK-1184, which keeps `ChannelStore.remove`).
+- Every boot deletes the shared install's rows in `channel_slack_v1_channels`,
+  after the memory-switch backfills have run.
+- A bot's first bind reads only the kept switch, then on.
+- The shared connection's switch, `/remember` on it and the `409 own-bot`
+  refusal are gone, along with `SlackChannel.isMember`.
+- channel-web lost the channel picker, the shared "Connected channels" list and
+  the moved-channels list. A member who can't manage the agent, whose bot isn't
+  live, sees "<agent> isn't in Slack yet. A team admin can add it."
+
+Retired as-built bullets: TASK-1167 "steps aside" and "the shared app's binding
+of it while there is one" (TASK-1179); TASK-1180's shared flip and the
+`409 own-bot`; TASK-1172's "the shared bot answers again in the agent's old
+shared channels"; TASK-1170's channel list in the "is live" DM; TASK-1168's
+moved-channels list; TASK-1184's shared-install branches.
+
+**Deploy:** after the deploy, Admin › Slack → Disconnect, then Connect, so the
+shared app sheds `channels:read`, `channels:join` and `commands`. Until then
+`/ax` in Slack fails with a 403.
 
 **Several bots in one channel are supported**, and the code already allows it.
 The shared app's one-agent-per-channel rule comes from its single @handle (the
@@ -1237,9 +1277,9 @@ plugin, `auth:list-admins`: `{} → { admins: [{ userId, email }] }` (TASK-1170)
 **No other new hooks** (apart from `auth:is-approved-email` and
 `auth:list-admins` above, and TASK-1095 adds none). TASK-1170 adds no routes
 either: the interactions route gains a Decline action id. TASK-1095 adds one more public route,
-`POST /slack/interactions/<installId>`, signed like the events and `/ax`
-routes (the signature, the install and the admission check run before the body
-is read), and decisions' attendance now covers origin `'slack'`.
+`POST /slack/interactions/<installId>`, signed like the events
+(the signature, the install and the admission check run before the body
+is read; the `/ax` route is removed, TASK-1186), and decisions' attendance now covers origin `'slack'`.
 TASK-1167 adds four more routes and no hooks: `POST /settings/slack/:agentId/bot`
 (ask for the agent's own bot), `…/bot/install-url` (pick a pending one back up
 in Slack), `…/bot/cancel` (take a pending one back), all from agent settings
@@ -1409,7 +1449,10 @@ connectors. The protections are:
   TASK-1097 walk checks whether Slack's Markdown turns a typed handle into a
   mention.
 
-**Known gaps, accepted (TASK-1184):**
+**Known gaps, accepted (TASK-1184).** Where a gap below talks about the shared
+app's connected channels, TASK-1186 retired that path (§4b.1); a team bot's
+bindings are the only ones left.
+
 
 - **The one-minute window.** Only an allowed answer is kept, for a minute. A
   turn that starts inside that minute still runs, and a turn already running

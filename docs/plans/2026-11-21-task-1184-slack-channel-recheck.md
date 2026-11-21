@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Update (TASK-1186):** this plan's shared-app parts are retired by design §4b.1. The shared app no longer connects or answers in channels, so only a team bot's channels are re-checked, with its own token. `ChannelStore.remove` and `channel-check.ts` stay. Read "the shared app" below as history.
+
 **Goal:** No channel turn runs, on the shared app or on a team agent's own bot, in a channel that Slack now says is private, archived or Slack Connect. That channel's binding goes, its sender is told once, and if Slack can't answer, no turn runs either.
 
 **Architecture:** A new `channel-check.ts` asks `conversations.info` with the install's bot token. It keeps an *allowed* answer per install and channel for `CHANNEL_CHECK_TTL_MS` (60 s), and never keeps a refusal or a failure. The router's queued `job` asks it after the existing re-reads and right before `recordThread`. On a definitive refusal, the job removes the binding with `channels.remove`, the same delete a team admin's Disconnect makes. The one turn whose remove took the binding tells its sender privately. Any other answer from Slack means no turn and "try again", and the binding stays. `plugin.ts` builds the check next to `createSeenEvents`.
