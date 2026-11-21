@@ -1,10 +1,10 @@
 /**
  * channel-slack's only egress: a small Slack Web API client over an injected
- * `fetch`. No Slack SDK: about nineteen methods don't earn a dependency tree,
+ * `fetch`. No Slack SDK: about seventeen methods don't earn a dependency tree,
  * or retries and logging we don't control.
  *
  * The capability is as small as we could make it (invariant 5):
- *   - one destination, `https://slack.com/api/<method>`, POST, for the nineteen
+ *   - one destination, `https://slack.com/api/<method>`, POST, for the seventeen
  *     methods below and no others. Nothing a caller passes reaches the URL;
  *   - redirects are refused (`redirect: 'manual'`; any 3xx, or an answer a
  *     fetch followed a redirect to anyway, is `redirect`), so no token is
@@ -20,10 +20,9 @@
  * Encoding, per method (MEASURED from docs.slack.dev, 2026-11-12):
  * `tooling.tokens.rotate`, `oauth.v2.access`, `users.info` and
  * `users.lookupByEmail` take ONLY form bodies ("arguments sent in a JSON body are ignored by methods that don't
- * list application/json"), and so do `conversations.info` and
- * `conversations.list` (read 2026-11-13). `conversations.join` and the
- * `apps.manifest.*` calls list both (the `apps.*` pages read 2026-11-15) and
- * are sent as forms like their siblings. `apps.icon.set` uploads its image as
+ * list application/json"), and so does `conversations.info` (read
+ * 2026-11-13). The `apps.manifest.*` calls list both (the `apps.*` pages read
+ * 2026-11-15) and are sent as forms like their siblings. `apps.icon.set` uploads its image as
  * `multipart/form-data`: the PNG as `file`, beside `app_id` (read on
  * docs.slack.dev 2026-11-18; the `url` argument made Slack fetch an image it
  * then refused, TASK-1133). Its content type is fetch's to write, because
@@ -111,24 +110,6 @@ export class SlackApiError extends Error {
   }
 }
 
-/**
- * Slack's codes for a bot token it no longer takes: revoked, the app
- * uninstalled, the bot deactivated. Only connecting Slack again fixes one, so
- * none is ever "try again". The one list: a connect (channels.ts) and `/ax`
- * admitting its invoker (commands.ts) both read it.
- */
-export const TOKEN_REFUSED_CODES: ReadonlySet<string> = new Set([
-  'invalid_auth',
-  'not_authed',
-  'token_revoked',
-  'account_inactive',
-]);
-
-/** Whether `code` is Slack refusing the bot token itself (`TOKEN_REFUSED_CODES`). */
-export function isTokenRefused(code: string | undefined): boolean {
-  return code !== undefined && TOKEN_REFUSED_CODES.has(code);
-}
-
 /** One Block Kit block, as Slack takes it. Built in prompt code, never from model text. */
 export type SlackBlock = Readonly<Record<string, unknown>>;
 
@@ -167,11 +148,11 @@ export interface OAuthInstall {
 }
 
 /**
- * A channel as `conversations.info` and `conversations.list` describe it,
- * narrowed. `name` is Slack's raw text: whoever shows or stores it cleans it
- * first. The flags that refuse a channel (`isPrivate`, `isArchived`,
- * `isExtShared`, `isPendingExtShared`) fail closed; `isChannel` and
- * `isMember` are true only when Slack says literally `true`.
+ * A channel as `conversations.info` describes it, narrowed. `name` is
+ * Slack's raw text: whoever shows or stores it cleans it first. The flags
+ * that refuse a channel (`isPrivate`, `isArchived`, `isExtShared`,
+ * `isPendingExtShared`) fail closed; `isChannel` and `isMember` are true
+ * only when Slack says literally `true`.
  */
 export interface SlackChannel {
   id: string;
@@ -266,16 +247,6 @@ export interface SlackApi {
   removeReaction(botToken: string, a: { channel: string; ts: string; name: string }): Promise<void>;
   /** One channel. An answer without a channel we can narrow is `bad-response`. */
   conversationsInfo(botToken: string, channel: string): Promise<SlackChannel>;
-  /**
-   * One page of the workspace's public, unarchived channels. An entry we
-   * can't narrow is left out; `nextCursor` is null on the last page.
-   */
-  conversationsList(
-    botToken: string,
-    a: { cursor?: string; limit: number },
-  ): Promise<{ channels: SlackChannel[]; nextCursor: string | null }>;
-  /** The bot joins a public channel. Already being in it is a success. */
-  conversationsJoin(botToken: string, channel: string): Promise<void>;
 }
 
 type SlackMethod =
@@ -295,9 +266,7 @@ type SlackMethod =
   | 'chat.stopStream'
   | 'reactions.add'
   | 'reactions.remove'
-  | 'conversations.info'
-  | 'conversations.list'
-  | 'conversations.join';
+  | 'conversations.info';
 
 type Auth =
   | { kind: 'none' }
@@ -664,39 +633,6 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       const out = channelOf(r['channel']);
       if (out === null) throw badResponse(method);
       return out;
-    },
-
-    async conversationsList(botToken, a) {
-      const method = 'conversations.list';
-      const r = await call(
-        method,
-        bearer(botToken),
-        form({
-          types: 'public_channel',
-          exclude_archived: 'true',
-          limit: String(a.limit),
-          ...(a.cursor !== undefined ? { cursor: a.cursor } : {}),
-        }),
-      );
-      const raw = r['channels'];
-      if (!Array.isArray(raw)) throw badResponse(method);
-      const channels: SlackChannel[] = [];
-      for (const entry of raw) {
-        // An entry we can't narrow is left out; the rest of the page still counts.
-        const channel = channelOf(entry);
-        if (channel !== null) channels.push(channel);
-      }
-      // A cursor we can't read must not pass for the last page.
-      const meta = r['response_metadata'] ?? {};
-      if (!isRecord(meta)) throw badResponse(method);
-      const next = meta['next_cursor'] ?? '';
-      if (typeof next !== 'string') throw badResponse(method);
-      return { channels, nextCursor: next === '' ? null : next };
-    },
-
-    async conversationsJoin(botToken, channel) {
-      // `ok` with `warning: already_in_channel` is a success: the bot is in.
-      await call('conversations.join', bearer(botToken), form({ channel }));
     },
 
     async postMessage(botToken, a) {

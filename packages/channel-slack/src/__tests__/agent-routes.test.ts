@@ -1,31 +1,26 @@
 import { HookBus, PluginError, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
-import { createAgentSlackRoutes } from '../agent-routes.js';
+import { createAgentSlackRoutes, type AgentRoutesDeps } from '../agent-routes.js';
 import type { BotChanges } from '../bot-changes.js';
 import type { BotRequests } from '../bot-requests.js';
 import type { AgentSlackBot, BotReply, Bots } from '../bots.js';
-import type { ChannelDeps } from '../channels.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
 import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, SLACK_ICON_MAX_BYTES } from '../limits.js';
-import { createSlackApi } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { pngBase64, pngHeader } from './fake-png.js';
-import {
-  CONFIG_REFRESH_PREFIX,
-  fakeBotToken,
-  fakeConfigAccessToken,
-  fakeConfigRefreshToken,
-} from './fake-slack-tokens.js';
+import { CONFIG_REFRESH_PREFIX, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
 
 /*
-  The agent-settings Slack section, through its route handlers, the real
-  Slack client and a fake Slack Web API. Who may do what is the point:
-  signed out → 401; anyone who can't see the agent → the same 404 a missing
-  agent gets; a team member reads without managing (403 on writes); a team
-  admin of the agent's team manages; workspace-admin status never counts;
-  a personal agent is refused before Slack is asked anything.
+  The agent-settings Slack section, through its route handlers. Who may do
+  what is the point: signed out → 401; anyone who can't see the agent → the
+  same 404 a missing agent gets; a team member reads without managing (403
+  on writes); a team admin of the agent's team manages; workspace-admin
+  status never counts; a personal agent is refused before anything else is
+  asked. The routes hold no Slack client and no vault (TASK-1186): the
+  shared app connects no channel, and whatever reaches Slack goes through
+  the bot domains, stubbed here.
 
   The agent's own bot (TASK-1167), and its Disconnect (TASK-1172), sit
   behind the same gate: its routes are checked here for who gets through and
@@ -41,7 +36,6 @@ import { memoryChannelStore } from './memory-channel-store.js';
 
 const INSTALL_ID = 'q3VtZ0xH4kTn9Wb2LmPa1A';
 const TEAM_ID = 'T07ABCDEF12';
-const BOT_TOKEN = fakeBotToken('ROUTESTESTSECRET');
 const INSTALL: InstallRow = {
   installId: INSTALL_ID,
   kind: 'shared',
@@ -121,126 +115,10 @@ const USERS = [ADA, GRACE, NONAME, MEL, WILL, WANDA, OTTO, PAT, SAM];
 
 const SUPPORT_CH = 'C07SUPPORT1';
 const SALES_CH = 'C07SALES002';
-const PRIVATE_CH = 'C07PRIVATE1';
-const ARCHIVED_CH = 'C07ARCHIVE1';
-const SHARED_CH = 'C07SHARED01';
-const PENDING_CH = 'C07PENDING1';
 const NAMES: Record<string, string> = {
   [SUPPORT_CH]: 'support-desk',
   [SALES_CH]: 'sales-floor',
-  [PRIVATE_CH]: 'secret-plans',
-  [ARCHIVED_CH]: 'old-news',
-  [SHARED_CH]: 'partner-room',
-  [PENDING_CH]: 'soon-partners',
 };
-
-/**
- * A channel as conversations.info and conversations.list describe it
- * (Slack's documented example's fields), with no `is_member`: Slack's
- * documented answer often leaves it out, which reads as "not a member".
- */
-function rawChannel(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
-  const name = NAMES[id] ?? id.toLowerCase();
-  return {
-    id,
-    name,
-    is_channel: true,
-    is_group: false,
-    is_im: false,
-    is_mpim: false,
-    is_private: false,
-    created: 1654868334,
-    is_archived: false,
-    is_general: false,
-    unlinked: 0,
-    name_normalized: name,
-    is_shared: false,
-    is_frozen: false,
-    is_org_shared: false,
-    is_ext_shared: false,
-    is_pending_ext_shared: false,
-    pending_shared: [],
-    context_team_id: TEAM_ID,
-    parent_conversation: null,
-    creator: 'U07CREATOR1',
-    shared_team_ids: [TEAM_ID],
-    pending_connected_team_ids: [],
-    topic: { value: '', creator: '', last_set: 0 },
-    purpose: { value: '', creator: '', last_set: 0 },
-    previous_names: [],
-    ...over,
-  };
-}
-
-// ── A fake Slack Web API behind the real client's fetchImpl ─────────────────
-
-function fakeSlackWeb() {
-  const channels = new Map<string, Record<string, unknown>>();
-  /** The channels the bot is in. */
-  const joined = new Set<string>();
-  const sent: Array<{ method: string; form: Record<string, string>; authorization: string | null }> = [];
-  /** A method listed here answers this instead. */
-  const overrides = new Map<string, () => Response>();
-  /** conversations.list: channels per page, whatever `limit` asks for. */
-  let pageSize = 1000;
-
-  const answer = (body: Record<string, unknown>): Response =>
-    new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
-  const ok = (fields: Record<string, unknown> = {}): Response => answer({ ok: true, ...fields });
-  const refuse = (error: string): Response => answer({ ok: false, error });
-
-  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(input instanceof Request ? input.url : String(input));
-    const method = url.pathname.replace(/^\/api\//, '');
-    const form = Object.fromEntries(new URLSearchParams(typeof init?.body === 'string' ? init.body : ''));
-    sent.push({ method, form, authorization: new Headers(init?.headers).get('authorization') });
-    const custom = overrides.get(method);
-    if (custom !== undefined) return custom();
-    const id = form['channel'] ?? '';
-    switch (method) {
-      case 'conversations.info': {
-        const found = channels.get(id);
-        return found === undefined ? refuse('channel_not_found') : ok({ channel: found });
-      }
-      case 'conversations.list': {
-        const all = [...channels.values()];
-        const start = form['cursor'] === undefined ? 0 : Number(form['cursor'].slice(1));
-        const end = start + pageSize;
-        return ok({
-          channels: all.slice(start, end),
-          response_metadata: { next_cursor: end < all.length ? `p${end}` : '' },
-        });
-      }
-      case 'conversations.join': {
-        const found = channels.get(id);
-        if (found === undefined) return refuse('channel_not_found');
-        if (found['is_archived'] === true) return refuse('is_archived');
-        if (found['is_private'] === true) return refuse('method_not_supported_for_channel_type');
-        const already = joined.has(id);
-        joined.add(id);
-        return ok({
-          channel: found,
-          ...(already ? { warning: 'already_in_channel', response_metadata: { warnings: ['already_in_channel'] } } : {}),
-        });
-      }
-      default:
-        return refuse('unknown_method');
-    }
-  }) as typeof fetch;
-
-  return {
-    fetchImpl,
-    channels,
-    joined,
-    sent,
-    overrides,
-    refuse,
-    setPageSize(n: number): void {
-      pageSize = n;
-    },
-    methods: (): string[] => sent.map((s) => s.method),
-  };
-}
 
 // ── A request and response shaped like @ax/http-server's ───────────────────
 
@@ -277,10 +155,6 @@ function fakeResponse(): { res: RouteResponse; answer: Answered } {
 
 type Suffix =
   | ''
-  | '/available'
-  | '/connect'
-  | '/disconnect'
-  | '/remember'
   | '/bot/remember'
   | '/bot'
   | '/bot/install-url'
@@ -300,10 +174,6 @@ const ACCESS = fakeConfigAccessToken('ROUTESACCESSSECRET');
 /** Every route, with a body each write would accept. */
 const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknown }> = [
   { method: 'GET', suffix: '' },
-  { method: 'GET', suffix: '/available' },
-  { method: 'POST', suffix: '/connect', body: { channelId: SUPPORT_CH } },
-  { method: 'POST', suffix: '/disconnect', body: { channelId: SUPPORT_CH } },
-  { method: 'POST', suffix: '/remember', body: { channelId: SUPPORT_CH, remember: false } },
   // A bot channel's memory switch (TASK-1180).
   { method: 'POST', suffix: '/bot/remember', body: { channelId: SUPPORT_CH, remember: false } },
   { method: 'POST', suffix: '/bot', body: { botName: 'Support Helper' } },
@@ -324,6 +194,17 @@ const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '');
 
 /** What the bot domain answers for an agent with no bot and a viewer with no token. */
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
+/** The live bot as a member reads it: no install id (only those who manage the agent get one, for its Disconnect). */
+const LIVE: AgentSlackBot = {
+  state: 'live',
+  botName: 'Support Helper',
+  handle: 'supporthelper',
+  approver: 'Grace Hopper',
+  approverGone: false,
+  viewerIsApprover: false,
+  needsClaim: false,
+  installId: null,
+};
 
 // ── The bot domain, as a stub ───────────────────────────────────────────────
 
@@ -457,7 +338,7 @@ interface Line {
   fields: Record<string, unknown> | undefined;
 }
 
-function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUserFault?: Error } = {}) {
+function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error } = {}) {
   const bus = new HookBus();
   const people = fakeAgents(bus, o.workspaceAdminsMayManage === true ? { workspaceAdminsMayManage: true } : {});
   for (const agent of [SUPPORT, SALES, PATS]) people.addAgent(agent);
@@ -480,7 +361,6 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
   bus.registerService('auth:get-user', '@ax/auth-better', async (_ctx, raw) => {
     const { userId } = raw as { userId: string };
     userLookups.push(userId);
-    if (o.getUserFault !== undefined) throw o.getUserFault;
     const user = users.get(userId);
     return user === undefined ? null : { ...user };
   });
@@ -491,13 +371,6 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
   };
   const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
 
-  const slack = fakeSlackWeb();
-  for (const id of [SUPPORT_CH, SALES_CH]) slack.channels.set(id, rawChannel(id));
-  slack.channels.set(PRIVATE_CH, rawChannel(PRIVATE_CH, { is_channel: false, is_group: true, is_private: true }));
-  slack.channels.set(ARCHIVED_CH, rawChannel(ARCHIVED_CH, { is_archived: true }));
-  slack.channels.set(SHARED_CH, rawChannel(SHARED_CH, { is_shared: true, is_ext_shared: true }));
-  slack.channels.set(PENDING_CH, rawChannel(PENDING_CH, { is_pending_ext_shared: true }));
-
   const memory = memoryChannelStore();
   const state = {
     install: { ...INSTALL } as InstallRow | null,
@@ -507,7 +380,7 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
   };
   /** The agents `botForAgent` was asked about, in order. */
   const botLookups: string[] = [];
-  const deps: ChannelDeps = {
+  const deps: AgentRoutesDeps = {
     bus,
     installs: {
       current: async () => (state.install === null ? null : { ...state.install }),
@@ -518,8 +391,6 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
       },
     },
     channels: memory.store,
-    secrets: { get: async (_owner, name) => (name === 'bot-token' ? BOT_TOKEN : null) },
-    api: createSlackApi({ fetchImpl: slack.fetchImpl }),
     logger,
   };
   const bots = stubBots();
@@ -569,7 +440,6 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
     people,
     users,
     userLookups,
-    slack,
     memory,
     state,
     botLookups,
@@ -579,13 +449,6 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
     requests,
     call,
     status: (agentId: string, as: TestUser | null = ADA) => reply(call('GET', '', agentId, as)),
-    available: (agentId: string, as: TestUser | null = ADA) => reply(call('GET', '/available', agentId, as)),
-    connect: (agentId: string, channelId: string, as: TestUser | null = ADA) =>
-      reply(call('POST', '/connect', agentId, as, { channelId })),
-    disconnect: (agentId: string, channelId: string, as: TestUser | null = ADA) =>
-      reply(call('POST', '/disconnect', agentId, as, { channelId })),
-    remember: (agentId: string, channelId: string, remember: unknown, as: TestUser | null = ADA) =>
-      reply(call('POST', '/remember', agentId, as, { channelId, remember })),
     requestBot: (agentId: string, body: unknown, as: TestUser | null = ADA) =>
       reply(call('POST', '/bot', agentId, as, body)),
     askForBot: (agentId: string, body: unknown, as: TestUser | null = ADA) =>
@@ -596,6 +459,16 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
 const NOT_FOUND = { status: 404, body: { error: 'not-found' } };
 const FORBIDDEN = { status: 403, body: { error: 'forbidden' } };
 
+/** The bot's first mention in a channel binds it on the bot's own install, to its agent (router.ts). */
+const answerOnBot = (w: ReturnType<typeof world>, channelId: string, channelName = NAMES[channelId] ?? channelId) =>
+  w.memory.store.upsert({
+    installId: OWN_BOT.installId,
+    channelId,
+    agentId: SUPPORT.id,
+    connectedByUserId: GRACE.id,
+    channelName,
+  });
+
 // ── The routes themselves ───────────────────────────────────────────────────
 
 describe('the routes', () => {
@@ -605,25 +478,6 @@ describe('the routes', () => {
       w.routes.map((r) => ({ method: r.method, path: r.path, bypassCsrf: r.bypassCsrf, maxBodyBytes: r.maxBodyBytes })),
     ).toEqual([
       { method: 'GET', path: '/settings/slack/:agentId', bypassCsrf: undefined, maxBodyBytes: undefined },
-      { method: 'GET', path: '/settings/slack/:agentId/available', bypassCsrf: undefined, maxBodyBytes: undefined },
-      {
-        method: 'POST',
-        path: '/settings/slack/:agentId/connect',
-        bypassCsrf: undefined,
-        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
-      },
-      {
-        method: 'POST',
-        path: '/settings/slack/:agentId/disconnect',
-        bypassCsrf: undefined,
-        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
-      },
-      {
-        method: 'POST',
-        path: '/settings/slack/:agentId/remember',
-        bypassCsrf: undefined,
-        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
-      },
       // The memory switch of a channel the agent's own bot has answered in (TASK-1180).
       {
         method: 'POST',
@@ -714,7 +568,6 @@ describe('rights', () => {
       });
     }
     expect(w.people.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
     expect(w.requests.calls).toEqual([]);
@@ -754,7 +607,6 @@ describe('rights', () => {
         missing,
       );
     }
-    expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
     expect(w.requests.calls).toEqual([]);
@@ -762,17 +614,18 @@ describe('rights', () => {
 
   it('lets a team member read the section without the manage controls, and refuses every write with 403', async () => {
     const w = world();
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toMatchObject({ status: 200 });
-    const sent = w.slack.sent.length;
-    const before = w.memory.row(INSTALL_ID, SUPPORT_CH);
+    // The agent's own bot answered in #support: a switch a member's write must not reach.
+    w.state.bot = OWN_BOT;
+    await answerOnBot(w, SUPPORT_CH);
+    const before = w.memory.row(OWN_BOT.installId, SUPPORT_CH);
 
     expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ status: 200, body: { state: 'ready', canManage: false } });
     for (const r of WRITES) {
       const a = await w.call(r.method, r.suffix, SUPPORT.id, MEL, r.body);
       expect({ status: a.status, body: a.body }, r.suffix).toEqual(FORBIDDEN);
     }
-    expect(w.slack.sent).toHaveLength(sent);
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(before);
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)).toEqual(before);
+    expect(w.memory.calls).not.toContain('setRemember');
     // The section read the bot as a non-manager; no write reached the bot domain.
     expect(w.bots.calls.map((c) => c.method)).toEqual(['status']);
     expect(w.requests.calls).toEqual([]);
@@ -782,16 +635,13 @@ describe('rights', () => {
     ['an empty object', {}],
     ['allowed as a string', { allowed: 'true' }],
     ['null', null],
-  ])('answers 403 on every write, and Slack is asked nothing, when agents answers the manage question with %s', async (_what, answer) => {
+  ])('answers 403 on every write, and nothing past the rights is asked, when agents answers the manage question with %s', async (_what, answer) => {
     const w = world();
     w.people.answers.set('agents:can-set-shared-credential', answer);
     for (const r of WRITES) {
       const a = await w.call(r.method, r.suffix, SUPPORT.id, ADA, r.body);
       expect({ status: a.status, body: a.body }, r.suffix).toEqual(FORBIDDEN);
     }
-    const a = await w.call('GET', '/available', SUPPORT.id, ADA);
-    expect({ status: a.status, body: a.body }).toEqual(FORBIDDEN);
-    expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
     expect(w.requests.calls).toEqual([]);
@@ -806,9 +656,6 @@ describe('rights', () => {
     const arrayBody = JSON.stringify([SUPPORT_CH]);
     const extraKey = JSON.stringify({ channelId: SUPPORT_CH, agentId: SALES.id });
     for (const suffix of [
-      '/connect',
-      '/disconnect',
-      '/remember',
       '/bot/remember',
       '/bot',
       // Cancel reads the install id the page showed since TASK-1173.
@@ -838,7 +685,6 @@ describe('rights', () => {
         });
       }
     }
-    expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
     expect(w.requests.calls).toEqual([]);
@@ -855,7 +701,6 @@ describe('rights', () => {
     const asked = w.people.inputs('agents:can-set-shared-credential');
     expect(asked.length).toBeGreaterThan(0);
     for (const input of asked) expect(input).toEqual({ agentId: SUPPORT.id, actor: { userId: WILL.id, isAdmin: false } });
-    expect(w.slack.sent).toEqual([]);
     expect(w.bots.calls.map((c) => c.method)).toEqual(['status']);
     expect(w.requests.calls).toEqual([]);
   });
@@ -863,13 +708,16 @@ describe('rights', () => {
   it("lets a team admin of the agent's team manage it", async () => {
     const w = world();
     expect(await w.status(SUPPORT.id, ADA)).toMatchObject({ status: 200, body: { state: 'ready', canManage: true } });
-    expect(await w.available(SUPPORT.id, ADA)).toMatchObject({ status: 200 });
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toMatchObject({ status: 200 });
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 200, body: {} });
-    expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: true } });
+    expect(await w.requestBot(SUPPORT.id, { botName: 'Support Helper' }, ADA)).toMatchObject({ status: 200 });
+    // Its own bot answered in #support: she flips that channel's switch.
+    w.state.bot = OWN_BOT;
+    await answerOnBot(w, SUPPORT_CH);
+    const a = await w.call('POST', '/bot/remember', SUPPORT.id, ADA, { channelId: SUPPORT_CH, remember: false });
+    expect({ status: a.status, body: a.body }).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
   });
 
-  it('says a personal agent is one, and refuses every write with 409 personal-agent before Slack is asked anything', async () => {
+  it('says a personal agent is one, and refuses every write with 409 personal-agent before anything else is asked', async () => {
     const w = world();
     expect(await w.status(PATS.id, PAT)).toEqual({
       status: 200,
@@ -879,7 +727,6 @@ describe('rights', () => {
       const a = await w.call(r.method, r.suffix, PATS.id, PAT, r.body);
       expect({ status: a.status, body: a.body }, r.suffix).toEqual({ status: 409, body: { error: 'personal-agent' } });
     }
-    expect(w.slack.sent).toEqual([]);
     expect(w.memory.calls).toEqual([]);
     expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
     // A personal agent has no bot of its own: none is asked about, or asked for.
@@ -917,8 +764,6 @@ describe('rights', () => {
       { userId: PAT.id, teamIds: [] },
       { userId: PAT.id, teamIds: [] },
     ]);
-    // Slack is asked nothing to answer it.
-    expect(w.slack.sent).toEqual([]);
   });
 
   it('answers an agent id no agent could have with 404, without asking agents', async () => {
@@ -1013,214 +858,59 @@ describe('the section', () => {
     });
   });
 
-  it("lists the agent's channels, oldest first, with who connected each and its memory switch", async () => {
+  it('the ready section carries the bot and its channels, and no shared channel list (TASK-1186)', async () => {
     const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SUPPORT.id, SALES_CH, GRACE);
-    await w.remember(SUPPORT.id, SALES_CH, false, GRACE);
-    // Another agent's channel is not this agent's business.
-    w.slack.channels.set('C07OTHER001', rawChannel('C07OTHER001'));
-    await w.connect(SALES.id, 'C07OTHER001', SAM);
-
-    expect(await w.status(SUPPORT.id, MEL)).toEqual({
-      status: 200,
-      body: {
-        state: 'ready',
-        botName: 'canopy-works',
-        workspaceName: 'Canopy Works',
-        canManage: false,
-        channels: [
-          { channelId: SUPPORT_CH, name: 'support-desk', remember: true, connectedBy: 'Ada Admin', needsReconnect: false, needsInvite: false },
-          { channelId: SALES_CH, name: 'sales-floor', remember: false, connectedBy: 'Grace Hopper', needsReconnect: false, needsInvite: false },
-        ],
-        bot: { state: 'none', configTokenStored: false },
-      },
+    w.state.bot = OWN_BOT;
+    w.bots.answers.status = LIVE;
+    // A binding left on the shared install (every boot deletes them, migrations.ts): never listed, never read.
+    await w.memory.store.upsert({
+      installId: INSTALL_ID,
+      channelId: SALES_CH,
+      agentId: SUPPORT.id,
+      connectedByUserId: ADA.id,
+      channelName: 'sales-floor',
     });
-  });
+    // The bot's first mention in #support-desk bound it on the bot's own install (router.ts).
+    await answerOnBot(w, SUPPORT_CH);
+    const before = w.memory.calls.length;
 
-  it('never shows the connector\'s email: no display name, a deleted account or an auth fault all read "A teammate"', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, NONAME);
-    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ body: { channels: [{ connectedBy: 'A teammate' }] } });
-
-    // Only invisible characters left once cleaned.
-    w.users.get(NONAME.id)!.displayName = `${String.fromCharCode(0x202e)}${String.fromCharCode(0x200b)}`;
-    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ body: { channels: [{ connectedBy: 'A teammate' }] } });
-
-    w.users.delete(NONAME.id);
-    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ body: { channels: [{ connectedBy: 'A teammate' }] } });
-    expect(w.lines.filter((l) => l.msg === 'slack_channel_route_failed')).toEqual([]);
-
-    const faulty = world({
-      getUserFault: new PluginError({ code: 'db-down', plugin: '@ax/auth-better', message: NONAME.email! }),
-    });
-    await faulty.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    const shown = await faulty.status(SUPPORT.id, MEL);
-    expect(shown).toMatchObject({ status: 200, body: { channels: [{ connectedBy: 'A teammate' }] } });
-    expect(faulty.lines.filter((l) => l.msg === 'slack_channel_route_failed')).toContainEqual({
-      level: 'warn',
-      msg: 'slack_channel_route_failed',
-      fields: { stage: 'connected-by', code: 'db-down' },
-    });
-    expect(JSON.stringify([shown, faulty.lines])).not.toMatch(/@canopyworks\.example/);
-  });
-
-  it('marks a channel needsReconnect once the person who connected it loses the agent', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SUPPORT.id, SALES_CH, GRACE);
-    // Ada leaves the support team; Grace stays.
-    w.people.setRole(SUPPORT_TEAM, ADA.id, null);
-
-    expect(await w.status(SUPPORT.id, GRACE)).toMatchObject({
-      status: 200,
-      body: {
-        channels: [
-          { channelId: SUPPORT_CH, connectedBy: 'Ada Admin', needsReconnect: true },
-          { channelId: SALES_CH, connectedBy: 'Grace Hopper', needsReconnect: false },
-        ],
-      },
-    });
-    // Asked about the connector, not about whoever is reading the page.
-    expect(w.people.inputs('agents:resolve')).toContainEqual({ agentId: SUPPORT.id, userId: ADA.id });
-  });
-
-  describe("with the agent's own bot (TASK-1168)", () => {
-    /** As a member reads it: no install id (only those who manage the agent get one, for its Disconnect). */
-    const LIVE: AgentSlackBot = {
-      state: 'live',
-      botName: 'Support Helper',
-      handle: 'supporthelper',
-      approver: 'Grace Hopper',
-      approverGone: false,
-      viewerIsApprover: false,
-      needsClaim: false,
-      installId: null,
-    };
-    const channelIds = async (w: ReturnType<typeof world>): Promise<string[]> => {
-      const got = await w.status(SUPPORT.id, MEL);
-      return (got.body as { channels: Array<{ channelId: string }> }).channels.map((c) => c.channelId);
-    };
-
-    it("with its own bot live, lists the shared channels it hasn't answered in yet, each needsInvite and never needsReconnect; one it has answered in leaves the list, and its shared binding stays", async () => {
-      const w = world();
-      // Connected first: a connect is refused once the bot is live, so this is what really happens.
-      await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-      await w.connect(SUPPORT.id, SALES_CH, GRACE);
-      w.state.bot = OWN_BOT;
-      w.bots.answers.status = LIVE;
-
-      expect(await w.status(SUPPORT.id, MEL)).toEqual({
+    for (const [as, canManage] of [
+      [MEL, false],
+      [ADA, true],
+    ] as const) {
+      expect(await w.status(SUPPORT.id, as), as.id).toEqual({
         status: 200,
         body: {
           state: 'ready',
           botName: 'canopy-works',
           workspaceName: 'Canopy Works',
-          canManage: false,
-          channels: [
-            { channelId: SUPPORT_CH, name: 'support-desk', remember: true, connectedBy: 'Ada Admin', needsReconnect: false, needsInvite: true },
-            { channelId: SALES_CH, name: 'sales-floor', remember: true, connectedBy: 'Grace Hopper', needsReconnect: false, needsInvite: true },
-          ],
+          canManage,
           bot: LIVE,
-          // It hasn't answered anywhere yet (TASK-1180).
-          botChannels: [],
+          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk', remember: true }],
         },
       });
-
-      // The bot's first mention in a channel binds it on the bot's own install (router.ts).
-      await w.memory.store.upsert({
-        installId: OWN_BOT.installId,
-        channelId: SUPPORT_CH,
-        agentId: SUPPORT.id,
-        connectedByUserId: 'usr_grace',
-        channelName: 'support-desk',
-      });
-      expect(await channelIds(w)).toEqual([SALES_CH]);
-      // Off the list, not deleted: the shared binding is exactly as it was.
-      expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SUPPORT.id, connectedByUserId: ADA.id });
-    });
-
-    it('a pending bot, no bot, or a live answer whose bot is gone by the route\'s own read: every row needsInvite false', async () => {
-      const pairs: Array<[InstallRow | null, AgentSlackBot]> = [
-        [
-          PENDING_BOT,
-          {
-            state: 'pending',
-            botName: 'Support Helper',
-            approver: 'Grace Hopper',
-            canContinue: false,
-            installId: PENDING_BOT.installId,
-          },
-        ],
-        [null, { state: 'none', configTokenStored: false }],
-        [null, LIVE],
-      ];
-      for (const [bot, answer] of pairs) {
-        const w = world();
-        await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-        await w.connect(SUPPORT.id, SALES_CH, GRACE);
-        w.state.bot = bot;
-        w.bots.answers.status = answer;
-        const got = await w.status(SUPPORT.id, MEL);
-        const rows = (got.body as { channels: Array<{ needsInvite: boolean }> }).channels;
-        expect(rows).toHaveLength(2);
-        expect(rows.map((r) => r.needsInvite)).toEqual([false, false]);
-      }
-    });
-
-    it("a channel waiting for the bot doesn't ask agents about its connector: no outsider runs as them while the bot is live", async () => {
-      const w = world();
-      await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-      w.people.setRole(SUPPORT_TEAM, ADA.id, null);
-      const before = w.people.inputs('agents:resolve').length;
-      w.state.bot = OWN_BOT;
-      w.bots.answers.status = LIVE;
-
-      expect(await w.status(SUPPORT.id, GRACE)).toMatchObject({
-        status: 200,
-        body: { channels: [{ channelId: SUPPORT_CH, needsReconnect: false, needsInvite: true }] },
-      });
-      expect(w.people.inputs('agents:resolve').slice(before)).not.toContainEqual({ agentId: SUPPORT.id, userId: ADA.id });
-    });
-
-    it("a store fault reading the agent's own bot (botForAgent) is the route's 500, logged by code alone", async () => {
-      const w = world();
-      w.state.bot = OWN_BOT;
-      w.bots.answers.status = LIVE;
-      w.state.botFault = Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
-      expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
-      expect(w.lines).toContainEqual({
-        level: 'error',
-        msg: 'slack_channel_route_failed',
-        fields: { stage: 'status', code: '42P01' },
-      });
-      expect(JSON.stringify(w.lines)).not.toContain(SUPPORT_CH);
-    });
-
-    it("a store fault reading the bot's channels (listForAgent on its install) is the route's 500, logged by code alone", async () => {
-      const w = world();
-      w.state.bot = OWN_BOT;
-      w.bots.answers.status = LIVE;
-      // Only the bot's install faults: the shared install's read, and the bot lookup itself, work.
-      const listForAgent = w.memory.store.listForAgent.bind(w.memory.store);
-      w.memory.store.listForAgent = async (installId, agentId) => {
-        if (installId === OWN_BOT.installId) {
-          throw Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
-        }
-        return listForAgent(installId, agentId);
-      };
-      expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
-      expect(w.lines).toContainEqual({
-        level: 'error',
-        msg: 'slack_channel_route_failed',
-        fields: { stage: 'status', code: '42P01' },
-      });
-      expect(JSON.stringify(w.lines)).not.toContain(SUPPORT_CH);
-    });
+    }
+    // One read per section, of the bot's install alone.
+    expect(w.memory.calls.slice(before)).toEqual(['listForAgent', 'listForAgent']);
+    // Nobody's name is looked up: the section names no connector.
+    expect(w.userLookups).toEqual([]);
   });
 
-  it('answers 500, logged by code alone, when the store fails', async () => {
+  it("a store fault reading the agent's own bot (botForAgent) is the route's 500, logged by code alone", async () => {
     const w = world();
+    w.state.bot = OWN_BOT;
+    w.bots.answers.status = LIVE;
+    w.state.botFault = Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'status', code: '42P01' } },
+    ]);
+  });
+
+  it("a store fault reading the bot's channels (listForAgent) is the route's 500, logged by code alone", async () => {
+    const w = world();
+    w.state.bot = OWN_BOT;
+    w.bots.answers.status = LIVE;
     w.memory.store.listForAgent = async () => {
       throw Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
     };
@@ -1228,189 +918,6 @@ describe('the section', () => {
     expect(w.lines).toEqual([
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'status', code: '42P01' } },
     ]);
-  });
-});
-
-// ── POST …/connect ──────────────────────────────────────────────────────────
-
-describe('connect', () => {
-  it('connects a channel for a team admin: Slack is asked about it, the bot joins, and the row comes back', async () => {
-    const w = world();
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({
-      status: 200,
-      body: {
-        channel: { channelId: SUPPORT_CH, name: 'support-desk', remember: true, connectedBy: 'Ada Admin', needsReconnect: false, needsInvite: false },
-        reconnected: false,
-      },
-    });
-    expect(w.slack.sent).toEqual([
-      { method: 'conversations.info', form: { channel: SUPPORT_CH }, authorization: `Bearer ${BOT_TOKEN}` },
-      { method: 'conversations.join', form: { channel: SUPPORT_CH }, authorization: `Bearer ${BOT_TOKEN}` },
-    ]);
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toMatchObject({ agentId: SUPPORT.id, connectedByUserId: ADA.id });
-  });
-
-  it("takes Slack's already_in_channel as a success (its info answer left is_member out)", async () => {
-    const w = world();
-    w.slack.joined.add(SUPPORT_CH);
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toMatchObject({ status: 200, body: { reconnected: false } });
-    expect(w.slack.methods()).toEqual(['conversations.info', 'conversations.join']);
-  });
-
-  it('does not join a channel Slack says the bot is in', async () => {
-    const w = world();
-    w.slack.channels.set(SUPPORT_CH, rawChannel(SUPPORT_CH, { is_member: true }));
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toMatchObject({ status: 200 });
-    expect(w.slack.methods()).toEqual(['conversations.info']);
-  });
-
-  it.each([
-    ['a private channel', PRIVATE_CH, 'not-public'],
-    ['an archived channel', ARCHIVED_CH, 'archived'],
-    ['a Slack Connect channel', SHARED_CH, 'shared'],
-    ['a channel being shared with another workspace', PENDING_CH, 'shared'],
-    ['a channel Slack does not show the bot', 'C07UNKNOWN1', 'not-public'],
-  ])('refuses %s with 422, and the bot never joins it', async (_what, channelId, reason) => {
-    const w = world();
-    expect(await w.connect(SUPPORT.id, channelId, ADA)).toEqual({
-      status: 422,
-      body: { error: 'channel-not-allowed', reason },
-    });
-    expect(w.slack.methods()).toEqual(['conversations.info']);
-    expect(w.memory.rows.size).toBe(0);
-  });
-
-  it.each(['conversations.info', 'conversations.join'])(
-    'answers an install made before channels (missing_scope from %s) with 409 needs-reconnect',
-    async (method) => {
-      const w = world();
-      w.slack.overrides.set(method, () => w.slack.refuse('missing_scope'));
-      expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 409, body: { error: 'needs-reconnect' } });
-      expect(w.memory.rows.size).toBe(0);
-    },
-  );
-
-  it.each(
-    ['conversations.info', 'conversations.join'].flatMap((method) =>
-      ['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive'].map((code) => [method, code] as const),
-    ),
-  )('answers a bot token Slack no longer takes (%s: %s) with 409 needs-reconnect, not "try again"', async (method, code) => {
-    const w = world();
-    w.slack.overrides.set(method, () => w.slack.refuse(code));
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 409, body: { error: 'needs-reconnect' } });
-    expect(w.memory.rows.size).toBe(0);
-  });
-
-  it("answers a workspace policy that keeps the bot out (restricted_action) with 422 workspace-policy", async () => {
-    const w = world();
-    w.slack.overrides.set('conversations.join', () => w.slack.refuse('restricted_action'));
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({
-      status: 422,
-      body: { error: 'channel-not-allowed', reason: 'workspace-policy' },
-    });
-    expect(w.memory.rows.size).toBe(0);
-  });
-
-  it('answers 404 when the agent is deleted while the channel is bound, and leaves no binding behind', async () => {
-    const w = world();
-    const write = w.memory.store.upsert;
-    w.memory.store.upsert = async (row) => {
-      const out = await write(row);
-      w.people.agents.delete(SUPPORT.id);
-      return out;
-    };
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual(NOT_FOUND);
-    expect(w.memory.rows.size).toBe(0);
-  });
-
-  it("refuses another agent's channel with 409 channel-taken and leaves its binding alone", async () => {
-    const w = world();
-    expect(await w.connect(SALES.id, SUPPORT_CH, SAM)).toMatchObject({ status: 200 });
-    const before = w.memory.row(INSTALL_ID, SUPPORT_CH);
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 409, body: { error: 'channel-taken' } });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(before);
-  });
-
-  it('lets a second team admin reconnect a channel: they become its connector, its memory switch stays', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA);
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, GRACE)).toEqual({
-      status: 200,
-      body: {
-        channel: { channelId: SUPPORT_CH, name: 'support-desk', remember: false, connectedBy: 'Grace Hopper', needsReconnect: false, needsInvite: false },
-        reconnected: true,
-      },
-    });
-    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({
-      body: { channels: [{ channelId: SUPPORT_CH, connectedBy: 'Grace Hopper', remember: false }] },
-    });
-  });
-
-  it('answers 409 no-workspace when Slack is not connected, asking Slack nothing', async () => {
-    const w = world();
-    w.state.install = null;
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 409, body: { error: 'no-workspace' } });
-    expect(w.slack.sent).toEqual([]);
-  });
-
-  it("answers 409 own-bot while the agent's own bot is live: Slack is asked nothing and nothing is bound; a pending bot connects as before (TASK-1168)", async () => {
-    const w = world();
-    w.state.bot = OWN_BOT;
-    // The code alone: the page that offered the connect is stale, and reading the section again shows the bot.
-    expect(await w.connect(SUPPORT.id, SALES_CH, ADA)).toEqual({ status: 409, body: { error: 'own-bot' } });
-    expect(w.slack.sent).toEqual([]);
-    expect(w.memory.row(INSTALL_ID, SALES_CH)).toBeUndefined();
-
-    w.state.bot = PENDING_BOT;
-    expect(await w.connect(SUPPORT.id, SALES_CH, ADA)).toMatchObject({ status: 200 });
-    expect(w.memory.row(INSTALL_ID, SALES_CH)).toMatchObject({ agentId: SUPPORT.id, connectedByUserId: ADA.id });
-  });
-
-  it('answers 502 slack-error when Slack fails, and binds nothing', async () => {
-    const w = world();
-    w.slack.overrides.set('conversations.join', () => new Response('', { status: 503 }));
-    expect(await w.connect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 502, body: { error: 'slack-error' } });
-    expect(w.memory.rows.size).toBe(0);
-  });
-
-  it.each([
-    ['not JSON', 'channel please'],
-    ['an array', [SUPPORT_CH]],
-    ['null', null],
-    ['no channelId', {}],
-    ['a number for channelId', { channelId: 7 }],
-    ['an empty channelId', { channelId: '' }],
-    ['a channelId with a space', { channelId: 'C07 SUPPORT' }],
-    ['a channel reference, not an id', { channelId: `<#${SUPPORT_CH}>` }],
-    ['a channelId past 64 characters', { channelId: `C${'7'.repeat(64)}` }],
-    ['an unknown key, even one naming another agent', { channelId: SUPPORT_CH, agentId: SALES.id }],
-  ])('refuses a connect body that is %s with 400, asking Slack nothing', async (_what, body) => {
-    const w = world();
-    const a = await w.call('POST', '/connect', SUPPORT.id, ADA, typeof body === 'string' ? body : JSON.stringify(body));
-    expect({ status: a.status, body: a.body }).toEqual({ status: 400, body: { error: 'invalid-body' } });
-    expect(w.slack.sent).toEqual([]);
-    expect(w.memory.calls).toEqual([]);
-  });
-
-  it('refuses a body past the cap with 413 (the route cap is the first line; this is the backstop)', async () => {
-    const w = world();
-    const big = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
-    // Asking an AX admin (TASK-1169) carries a name and nothing else: the plain cap. So does a bot
-    // channel's switch (TASK-1180).
-    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot/remember', '/bot-request'] as const) {
-      const a = await w.call('POST', suffix, SUPPORT.id, ADA, big);
-      expect({ status: a.status, body: a.body }, suffix).toEqual({ status: 413, body: { error: 'body-too-large' } });
-    }
-    // The bot request's own cap: room for the bot's picture, and not a byte more.
-    const bigBot = Buffer.from(
-      JSON.stringify({ botName: 'Support Helper', iconPng: 'A'.repeat(ADMIN_CONNECT_BODY_MAX_BYTES) }),
-    );
-    const a = await w.call('POST', '/bot', SUPPORT.id, ADA, bigBot);
-    expect({ status: a.status, body: a.body }).toEqual({ status: 413, body: { error: 'body-too-large' } });
-    expect(w.slack.sent).toEqual([]);
-    expect(w.bots.calls).toEqual([]);
-    expect(w.requests.calls).toEqual([]);
   });
 });
 
@@ -1439,7 +946,6 @@ describe('the bot routes', () => {
       expect({ status: a.status, body: a.body }, what).toEqual({ status: 400, body: error });
     }
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
   });
 
   it('POST /bot without refreshToken reaches the domain with null', async () => {
@@ -1583,7 +1089,6 @@ describe('the bot routes', () => {
     const a = await w.call('POST', '/bot/disconnect', SUPPORT.id, ADA, big);
     expect({ status: a.status, body: a.body }).toEqual({ status: 413, body: { error: 'body-too-large' } });
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -1715,7 +1220,6 @@ describe("the agent's own bot's name and picture (TASK-1171)", () => {
       expect(await post(w, '/bot/rename', { botName: 'Quill Desk' }), JSON.stringify(answer)).toEqual(answer);
     }
     expect(w.bots.calls).toHaveLength(5);
-    expect(w.slack.sent).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -1738,7 +1242,6 @@ describe("the agent's own bot's name and picture (TASK-1171)", () => {
       });
     }
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
   });
 
   it('a rename body must be an object holding botName alone, within the cap every other write has', async () => {
@@ -1786,7 +1289,6 @@ describe("the agent's own bot's name and picture (TASK-1171)", () => {
       w.bots.answers.setPicture = answer;
       expect(await post(w, '/bot/icon', { iconPng: pngBase64(512, 512) }), JSON.stringify(answer)).toEqual(answer);
     }
-    expect(w.slack.sent).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -1808,7 +1310,6 @@ describe("the agent's own bot's name and picture (TASK-1171)", () => {
       expect(await post(w, '/bot/icon', body), what).toEqual({ status: 400, body: { error: 'invalid-icon', reason } });
     }
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
   });
 
   it("a picture body must be an object holding iconPng alone, within Connect's cap", async () => {
@@ -1896,8 +1397,7 @@ describe("the agent's own bot's token, its claim, and Cancel by the page's insta
       expect(await post(w, '/bot/replace-token', { refreshToken: REFRESH }), JSON.stringify(answer)).toEqual(answer);
     }
     expect(w.bots.calls).toHaveLength(8);
-    // The route itself asks Slack nothing and logs nothing: the domain does both.
-    expect(w.slack.sent).toEqual([]);
+    // The route itself logs nothing: the domain does.
     expect(w.lines).toEqual([]);
   });
 
@@ -1941,7 +1441,6 @@ describe("the agent's own bot's token, its claim, and Cancel by the page's insta
     });
     // Nothing reached the domain, so no paste reached Slack.
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -2014,7 +1513,6 @@ describe("the agent's own bot's token, its claim, and Cancel by the page's insta
       });
     }
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -2044,7 +1542,6 @@ describe("the agent's own bot's token, its claim, and Cancel by the page's insta
       expect(await post(w, '/bot/cancel', shown), JSON.stringify(answer)).toEqual(answer);
     }
     expect(w.bots.calls).toHaveLength(10);
-    expect(w.slack.sent).toEqual([]);
     expect(w.lines).toEqual([]);
   });
 
@@ -2100,7 +1597,6 @@ describe('the bot request routes', () => {
     }
     expect(w.requests.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
-    expect(w.slack.sent).toEqual([]);
   });
 
   it('POST /bot-request hands the domain the name as checkBotName tidied it, the person asking, and the agent in the path', async () => {
@@ -2144,184 +1640,15 @@ describe('the bot request routes', () => {
   });
 });
 
-// ── GET …/available ─────────────────────────────────────────────────────────
-
-describe('available', () => {
-  it('lists five pages at most, then says truncated; drops Slack Connect, archived and private; marks bound ones', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SALES.id, SALES_CH, SAM);
-    for (let i = 10; i < 20; i += 1) w.slack.channels.set(`C07CHAN00${i}`, rawChannel(`C07CHAN00${i}`));
-    // 16 channels, 3 a page: the sixth page is never read.
-    w.slack.setPageSize(3);
-    w.slack.sent.length = 0;
-
-    const listed = await w.available(SUPPORT.id, ADA);
-    expect(listed).toEqual({
-      status: 200,
-      body: {
-        truncated: true,
-        channels: [
-          { channelId: 'C07CHAN0010', name: 'c07chan0010', connected: null },
-          { channelId: 'C07CHAN0011', name: 'c07chan0011', connected: null },
-          { channelId: 'C07CHAN0012', name: 'c07chan0012', connected: null },
-          { channelId: 'C07CHAN0013', name: 'c07chan0013', connected: null },
-          { channelId: 'C07CHAN0014', name: 'c07chan0014', connected: null },
-          { channelId: 'C07CHAN0015', name: 'c07chan0015', connected: null },
-          { channelId: 'C07CHAN0016', name: 'c07chan0016', connected: null },
-          { channelId: 'C07CHAN0017', name: 'c07chan0017', connected: null },
-          { channelId: 'C07CHAN0018', name: 'c07chan0018', connected: null },
-          { channelId: SALES_CH, name: 'sales-floor', connected: 'other-agent' },
-          { channelId: SUPPORT_CH, name: 'support-desk', connected: 'this-agent' },
-        ],
-      },
-    });
-    expect(w.slack.sent.map((s) => s.form)).toEqual([
-      { types: 'public_channel', exclude_archived: 'true', limit: '200' },
-      { types: 'public_channel', exclude_archived: 'true', limit: '200', cursor: 'p3' },
-      { types: 'public_channel', exclude_archived: 'true', limit: '200', cursor: 'p6' },
-      { types: 'public_channel', exclude_archived: 'true', limit: '200', cursor: 'p9' },
-      { types: 'public_channel', exclude_archived: 'true', limit: '200', cursor: 'p12' },
-    ]);
-  });
-
-  it('answers 409 needs-reconnect (missing_scope), 409 no-workspace, and 502 slack-error', async () => {
-    const old = world();
-    old.slack.overrides.set('conversations.list', () => old.slack.refuse('missing_scope'));
-    expect(await old.available(SUPPORT.id, ADA)).toEqual({ status: 409, body: { error: 'needs-reconnect' } });
-
-    const none = world();
-    none.state.install = null;
-    expect(await none.available(SUPPORT.id, ADA)).toEqual({ status: 409, body: { error: 'no-workspace' } });
-
-    const down = world();
-    down.slack.overrides.set('conversations.list', () => new Response('', { status: 500 }));
-    expect(await down.available(SUPPORT.id, ADA)).toEqual({ status: 502, body: { error: 'slack-error' } });
-  });
-
-  it.each(['invalid_auth', 'not_authed', 'token_revoked', 'account_inactive'])(
-    'answers a bot token Slack no longer takes (%s) with 409 needs-reconnect',
-    async (code) => {
-      const w = world();
-      w.slack.overrides.set('conversations.list', () => w.slack.refuse(code));
-      expect(await w.available(SUPPORT.id, ADA)).toEqual({ status: 409, body: { error: 'needs-reconnect' } });
-    },
-  );
-});
-
-// ── POST …/disconnect and …/remember ────────────────────────────────────────
-
-describe('disconnect and remember', () => {
-  it("disconnect removes this agent's channel, and never another agent's", async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SALES.id, SALES_CH, SAM);
-    const theirs = w.memory.row(INSTALL_ID, SALES_CH);
-
-    // Ada manages the support agent; the sales channel is not its to remove.
-    expect(await w.disconnect(SUPPORT.id, SALES_CH, ADA)).toEqual({ status: 200, body: { removed: false } });
-    expect(w.memory.row(INSTALL_ID, SALES_CH)).toEqual(theirs);
-
-    expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: true } });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
-    expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: false } });
-  });
-
-  it('disconnect still removes a shared channel of an agent whose own bot is live', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    w.state.bot = OWN_BOT;
-    const lookups = w.botLookups.length;
-    expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: true } });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toBeUndefined();
-    // Disconnect never asks about the bot.
-    expect(w.botLookups).toHaveLength(lookups);
-  });
-
-  it("remember flips this agent's switch, and answers 404 not-connected for any other channel", async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SALES.id, SALES_CH, SAM);
-    const theirs = w.memory.row(INSTALL_ID, SALES_CH);
-
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 200, body: {} });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, true, ADA)).toEqual({ status: 200, body: {} });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
-
-    expect(await w.remember(SUPPORT.id, SALES_CH, false, ADA)).toEqual({ status: 404, body: { error: 'not-connected' } });
-    expect(w.memory.row(INSTALL_ID, SALES_CH)).toEqual(theirs);
-    expect(await w.remember(SUPPORT.id, 'C07NOWHERE1', false, ADA)).toEqual({
-      status: 404,
-      body: { error: 'not-connected' },
-    });
-  });
-
-  it('disconnect and remember take no key but their own: an extra one, even naming another agent, is a 400 and changes nothing', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SALES.id, SALES_CH, SAM);
-    const mine = w.memory.row(INSTALL_ID, SUPPORT_CH);
-    const theirs = w.memory.row(INSTALL_ID, SALES_CH);
-    const writes = w.memory.calls.length;
-    const cases: Array<{ suffix: '/disconnect' | '/remember'; body: Record<string, unknown> }> = [
-      { suffix: '/disconnect', body: { channelId: SUPPORT_CH, agentId: 'agt_other' } },
-      { suffix: '/disconnect', body: { channelId: SALES_CH, agentId: SALES.id } },
-      { suffix: '/disconnect', body: { channelId: SUPPORT_CH, remember: false } },
-      { suffix: '/remember', body: { channelId: SUPPORT_CH, remember: false, agentId: 'agt_other' } },
-      { suffix: '/remember', body: { channelId: SALES_CH, remember: false, agentId: SALES.id } },
-    ];
-    for (const c of cases) {
-      const a = await w.call('POST', c.suffix, SUPPORT.id, ADA, JSON.stringify(c.body));
-      expect({ status: a.status, body: a.body }, `${c.suffix} ${JSON.stringify(c.body)}`).toEqual({
-        status: 400,
-        body: { error: 'invalid-body' },
-      });
-    }
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)).toEqual(mine);
-    expect(w.memory.row(INSTALL_ID, SALES_CH)).toEqual(theirs);
-    expect(w.memory.calls).toHaveLength(writes);
-  });
-
-  it('remember takes only a boolean', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    for (const remember of ['false', 0, null, undefined]) {
-      expect(await w.remember(SUPPORT.id, SUPPORT_CH, remember, ADA), String(remember)).toEqual({
-        status: 400,
-        body: { error: 'invalid-body' },
-      });
-    }
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
-  });
-
-  it('with Slack not connected, there is nothing to disconnect or remember', async () => {
-    const w = world();
-    w.state.install = null;
-    expect(await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA)).toEqual({ status: 200, body: { removed: false } });
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({
-      status: 404,
-      body: { error: 'not-connected' },
-    });
-  });
-});
-
 // ── POST …/bot/remember (TASK-1180) ─────────────────────────────────────────
 
 describe("a bot channel's memory switch (TASK-1180)", () => {
-  it("only a team admin of the agent's team flips a bot channel's switch: everyone else gets the shared toggle's answer, and no switch moves (TASK-1180)", async () => {
+  it("only a team admin of the agent's team flips a bot channel's switch: everyone else gets the answer every write gives, and no switch moves (TASK-1180)", async () => {
     const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
     // The route reads the bot itself (liveOwnBot); bots.status isn't asked.
     w.state.bot = OWN_BOT;
     // The bot's first mention in #support bound it on the bot's own install (router.ts).
-    await w.memory.store.upsert({
-      installId: OWN_BOT.installId,
-      channelId: SUPPORT_CH,
-      agentId: SUPPORT.id,
-      connectedByUserId: 'usr_grace',
-      channelName: 'support-desk',
-    });
+    await answerOnBot(w, SUPPORT_CH);
     const flip = async (agentId: string, as: TestUser | null) => {
       const a = await w.call('POST', '/bot/remember', agentId, as, { channelId: SUPPORT_CH, remember: false });
       return { status: a.status, body: a.body };
@@ -2336,7 +1663,6 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
     for (const as of [MEL, WILL]) expect(await flip(SUPPORT.id, as), as.id).toEqual(FORBIDDEN);
     expect(await flip(PATS.id, PAT)).toEqual({ status: 409, body: { error: 'personal-agent' } });
     expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
     expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
     expect(w.memory.calls).not.toContain('setRemember');
     // Nothing is read for anyone refused, not even the agent's bot.
@@ -2346,84 +1672,27 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
     expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
   });
 
-  /** As a member reads the live bot: no install id. */
-  const LIVE: AgentSlackBot = {
-    state: 'live',
-    botName: 'Support Helper',
-    handle: 'supporthelper',
-    approver: 'Grace Hopper',
-    approverGone: false,
-    viewerIsApprover: false,
-    needsClaim: false,
-    installId: null,
-  };
-  /** A channel the agent's own bot answers in that the shared app never connected; its id sorts before #support's. */
+  /** A second channel the agent's own bot answers in; its id sorts before #support's. */
   const BOT_ONLY_CH = 'C07ALPHA001';
 
-  /** The bot's first mention in a channel binds it on the bot's own install, to its agent (router.ts). */
-  const answerOnBot = (w: ReturnType<typeof world>, channelId: string, channelName = NAMES[channelId] ?? channelId) =>
-    w.memory.store.upsert({
-      installId: OWN_BOT.installId,
-      channelId,
-      agentId: SUPPORT.id,
-      connectedByUserId: 'usr_grace',
-      channelName,
-    });
   const flipBot = async (w: ReturnType<typeof world>, channelId: string, remember: unknown, as: TestUser = ADA) => {
     const a = await w.call('POST', '/bot/remember', SUPPORT.id, as, { channelId, remember });
     return { status: a.status, body: a.body };
   };
   const flips = (w: ReturnType<typeof world>): number => w.memory.calls.filter((c) => c === 'setRemember').length;
 
-  it("the shared switch is refused with 409 own-bot once the agent's own bot has answered in that channel, and nothing changes; before that it flips the shared binding and the kept switch the bot will start from", async () => {
+  it("the bot's switch flips the bot's binding and the kept switch; 404 not-connected where the bot hasn't answered, with no bot, or with a pending one", async () => {
     const w = world();
-    // Connected first: a connect is refused once the bot is live.
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SUPPORT.id, SALES_CH, GRACE);
-    w.state.bot = OWN_BOT;
-
-    // The bot hasn't answered in #sales-floor yet: the shared switch is the one it will start from there.
-    expect(await w.remember(SUPPORT.id, SALES_CH, false, ADA)).toEqual({ status: 200, body: {} });
-    expect(w.memory.row(INSTALL_ID, SALES_CH)?.remember).toBe(false);
-    expect(w.memory.kept(SUPPORT.id, SALES_CH)).toBe(false);
-
-    // It has answered in #support-desk: the switch there is the bot channel's.
-    await answerOnBot(w, SUPPORT_CH);
-    const before = flips(w);
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 409, body: { error: 'own-bot' } });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
-    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
-    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
-    expect(flips(w)).toBe(before);
-  });
-
-  it('a pending bot changes nothing: the shared switch flips as before', async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    w.state.bot = PENDING_BOT;
-    // A bot answers nothing before its Allow; even a binding on its install doesn't make it live.
-    await answerOnBot(w, SUPPORT_CH);
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 200, body: {} });
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
-    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
-  });
-
-  it("the bot's switch flips the bot's binding, the agent's shared binding of that channel and the kept switch; 404 not-connected where the bot hasn't answered, with no bot, or with a pending one", async () => {
-    const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SUPPORT.id, SALES_CH, GRACE);
     w.state.bot = OWN_BOT;
     await answerOnBot(w, SUPPORT_CH);
 
     expect(await flipBot(w, SUPPORT_CH, false)).toEqual({ status: 200, body: {} });
     expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
-    // So the shared bot carries on with it if the bot is disconnected.
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
+    // So a bot of the agent's that binds #support later starts from it (channel-store.ts `bindBot`).
     expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
 
-    // Not a channel the bot has answered in: its shared binding is the shared switch's to flip.
+    // Not a channel the bot has answered in: nothing to flip there, and nothing kept.
     expect(await flipBot(w, SALES_CH, false)).toEqual({ status: 404, body: { error: 'not-connected' } });
-    expect(w.memory.row(INSTALL_ID, SALES_CH)?.remember).toBe(true);
     expect(w.memory.kept(SUPPORT.id, SALES_CH)).toBeUndefined();
 
     // No bot, or one that isn't live: nothing to flip, and nothing moves.
@@ -2437,7 +1706,6 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
     }
     expect(flips(w)).toBe(before);
     expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
     expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
   });
 
@@ -2481,31 +1749,24 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
 
   it("a store fault reading the agent's bot is the bot switch's 500, logged as slack_channel_route_failed { stage: 'bot-remember', code } and never naming the channel", async () => {
     const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
     w.state.bot = OWN_BOT;
     await answerOnBot(w, SUPPORT_CH);
     w.state.botFault = Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
 
     expect(await flipBot(w, SUPPORT_CH, false)).toEqual({ status: 500, body: { error: 'internal' } });
-    // The shared switch can't tell whether the bot answered there either: its own 500, never a guess.
-    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
     expect(w.memory.calls).not.toContain('setRemember');
-    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
     expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
     expect(w.lines.filter((l) => l.msg === 'slack_channel_route_failed')).toEqual([
       { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-remember', code: '42P01' } },
-      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'remember', code: '42P01' } },
     ]);
     expect(JSON.stringify(w.lines)).not.toContain(SUPPORT_CH);
   });
 
   it("the section lists the live bot's own channels with their switches, oldest first, to managers and members, with or without the shared app; no botChannels without a live bot", async () => {
     const w = world();
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SUPPORT.id, SALES_CH, GRACE);
     w.state.bot = OWN_BOT;
     w.bots.answers.status = LIVE;
-    // The bot answered in #support-desk first, then in a channel the shared app never had.
+    // The bot answered in #support-desk first, then in #alpha-room.
     await answerOnBot(w, SUPPORT_CH);
     await answerOnBot(w, BOT_ONLY_CH, 'alpha-room');
     expect(await w.memory.store.setRemember(OWN_BOT.installId, SUPPORT_CH, SUPPORT.id, false)).toBe(true);
@@ -2525,10 +1786,6 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
           botName: 'canopy-works',
           workspaceName: 'Canopy Works',
           canManage,
-          // #support-desk moved to the bot's list; #sales-floor still waits for it.
-          channels: [
-            { channelId: SALES_CH, name: 'sales-floor', remember: true, connectedBy: 'Grace Hopper', needsReconnect: false, needsInvite: true },
-          ],
           bot: LIVE,
           botChannels,
         },
@@ -2574,40 +1831,40 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
 
 describe('logs', () => {
   it('say what happened by code alone: never a channel id or name, an email or a person', async () => {
-    const w = world({
-      getUserFault: new PluginError({ code: 'db-down', plugin: '@ax/auth-better', message: 'down' }),
-    });
-    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
-    await w.connect(SUPPORT.id, SUPPORT_CH, GRACE);
-    await w.connect(SUPPORT.id, ARCHIVED_CH, ADA);
-    await w.connect(SALES.id, SUPPORT_CH, SAM);
+    const w = world();
+    // The agent's own bot, live, answered in #support-desk and #sales-floor (router.ts).
+    w.state.bot = OWN_BOT;
+    w.bots.answers.status = LIVE;
+    await answerOnBot(w, SUPPORT_CH);
+    await answerOnBot(w, SALES_CH);
     await w.status(SUPPORT.id, MEL);
-    await w.available(SUPPORT.id, ADA);
-    await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA);
-    await w.disconnect(SUPPORT.id, SUPPORT_CH, ADA);
-    w.slack.overrides.set('conversations.info', () => w.slack.refuse('missing_scope'));
-    await w.connect(SUPPORT.id, SALES_CH, ADA);
+    await w.call('POST', '/bot/remember', SUPPORT.id, ADA, { channelId: SUPPORT_CH, remember: false });
+    // What went right logs nothing.
+    expect(w.lines).toEqual([]);
 
-    expect(w.lines.map((l) => l.msg)).toEqual(
-      expect.arrayContaining([
-        'slack_channel_connected',
-        'slack_channel_refused',
-        'slack_channel_disconnected',
-        'slack_channel_route_failed',
-      ]),
-    );
-    expect(w.lines).toContainEqual({
-      level: 'info',
-      msg: 'slack_channel_disconnected',
-      fields: { installId: INSTALL_ID },
-    });
+    // Faults whose own text names a channel, its name, a person and their email: their codes alone are logged.
+    const named = `${SUPPORT_CH} ${NAMES[SUPPORT_CH]!} ${ADA.email!} ${ADA.displayName!}`;
+    w.memory.store.setRemember = async () => {
+      throw Object.assign(new Error(named), { code: '42P01' });
+    };
+    await w.call('POST', '/bot/remember', SUPPORT.id, ADA, { channelId: SALES_CH, remember: false });
+    w.state.botFault = Object.assign(new Error(named), { code: '57P01' });
+    await w.status(SUPPORT.id, ADA);
+    w.state.botFault = undefined;
+    w.bots.state.fail = Object.assign(new Error(named), { code: 'ECONNRESET' });
+    await w.requestBot(SUPPORT.id, { botName: 'Support Helper' }, ADA);
+
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-remember', code: '42P01' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'status', code: '57P01' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot', code: 'ECONNRESET' } },
+    ]);
     const logged = JSON.stringify(w.lines);
     for (const secret of [
       ...Object.keys(NAMES),
       ...Object.values(NAMES),
       ...USERS.flatMap((u) => [u.email!, ...(u.displayName === null ? [] : [u.displayName])]),
       SUPPORT.displayName,
-      BOT_TOKEN,
     ]) {
       expect(logged, secret).not.toContain(secret);
     }

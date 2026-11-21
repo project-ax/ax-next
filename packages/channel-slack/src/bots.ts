@@ -87,9 +87,7 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  * their rights asked again inside the lock; or an AX admin from Admin ›
  * Slack, never the shared app), and its agent's deletion. Cancel and
  * Disconnect name the bot by the install id their page showed (Cancel since
- * TASK-1173), so a stale page can't take a bot asked for since. The
- * shared bot's channel bindings are never touched, so it answers in the
- * agent's channels again once the agent's bot is gone.
+ * TASK-1173), so a stale page can't take a bot asked for since.
  *
  * Every step that touches a Slack app or a configuration token runs under the
  * one app lock (`lock`), which plugin.ts creates once and shares with Admin ›

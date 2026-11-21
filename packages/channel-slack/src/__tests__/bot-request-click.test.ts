@@ -164,8 +164,6 @@ function fakeSlack(trail: string[], o: { users: Record<string, unknown>; ephemer
     addReaction: notHere('addReaction'),
     removeReaction: notHere('removeReaction'),
     conversationsInfo: notHere('conversationsInfo'),
-    conversationsList: notHere('conversationsList'),
-    conversationsJoin: notHere('conversationsJoin'),
   };
   return { api, calls };
 }

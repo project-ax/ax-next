@@ -6,23 +6,25 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * Slack's word that a bound channel is still one a bot may answer in: public,
  * live, and not Slack Connect (TASK-1184).
  *
- * Why: a channel is checked when it is bound (channels.ts `connectChannel`,
- * and a team agent's own bot at its first mention there, router.ts
- * `bindBotChannel`), but it can change after that: made private, archived,
- * or shared with another company. An `app_mention` carries no channel type
- * to notice that by, so the router asks Slack's `conversations.info` again,
- * with the install's own bot token, when each channel turn starts. (Slack
- * does flag an event in a channel shared with another company, and
- * admission.ts `screenEvent` drops it before any turn, so a shared channel
- * reaches this check only through a turn already waiting when it was shared,
- * or a mention while its share is still pending.)
+ * Why: a channel is checked when a team agent's own bot binds it, at its
+ * first mention there (router.ts `bindBotChannel`), but it can change after
+ * that: made private, archived, or shared with another company. An
+ * `app_mention` carries no channel type to notice that by, so the router
+ * asks Slack's `conversations.info` again, with the bot's own token, when
+ * each channel turn starts. The shared app binds no channel (TASK-1186), so
+ * only a bot's token is ever asked. (Slack does flag an event in a channel
+ * shared with another company, and admission.ts `screenEvent` drops it
+ * before any turn, so a shared channel reaches this check only through a
+ * turn already waiting when it was shared, or a mention while its share is
+ * still pending.)
  *
  * What Slack's untrusted answer becomes:
  *   - allowed: an answer about this channel that channels.ts `connectable`
- *     accepts, the same test a connect makes, so the two can't disagree;
+ *     accepts, the same test a bot's first bind makes, so the two can't
+ *     disagree;
  *   - refused, which is definitive: an answer about this channel that
  *     `connectable` refuses (`not-public`, `archived` or `shared`, named in
- *     connectChannel's order), or Slack's own `channel_not_found` or
+ *     `connectable`'s order), or Slack's own `channel_not_found` or
  *     `missing_scope` (CHANNEL_REFUSED_CODES). A bot that reads public
  *     channels only gets `missing_scope` for a channel it can't read as
  *     one: the TASK-1174 walk measured it at a bot's first bind, for a
@@ -67,18 +69,18 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
 
 /**
  * conversations.info refusals that are about the channel, not Slack failing:
- * definitive, never "try again". Both apps read public channels only (each
- * manifest's `channels:read`, and no `groups:read`), so a private channel or
- * a group DM a bot was added to anyway is `channel_not_found` or
- * `missing_scope` to it. A team agent's own bot binds nothing there, in
- * silence, as for a channel Slack describes as one it can't serve (router.ts
- * `bindBotChannel`); a channel already bound is refused (above). Either way,
- * a `missing_scope` refuses only when it isn't the token's own
- * (channelInfoFailure).
+ * definitive, never "try again". A bot reads public channels only (its
+ * manifest's `channels:read`, and no `groups:read`; the shared app's manifest
+ * reads no channel at all, TASK-1186), so a private channel or a group DM a
+ * bot was added to anyway is `channel_not_found` or `missing_scope` to it. A
+ * team agent's own bot binds nothing there, in silence, as for a channel
+ * Slack describes as one it can't serve (router.ts `bindBotChannel`); a
+ * channel already bound is refused (above). Either way, a `missing_scope`
+ * refuses only when it isn't the token's own (channelInfoFailure).
  */
 export const CHANNEL_REFUSED_CODES: ReadonlySet<string> = new Set(['channel_not_found', 'missing_scope']);
 
-/** The scope a bot reads every public channel with: both manifests ask for it (manifest.ts). */
+/** The scope a bot reads every public channel with: its manifest asks for it (manifest.ts). */
 const PUBLIC_CHANNELS_SCOPE = 'channels:read';
 
 export type ChannelCheckResult =
@@ -132,7 +134,7 @@ export interface ChannelCheck {
   check(installId: string, botToken: string, channelId: string): Promise<ChannelCheckResult>;
 }
 
-/** Why `connectable` refused a channel, in channels.ts connectChannel's order. */
+/** Why `connectable` refused a channel: the first of its tests that failed, in its order. */
 function refusalCode(c: SlackChannel): 'not-public' | 'archived' | 'shared' {
   if (!c.isChannel || c.isPrivate) return 'not-public';
   if (c.isArchived) return 'archived';

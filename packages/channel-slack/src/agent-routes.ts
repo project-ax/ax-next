@@ -1,53 +1,34 @@
-import { makeAgentContext, type AgentContext } from '@ax/core';
+import { makeAgentContext, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import type { BotChanges } from './bot-changes.js';
 import { checkBotName } from './bot-name.js';
 import type { BotRequests } from './bot-requests.js';
 import type { AgentSlackBot, Bots } from './bots.js';
-import {
-  agentAccess,
-  checkRights,
-  connectChannel,
-  listAvailableChannels,
-  liveOwnBot,
-  type AgentAccess,
-  type ChannelDeps,
-  type Rights,
-} from './channels.js';
+import type { ChannelStore } from './channel-store.js';
+import { checkRights, liveOwnBot, type Rights } from './channels.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
 import { INSTALL_ID_RE } from './ingress.js';
 import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX, SLACK_ID_RE } from './limits.js';
 import { logCode } from './log-code.js';
-import { personName } from './person-name.js';
 import { personalAgentFor } from './router.js';
 import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
+import type { InstallStore } from './store.js';
 import { checkUser } from './user-auth.js';
 
 /**
- * The Slack section of a team agent's settings (TASK-1094): the channels
- * connected to it through the shared app, and connecting, disconnecting and
- * remembering them. With its own bot live (TASK-1168) those are the ones still
- * waiting for the bot: each is `needsInvite` until the bot has answered there
- * (a binding on the bot's install), then it leaves the list for the bot's own
- * (`botChannels`, TASK-1180), where it has its own memory switch, flipped by
- * `POST …/bot/remember`. From then the shared switch answers `409 own-bot`
- * for that channel; before, it sets what the bot will start from there. And
- * `POST …/connect` refuses that agent with `409 own-bot` (channels.ts). And
- * the agent's own Slack bot (TASK-1167, bots.ts): asking for it, picking the
- * request back up in Slack, cancelling it, and disconnecting it (TASK-1172);
- * once it's live, renaming it or changing its picture (TASK-1171,
- * bot-changes.ts), its approver replacing their configuration token, and a
- * team admin claiming it once its requester is no longer one (TASK-1173). Or,
- * for a team admin who can't install Slack apps, asking an AX admin to
- * approve it instead (TASK-1169, bot-requests.ts), and taking that ask back.
+ * The Slack section of a team agent's settings: the agent's own Slack bot
+ * (TASK-1167, bots.ts). Asking for it, picking the request back up in Slack,
+ * cancelling it, and disconnecting it (TASK-1172); once it's live, the
+ * channels it has answered in (a binding on its install), each with its own
+ * memory switch (`botChannels`, TASK-1180), renaming it or changing its
+ * picture (TASK-1171, bot-changes.ts), its approver replacing their
+ * configuration token, and a team admin claiming it once its requester is no
+ * longer one (TASK-1173). Or, for a team admin who can't install Slack apps,
+ * asking an AX admin to approve it instead (TASK-1169, bot-requests.ts), and
+ * taking that ask back. The shared app connects no channel here (TASK-1186;
+ * design §4b.1): a team agent is reached in a channel only through its own bot.
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
- *   GET  /settings/slack/:agentId/available   → { channels, truncated }   (a team admin of its team)
- *   POST /settings/slack/:agentId/connect     { channelId } → { channel, reconnected }
- *                                             · 409 own-bot while its own bot is live
- *   POST /settings/slack/:agentId/disconnect  { channelId } → { removed }
- *   POST /settings/slack/:agentId/remember    { channelId, remember } → {}
- *                                             · 409 own-bot once its own bot has answered in the channel
  *   POST /settings/slack/:agentId/bot/remember  { channelId, remember } → {}, a channel its live bot has
  *                                               answered in, with or without the shared app (TASK-1180)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -75,10 +56,11 @@ import { checkUser } from './user-auth.js';
  * could have (never tell someone the agent exists); then rights (channels.ts:
  * a team admin of the agent's team manages, workspace-admin status never
  * counts; anything but a team agent is `personal-agent`), all before a body
- * is read or Slack is asked anything. The POSTs keep http-server's CSRF
- * check and cap their bodies; an unknown body key is a 400, so nothing in a
- * body can name another agent. The bot's request body can carry its picture,
- * and a new picture's body is one, so both have Admin › Slack's Connect cap.
+ * is read or the domain is asked anything. The routes hold no Slack client
+ * and no vault: the domains do. The POSTs keep http-server's CSRF check and
+ * cap their bodies; an unknown body key is a 400, so nothing in a body can
+ * name another agent. The bot's request body can carry its picture, and a
+ * new picture's body is one, so both have Admin › Slack's Connect cap.
  * The request's `refreshToken` is optional (the one stored for the person is
  * used without it), but one that is there must look like a configuration
  * refresh token, so an access token pasted into that box never reaches Slack.
@@ -101,10 +83,9 @@ import { checkUser } from './user-auth.js';
  * token (the approving AX admin brings their own) and no picture (their
  * browser draws it at Approve). Taking the ask back reads no body.
  *
- * Team members who aren't admins read the section, so "connected by" and a
- * bot's approver are a display name or "A teammate", never an email, and a
- * live bot's install id reaches only those who manage the agent (bots.ts).
- * Failures log code-only.
+ * Team members who aren't admins read the section, so a bot's approver is a
+ * display name or "A teammate", never an email, and a live bot's install id
+ * reaches only those who manage the agent (bots.ts). Failures log code-only.
  */
 
 /**
@@ -136,29 +117,29 @@ export type AgentSlackStatus =
       botName: string;
       workspaceName: string;
       canManage: boolean;
-      channels: Array<{
-        channelId: string;
-        name: string;
-        remember: boolean;
-        connectedBy: string;
-        needsReconnect: boolean;
-        /**
-         * The agent's own bot is live and hasn't answered in this channel yet,
-         * so the shared bot steps aside here and nobody reaches the agent in it
-         * until someone runs `/invite` for the bot. Only ever true when `bot`
-         * is live in the same answer.
-         */
-        needsInvite: boolean;
-      }>;
       bot: AgentSlackBot;
       /**
        * The agent's own bot's channels, oldest first. Present only when the
-       * route's own read finds the bot live (as `needsInvite` is).
+       * route's own read finds the bot live, so a row never needs a bot this
+       * answer doesn't show.
        */
       botChannels?: AgentSlackBotChannel[];
     };
 
 export const AGENT_SLACK_PATH = '/settings/slack/:agentId';
+
+/**
+ * What the section's routes read for themselves (invariant 5): the shared
+ * install (is Slack connected, its names), the agent's own bot, and that
+ * bot's channels and their memory switches. No Slack client and no vault:
+ * whatever reaches Slack goes through the bot domains.
+ */
+export interface AgentRoutesDeps {
+  bus: HookBus;
+  installs: Pick<InstallStore, 'current' | 'botForAgent'>;
+  channels: Pick<ChannelStore, 'listForAgent' | 'setRemember'>;
+  logger: Logger;
+}
 
 type Reply = { status: number; body: unknown };
 
@@ -178,8 +159,6 @@ const PICTURE_KEYS: readonly string[] = ['iconPng'];
 const REPLACE_KEYS: readonly string[] = ['refreshToken'];
 
 const PLUGIN = '@ax/channel-slack';
-/** "Connected by" when auth has no name, no account or no answer. Never the email: members read this page. */
-const CONNECTOR_FALLBACK = 'A teammate';
 /** An agent id as a path may carry it: printable ASCII, bounded. Anything else is no agent at all. */
 const AGENT_ID_RE = new RegExp(`^[\\x21-\\x7e]{1,${AGENT_ID_MAX}}$`);
 
@@ -379,19 +358,6 @@ function readPictureBody(req: RouteRequest): PictureBody {
   return { ok: true, png: icon.png };
 }
 
-/** One lookup per key per request, however many channels share it. */
-function once<T>(look: (key: string) => Promise<T>): (key: string) => Promise<T> {
-  const seen = new Map<string, Promise<T>>();
-  return (key) => {
-    let found = seen.get(key);
-    if (found === undefined) {
-      found = look(key);
-      seen.set(key, found);
-    }
-    return found;
-  };
-}
-
 /** Who is asking, about which agent, as one route sees it. */
 interface Asked {
   req: RouteRequest;
@@ -401,7 +367,7 @@ interface Asked {
 }
 
 export function createAgentSlackRoutes(
-  d: ChannelDeps,
+  d: AgentRoutesDeps,
   bots: Pick<Bots, 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status'>,
   requests: Pick<BotRequests, 'ask' | 'cancel'>,
   // Never Admin › Slack's Replace by install id: admin-bot-routes.ts is its one caller.
@@ -421,13 +387,6 @@ export function createAgentSlackRoutes(
       // A log line never changes an answer.
     }
   };
-
-  const connectorName = (ctx: AgentContext, userId: string): Promise<string> =>
-    personName(d.bus, ctx, userId, {
-      allowEmail: false,
-      fallback: CONNECTOR_FALLBACK,
-      onFault: (err) => log('warn', 'slack_channel_route_failed', { stage: 'connected-by', code: logCode(err) }),
-    });
 
   /** The manage check every route but the section itself starts with. */
   const manages = (a: Asked): Promise<Rights> => checkRights(d.bus, a.ctx, a.agentId, a.userId, 'manage');
@@ -476,149 +435,26 @@ export function createAgentSlackRoutes(
     if (!sharedActive) {
       return json(200, { state: 'no-workspace', canManage: manage.ok, bot, ...botChannels } satisfies AgentSlackStatus);
     }
-    const nameOf = once((userId) => connectorName(a.ctx, userId));
-    const accessOf = once((userId): Promise<AgentAccess> => agentAccess(d.bus, a.ctx, a.agentId, userId));
-    const channels: Extract<AgentSlackStatus, { state: 'ready' }>['channels'] = [];
-    const answered = ownBindings === null ? null : new Set(ownBindings.map((c) => c.channelId));
-    for (const b of await d.channels.listForAgent(install.installId, a.agentId)) {
-      // Its own bot answers here now: off the list. The shared binding stays, unused.
-      if (answered?.has(b.channelId) === true) continue;
-      const needsInvite = answered !== null;
-      channels.push({
-        channelId: b.channelId,
-        name: b.channelName,
-        remember: b.remember,
-        connectedBy: await nameOf(b.connectedByUserId),
-        // Outsiders' turns run as the connector, so a connector who lost the
-        // agent breaks the channel until a team admin connects it again. While
-        // the agent's own bot is live the shared bot steps aside for it, so
-        // no outsider runs as the connector here.
-        needsReconnect: !needsInvite && (await accessOf(b.connectedByUserId)) !== 'yes',
-        needsInvite,
-      });
-    }
     const out: AgentSlackStatus = {
       state: 'ready',
       botName: install.botName,
       workspaceName: install.teamName ?? '',
       canManage: manage.ok,
-      channels,
       bot,
       ...botChannels,
     };
     return json(200, out);
   }
 
-  async function available(a: Asked): Promise<Reply> {
-    const rights = await manages(a);
-    if (!rights.ok) return refused(rights.reason);
-    const listed = await listAvailableChannels(d, a.agentId);
-    if (listed.ok) return json(200, { channels: listed.channels, truncated: listed.truncated });
-    return listed.reason === 'slack-error' ? json(502, { error: 'slack-error' }) : json(409, { error: listed.reason });
-  }
-
-  async function connect(a: Asked): Promise<Reply> {
-    const rights = await manages(a);
-    if (!rights.ok) return refused(rights.reason);
-    const body = readBody(a.req, ['channelId']);
-    if (!body.ok) return body.reply;
-    const out = await connectChannel(d, {
-      // The settings have no signed request: they work in the one install.
-      install: await d.installs.current(),
-      agentId: a.agentId,
-      channelId: body.channelId,
-      actorUserId: a.userId,
-      ctx: a.ctx,
-    });
-    if (out.ok) {
-      const b = out.binding;
-      return json(200, {
-        channel: {
-          channelId: b.channelId,
-          name: b.channelName,
-          remember: b.remember,
-          connectedBy: await connectorName(a.ctx, b.connectedByUserId),
-          needsReconnect: false,
-          needsInvite: false,
-        },
-        reconnected: out.reconnected,
-      });
-    }
-    switch (out.reason) {
-      case 'not-public':
-      case 'archived':
-      case 'shared':
-        return json(422, { error: 'channel-not-allowed', reason: out.reason });
-      case 'not-allowed':
-        return json(422, { error: 'channel-not-allowed', reason: 'workspace-policy' });
-      case 'agent-gone':
-        // Deleted while this connect ran: the binding was taken back.
-        return NOT_FOUND;
-      case 'own-bot':
-        // The agent's own bot went live since the page that offered this was
-        // drawn (it hides the picker and Reconnect while one is live). The code
-        // alone: reading the section again shows the bot and how to invite it.
-        return json(409, { error: 'own-bot' });
-      case 'slack-error':
-        return json(502, { error: 'slack-error' });
-      default:
-        return json(409, { error: out.reason });
-    }
-  }
-
-  async function disconnect(a: Asked): Promise<Reply> {
-    const rights = await manages(a);
-    if (!rights.ok) return refused(rights.reason);
-    const body = readBody(a.req, ['channelId']);
-    if (!body.ok) return body.reply;
-    const install = await d.installs.current();
-    if (install === null) return json(200, { removed: false });
-    const removed = await d.channels.remove(install.installId, body.channelId, a.agentId);
-    if (removed) log('info', 'slack_channel_disconnected', { installId: install.installId });
-    return json(200, { removed });
-  }
-
-  /**
-   * Whether the agent's own bot is live and has answered in the channel: a
-   * binding of it, this agent's, on the bot's install. A store fault throws,
-   * so a caller that can't tell writes nothing.
-   */
-  async function ownBotAnswers(agentId: string, channelId: string): Promise<boolean> {
-    const own = await liveOwnBot(d.installs, agentId);
-    if (own === null) return false;
-    const binding = await d.channels.get(own.installId, channelId);
-    return binding !== null && binding.agentId === agentId;
-  }
-
-  /**
-   * The shared connection's switch. Once the agent's own bot has answered in
-   * the channel, the switch there is the bot channel's (`…/bot/remember`), so
-   * this one answers `409 own-bot` and writes nothing. Before that it is what
-   * the bot will start from there (channel-store.ts `bindBot`), so it flips
-   * as before: the agent's bindings of the channel and the switch kept for
-   * it (channel-store.ts `setRemember`).
-   */
-  async function remember(a: Asked): Promise<Reply> {
-    const rights = await manages(a);
-    if (!rights.ok) return refused(rights.reason);
-    const body = readSwitchBody(a.req);
-    if (!body.ok) return body.reply;
-    const install = await d.installs.current();
-    if (install === null) return json(404, { error: 'not-connected' });
-    if (await ownBotAnswers(a.agentId, body.channelId)) return json(409, { error: 'own-bot' });
-    const changed = await d.channels.setRemember(install.installId, body.channelId, a.agentId, body.remember);
-    return changed ? json(200, {}) : json(404, { error: 'not-connected' });
-  }
-
   /**
    * The switch of a channel the agent's own bot has answered in (TASK-1180):
    * any team admin who manages the agent may flip it, with or without the
-   * shared app. It flips the bot's binding, the agent's shared binding of
-   * the channel with it, and the switch kept for the agent and channel
-   * (channel-store.ts `setRemember`), so the shared bot carries on with it
-   * if the bot is disconnected. The bot is the agent's, never the body's to
-   * name. `404 not-connected` while the agent has no live bot, or its bot
-   * hasn't answered there.
+   * shared app. It flips the bot's binding and the switch kept for the agent
+   * and channel (channel-store.ts `setRemember`), which outlives a
+   * Disconnect: a bot of the agent's that binds the channel later starts
+   * from it (`bindBot`). The bot is the agent's, never the body's to name.
+   * `404 not-connected` while the agent has no live bot, or its bot hasn't
+   * answered there.
    */
   async function rememberBotChannel(a: Asked): Promise<Reply> {
     const rights = await manages(a);
@@ -793,10 +629,6 @@ export function createAgentSlackRoutes(
 
   return [
     route('GET', '', 'status', status),
-    route('GET', '/available', 'available', available),
-    route('POST', '/connect', 'connect', connect),
-    route('POST', '/disconnect', 'disconnect', disconnect),
-    route('POST', '/remember', 'remember', remember),
     // A channel the agent's own bot has answered in has its own switch (TASK-1180).
     route('POST', '/bot/remember', 'bot-remember', rememberBotChannel),
     // Its body can carry the bot's picture (icon.ts), as Admin › Slack's Connect can.

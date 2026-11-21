@@ -65,12 +65,6 @@ export function memoryChannelStore() {
         )
         .map(copy);
     },
-    async listAll(installId) {
-      calls.push('listAll');
-      return [...rows.values()]
-        .filter((b) => b.installId === installId)
-        .map((b) => ({ channelId: b.channelId, agentId: b.agentId }));
-    },
     async upsert(b) {
       calls.push('upsert');
       const at = key(b.installId, b.channelId);

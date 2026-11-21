@@ -143,7 +143,7 @@ describe('createChannelCheck', () => {
     ['archived', { isArchived: true }, 'archived'],
     ['Slack Connect', { isExtShared: true }, 'shared'],
     ['a pending Slack Connect invitation', { isPendingExtShared: true }, 'shared'],
-    // More than one at once: the first in channels.ts connectChannel's order names it.
+    // More than one at once: the first in channels.ts `connectable`'s order names it.
     ['private and archived', { isPrivate: true, isArchived: true }, 'not-public'],
     ['archived and Slack Connect', { isArchived: true, isExtShared: true }, 'archived'],
   ] as const)('a channel Slack describes as %s is refused, and the refusal is never kept', async (_n, over, code) => {
@@ -220,9 +220,9 @@ describe('createChannelCheck', () => {
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'channel_not_found' });
   });
 
-  it('both apps hold channels:read, the scope a missing_scope is read against: a token without it is not ours as built', () => {
-    expect(BOT_SCOPES).toContain('channels:read');
+  it("a bot holds channels:read, the scope a missing_scope is read against: a token without it is not ours as built; the shared app's token is never checked, as it reads no channel (TASK-1186)", () => {
     expect(DEDICATED_BOT_SCOPES).toContain('channels:read');
+    expect(BOT_SCOPES).not.toContain('channels:read');
   });
 
   // The check reads every failure through channelInfoFailure, the one reading router.ts `bindBotChannel`

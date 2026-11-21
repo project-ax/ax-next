@@ -27,7 +27,6 @@ import type { RouteRequest, RouteResponse, RouteSpec } from '../http-types.js';
 import {
   ADMIN_BODY_MAX_BYTES,
   ADMIN_CONNECT_BODY_MAX_BYTES,
-  COMMANDS_MAX_BODY_BYTES,
   EVENTS_MAX_BODY_BYTES,
   INTERACTIONS_MAX_BODY_BYTES,
   OAUTH_STATE_BYTES,
@@ -568,6 +567,14 @@ async function installCount(): Promise<number> {
   return Number(r.rows[0]?.n ?? '0');
 }
 
+/** The channels bound on an install, whichever agent, read straight from Postgres, by id. */
+async function channelsOn(installId: string): Promise<string[]> {
+  const r = await sql<{ channel_id: string }>`
+    SELECT channel_id FROM channel_slack_v1_channels WHERE install_id = ${installId} ORDER BY channel_id
+  `.execute(probe);
+  return r.rows.map((row) => row.channel_id);
+}
+
 /** The agent's own bot's signing secret, Slack user id and bot token, as seedSupportBot stores them (TASK-1180). */
 const BOT_SIGNING_SECRET = 'test-bot-signing-secret-03';
 const BOT_USER_ID = 'U07HELPERBOT';
@@ -576,8 +583,8 @@ const SUPPORT_BOT_TOKEN = fakeBotToken('DISCONNECTBOTSECRET');
 /**
  * TASK-1172's world: Ada's shared app, live, with its signing secret, bot
  * token and her own configuration token; Grace's live bot for the team agent,
- * with its three secrets and her own token; and the agent's #support bound on
- * both, the shared binding Ada's and the bot's Grace's.
+ * with its three secrets and her own token; and the agent's #support bound to
+ * the bot, Grace's. The shared app binds no channel (TASK-1186).
  */
 async function seedSupportBot(s: Services): Promise<{ adas: string; graces: string }> {
   const adas = fakeConfigRefreshToken('DISCONNECTADASECRET');
@@ -607,9 +614,15 @@ async function seedSupportBot(s: Services): Promise<{ adas: string; graces: stri
   s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-03');
   s.vault.set(configTokenRef(GRACE), graces);
   const channels = createChannelStore(probe);
-  const bound = { channelId: SUPPORT_CH, agentId: TEAM_AGENT.id, channelName: 'support' };
-  expect(await channels.upsert({ ...bound, installId: INSTALL_ID, connectedByUserId: ADMIN.id })).toBe('connected');
-  expect(await channels.upsert({ ...bound, installId: BOT_INSTALL_ID, connectedByUserId: GRACE })).toBe('connected');
+  expect(
+    await channels.upsert({
+      installId: BOT_INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: GRACE,
+      channelName: 'support',
+    }),
+  ).toBe('connected');
   return { adas, graces };
 }
 
@@ -791,10 +804,8 @@ describe('@ax/channel-slack plugin', () => {
           hook: 'agent:interrupt',
           degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
-        {
-          hook: 'teams:list-for-user',
-          degradation: '/ax connect finds no team agents, so channels connect from agent settings only',
-        },
+        // A bot request's team (bot-requests.ts): without @ax/teams none is named.
+        { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
         // The approval buttons (TASK-1095): optional, never hard.
         ...[
           'decisions:recent-for-conversation',
@@ -869,7 +880,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the thirty-four routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the twenty-nine routes, and only the events and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -917,7 +928,6 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
       { method: 'POST', path: '/slack/events/:installId', bypassCsrf: true, maxBodyBytes: EVENTS_MAX_BODY_BYTES },
-      { method: 'POST', path: '/slack/commands/:installId', bypassCsrf: true, maxBodyBytes: COMMANDS_MAX_BODY_BYTES },
       {
         method: 'POST',
         path: '/slack/interactions/:installId',
@@ -925,15 +935,6 @@ describe('@ax/channel-slack plugin', () => {
         maxBodyBytes: INTERACTIONS_MAX_BODY_BYTES,
       },
       { method: 'GET', path: '/settings/slack/:agentId', bypassCsrf: false, maxBodyBytes: undefined },
-      { method: 'GET', path: '/settings/slack/:agentId/available', bypassCsrf: false, maxBodyBytes: undefined },
-      { method: 'POST', path: '/settings/slack/:agentId/connect', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
-      {
-        method: 'POST',
-        path: '/settings/slack/:agentId/disconnect',
-        bypassCsrf: false,
-        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
-      },
-      { method: 'POST', path: '/settings/slack/:agentId/remember', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
       // The memory switch of a channel the agent's own bot has answered in (TASK-1180).
       {
         method: 'POST',
@@ -1059,8 +1060,6 @@ describe('@ax/channel-slack plugin', () => {
     expect(unserved.status).toBe(404);
     for (const id of [UNKNOWN_ID, INSTALL_ID.slice(1), INSTALL_ID]) {
       expect(await answer(`/slack/events/${id}`), id).toEqual(unserved);
-      // The commands route answers an unknown or secretless install the same way.
-      expect(await answer(`/slack/commands/${id}`), `commands ${id}`).toEqual(unserved);
       // And the interactions route (TASK-1095).
       expect(await answer(`/slack/interactions/${id}`), `interactions ${id}`).toEqual(unserved);
     }
@@ -2348,7 +2347,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(34);
+    expect(s.routes).toHaveLength(29);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2370,7 +2369,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(34);
+    expect(s.routes).toHaveLength(29);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2399,7 +2398,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(34);
+    expect(s.routes).toHaveLength(29);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2449,9 +2448,17 @@ describe('@ax/channel-slack plugin', () => {
       done: true,
     });
     await insertActiveInstall();
-    expect(await get(ADMIN.id)).toMatchObject({
+    // Ready: the workspace and the bot, and no shared channel list (TASK-1186).
+    expect(await get(ADMIN.id)).toEqual({
       status: 200,
-      body: { state: 'ready', canManage: true, channels: [] },
+      body: {
+        state: 'ready',
+        botName: 'canopy-works',
+        workspaceName: 'Canopy Works',
+        canManage: true,
+        bot: { state: 'none', configTokenStored: false },
+      },
+      done: true,
     });
   });
 
@@ -2481,7 +2488,7 @@ describe('@ax/channel-slack plugin', () => {
       ownerType: 'team',
     });
 
-    expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual(['C07OTHER002']);
+    expect(await channelsOn(INSTALL_ID)).toEqual(['C07OTHER002']);
   });
 
   it("deleting a team agent deletes its own Slack bot through the wiring, after the Admin › Slack step that holds the one app lock (TASK-1167)", async () => {
@@ -2535,13 +2542,14 @@ describe('@ax/channel-slack plugin', () => {
     s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), fakeBotToken('ONELOCKBOTSECRET'));
     s.vault.set(secretRef(BOT_INSTALL_ID, 'signing-secret'), 'test-bot-signing-secret-02');
     s.vault.set(secretRef(BOT_INSTALL_ID, 'client-secret'), 'test-bot-client-secret-02');
-    // A channel of the agent's on the shared app: it goes as soon as the agent's cleanup starts.
+    // A channel of the agent's, on its own bot: it goes as soon as the agent's
+    // cleanup starts, while the bot's own removal waits for the lock.
     const channels = createChannelStore(probe);
     await channels.upsert({
-      installId: INSTALL_ID,
+      installId: BOT_INSTALL_ID,
       channelId: SUPPORT_CH,
       agentId: TEAM_AGENT.id,
-      connectedByUserId: ADMIN.id,
+      connectedByUserId: GRACE,
       channelName: 'support',
     });
 
@@ -2555,7 +2563,7 @@ describe('@ax/channel-slack plugin', () => {
     // The agent's channel goes at once; its bot waits for the lock. The pause
     // only gives a removal that didn't wait time to show it: with the one
     // lock, nothing below depends on how long it is.
-    await vi.waitFor(async () => expect(await channels.listAll(INSTALL_ID)).toEqual([]));
+    await vi.waitFor(async () => expect(await channelsOn(BOT_INSTALL_ID)).toEqual([]));
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(s.credentialGets).not.toContain(configTokenRef(GRACE));
     expect(calls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.delete']);
@@ -2690,7 +2698,7 @@ describe('@ax/channel-slack plugin', () => {
     expect(await store.get(BOT_INSTALL_ID)).toMatchObject({ botName: 'Quill Desk', botHandle: 'quilldesk' });
   });
 
-  it("after a team admin disconnects the agent's own bot, the bot's app, row, binding, secrets and its approver's token go, the shared binding stays, and a mention of the shared bot in the agent's channel still runs no turn (TASK-1172, TASK-1186)", async () => {
+  it("after a team admin disconnects the agent's own bot, the bot's app, row, binding, secrets and its approver's token go, the shared app stays, and a mention of the shared bot in the agent's channel still runs no turn (TASK-1172, TASK-1186)", async () => {
     const slack = disconnectSlackFetch();
     const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
     const { adas, graces } = await seedSupportBot(s);
@@ -2754,18 +2762,18 @@ describe('@ax/channel-slack plugin', () => {
     ]);
     expect(slack.calls.at(-1)!.auth).toBe(`Bearer ${fakeConfigAccessToken('DISCONNECTACCESS1')}`);
 
-    // 3. The bot's row, its binding, its secrets and Grace's token are gone (nothing else
-    //    names her); the shared app, its #support binding, its secrets and Ada's token stay.
+    // 3. The bot's row, its #support binding, its secrets and Grace's token are gone
+    //    (nothing else names her); the shared app, its secrets and Ada's token stay.
     expect(await installCount()).toBe(1);
-    expect((await channels.listAll(INSTALL_ID)).map((b) => b.channelId)).toEqual([SUPPORT_CH]);
-    expect(await channels.listAll(BOT_INSTALL_ID)).toEqual([]);
+    expect(await channelsOn(BOT_INSTALL_ID)).toEqual([]);
+    expect(await channels.get(BOT_INSTALL_ID, SUPPORT_CH)).toBeNull();
     expect([...s.vault.keys()].sort()).toEqual(
       [configTokenRef(ADMIN.id), secretRef(INSTALL_ID, 'signing-secret'), secretRef(INSTALL_ID, 'bot-token')].sort(),
     );
     expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(adas);
 
-    // 4. With the bot gone, the shared bot still answers no channel, the shared binding
-    //    left there included: Ada's next mention gets the same one private line, and no turn.
+    // 4. With the bot gone, the shared bot still answers no channel: Ada's next mention
+    //    gets the same one private line, and no turn.
     await answeredPrivately('Ev07ABCDEF41', '1763035700.000700', 'and now?');
   });
 
@@ -3258,7 +3266,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(34);
+    expect(s.routes).toHaveLength(29);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
@@ -3308,123 +3316,19 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  // TASK-1180: the switch a team set for a channel is kept apart from the
-  // channel's connections, so it reaches the agent's own bot even when the
-  // shared connection it was set on is gone before the bot first answers
-  // there. Before the fix the bot bound such a channel with the switch back on,
-  // and the agent learned from a channel the team chose not to have remembered.
-  it("a channel the team switched off stays off when the agent's own bot first answers there, after its shared connection was disconnected (TASK-1180)", async () => {
-    const slack = disconnectSlackFetch();
-    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
-    await seedSupportBot(s);
-    const channels = createChannelStore(probe);
-    const postToBot = (body: Buffer) =>
-      call(
-        'POST',
-        '/slack/events/:installId',
-        request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
-          params: { installId: BOT_INSTALL_ID },
-          body,
-          headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
-        }),
-      );
-    const settings = (suffix: string, body: unknown, as: string = ADMIN.id) =>
-      call(
-        'POST',
-        `/settings/slack/:agentId${suffix}`,
-        request('POST', `/settings/slack/${TEAM_AGENT.id}${suffix}`, {
-          as,
-          params: { agentId: TEAM_AGENT.id },
-          body: Buffer.from(JSON.stringify(body)),
-        }),
-      );
-
-    // The bot hasn't answered in #support yet: the channel is still waiting for it (TASK-1168).
-    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
-    expect(await settings('/remember', { channelId: SUPPORT_CH, remember: false })).toEqual({
-      status: 200,
-      body: {},
-      done: true,
-    });
-    // Disconnect on the moved row: the shared connection goes before the bot's first mention there.
-    expect(await settings('/disconnect', { channelId: SUPPORT_CH })).toEqual({
-      status: 200,
-      body: { removed: true },
-      done: true,
-    });
-    expect(await channels.get(INSTALL_ID, SUPPORT_CH)).toBeNull();
-
-    expect((await postToBot(botMentionBody('Ev07ABCDEF60', '1763036000.000600', 'hello there'))).status).toBe(200);
-    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
-    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036000.000600`;
-    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: thread, userId: ADMIN.id });
-    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
-    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
-  });
-
-  it("a channel the team switched off stays off when the agent's own bot first answers there, after Slack was disconnected in Admin › Slack (TASK-1180)", async () => {
-    const slack = disconnectSlackFetch();
-    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
-    await seedSupportBot(s);
-    const channels = createChannelStore(probe);
-    const postToBot = (body: Buffer) =>
-      call(
-        'POST',
-        '/slack/events/:installId',
-        request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
-          params: { installId: BOT_INSTALL_ID },
-          body,
-          headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
-        }),
-      );
-    const settings = (suffix: string, body: unknown, as: string = ADMIN.id) =>
-      call(
-        'POST',
-        `/settings/slack/:agentId${suffix}`,
-        request('POST', `/settings/slack/${TEAM_AGENT.id}${suffix}`, {
-          as,
-          params: { agentId: TEAM_AGENT.id },
-          body: Buffer.from(JSON.stringify(body)),
-        }),
-      );
-
-    // The bot hasn't answered in #support yet: the channel is still waiting for it (TASK-1168).
-    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
-    expect(await settings('/remember', { channelId: SUPPORT_CH, remember: false })).toEqual({
-      status: 200,
-      body: {},
-      done: true,
-    });
-    // Admin › Slack's Disconnect: the shared app, its row and its bindings go; the agent's own bot stays.
-    const off = await call('POST', '/admin/slack/disconnect', request('POST', '/admin/slack/disconnect', { as: ADMIN.id }));
-    expect(off.status).toBe(200);
-    expect(await installCount()).toBe(1);
-    expect(await channels.get(INSTALL_ID, SUPPORT_CH)).toBeNull();
-
-    expect((await postToBot(botMentionBody('Ev07ABCDEF60', '1763036000.000600', 'hello there'))).status).toBe(200);
-    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
-    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036000.000600`;
-    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: thread, userId: ADMIN.id });
-    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
-    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
-  });
-
   // TASK-1180: before this deploy, a channel's switch lived on its binding
   // alone. A channel switched off and disconnected then has no binding left
   // to keep its switch from, only the thread a turn left there while it was
   // off. The boot keeps it off from that thread. Before the fix nothing kept
   // it, and the bot's first mention there bound it on.
   it("a channel switched off and disconnected before this deploy stays off when the agent's own bot first answers there: the boot keeps it off from the thread kept out of memory there (TASK-1180)", async () => {
-    // The database and vault as this deploy finds them: the shared app and the agent's own bot, both live,
+    // The database and vault as this deploy finds them: the shared app and the agent's own bot, both live;
     await runMigrations(probe);
     const before = newServices();
     await seedSupportBot(before);
     const channels = createChannelStore(probe);
-    // #support's shared connection disconnected after a turn there was kept out of memory,
+    // a turn in #support kept out of memory, from a connection long gone,
     await keptOutThread('conv_kept_out');
-    expect(await channels.remove(INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
     // and the bot not yet answered in #support. Nothing kept the channel's switch.
     expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
     expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBeNull();
@@ -3460,7 +3364,7 @@ describe('@ax/channel-slack plugin', () => {
   it("a bot channel's switch: only the agent's team admin flips it, the settings show it, and memory follows it (TASK-1180)", async () => {
     const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
-    // #support is bound on both installs, the shared app's and the bot's, and on.
+    // #support is bound to the agent's own bot, and on.
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
     const postToBot = (body: Buffer) =>
@@ -3522,32 +3426,23 @@ describe('@ax/channel-slack plugin', () => {
     expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(true);
 
     // 4. Ada, a team admin of the agent's team, switches it off: the bot's binding, and the
-    //    agent's shared binding of #support with it. Memory stops learning from the thread.
+    //    switch kept for the agent and channel. Memory stops learning from the thread.
     expect(await settings('/bot/remember', { channelId: SUPPORT_CH, remember: false })).toEqual({
       status: 200,
       body: {},
       done: true,
     });
     expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBe(false);
     expect(await askMemory(harness.bus, t1)).toEqual(NOT_REMEMBERED);
 
-    // 5. The shared connection's switch is the bot's now: refused, and nothing changes.
-    expect(await settings('/remember', { channelId: SUPPORT_CH, remember: true })).toEqual({
-      status: 409,
-      body: { error: 'own-bot' },
-      done: true,
-    });
-    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-
-    // 6. A mention while it is off: that thread is never remembered.
+    // 5. A mention while it is off: that thread is never remembered.
     expect((await postToBot(botMentionBody('Ev07ABCDEF62', '1763036200.000620', 'my number is 4417'))).status).toBe(200);
     await vi.waitFor(() => expect(s.invokesReturned).toBe(2));
     expect(s.invokes![1]!.ctx.conversationId).toBe(t2);
     expect((await channels.getThread(t2))?.notRemembered).toBe(true);
 
-    // 7. On again: the first thread had no turn while it was off, so memory may learn from it
+    // 6. On again: the first thread had no turn while it was off, so memory may learn from it
     //    again; the second stays out for good.
     expect(await settings('/bot/remember', { channelId: SUPPORT_CH, remember: true })).toEqual({
       status: 200,
@@ -3556,134 +3451,5 @@ describe('@ax/channel-slack plugin', () => {
     });
     expect(await askMemory(harness.bus, t1)).toEqual(remembered(t1));
     expect(await askMemory(harness.bus, t2)).toEqual(NOT_REMEMBERED);
-  });
-});
-
-// ── TASK-1182 ───────────────────────────────────────────────────────────────
-
-/** The sessions waiting on a lock `pid` holds: Postgres's own word that one side is blocked, never a sleep. */
-async function waitingOn(pid: number): Promise<number[]> {
-  const r = await sql<{ pid: number }>`
-    SELECT pid FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))
-  `.execute(probe);
-  return r.rows.map((row) => row.pid);
-}
-
-/*
-  TASK-1182: a memory switch flip and the agent's own bot's first bind in a
-  channel take one lock on the agent and channel, so whichever comes second
-  sees what the other wrote. Before the fix they could interleave, and the
-  bot's binding kept the switch from before the flip: the channel was
-  remembered although the team's last choice was off. Each test stops one
-  side partway with a session of its own, and moves on only when Postgres
-  says the other side is waiting, never after a sleep.
-*/
-describe("a memory switch flip and the agent's own bot's first bind take turns (TASK-1182)", () => {
-  /** TASK-1180's world with the bot not yet answered in #support; its mention, and the shared switch turned off, through the wiring. */
-  async function race() {
-    const slack = disconnectSlackFetch();
-    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
-    await seedSupportBot(s);
-    const channels = createChannelStore(probe);
-    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
-    const mention = (eventId: string, ts: string) => {
-      const body = botMentionBody(eventId, ts, 'hello there');
-      return call('POST', '/slack/events/:installId', request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
-        params: { installId: BOT_INSTALL_ID }, body, headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
-      }));
-    };
-    const switchOff = () =>
-      call('POST', '/settings/slack/:agentId/remember', request('POST', `/settings/slack/${TEAM_AGENT.id}/remember`, {
-        as: ADMIN.id, params: { agentId: TEAM_AGENT.id },
-        body: Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, remember: false })),
-      }));
-    return { s, harness, channels, mention, switchOff };
-  }
-
-  /** The one waiter on `pid`, once there is one. */
-  async function waiterOn(pid: number): Promise<number> {
-    let waiter = 0;
-    await vi.waitFor(async () => {
-      const [found] = await waitingOn(pid);
-      expect(found).toBeDefined();
-      waiter = found!;
-    }, { timeout: 10_000 });
-    return waiter;
-  }
-
-  it('the flip first: the bind waits for it, starts off, and memory stays out of the thread', async () => {
-    const { s, harness, channels, mention, switchOff } = await race();
-    // Holding the shared binding's row stops the flip inside its write, after its snapshot.
-    const holder = await probePool.connect();
-    let flip: Promise<Answer> | undefined;
-    try {
-      await holder.query('BEGIN');
-      await holder.query(
-        'SELECT 1 FROM channel_slack_v1_channels WHERE install_id = $1 AND channel_id = $2 FOR UPDATE',
-        [INSTALL_ID, SUPPORT_CH],
-      );
-      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
-      flip = switchOff();
-      const flipPid = await waiterOn(holderPid);
-      expect((await mention('Ev07ABCDEF61', '1763036300.000700')).status).toBe(200);
-      // Before the fix the bind doesn't wait: it binds with the switch it reads, still on.
-      await vi.waitFor(async () => {
-        const waits = (await waitingOn(flipPid)).length === 1;
-        expect(waits || (await channels.get(BOT_INSTALL_ID, SUPPORT_CH)) !== null).toBe(true);
-      }, { timeout: 10_000 });
-      await holder.query('COMMIT');
-      expect(await flip).toEqual({ status: 200, body: {}, done: true });
-    } finally {
-      await holder.query('ROLLBACK').catch(() => {});
-      holder.release();
-      void flip?.catch(() => {});
-    }
-    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
-    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBe(false);
-    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036300.000700`;
-    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
-    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
-  });
-
-  it('the bind first: the flip waits for it, then turns the binding it wrote off too', async () => {
-    const { s, harness, channels, mention, switchOff } = await race();
-    // An uncommitted row under the bot binding's key stops the bind at its write, after its read.
-    const holder = await probePool.connect();
-    let flip: Promise<Answer> | undefined;
-    try {
-      await holder.query('BEGIN');
-      await holder.query(
-        `INSERT INTO channel_slack_v1_channels (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
-         VALUES ($1, $2, $3, $4, 'support')`,
-        [BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id, GRACE],
-      );
-      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
-      expect((await mention('Ev07ABCDEF62', '1763036400.000800')).status).toBe(200);
-      const bindPid = await waiterOn(holderPid);
-      let flipped = false;
-      flip = switchOff().finally(() => {
-        flipped = true;
-      });
-      // Before the fix the flip doesn't wait: it can't see the binding the bind is about to write.
-      await vi.waitFor(async () => {
-        expect(flipped || (await waitingOn(bindPid)).length === 1).toBe(true);
-      }, { timeout: 10_000 });
-      await holder.query('ROLLBACK');
-      expect(await flip).toEqual({ status: 200, body: {}, done: true });
-    } finally {
-      await holder.query('ROLLBACK').catch(() => {});
-      holder.release();
-      void flip?.catch(() => {});
-    }
-    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
-    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
-    expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBe(false);
-    // Not the thread's flag: the turn may record it just before the flip commits or just after.
-    // Memory is refused either way, once the bot's binding is off.
-    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036400.000800`;
-    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
   });
 });

@@ -1,5 +1,4 @@
 import { cleanPromptSubject, mrkdwnEscape, neutralizeSlackControls } from './format.js';
-import { SLASH_COMMAND } from './manifest.js';
 import type { SkillReach } from './turn-registry.js';
 
 /**
@@ -14,16 +13,16 @@ import type { SkillReach } from './turn-registry.js';
  * `@here`, `@channel` or `@everyone`: the bot never pings anyone, a name
  * from outside included (copy.test.ts).
  *
- * The `slash*` lines answer `/ax` (commands.ts), the `channel*` lines (with
- * `queueFull`, `turnFailed`, TASK-1167's `botUnavailable` and TASK-1186's
- * `sharedBotInChannel`) can reach a channel mention's sender privately,
- * before its turn starts or in place of one (router.ts), and the `prompt*` and
- * `decision*` lines surround an approval prompt (blocks.ts). All three go
- * out as mrkdwn, not Markdown (but for the prompt's two button labels, which
- * are plain_text): a link is a bare URL, and no line holds a `<` or `>` of
- * its own (mrkdwn reads `<…>` as a link). A name from outside goes through
- * `shown`. A prompt's subject is never a COPY line: it is outside text,
- * shown as `plain_text` (format.ts `cleanPromptSubject`). Two lines frame
+ * The `channel*` lines (with `queueFull`, `turnFailed`, TASK-1167's
+ * `botUnavailable` and TASK-1186's `sharedBotInChannel`) can reach a channel
+ * mention's sender privately, before its turn starts or in place of one
+ * (router.ts), and the `prompt*` and `decision*` lines surround an approval
+ * prompt (blocks.ts). Both go out as mrkdwn, not Markdown (but for the
+ * prompt's two button labels, which are plain_text): a link is a bare URL,
+ * and no line holds a `<` or `>` of its own (mrkdwn reads `<…>` as a link).
+ * A name from outside goes through `shown`. A prompt's subject is never a
+ * COPY line: it is outside text, shown as `plain_text` (format.ts
+ * `cleanPromptSubject`). Two lines frame
  * outside text as a subject, raw, cleaned where it is drawn: `hostSubject`
  * (a host past the egress proxy's HOST_RE, permission-prompts.ts) and
  * `skillSubject` (a catalog skill's id, the hosts it reaches and its
@@ -50,16 +49,6 @@ import type { SkillReach } from './turn-registry.js';
  * marked as one (format.ts `neutralizeSlackControls`).
  */
 const shown = (text: string, before = ''): string => mrkdwnEscape(neutralizeSlackControls(text, before));
-
-/**
- * Why a channel can't have an agent: channels.ts's refusals that are about
- * the channel, and `workspace-policy` (its `not-allowed`: the workspace's
- * settings keep the bot out).
- */
-export type ChannelNotAllowed = 'not-public' | 'archived' | 'shared' | 'workspace-policy';
-
-const CONNECT = `\`${SLASH_COMMAND} connect\``;
-const DISCONNECT = `\`${SLASH_COMMAND} disconnect\``;
 
 /** `a`, `a and b`, `a, b and c`: in the order given, each as given. */
 function listed(items: readonly string[]): string {
@@ -244,74 +233,6 @@ export const COPY = {
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
 
-  // ── /ax replies (mrkdwn, shown only to whoever typed the command) ─────────
-  slashUsage:
-    `To connect this channel to a team agent, type ${CONNECT} followed by the agent's name. ` +
-    `To disconnect whichever agent is connected here, type ${DISCONNECT}.`,
-  slashNotMapped: (origin: string) =>
-    "I couldn't match your Slack account to an account in the web app. " +
-    `Sign in once at ${shown(origin)} with your work account, then try again.`,
-  slashNoSuchAgent:
-    "I couldn't find a team agent with that name that you can use. Check its name in the web app, then try again.",
-  slashNotManager: "Only a team admin of the agent's team can connect it to a channel or disconnect it.",
-  slashAmbiguous:
-    'More than one team agent you manage has that name. ' +
-    "Connect this channel from the agent's settings in the web app instead.",
-  slashConnected: (agent: string, channel: string) =>
-    `Connected *${shown(agent)}* to #${shown(channel)}. Mention me here to talk to it.\n` +
-    '• Anything in its instructions and files can show up in its answers, and everyone in this channel can read them.\n' +
-    "• When someone who can't use the agent talks to it here, it works with your access, " +
-    'and anything that needs approval waits for you in Today.',
-  slashReconnected: (agent: string) =>
-    `*${shown(agent)}* was already connected here. From now on, when someone who can't use it talks to it here, ` +
-    'it works with your access, and anything that needs approval waits for you in Today.',
-  slashDisconnected: "Disconnected. The agent won't answer in this channel anymore.",
-  /*
-    `/ax disconnect` for an agent whose own bot is live (TASK-1168): the shared
-    binding is gone, but its own bot keeps answering wherever it is a member, and
-    we can't tell from here whether it is one in this channel. Says so, and how to
-    remove it. The bot is named like slashOwnBot names it.
-  */
-  slashDisconnectedOwnBot: (bot: { botName: string; handle: string | null }) =>
-    bot.handle === null
-      ? `Disconnected. If ${shown(bot.botName)} is in this channel, it still answers here: remove it with /kick.`
-      : `Disconnected. If @${shown(bot.handle, '@')} is in this channel, it still answers here: ` +
-        `remove it with /kick @${shown(bot.handle, '@')}.`,
-  slashNothingConnected: 'No agent is connected to this channel.',
-  slashChannelTaken:
-    'Another agent is already connected to this channel. ' +
-    `A team admin of that agent's team can disconnect it with ${DISCONNECT}.`,
-  /*
-    `/ax connect` for an agent whose own bot is live (TASK-1168): the shared
-    app connects nothing for it any more, so the line says which bot to
-    /invite instead. Only someone who manages the agent ever reads it (the
-    rights come first, commands.ts), so the agent is named. The bot is named
-    by its @handle, through `shown(handle, '@')` after the line's own `@`, or
-    by its name when it has none (the Allow kept no handle: bots.ts
-    `keepHandle`).
-  */
-  slashOwnBot: (agent: string, bot: { botName: string; handle: string | null }) =>
-    bot.handle === null
-      ? `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
-        `Invite ${shown(bot.botName)} to this channel with /invite instead.`
-      : `*${shown(agent)}* has its own Slack bot now, so I can't connect it here. ` +
-        `Invite it to this channel with /invite @${shown(bot.handle, '@')} instead.`,
-  slashChannelNotAllowed: (reason: ChannelNotAllowed) =>
-    reason === 'archived'
-      ? "This channel is archived, so I can't connect an agent to it."
-      : reason === 'shared'
-        ? "This channel is shared with another organization, so I can't connect an agent to it."
-        : reason === 'workspace-policy'
-          ? "This workspace's settings don't let me join this channel, so I can't connect an agent to it. " +
-            'A Slack admin can change that.'
-          : 'I can only connect an agent to a public channel, and this is a private channel or a direct message.',
-  slashNeedsReconnect:
-    'Slack needs to be connected to the web app again before an agent can join a channel. ' +
-    "An admin can do that in the web app's admin settings.",
-  slashWorking:
-    "I'm still working on it. If nothing shows up here, check the agent's Slack settings in the web app.",
-  slashFailed: "Something went wrong and I couldn't finish that. Try again in a moment.",
-
   // ── A bot request's DMs (TASK-1170; blocks.ts, bot-request-dms.ts) ──
   // The admin DM's notification and fallback: it names nobody.
   botRequestAsked: 'A team asked for its own Slack bot.',
@@ -347,7 +268,9 @@ export const COPY = {
     To the agent's owner when someone else approved the bot: it is live, how to
     invite it, and the channels the shared app served that now need it
     (`channels` is already capped by the caller; `more` is how many it left
-    out). The bot is named like slashOwnBot names it.
+    out). The bot is named by its @handle, through `shown(handle, '@')` after
+    the line's own `@`, or by its name when it has none (the Allow kept no
+    handle: bots.ts `keepHandle`).
   */
   botLiveForOwner: (bot: { botName: string; handle: string | null }, channels: readonly string[], more: number) => {
     const head =

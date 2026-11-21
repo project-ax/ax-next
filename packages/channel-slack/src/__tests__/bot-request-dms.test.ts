@@ -400,8 +400,6 @@ function fakeSlack() {
     addReaction: notHere('addReaction'),
     removeReaction: notHere('removeReaction'),
     conversationsInfo: notHere('conversationsInfo'),
-    conversationsList: notHere('conversationsList'),
-    conversationsJoin: notHere('conversationsJoin'),
   };
   return {
     api,

@@ -7,11 +7,12 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * Which team agent a Slack channel is connected to (TASK-1094): one agent per
  * channel, any number of channels per agent.
  *
- * A binding decides whose identity the channel's outsiders run as (the person
- * who connected it), so every write here is scoped to the agent the caller
- * named, the one it checked rights on: a second agent never takes a channel
- * over (`upsert` answers `taken`), and `remove`/`setRemember` with another
- * agent's id change nothing. Who may connect is the caller's to decide
+ * A binding decides whose identity the channel's outsiders run as (the bot's
+ * requester, copied into the binding at its first mention; a Claim moves
+ * it), so every write here is scoped to the agent the caller named, the one
+ * it checked rights on: a second agent never takes a channel over (`upsert`
+ * answers `taken`), and `remove`/`setRemember` with another agent's id
+ * change nothing. Who may bind or flip a channel is the caller's to decide
  * (channels.ts), never this file's.
  *
  * Removing an install removes its bindings in the same statement (store.ts);
@@ -56,7 +57,10 @@ export interface ChannelBinding {
   installId: string;
   channelId: string;
   agentId: string;
-  /** The team admin who connected the channel. Their name is auth's, read when shown. */
+  /**
+   * Whom the channel's outsiders run as: the bot's requester, copied into the
+   * binding at its first mention there; a Claim moves it (TASK-1173).
+   */
   connectedByUserId: string;
   /** Slack's name for the channel when it was connected, cleaned (label.ts). */
   channelName: string;
@@ -100,8 +104,9 @@ export interface ChannelThread {
 /**
  * Whose turn is starting, as the router decided it: a member's, run as
  * themselves (`attended`), with the names their sender label shows
- * (`speakerNames`); or an outsider's, run as the person who connected the
- * channel when it was planned (`external`, `runAs`), which brings no names.
+ * (`speakerNames`); or an outsider's, run as the binding's connector (the
+ * bot's requester) when it was planned (`external`, `runAs`), which brings
+ * no names.
  */
 export type ThreadTurn = { mode: 'attended'; speakerNames: readonly string[] } | { mode: 'external'; runAs: string };
 
@@ -109,8 +114,6 @@ export interface ChannelStore {
   get(installId: string, channelId: string): Promise<ChannelBinding | null>;
   /** This agent's channels on this install, oldest first. */
   listForAgent(installId: string, agentId: string): Promise<ChannelBinding[]>;
-  /** Every binding on this install, whichever agent, in no particular order. */
-  listAll(installId: string): Promise<Array<{ channelId: string; agentId: string }>>;
   /**
    * Connect a channel, in ONE statement, so of any number of concurrent
    * connects exactly one can bind a free channel. `connected`: a new binding,
@@ -290,15 +293,6 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         .orderBy('channel_id', 'asc')
         .execute();
       return rows.map(toBinding);
-    },
-
-    async listAll(installId) {
-      const rows = await db
-        .selectFrom(CHANNELS)
-        .select(['channel_id', 'agent_id'])
-        .where('install_id', '=', installId)
-        .execute();
-      return rows.map((r) => ({ channelId: r.channel_id, agentId: r.agent_id }));
     },
 
     async upsert(b) {

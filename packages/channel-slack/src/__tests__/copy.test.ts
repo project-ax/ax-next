@@ -44,10 +44,6 @@ const ARGS: Record<string, unknown[][]> = {
   ],
   skillNeedsWeb: [[TODAY], [HOSTILE]],
   skillFailed: [[TODAY], [HOSTILE]],
-  slashNotMapped: [[ORIGIN]],
-  slashConnected: [[HOSTILE, HOSTILE]],
-  slashReconnected: [[HOSTILE]],
-  slashChannelNotAllowed: [['not-public'], ['archived'], ['shared'], ['workspace-policy']],
   // A bot request's DMs (TASK-1170). The subject is plain_text: benign args only (its hostile case is in blocks.test.ts).
   botRequestSubject: [
     [{ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' }],
@@ -66,26 +62,6 @@ const ARGS: Record<string, unknown[][]> = {
     [{ botName: 'Ops', handle: 'everyone' }, ['a'], 0],
   ],
   botDeclinedForOwner: [['Support Bot'], [HOSTILE], ['here'], ['channel']],
-  // `/ax disconnect` for an agent whose own bot is live (TASK-1168): the bot's @handle or its name.
-  slashDisconnectedOwnBot: [
-    [{ botName: 'Support Bot', handle: 'supportbot' }],
-    [{ botName: 'Support Bot', handle: null }],
-    [{ botName: HOSTILE, handle: HOSTILE }],
-    [{ botName: HOSTILE, handle: null }],
-    [{ botName: 'Ops', handle: 'here' }],
-    [{ botName: 'Ops', handle: 'channel' }],
-    [{ botName: 'Ops', handle: 'everyone' }],
-  ],
-  // `/ax connect` for an agent whose own bot is live (TASK-1168): the agent, then the bot's @handle or its name.
-  slashOwnBot: [
-    ['Support', { botName: 'Support Bot', handle: 'supportbot' }],
-    ['Support', { botName: 'Support Bot', handle: null }],
-    [HOSTILE, { botName: HOSTILE, handle: HOSTILE }],
-    [HOSTILE, { botName: HOSTILE, handle: null }],
-    ['Ops', { botName: 'Ops', handle: 'here' }],
-    ['Ops', { botName: 'Ops', handle: 'channel' }],
-    ['Ops', { botName: 'Ops', handle: 'everyone' }],
-  ],
 };
 
 /** Every string the bot can say, with the ones that take arguments filled in. */
@@ -143,22 +119,6 @@ describe('COPY: everything the bot says in Slack', () => {
         'queueFull',
         'statusDefault',
         'turnFailed',
-        'slashUsage',
-        'slashNotMapped',
-        'slashNoSuchAgent',
-        'slashNotManager',
-        'slashAmbiguous',
-        'slashConnected',
-        'slashReconnected',
-        'slashDisconnected',
-        'slashDisconnectedOwnBot',
-        'slashNothingConnected',
-        'slashChannelTaken',
-        'slashOwnBot',
-        'slashChannelNotAllowed',
-        'slashNeedsReconnect',
-        'slashWorking',
-        'slashFailed',
         'botUnavailable',
         'botRequestAsked',
         'botRequestSubject',
@@ -435,26 +395,13 @@ describe('COPY: what a channel mention can get privately, in place of its turn o
   });
 });
 
-describe('COPY: the /ax replies (mrkdwn)', () => {
-  const slash = (): Array<[string, string]> => everyLine().filter(([key]) => key.startsWith('slash'));
-
-  it('hold no < or > of their own: mrkdwn would read one as the start of a link', () => {
-    const lines = slash();
-    expect(lines.length).toBeGreaterThanOrEqual(16);
-    for (const [key, line] of lines) expect(line, key).not.toMatch(/[<>]/);
-  });
-
-  it('show a name as typed, escaped: never a link, a mention or a broadcast', () => {
-    for (const line of [COPY.slashConnected(HOSTILE, HOSTILE), COPY.slashReconnected(HOSTILE)]) {
-      // As typed, apart from the invisible marks, with mrkdwn's three characters escaped.
-      expect(line.split(ZWSP).join('')).toContain('&lt;!channel&gt; &amp; &lt;@U1&gt;');
-      expect(line).not.toContain('<!channel>');
-    }
-    expect(COPY.slashConnected('<b>R&D</b>', 'support')).toContain('&lt;b&gt;R&amp;D&lt;/b&gt;');
-  });
-
+describe('COPY: a name from outside in a mrkdwn line (`shown`)', () => {
+  // `shown` neutralizes, THEN escapes (copy.ts): the other way round, mrkdwn's
+  // own `&lt;` would reach the neutralizer as an entity and be marked, and the
+  // reader would see `&lt;` where the name has a `<`. botRequestApproved shows
+  // a person's name through it.
   it("a name spelling a broadcast in entities shows as typed and decodes to nothing; mrkdwn's own escapes stay whole", () => {
-    const line = COPY.slashConnected('a<b &#64;channel &commat;here', 'support');
+    const line = COPY.botRequestApproved('a<b &#64;channel &commat;here');
     // The escape of the `<` is intact, so the reader sees `a<b`, not `a&lt;b`...
     expect(line).toContain('a&lt;b ');
     // ...and the name's own entities can't decode: each `&` is escaped, and marked right after its escape.
@@ -462,68 +409,12 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
     // Slack undoes mrkdwn's escapes; a lenient decoder after it finds no mention, though unmarked it would.
     expect(spellsMention(decodeSlackEntities(line))).toBe(false);
     expect(spellsMention(decodeSlackEntities(line.split(ZWSP).join('')))).toBe(true);
+    // An `&` is escaped exactly once.
+    expect(COPY.botRequestApproved('<b>R&D</b>')).toContain('&lt;b&gt;R&amp;D&lt;/b&gt;');
   });
+});
 
-  it('the not-mapped line links the web app as a bare URL', () => {
-    expect(COPY.slashNotMapped(ORIGIN)).toContain(ORIGIN);
-    expect(COPY.slashNotMapped(ORIGIN)).not.toContain(`](${ORIGIN})`);
-  });
-
-  it('connecting says how to talk to it, that the channel can see what it knows, and whose access outsiders use', () => {
-    const line = COPY.slashConnected('Support', 'support-desk');
-    expect(line).toContain('Support');
-    expect(line).toContain('#support-desk');
-    expect(line).toMatch(/\bmention me\b/i);
-    expect(line).toMatch(/instructions and files/i);
-    expect(line).toMatch(/everyone in this channel/i);
-    expect(line).toMatch(/your access/i);
-    expect(line).toMatch(/\bToday\b/);
-    expect(COPY.slashReconnected('Support')).toMatch(/your access/i);
-  });
-
-  it('each refusal reason has its own line', () => {
-    const lines = (['not-public', 'archived', 'shared', 'workspace-policy'] as const).map((r) =>
-      COPY.slashChannelNotAllowed(r),
-    );
-    expect(new Set(lines).size).toBe(4);
-    // A workspace policy is not ours to change: a Slack admin's, and never "try again".
-    expect(COPY.slashChannelNotAllowed('workspace-policy')).toMatch(/Slack admin/);
-    expect(COPY.slashChannelNotAllowed('workspace-policy')).not.toMatch(/try again/i);
-  });
-
-  it("an agent whose own bot is live: names the agent, then the bot's @handle to /invite, or its name without one (TASK-1168)", () => {
-    expect(COPY.slashOwnBot('Support', { botName: 'Support Bot', handle: 'supportbot' })).toBe(
-      "*Support* has its own Slack bot now, so I can't connect it here. Invite it to this channel with /invite @supportbot instead.",
-    );
-    expect(COPY.slashOwnBot('Support', { botName: 'Support Bot', handle: null })).toBe(
-      "*Support* has its own Slack bot now, so I can't connect it here. Invite Support Bot to this channel with /invite instead.",
-    );
-    // After the line's own `@`, a broadcast word gets its mark.
-    expect(COPY.slashOwnBot('Ops', { botName: 'Ops', handle: 'here' })).toContain(`/invite @${ZWSP}here instead.`);
-    const hostile = COPY.slashOwnBot(HOSTILE, { botName: HOSTILE, handle: HOSTILE }).split(ZWSP).join('');
-    expect(hostile).toContain('*&lt;!channel&gt; &amp; &lt;@U1&gt; @here* has its own Slack bot now');
-  });
-
-  it('disconnecting an agent whose own bot is live: says the bot still answers where it is, and how to remove it (TASK-1168)', () => {
-    expect(COPY.slashDisconnectedOwnBot({ botName: 'Support Bot', handle: 'supportbot' })).toBe(
-      'Disconnected. If @supportbot is in this channel, it still answers here: remove it with /kick @supportbot.',
-    );
-    expect(COPY.slashDisconnectedOwnBot({ botName: 'Support Bot', handle: null })).toBe(
-      'Disconnected. If Support Bot is in this channel, it still answers here: remove it with /kick.',
-    );
-    // After the line's own `@`, a broadcast word gets its mark.
-    expect(COPY.slashDisconnectedOwnBot({ botName: 'Ops', handle: 'here' })).toContain(`If @${ZWSP}here is in`);
-    expect(COPY.slashDisconnectedOwnBot({ botName: 'Ops', handle: 'here' })).toContain(`/kick @${ZWSP}here.`);
-    const hostile = COPY.slashDisconnectedOwnBot({ botName: HOSTILE, handle: null }).split(ZWSP).join('');
-    expect(hostile).toContain('If &lt;!channel&gt; &amp; &lt;@U1&gt; @here is in this channel');
-  });
-
-  it('"working on it" promises no follow-up: the late private reply fails where the bot is not a member', () => {
-    expect(COPY.slashWorking).not.toMatch(/\bI'll\b|\bI will\b|\btell you\b|\blet you know\b/i);
-    // It says where to look instead.
-    expect(COPY.slashWorking).toMatch(/Slack settings in the web app/);
-  });
-
+describe("COPY: a bot request's DMs (TASK-1170)", () => {
   it("a bot request's DM lines: no <, > or Markdown link of their own, and none names the product (TASK-1170)", () => {
     const lines = everyLine().filter(([k]) => /^(botRequest|botLive|botDeclined)/.test(k));
     expect(lines.length).toBeGreaterThan(11);
@@ -600,10 +491,6 @@ describe("COPY: a bot's @handle is its display name, shown as people type it (TA
   // and every line that names the bot by its handle shows it after `@` unchanged.
   it.each(['fern-walk', 'Fern Walk'])('%s', (handle) => {
     const bot = { botName: 'Fern', handle };
-    expect(COPY.slashDisconnectedOwnBot(bot)).toBe(
-      `Disconnected. If @${handle} is in this channel, it still answers here: remove it with /kick @${handle}.`,
-    );
-    expect(COPY.slashOwnBot('Fern', bot)).toContain(`with /invite @${handle} instead.`);
     expect(COPY.botLiveForOwner(bot, [], 0)).toBe(`@${handle} is live. Invite it to a channel with /invite @${handle}.`);
   });
 
@@ -611,13 +498,8 @@ describe("COPY: a bot's @handle is its display name, shown as people type it (TA
   // with a broadcast word, in any case, still gets its mark after the line's `@`.
   it.each(['Here Now', 'channel x', 'EVERYONE-else'])('%s is marked after the @', (handle) => {
     const bot = { botName: 'Fern', handle };
-    for (const line of [
-      COPY.slashDisconnectedOwnBot(bot),
-      COPY.slashOwnBot('Fern', bot),
-      COPY.botLiveForOwner(bot, [], 0),
-    ]) {
-      expect(line).toContain(`@${ZWSP}${handle}`);
-      expect(line).not.toContain(`@${handle}`);
-    }
+    const line = COPY.botLiveForOwner(bot, [], 0);
+    expect(line).toContain(`@${ZWSP}${handle}`);
+    expect(line).not.toContain(`@${handle}`);
   });
 });

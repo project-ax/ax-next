@@ -104,8 +104,14 @@ async function setCreatedAt(installId: string, channelId: string, at: Date): Pro
   `.execute(db);
 }
 
-const byChannel = (a: { channelId: string }, b: { channelId: string }): number =>
-  a.channelId < b.channelId ? -1 : a.channelId > b.channelId ? 1 : 0;
+/** Every binding on an install, whichever agent, read straight from the table, by channel. */
+async function bindingsOn(installId: string): Promise<Array<{ channelId: string; agentId: string }>> {
+  const r = await sql<{ channel_id: string; agent_id: string }>`
+    SELECT channel_id, agent_id FROM channel_slack_v1_channels
+     WHERE install_id = ${installId} ORDER BY channel_id
+  `.execute(db);
+  return r.rows.map((row) => ({ channelId: row.channel_id, agentId: row.agent_id }));
+}
 
 // Conversation ids are the conversations plugin's, opaque here.
 const CONV = 'conv_support_thread_1';
@@ -470,7 +476,7 @@ describe('remove and setRemember act only on the named agent', () => {
 
     expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
     expect(await channels.get(INSTALL, SUPPORT)).toBeNull();
-    expect([...(await channels.listAll(INSTALL))].sort(byChannel)).toEqual([
+    expect(await bindingsOn(INSTALL)).toEqual([
       { channelId: GENERAL, agentId: OTHER_AGENT },
       { channelId: SALES, agentId: AGENT },
     ]);
@@ -866,20 +872,6 @@ describe('lists', () => {
     expect(await channels.listForAgent(INSTALL, 'agt_nobody')).toEqual([]);
     expect(await channels.listForAgent(OTHER_INSTALL, OTHER_AGENT)).toEqual([]);
   });
-
-  it('listAll: every binding on this install, whichever agent, and none from another install', async () => {
-    await connect({ channelId: SUPPORT });
-    await connect({ channelId: SALES });
-    await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
-    await connect({ installId: OTHER_INSTALL, channelId: 'C07ELSEWHR1' });
-
-    expect([...(await channels.listAll(INSTALL))].sort(byChannel)).toEqual([
-      { channelId: GENERAL, agentId: OTHER_AGENT },
-      { channelId: SALES, agentId: AGENT },
-      { channelId: SUPPORT, agentId: AGENT },
-    ]);
-    expect(await channels.listAll('AAAAAAAAAAAAAAAAAAAAAA')).toEqual([]);
-  });
 });
 
 describe('removeForAgent', () => {
@@ -893,8 +885,8 @@ describe('removeForAgent', () => {
     expect(await record('conv_general_thread', { channelId: GENERAL, agentId: OTHER_AGENT })).toBe('recorded');
 
     expect(await channels.removeForAgent(AGENT)).toEqual({ channels: 3, threads: 2 });
-    expect(await channels.listAll(INSTALL)).toEqual([{ channelId: GENERAL, agentId: OTHER_AGENT }]);
-    expect(await channels.listAll(OTHER_INSTALL)).toEqual([]);
+    expect(await bindingsOn(INSTALL)).toEqual([{ channelId: GENERAL, agentId: OTHER_AGENT }]);
+    expect(await bindingsOn(OTHER_INSTALL)).toEqual([]);
     expect(await channels.getThread(CONV)).toBeNull();
     expect(await channels.getThread(OTHER_CONV)).toBeNull();
     expect(await channels.getThread('conv_general_thread')).toEqual(supportThread({ channelId: GENERAL, agentId: OTHER_AGENT }));
@@ -1011,7 +1003,7 @@ describe('the thread map behind the memory switch (TASK-1094)', () => {
 
     // A reset removes every install the same way.
     expect((await installs.removeAll()).map((r) => r.installId)).toEqual([OTHER_INSTALL]);
-    expect(await channels.listAll(OTHER_INSTALL)).toEqual([]);
+    expect(await bindingsOn(OTHER_INSTALL)).toEqual([]);
     expect(await threadCount()).toBe(2);
     // A thread the channel had while it was remembered is refused too now: nothing is connected there.
     expect(await vetoFor(OTHER_CONV)).toEqual(REFUSED);

@@ -39,8 +39,7 @@ import { busVault } from './fake-vault.js';
   (AGENTS_DELETED_SUBSCRIBER_TIMEOUT_MS). A channel binding has no foreign key
   to the agents table (no plugin references another's rows), so this
   subscriber is the only thing that removes a deleted agent's channels.
-  Without it each channel stays "taken" by an agent that no longer exists, and
-  a connect refuses it until someone runs `/ax disconnect` there.
+  Without it each binding would outlive the agent it names.
 
   It removes the agent's thread rows too (TASK-1094, the memory switch's
   map), in the same transaction as its bindings: nothing else ever deletes
@@ -160,6 +159,15 @@ async function countFor(agentId: string): Promise<number> {
   return r.rows[0]!.n;
 }
 
+/** Every binding on an install, whichever agent, read straight from the table, by channel. */
+async function bindingsOn(installId: string): Promise<Array<{ channelId: string; agentId: string }>> {
+  const r = await sql<{ channel_id: string; agent_id: string }>`
+    SELECT channel_id, agent_id FROM channel_slack_v1_channels
+     WHERE install_id = ${installId} ORDER BY channel_id
+  `.execute(db);
+  return r.rows.map((row) => ({ channelId: row.channel_id, agentId: row.agent_id }));
+}
+
 async function threadsFor(agentId: string): Promise<number> {
   const r = await sql<{ n: number }>`
     SELECT count(*)::int AS n FROM channel_slack_v1_threads WHERE agent_id = ${agentId}
@@ -240,7 +248,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
 
     expect(await countFor(AGENT)).toBe(0);
     expect(await threadsFor(AGENT)).toBe(0);
-    expect(await channels.listAll(INSTALL)).toEqual([{ channelId: GENERAL, agentId: OTHER_AGENT }]);
+    expect(await bindingsOn(INSTALL)).toEqual([{ channelId: GENERAL, agentId: OTHER_AGENT }]);
     expect(await threadsFor(OTHER_AGENT)).toBe(1);
     expect(plugin.lines).toEqual([
       { level: 'info', msg: 'slack_agent_channels_removed', bindings: { channels: 3, threads: 2 } },

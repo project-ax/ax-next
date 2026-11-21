@@ -226,10 +226,11 @@ const MRKDWN_ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&
 
 /**
  * Text from outside (an agent's or a channel's name) made fit for a mrkdwn
- * `text` field, the `/ax` replies' format: the three characters Slack
- * reserves become the entities Slack itself uses, in one pass, so an `&` is
- * escaped exactly once. No `<` is left to open a link, a mention or a
- * broadcast (`<!channel>`), and the reader sees the name as it was typed.
+ * `text` field, the format of the bot's own lines (copy.ts `shown`): the
+ * three characters Slack reserves become the entities Slack itself uses, in
+ * one pass, so an `&` is escaped exactly once. No `<` is left to open a
+ * link, a mention or a broadcast (`<!channel>`), and the reader sees the
+ * name as it was typed.
  * The inverse of `decodeSlackEntities`.
  */
 export function mrkdwnEscape(text: string): string {

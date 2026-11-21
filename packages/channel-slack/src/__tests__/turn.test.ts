@@ -109,8 +109,6 @@ function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean 
       if (o.updateMessageFails === true) throw new SlackApiError('chat.update', 'message_not_found');
     },
     conversationsInfo: notHere,
-    conversationsList: notHere,
-    conversationsJoin: notHere,
     async postMessage(token, a) {
       record('postMessage', a, token);
     },
