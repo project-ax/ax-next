@@ -224,6 +224,17 @@ export const COPY = {
     that person, so none runs until a team admin connects the channel again.
   */
   channelUnavailable: "I can't answer here right now. A team admin needs to connect me to this channel again.",
+  /*
+    A connected channel Slack no longer allows (TASK-1184): made private,
+    archived or shared with another company since it was connected (or since
+    a team agent's own bot first answered there). Checked when each turn
+    starts. The turn that finds it disconnects the channel and says this once,
+    to its sender. Archived and deleted channels take no line at all, so it
+    names the two cases someone can read it in. It names nothing else.
+  */
+  channelNoLongerAllowed:
+    "I've stopped answering in this channel: it's private now, or shared with another organization. " +
+    'I only answer in public channels of this workspace.',
   channelBusy: "I'm busy with other questions in this channel. Try again in a minute.",
   /*
     A team agent's own bot (TASK-1167) whose requester can't vouch for its

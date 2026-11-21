@@ -273,7 +273,10 @@ function fakeServices(s: Services) {
  * and Meg, users.lookupByEmail for Ada and Meg (TASK-1170), and every chat.*
  * call (a chat.postMessage to a person's user id lands in the shared bot's DM
  * with them, which the answer names), and records each method with its auth
- * header and body.
+ * header and body. conversations.info describes #support as a live public
+ * channel, every flag set as Slack's own answer sets them, and finds no other
+ * channel: every channel turn asks it first (TASK-1184), and a team agent's
+ * own bot asks it to bind #support at its first mention there (TASK-1180).
  */
 function fakeSlackFetch() {
   const calls: Array<{ method: string; auth: string | null; body: Record<string, unknown> }> = [];
@@ -323,6 +326,24 @@ function fakeSlackFetch() {
     if (method === 'users.lookupByEmail') {
       const id = { 'ada@canopyworks.com': ADA_SLACK, [MEG.email]: MEG_SLACK }[String(body['email'])];
       answer = id === undefined ? { ok: false, error: 'users_not_found' } : { ok: true, user: { id } };
+    }
+    if (method === 'conversations.info') {
+      answer =
+        body['channel'] === SUPPORT_CH
+          ? {
+              ok: true,
+              channel: {
+                id: SUPPORT_CH,
+                name: 'support',
+                is_channel: true,
+                is_private: false,
+                is_archived: false,
+                is_ext_shared: false,
+                is_pending_ext_shared: false,
+                is_member: true,
+              },
+            }
+          : { ok: false, error: 'channel_not_found' };
     }
     if (method === 'chat.startStream') answer = { ok: true, ts: '1763039999.000001' };
     if (method === 'chat.postMessage') {
@@ -389,34 +410,6 @@ function disconnectSlackFetch() {
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
-  };
-  return { fetchImpl, calls: slack.calls };
-}
-
-/**
- * disconnectSlackFetch, with conversations.info describing #support as a live
- * public channel the agent's own bot may bind at its first mention there
- * (TASK-1180). Every flag is set, as Slack's own answer sets them.
- */
-function botChannelSlackFetch() {
-  const slack = disconnectSlackFetch();
-  const fetchImpl: typeof fetch = async (input, init) => {
-    const answered = await slack.fetchImpl(input, init);
-    if (String(input) !== 'https://slack.com/api/conversations.info') return answered;
-    const channel = {
-      id: SUPPORT_CH,
-      name: 'support',
-      is_channel: true,
-      is_private: false,
-      is_archived: false,
-      is_ext_shared: false,
-      is_pending_ext_shared: false,
-      is_member: true,
-    };
-    return new Response(JSON.stringify({ ok: true, channel }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
   };
   return { fetchImpl, calls: slack.calls };
 }
@@ -3218,7 +3211,7 @@ describe('@ax/channel-slack plugin', () => {
   // there. Before the fix the bot bound such a channel with the switch back on,
   // and the agent learned from a channel the team chose not to have remembered.
   it("a channel the team switched off stays off when the agent's own bot first answers there, after its shared connection was disconnected (TASK-1180)", async () => {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
@@ -3268,7 +3261,7 @@ describe('@ax/channel-slack plugin', () => {
   });
 
   it("a channel the team switched off stays off when the agent's own bot first answers there, after Slack was disconnected in Admin › Slack (TASK-1180)", async () => {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
@@ -3333,7 +3326,7 @@ describe('@ax/channel-slack plugin', () => {
     expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
     expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBeNull();
 
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot(
       { fetchImpl: slack.fetchImpl },
       {
@@ -3362,7 +3355,7 @@ describe('@ax/channel-slack plugin', () => {
   });
 
   it("a bot channel's switch: only the agent's team admin flips it, the settings show it, and memory follows it (TASK-1180)", async () => {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     // #support is bound on both installs, the shared app's and the bot's, and on.
     await seedSupportBot(s);
@@ -3485,7 +3478,7 @@ async function waitingOn(pid: number): Promise<number[]> {
 describe("a memory switch flip and the agent's own bot's first bind take turns (TASK-1182)", () => {
   /** TASK-1180's world with the bot not yet answered in #support; its mention, and the shared switch turned off, through the wiring. */
   async function race() {
-    const slack = botChannelSlackFetch();
+    const slack = disconnectSlackFetch();
     const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
