@@ -540,7 +540,7 @@ describe('a rebuilt bot (TASK-1173)', () => {
   it('no workspace: a gone approver still gets the alert, with no Rebuild button (a request needs the shared app)', async () => {
     renderIt({ state: 'no-workspace', canManage: true, bot: GONE_BOT });
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Quill Bot needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more. A team admin can rebuild it.',
+      'Quill Bot needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more. Once Slack is connected again, you can rebuild it here.',
     );
     expect(screen.queryByRole('button', { name: 'Rebuild bot' })).toBeNull();
   });

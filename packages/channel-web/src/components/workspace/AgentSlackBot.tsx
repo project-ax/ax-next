@@ -610,7 +610,11 @@ function Live({
         <Alert>
           <AlertDescription>
             {`${bot.botName} needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more.${
-              canRebuild ? ' Rebuild it to set it up again under your own token.' : ' A team admin can rebuild it.'
+              canRebuild
+                ? ' Rebuild it to set it up again under your own token.'
+                : canManage
+                  ? ' Once Slack is connected again, you can rebuild it here.'
+                  : ' A team admin can rebuild it.'
             }`}
           </AlertDescription>
         </Alert>

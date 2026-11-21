@@ -787,23 +787,24 @@ describe('live: needs attention (TASK-1173)', () => {
     expect(screen.queryByText(/^Set up by|^You set it up/)).toBeNull();
   });
 
-  it('approver gone: a manager with the shared app is told to rebuild, anyone else that a team admin can', () => {
+  it('approver gone: a manager with the shared app is told to rebuild, one without it to wait for Slack, a member that a team admin can', () => {
     const first = render(
       <AgentSlackBot agentId="a1" agentName="Quill" bot={GONE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
     );
     expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} Rebuild it to set it up again under your own token.`);
     first.unmount();
-    // A member, and a manager while the shared app isn't connected: no Rebuild button to point at.
-    for (const [canManage, sharedConnected] of [
-      [false, true],
-      [true, false],
-    ] as const) {
-      const view = render(
-        <AgentSlackBot agentId="a1" agentName="Quill" bot={GONE} canManage={canManage} sharedConnected={sharedConnected} {...QUIET} onChanged={vi.fn()} />,
-      );
-      expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} A team admin can rebuild it.`);
-      view.unmount();
-    }
+    // A manager while the shared app isn't connected: no Rebuild button yet, and they are the team admin to do it.
+    const waiting = render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={GONE} canManage sharedConnected={false} {...QUIET} onChanged={vi.fn()} />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} Once Slack is connected again, you can rebuild it here.`);
+    expect(screen.getByRole('alert')).not.toHaveTextContent('A team admin can rebuild it.');
+    waiting.unmount();
+    // A member: no Rebuild button, so point at the people who have one.
+    render(
+      <AgentSlackBot agentId="a1" agentName="Quill" bot={GONE} canManage={false} sharedConnected {...QUIET} onChanged={vi.fn()} />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(`${REBUILD_ALERT} A team admin can rebuild it.`);
   });
 
   it('an approver who is still here gets no alert', () => {
