@@ -413,10 +413,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           logger,
           randomBytes,
         });
-        // Renaming a live bot or changing its picture (TASK-1171) uses its
-        // approver's configuration token, so it takes the same lock as every
-        // other use of a person's token, on the same cached secret store.
+        // Renaming a live bot or changing its picture (TASK-1171), and its
+        // approver's Replace (TASK-1173), use the approver's configuration
+        // token, so they take the same lock as every other use of a person's
+        // token, on the same cached secret store. A Claim (TASK-1173) asks the
+        // claimer's rights again on the bus, under that lock too.
         const botChanges = createBotChanges({
+          bus,
           installs: store,
           secrets,
           api,
