@@ -54,10 +54,9 @@ export const CALL_LIMITS = {
   maxResponseBytes: 2 * 1024 * 1024,
 } as const;
 
-export type ServerCallOutcome =
-  | { outcome: 'succeeded' }
-  | { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' | 'tool-error' }
-  | { outcome: 'unknown'; reason: 'timeout' | 'interrupted' };
+export type ServerCallFailed = { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' | 'tool-error' };
+export type ServerCallUnknown = { outcome: 'unknown'; reason: 'timeout' | 'interrupted' };
+export type ServerCallOutcome = { outcome: 'succeeded' } | ServerCallFailed | ServerCallUnknown;
 
 export interface CallServerToolOptions {
   url: string;
@@ -84,7 +83,7 @@ function errorName(err: unknown): string {
 }
 
 /** A failure during connect: `tools/call` was never sent, so it is definite. */
-function classifyConnectError(err: unknown): ServerCallOutcome {
+function classifyConnectError(err: unknown): ServerCallFailed {
   const code = err !== null && typeof err === 'object' ? (err as { code?: unknown }).code : undefined;
   if (code === 401 || code === 403 || errorName(err) === 'UnauthorizedError') {
     return { outcome: 'failed', reason: 'needs-auth' };
@@ -93,7 +92,7 @@ function classifyConnectError(err: unknown): ServerCallOutcome {
 }
 
 /** A failure after `tools/call` was sent: definite only when the answer says so. */
-function classifyCallError(err: unknown): ServerCallOutcome {
+function classifyCallError(err: unknown): ServerCallFailed | ServerCallUnknown {
   // An HTTP status, as the transport saw it. Only these mean the request
   // itself was turned away, and that is an ASSUMPTION (review r3 S2): a
   // conformant server sends a 4xx only when it cannot accept the request. A
@@ -139,8 +138,18 @@ function classifyCallError(err: unknown): ServerCallOutcome {
 /**
  * Connect to one http MCP server through the guarded fetch, send exactly one
  * `tools/call`, and close. Never throws: every failure is an outcome.
+ *
+ * `onReply` turns the server's answer into the caller's success shape. It
+ * sees the reply only as `CallResultView` let it through (`isError`, the rest
+ * unvalidated and untrusted). It must be synchronous: it runs inside the
+ * request's try, before `close()`, and only a synchronous throw is caught
+ * there. It runs after the call went out, so if it throws the answer is
+ * `unknown`, never `failed`.
  */
-export async function callServerTool(opts: CallServerToolOptions): Promise<ServerCallOutcome> {
+export async function sendOneCall<S>(
+  opts: CallServerToolOptions,
+  onReply: (reply: { isError?: boolean | undefined } & Record<string, unknown>) => S,
+): Promise<S | ServerCallFailed | ServerCallUnknown> {
   const limits = { ...CALL_LIMITS, ...(opts.limits ?? {}) };
   const oversize = new AbortController();
   let budget: AbortSignal;
@@ -208,9 +217,7 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
         CallResultView,
         { signal: budget, timeout: limits.requestTimeoutMs },
       );
-      // `isError` is the service's answer once the call went out (review F3):
-      // not a refusal. The tool may have run and done part of the work.
-      return reply.isError === true ? { outcome: 'failed', reason: 'tool-error' } : { outcome: 'succeeded' };
+      return onReply(reply);
     } catch (err) {
       // An oversize reply aborts the budget, which the SDK reports as a
       // request timeout, so the size check comes first.
@@ -220,4 +227,13 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
     await client.close().catch(() => {});
     await guarded.close();
   }
+}
+
+/** `sendOneCall`, answering the outcome only: nothing the server said comes back. */
+export function callServerTool(opts: CallServerToolOptions): Promise<ServerCallOutcome> {
+  // `isError` is the service's answer once the call went out (review F3):
+  // not a refusal. The tool may have run and done part of the work.
+  return sendOneCall<ServerCallOutcome>(opts, (reply) =>
+    reply.isError === true ? { outcome: 'failed', reason: 'tool-error' } : { outcome: 'succeeded' },
+  );
 }
