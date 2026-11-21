@@ -92,7 +92,11 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      tells its sender, privately and once (`channelNoLongerAllowed`); every
  *      turn it stops is dropped (`slack_turns_dropped`,
  *      `channel-not-allowed`). Slack not answering is no turn either: "try
- *      again", and the binding stays. A Slack Connect channel seldom gets
+ *      again", and the binding stays. Nor is Slack saying the install's own
+ *      token can't read any public channel (code `token-scope`): the binding
+ *      stays, and since no retry fixes that, its sender is told a team admin
+ *      must look (`channelUnavailable`, or `botUnavailable` on a team agent's
+ *      own bot), never to try again. A Slack Connect channel seldom gets
  *      this far: step 1 drops its events, so only a turn that was waiting
  *      when it was shared, or one while its share is still pending, finds it.
  *   9. Before the agent runs, the conversation is recorded as one of the
@@ -124,10 +128,11 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *     channel, shows one the agent settings could connect (channels.ts
  *     `connectable`): to the bot's one agent, connected by its requester.
  *     Slack is asked again when each turn starts, as on the shared app (step
- *     8). A channel refused at its first mention is silence; Slack failing,
- *     or saying the bot's token can't read any public channel (the turn-start
- *     check's reading, channel-check.ts `channelInfoFailure`), is "try
- *     again"; a binding naming any other agent runs nothing;
+ *     8). A channel refused at its first mention is silence; Slack failing is
+ *     "try again"; Slack saying the bot's token can't read any public
+ *     channel (the turn-start check's reading, channel-check.ts
+ *     `channelInfoFailure`) is `botUnavailable`; a binding naming any other
+ *     agent runs nothing;
  *   - an outsider's turn runs as that requester, and only while they are
  *     still a team admin of the agent's team (channels.ts `teamAdminAccess`);
  *     otherwise an outsider is told privately (`botUnavailable`) and gets
@@ -641,6 +646,15 @@ async function routeMention(
     // listing it and memory stops learning from its threads. Slack not
     // answering says nothing about the channel: no turn, and the binding stays.
     const channel = await d.channelCheck.check(installId, botToken, m.channel);
+    if (channel.kind === 'token-scope') {
+      // The install's own token can't read any public channel (its app lost
+      // channels:read): nothing about this channel, so the binding stays. No
+      // retry fixes it, so no "try again": a team admin must look, as for a
+      // broken connection (tier `unavailable`, step 5).
+      log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
+      await tell(install.kind === 'shared' ? COPY.channelUnavailable : COPY.botUnavailable);
+      return;
+    }
     if (channel.kind === 'unknown') {
       log('error', 'slack_event_failed', { stage: 'channel-check', code: channel.code });
       await tell(COPY.turnFailed);
@@ -817,8 +831,9 @@ async function reachShared(
  * with no binding is never "no agent here" (the bot serves its one agent
  * wherever it was invited). Then the channel's binding, or the one this
  * first mention there writes (bindBotChannel): a channel it refuses is
- * silence, Slack failing is "try again", and so is a token that can't read
- * any public channel. A binding naming any agent but the bot's runs nothing.
+ * silence, Slack failing is "try again", and a token that can't read any
+ * public channel is `botUnavailable`, since no retry fixes it. A binding
+ * naming any agent but the bot's runs nothing.
  */
 async function reachOwnBot(
   d: RouterDeps,
@@ -861,7 +876,11 @@ async function reachOwnBot(
     }
     if (!outcome.ok) {
       const code = outcome.code !== undefined ? { code: outcome.code } : {};
-      if (outcome.reason === 'slack-error') {
+      if (outcome.reason === 'token-scope') {
+        // As at the turn-start check (step 8): no retry fixes the bot's token, a team admin must.
+        log('error', 'slack_event_failed', { stage: 'channel-info', code: 'token-scope' });
+        await say.tell(COPY.botUnavailable);
+      } else if (outcome.reason === 'slack-error') {
         log('error', 'slack_event_failed', { stage: 'channel-info', ...code });
         await say.tell(COPY.turnFailed);
       } else {
@@ -888,11 +907,13 @@ function isId(value: string | null | undefined): value is string {
 
 /**
  * `code` is Slack's own (or this file's `id-mismatch`), when there is one to
- * log. `slack-error` always has one.
+ * log. `slack-error` always has one. `token-scope` (never a code): the bot's
+ * own token can't read any public channel (channel-check.ts
+ * `channelInfoFailure`).
  */
 type BindOutcome =
   | { ok: true; binding: ChannelBinding }
-  | { ok: false; reason: 'channel-not-allowed' | 'slack-error'; code?: string };
+  | { ok: false; reason: 'channel-not-allowed' | 'slack-error' | 'token-scope'; code?: string };
 
 /**
  * A team agent's own bot binds a channel at its first mention there
@@ -933,6 +954,7 @@ async function bindBotChannel(
     // is no refusal of this channel.
     const failure = channelInfoFailure(err);
     if (failure.kind === 'refused') return { ok: false, reason: 'channel-not-allowed', code: failure.code };
+    if (failure.kind === 'token-scope') return { ok: false, reason: 'token-scope' };
     return { ok: false, reason: 'slack-error', code: failure.code };
   }
   // Every check reads this answer, so it must be about the channel the mention came from.

@@ -3020,16 +3020,17 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
   });
 
   /*
-    TASK-1184 review round 2 (R4): a bot whose token can't read public
+    TASK-1184 review round 2 (R4, R3): a bot whose token can't read public
     channels at all (its app reinstalled without channels:read) learns
     nothing about this channel from Slack's missing_scope. It was silence, as
-    for a private channel; it binds nothing, and says so.
+    for a private channel; it binds nothing, and says so: a team admin must
+    look at the bot, since no retry fixes its token.
   */
   it.each([
     ["Slack's provided lacks channels:read, whatever it needs", { needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ }],
     ['no provided, and Slack needs exactly channels:read', { needed: 'channels:read' }],
   ] as const)(
-    "a missing_scope that is the bot token's own (%s) binds nothing and runs nothing, and its sender is told",
+    "a missing_scope that is the bot token's own (%s) binds nothing and runs nothing, and its sender is told a team admin must look",
     async (_name, scopes) => {
       const w = world({ channelInfo: () => missingScopeNaming(scopes) });
       w.putInstall(OWN_BOT);
@@ -3039,12 +3040,12 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
       expect(w.channels.calls).toEqual(['get']);
       expect(w.invokes).toEqual([]);
-      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.botUnavailable }]);
       expect(w.lines).toEqual([
         {
           level: 'error',
           msg: 'slack_event_failed',
-          fields: { installId: OWN_BOT_ID, stage: 'channel-info', code: 'missing_scope' },
+          fields: { installId: OWN_BOT_ID, stage: 'channel-info', code: 'token-scope' },
         },
       ]);
     },
@@ -3477,6 +3478,8 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
     bound: (w: ReturnType<typeof world>) => void;
     /** What Alice is told at a mention there once its binding is gone. */
     next: Array<Record<string, unknown>>;
+    /** What a sender is told when the install's own token can't read public channels: no retry fixes that. */
+    tokenScopeLine: string;
   }
   const WAYS: Way[] = [
     {
@@ -3490,6 +3493,8 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
       bound: () => undefined,
       // The shared bot's line for a channel nothing is connected to.
       next: [{ channel: SUPPORT, user: ALICE, text: COPY.channelNotConnected }],
+      // As for a broken connection: a team admin must look.
+      tokenScopeLine: COPY.channelUnavailable,
     },
     {
       way: "a team agent's own bot",
@@ -3512,6 +3517,8 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
       },
       // The bot asks Slack to bind the channel again, and binds nothing, in silence (bindBotChannel).
       next: [],
+      // Nobody connected a bot's channel by hand: what needs a team admin is the bot itself.
+      tokenScopeLine: COPY.botUnavailable,
     },
   ];
 
@@ -3659,19 +3666,6 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
     ['an unreadable answer', new SlackApiError('conversations.info', 'bad-response'), 'bad-response'],
     ['a network failure', new Error('socket hang up'), 'unknown'],
     ['an answer about another channel', slackChannel(OPS, 'ops'), 'id-mismatch'],
-    // The app's configuration lost channels:read and it was reinstalled: the
-    // token kept its string, and reads no channel at all. Slack's provided
-    // says so, whatever it needs; without one, a need of exactly channels:read.
-    [
-      'its token lacks channels:read, as the scopes it holds say',
-      missingScopeNaming({ needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ }),
-      'missing_scope',
-    ],
-    [
-      'its token lacks channels:read, as Slack needs exactly that one',
-      missingScopeNaming({ needed: 'channels:read' }),
-      'missing_scope',
-    ],
   ] as const)(
     "when Slack can't say (%s), no turn runs, the binding stays, the sender is told to try again, and nothing is kept",
     async (_what, failure, code) => {
@@ -3692,6 +3686,55 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
       // Slack answers again: the next turn asks, and runs.
       answer = slackChannel(SUPPORT, 'support');
       await w.dispatch(INSTALL, mention({ ts: '1763035301.000301' }));
+      await w.idle();
+      expect(w.invokes).toHaveLength(1);
+      expect(infoCalls(w)).toHaveLength(2);
+    },
+  );
+
+  /*
+    The app's configuration lost channels:read and it was reinstalled: the
+    token kept its string, and reads no channel at all. Slack's provided says
+    so, whatever it needs; without one, a need of exactly channels:read. That
+    says nothing about the channel, so the binding stays, as when Slack can't
+    say. But no retry fixes it either (review round 2, R3): "try again" would
+    be a promise kept by nobody, so the sender hears that a team admin must
+    look, the line the router already has for a channel no turn can run in.
+  */
+  it.each(
+    WAYS.flatMap((way) =>
+      (
+        [
+          ['as the scopes it holds say', missingScopeNaming({ needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ })],
+          ['as Slack needs exactly that one', missingScopeNaming({ needed: 'channels:read' })],
+        ] as const
+      ).map(([how, answer]) => [way.way, how, way, answer] as const),
+    ),
+  )(
+    '%s: a token that lacks channels:read (%s) runs no turn and keeps the binding; its sender is told a team admin must look, never to try again',
+    async (_way, _how, way, answer) => {
+      let info: SlackChannel | Error = answer;
+      const w = world({ channelInfo: () => info });
+      way.bound(w);
+      await w.dispatch(way.install, way.mention());
+      await w.idle();
+
+      expect(w.invokes).toEqual([]);
+      expect(w.threadWrites).toEqual([]);
+      expect(w.channels.calls).not.toContain('remove');
+      expect(w.channels.row(way.installId, SUPPORT)).toMatchObject({ agentId: SUPPORT_AGENT.id, connectedByUserId: 'usr_ada' });
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: way.tokenScopeLine }]);
+      expect(w.lines).toEqual([
+        {
+          level: 'error',
+          msg: 'slack_event_failed',
+          fields: { installId: way.installId, stage: 'channel-check', code: 'token-scope' },
+        },
+      ]);
+
+      // Nothing was kept: once the token reads channels again, the next turn asks Slack, and runs.
+      info = slackChannel(SUPPORT, 'support');
+      await w.dispatch(way.install, way.mention({ ts: '1763035301.000301' }));
       await w.idle();
       expect(w.invokes).toHaveLength(1);
       expect(infoCalls(w)).toHaveLength(2);

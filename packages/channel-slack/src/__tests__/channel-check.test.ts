@@ -174,9 +174,9 @@ describe('createChannelCheck', () => {
     ["the token's own scopes lack channels:read, and Slack needs groups:read", { needed: 'groups:read', provided: LACKS }],
     ["the token's own scopes lack channels:read, and Slack names nothing needed", { provided: LACKS }],
     ['Slack says nothing of the scopes the token holds, and needs exactly channels:read', { needed: 'channels:read' }],
-  ] as const)("a missing_scope where %s is the token's, not the channel's: unknown, never kept", async (_n, scopes) => {
+  ] as const)("a missing_scope where %s is the token's, not the channel's: token-scope, never kept", async (_n, scopes) => {
     const { calls, check } = setup(() => missingScope(scopes));
-    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'unknown', code: 'missing_scope' });
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'token-scope' });
     await check.check(INSTALL, TOKEN, CH);
     expect(calls).toHaveLength(2);
   });
@@ -228,8 +228,8 @@ describe('createChannelCheck', () => {
       kinds.add(read.kind);
       expect(await check.check(INSTALL, TOKEN, CH), err.message).toEqual(read);
     }
-    // The list reaches both readings: the comparison compared something.
-    expect([...kinds].sort()).toEqual(['refused', 'unknown']);
+    // The list reaches every reading: the comparison compared something.
+    expect([...kinds].sort()).toEqual(['refused', 'token-scope', 'unknown']);
   });
 
   it('CHANNEL_REFUSED_CODES is exactly channel_not_found and missing_scope', () => {

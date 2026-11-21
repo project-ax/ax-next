@@ -222,6 +222,8 @@ export const COPY = {
     The channel's connection is broken: the person who connected it can't use
     the agent anymore, or the agent is gone. Outsiders' turns would run as
     that person, so none runs until a team admin connects the channel again.
+    Any sender hears it too when the app's own token can't read public
+    channels any more (TASK-1184): no retry fixes that either.
   */
   channelUnavailable: "I can't answer here right now. A team admin needs to connect me to this channel again.",
   /*
@@ -241,7 +243,8 @@ export const COPY = {
     channels' outsiders anymore: they are no longer a team admin of the
     agent's team, or are gone. An outsider's turn would run as them, so none
     runs until a team admin claims the bot in the web app; members are still
-    answered. Only an outsider ever reads it.
+    answered. Members read it only when the bot's own token can't read public
+    channels any more (TASK-1184): no retry fixes that, a team admin must.
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
   /*

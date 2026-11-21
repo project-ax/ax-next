@@ -28,16 +28,19 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  *     one: the TASK-1174 walk measured it at a bot's first bind, for a
  *     channel private from the start. Nobody has measured a channel made
  *     private later, nor what Slack's `needed` and `provided` say for either;
+ *   - token-scope: a `missing_scope` that is the token's own
+ *     (channelInfoFailure). It lacks `channels:read`, the scope every public
+ *     channel is read with (say its app was reinstalled without it: a token
+ *     keeps its string, and its scopes follow the app's configuration at the
+ *     reinstall), so it reads no channel at all, and a refusal would
+ *     disconnect every channel with a false "it's private now". It says
+ *     nothing about the channel, but unlike the answers below, asking again
+ *     won't change it: a team admin must;
  *   - unknown: Slack couldn't say. A rate limit, a token Slack refuses, a
- *     5xx, an unreadable answer, a network failure, an answer about some
- *     other channel (`id-mismatch`), or a `missing_scope` that is the
- *     token's own (channelInfoFailure): it lacks `channels:read`, the scope
- *     every public channel is read with (say its app was reinstalled without
- *     it: a token keeps its string, and its scopes follow the app's
- *     configuration at the reinstall), so it reads no channel at all, and a
- *     refusal would disconnect every channel with a false "it's private
- *     now". None of these says anything about the channel, so the caller
- *     runs no turn and changes nothing durable.
+ *     5xx, an unreadable answer, a network failure, or an answer about some
+ *     other channel (`id-mismatch`).
+ * Neither of the last two says anything about the channel, so the caller
+ * runs no turn and changes nothing durable.
  * A code is Slack's own, logCode's, or one of this file's: never anything
  * else from the answer.
  *
@@ -46,9 +49,9 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * a minute, not a rate limit that turns every channel turn in the workspace
  * into "try again". A refusal is never kept: the caller acts on it at once
  * (the binding goes), and a kept one would remove a binding made again within
- * the minute. A failure is never kept either, so the next turn asks as soon
- * as Slack can answer, and an expired allowed answer is never used in its
- * place.
+ * the minute. A failure or a token-scope answer is never kept either, so
+ * the next turn asks as soon as Slack can answer, or the token can read
+ * channels again, and an expired allowed answer is never used in its place.
  *
  * Two turns in one channel can ask at once, and Slack's answers can arrive in
  * any order. So a refusal also forgets the allowed answer kept for that
@@ -59,7 +62,7 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * In-process and bounded (`max` channels, the oldest forgotten first), like
  * the event-id dedupe and the signing-secret cache; an install and channel
  * is tracked for the race above only while an ask about it is on its way. It
- * never logs: the caller logs the result's code.
+ * never logs: the caller logs the result's code, or `token-scope`.
  */
 
 /**
@@ -82,7 +85,9 @@ export type ChannelCheckResult =
   | { kind: 'allowed' }
   /** Definitive. code: 'not-public' | 'archived' | 'shared' (from the flags) or Slack's 'channel_not_found' | 'missing_scope'. */
   | { kind: 'refused'; code: string }
-  /** Slack couldn't say. code: Slack's own (a token missing `channels:read` is `missing_scope`), logCode's, or 'id-mismatch'. */
+  /** The install's own token can't read any public channel: nothing about this one, and no retry fixes it. */
+  | { kind: 'token-scope' }
+  /** Slack couldn't say. code: Slack's own, logCode's, or 'id-mismatch'. */
   | { kind: 'unknown'; code: string };
 
 /** What a failed conversations.info says (channelInfoFailure): never allowed. */
@@ -105,15 +110,15 @@ function isTokensOwn(err: SlackApiError): boolean {
 /**
  * What a conversations.info that failed says about the channel it was asked
  * about: refused (definitive) for Slack's own `channel_not_found`, or a
- * `missing_scope` that isn't the token's own; unknown for anything else,
- * that `missing_scope` included. The one reading of a failure, for the check
+ * `missing_scope` that isn't the token's own; token-scope for one that is;
+ * unknown for anything else. The one reading of a failure, for the check
  * below and for a team agent's own bot binding a channel at its first
  * mention (router.ts `bindBotChannel`), so a bind and every later turn
  * agree. Only Slack's own answer refuses: a refusal deletes a binding.
  */
 export function channelInfoFailure(err: unknown): ChannelInfoFailure {
   if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
-    if (err.code === 'missing_scope' && isTokensOwn(err)) return { kind: 'unknown', code: err.code };
+    if (err.code === 'missing_scope' && isTokensOwn(err)) return { kind: 'token-scope' };
     return { kind: 'refused', code: err.code };
   }
   return { kind: 'unknown', code: logCode(err) };
