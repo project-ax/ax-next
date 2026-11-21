@@ -10,6 +10,7 @@ import {
   type DirectMessage,
   type Mention,
 } from './admission.js';
+import { CHANNEL_REFUSED_CODES } from './channel-check.js';
 import { decideTier, runsAsConnector, type SenderFacts } from './channel-route.js';
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { agentAccess, connectable, teamAdminAccess, type AgentAccess } from './channels.js';
@@ -833,15 +834,6 @@ async function reachOwnBot(
 function isId(value: string | null | undefined): value is string {
   return typeof value === 'string' && value.length > 0;
 }
-
-/**
- * conversations.info refusals that are about the channel, not Slack failing:
- * a team agent's own bot reads public channels only (its manifest's
- * `channels:read`), so a private channel or a group DM it was added to
- * anyway is `channel_not_found` or `missing_scope` to it. Silence, as for a
- * channel Slack describes as one it can't serve.
- */
-const CHANNEL_REFUSED_CODES: ReadonlySet<string> = new Set(['channel_not_found', 'missing_scope']);
 
 /**
  * `code` is Slack's own (or this file's `id-mismatch`), when there is one to
