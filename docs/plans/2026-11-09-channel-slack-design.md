@@ -1276,6 +1276,15 @@ connectors. The protections are:
   channel's threads.
 - **A spurious `channel_not_found` disconnects.** If Slack wrongly says a public
   channel is gone, we disconnect it.
+- **What Slack names in a `missing_scope` is unmeasured.** A token that can't
+  read public channels at all (its app reinstalled without `channels:read`)
+  gets `missing_scope` for every channel, just like a channel made private.
+  We tell them apart by Slack's `provided`, the scopes the token holds: if it
+  lacks `channels:read`, the answer is about the token, not the channel, so
+  no turn runs, the connection stays, and the sender hears that a team admin
+  must look. Without `provided`, only a `needed` of exactly `channels:read`
+  reads that way. Nobody has recorded what Slack sends in either case; the
+  next Slack walk does (the TASK-1184 plan's walk note).
 - **Connected again on the shared app, a channel starts with memory on.** That
   is the cost of every disconnect this check makes, not only a spurious one:
   once the channel is public again, a team admin must connect it again, and
