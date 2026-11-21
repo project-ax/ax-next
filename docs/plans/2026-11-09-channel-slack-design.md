@@ -905,7 +905,7 @@ The agent's Slack settings become one card with three states:
 
 - **Asking an AX admin is the default.** "I can install Slack apps myself" is
   a quiet link under the button that opens the configuration-token paste.
-  Today the form opens with a two-way choice, "Who sets it up in Slack?".
+  Until TASK-1187 the form opened with a two-way choice, "Who sets it up in Slack?".
 - **These words leave the agent settings:** approver, requester, claim,
   rebuild, shared app, own bot, and configuration token (except on the
   install-it-myself path). Admin › Slack keeps them. Admins are the right
@@ -919,6 +919,32 @@ The agent's Slack settings become one card with three states:
   | The token stopped working, and someone else made the bot | "@fern lost its connection to Slack. Ask <name> to reconnect it." | (none for this viewer) |
   | Whoever made the bot has left | "@fern needs to be set up again." **Set up again** | Rebuild |
   | The team admin people outside AX run as is no longer a team admin | "People outside AX can't use @fern right now." **Take over** | Claim |
+
+**As built (TASK-1187).** The card is one component. Its title is the state
+sentence ("@fern isn't in Slack yet", "Waiting for an admin to approve ...",
+"@fern is in Slack"), and the actions live in a ⋯ menu.
+
+- **Asking an admin is the default**, unless the person's configuration token
+  is already stored. Then the button installs the bot directly. The form has
+  one link-button that flips its label: "I can install Slack apps myself" and
+  "Ask an admin instead". It is not a two-way choice.
+- **Waiting names the bot**, not an @handle.
+- **`approverGone` shows alone.** No other problem row sits beside it.
+- **The token rows are not on page load.** They appear only after a Rename or
+  Change picture finds the token dead, and they don't survive a reload.
+  TASK-1178 item 19 would persist them.
+- **Two copy differences from the table, on purpose.** We say "outside the
+  team", not "outside AX": the product is white-labeled, and §2's outsiders
+  include AX users who have no access. We say "Changes to @fern can't reach
+  Slack right now", not "lost its connection": the bot keeps answering in
+  Slack, so "lost" would be wrong.
+- **The memory switch is the channel row's ⋯ item** ("Don't remember this
+  channel" or "Remember this channel"). Storage, route and locks are
+  unchanged.
+- **The help line** (who @fern asks when it needs an OK) is on the Not in
+  Slack and Live cards.
+- **A words test** (`slack-card-words.test.ts`) fails if the plumbing words
+  come back into the agent settings.
 
 ### 3. Memory: one rule, and no switch on screen
 
