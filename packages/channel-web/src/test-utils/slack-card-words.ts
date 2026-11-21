@@ -16,6 +16,11 @@ export function slackCardWordsFound(text: string): string[] {
 
 /** What a person can read now: the body's text (menus and dialogs portal into it) and every aria-label. */
 export function slackCardText(root: Element = document.body): string {
+  // Text nodes joined by newlines: `textContent` glues neighbouring elements
+  // ("Rebuild" + "Rename" -> "RebuildRename"), so `\b` never sees the word.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts: string[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n.textContent ?? '');
   const labels = [...root.querySelectorAll('[aria-label]')].map((el) => el.getAttribute('aria-label') ?? '');
-  return [root.textContent ?? '', ...labels].join('\n');
+  return [...texts, ...labels].join('\n');
 }

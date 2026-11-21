@@ -46,4 +46,13 @@ describe('slack card words matcher', () => {
     expect(text).toContain('hello');
     expect(slackCardWordsFound(text)).toEqual(['Rebuild']);
   });
+
+  it('slackCardText sees words at element edges (no glued text)', () => {
+    document.body.innerHTML = '<h3>Waiting for the approver</h3><p>Asked on</p>';
+    expect(slackCardWordsFound(slackCardText())).toEqual(['approver']);
+    document.body.innerHTML = '<div>Claim</div><div>Rename</div>';
+    expect(slackCardWordsFound(slackCardText())).toEqual(['Claim']);
+    document.body.innerHTML = '<button>Rebuild</button><button>Rename</button>';
+    expect(slackCardWordsFound(slackCardText())).toEqual(['Rebuild']);
+  });
 });
