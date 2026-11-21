@@ -96,7 +96,7 @@ import type { InstallRow, InstallStore } from './store.js';
  *
  * Log lines are code-only: `slack_bot_request_dms_sent { requestId, sent,
  * skipped }` once per fan-out, `slack_bot_request_dms_skipped { requestId,
- * reason }` for a fan-out not started, `slack_bot_request_dm_skipped
+ * reason }` for a fan-out not started, `slack_bot_request_dm_admin_skipped
  * { requestId, stage, code }` for each admin it can't reach (Slack doesn't
  * know them at `lookup`, `admission` refused them, or their Slack email maps
  * elsewhere at `find-user`), `slack_bot_request_owner_dm_sent { requestId |
@@ -240,7 +240,7 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     log('warn', 'slack_bot_request_dm_failed', { ...key, stage, code });
   /** One admin the fan-out can't reach (D2), and which check said so. */
   const skipped = (key: LogKey, stage: string, code: string): void =>
-    log('info', 'slack_bot_request_dm_skipped', { ...key, stage, code });
+    log('info', 'slack_bot_request_dm_admin_skipped', { ...key, stage, code });
 
   /** Forget what has outlived its TTL or window, then make room for one more record. */
   function prune(now: number): void {
@@ -450,7 +450,12 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
       // (its post's answer may still be on its way), so the fan-out leaves it.
       record.line = line;
       if (clicked !== undefined && !record.sent.some((dm) => sameDm(dm, clicked))) record.sent.push({ ...clicked });
-      posted = [...record.sent];
+      // The clicked DM first: its redraw is the clicker's only answer, so it
+      // doesn't wait behind every other admin's.
+      posted =
+        clicked === undefined
+          ? [...record.sent]
+          : [{ ...clicked }, ...record.sent.filter((dm) => !sameDm(dm, clicked))];
       subject = record.subject ?? '';
       installId = record.installId;
     }

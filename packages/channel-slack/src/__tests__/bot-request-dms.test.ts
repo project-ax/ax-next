@@ -218,7 +218,7 @@ const failedLine = (stage: string, code: string, key: Record<string, string> = {
 /** One admin the fan-out skipped, and why: the stage that said so and its code. */
 const skippedLine = (stage: string, code: string) => ({
   level: 'info',
-  msg: 'slack_bot_request_dm_skipped',
+  msg: 'slack_bot_request_dm_admin_skipped',
   fields: { requestId: REQUEST, stage, code },
 });
 
@@ -1106,7 +1106,7 @@ describe('closed', () => {
     ]);
   });
 
-  it('a clicked DM already in the record is redrawn once, with the rest', async () => {
+  it('a clicked DM already in the record is redrawn once, with the rest, and first: it is the clicker\'s only answer', async () => {
     const w = await world();
     w.auth.admins = listed(GRACE, KAY);
     await w.open();
@@ -1115,8 +1115,8 @@ describe('closed', () => {
     await w.close({ outcome: 'declined', byUserId: KAY.id, clicked: { channel: dmOf(KAY.slackId), ts: tsOf(2) } });
 
     expect(updates(w)).toEqual([
-      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
       { channel: dmOf(KAY.slackId), ts: tsOf(2), ...answered('Kay McNulty declined this.') },
+      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
     ]);
   });
 
@@ -1131,8 +1131,8 @@ describe('closed', () => {
     await w.close({ outcome: 'declined', byUserId: KAY.id, clicked: kays });
 
     expect(updates(w)).toEqual([
-      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
       { ...kays, ...answered('Kay McNulty declined this.') },
+      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
     ]);
   });
 
@@ -1617,9 +1617,9 @@ describe('logs', () => {
       // The fan-out: Ada's name, Gus skipped (a guest), Eli's address nobody
       // has and Eli skipped, Kay's DM refused, the summary.
       'slack_bot_request_dm_failed',
-      'slack_bot_request_dm_skipped',
+      'slack_bot_request_dm_admin_skipped',
       'slack_sender_not_mapped',
-      'slack_bot_request_dm_skipped',
+      'slack_bot_request_dm_admin_skipped',
       'slack_bot_request_dm_failed',
       'slack_bot_request_dms_sent',
       // The decline: Grace's redraw, then Ada's address.
