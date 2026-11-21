@@ -2748,7 +2748,7 @@ describe('POST /admin/slack/rename', () => {
     expect(onlyRow(w).botName).toBe('Ada Helper');
   });
 
-  it('R7 the install removed while Slack was renaming it (a reset takes no admin lock) → 409 not-connected; the token it just stored goes, unless a leftover app still names the person', async () => {
+  it('R7 the install removed while Slack was renaming it (a reset takes no admin lock) → 409 not-connected; the token it just stored goes (read first, so one the reset already wiped leaves no empty row behind), unless a leftover app still names the person', async () => {
     const { w, installId } = await connectedWorld();
     w.slack.on.updateApp = async () => {
       await w.memory.store.removeAll();
@@ -2760,12 +2760,34 @@ describe('POST /admin/slack/rename', () => {
       { method: 'personHasApps', args: [ADA.id] },
     ]);
     expect(w.memory.rows.size).toBe(0);
-    // Nothing does, so the token it had just stored goes too. The rename takes
-    // it back itself: a reset's own sweep (plugin.ts) only catches one stored
-    // before the sweep ran.
+    // Nothing does, so the token it had just stored goes too, once a read
+    // finds it there. The rename takes it back itself: a reset's own sweep
+    // (plugin.ts) only catches one stored before the sweep ran.
     expect(w.vault.has(configTokenRef(ADA.id))).toBe(false);
-    expect(w.trail.slice(-2)).toEqual(['store:personHasApps', 'vault:delete config-refresh-token']);
+    expect(w.trail.slice(-3)).toEqual([
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+      'vault:delete config-refresh-token',
+    ]);
     expect(w.lines).toEqual([]);
+
+    // The reset's wipe landed after the rename stored the token: there is
+    // nothing left to take back, so nothing is deleted. The vault deletes by
+    // writing an empty row, and a reset leaves no rows behind.
+    const wiped = await connectedWorld();
+    wiped.w.slack.on.updateApp = async () => {
+      wiped.w.vault.clear();
+      await wiped.w.memory.store.removeAll();
+    };
+    const wipedMark = wiped.w.trail.length;
+    expect(await wiped.w.rename()).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(wiped.w.trail.slice(-3)).toEqual([
+      'store:setBotName',
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+    ]);
+    expect(wiped.w.trail.slice(wipedMark)).not.toContain('vault:delete config-refresh-token');
+    expect(wiped.w.lines).toEqual([]);
 
     // An app Ada made is still left over: it names her, so her token stays, for it.
     const kept = await connectedWorld();
@@ -3208,7 +3230,7 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     expect(rotatedTokens(w).at(-1)).toBe(mintedRefresh(2));
   });
 
-  it('R7 the install removed meanwhile (a reset takes no admin lock) → 409 not-connected; the token just stored goes, unless a leftover app still names the person', async () => {
+  it('R7 the install removed meanwhile (a reset takes no admin lock) → 409 not-connected; the token just stored goes (read first, so one the reset already wiped leaves no empty row behind), unless a leftover app still names the person', async () => {
     // Removed just before the date is written.
     const { w, installId } = await connectedWorld();
     const setAddedAt = w.memory.store.setConfigTokenAddedAt.bind(w.memory.store);
@@ -3218,10 +3240,11 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
     };
     const mark = w.trail.length;
     expect(await w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
-    // Nothing names Ada any more: her token goes.
+    // Nothing names Ada any more: her token goes, once a read finds it there.
     expect(w.trail.slice(mark)).toEqual([
       ...ONE_REPLACE.slice(0, STOPS_AFTER['save-added-at']),
       'store:personHasApps',
+      'vault:get config-refresh-token',
       'vault:delete config-refresh-token',
     ]);
     expect(w.memory.calls.slice(-2)).toEqual([
@@ -3241,9 +3264,29 @@ describe('POST /admin/slack/replace-token (TASK-1128)', () => {
       { method: 'setConfigTokenAddedAt', args: [racedId, new Date(NOW_MS)] },
       { method: 'personHasApps', args: [ADA.id] },
     ]);
+    expect(raced.trail.at(-2)).toBe('vault:get config-refresh-token');
     expect(raced.trail.at(-1)).toBe('vault:delete config-refresh-token');
     expect(raced.vault.has(configTokenRef(ADA.id))).toBe(false);
     expect(raced.lines).toEqual([]);
+
+    // The reset's wipe landed after the replace stored the new token: there is
+    // nothing left to take back, so nothing is deleted. The vault deletes by
+    // writing an empty row, and a reset leaves no rows behind.
+    const wiped = await connectedWorld();
+    const wipedSetAddedAt = wiped.w.memory.store.setConfigTokenAddedAt.bind(wiped.w.memory.store);
+    wiped.w.memory.store.setConfigTokenAddedAt = async (id, addedAt) => {
+      wiped.w.vault.clear();
+      wiped.w.memory.rows.clear();
+      return wipedSetAddedAt(id, addedAt);
+    };
+    const wipedMark = wiped.w.trail.length;
+    expect(await wiped.w.replace(undefined, GRACE)).toMatchObject({ status: 409, body: { error: 'not-connected' } });
+    expect(wiped.w.trail.slice(wipedMark)).toEqual([
+      ...ONE_REPLACE.slice(0, STOPS_AFTER['save-added-at']),
+      'store:personHasApps',
+      'vault:get config-refresh-token',
+    ]);
+    expect(wiped.w.lines).toEqual([]);
 
     // An app Ada made is still left over: it names her, so her token stays, for it.
     const kept = await connectedWorld();

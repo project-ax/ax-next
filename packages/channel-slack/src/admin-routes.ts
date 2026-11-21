@@ -699,11 +699,14 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
           // Gone meanwhile: a reset removes installs without this lock. Once
           // the rows are gone it deletes what is left of their secrets
           // (plugin.ts); this takes back the person's token stored after
-          // that, unless an install or a leftover app still names them.
+          // that, unless an install or a leftover app still names them. It
+          // reads first (`onlyIfStored`): when the reset's wipe ran after
+          // the store, nothing is left to take back, and a delete would only
+          // write the vault's empty row, which a reset never leaves behind.
           // Still left live, where no route can reach it: one stored after
           // the reset's sweep when Slack then refused the update (that 502
           // returns before here), and any whose delete fails (logged).
-          await release(install);
+          await release(install, { onlyIfStored: true });
           return json(409, { error: 'not-connected' });
         }
         throw err;
@@ -757,10 +760,11 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
       } catch (err) {
         if (err instanceof InstallStoreError) {
           // Gone meanwhile: a reset removes installs without this lock. Take
-          // back the token just stored, as Rename does, unless an install or
-          // a leftover app still names the person (a failed delete is
-          // logged).
-          await release(install);
+          // back the token just stored, as Rename does: read first, so a
+          // token the reset's wipe already took leaves no empty row behind,
+          // and not while an install or a leftover app still names the
+          // person (a failed read or delete is logged).
+          await release(install, { onlyIfStored: true });
           return json(409, { error: 'not-connected' });
         }
         // A 500, logged with its install. The vault keeps the new token,
