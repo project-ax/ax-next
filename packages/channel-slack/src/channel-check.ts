@@ -19,15 +19,22 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  *   - refused, which is definitive: an answer about this channel that
  *     `connectable` refuses (`not-public`, `archived` or `shared`, named in
  *     connectChannel's order), or Slack's own `channel_not_found` or
- *     `missing_scope` (CHANNEL_REFUSED_CODES). `missing_scope` is definitive
- *     here, not a broken grant: a binding exists only after this install's
- *     own token read this channel, so that token has `channels:read`, and
- *     the channel is no longer one it can read (the TASK-1174 walk measured
- *     it for a channel made private);
+ *     `missing_scope` (CHANNEL_REFUSED_CODES). A bot that reads public
+ *     channels only gets `missing_scope` for a channel it can't read as
+ *     one: the TASK-1174 walk measured it at a bot's first bind, for a
+ *     channel private from the start. Nobody has measured a channel made
+ *     private later, nor what Slack's `needed` says for either;
  *   - unknown: Slack couldn't say. A rate limit, a token Slack refuses, a
- *     5xx, an unreadable answer, a network failure, or an answer about some
- *     other channel (`id-mismatch`). It says nothing about the channel, so
- *     the caller runs no turn and changes nothing durable.
+ *     5xx, an unreadable answer, a network failure, an answer about some
+ *     other channel (`id-mismatch`), or a `missing_scope` whose `needed` is
+ *     exactly `channels:read`. That one is the token's: it lacks the scope
+ *     every public channel is read with (say its app was reinstalled without
+ *     it: a token keeps its string, and its scopes follow the app's
+ *     configuration at the reinstall), so it reads no channel at all, and a
+ *     refusal would disconnect every channel with a false "it's private
+ *     now". Any other `missing_scope` is still refused. None of these says
+ *     anything about the channel, so the caller runs no turn and changes
+ *     nothing durable.
  * A code is Slack's own, logCode's, or one of this file's: never anything
  * else from the answer.
  *
@@ -59,15 +66,19 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * a group DM a bot was added to anyway is `channel_not_found` or
  * `missing_scope` to it. A team agent's own bot binds nothing there, in
  * silence, as for a channel Slack describes as one it can't serve (router.ts
- * `bindBotChannel`); a channel already bound is refused (above).
+ * `bindBotChannel`); a channel already bound is refused (above), unless
+ * Slack's `needed` says the token itself lacks `channels:read` (TOKEN_SCOPE).
  */
 export const CHANNEL_REFUSED_CODES: ReadonlySet<string> = new Set(['channel_not_found', 'missing_scope']);
+
+/** The scope a bot reads every public channel with. A `missing_scope` that needs exactly this one is the token's. */
+const TOKEN_SCOPE = 'channels:read';
 
 export type ChannelCheckResult =
   | { kind: 'allowed' }
   /** Definitive. code: 'not-public' | 'archived' | 'shared' (from the flags) or Slack's 'channel_not_found' | 'missing_scope'. */
   | { kind: 'refused'; code: string }
-  /** Slack couldn't say. code: Slack's own, logCode's, or 'id-mismatch'. */
+  /** Slack couldn't say. code: Slack's own (a token missing `channels:read` is `missing_scope`), logCode's, or 'id-mismatch'. */
   | { kind: 'unknown'; code: string };
 
 export interface ChannelCheck {
@@ -93,6 +104,8 @@ async function ask(
     info = await api.conversationsInfo(botToken, channelId);
   } catch (err) {
     if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
+      // The token can't read any public channel: about the token, not this one (header).
+      if (err.code === 'missing_scope' && err.needed === TOKEN_SCOPE) return { kind: 'unknown', code: err.code };
       return { kind: 'refused', code: err.code };
     }
     return { kind: 'unknown', code: logCode(err) };

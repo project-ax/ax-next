@@ -921,6 +921,19 @@ describe('conversations', () => {
     }
   });
 
+  it("missing_scope keeps the scope Slack says the call needed as `needed`, never in the message; a refusal naming none has none", async () => {
+    const api = (code: string) => createSlackApi({ fetchImpl: fakeSlack(() => refusal(code)).fetchImpl });
+    const scoped = await failure(api('missing_scope').conversationsInfo(BOT, 'C012AB3CD'));
+    expect(scoped.code).toBe('missing_scope');
+    expect(scoped.needed).toBe('channels:read');
+    expect(scoped.message).toBe('slack conversations.info: missing_scope');
+    // What the token has is never read.
+    expect('provided' in scoped).toBe(false);
+
+    const unscoped = await failure(api('channel_not_found').conversationsInfo(BOT, 'C012AB3CD'));
+    expect('needed' in unscoped).toBe(false);
+  });
+
   it('a refusing flag (private, archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
     const flags = [
       ['is_private', 'isPrivate'],
@@ -1067,6 +1080,52 @@ describe('failures', () => {
       const err = await failure(api.usersInfo(BOT, 'U1'));
       expect(err.code, echoed).toBe('slack-error');
       expect(err.message).toBe('slack users.info: slack-error');
+      expect(JSON.stringify(err) + String(err) + (err.stack ?? '')).not.toContain(echoed);
+    }
+  });
+
+  it("Slack's `needed` is kept only when it reads as scope names: lowercase letters, _ . : and commas, at most 200", async () => {
+    const cases: Array<[unknown, string | null]> = [
+      ['channels:read', 'channels:read'],
+      ['channels:read,groups:read', 'channels:read,groups:read'],
+      ['users:read.email', 'users:read.email'],
+      ['a'.repeat(200), 'a'.repeat(200)],
+      ['a'.repeat(201), null],
+      ['', null],
+      ['Channels:read', null],
+      ['channels:read groups:read', null],
+      ['channels:read\n', null],
+      ['channels:read2', null],
+      ['<script>', null],
+      [['channels:read'], null],
+      [{ scope: 'channels:read' }, null],
+      [42, null],
+      [true, null],
+      [null, null],
+      [undefined, null],
+    ];
+    for (const [needed, kept] of cases) {
+      const api = createSlackApi({
+        fetchImpl: fakeSlack(() => new Response(JSON.stringify({ ok: false, error: 'missing_scope', needed }), { status: 200 }))
+          .fetchImpl,
+      });
+      const err = await failure(api.conversationsInfo(BOT, 'C012AB3CD'));
+      expect(err.code, JSON.stringify(needed)).toBe('missing_scope');
+      expect(err.message).toBe('slack conversations.info: missing_scope');
+      if (kept === null) expect('needed' in err, JSON.stringify(needed)).toBe(false);
+      else expect(err.needed, JSON.stringify(needed)).toBe(kept);
+    }
+  });
+
+  it('a lowercase-hex secret Slack echoes as its `needed` is never kept', async () => {
+    for (const echoed of ['0a1b2c3d'.repeat(4), '8f742231b10e8888abcd99', 'c0ffee_1234']) {
+      const api = createSlackApi({
+        fetchImpl: fakeSlack(
+          () => new Response(JSON.stringify({ ok: false, error: 'missing_scope', needed: echoed }), { status: 200 }),
+        ).fetchImpl,
+      });
+      const err = await failure(api.conversationsInfo(BOT, 'C012AB3CD'));
+      expect('needed' in err, echoed).toBe(false);
       expect(JSON.stringify(err) + String(err) + (err.stack ?? '')).not.toContain(echoed);
     }
   });

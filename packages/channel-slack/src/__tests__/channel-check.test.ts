@@ -149,6 +149,34 @@ describe('createChannelCheck', () => {
     expect(calls).toHaveLength(2);
   });
 
+  /*
+    A bot token keeps its string when its app is reinstalled, but its scopes
+    follow the app's configuration then. One that lost `channels:read` reads
+    no channel at all, and Slack says so in `needed`: that is about the token,
+    not this channel, so its binding must stay.
+  */
+  it("a missing_scope whose needed is exactly channels:read is the token's, not the channel's: unknown, never kept", async () => {
+    const { calls, check } = setup(() => new SlackApiError('conversations.info', 'missing_scope', undefined, 'channels:read'));
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'unknown', code: 'missing_scope' });
+    await check.check(INSTALL, TOKEN, CH);
+    expect(calls).toHaveLength(2);
+  });
+
+  it.each([
+    ['names no scope', undefined],
+    ['needs groups:read', 'groups:read'],
+    ['needs channels:read and more', 'channels:read,groups:read'],
+    ['needs another channels scope', 'channels:history'],
+  ] as const)('any other missing_scope (Slack %s) is still a refusal', async (_n, needed) => {
+    const { check } = setup(() => new SlackApiError('conversations.info', 'missing_scope', undefined, needed));
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'missing_scope' });
+  });
+
+  it('only missing_scope reads needed: a channel_not_found that names channels:read is still a refusal', async () => {
+    const { check } = setup(() => new SlackApiError('conversations.info', 'channel_not_found', undefined, 'channels:read'));
+    expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'channel_not_found' });
+  });
+
   it('CHANNEL_REFUSED_CODES is exactly channel_not_found and missing_scope', () => {
     expect([...CHANNEL_REFUSED_CODES].sort()).toEqual(['channel_not_found', 'missing_scope']);
   });

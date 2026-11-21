@@ -3404,7 +3404,11 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
 */
 describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)', () => {
   const infoCalls = (w: ReturnType<typeof world>) => w.slack.calls.filter((c) => c.method === 'conversationsInfo');
-  /** What the walk measured for a channel made private: a bot that reads public channels only can't read it. */
+  /**
+   * A channel a bot that reads public channels only can't read. The TASK-1174
+   * walk measured it at a bot's first bind, for a channel private from the
+   * start; what Slack's `needed` says then is unknown, so this names none.
+   */
   const missingScope = () => new SlackApiError('conversations.info', 'missing_scope');
   const WALK_START = Date.parse('2026-11-21T12:00:00Z');
 
@@ -3598,6 +3602,13 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
     ['an unreadable answer', new SlackApiError('conversations.info', 'bad-response'), 'bad-response'],
     ['a network failure', new Error('socket hang up'), 'unknown'],
     ['an answer about another channel', slackChannel(OPS, 'ops'), 'id-mismatch'],
+    // The app's configuration lost channels:read and it was reinstalled: the
+    // token kept its string, reads no channel at all, and Slack names the scope.
+    [
+      'its token missing channels:read itself',
+      new SlackApiError('conversations.info', 'missing_scope', undefined, 'channels:read'),
+      'missing_scope',
+    ],
   ] as const)(
     "when Slack can't say (%s), no turn runs, the binding stays, the sender is told to try again, and nothing is kept",
     async (_what, failure, code) => {

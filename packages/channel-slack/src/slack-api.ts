@@ -39,8 +39,13 @@
  * and underscores, at most 64 characters), else `slack-error`; or one of
  * ours: `ratelimited` (with `retryAfterMs`), `redirect`, `http-<status>`,
  * `too-large`, `bad-response`, `timeout`, `network`. No digits: a secret
- * Slack echoed back as its error would be lowercase hex. An error never carries a token, a URL, a header, a
- * byte of the answer or an underlying error, so it is safe to log as it is.
+ * Slack echoed back as its error would be lowercase hex. A refusal that
+ * names the scopes the call needed (`missing_scope`'s `needed`) keeps them
+ * as `needed` when they read as scope names (lowercase letters, `_`, `.`,
+ * `:` and `,`, at most 200 characters: no digits either), and drops them
+ * otherwise; the message never holds them. An error never carries a token,
+ * a URL, a header, an underlying error, or any byte of the answer but those
+ * two, so it is safe to log as it is.
  *
  * `rotateConfigToken` hands back the refresh token Slack mints with the
  * access token. Slack retires the refresh token it was sent some time after
@@ -70,13 +75,20 @@ export class SlackApiError extends Error {
   readonly code: string;
   /** Only on `ratelimited`: how long to wait before asking again. */
   declare readonly retryAfterMs?: number;
+  /**
+   * Only on a refusal that names them (`missing_scope`): the scopes Slack
+   * says the call needed, comma-separated (`channels:read`), kept only when
+   * they read as scope names (createSlackApi). Never in the message.
+   */
+  declare readonly needed?: string;
 
-  constructor(method: string, code: string, retryAfterMs?: number) {
+  constructor(method: string, code: string, retryAfterMs?: number, needed?: string) {
     super(`slack ${method}: ${code}`);
     this.name = 'SlackApiError';
     this.method = method;
     this.code = code;
     if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
+    if (needed !== undefined) this.needed = needed;
   }
 }
 
@@ -293,6 +305,12 @@ const JSON_TYPE = 'application/json; charset=utf-8';
  */
 const SLACK_CODE = /^[a-z_]{1,64}$/;
 const UNREADABLE_SLACK_CODE = 'slack-error';
+/**
+ * Slack's `needed` on a refusal: scope names, comma-separated
+ * (`channels:read`, `users:read.email`). No digits, as for a code: a secret
+ * echoed back would be lowercase hex. Anything else is dropped, never kept.
+ */
+const SLACK_SCOPES = /^[a-z_.:,]{1,200}$/;
 /** Printable ASCII with no space, so a secret can never break a header. */
 const SLACK_TOKEN = new RegExp(`^[\\x21-\\x7e]{1,${SLACK_TOKEN_MAX}}$`);
 const DIGITS = /^\d+$/;
@@ -311,6 +329,10 @@ function tokenOf(value: unknown): string | null {
 
 function codeOf(value: unknown): string {
   return typeof value === 'string' && SLACK_CODE.test(value) ? value : UNREADABLE_SLACK_CODE;
+}
+
+function scopesOf(value: unknown): string | undefined {
+  return typeof value === 'string' && SLACK_SCOPES.test(value) ? value : undefined;
 }
 
 /**
@@ -428,8 +450,8 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       headers['authorization'] = `Basic ${pair}`;
     }
     const payload = payloadOf(body);
-    const fail = (code: string, retryAfter?: number): SlackApiError =>
-      new SlackApiError(method, code, retryAfter);
+    const fail = (code: string, retryAfter?: number, needed?: string): SlackApiError =>
+      new SlackApiError(method, code, retryAfter, needed);
 
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), timeoutMs);
@@ -490,7 +512,7 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       if (answer['ok'] === false) {
         const code = codeOf(answer['error']);
         const wait = code === 'ratelimited' ? retryAfterMs(res.headers.get('retry-after')) : undefined;
-        throw fail(code, wait);
+        throw fail(code, wait, scopesOf(answer['needed']));
       }
       throw fail('bad-response');
     } finally {
