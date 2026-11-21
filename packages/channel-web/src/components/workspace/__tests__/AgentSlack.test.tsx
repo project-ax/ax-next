@@ -468,6 +468,84 @@ describe("a team agent's own live bot", () => {
   });
 });
 
+describe('a rebuilt bot (TASK-1173)', () => {
+  const GONE_BOT: AgentSlackBot = { ...LIVE_BOT, botName: 'Quill Bot', handle: 'quill_bot', approverGone: true };
+  const NONE_STORED: AgentSlackBot = { state: 'none', configTokenStored: true };
+  const LEFT_OVER = /couldn.t confirm its Slack app was deleted/;
+  const NOTICE =
+    '@quill_bot is disconnected. Set up its replacement below. It gets a new @handle, so invite it to each channel again.';
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    avatar.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Rebuild the gone-approver bot, holding the status re-read open until the loading face shows. */
+  async function rebuildThroughReRead(appDeleted: boolean) {
+    const reRead = deferred<AgentSlackRead>();
+    fetchStatus.mockResolvedValueOnce(ready([], true, GONE_BOT)).mockReturnValueOnce(reRead.promise);
+    disconnectBot.mockResolvedValueOnce({ appDeleted });
+    const view = render(<AgentSlack agentId="a1" agentName="Quill" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Rebuild bot' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Rebuild' }));
+    expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
+    reRead.resolve(ready([], true, NONE_STORED));
+    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    return view;
+  }
+
+  it('after a Rebuild the form is prefilled with the old name, under the notice, with no left-over note when the app was deleted', async () => {
+    await rebuildThroughReRead(true);
+    expect(disconnectBot).toHaveBeenCalledWith('a1', BOT_ID);
+    const notice = screen.getByText(NOTICE);
+    expect(screen.getByLabelText('Bot name')).toHaveValue('Quill Bot');
+    expect(notice.compareDocumentPosition(screen.getByLabelText('Bot name')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(LEFT_OVER)).toBeNull();
+  });
+
+  it("when Slack kept the old app, the left-over note follows the notice and doesn't name the person who left", async () => {
+    await rebuildThroughReRead(false);
+    const notice = screen.getByText(NOTICE);
+    const note = screen.getByText(LEFT_OVER);
+    expect(notice.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(note).toHaveTextContent(
+      "We disconnected the bot, but we couldn't confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn't delete.",
+    );
+    expect(note).not.toHaveTextContent(/Ada Lovelace/);
+  });
+
+  it('asking for a new bot clears the notice', async () => {
+    request.mockRejectedValueOnce(new AgentSlackError(502, 'slack-error'));
+    await rebuildThroughReRead(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Create the Slack bot' }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong talking to Slack.');
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it('another agent clears the notice and the prefill', async () => {
+    const { rerender } = await rebuildThroughReRead(true);
+    fetchStatus.mockResolvedValueOnce(ready([], true, NONE_STORED));
+    rerender(<AgentSlack agentId="a2" agentName="Rook" />);
+    await waitFor(() => expect(fetchStatus).toHaveBeenLastCalledWith('a2'));
+    expect(await screen.findByRole('button', { name: 'Create the Slack bot' })).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    expect(screen.getByLabelText('Bot name')).toHaveValue('Rook');
+  });
+
+  it('no workspace: a gone approver still gets the alert, with no Rebuild button (a request needs the shared app)', async () => {
+    renderIt({ state: 'no-workspace', canManage: true, bot: GONE_BOT });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Quill Bot needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more. A team admin can rebuild it.',
+    );
+    expect(screen.queryByRole('button', { name: 'Rebuild bot' })).toBeNull();
+  });
+});
+
 describe('the list', () => {
   it('shows #name and who connected it, never an id', async () => {
     const { container } = renderIt(ready([SUPPORT]));
