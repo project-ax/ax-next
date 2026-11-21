@@ -270,6 +270,28 @@ describe('listServerTools', () => {
     expect(out.tools[0]).not.toHaveProperty('outputSchema');
   });
 
+  it('SECURITY: a top-level __proto__ in a schema never becomes the kept schema\'s prototype', async () => {
+    // Raw wire bytes: a JS object literal would set the prototype here, not
+    // send the key. The SDK's catchall parse turns a top-level `__proto__`
+    // key into the parsed object's prototype.
+    const body = (id: unknown) =>
+      `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"tools":[{"name":"get","inputSchema":` +
+      `{"type":"object","__proto__":{"polluted":1},"properties":{"id":{"type":"string","__proto__":{"nested":1}}}}}]}}`;
+    const server = fakeMcpServer({ toolsListBody: body });
+    const out = await listServerTools({ url: URL_OK, headers: {}, baseFetch: server.baseFetch });
+    expect(out.kind).toBe('ok');
+    if (out.kind !== 'ok') return;
+    const schema = out.tools[0]!.inputSchema!;
+    expect(schema).not.toBeNull();
+    expect(Object.getPrototypeOf(schema)).toBe(Object.prototype);
+    expect('polluted' in schema).toBe(false);
+    expect((schema as { polluted?: unknown }).polluted).toBeUndefined();
+    // What a fresh answer holds is exactly what the cache round-trip
+    // (JSON.stringify on put, JSON.parse on get) gives back.
+    expect(schema).toStrictEqual(JSON.parse(JSON.stringify(schema)));
+    expect(Object.getPrototypeOf((schema.properties as Record<string, object>).id)).toBe(Object.prototype);
+  });
+
   it('stops at the page cap even if the server keeps handing out cursors', async () => {
     const server = fakeMcpServer({
       pages: Array.from({ length: 50 }, (_, i) => [{ name: `t${i}`, inputSchema: { type: 'object' } }]),

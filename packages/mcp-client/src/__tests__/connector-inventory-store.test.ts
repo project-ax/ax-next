@@ -9,7 +9,8 @@ import {
   runMcpClientMigration,
   type McpClientDatabase,
 } from '../connector-inventory/store.js';
-import type { ListOutcome } from '../connector-inventory/list-tools.js';
+import { ListToolsResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { normalizeTools, type ListOutcome } from '../connector-inventory/list-tools.js';
 import { CHECK_COOLDOWN_MS } from '../connector-inventory/describe-tools.js';
 import type { DescribeToolsOutput } from '../connector-inventory/types.js';
 
@@ -119,6 +120,22 @@ describe('inventory store (postgres)', () => {
     const row = await store.get(key);
     expect(row!.tools).toEqual([{ ...legacy, inputSchema: null }]);
     expect(await store.okInventories('u', ['c'])).toEqual([{ connectorId: 'c', tools: [{ ...legacy, inputSchema: null }] }]);
+  });
+
+  it('SECURITY: a schema with a top-level __proto__ reads back from the cache exactly as the fresh answer held it', async () => {
+    const h = await boot(async () => ({ kind: 'ok', dropped: 0, tools: [] }));
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    const key = { userId: 'u', agentId: 'a', connectorId: 'c' };
+    // The SDK's own parse of raw wire JSON, then the inventory mapping.
+    const wire = JSON.parse('{"tools":[{"name":"get","inputSchema":{"type":"object","__proto__":{"polluted":1}}}]}');
+    const [base] = normalizeTools(ListToolsResultSchema.parse(wire).tools).tools;
+    const fresh = { ...base!, toolKey: 'mcp.c0123456789.get' };
+    expect(Object.getPrototypeOf(fresh.inputSchema)).toBe(Object.prototype);
+    await store.put(key, { status: 'ok', tools: [fresh], fingerprint: 'f', checkedAt: new Date() });
+    const cached = (await store.get(key))!.tools[0]!;
+    expect(cached).toStrictEqual(fresh);
+    expect('polluted' in cached.inputSchema!).toBe(false);
   });
 });
 

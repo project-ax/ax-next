@@ -44,7 +44,7 @@ The k8s preset turns on `connectorToolInventory`, which makes the host itself li
   - `outputSchema` is dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.
   - `inputSchema` is kept, as opaque JSON, so `@ax/apps-bridge` can hand an external apps platform each tool's argument schema. It is as untrusted as the description: the server wrote it.
     - Kept only when it is a plain object whose serialized UTF-8 size is at most 32,768 bytes, and only while that server's kept schemas total at most 1,048,576 bytes. Otherwise it is `null` and the tool is still listed. A schema JSON can't serialize counts as too big.
-    - Stored as the SDK parsed it. Nothing on the host compiles it, validates input against it, or reads it to decide anything. It is never logged.
+    - What we keep is a fresh parse of the exact JSON we measured, never the SDK's parsed object: the SDK's parse turns a top-level `__proto__` key into that object's prototype, and the copy drops it. So the kept schema is always a plain object and reads back from the cache unchanged. Nothing on the host compiles it, validates input against it, or reads it to decide anything. It is never logged.
     - A row cached before this field reads as `null` until its 15-minute TTL passes.
   - Hints only choose UI defaults and grouping. They are not a security claim, and nothing enforces policy from them. Renderers must still fence descriptions.
   - Errors are reduced to a short reason code. The server's response text is never echoed.

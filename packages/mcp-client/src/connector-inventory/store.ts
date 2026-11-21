@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { sql, type Kysely } from 'kysely';
+import { isPlainJsonObject } from './list-tools.js';
 import type { InventoryStatus, InventoryTool } from './types.js';
 
 export async function runMcpClientMigration<DB>(db: Kysely<DB>): Promise<void> {
@@ -92,8 +93,7 @@ function parseTools(raw: string): InventoryTool[] | null {
     return parsed.map((tool: unknown) => {
       if (tool === null || typeof tool !== 'object' || Array.isArray(tool)) return tool;
       const schema = (tool as { inputSchema?: unknown }).inputSchema;
-      const plain = schema !== null && typeof schema === 'object' && !Array.isArray(schema);
-      return plain ? tool : { ...tool, inputSchema: null };
+      return isPlainJsonObject(schema) ? tool : { ...tool, inputSchema: null };
     }) as InventoryTool[];
   } catch {
     return null;

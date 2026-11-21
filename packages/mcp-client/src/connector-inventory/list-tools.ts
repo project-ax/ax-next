@@ -11,8 +11,10 @@
 //   - `outputSchema` is dropped. `inputSchema` is kept as opaque JSON for
 //     callers that relay it (an external apps platform needs each tool's
 //     argument schema): only a plain object, at most 32 KiB serialized and
-//     within 1 MiB per server listing, else null. It is stored as the SDK
-//     parsed it and never compiled, read or acted on here. We deliberately
+//     within 1 MiB per server listing, else null. What we keep is a fresh
+//     parse of the exact JSON we measured (so a `__proto__` the SDK's parse
+//     turned into a prototype is gone), and it is never compiled, read or
+//     acted on here. We deliberately
 //     call `client.request('tools/list')` instead of `client.listTools()`,
 //     because the latter compiles every tool's `outputSchema` with a
 //     JSON-Schema validator — compiling attacker-supplied schemas on the host
@@ -98,18 +100,34 @@ export function mapOutward(annotations: unknown): boolean | null {
   return null;
 }
 
-/** Serialized UTF-8 size of a schema; a value JSON can't encode reads as too big. */
-function schemaBytes(schema: Record<string, unknown>): number {
-  try {
-    const json = JSON.stringify(schema);
-    return typeof json === 'string' ? Buffer.byteLength(json, 'utf8') : Number.POSITIVE_INFINITY;
-  } catch {
-    return Number.POSITIVE_INFINITY;
-  }
+/**
+ * A plain JSON object: not null, not an array, and with `Object.prototype` (or
+ * no prototype). The SDK's catchall parse turns a top-level `__proto__` key in
+ * a server's schema into the parsed object's prototype, so "is an object" is
+ * not enough. Shared with the cache read (store.ts).
+ */
+export function isPlainJsonObject(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
+/**
+ * A fresh copy of `schema` made from its own JSON, with its UTF-8 size: what
+ * we keep is exactly the bytes we measured, always a plain object, and the
+ * same as what the cache round-trip (stringify, then parse) gives back. A
+ * value JSON can't encode reads as too big (null).
+ */
+function copySchema(schema: object): { copy: Record<string, unknown>; bytes: number } | null {
+  try {
+    const json = JSON.stringify(schema);
+    if (typeof json !== 'string') return null;
+    const copy: unknown = JSON.parse(json);
+    if (!isPlainJsonObject(copy)) return null;
+    return { copy, bytes: Buffer.byteLength(json, 'utf8') };
+  } catch {
+    return null;
+  }
 }
 
 export interface NormalizeResult {
@@ -155,15 +173,19 @@ export function normalizeTools(raw: ReadonlyArray<unknown>): NormalizeResult {
         : undefined;
     const title = cleanText(t.title ?? annTitle, INVENTORY_LIMITS.maxTitleLength);
     let inputSchema: Record<string, unknown> | null = null;
-    if (isPlainObject(t.inputSchema)) {
-      const bytes = schemaBytes(t.inputSchema);
-      if (
-        bytes <= INVENTORY_LIMITS.maxInputSchemaBytes &&
-        schemaTotal + bytes <= INVENTORY_LIMITS.maxInputSchemaBytesPerServer
-      ) {
-        inputSchema = t.inputSchema;
-        schemaTotal += bytes;
-      }
+    // The SDK's object is only the input: a top-level `__proto__` from the
+    // wire is its prototype, not an own key. Only a plain object reaches the
+    // copy, and what we keep is the copy, re-read from the JSON we measured.
+    const sent: unknown = t.inputSchema;
+    const measured =
+      sent !== null && typeof sent === 'object' && !Array.isArray(sent) ? copySchema(sent) : null;
+    if (
+      measured !== null &&
+      measured.bytes <= INVENTORY_LIMITS.maxInputSchemaBytes &&
+      schemaTotal + measured.bytes <= INVENTORY_LIMITS.maxInputSchemaBytesPerServer
+    ) {
+      inputSchema = measured.copy;
+      schemaTotal += measured.bytes;
     }
     out.push({
       name,
