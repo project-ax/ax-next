@@ -369,6 +369,8 @@ function world(o: {
   installReadFails?: boolean;
   /** The install store fails to read the shared app's install (a bot's first bind, TASK-1179). */
   sharedReadFails?: boolean;
+  /** The channel store fails to read the switch kept for the agent and channel (a bot's first bind, TASK-1180). */
+  keptReadFails?: boolean;
   /** The channel store fails the n-th binding read (1-based) when this says so. */
   bindingReadFails?: (n: number) => boolean;
   /** The channel store fails to record a thread. */
@@ -600,6 +602,13 @@ function world(o: {
     },
     // A team agent's own bot binds a channel at its first mention there (TASK-1167).
     upsert: (b: Parameters<ChannelStore['upsert']>[0]) => channels.store.upsert(b),
+    // The switch kept for the agent and channel, which that bind starts from once the shared binding is gone (TASK-1180).
+    async keptRemember(agentId: string, channelId: string): Promise<boolean | null> {
+      if (o.keptReadFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
+      }
+      return channels.store.keptRemember(agentId, channelId);
+    },
   };
   /**
    * The install rows, as the store would answer a re-read. `disconnect()`
@@ -2847,6 +2856,78 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     const w = world(fails);
     w.putInstall(OWN_BOT);
     await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+    expect(w.invokes).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+    expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([
+      { level: 'error', msg: 'slack_event_failed', fields: { installId: OWN_BOT_ID, stage: 'bind', code: 'store-unavailable' } },
+    ]);
+  });
+
+  // TASK-1180: the switch the team set is also kept apart from the shared
+  // connection (channel-store.ts), so it still reaches the bot once that
+  // connection is gone. Before the fix the bot bound such a channel on.
+  it('a channel the team switched off stays off when the bot first answers there, after its shared connection was disconnected (TASK-1180)', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    expect(await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    // Disconnect on the moved row, before the bot's first mention there.
+    expect(await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id)).toBe(true);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: false, createdAt: expect.any(Date) }));
+    // The first turn there already runs with the switch off: its thread is never remembered.
+    expect(w.invokes).toHaveLength(1);
+    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, true]]);
+  });
+
+  it('a channel the team switched off stays off when the bot first answers there, after Slack was disconnected in Admin › Slack (TASK-1180)', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    expect(await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    // Admin › Slack's Disconnect: the shared app's row goes, and its bindings with it (store.ts).
+    w.disconnect();
+    w.channels.rows.delete(`${INSTALL_ID}/${SUPPORT}`);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    // A rebuilt bot is the same case to the router: no shared binding, and the switch kept.
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: false, createdAt: expect.any(Date) }));
+    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, true]]);
+  });
+
+  it('a channel connected again since it was switched off starts on: the live connection wins over the switch kept from before', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    expect(await w.channels.store.setRemember(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    expect(await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id)).toBe(true);
+    // Connected again, fresh: on, as any new connection is. The off from before is still kept.
+    expect(
+      await w.channels.store.upsert({
+        installId: INSTALL_ID,
+        channelId: SUPPORT,
+        agentId: SUPPORT_AGENT.id,
+        connectedByUserId: 'usr_ada',
+        channelName: 'support',
+      }),
+    ).toBe('connected');
+    expect(w.channels.kept(SUPPORT_AGENT.id, SUPPORT)).toBe(false);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: true, createdAt: expect.any(Date) }));
+    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, false]]);
+  });
+
+  it("a kept switch that can't be read binds nothing and runs nothing: the switch is never guessed", async () => {
+    const w = world({ keptReadFails: true });
+    w.putInstall(OWN_BOT);
+    // No shared binding of the channel: the kept switch is what the bind needs.
+    expect(await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id)).toBe(true);
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 

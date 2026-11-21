@@ -3,7 +3,7 @@ import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { channelCaptureVeto } from '../capture-veto.js';
 import { createChannelStore, type ChannelBinding, type ChannelStore, type ChannelThread } from '../channel-store.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
@@ -40,7 +40,10 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_installs`.execute(db);
+  await sql`
+    TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_installs,
+      channel_slack_v1_memory_switches
+  `.execute(db);
 });
 
 afterAll(async () => {
@@ -83,6 +86,14 @@ async function rawRow(installId: string, channelId: string) {
      WHERE install_id = ${installId} AND channel_id = ${channelId}
   `.execute(db);
   return r.rows[0];
+}
+
+/** How many database sessions are waiting on a lock the session `pid` holds. */
+async function sessionsWaitingOn(pid: number): Promise<number> {
+  const r = await sql<{ n: number }>`
+    SELECT count(*)::int AS n FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))
+  `.execute(db);
+  return r.rows[0]!.n;
 }
 
 /** Pin a binding's age, so "oldest first" never hangs on the clock's resolution. */
@@ -179,11 +190,16 @@ describe('runMigrations', () => {
     await connect();
     await recordOff(CONV);
     await record(OTHER_CONV, { mode: 'external' });
+    // A switch kept for a channel that is no longer connected (TASK-1180): no binding to fill it from again.
+    await connect({ channelId: SALES });
+    expect(await channels.setRemember(INSTALL, SALES, AGENT, false)).toBe(true);
+    expect(await channels.remove(INSTALL, SALES, AGENT)).toBe(true);
     await runMigrations(db);
     await runMigrations(db);
     expect((await channels.get(INSTALL, SUPPORT))?.agentId).toBe(AGENT);
     expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
     expect(await channels.getThread(OTHER_CONV)).toEqual(outsiderThread());
+    expect(await channels.keptRemember(AGENT, SALES)).toBe(false);
   });
 
   it('adds speaker_names to a thread table made before it, every old row with none until its next member turn (TASK-1146)', async () => {
@@ -256,6 +272,47 @@ describe('runMigrations', () => {
     await connect();
     expect(await record(OTHER_CONV)).toBe('recorded');
     expect(await channels.getThread(OTHER_CONV)).toEqual(supportThread());
+  });
+
+  // TASK-1180. Phase 1 kept a channel's switch on its binding alone, and a
+  // Disconnect deletes the binding. A channel switched off and disconnected
+  // before the switches table existed has one trace left: the thread a turn
+  // left there while the switch was off (thread rows outlive every
+  // Disconnect). The boot keeps its switch off from that, so the agent's own
+  // bot doesn't start there on.
+  it("keeps a switch off for a channel with no binding left where a turn ran while it was off; a live binding that is on still wins; never over a switch already kept; a second run changes nothing", async () => {
+    // Switched off (on the binding alone, as phase 1 did), a turn kept out of memory, then disconnected.
+    await connect();
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${INSTALL} AND channel_id = ${SUPPORT}`.execute(db);
+    expect(await record(CONV)).toBe('recorded');
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    // Switched off, a turn kept out of memory, switched on again, and still connected.
+    await connect({ channelId: SALES });
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${INSTALL} AND channel_id = ${SALES}`.execute(db);
+    expect(await record(OTHER_CONV, { channelId: SALES })).toBe('recorded');
+    await sql`UPDATE channel_slack_v1_channels SET remember = true WHERE install_id = ${INSTALL} AND channel_id = ${SALES}`.execute(db);
+    // Every turn remembered, then disconnected: nothing says it was ever off.
+    await connect({ channelId: GENERAL });
+    expect(await record('conv_general_thread', { channelId: GENERAL })).toBe('recorded');
+    expect(await channels.remove(INSTALL, GENERAL, AGENT)).toBe(true);
+    // Since the table: off, a turn kept out of memory, on again (kept on), then disconnected.
+    await connect({ installId: OTHER_INSTALL, agentId: OTHER_AGENT });
+    await recordOff('conv_other_agent_thread', { installId: OTHER_INSTALL, agentId: OTHER_AGENT });
+    expect(await channels.remove(OTHER_INSTALL, SUPPORT, OTHER_AGENT)).toBe(true);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+    expect(await channels.keptRemember(OTHER_AGENT, SUPPORT)).toBe(true);
+
+    for (let run = 1; run <= 2; run += 1) {
+      await runMigrations(db);
+      expect(await channels.keptRemember(AGENT, SUPPORT), `run ${run}`).toBe(false);
+      expect(await channels.keptRemember(AGENT, SALES), `run ${run}`).toBe(true);
+      expect(await channels.keptRemember(AGENT, GENERAL), `run ${run}`).toBeNull();
+      expect(await channels.keptRemember(OTHER_AGENT, SUPPORT), `run ${run}`).toBe(true);
+    }
+    // The threads and the live binding are untouched.
+    expect(await channels.getThread(CONV)).toEqual(supportThread({ notRemembered: true }));
+    expect((await channels.get(INSTALL, SALES))?.remember).toBe(true);
   });
 });
 
@@ -385,6 +442,193 @@ describe('remove and setRemember act only on the named agent', () => {
     expect((await channels.get(INSTALL, SALES))?.remember).toBe(true);
     expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
     expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+  });
+});
+
+/*
+  TASK-1180. The agent's memory switch for a channel is kept apart from its
+  bindings, so a Disconnect (of the channel, of Slack in Admin › Slack, or a
+  removed bot) never loses the team's OFF before the agent's own bot first
+  answers there (router.ts reads it). setRemember writes it in the statement
+  that flips the bindings, and flips every binding of that agent in that
+  channel, on any install: a bot channel switched off stays off on the shared
+  binding too, which the shared bot answers with again once the bot is gone.
+*/
+describe('the switch kept for the agent and channel (TASK-1180)', () => {
+  /** A third install with a binding of #support, another agent's. */
+  const THIRD_INSTALL = 'Y2hhbm5lbC1zbGFjay0wMw';
+
+  it('setRemember keeps the switch apart from the binding: a Disconnect keeps it, keptRemember reads it', async () => {
+    await connect();
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await channels.get(INSTALL, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
+
+    // Connected again: a connect keeps nothing (the live binding is read before the kept switch).
+    expect(await connect()).toBe('connected');
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
+    // Flipped again, on: the switch kept is the one last set.
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(true);
+  });
+
+  it("keptRemember is null where nothing was set; another agent's switch is that agent's", async () => {
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+    await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
+    expect(await channels.setRemember(INSTALL, GENERAL, OTHER_AGENT, false)).toBe(true);
+    expect(await channels.keptRemember(AGENT, GENERAL)).toBeNull();
+    expect(await channels.keptRemember(OTHER_AGENT, GENERAL)).toBe(false);
+  });
+
+  it("a flip on one binding flips every binding of the same agent in the channel, on any install, and no other agent's or channel's", async () => {
+    await connect();
+    await connect({ installId: OTHER_INSTALL });
+    await connect({ channelId: SALES });
+    await connect({ installId: THIRD_INSTALL, agentId: OTHER_AGENT });
+
+    expect(await channels.setRemember(OTHER_INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
+    expect((await channels.get(INSTALL, SALES))?.remember).toBe(true);
+    expect((await channels.get(THIRD_INSTALL, SUPPORT))?.remember).toBe(true);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+    expect(await channels.keptRemember(OTHER_AGENT, SUPPORT)).toBeNull();
+
+    // Back on, from the other binding: both of the agent's, and the kept switch.
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(true);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(true);
+  });
+
+  it("a flip named on a binding that isn't the agent's writes nothing: no row moves and nothing is kept", async () => {
+    await connect();
+    const before = await rawRow(INSTALL, SUPPORT);
+
+    // No binding on the install named, though the agent has one on another.
+    expect(await channels.setRemember(OTHER_INSTALL, SUPPORT, AGENT, false)).toBe(false);
+    // The install's binding of the channel is another agent's.
+    expect(await channels.setRemember(INSTALL, SUPPORT, OTHER_AGENT, false)).toBe(false);
+
+    expect(await rawRow(INSTALL, SUPPORT)).toEqual(before);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(OTHER_AGENT, SUPPORT)).toBeNull();
+  });
+
+  it("a Disconnect that deletes the named binding while a flip waits on it: the agent's other binding and the kept switch take the flip together, and the caller hears false", async () => {
+    await connect();
+    await connect({ installId: OTHER_INSTALL });
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+
+    // The Disconnect's delete, not yet committed: the flip still reads the named binding as the
+    // agent's as it starts, then waits on that row.
+    const disconnect = await pool.connect();
+    let flip: Promise<boolean> | undefined;
+    try {
+      await disconnect.query('BEGIN');
+      await disconnect.query(
+        'DELETE FROM channel_slack_v1_channels WHERE install_id = $1 AND channel_id = $2 AND agent_id = $3',
+        [INSTALL, SUPPORT, AGENT],
+      );
+      const holder = (await disconnect.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      flip = channels.setRemember(INSTALL, SUPPORT, AGENT, false);
+      await vi.waitFor(async () => expect(await sessionsWaitingOn(holder)).toBe(1), { timeout: 10_000 });
+      await disconnect.query('COMMIT');
+    } finally {
+      // Never left open: a failed wait rolls the delete back (after the COMMIT, a no-op).
+      await disconnect.query('ROLLBACK').catch(() => {});
+      disconnect.release();
+    }
+
+    expect(await flip).toBe(false);
+    expect(await channels.get(INSTALL, SUPPORT)).toBeNull();
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
+  });
+
+  it("the kept switch outlives its install's removal (Admin › Slack's Disconnect, a bot's removal)", async () => {
+    // The install row first, so its removal takes the row and its bindings in one statement (store.ts).
+    await installs.insertPending({ installId: INSTALL, appId: 'A07QF9ZK2MN', clientId: '1.2', botName: 'canopy', connectedByUserId: ADA });
+    await connect();
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+
+    await installs.remove(INSTALL);
+    expect(await channels.get(INSTALL, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
+  });
+
+  it("removeForAgent takes the agent's kept switches with its bindings and threads, and no other agent's", async () => {
+    await connect();
+    await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect(await channels.setRemember(INSTALL, GENERAL, OTHER_AGENT, false)).toBe(true);
+    // Disconnected before the agent is deleted: its switch is still kept, and still goes with it.
+    await connect({ channelId: SALES });
+    expect(await channels.setRemember(INSTALL, SALES, AGENT, false)).toBe(true);
+    expect(await channels.remove(INSTALL, SALES, AGENT)).toBe(true);
+
+    // The answer counts bindings and threads, as before.
+    expect(await channels.removeForAgent(AGENT)).toEqual({ channels: 1, threads: 0 });
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+    expect(await channels.keptRemember(OTHER_AGENT, GENERAL)).toBe(false);
+  });
+
+  it("runMigrations keeps a switch for every binding written before the table: off if any of the agent's bindings of the channel is, never turning one kept off back on, and a second run changes nothing", async () => {
+    // Bindings as phase 1 wrote them, before the table: their switches only on the bindings.
+    await connect();
+    await connect({ installId: OTHER_INSTALL });
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${OTHER_INSTALL}`.execute(db);
+    await connect({ channelId: SALES });
+    // One already kept, off, while its binding is on (a fresh connect after a switch-off and a Disconnect).
+    await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
+    await sql`
+      INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
+      VALUES (${OTHER_AGENT}, ${GENERAL}, false)
+    `.execute(db);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
+    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
+
+    for (let run = 1; run <= 2; run += 1) {
+      await runMigrations(db);
+      expect(await channels.keptRemember(AGENT, SUPPORT), `run ${run}`).toBe(false);
+      expect(await channels.keptRemember(AGENT, SALES), `run ${run}`).toBe(true);
+      expect(await channels.keptRemember(OTHER_AGENT, GENERAL), `run ${run}`).toBe(false);
+    }
+    // The bindings themselves are untouched.
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(true);
+    expect((await channels.get(INSTALL, GENERAL))?.remember).toBe(true);
+  });
+
+  // Code from before the table (an older replica in a rolling deploy, or a
+  // rollback) flips the binding alone, so a kept switch can be left on
+  // beside a binding the team has since switched off.
+  it("runMigrations moves a kept switch from on to off where one of the agent's bindings of the channel is off, never from off to on, and a second run changes nothing", async () => {
+    // Kept on, then switched off on one of its two bindings by code from before the table.
+    await connect();
+    await connect({ installId: OTHER_INSTALL });
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, true)).toBe(true);
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${INSTALL} AND channel_id = ${SUPPORT}`.execute(db);
+    // Kept on, its binding on: nothing to move.
+    await connect({ channelId: SALES });
+    expect(await channels.setRemember(INSTALL, SALES, AGENT, true)).toBe(true);
+    // Kept off, then switched on again by code from before the table: it stays off (toward off only).
+    await connect({ channelId: GENERAL, agentId: OTHER_AGENT });
+    expect(await channels.setRemember(INSTALL, GENERAL, OTHER_AGENT, false)).toBe(true);
+    await sql`UPDATE channel_slack_v1_channels SET remember = true WHERE install_id = ${INSTALL} AND channel_id = ${GENERAL}`.execute(db);
+
+    for (let run = 1; run <= 2; run += 1) {
+      await runMigrations(db);
+      expect(await channels.keptRemember(AGENT, SUPPORT), `run ${run}`).toBe(false);
+      expect(await channels.keptRemember(AGENT, SALES), `run ${run}`).toBe(true);
+      expect(await channels.keptRemember(OTHER_AGENT, GENERAL), `run ${run}`).toBe(false);
+    }
+    // The bindings themselves are untouched.
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(true);
+    expect((await channels.get(INSTALL, GENERAL))?.remember).toBe(true);
   });
 });
 

@@ -221,6 +221,15 @@ recalled in a channel.
   off, that thread stays unremembered: turning the switch back on doesn't
   capture it, and disconnecting Slack keeps that. The switch stops learning,
   not recall: the agent still recalls memory it learned elsewhere.
+- A team agent's own bot's channels have the same switch, in the same place
+  (TASK-1180). AX also keeps the agent's switch for each channel apart from
+  its connections, so a Disconnect (of the channel, or of Slack in
+  Admin › Slack) doesn't lose it: the agent's own bot starts there where the
+  team left it, unless the channel was connected again since (then the new
+  connection's switch wins). One exception, from before this was built: a
+  channel switched off and disconnected before TASK-1180 deployed, with no
+  conversation there while it was off, left nothing behind to read, so the
+  bot starts on there. A brand-new channel still starts on.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
@@ -466,9 +475,9 @@ answer for one agent. The owner is told which channels changed, and that
 under "These channels still need @ada: run /invite @ada in each one." A channel
 leaves the list once @ada has answered there: AX hears only mentions, and the
 first one binds the channel to the bot. The old shared connection stays,
-unused, and Disconnect still removes it. The bot's own channels aren't listed
-yet, so a channel that left the list doesn't come back if the bot is later
-removed from it.
+unused, and Disconnect still removes it. A channel that leaves this list moves
+to the bot's own list, which has its own memory switch (TASK-1180). AX hears
+only mentions, so a channel the bot was later removed from stays on that list.
 
 **Lifecycle (decided 2026-11-18).**
 - **Deleting the agent, or its team, deletes the bot** (`apps.manifest.delete`),
@@ -534,18 +543,36 @@ the requester.
 - A channel binding is written on the bot's first mention there, after the
   channel check (public, live, not Slack Connect). It's bound only to the bot's
   own agent.
-- That binding's remember switch is the one the same agent had for the channel
-  on the shared app, so a channel the team set not to be remembered stays that
-  way (TASK-1179). With no such binding it starts on, like any new connection.
-  If the switch can't be read, nothing is bound and nothing runs. Two known
-  gaps remain. A bot's channels have no switch in settings yet, so whatever a
-  bot channel starts with is stuck: "on by default" is currently "on, with no
-  way to turn it off", and a carried "off" can't be turned back on. (A moved
-  channel's row hides the shared switch too.) And the switch is
-  read at the first mention, so if the shared binding is gone by then (Admin ›
-  Slack Disconnect, Disconnect on a moved channel, or a rebuilt bot after
-  either), the team's "off" is lost and the bot binds the channel with
-  remember on.
+- That binding starts with the switch the team last set for the agent in that
+  channel: the shared app's binding of it while there is one (TASK-1179), else
+  the switch AX keeps for the agent and channel, which outlives a Disconnect
+  (of the channel, or of Slack in Admin › Slack) and a rebuilt bot (TASK-1180).
+  With neither, it starts on, like any new connection. If the switch can't be
+  read, nothing is bound and nothing runs.
+- The kept switch is written in the same statement as every flip, and filled
+  at boot for connections made before it existed (off wins when an agent has
+  two connections of one channel that disagree). The boot fill also keeps an
+  off for a channel that was switched off and disconnected before the table
+  existed, read from its threads that weren't remembered. With no such
+  thread (switched off and disconnected before deploy, with no conversation
+  in between), nothing records the off, and the bot starts on there. The boot
+  fill only ever moves a kept switch toward off. A flip to on that commits
+  while the boot fill runs can still be moved back to off, because the fill
+  read the bindings before the flip: the bindings and the page show on, and
+  the bot starts off only if every binding goes before it answers there. It
+  goes only with the agent.
+  We keep it when it's set rather than copying it when the bot goes live, so
+  it doesn't matter what got disconnected first.
+- Each of the bot's channels has its own switch in the agent's settings. Only
+  a team admin of the agent's team flips it, and the capture veto enforces it,
+  as on the shared app. A flip also sets the agent's shared binding of that
+  channel, so the shared bot carries on with it if the bot is disconnected.
+  The shared connection's switch is refused (`409 own-bot`) only once the bot
+  has answered in that channel. Before that it is the bot's starting value, so
+  a moved channel's row shows it. A flip racing the bot's first answer in that
+  channel can leave the bot on the value from just before the flip. After a
+  flip on a channel still waiting for the bot, the page reads the status
+  again, so it shows where the switch really landed.
 - Outsiders in a bot's channels run as the requester, while the requester is
   still a team admin. Otherwise they get a polite line and the bot shows
   "needs a team admin to claim it".
@@ -1262,6 +1289,8 @@ approving a second app never breaks the first).
   section 4).
   TASK-1168 lists the already-connected channels that still need the new
   handle, and refuses connecting the agent through the shared app once its bot
-  is live. TASK-1172 did Disconnect and the Admin › Slack list. TASK-1170 DMs
-  the admins about a request and tells the owner how it went.
+  is live. TASK-1172 did Disconnect and the Admin › Slack list. TASK-1180 gave
+  each bot channel its memory switch, and keeps the agent's switch for a
+  channel after a Disconnect. TASK-1170 DMs the admins about a request and
+  tells the owner how it went.
 - **9. Walk (walk).**

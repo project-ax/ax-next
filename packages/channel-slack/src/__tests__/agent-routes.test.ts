@@ -275,6 +275,7 @@ type Suffix =
   | '/connect'
   | '/disconnect'
   | '/remember'
+  | '/bot/remember'
   | '/bot'
   | '/bot/install-url'
   | '/bot/cancel'
@@ -291,6 +292,8 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   { method: 'POST', suffix: '/connect', body: { channelId: SUPPORT_CH } },
   { method: 'POST', suffix: '/disconnect', body: { channelId: SUPPORT_CH } },
   { method: 'POST', suffix: '/remember', body: { channelId: SUPPORT_CH, remember: false } },
+  // A bot channel's memory switch (TASK-1180).
+  { method: 'POST', suffix: '/bot/remember', body: { channelId: SUPPORT_CH, remember: false } },
   { method: 'POST', suffix: '/bot', body: { botName: 'Support Helper' } },
   { method: 'POST', suffix: '/bot/install-url' },
   { method: 'POST', suffix: '/bot/cancel' },
@@ -586,6 +589,13 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
+      // The memory switch of a channel the agent's own bot has answered in (TASK-1180).
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/remember',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
       // The agent's own bot (TASK-1167): its request can carry the bot's picture, as Admin › Slack's Connect can.
       {
         method: 'POST',
@@ -751,6 +761,7 @@ describe('rights', () => {
       '/connect',
       '/disconnect',
       '/remember',
+      '/bot/remember',
       '/bot',
       '/bot/disconnect',
       '/bot/rename',
@@ -1055,6 +1066,8 @@ describe('the section', () => {
             { channelId: SALES_CH, name: 'sales-floor', remember: true, connectedBy: 'Grace Hopper', needsReconnect: false, needsInvite: true },
           ],
           bot: LIVE,
+          // It hasn't answered anywhere yet (TASK-1180).
+          botChannels: [],
         },
       });
 
@@ -1327,8 +1340,9 @@ describe('connect', () => {
   it('refuses a body past the cap with 413 (the route cap is the first line; this is the backstop)', async () => {
     const w = world();
     const big = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
-    // Asking an AX admin (TASK-1169) carries a name and nothing else: the plain cap.
-    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot-request'] as const) {
+    // Asking an AX admin (TASK-1169) carries a name and nothing else: the plain cap. So does a bot
+    // channel's switch (TASK-1180).
+    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot/remember', '/bot-request'] as const) {
       const a = await w.call('POST', suffix, SUPPORT.id, ADA, big);
       expect({ status: a.status, body: a.body }, suffix).toEqual({ status: 413, body: { error: 'body-too-large' } });
     }
@@ -2013,6 +2027,268 @@ describe('disconnect and remember', () => {
       status: 404,
       body: { error: 'not-connected' },
     });
+  });
+});
+
+// ── POST …/bot/remember (TASK-1180) ─────────────────────────────────────────
+
+describe("a bot channel's memory switch (TASK-1180)", () => {
+  it("only a team admin of the agent's team flips a bot channel's switch: everyone else gets the shared toggle's answer, and no switch moves (TASK-1180)", async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    // The route reads the bot itself (liveOwnBot); bots.status isn't asked.
+    w.state.bot = OWN_BOT;
+    // The bot's first mention in #support bound it on the bot's own install (router.ts).
+    await w.memory.store.upsert({
+      installId: OWN_BOT.installId,
+      channelId: SUPPORT_CH,
+      agentId: SUPPORT.id,
+      connectedByUserId: 'usr_grace',
+      channelName: 'support-desk',
+    });
+    const flip = async (agentId: string, as: TestUser | null) => {
+      const a = await w.call('POST', '/bot/remember', agentId, as, { channelId: SUPPORT_CH, remember: false });
+      return { status: a.status, body: a.body };
+    };
+    const lookups = w.botLookups.length;
+
+    expect((await flip(SUPPORT.id, null)).status).toBe(401);
+    // Outside the team, a workspace admin outside it, another team's admin, a missing agent: one 404.
+    for (const as of [OTTO, WANDA, SAM]) expect(await flip(SUPPORT.id, as), as.id).toEqual(NOT_FOUND);
+    expect(await flip('agt_nobody', ADA)).toEqual(NOT_FOUND);
+    // A member, and a workspace admin who is a plain member: they see the agent, and can't manage it.
+    for (const as of [MEL, WILL]) expect(await flip(SUPPORT.id, as), as.id).toEqual(FORBIDDEN);
+    expect(await flip(PATS.id, PAT)).toEqual({ status: 409, body: { error: 'personal-agent' } });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
+    expect(w.memory.calls).not.toContain('setRemember');
+    // Nothing is read for anyone refused, not even the agent's bot.
+    expect(w.botLookups).toHaveLength(lookups);
+
+    expect(await flip(SUPPORT.id, ADA)).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
+  });
+
+  /** As a member reads the live bot: no install id. */
+  const LIVE: AgentSlackBot = {
+    state: 'live',
+    botName: 'Support Helper',
+    handle: 'supporthelper',
+    approver: 'Grace Hopper',
+    needsClaim: false,
+    installId: null,
+  };
+  /** A channel the agent's own bot answers in that the shared app never connected; its id sorts before #support's. */
+  const BOT_ONLY_CH = 'C07ALPHA001';
+
+  /** The bot's first mention in a channel binds it on the bot's own install, to its agent (router.ts). */
+  const answerOnBot = (w: ReturnType<typeof world>, channelId: string, channelName = NAMES[channelId] ?? channelId) =>
+    w.memory.store.upsert({
+      installId: OWN_BOT.installId,
+      channelId,
+      agentId: SUPPORT.id,
+      connectedByUserId: 'usr_grace',
+      channelName,
+    });
+  const flipBot = async (w: ReturnType<typeof world>, channelId: string, remember: unknown, as: TestUser = ADA) => {
+    const a = await w.call('POST', '/bot/remember', SUPPORT.id, as, { channelId, remember });
+    return { status: a.status, body: a.body };
+  };
+  const flips = (w: ReturnType<typeof world>): number => w.memory.calls.filter((c) => c === 'setRemember').length;
+
+  it("the shared switch is refused with 409 own-bot once the agent's own bot has answered in that channel, and nothing changes; before that it flips the shared binding and the kept switch the bot will start from", async () => {
+    const w = world();
+    // Connected first: a connect is refused once the bot is live.
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    await w.connect(SUPPORT.id, SALES_CH, GRACE);
+    w.state.bot = OWN_BOT;
+
+    // The bot hasn't answered in #sales-floor yet: the shared switch is the one it will start from there.
+    expect(await w.remember(SUPPORT.id, SALES_CH, false, ADA)).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(INSTALL_ID, SALES_CH)?.remember).toBe(false);
+    expect(w.memory.kept(SUPPORT.id, SALES_CH)).toBe(false);
+
+    // It has answered in #support-desk: the switch there is the bot channel's.
+    await answerOnBot(w, SUPPORT_CH);
+    const before = flips(w);
+    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 409, body: { error: 'own-bot' } });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
+    expect(flips(w)).toBe(before);
+  });
+
+  it('a pending bot changes nothing: the shared switch flips as before', async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    w.state.bot = PENDING_BOT;
+    // A bot answers nothing before its Allow; even a binding on its install doesn't make it live.
+    await answerOnBot(w, SUPPORT_CH);
+    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
+  });
+
+  it("the bot's switch flips the bot's binding, the agent's shared binding of that channel and the kept switch; 404 not-connected where the bot hasn't answered, with no bot, or with a pending one", async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    await w.connect(SUPPORT.id, SALES_CH, GRACE);
+    w.state.bot = OWN_BOT;
+    await answerOnBot(w, SUPPORT_CH);
+
+    expect(await flipBot(w, SUPPORT_CH, false)).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
+    // So the shared bot carries on with it if the bot is disconnected.
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
+
+    // Not a channel the bot has answered in: its shared binding is the shared switch's to flip.
+    expect(await flipBot(w, SALES_CH, false)).toEqual({ status: 404, body: { error: 'not-connected' } });
+    expect(w.memory.row(INSTALL_ID, SALES_CH)?.remember).toBe(true);
+    expect(w.memory.kept(SUPPORT.id, SALES_CH)).toBeUndefined();
+
+    // No bot, or one that isn't live: nothing to flip, and nothing moves.
+    const before = flips(w);
+    for (const bot of [null, PENDING_BOT]) {
+      w.state.bot = bot;
+      expect(await flipBot(w, SUPPORT_CH, true), String(bot?.status)).toEqual({
+        status: 404,
+        body: { error: 'not-connected' },
+      });
+    }
+    expect(flips(w)).toBe(before);
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(false);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
+  });
+
+  it('the bot channel switch needs no shared app', async () => {
+    const w = world();
+    // Admin › Slack disconnected the shared app; the bot and its channels stay (TASK-1172).
+    w.state.install = null;
+    w.state.bot = OWN_BOT;
+    await answerOnBot(w, SUPPORT_CH);
+    expect(await flipBot(w, SUPPORT_CH, false)).toEqual({ status: 200, body: {} });
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(false);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBe(false);
+  });
+
+  it('the bot channel switch takes only its own keys and a boolean', async () => {
+    const w = world();
+    w.state.bot = OWN_BOT;
+    await answerOnBot(w, SUPPORT_CH);
+    const before = w.memory.row(OWN_BOT.installId, SUPPORT_CH);
+    const calls = w.memory.calls.length;
+    const cases: Array<[string, unknown]> = [
+      ['an unknown key, even one naming another agent', { channelId: SUPPORT_CH, remember: false, agentId: SALES.id }],
+      ["an install id: the bot is the agent's, never the page's to name", { channelId: SUPPORT_CH, remember: false, installId: OWN_BOT.installId }],
+      ['remember as a string', { channelId: SUPPORT_CH, remember: 'false' }],
+      ['remember as a number', { channelId: SUPPORT_CH, remember: 0 }],
+      ['remember null', { channelId: SUPPORT_CH, remember: null }],
+      ['no remember', { channelId: SUPPORT_CH }],
+      ['a channel reference, not an id', { channelId: `<#${SUPPORT_CH}>`, remember: false }],
+      ['not JSON', 'off please'],
+    ];
+    for (const [what, body] of cases) {
+      const a = await w.call('POST', '/bot/remember', SUPPORT.id, ADA, typeof body === 'string' ? body : JSON.stringify(body));
+      expect({ status: a.status, body: a.body }, what).toEqual({ status: 400, body: { error: 'invalid-body' } });
+    }
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)).toEqual(before);
+    expect(w.memory.calls).toHaveLength(calls);
+    expect(w.memory.kept(SUPPORT.id, SUPPORT_CH)).toBeUndefined();
+    // Refused before the bot is even looked up.
+    expect(w.botLookups).toEqual([]);
+  });
+
+  it("a store fault reading the agent's bot is the bot switch's 500, logged as slack_channel_route_failed { stage: 'bot-remember', code } and never naming the channel", async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    w.state.bot = OWN_BOT;
+    await answerOnBot(w, SUPPORT_CH);
+    w.state.botFault = Object.assign(new Error(`relation gone ${SUPPORT_CH}`), { code: '42P01' });
+
+    expect(await flipBot(w, SUPPORT_CH, false)).toEqual({ status: 500, body: { error: 'internal' } });
+    // The shared switch can't tell whether the bot answered there either: its own 500, never a guess.
+    expect(await w.remember(SUPPORT.id, SUPPORT_CH, false, ADA)).toEqual({ status: 500, body: { error: 'internal' } });
+    expect(w.memory.calls).not.toContain('setRemember');
+    expect(w.memory.row(INSTALL_ID, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)?.remember).toBe(true);
+    expect(w.lines.filter((l) => l.msg === 'slack_channel_route_failed')).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-remember', code: '42P01' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'remember', code: '42P01' } },
+    ]);
+    expect(JSON.stringify(w.lines)).not.toContain(SUPPORT_CH);
+  });
+
+  it("the section lists the live bot's own channels with their switches, oldest first, to managers and members, with or without the shared app; no botChannels without a live bot", async () => {
+    const w = world();
+    await w.connect(SUPPORT.id, SUPPORT_CH, ADA);
+    await w.connect(SUPPORT.id, SALES_CH, GRACE);
+    w.state.bot = OWN_BOT;
+    w.bots.answers.status = LIVE;
+    // The bot answered in #support-desk first, then in a channel the shared app never had.
+    await answerOnBot(w, SUPPORT_CH);
+    await answerOnBot(w, BOT_ONLY_CH, 'alpha-room');
+    expect(await w.memory.store.setRemember(OWN_BOT.installId, SUPPORT_CH, SUPPORT.id, false)).toBe(true);
+    const botChannels = [
+      { channelId: SUPPORT_CH, name: 'support-desk', remember: false },
+      { channelId: BOT_ONLY_CH, name: 'alpha-room', remember: true },
+    ];
+
+    for (const [as, canManage] of [
+      [MEL, false],
+      [ADA, true],
+    ] as const) {
+      expect(await w.status(SUPPORT.id, as), as.id).toEqual({
+        status: 200,
+        body: {
+          state: 'ready',
+          botName: 'canopy-works',
+          workspaceName: 'Canopy Works',
+          canManage,
+          // #support-desk moved to the bot's list; #sales-floor still waits for it.
+          channels: [
+            { channelId: SALES_CH, name: 'sales-floor', remember: true, connectedBy: 'Grace Hopper', needsReconnect: false, needsInvite: true },
+          ],
+          bot: LIVE,
+          botChannels,
+        },
+      });
+    }
+
+    // Admin › Slack disconnected the shared app: the live bot, and its channels, still show.
+    w.state.install = null;
+    expect(await w.status(SUPPORT.id, MEL)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: false, bot: LIVE, botChannels },
+    });
+
+    // A pending bot, no bot, a live answer whose bot is gone by the route's own read, or a bot that
+    // went live after the bot domain answered pending: no list. A row never needs a bot the answer
+    // doesn't show (TASK-1168's rule).
+    const pending: AgentSlackBot = {
+      state: 'pending',
+      botName: 'Support Helper',
+      approver: 'Grace Hopper',
+      canContinue: false,
+      installId: PENDING_BOT.installId,
+    };
+    for (const install of [{ ...INSTALL }, null]) {
+      for (const [bot, answer] of [
+        [PENDING_BOT, pending],
+        [null, NO_BOT],
+        [null, LIVE],
+        [OWN_BOT, pending],
+      ] as const) {
+        w.state.install = install;
+        w.state.bot = bot;
+        w.bots.answers.status = answer;
+        const got = await w.status(SUPPORT.id, MEL);
+        expect(got.status).toBe(200);
+        expect(got.body, `${install === null ? 'no-workspace' : 'ready'} ${answer.state}`).not.toHaveProperty('botChannels');
+      }
+    }
   });
 });
 
