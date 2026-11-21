@@ -146,9 +146,11 @@ export interface RouterDeps extends TurnDeps {
    * Which agent each channel is connected to, read when a mention arrives and
    * again when its turn starts; the thread map the memory switch's veto
    * reads, written just before the turn's agent runs; and the binding a team
-   * agent's own bot writes at its first mention in a channel (TASK-1167).
+   * agent's own bot writes at its first mention in a channel (TASK-1167),
+   * with the switch kept for the agent and channel when the agent has no
+   * shared binding of it to start from (TASK-1180).
    */
-  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'upsert'>;
+  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'upsert' | 'keptRemember'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
 }
@@ -857,13 +859,16 @@ type BindOutcome =
  * could take (`connectable`: public, live, not Slack Connect). The binding
  * is to the bot's one agent, connected by its requester, whom the channel's
  * outsiders run as (channel-store.ts); read back, so it is the one stored.
- * Its memory switch is the one the agent had for this channel on the shared
- * app, if it had one there, so a channel the team chose not to have
- * remembered stays that way (TASK-1179); otherwise on, as any new connection
- * is. It's written by the insert itself, so no turn ever reads it on.
- * The bot never joins a channel: it is in this one because someone invited
- * it. A store failure throws; a failed read of the shared app's install or
- * binding throws before anything is written.
+ * Its memory switch is the one the team last set for the agent in this
+ * channel (startingRemember), so a channel the team chose not to have
+ * remembered stays that way: the agent's live binding of it on the shared
+ * app (TASK-1179), else the switch kept for the agent and channel, which
+ * outlives a Disconnect and a rebuilt bot (TASK-1180), else on, as any new
+ * connection is. It's written by the insert itself, so no turn ever reads it
+ * on. The bot never joins a channel: it is in this one because someone
+ * invited it. A store failure throws; a failed read of the shared app's
+ * install or binding, or of the kept switch, throws before anything is
+ * written.
  */
 async function bindBotChannel(
   d: RouterDeps,
@@ -884,7 +889,7 @@ async function bindBotChannel(
   if (info.id !== channelId) return { ok: false, reason: 'channel-not-allowed', code: 'id-mismatch' };
   if (!connectable(info)) return { ok: false, reason: 'channel-not-allowed' };
 
-  const remember = await sharedRemember(d, install.agentId, channelId);
+  const remember = await startingRemember(d, install.agentId, channelId);
   const wrote = {
     installId: install.installId,
     channelId,
@@ -907,16 +912,30 @@ async function bindBotChannel(
 }
 
 /**
+ * What a team agent's own bot binds a channel with: the agent's live binding
+ * of it on the shared app (sharedRemember), else the switch kept for the
+ * agent and channel (TASK-1180), else on. The live binding comes first: a
+ * fresh connect keeps no switch, so it is never staler than the kept one,
+ * which only matters once that binding is gone. A store failure throws: the
+ * switch is never guessed.
+ */
+async function startingRemember(d: RouterDeps, agentId: string, channelId: string): Promise<boolean> {
+  return (
+    (await sharedRemember(d, agentId, channelId)) ?? (await d.channels.keptRemember(agentId, channelId)) ?? true
+  );
+}
+
+/**
  * The memory switch of this agent's binding of the channel on the shared
- * app (TASK-1179): what the team chose for it there. On when the shared app
- * isn't installed, or doesn't connect the channel to this agent: another
+ * app (TASK-1179): what the team chose for it there. Null when the shared
+ * app isn't installed, or doesn't connect the channel to this agent: another
  * agent's switch is about that agent's memory. A store failure throws.
  */
-async function sharedRemember(d: RouterDeps, agentId: string, channelId: string): Promise<boolean> {
+async function sharedRemember(d: RouterDeps, agentId: string, channelId: string): Promise<boolean | null> {
   const shared = await d.installs.current();
-  if (shared === null) return true;
+  if (shared === null) return null;
   const binding = await d.channels.get(shared.installId, channelId);
-  return binding === null || binding.agentId !== agentId ? true : binding.remember;
+  return binding === null || binding.agentId !== agentId ? null : binding.remember;
 }
 
 /**

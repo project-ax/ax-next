@@ -26,6 +26,23 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * deletes a thread row: an install's removal and a disconnect keep them, so
  * what was said while the switch was off stays out of memory after Slack is
  * gone.
+ *
+ * And the memory switch the team last set for an agent in a channel, kept
+ * apart from the bindings (TASK-1180), so a Disconnect never loses it. A flip
+ * (`setRemember`) writes every binding of that agent in that channel, on any
+ * install, and the kept switch, in ONE statement, so a flip leaves the kept
+ * switch agreeing with every binding it reached; and a bot channel switched
+ * off is off on the shared binding too, which the shared bot answers with
+ * again once the bot is gone. `keptRemember` reads it for a team agent's own
+ * bot's first bind there (router.ts). An install's removal and a disconnect
+ * keep it; only `removeForAgent` deletes it. Any future writer that flips a
+ * binding's `remember` must keep that one-statement rule. `upsert`'s insert
+ * is the one exception, on purpose: a new binding's starting switch is not
+ * a flip, so it keeps nothing (a fresh connect starts on beside whatever is
+ * kept, and the bot's first bind reads a live binding before the kept
+ * switch). The two can also differ after a flip by code from before the
+ * table (an older replica, or a rollback), which writes the binding alone;
+ * the next boot moves the kept switch toward off (migrations.ts).
  */
 export interface ChannelBinding {
   installId: string;
@@ -37,8 +54,8 @@ export interface ChannelBinding {
   channelName: string;
   /**
    * The channel's memory switch. On for a new binding unless its writer says
-   * otherwise (a team agent's own bot carries the agent's shared-app switch,
-   * TASK-1179); a reconnect keeps it.
+   * otherwise (a team agent's own bot starts from the agent's switch for the
+   * channel, TASK-1179/1180); a reconnect keeps it.
    */
   remember: boolean;
   createdAt: Date;
@@ -100,13 +117,34 @@ export interface ChannelStore {
       remember?: boolean;
     },
   ): Promise<'connected' | 'reconnected' | 'taken'>;
-  /** Disconnect a channel from THIS agent. False when it isn't this agent's (or isn't bound at all). */
+  /**
+   * Disconnect a channel from THIS agent. False when it isn't this agent's (or isn't bound at all).
+   * The switch kept for the agent and channel (keptRemember) stays.
+   */
   remove(installId: string, channelId: string, agentId: string): Promise<boolean>;
-  /** Flip THIS agent's channel's memory switch. False when it isn't this agent's (or isn't bound at all). */
+  /**
+   * Flip the agent's memory switch for a channel. `installId`'s binding of
+   * the channel must be THIS agent's, else false and nothing is written.
+   * Then, in ONE statement, every binding of the agent in that channel, on
+   * any install (its shared binding while its own bot answers there, and the
+   * bot's), takes it, and so does the switch kept apart from the bindings
+   * (keptRemember). Another agent's rows and other channels are never
+   * touched. True when the named binding took it. A Disconnect can delete
+   * the named binding while the flip waits on it: then false, though the
+   * agent's other bindings of the channel and the kept switch took it,
+   * together.
+   */
   setRemember(installId: string, channelId: string, agentId: string, remember: boolean): Promise<boolean>;
   /**
-   * Delete the agent's bindings and thread rows on every install, in one
-   * transaction (both go, or neither does), and say how many of each went.
+   * The switch last set for this agent in this channel (TASK-1180): kept
+   * when the bindings go (a Disconnect, a removed install, a removed bot),
+   * deleted only with the agent. Null when none was ever set or backfilled.
+   */
+  keptRemember(agentId: string, channelId: string): Promise<boolean | null>;
+  /**
+   * Delete the agent's bindings, thread rows and kept switches on every
+   * install, in one transaction (all go, or none does), and say how many
+   * bindings and threads went.
    */
   removeForAgent(agentId: string): Promise<{ channels: number; threads: number }>;
   /**
@@ -136,6 +174,7 @@ export interface ChannelStore {
 
 const CHANNELS = 'channel_slack_v1_channels';
 const THREADS = 'channel_slack_v1_threads';
+const SWITCHES = 'channel_slack_v1_memory_switches';
 
 const COLUMNS = [
   'install_id',
@@ -246,20 +285,54 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
     },
 
     async setRemember(installId, channelId, agentId, remember) {
-      const r = await db
-        .updateTable(CHANNELS)
-        .set({ remember, updated_at: sql<Date>`now()` })
-        .where('install_id', '=', installId)
-        .where('channel_id', '=', channelId)
+      // One statement, so the kept switch ends up agreeing with every binding
+      // the flip reached. Every row it flips is this agent's, in this channel,
+      // and only when the binding the caller named is this agent's (the
+      // EXISTS, read as the statement starts): a route that checked rights on
+      // one agent can't touch another's. The kept switch is written whenever
+      // any binding was flipped, so it goes with them even when a Disconnect
+      // deletes the named binding while the flip waits on its row: that row
+      // is skipped, and the agent's other bindings still flip. The answer is
+      // whether the named binding took it: false then, so the caller's page
+      // re-reads and finds it gone. A bare parameter in a SELECT list has no
+      // type, so each is cast.
+      const r = await sql<{ changed: number }>`
+        WITH flipped AS (
+          UPDATE channel_slack_v1_channels
+             SET remember = ${remember}, updated_at = now()
+           WHERE channel_id = ${channelId}
+             AND agent_id = ${agentId}
+             AND EXISTS (
+               SELECT 1 FROM channel_slack_v1_channels n
+                WHERE n.install_id = ${installId} AND n.channel_id = ${channelId} AND n.agent_id = ${agentId}
+             )
+          RETURNING install_id
+        ), kept AS (
+          INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
+          SELECT CAST(${agentId} AS text), CAST(${channelId} AS text), CAST(${remember} AS boolean)
+           WHERE EXISTS (SELECT 1 FROM flipped)
+          ON CONFLICT (agent_id, channel_id) DO UPDATE SET remember = EXCLUDED.remember, updated_at = now()
+        )
+        SELECT (SELECT count(*) FROM flipped WHERE install_id = ${installId})::int AS changed
+      `.execute(db);
+      return (r.rows[0]?.changed ?? 0) > 0;
+    },
+
+    async keptRemember(agentId, channelId) {
+      const row = await db
+        .selectFrom(SWITCHES)
+        .select('remember')
         .where('agent_id', '=', agentId)
+        .where('channel_id', '=', channelId)
         .executeTakeFirst();
-      return r.numUpdatedRows > 0n;
+      return row?.remember ?? null;
     },
 
     async removeForAgent(agentId) {
       return db.transaction().execute(async (trx) => {
         const channels = await trx.deleteFrom(CHANNELS).where('agent_id', '=', agentId).executeTakeFirst();
         const threads = await trx.deleteFrom(THREADS).where('agent_id', '=', agentId).executeTakeFirst();
+        await trx.deleteFrom(SWITCHES).where('agent_id', '=', agentId).execute();
         return { channels: Number(channels.numDeletedRows), threads: Number(threads.numDeletedRows) };
       });
     },

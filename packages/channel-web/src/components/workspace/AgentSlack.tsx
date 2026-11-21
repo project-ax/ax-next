@@ -4,6 +4,9 @@
  * manage it — connecting, disconnecting and "remember this channel". Once the
  * agent's own bot is live (TASK-1168), the list is the channels that still
  * need that bot invited, and nothing more is connected through the shared app.
+ * The channels the bot has answered in are listed too, each with the same
+ * memory switch (TASK-1180); a channel it still needs shows its switch as the
+ * value the bot will start from.
  *
  * Claude-simple on purpose. No ids, scopes or install words: a channel is
  * `#name`, a person is a name, and a problem shows up only when there is one.
@@ -35,13 +38,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
-import { Switch } from '@/components/ui/switch';
 import { logRequestFailure } from '@/lib/http';
 import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
+import { AgentSlackBotChannels } from './AgentSlackBotChannels';
+import { SlackRememberField } from './SlackRememberField';
 import {
   AGENT_SLACK_COPY,
   agentSlackErrorCopy,
@@ -153,6 +157,16 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
           <p className="text-[13px] text-muted-foreground">
             Slack isn&apos;t connected to this workspace yet. An admin can connect it in Admin settings.
           </p>
+          {state.bot.state === 'live' && (state.botChannels ?? []).length > 0 && (
+            <AgentSlackBotChannels
+              agentId={agentId}
+              agentName={agentName}
+              canManage={state.canManage}
+              invite={{ botName: state.bot.botName, handle: state.bot.handle }}
+              channels={state.botChannels ?? []}
+              onStale={read}
+            />
+          )}
           {state.bot.state !== 'none' ? (
             <AgentSlackBot
               key={agentId}
@@ -211,10 +225,12 @@ function ReadySection({
 }) {
   const { channels, canManage, bot } = ready;
   // A live bot answers where it was invited and the shared bot no longer reaches this agent, so the
-  // rows that still need an invite say so and carry nothing else.
+  // rows that still need an invite say so. Their switch stays: it is the value the bot starts from
+  // once it answers there (TASK-1180).
   const invite: InviteTarget | null =
     bot.state === 'live' ? { botName: bot.botName, handle: bot.handle } : null;
   const isMoved = (row: SlackChannelRow) => invite !== null && row.needsInvite;
+  const botChannels = ready.botChannels ?? [];
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
   const [notice, setNotice] = useState<string | null>(null);
@@ -253,6 +269,13 @@ function ReadySection({
     setRowErrors(({ [row.channelId]: _gone, ...rest }) => rest);
     try {
       await setSlackChannelRemember(agentId, row.channelId, on);
+      // A moved row is still waiting for the agent's own bot, and the bot may have bound the channel
+      // while this write was in flight, so the stored value is no longer this row's to show: read
+      // where the switch really is. A shared row nobody else can move updates in place.
+      if (isMoved(row)) {
+        onStale();
+        return;
+      }
       withRows(
         latest.current.channels.map((c) => (c.channelId === row.channelId ? { ...c, remember: on } : c)),
       );
@@ -283,6 +306,16 @@ function ReadySection({
         <Alert variant="destructive">
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
+      )}
+      {invite !== null && botChannels.length > 0 && (
+        <AgentSlackBotChannels
+          agentId={agentId}
+          agentName={agentName}
+          canManage={canManage}
+          invite={invite}
+          channels={botChannels}
+          onStale={onStale}
+        />
       )}
       {channels.length === 0 ? (
         // A live bot may be answering in channels this list doesn't show; its own section says how to invite it.
@@ -371,7 +404,7 @@ function ChannelRow({
   row: SlackChannelRow;
   agentName: string;
   canManage: boolean;
-  /** Set when the agent's own bot is live and still needs inviting here: the row shrinks to its hint. */
+  /** Set when the agent's own bot is live and still needs inviting here: the row shows its hint and its switch (the bot's starting value), not who connected it. */
   invite: InviteTarget | null;
   busy: boolean;
   error: string | null;
@@ -379,8 +412,16 @@ function ChannelRow({
   onReconnect: () => void;
   onDisconnect: () => void;
 }) {
-  const switchId = `slack-remember-${row.channelId}`;
-  const rememberNote = `${agentName} remembers what people with access to it say here. It never remembers what anyone else says.`;
+  const rememberField = (
+    <SlackRememberField
+      id={`slack-remember-${row.channelId}`}
+      agentName={agentName}
+      remember={row.remember}
+      canManage={canManage}
+      busy={busy}
+      onChange={onRemember}
+    />
+  );
   if (invite !== null) {
     return (
       <li className="flex flex-col gap-3 px-4 py-3">
@@ -398,6 +439,7 @@ function ChannelRow({
             </Button>
           )}
         </div>
+        {rememberField}
         {error !== null && (
           <p role="alert" className="text-[12.5px] text-destructive">
             {error}
@@ -437,26 +479,7 @@ function ChannelRow({
             : `Whoever connected this channel no longer has access to ${agentName}, so it can't answer here until a team admin reconnects it.`}
         </p>
       )}
-      {/* What people without access to the agent say is never remembered, whatever the switch says (channel-slack's capture veto). */}
-      {canManage ? (
-        <Field orientation="horizontal">
-          <Switch
-            id={switchId}
-            checked={row.remember}
-            disabled={busy}
-            onCheckedChange={onRemember}
-            aria-describedby={`${switchId}-note`}
-          />
-          <FieldContent>
-            <FieldLabel htmlFor={switchId} className="font-normal">
-              Let {agentName} remember this channel
-            </FieldLabel>
-            <FieldDescription id={`${switchId}-note`}>When this is on, {rememberNote}</FieldDescription>
-          </FieldContent>
-        </Field>
-      ) : (
-        row.remember && <p className="text-[12.5px] text-muted-foreground">{rememberNote}</p>
-      )}
+      {rememberField}
       {error !== null && (
         <p role="alert" className="text-[12.5px] text-destructive">
           {error}
