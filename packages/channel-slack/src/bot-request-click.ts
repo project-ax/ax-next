@@ -61,8 +61,8 @@ import type { SlackApi } from './slack-api.js';
 
 export interface BotRequestClickDeps {
   bus: HookBus;
-  /** users.info for step 2 and postEphemeral for the private lines; nothing else is called. */
-  api: SlackApi;
+  /** users.info for step 2 and postEphemeral for the private lines; the type grants nothing else. */
+  api: Pick<SlackApi, 'usersInfo' | 'postEphemeral'>;
   secrets: Pick<SecretStore, 'get'>;
   /** The one decline Admin › Slack runs (bot-requests.ts), here as the admin who clicked, with the DM she clicked in. */
   requests: { decline(i: { requestId: string; actorUserId: string; clicked: PostedDm }): Promise<BotReply> };

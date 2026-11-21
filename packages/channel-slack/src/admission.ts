@@ -134,7 +134,7 @@ export function admitSlackUser(user: unknown, teamId: string): Admission {
  * sender: that would hand them someone else's email, and so their agent.
  */
 export async function admitSender(
-  api: SlackApi,
+  api: Pick<SlackApi, 'usersInfo'>,
   botToken: string,
   slackUserId: string,
   teamId: string,

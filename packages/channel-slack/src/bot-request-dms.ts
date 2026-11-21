@@ -109,8 +109,8 @@ import type { InstallRow, InstallStore } from './store.js';
 
 export interface BotRequestDmsDeps {
   bus: HookBus;
-  /** The shared bot's calls: find a person by email, admit them (users.info), DM them, redraw a DM. */
-  api: SlackApi;
+  /** The shared bot's calls: find a person by email, admit them (users.info), DM them, redraw a DM. No others. */
+  api: Pick<SlackApi, 'usersLookupByEmail' | 'usersInfo' | 'postDirect' | 'updateMessage'>;
   installs: Pick<InstallStore, 'current' | 'get'>;
   /** For `live`: the agent's channels on the shared app, and the ones its own bot has. */
   channels: Pick<ChannelStore, 'listForAgent'>;
