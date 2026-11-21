@@ -1,6 +1,7 @@
 import { makeAgentContext, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import { admitSender, findSenderUser, isTemporaryLookupFailure, type Admission } from './admission.js';
 import { isAxAdmin } from './ax-admin.js';
+import type { PostedDm } from './bot-request-dms.js';
 import type { BotReply } from './bots.js';
 import { COPY } from './copy.js';
 import type { BotRequestClickHandler } from './interactions.js';
@@ -32,15 +33,17 @@ import type { SlackApi } from './slack-api.js';
  *      tell an account that isn't an admin from no account at all. Both run
  *      before anything touches the request, so a non-admin learns nothing
  *      about it, not even whether it is still open.
- *   5. The same decline Admin › Slack runs (bot-requests.ts), as that admin.
- *      It reads and deletes the request under the app lock, so a request
- *      answered first (approved, declined, cancelled, or forgotten by a
- *      restart along with its DM's record) is a 404: "This request was
- *      already handled." That is what makes each button act at most once: of
- *      two clicks (a double click, or two admins), only one finds the
- *      request. A 200 says nothing privately: the DMs' redraw, which names
- *      who declined, is the answer. Anything else, or a throw, is "try
- *      again".
+ *   5. The same decline Admin › Slack runs (bot-requests.ts), as that admin,
+ *      with the DM she clicked in (its channel and ts, from the click Slack
+ *      signed). It reads and deletes the request under the app lock, so a
+ *      request answered first (approved, declined or cancelled) is a 404:
+ *      "This request was already handled." That is what makes each button
+ *      act at most once: of two clicks (a double click, or two admins), only
+ *      one finds the request. A 200 says nothing privately: the redraw of the
+ *      DMs, which names who declined, is the answer, and the DM she clicked
+ *      is redrawn even when nothing was kept for the request (the records
+ *      live in memory: a restart, their TTL or their cap forgets them).
+ *      Anything else, or a throw, is "try again".
  *   An auth fault at step 3 or 4 is "try again" too: an outage is not a "no".
  *
  * No step here has a deadline of its own. Unlike a prompt's click
@@ -61,8 +64,8 @@ export interface BotRequestClickDeps {
   /** users.info for step 2 and postEphemeral for the private lines; nothing else is called. */
   api: SlackApi;
   secrets: Pick<SecretStore, 'get'>;
-  /** The one decline Admin › Slack runs (bot-requests.ts), here as the admin who clicked. */
-  requests: { decline(i: { requestId: string; actorUserId: string }): Promise<BotReply> };
+  /** The one decline Admin › Slack runs (bot-requests.ts), here as the admin who clicked, with the DM she clicked in. */
+  requests: { decline(i: { requestId: string; actorUserId: string; clicked: PostedDm }): Promise<BotReply> };
   logger: Logger;
 }
 
@@ -153,10 +156,12 @@ export function createBotRequestClickHandler(d: BotRequestClickDeps): BotRequest
       return;
     }
 
-    // 5. The decline Admin › Slack runs, as her. Read inside the try: a reply we can't read is a fault too.
+    // 5. The decline Admin › Slack runs, as her, with the DM she clicked in. Read inside the try: a reply we can't read is a fault too.
     let status: number;
     try {
-      status = (await d.requests.decline({ requestId, actorUserId: userId })).status;
+      status = (
+        await d.requests.decline({ requestId, actorUserId: userId, clicked: { channel: click.channel, ts: click.messageTs } })
+      ).status;
     } catch (err) {
       failed('decline', logCode(err));
       await tell(COPY.promptFailed);

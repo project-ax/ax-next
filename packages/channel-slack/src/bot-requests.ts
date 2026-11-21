@@ -1,7 +1,7 @@
 import { PluginError, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import { isAxAdmin } from './ax-admin.js';
 import { isBotNameTaken } from './bot-name.js';
-import type { BotRequestDms } from './bot-request-dms.js';
+import type { BotRequestDms, PostedDm } from './bot-request-dms.js';
 import type { BotReply, Bots } from './bots.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
@@ -197,10 +197,12 @@ export interface BotRequests {
    * reads the request (404 `not-found` when it is gone) and deletes it (404
    * if nothing went). 200 `{}`, logged `slack_bot_request_declined
    * { requestId }`; once the lock is free, the request's DMs close as
-   * declined by her (`dms.closed`). No declined marker is kept: the team sees
-   * its form again. A store fault throws.
+   * declined by her (`dms.closed`), `clicked` with them: the DM a Slack
+   * Decline was clicked in, which is redrawn even when nothing was kept for
+   * it (Admin › Slack's decline has none). No declined marker is kept: the
+   * team sees its form again. A store fault throws.
    */
-  decline(i: { requestId: string; actorUserId: string }): Promise<BotReply>;
+  decline(i: { requestId: string; actorUserId: string; clicked?: PostedDm }): Promise<BotReply>;
 }
 
 /** The agent's name when its requester can't see it, or nobody says. */
@@ -387,7 +389,7 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     return approved.reply;
   }
 
-  async function decline(i: { requestId: string; actorUserId: string }): Promise<BotReply> {
+  async function decline(i: { requestId: string; actorUserId: string; clicked?: PostedDm }): Promise<BotReply> {
     const declined = await d.lock.run(async (): Promise<BotRequest | null> => {
       // Read before the delete, under the lock: its DMs need whose request it was and its name.
       const request = await d.installs.getBotRequest(i.requestId);
@@ -397,13 +399,15 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     });
     if (declined === null) return NOT_FOUND;
     // Once the lock is free, never awaited: the AX admins' DMs say she declined
-    // it (whether its requester hears is bot-request-dms.ts's to decide).
+    // it, the one she clicked in too (whether its requester hears is
+    // bot-request-dms.ts's to decide).
     void d.dms.closed({
       requestId: declined.requestId,
       requesterUserId: declined.requestedByUserId,
       botName: declined.botName,
       outcome: 'declined',
       byUserId: i.actorUserId,
+      ...(i.clicked !== undefined ? { clicked: i.clicked } : {}),
     });
     return json(200, {});
   }

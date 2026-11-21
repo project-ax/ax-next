@@ -62,15 +62,20 @@ import type { InstallRow, InstallStore } from './store.js';
  * skips that one admin. Where each DM went (its IM and ts, never a token) is
  * kept in memory for the redraw, for at most BOT_REQUEST_DM_RECORDS_MAX
  * requests and BOT_REQUEST_DM_TTL_MS. After a restart, or past either bound,
- * old DMs keep their buttons, and a click on one says the request was
- * already handled.
+ * old DMs aren't redrawn when someone else answers: they keep their buttons.
+ * The request itself is on Postgres, so a Decline clicked in one still
+ * declines a request that is open, and that DM is redrawn (under the ask
+ * itself: the subject it was drawn with is gone); on one already closed,
+ * the click says it was already handled (bot-request-click.ts).
  *
  * A close during the fan-out (D8). `closed` marks the request closing before
  * it awaits anything, and the fan-out checks that before each admin and
  * again right before each post, so no DM goes out once the close is known. A
  * DM already on its way is redrawn exactly once: the close sets its line and
  * copies the list of DMs posted so far in one synchronous step, and the
- * fan-out redraws any DM it records after that itself.
+ * fan-out redraws any DM it records after that itself. The DM a Decline was
+ * clicked in joins that list in the same step, if the fan-out hasn't
+ * recorded it yet, and the fan-out then leaves it to the close.
  *
  * Off the request path (D5). Every method runs its work tracked by the
  * plugin's lifetime (shutdown drains it), takes no lock, and returns a
@@ -118,8 +123,11 @@ export interface BotRequestDms {
   /**
    * A request was approved (a bot made) or declined, by `byUserId`: redraw
    * the admins' DMs, and tell the requester of a decline that isn't their
-   * own. Call it after the app lock is free, and never await it on a request
-   * path. Never rejects.
+   * own. `clicked` is the DM a Slack Decline was clicked in
+   * (bot-request-click.ts): it is redrawn too, once, even when nothing was
+   * kept for the request (a restart, the TTL or the cap forgot it) or its
+   * post looked failed. Call it after the app lock is free, and never await
+   * it on a request path. Never rejects.
    */
   closed(i: {
     requestId: string;
@@ -127,6 +135,7 @@ export interface BotRequestDms {
     botName: string;
     outcome: 'approved' | 'declined';
     byUserId: string;
+    clicked?: PostedDm;
   }): Promise<void>;
   /**
    * A team agent's own bot just went live (its approver's Allow): when an AX
@@ -153,10 +162,12 @@ interface Workspace {
 }
 
 /** One DM posted: its IM and ts, all a redraw needs. */
-interface PostedDm {
+export interface PostedDm {
   channel: string;
   ts: string;
 }
+
+const sameDm = (a: PostedDm, b: PostedDm): boolean => a.channel === b.channel && a.ts === b.ts;
 
 /** One request's DMs, kept for the redraw (D3, D8). */
 interface DmRecord {
@@ -378,7 +389,10 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
         }
         sent += 1;
         // Recorded and checked in one step (D8): before the close's line is
-        // set, the close redraws this DM; after it, this does.
+        // set, the close redraws this DM; after it, this does. Unless the
+        // close has it already: the DM a Decline was clicked in, before this
+        // post's answer came back.
+        if (record.sent.some((posted) => sameDm(posted, dm))) continue;
         record.sent.push(dm);
         if (record.line !== null) await redraw(key, ws.token, subject, dm, record.line);
       }
@@ -386,8 +400,16 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
     log('info', 'slack_bot_request_dms_sent', { requestId: i.requestId, sent, skipped: admins.length - sent });
   }
 
-  /** Every admin DM `record` kept, redrawn with who approved or declined it. */
-  async function redrawAll(key: LogKey, i: Closed, record: DmRecord): Promise<void> {
+  /**
+   * Every admin DM `record` kept, and the one a Decline was clicked in, each
+   * redrawn once with who approved or declined it. With no record (a
+   * restart, the TTL or the cap forgot it), only the clicked one: under the
+   * ask itself (the subject it was drawn with is gone), through the shared
+   * install there is now.
+   */
+  async function redrawAll(key: LogKey, i: Closed, record: DmRecord | undefined): Promise<void> {
+    const { clicked } = i;
+    if (record === undefined && clicked === undefined) return;
     // Who did it, by display name only.
     const name = await personName(d.bus, ctxOf(''), i.byUserId, {
       allowEmail: false,
@@ -395,14 +417,23 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
       onFault: (err) => failed(key, 'closed-by', logCode(err)),
     });
     const line = i.outcome === 'approved' ? COPY.botRequestApproved(name) : COPY.botRequestDeclined(name);
-    // One synchronous step (D8): a DM recorded before this is in `posted`
-    // and redrawn here; one recorded after it, the fan-out redraws itself.
-    record.line = line;
-    const posted = [...record.sent];
-    const { installId, subject } = record;
-    if (posted.length === 0 || installId === null || subject === null) return;
+    let posted: PostedDm[] = clicked === undefined ? [] : [clicked];
+    let subject = '';
+    let installId: string | null = null;
+    if (record !== undefined) {
+      // One synchronous step (D8): a DM recorded before this is in `posted`
+      // and redrawn here; one recorded after it, the fan-out redraws itself.
+      // The clicked DM is this close's, recorded now if the fan-out hasn't
+      // (its post's answer may still be on its way), so the fan-out leaves it.
+      record.line = line;
+      if (clicked !== undefined && !record.sent.some((dm) => sameDm(dm, clicked))) record.sent.push({ ...clicked });
+      posted = [...record.sent];
+      subject = record.subject ?? '';
+      installId = record.installId;
+    }
+    if (posted.length === 0) return;
     // The token of the install the DMs went through, read again: none is kept.
-    const ws = await liveInstall(key, () => d.installs.get(installId));
+    const ws = await liveInstall(key, () => (installId === null ? d.installs.current() : d.installs.get(installId)));
     if (ws === null) return;
     for (const dm of posted) await redraw(key, ws.token, subject, dm, line);
   }
@@ -457,7 +488,7 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
 
   async function close(i: Closed, record: DmRecord | undefined): Promise<void> {
     const key = { requestId: i.requestId };
-    if (record !== undefined) await redrawAll(key, i, record);
+    await redrawAll(key, i, record);
     // The requester hears of a decline unless it was their own. An approve
     // tells them nothing yet: they hear when the bot goes live.
     if (i.outcome !== 'declined' || i.byUserId === i.requesterUserId) return;

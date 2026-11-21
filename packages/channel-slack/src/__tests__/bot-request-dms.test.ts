@@ -514,7 +514,7 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
     /** Ada asks for the support agent's bot, as REQUEST, unless told otherwise. */
     open: (over: Partial<{ requestId: string; agentId: string; requesterUserId: string; botName: string }> = {}) =>
       dms.opened({ requestId: REQUEST, agentId: SUPPORT.id, requesterUserId: ADA.id, botName: BOT_NAME, ...over }),
-    /** REQUEST is approved by Grace, unless told otherwise. */
+    /** REQUEST is approved by Grace, unless told otherwise (`clicked`: the DM a Slack Decline came from). */
     close: (
       over: Partial<{
         requestId: string;
@@ -522,6 +522,7 @@ async function world(o: { shared?: 'active' | 'pending' | 'none'; logger?: 'thro
         botName: string;
         outcome: 'approved' | 'declined';
         byUserId: string;
+        clicked: { channel: string; ts: string };
       }> = {},
     ) =>
       dms.closed({
@@ -1056,6 +1057,96 @@ describe('closed', () => {
     expect(down.slack.calls).toEqual([]);
     expect(down.lines).toEqual([failedLine('close', 'shutting-down')]);
   });
+
+  it('a decline with no record still redraws the clicked DM, once: under the ask, since its subject went with the record', async () => {
+    // A restart since the DMs went out: nothing is kept, but the request is
+    // still open in AX, so Grace's Decline in her DM declined it.
+    const w = await world();
+    const graces = { channel: dmOf(GRACE.slackId), ts: tsOf(7) };
+
+    await w.close({ outcome: 'declined', byUserId: GRACE.id, clicked: graces });
+
+    expect(w.slack.of('updateMessage')).toEqual([
+      {
+        method: 'updateMessage',
+        token: SHARED_TOKEN,
+        args: { ...graces, ...answered('Grace Hopper declined this.', 'A team asked for its own Slack bot.') },
+      },
+    ]);
+    // Then Ada hears, as with any decline that wasn't her own.
+    expect(w.slack.calls.map((c) => c.method)).toEqual(['updateMessage', 'usersLookupByEmail', 'usersInfo', 'postDirect']);
+    expect(w.lines).toEqual([ownerSent('declined', { requestId: REQUEST })]);
+
+    // Past its TTL a record is as good as forgotten: the same, once.
+    const old = await world();
+    old.auth.admins = listed(GRACE, KAY);
+    await old.open();
+    forget(old);
+    old.clock.ms = NOW_MS + BOT_REQUEST_DM_TTL_MS;
+    await old.close({ outcome: 'declined', byUserId: KAY.id, clicked: { channel: dmOf(KAY.slackId), ts: tsOf(2) } });
+    expect(updates(old)).toEqual([
+      {
+        channel: dmOf(KAY.slackId),
+        ts: tsOf(2),
+        ...answered('Kay McNulty declined this.', 'A team asked for its own Slack bot.'),
+      },
+    ]);
+  });
+
+  it('a clicked DM already in the record is redrawn once, with the rest', async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY);
+    await w.open();
+    forget(w);
+
+    await w.close({ outcome: 'declined', byUserId: KAY.id, clicked: { channel: dmOf(KAY.slackId), ts: tsOf(2) } });
+
+    expect(updates(w)).toEqual([
+      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
+      { channel: dmOf(KAY.slackId), ts: tsOf(2), ...answered('Kay McNulty declined this.') },
+    ]);
+  });
+
+  it("a clicked DM the record doesn't list (its post timed out, but Slack delivered it) is redrawn too, under the record's subject", async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY);
+    w.slack.postFailures.set(KAY.slackId, new SlackApiError('chat.postMessage', 'timeout'));
+    await w.open();
+    forget(w);
+    const kays = { channel: dmOf(KAY.slackId), ts: '1763640000.000099' };
+
+    await w.close({ outcome: 'declined', byUserId: KAY.id, clicked: kays });
+
+    expect(updates(w)).toEqual([
+      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
+      { ...kays, ...answered('Kay McNulty declined this.') },
+    ]);
+  });
+
+  it("a close during the fan-out: the clicked DM's own post answering after the close is redrawn once, by the close", async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY);
+    const post = w.slack.hold('postDirect', GRACE.slackId);
+    const opening = w.open();
+    await post.reached;
+    // Slack delivered Grace's DM and she declined it before our post call
+    // came back. The close is redrawing that DM when the post answers.
+    const redrawing = w.slack.hold('updateMessage', dmOf(GRACE.slackId));
+    const closing = w.close({ outcome: 'declined', byUserId: GRACE.id, clicked: { channel: dmOf(GRACE.slackId), ts: tsOf(1) } });
+    await redrawing.reached;
+    post.release();
+    await opening;
+    redrawing.release();
+    await closing;
+
+    expect(updates(w)).toEqual([
+      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Grace Hopper declined this.') },
+    ]);
+    // Nobody else is DMed once the close is known; then Ada hears.
+    expect(dmedSlackIds(w)).toEqual([GRACE.slackId, ADA.slackId]);
+    expect(w.slack.of('postDirect')[1]!.args).toStrictEqual({ user: ADA.slackId, text: DECLINED_FOR_OWNER });
+    expect(w.lines).toEqual([sentLine(1, 1), ownerSent('declined', { requestId: REQUEST })]);
+  }, RACE_TIMEOUT_MS);
 
   it('a failed redraw is logged and the others are still redrawn', async () => {
     const w = await world();

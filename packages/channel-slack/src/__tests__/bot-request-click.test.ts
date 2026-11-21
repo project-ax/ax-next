@@ -100,6 +100,8 @@ const decline = (over: Partial<BotRequestClick> = {}): BotRequestClick => ({
   ...over,
 });
 const BENS = { slackUserId: BEN, channel: DM_BEN };
+/** The decline Ada's click asks for: as her, with the DM she clicked in, so that DM is redrawn. */
+const ADAS_DECLINE = { requestId: REQUEST_ID, actorUserId: 'usr_ada', clicked: { channel: DM_ADA, ts: DM_TS } };
 
 /** A private line to `user` in the DM they clicked in: no thread (the DM's message is a top-level one). */
 function told(user: string, channel: string, text: string) {
@@ -241,9 +243,10 @@ function world(o: WorldOptions = {}) {
   // The domain's own rule (bot-requests.ts): the request is deleted under the
   // app lock, so of two declines only the first finds it.
   const open = new Set([REQUEST_ID]);
-  const declines: Array<{ requestId: string; actorUserId: string }> = [];
+  type Decline = { requestId: string; actorUserId: string; clicked: { channel: string; ts: string } };
+  const declines: Decline[] = [];
   const requests = {
-    async decline(i: { requestId: string; actorUserId: string }): Promise<BotReply> {
+    async decline(i: Decline): Promise<BotReply> {
       declines.push({ ...i });
       trail.push('requests:decline');
       if (o.decline !== undefined) return o.decline();
@@ -265,7 +268,7 @@ describe('the Decline gate: an AX admin declines', () => {
     const w = world();
     await w.onBotRequestClick(SHARED, decline());
 
-    expect(w.declines).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
+    expect(w.declines).toStrictEqual([ADAS_DECLINE]);
     // The redraw of her DM is the answer (bot-request-dms.ts): nothing private.
     expect(w.slack.calls).toStrictEqual([{ method: 'usersInfo', token: BOT_TOKEN, args: { user: ADA } }]);
     expect(w.trail).toEqual(['vault:bot-token', 'slack:usersInfo', 'auth:find-user-by-email', 'auth:get-user', 'requests:decline']);
@@ -284,7 +287,17 @@ describe('the Decline gate: an AX admin declines', () => {
     expect(w.vault).toEqual([{ installId: INSTALL_ID, name: 'bot-token' }]);
     expect(w.findUser.map((f) => f.email)).toEqual([odd]);
     expect(w.getUser.map((g) => [g.userId, g.ctx.userId])).toEqual([['usr_ada', 'usr_ada']]);
-    expect(w.declines).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
+    expect(w.declines).toStrictEqual([ADAS_DECLINE]);
+  });
+
+  it('hands the decline the DM she clicked in, as Slack signed it: its channel and ts, so that DM is redrawn even when nothing was kept for it', async () => {
+    // An older DM of hers, in another IM: whatever the click names, and only that.
+    const w = world();
+    await w.onBotRequestClick(SHARED, decline({ channel: 'D07DMADA002', messageTs: '1763000000.000100' }));
+
+    expect(w.declines).toStrictEqual([
+      { requestId: REQUEST_ID, actorUserId: 'usr_ada', clicked: { channel: 'D07DMADA002', ts: '1763000000.000100' } },
+    ]);
   });
 });
 
@@ -417,7 +430,7 @@ describe('the Decline gate: the request', () => {
     for (const [name, reply, code] of cases) {
       const w = world({ decline: reply });
       await w.onBotRequestClick(SHARED, decline());
-      expect(w.declines, name).toStrictEqual([{ requestId: REQUEST_ID, actorUserId: 'usr_ada' }]);
+      expect(w.declines, name).toStrictEqual([ADAS_DECLINE]);
       expect(w.slack.calls.filter((c) => c.method === 'postEphemeral'), name).toStrictEqual([
         told(ADA, DM_ADA, COPY.promptFailed),
       ]);

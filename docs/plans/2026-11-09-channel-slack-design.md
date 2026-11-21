@@ -652,8 +652,12 @@ own bot, the shared bot DMs the admins, and the requester hears back.
   released, never fails an answer, and logs only codes.
 - **Redraws.** An approve that made the bot, and every decline, redraw each
   DM with who approved or declined it. A cancel, an agent's deletion and a
-  reset don't. After a restart, old DMs aren't redrawn, and a click on one says
-  "This request was already handled."
+  reset don't. After a restart (or past the 200-record or 7-day bound), old DMs
+  aren't redrawn when someone else answers. The request itself is on Postgres,
+  so a Decline clicked in one still declines a request that's open, and the DM
+  it was clicked in is redrawn (under the plain ask, since its subject is
+  gone). On a request that's already closed, the click says "This request was
+  already handled."
 - **The Decline click.** It goes through the interactions route to its own
   gate: bot token, admission, `auth:find-user-by-email`, then `auth:get-user`
   must say admin. Only then does anything read the request, so a non-admin

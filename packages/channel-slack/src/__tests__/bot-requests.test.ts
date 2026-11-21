@@ -309,9 +309,13 @@ function world(o: { publicOrigin?: string; lock?: Mutex; teams?: boolean } = {})
           icon: a.icon === undefined ? ICON : a.icon,
         }),
       ),
-    /** An AX admin declines REQUEST: Grace, unless told otherwise. */
-    decline: async (requestId: string = REQUEST, as: string = GRACE): Promise<Reply> =>
-      keep(await requests.decline({ requestId, actorUserId: as })),
+    /** An AX admin declines REQUEST: Grace, unless told otherwise; `clicked` is the DM a Slack Decline came from. */
+    decline: async (
+      requestId: string = REQUEST,
+      as: string = GRACE,
+      clicked?: { channel: string; ts: string },
+    ): Promise<Reply> =>
+      keep(await requests.decline({ requestId, actorUserId: as, ...(clicked !== undefined ? { clicked } : {}) })),
   };
 }
 
@@ -1465,6 +1469,30 @@ describe('decline', () => {
       await expect(faulted.decline(), step).rejects.toThrow();
       expect(faulted.dms.calls, step).toEqual([]);
     }
+  });
+
+  it("a Slack Decline's clicked DM goes on to the DMs' close, so that DM is redrawn even with nothing kept for it; Admin › Slack's decline names none", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: 'Sales Desk' });
+    const clicked = { channel: 'D07KAYDM001', ts: '1763640000.000007' };
+
+    expect(await w.decline(REQUEST, KAY, clicked)).toEqual({ status: 200, body: {} });
+    expect(await w.decline(SALES_REQUEST, GRACE)).toEqual({ status: 200, body: {} });
+
+    expect(w.dms.calls).toStrictEqual([
+      {
+        method: 'closed',
+        input: { requestId: REQUEST, requesterUserId: ADA, botName: BOT_NAME, outcome: 'declined', byUserId: KAY, clicked },
+        lockHeld: false,
+      },
+      {
+        method: 'closed',
+        input: { requestId: SALES_REQUEST, requesterUserId: SAM, botName: 'Sales Desk', outcome: 'declined', byUserId: GRACE },
+        lockHeld: false,
+      },
+    ]);
   });
 
   it('waits for an approve in flight, then finds the request gone: 404 not-found, and the bot stays', async () => {

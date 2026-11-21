@@ -83,7 +83,9 @@ export const BOT_REQUEST_FANOUT_WINDOW_MS = 600_000;
 /**
  * The most requests whose DMs are remembered for their redraw (each DM's IM
  * and ts, in memory). Past it the oldest is forgotten: its DMs keep their
- * buttons, and a click on one says the request was already handled.
+ * buttons when someone else answers. A Decline clicked in one still declines
+ * a request that is open, and redraws that DM; on one already closed, it says
+ * the request was already handled.
  */
 export const BOT_REQUEST_DM_RECORDS_MAX = 200;
 /** How long a request's DMs are remembered for their redraw: 7 days. */

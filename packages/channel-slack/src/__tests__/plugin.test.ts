@@ -2833,6 +2833,92 @@ describe('@ax/channel-slack plugin', () => {
     });
   });
 
+  it("after a restart, her Decline in the DM the old process sent still declines the open request and redraws that DM, through the wiring (TASK-1170)", async () => {
+    const slack = fakeSlackFetch();
+    const seed = (s: Services): void => {
+      s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+      s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    };
+    const first = await boot({ fetchImpl: slack.fetchImpl }, { seed });
+    await insertActiveInstall();
+
+    // Meg asks; the shared bot DMs Ada.
+    const askPath = `/settings/slack/${TEAM_AGENT.id}/bot-request`;
+    expect(
+      await first.call(
+        'POST',
+        '/settings/slack/:agentId/bot-request',
+        request('POST', askPath, {
+          as: MEG.id,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify({ botName: 'Support Helper' })),
+        }),
+      ),
+    ).toEqual({ status: 200, body: {}, done: true });
+    await vi.waitFor(() => expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const dm = slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    const blocks = dm.body['blocks'] as Array<Record<string, unknown>>;
+    const decline = (blocks.find((b) => b['type'] === 'actions')!['elements'] as Array<Record<string, unknown>>)[1]!;
+
+    // A restart: where that DM went is gone with the old process. The request isn't: it's on Postgres.
+    await first.harness.close({ onError: () => {} });
+    const second = await boot({ fetchImpl: slack.fetchImpl }, { seed });
+
+    // Ada clicks Decline in that DM, signed as Slack signs a click.
+    const payload = {
+      type: 'block_actions',
+      api_app_id: APP_ID,
+      team: { id: TEAM_ID },
+      user: { id: ADA_SLACK },
+      channel: { id: ADA_DM },
+      container: { type: 'message', message_ts: POSTED_TS, channel_id: ADA_DM },
+      message: { ts: POSTED_TS },
+      actions: [{ type: 'button', action_id: decline['action_id'], value: decline['value'] }],
+    };
+    const clickBody = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString());
+    const mark = slack.calls.length;
+    expect(
+      await second.call(
+        'POST',
+        '/slack/interactions/:installId',
+        request('POST', `/slack/interactions/${INSTALL_ID}`, {
+          params: { installId: INSTALL_ID },
+          body: clickBody,
+          headers: { ...signed(clickBody), 'content-type': 'application/x-www-form-urlencoded' },
+        }),
+      ),
+    ).toEqual({ status: 200, body: undefined, done: true });
+
+    // The DM she clicked is redrawn naming her where the buttons were: under
+    // the plain ask, since the subject it was drawn with went with the old
+    // process. Meg hears too, and Ada is told nothing privately.
+    await vi.waitFor(() => expect(slack.calls.slice(mark).filter((c) => c.method === 'chat.update')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    await vi.waitFor(() => expect(slack.calls.slice(mark).filter((c) => c.method === 'chat.postMessage')).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const after = slack.calls.slice(mark);
+    expect(after.filter((c) => c.method === 'chat.update').map((c) => c.body)).toEqual([
+      {
+        channel: ADA_DM,
+        ts: POSTED_TS,
+        text: 'Ada Admin declined this.',
+        blocks: [
+          { type: 'section', text: { type: 'plain_text', text: COPY.botRequestAsked, emoji: false } },
+          { type: 'context', elements: [{ type: 'mrkdwn', text: 'Ada Admin declined this.' }] },
+        ],
+      },
+    ]);
+    expect(after.find((c) => c.method === 'chat.postMessage')!.body['channel']).toBe(MEG_SLACK);
+    expect(after.map((c) => c.method)).not.toContain('chat.postEphemeral');
+    expect(
+      await second.call('GET', '/admin/slack/bot-requests', request('GET', '/admin/slack/bot-requests', { as: ADMIN.id })),
+    ).toEqual({ status: 200, body: { requests: [], truncated: false, configTokenStored: false }, done: true });
+  });
+
   it("an AX admin's Allow on the bot she approved for a team admin tells that team admin it is live, from the shared bot, through the wiring (TASK-1170)", async () => {
     const slack = allowSlackFetch();
     const { s, call } = await boot({ fetchImpl: slack.fetchImpl });
