@@ -1266,9 +1266,12 @@ connectors. The protections are:
   feed memory until the binding goes. After that, the veto refuses the
   channel's threads.
 - **A spurious `channel_not_found` disconnects.** If Slack wrongly says a public
-  channel is gone, we disconnect it. The shared app then needs a team admin to
-  connect it again, and that new connection starts with memory on, like any
-  Disconnect plus Connect. A bot binds it again at its next mention, with the
+  channel is gone, we disconnect it.
+- **Connected again on the shared app, a channel starts with memory on.** That
+  is the cost of every disconnect this check makes, not only a spurious one:
+  once the channel is public again, a team admin must connect it again, and
+  that new connection starts with memory on, like any Disconnect plus Connect,
+  whatever the team had set. A bot binds it again at its next mention, with the
   team's switch.
 - **A bot's removal leaves the agent's shared binding.** The shared bot steps
   aside before its own check, so settings may list the channel as waiting for an
