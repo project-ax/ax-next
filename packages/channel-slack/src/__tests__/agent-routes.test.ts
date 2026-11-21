@@ -1,15 +1,16 @@
 import { HookBus, PluginError, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { createAgentSlackRoutes } from '../agent-routes.js';
+import type { BotChanges } from '../bot-changes.js';
 import type { BotRequests } from '../bot-requests.js';
 import type { AgentSlackBot, BotReply, Bots } from '../bots.js';
 import type { ChannelDeps } from '../channels.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
-import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES } from '../limits.js';
+import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, SLACK_ICON_MAX_BYTES } from '../limits.js';
 import { createSlackApi } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
-import { pngBase64 } from './fake-png.js';
+import { pngBase64, pngHeader } from './fake-png.js';
 import { fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
 
@@ -25,7 +26,9 @@ import { memoryChannelStore } from './memory-channel-store.js';
   behind the same gate: its routes are checked here for who gets through and
   what the domain is handed, with a stub domain (bots.test.ts tests the
   domain itself). So does asking an AX admin for it (TASK-1169), with its own
-  stub (bot-requests.test.ts tests that domain).
+  stub (bot-requests.test.ts tests that domain), and so do renaming the live
+  bot and changing its picture (TASK-1171; bot-changes.test.ts tests that
+  domain).
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -276,6 +279,8 @@ type Suffix =
   | '/bot/install-url'
   | '/bot/cancel'
   | '/bot/disconnect'
+  | '/bot/rename'
+  | '/bot/icon'
   | '/bot-request'
   | '/bot-request/cancel';
 
@@ -290,6 +295,8 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   { method: 'POST', suffix: '/bot/install-url' },
   { method: 'POST', suffix: '/bot/cancel' },
   { method: 'POST', suffix: '/bot/disconnect', body: { installId: OWN_BOT.installId } },
+  { method: 'POST', suffix: '/bot/rename', body: { botName: 'Support Helper' } },
+  { method: 'POST', suffix: '/bot/icon', body: { iconPng: pngBase64(512, 512) } },
   // Asking an AX admin for the bot instead (TASK-1169).
   { method: 'POST', suffix: '/bot-request', body: { botName: 'Ada Bot' } },
   { method: 'POST', suffix: '/bot-request/cancel', body: {} },
@@ -305,13 +312,14 @@ const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 // ── The bot domain, as a stub ───────────────────────────────────────────────
 
 /**
- * bots.ts behind the routes, as a stub: each call is recorded (its ctx as the
- * person it acts for), and answers what the test set. `fail` makes every call
- * throw. The routes' own job is who gets through, and what they hand on.
+ * bots.ts and bot-changes.ts behind the routes, as stubs: each call is
+ * recorded in the one `calls` list (its ctx as the person it acts for), and
+ * answers what the test set. `fail` makes every call throw. The routes' own
+ * job is who gets through, and what they hand on.
  */
 function stubBots() {
   const calls: Array<{
-    method: 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status';
+    method: 'request' | 'installUrl' | 'cancel' | 'disconnect' | 'status' | 'rename' | 'setPicture';
     input: Record<string, unknown>;
   }> = [];
   const answers: {
@@ -320,12 +328,16 @@ function stubBots() {
     cancel: BotReply;
     disconnect: BotReply;
     status: AgentSlackBot;
+    rename: BotReply;
+    setPicture: BotReply;
   } = {
     request: { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=first', iconSet: true } },
     installUrl: { status: 200, body: { installUrl: 'https://slack.com/oauth/v2/authorize?state=again' } },
     cancel: { status: 200, body: { appDeleted: true } },
     disconnect: { status: 200, body: { appDeleted: true } },
     status: NO_BOT,
+    rename: { status: 200, body: { botName: 'Quill Desk' } },
+    setPicture: { status: 200, body: {} },
   };
   const state: { fail: unknown } = { fail: undefined };
   const enter = (method: (typeof calls)[number]['method'], input: object): void => {
@@ -355,7 +367,18 @@ function stubBots() {
       return answers.status;
     },
   };
-  return { bots, calls, answers, state };
+  // Into the same `calls`, so every "the domain was never asked" covers these too.
+  const changes: BotChanges = {
+    rename: async (i) => {
+      enter('rename', i);
+      return answers.rename;
+    },
+    setPicture: async (i) => {
+      enter('setPicture', i);
+      return answers.setPicture;
+    },
+  };
+  return { bots, changes, calls, answers, state };
 }
 
 /**
@@ -463,7 +486,7 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error; getUs
   };
   const bots = stubBots();
   const requests = stubRequests();
-  const routes = createAgentSlackRoutes(deps, bots.bots, requests.requests);
+  const routes = createAgentSlackRoutes(deps, bots.bots, requests.requests, bots.changes);
 
   async function call(
     method: 'GET' | 'POST',
@@ -589,6 +612,19 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
+      // Its live bot's name and picture (TASK-1171): a picture's body is the PNG itself, so it has Connect's cap.
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/rename',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/icon',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES,
+      },
       // Asking an AX admin for it (TASK-1169): a name and nothing else, so the plain cap.
       {
         method: 'POST',
@@ -711,7 +747,16 @@ describe('rights', () => {
     const oversized = Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, pad: 'x'.repeat(ADMIN_BODY_MAX_BYTES) }));
     const arrayBody = JSON.stringify([SUPPORT_CH]);
     const extraKey = JSON.stringify({ channelId: SUPPORT_CH, agentId: SALES.id });
-    for (const suffix of ['/connect', '/disconnect', '/remember', '/bot', '/bot/disconnect', '/bot-request'] as const) {
+    for (const suffix of [
+      '/connect',
+      '/disconnect',
+      '/remember',
+      '/bot',
+      '/bot/disconnect',
+      '/bot/rename',
+      '/bot/icon',
+      '/bot-request',
+    ] as const) {
       for (const body of [garbage, oversized, arrayBody, extraKey]) {
         const label = `${suffix} ${typeof body === 'string' ? body : 'oversized'}`;
         // Not a member of the team (or a workspace admin outside it): as unknown as a missing agent.
@@ -1555,6 +1600,185 @@ describe('the bot routes', () => {
       body: { state: 'no-workspace', canManage: false, bot: NO_BOT },
     });
     expect(w.bots.calls).toHaveLength(3);
+  });
+});
+
+// ── The live bot's name and picture (TASK-1171) ─────────────────────────────
+
+describe("the agent's own bot's name and picture (TASK-1171)", () => {
+  /** One POST to the support agent, status and body only. A string or a Buffer goes as it is, anything else as JSON. */
+  const post = async (
+    w: ReturnType<typeof world>,
+    suffix: '/bot/rename' | '/bot/icon',
+    body: unknown,
+    as: TestUser = ADA,
+  ): Promise<{ status: number; body: unknown }> => {
+    const a = await w.call('POST', suffix, SUPPORT.id, as, body);
+    return { status: a.status, body: a.body };
+  };
+  /** A body of exactly `bytes` bytes: `{"<key>":"xxx…"}`. */
+  const sized = (key: string, bytes: number, fill: string): Buffer => {
+    const head = `{"${key}":"`;
+    const out = Buffer.from(`${head}${fill.repeat(bytes - head.length - 2)}"}`);
+    expect(out.length).toBe(bytes);
+    return out;
+  };
+
+  it("a team admin's rename reaches the domain with the tidied name and nothing else, and its answer is the route's", async () => {
+    const w = world();
+    expect(await post(w, '/bot/rename', { botName: '  Quill   Desk ' }, GRACE)).toEqual({
+      status: 200,
+      body: { botName: 'Quill Desk' },
+    });
+    // The name as checkBotName tidied it, for the agent in the path: no person, no ctx.
+    // The domain uses the bot's approver's token, whoever asked.
+    expect(w.bots.calls).toEqual([{ method: 'rename', input: { agentId: SUPPORT.id, botName: 'Quill Desk' } }]);
+    // The domain's answer is the answer, whatever it is.
+    for (const answer of [
+      { status: 409, body: { error: 'bot-name-taken' } },
+      { status: 409, body: { error: 'not-live' } },
+      { status: 502, body: { error: 'slack-config-token' } },
+      { status: 500, body: { error: 'internal' } },
+    ]) {
+      w.bots.answers.rename = answer;
+      expect(await post(w, '/bot/rename', { botName: 'Quill Desk' }), JSON.stringify(answer)).toEqual(answer);
+    }
+    expect(w.bots.calls).toHaveLength(5);
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('a name the rules refuse is 400 invalid-bot-name with its reason, before the domain', async () => {
+    const w = world();
+    const cases: Array<[string, unknown, string]> = [
+      ['an empty name', { botName: '' }, 'empty'],
+      ['a blank name', { botName: '   ' }, 'empty'],
+      ['no name', {}, 'empty'],
+      ['a null name', { botName: null }, 'empty'],
+      ['a name past 35 characters', { botName: 'x'.repeat(36) }, 'too-long'],
+      ['a name Slack refuses', { botName: 'Café' }, 'bad-characters'],
+      ['a name that is not text', { botName: 42 }, 'bad-characters'],
+      ['a reserved name', { botName: 'here' }, 'reserved'],
+    ];
+    for (const [what, body, reason] of cases) {
+      expect(await post(w, '/bot/rename', body), what).toEqual({
+        status: 400,
+        body: { error: 'invalid-bot-name', reason },
+      });
+    }
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+  });
+
+  it('a rename body must be an object holding botName alone, within the cap every other write has', async () => {
+    const w = world();
+    const cases: Array<[string, unknown]> = [
+      ['an unknown key, even one naming another agent', { botName: 'Quill Desk', agentId: SALES.id }],
+      ['a picture beside the name', { botName: 'Quill Desk', iconPng: pngBase64(512, 512) }],
+      ['an array', []],
+      ['null', null],
+      ['a number', 42],
+      ['not JSON', 'garbage'],
+    ];
+    for (const [what, body] of cases) {
+      expect(await post(w, '/bot/rename', body), what).toEqual({ status: 400, body: { error: 'invalid-body' } });
+    }
+    // The backstop for http-server's cap: one byte past it is a 413; at it, the body is read.
+    expect(await post(w, '/bot/rename', sized('botName', ADMIN_BODY_MAX_BYTES + 1, 'x'))).toEqual({
+      status: 413,
+      body: { error: 'body-too-large' },
+    });
+    expect(await post(w, '/bot/rename', sized('botName', ADMIN_BODY_MAX_BYTES, 'x'))).toEqual({
+      status: 400,
+      body: { error: 'invalid-bot-name', reason: 'too-long' },
+    });
+    expect(w.bots.calls).toEqual([]);
+  });
+
+  it("a team admin's picture reaches the domain as the PNG's bytes, and its answer is the route's", async () => {
+    const w = world();
+    expect(await post(w, '/bot/icon', { iconPng: pngBase64(512, 512) }, GRACE)).toEqual({ status: 200, body: {} });
+    // The bytes icon.ts checked, for the agent in the path: no person, no ctx.
+    expect(w.bots.calls).toEqual([{ method: 'setPicture', input: { agentId: SUPPORT.id, png: pngHeader(512, 512) } }]);
+    expect((w.bots.calls[0]?.input['png'] as Buffer).equals(pngHeader(512, 512))).toBe(true);
+    // The largest picture Slack takes fits under the route's cap.
+    expect(await post(w, '/bot/icon', { iconPng: pngBase64(2000, 2000, SLACK_ICON_MAX_BYTES) })).toEqual({
+      status: 200,
+      body: {},
+    });
+    expect((w.bots.calls[1]?.input['png'] as Buffer).equals(pngHeader(2000, 2000, SLACK_ICON_MAX_BYTES))).toBe(true);
+    for (const answer of [
+      { status: 409, body: { error: 'not-live' } },
+      { status: 502, body: { error: 'slack-app-gone' } },
+      { status: 500, body: { error: 'internal' } },
+    ]) {
+      w.bots.answers.setPicture = answer;
+      expect(await post(w, '/bot/icon', { iconPng: pngBase64(512, 512) }), JSON.stringify(answer)).toEqual(answer);
+    }
+    expect(w.slack.sent).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it("a picture that isn't one is 400 invalid-icon with icon.ts's reason, before the domain", async () => {
+    const w = world();
+    const gif = Buffer.concat([Buffer.from('GIF89a', 'latin1'), Buffer.alloc(42)]).toString('base64');
+    const cases: Array<[string, unknown, string]> = [
+      ['not base64', { iconPng: 'not base64!' }, 'icon-not-base64'],
+      ['a data URL, not bare base64', { iconPng: `data:image/png;base64,${pngBase64(512, 512)}` }, 'icon-not-base64'],
+      ['no picture', {}, 'icon-not-base64'],
+      ['a null picture', { iconPng: null }, 'icon-not-base64'],
+      ['a picture that is not text', { iconPng: 42 }, 'icon-not-base64'],
+      ['a GIF', { iconPng: gif }, 'icon-not-png'],
+      ['a PNG past 1 MiB', { iconPng: pngBase64(512, 512, SLACK_ICON_MAX_BYTES + 1) }, 'icon-too-large'],
+      ['a PNG too small', { iconPng: pngBase64(511, 511) }, 'icon-bad-size'],
+      ['a PNG that is not square', { iconPng: pngBase64(512, 640) }, 'icon-bad-size'],
+    ];
+    for (const [what, body, reason] of cases) {
+      expect(await post(w, '/bot/icon', body), what).toEqual({ status: 400, body: { error: 'invalid-icon', reason } });
+    }
+    expect(w.bots.calls).toEqual([]);
+    expect(w.slack.sent).toEqual([]);
+  });
+
+  it("a picture body must be an object holding iconPng alone, within Connect's cap", async () => {
+    const w = world();
+    const png = pngBase64(512, 512);
+    const cases: Array<[string, unknown]> = [
+      ['an unknown key, even one naming another agent', { iconPng: png, agentId: SALES.id }],
+      ['a name beside the picture', { iconPng: png, botName: 'Quill Desk' }],
+      ['an array', [png]],
+      ['null', null],
+      ['not JSON', 'garbage'],
+    ];
+    for (const [what, body] of cases) {
+      expect(await post(w, '/bot/icon', body), what).toEqual({ status: 400, body: { error: 'invalid-body' } });
+    }
+    // The backstop for http-server's cap: one byte past Connect's cap is a 413; at it, the body is read.
+    expect(await post(w, '/bot/icon', sized('iconPng', ADMIN_CONNECT_BODY_MAX_BYTES + 1, 'A'))).toEqual({
+      status: 413,
+      body: { error: 'body-too-large' },
+    });
+    expect(await post(w, '/bot/icon', sized('iconPng', ADMIN_CONNECT_BODY_MAX_BYTES, 'A'))).toEqual({
+      status: 400,
+      body: { error: 'invalid-icon', reason: 'icon-not-base64' },
+    });
+    expect(w.bots.calls).toEqual([]);
+  });
+
+  it('a fault in the domain is a 500, logged by its code and the route alone', async () => {
+    const w = world();
+    w.bots.state.fail = Object.assign(new Error(`vault down holding ${REFRESH}`), { code: 'ECONNRESET' });
+    expect(await post(w, '/bot/rename', { botName: 'Quill Desk' })).toEqual({ status: 500, body: { error: 'internal' } });
+    expect(await post(w, '/bot/icon', { iconPng: pngBase64(512, 512) })).toEqual({
+      status: 500,
+      body: { error: 'internal' },
+    });
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-rename', code: 'ECONNRESET' } },
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'bot-icon', code: 'ECONNRESET' } },
+    ]);
+    const logged = JSON.stringify(w.lines);
+    for (const text of [REFRESH, 'vault down', 'Quill Desk', SUPPORT.id, ADA.id]) expect(logged).not.toContain(text);
   });
 });
 

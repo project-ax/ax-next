@@ -31,6 +31,7 @@ import {
   EVENTS_MAX_BODY_BYTES,
   INTERACTIONS_MAX_BODY_BYTES,
 } from '../limits.js';
+import { botUrls, buildBotManifest } from '../manifest.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import {
   PLUGIN_NAME,
@@ -42,6 +43,7 @@ import { configTokenRef, secretRef } from '../secrets.js';
 import { createInstallStore } from '../store.js';
 import { slackTurnNote } from '../turn-note.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
+import { pngBase64, pngHeader } from './fake-png.js';
 import { fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 
 /*
@@ -737,7 +739,7 @@ describe('@ax/channel-slack plugin', () => {
     }
   });
 
-  it('init registers the twenty-eight routes, and only the events, commands and interactions routes bypass CSRF', async () => {
+  it('init registers the thirty routes, and only the events, commands and interactions routes bypass CSRF', async () => {
     const { s } = await boot();
     const shapes = s.routes.map((r) => ({
       method: r.method,
@@ -810,6 +812,14 @@ describe('@ax/channel-slack plugin', () => {
         path: '/settings/slack/:agentId/bot/disconnect',
         bypassCsrf: false,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
+      // Its live bot's name and picture (TASK-1171): a picture's body is the PNG, so it has Connect's cap.
+      { method: 'POST', path: '/settings/slack/:agentId/bot/rename', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/bot/icon',
+        bypassCsrf: false,
+        maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES,
       },
       // Asking an AX admin for it instead (TASK-1169), and taking the ask back.
       { method: 'POST', path: '/settings/slack/:agentId/bot-request', bypassCsrf: false, maxBodyBytes: ADMIN_BODY_MAX_BYTES },
@@ -2181,7 +2191,7 @@ describe('@ax/channel-slack plugin', () => {
         };
       },
     });
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(30);
     expect(atFirstRoute?.get(personRef)).toBe(old);
     expect(atFirstRoute?.has(oldRef)).toBe(false);
   });
@@ -2203,7 +2213,7 @@ describe('@ax/channel-slack plugin', () => {
         );
       },
     });
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(30);
     // Nothing stored and nothing deleted: the next boot tries again.
     expect(s.vault.get(oldRef)).toBe(old);
     expect(s.vault.has(personRef)).toBe(false);
@@ -2232,7 +2242,7 @@ describe('@ax/channel-slack plugin', () => {
         s.vault.set(oldRef, old);
       },
     });
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(30);
     // Not even read: the old row stays the install's, for the host's next boot.
     expect(s.credentialGets).toEqual([]);
     expect(s.credentialSets).toBe(0);
@@ -2407,6 +2417,120 @@ describe('@ax/channel-slack plugin', () => {
     // Both apps' rows, the bot's secrets and both people's tokens are gone.
     expect(await installCount()).toBe(0);
     expect([...s.vault.keys()]).toEqual([]);
+  });
+
+  it("a team agent's live bot is renamed, and given a new picture, through the wiring: the rename waits for the one app lock an Admin › Slack step holds, and both use the bot's approver's token, never the asker's (TASK-1171)", async () => {
+    const adas = fakeConfigRefreshToken('BOTCHANGEADASECRET');
+    const graces = fakeConfigRefreshToken('BOTCHANGEGRACESECRET');
+    const botToken = fakeBotToken('BOTCHANGEBOTSECRET');
+    const botUserId = 'U07HELPERBOT';
+    const calls: Array<{ method: string; auth: string | null; body: Record<string, string>; file?: Buffer }> = [];
+    let rotates = 0;
+    const sharedUpdate = deferred();
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = String(input).replace('https://slack.com/api/', '');
+      let body: Record<string, string>;
+      let file: Buffer | undefined;
+      if (init?.body instanceof FormData) {
+        // apps.icon.set: the app id beside the PNG.
+        body = { app_id: String(init.body.get('app_id')) };
+        const part = init.body.get('file');
+        if (part instanceof Blob) file = Buffer.from(await part.arrayBuffer());
+      } else {
+        body = Object.fromEntries(new URLSearchParams(typeof init?.body === 'string' ? init.body : ''));
+      }
+      calls.push({ method, auth: new Headers(init?.headers).get('authorization'), body, ...(file !== undefined ? { file } : {}) });
+      let answer: Record<string, unknown> = { ok: true };
+      if (method === 'tooling.tokens.rotate') {
+        rotates += 1;
+        answer = {
+          ok: true,
+          token: fakeConfigAccessToken(`BOTCHANGEACCESS${rotates}`),
+          refresh_token: fakeConfigRefreshToken(`BOTCHANGEREFRESH${rotates}`),
+          exp: 4_102_444_800,
+        };
+      }
+      // Slack is slow to rename the shared app, so Ada's Rename holds the app lock until the test lets it go.
+      if (method === 'apps.manifest.update' && body['app_id'] === APP_ID) await sharedUpdate.promise;
+      if (method === 'users.info') answer = { ok: true, user: { id: botUserId, name: 'quilldesk' } };
+      return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { s, call } = await boot({ fetchImpl });
+    // Ada's shared app, and Grace's live bot for the team agent, each made with its person's own token.
+    await insertActiveInstall();
+    const store = createInstallStore(probe);
+    await store.insertPendingBot({
+      installId: BOT_INSTALL_ID,
+      appId: BOT_APP_ID,
+      clientId: '7512345678901.7522222222222',
+      botName: 'support-helper',
+      connectedByUserId: GRACE,
+      agentId: TEAM_AGENT.id,
+      requestedByUserId: GRACE,
+    });
+    await store.activate(BOT_INSTALL_ID, { teamId: TEAM_ID, teamName: 'Canopy Works', botUserId, installedAt: new Date(NOW_MS) });
+    s.vault.set(configTokenRef(ADMIN.id), adas);
+    s.vault.set(configTokenRef(GRACE), graces);
+    s.vault.set(secretRef(BOT_INSTALL_ID, 'bot-token'), botToken);
+    // Ada asks each time: a team admin of the agent's team, and not the bot's approver.
+    const asAda = (suffix: '/bot/rename' | '/bot/icon', body: Record<string, unknown>) =>
+      call(
+        'POST',
+        `/settings/slack/:agentId${suffix}`,
+        request('POST', `/settings/slack/${TEAM_AGENT.id}${suffix}`, {
+          as: ADMIN.id,
+          params: { agentId: TEAM_AGENT.id },
+          body: Buffer.from(JSON.stringify(body)),
+        }),
+      );
+
+    const sharedRename = call(
+      'POST',
+      '/admin/slack/rename',
+      request('POST', '/admin/slack/rename', { as: ADMIN.id, body: Buffer.from(JSON.stringify({ botName: 'Canopy Desk' })) }),
+    );
+    await vi.waitFor(() => expect(calls.map((c) => c.method)).toContain('apps.manifest.update'));
+    const botRename = asAda('/bot/rename', { botName: 'Quill Desk' });
+    // The bot's rename waits for the lock. The pause only gives a rename that
+    // didn't wait time to show it: with the one lock, nothing below depends on how long it is.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(s.credentialGets).not.toContain(configTokenRef(GRACE));
+    expect(calls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.update']);
+
+    sharedUpdate.release();
+    expect(await sharedRename).toMatchObject({ status: 200, body: { botName: 'Canopy Desk' } });
+    expect(await botRename).toEqual({ status: 200, body: { botName: 'Quill Desk' }, done: true });
+    // Then Grace's own token is rotated, and the access token minted with it
+    // sends the bot's whole manifest; the bot's own token asks about its user.
+    expect(calls.map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id'] ?? c.body['user']])).toEqual([
+      ['tooling.tokens.rotate', adas],
+      ['apps.manifest.update', APP_ID],
+      ['tooling.tokens.rotate', graces],
+      ['apps.manifest.update', BOT_APP_ID],
+      ['users.info', botUserId],
+    ]);
+    expect(calls[3]!.auth).toBe(`Bearer ${fakeConfigAccessToken('BOTCHANGEACCESS2')}`);
+    expect(JSON.parse(calls[3]!.body['manifest']!)).toEqual(
+      buildBotManifest('Quill Desk', botUrls(HTTPS_ORIGIN, BOT_INSTALL_ID)),
+    );
+    expect(calls[4]!.auth).toBe(`Bearer ${botToken}`);
+    expect(await store.get(BOT_INSTALL_ID)).toMatchObject({ botName: 'Quill Desk', botHandle: 'quilldesk' });
+    // Each person holds their own successor: Ada's from the shared Rename, Grace's from the bot's.
+    expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(fakeConfigRefreshToken('BOTCHANGEREFRESH1'));
+    expect(s.vault.get(configTokenRef(GRACE))).toBe(fakeConfigRefreshToken('BOTCHANGEREFRESH2'));
+
+    // The picture: Grace's token once more, then the PNG to Slack and nothing else.
+    const sent = calls.length;
+    expect(await asAda('/bot/icon', { iconPng: pngBase64(512, 512) })).toEqual({ status: 200, body: {}, done: true });
+    expect(calls.slice(sent).map((c) => [c.method, c.body['refresh_token'] ?? c.body['app_id']])).toEqual([
+      ['tooling.tokens.rotate', fakeConfigRefreshToken('BOTCHANGEREFRESH2')],
+      ['apps.icon.set', BOT_APP_ID],
+    ]);
+    expect(calls.at(-1)!.auth).toBe(`Bearer ${fakeConfigAccessToken('BOTCHANGEACCESS3')}`);
+    expect(calls.at(-1)!.file?.equals(pngHeader(512, 512))).toBe(true);
+    expect(s.vault.get(configTokenRef(GRACE))).toBe(fakeConfigRefreshToken('BOTCHANGEREFRESH3'));
+    expect(s.vault.get(configTokenRef(ADMIN.id))).toBe(fakeConfigRefreshToken('BOTCHANGEREFRESH1'));
+    expect(await store.get(BOT_INSTALL_ID)).toMatchObject({ botName: 'Quill Desk', botHandle: 'quilldesk' });
   });
 
   it("after a team admin disconnects the agent's own bot, a mention of the shared bot in the agent's channel runs a turn again; the bot's app, row, binding, secrets and its approver's token go, the shared binding stays (TASK-1172)", async () => {
@@ -2644,7 +2768,7 @@ describe('@ax/channel-slack plugin', () => {
   it('shutdown unregisters every route, the reset and chat subscribers, and is safe to call twice', async () => {
     const { s, plugin, harness } = await boot();
     await plugin.shutdown?.();
-    expect(s.routes).toHaveLength(28);
+    expect(s.routes).toHaveLength(30);
     for (const r of s.routes) expect(r.unregister, `${r.method} ${r.path}`).toHaveBeenCalledTimes(1);
     for (const hook of TURN_EVENT_HOOKS) expect(harness.bus.unsubscribe(hook, TURN_EVENTS_KEY), hook).toBe(0);
     expect(harness.bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
