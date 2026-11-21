@@ -1,6 +1,6 @@
 /**
  * The sentences about a pasted Slack configuration token and a bot's name that
- * Admin › Slack (slack-admin.ts) and an agent's "Its own Slack bot" section
+ * Admin › Slack (slack-admin.ts) and an agent's Slack card
  * (agent-slack.ts) both show, so the two surfaces word a refused token and a
  * refused name the same way (TASK-1167).
  */

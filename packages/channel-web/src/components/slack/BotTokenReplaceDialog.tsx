@@ -1,7 +1,7 @@
 /**
  * "Replace your Slack token": the dialog where the person who set up a team
  * bot pastes a new configuration token (TASK-1173). Agent settings (the
- * "Slack token" row in `AgentSlackBotChanges`) and Admin › Slack open it. Each
+ * Reconnect row on the Slack card, `ReconnectDialog` in `AgentSlackBotChanges`) and Admin › Slack open it. Each
  * passes its own request and its own words for a refusal, so the dialog never
  * knows which route it posts to. Only the bot's approver gets it: the surfaces
  * show it to nobody else, and the server refuses anyone else.

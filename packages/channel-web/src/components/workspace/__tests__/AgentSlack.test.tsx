@@ -11,9 +11,13 @@ import {
   AgentSlackError,
   cancelSlackBot,
   cancelSlackBotRequest,
+  claimAgentSlackBot,
   disconnectSlackBot,
   fetchAgentSlack,
+  renameAgentSlackBot,
+  replaceAgentSlackBotToken,
   requestSlackBot,
+  setAgentSlackBotPicture,
   setSlackBotChannelRemember,
   type AgentSlackBot,
   type AgentSlackRead,
@@ -30,9 +34,13 @@ vi.mock('@/lib/agent-slack', async (original) => ({
   cancelSlackBotRequest: vi.fn(),
   disconnectSlackBot: vi.fn(),
   requestSlackBot: vi.fn(),
+  claimAgentSlackBot: vi.fn(),
+  renameAgentSlackBot: vi.fn(),
+  setAgentSlackBotPicture: vi.fn(),
+  replaceAgentSlackBotToken: vi.fn(),
 }));
 // jsdom has no canvas to draw the bot's picture on.
-vi.mock('@/lib/slack-avatar', () => ({ renderSlackAvatar: vi.fn() }));
+vi.mock('@/lib/slack-avatar', () => ({ renderSlackAvatar: vi.fn(), drawPickedSlackAvatar: vi.fn() }));
 
 const fetchStatus = vi.mocked(fetchAgentSlack);
 const rememberBot = vi.mocked(setSlackBotChannelRemember);
@@ -40,8 +48,9 @@ const cancel = vi.mocked(cancelSlackBot);
 const disconnectBot = vi.mocked(disconnectSlackBot);
 const request = vi.mocked(requestSlackBot);
 const avatar = vi.mocked(renderSlackAvatar);
+const rename = vi.mocked(renameAgentSlackBot);
 
-/** The bot's install id, as a manager's status carries it: the key its Disconnect takes. */
+/** The bot's install id, as a manager's status carries it: the key its Remove from Slack takes. */
 const BOT_ID = 'Hb7Kq2Lw8vNc5Xr1Bm7KdA';
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
 const LIVE_BOT: AgentSlackBot = {
@@ -79,6 +88,14 @@ async function openMenu(name: string) {
   return screen.findByRole('menu');
 }
 
+/** Pick an item from a ⋯. It runs once the menu has closed, so the caller awaits what it does. */
+async function choose(menu: string, item: string) {
+  fireEvent.click(within(await openMenu(menu)).getByRole('menuitem', { name: item }));
+}
+
+/** The live card's title, once it is drawn. */
+const liveTitle = (who: string) => screen.findByRole('heading', { level: 3, name: `${who} is in Slack` });
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -97,10 +114,10 @@ describe('the states', () => {
     expect(screen.queryByRole('heading')).toBeNull();
   });
 
-  it("no workspace, but the agent's own bot is live: the live line still shows", async () => {
+  it("no workspace, but the agent's own bot is live: the live card still shows", async () => {
     renderIt({ state: 'no-workspace', canManage: false, bot: LIVE_BOT });
     expect(await screen.findByText(/Slack isn't connected to this workspace yet/)).toBeInTheDocument();
-    expect(screen.getByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
+    expect(await liveTitle('@quill')).toBeInTheDocument();
   });
 
   it('no workspace, with a pending request: it can still be cancelled (only a manager is told of it)', async () => {
@@ -162,7 +179,7 @@ describe('the states', () => {
 });
 
 describe("the agent's own bot, in the ready section", () => {
-  it("shows the bot's channels and the bot card, and no picker or shared list", async () => {
+  it("shows the bot's channels inside the bot card, and no picker or shared list", async () => {
     renderIt({
       state: 'ready',
       botName: 'canopy',
@@ -171,19 +188,23 @@ describe("the agent's own bot, in the ready section", () => {
       bot: LIVE_BOT,
       botChannels: [{ channelId: 'C0BOTSUP01', name: 'help', remember: true }],
     });
+    const heading = await liveTitle('@quill');
+    const card = heading.closest('[data-slot="card"]') as HTMLElement;
     expect(
-      await screen.findByText('@quill has answered in these channels. It remembers what team members say there.'),
+      within(card).getByText('@quill has answered in these channels. It remembers what team members say there.'),
     ).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Channels @quill has answered in' });
+    const list = within(card).getByRole('list', { name: 'Channels @quill has answered in' });
     expect(within(list).getByText('help')).toBeInTheDocument();
-    expect(screen.getByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Disconnect bot' })).toBeInTheDocument();
+    expect(card.querySelector('[data-slot="card-description"]')).toHaveTextContent('Invite it to a channel: /invite @quill');
+    // The only button on the card is a ⋯ or two: nothing hangs outside the menus.
+    const menu = await openMenu('@quill');
+    expect(within(menu).getByRole('menuitem', { name: 'Remove from Slack' })).toBeInTheDocument();
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.queryByRole('list', { name: 'Connected channels' })).toBeNull();
     for (const gone of [/Connect a channel/, /Connected channels/, /still need/, /Connected by/, /\/ax\b/]) {
       expect(screen.queryByText(gone)).toBeNull();
     }
-    expect(screen.queryByRole('button', { name: /Reconnect/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Disconnect/ })).toBeNull();
   });
 
   it.each(['none', 'requested', 'pending'] as const)(
@@ -213,7 +234,8 @@ describe("the agent's own bot, in the ready section", () => {
     'live, with no channel left to invite: no "no channels" line (manager: %s), and the live line still says how to invite it',
     async (canManage) => {
       renderIt(ready(canManage, LIVE_BOT));
-      expect(await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
+      expect(await liveTitle('@quill')).toBeInTheDocument();
+      expect(screen.getByText('Invite it to a channel:', { exact: false })).toBeInTheDocument();
       expect(screen.queryByText(/isn't answering in any channels yet/)).toBeNull();
       expect(screen.queryByText(/isn't connected to any Slack channels yet/)).toBeNull();
       expect(screen.queryByText(/still need/)).toBeNull();
@@ -353,10 +375,10 @@ describe("a team agent's own live bot", () => {
     fetchStatus.mockResolvedValueOnce(ready(true, LIVE_BOT)).mockReturnValueOnce(reRead.promise);
     disconnectBot.mockResolvedValueOnce({ appDeleted: false });
     render(<AgentSlack agentId="a1" agentName="Quill" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect bot' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
+    await choose('@quill', 'Remove from Slack');
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Disconnect bot' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Actions for @quill' })).toBeNull();
     reRead.resolve(ready(true, NONE_STORED));
     expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     const note = screen.getByText(LEFT_OVER);
@@ -367,16 +389,16 @@ describe("a team agent's own live bot", () => {
     expect(disconnectBot).toHaveBeenCalledWith('a1', BOT_ID);
   });
 
-  it('a page drawn before its bot was disconnected and replaced: Disconnect names the bot it showed, and no-bot reads the status again, which shows the new one', async () => {
+  it('a page drawn before its bot was removed and replaced: Remove names the bot it showed, and no-bot reads the status again, which shows the new one', async () => {
     // The server refuses: that bot is gone, and the agent's live bot is a newer one.
     const NEWER: AgentSlackBot = { ...LIVE_BOT, botName: 'Quill Two', handle: 'quill_two', installId: 'Nw2Kq2Lw8vNc5Xr1Bm7KdB' };
     disconnectBot.mockRejectedValueOnce(new AgentSlackError(409, 'no-bot'));
     fetchStatus.mockResolvedValueOnce(ready(true, LIVE_BOT)).mockResolvedValueOnce(ready(true, NEWER));
     render(<AgentSlack agentId="a1" agentName="Quill" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect bot' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Disconnect @quill?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
-    expect(await screen.findByText('@quill_two is live. Invite it to a channel with /invite @quill_two.')).toBeInTheDocument();
+    await choose('@quill', 'Remove from Slack');
+    const dialog = await screen.findByRole('dialog', { name: 'Remove @quill from Slack?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    expect(await liveTitle('@quill_two')).toBeInTheDocument();
     expect(disconnectBot).toHaveBeenCalledTimes(1);
     expect(disconnectBot).toHaveBeenCalledWith('a1', BOT_ID);
     expect(fetchStatus).toHaveBeenCalledTimes(2);
@@ -384,33 +406,33 @@ describe("a team agent's own live bot", () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it("ready: a disconnect that deleted the Slack app leaves no note, and the dialog doesn't promise the shared bot back", async () => {
+  it("ready: a removal that deleted the Slack app leaves no note, and the dialog doesn't promise the shared bot back", async () => {
     disconnectBot.mockResolvedValueOnce({ appDeleted: true });
     fetchStatus.mockResolvedValueOnce(ready(true, LIVE_BOT)).mockResolvedValueOnce(ready(true, NONE_STORED));
     render(<AgentSlack agentId="a1" agentName="Quill" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect bot' }));
+    await choose('@quill', 'Remove from Slack');
     const dialog = await screen.findByRole('dialog');
     expect(dialog).not.toHaveTextContent(/The shared bot answers/);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     expect(screen.queryByText(LEFT_OVER)).toBeNull();
   });
 
-  it('no workspace: a manager can disconnect a live bot (canManage from the server); a member sees no Disconnect bot', async () => {
+  it('no workspace: a manager can remove a live bot (canManage from the server); a member has no ⋯', async () => {
     const { unmount } = renderIt({ state: 'no-workspace', canManage: true, bot: LIVE_BOT });
-    expect(await screen.findByRole('button', { name: 'Disconnect bot' })).toBeInTheDocument();
+    expect(await liveTitle('@quill')).toBeInTheDocument();
     // Nothing on the shared bot to promise here: no channels are shown.
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect bot' }));
+    await choose('@quill', 'Remove from Slack');
     expect(await screen.findByRole('dialog')).not.toHaveTextContent(/shared bot/);
     unmount();
     // As the server answers a member: no install id either.
     renderIt({ state: 'no-workspace', canManage: false, bot: { ...LIVE_BOT, installId: null } });
-    expect(await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Disconnect bot' })).toBeNull();
+    expect(await liveTitle('@quill')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Actions for @quill' })).toBeNull();
   });
 });
 
-describe('a rebuilt bot (TASK-1173)', () => {
+describe('a bot set up again (TASK-1173)', () => {
   const GONE_BOT: AgentSlackBot = { ...LIVE_BOT, botName: 'Quill Bot', handle: 'quill_bot', approverGone: true };
   const NONE_STORED: AgentSlackBot = { state: 'none', configTokenStored: true };
   const LEFT_OVER = /couldn.t confirm its Slack app was deleted/;
@@ -426,21 +448,21 @@ describe('a rebuilt bot (TASK-1173)', () => {
     vi.restoreAllMocks();
   });
 
-  /** Rebuild the gone-approver bot, holding the status re-read open until the loading face shows. */
+  /** Set the gone-approver bot up again, holding the status re-read open until the loading face shows. */
   async function rebuildThroughReRead(appDeleted: boolean) {
     const reRead = deferred<AgentSlackRead>();
     fetchStatus.mockResolvedValueOnce(ready(true, GONE_BOT)).mockReturnValueOnce(reRead.promise);
     disconnectBot.mockResolvedValueOnce({ appDeleted });
     const view = render(<AgentSlack agentId="a1" agentName="Quill" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Rebuild bot' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Rebuild' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Set up again' }));
     expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
     reRead.resolve(ready(true, NONE_STORED));
     expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     return view;
   }
 
-  it('after a Rebuild the form is prefilled with the old name, under the notice, with no left-over note when the app was deleted', async () => {
+  it('after Set up again the form is prefilled with the old name, under the notice, with no left-over note when the app was deleted', async () => {
     await rebuildThroughReRead(true);
     expect(disconnectBot).toHaveBeenCalledWith('a1', BOT_ID);
     const notice = screen.getByText(NOTICE);
@@ -479,12 +501,12 @@ describe('a rebuilt bot (TASK-1173)', () => {
     expect(screen.getByLabelText('Bot name')).toHaveValue('Rook');
   });
 
-  it('no workspace: a gone approver still gets the alert, with no Rebuild button (a request needs the shared app)', async () => {
+  it('no workspace: a gone approver still gets the alert, with no Set up again button (a request needs the shared app)', async () => {
     renderIt({ state: 'no-workspace', canManage: true, bot: GONE_BOT });
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Quill Bot needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more. Once Slack is connected again, you can rebuild it here.',
+      '@quill_bot needs to be set up again. The person who added it to Slack has left. You can do this here once Slack is connected again.',
     );
-    expect(screen.queryByRole('button', { name: 'Rebuild bot' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Set up again' })).toBeNull();
   });
 });
 
@@ -599,14 +621,14 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
 
   it('no botChannels (an older host, or no live bot): no list', async () => {
     renderIt(ready(true, LIVE_BOT));
-    await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.');
+    await liveTitle('@quill');
     expect(screen.queryByText(/has answered in these channels/)).toBeNull();
     expect(screen.queryByRole('list', { name: 'Channels @quill has answered in' })).toBeNull();
   });
 
   it('an empty botChannels draws nothing either', async () => {
     renderIt(withBotChannels(ready(true, LIVE_BOT), []));
-    await screen.findByText('@quill is live. Invite it to a channel with /invite @quill.');
+    await liveTitle('@quill');
     expect(screen.queryByText(/has answered in these channels/)).toBeNull();
   });
 
@@ -673,6 +695,121 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
     renderIt({ state: 'no-workspace', canManage: true, bot: REQUESTED_BOT });
     await screen.findByRole('heading', { level: 3, name: 'Waiting for an admin to approve Quill Bot' });
     expectClean();
+  });
+
+  describe('the live card', () => {
+    const channels = (read: AgentSlackRead) => ({ ...read, botChannels: [BOT_HELP, BOT_OPS] }) as AgentSlackRead;
+    const BOT_HELP: BotChannelRow = { channelId: 'C0BOTSUP01', name: 'help', remember: true };
+    const BOT_OPS: BotChannelRow = { channelId: 'C0BOTOPS01', name: 'ops-desk', remember: false };
+    const dismiss = async (menu: HTMLElement) => {
+      fireEvent.keyDown(menu, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    };
+
+    beforeEach(() => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('a manager with channels, with the card menu open and again with a row menu open', async () => {
+      renderIt(channels(ready(true, LIVE_BOT)));
+      await liveTitle('@quill');
+      expectClean();
+      const cardMenu = await openMenu('@quill');
+      expectClean();
+      await dismiss(cardMenu);
+      const rowMenu = await openMenu('#help');
+      expectClean();
+      await dismiss(rowMenu);
+    });
+
+    it('a member', async () => {
+      renderIt(channels(ready(false, { ...LIVE_BOT, installId: null })));
+      await liveTitle('@quill');
+      expectClean();
+    });
+
+    it.each([
+      ['a manager, Slack connected', ready(true, { ...LIVE_BOT, approverGone: true })],
+      ['a manager, no Slack workspace', { state: 'no-workspace', canManage: true, bot: { ...LIVE_BOT, approverGone: true } } as AgentSlackRead],
+      ['a member', ready(false, { ...LIVE_BOT, approverGone: true, installId: null })],
+    ])('the set-up-again row: %s', async (_, status) => {
+      renderIt(status);
+      await screen.findByRole('alert');
+      expectClean();
+    });
+
+    it.each([
+      ['a manager', ready(true, { ...LIVE_BOT, needsClaim: true })],
+      ['a member', ready(false, { ...LIVE_BOT, needsClaim: true, installId: null })],
+    ])('the take-over row: %s', async (_, status) => {
+      renderIt(status);
+      await screen.findByRole('alert');
+      expectClean();
+    });
+
+    it.each([
+      ['the person who set it up', { ...LIVE_BOT, viewerIsApprover: true }],
+      ['another admin', LIVE_BOT],
+    ])('the dead-token row, found by Rename: %s', async (_, bot) => {
+      rename.mockRejectedValueOnce(new AgentSlackError(502, 'slack-config-token'));
+      renderIt(ready(true, bot));
+      await choose('@quill', 'Rename');
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.submit(within(dialog).getByLabelText('Bot name').closest('form')!);
+      await within(dialog).findByRole('alert');
+      expectClean();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expectClean();
+    });
+
+    // The Reconnect dialog is the documented exception (it is the install-it-myself path's token dialog), so no scan opens it.
+    it.each([
+      ['Rename', LIVE_BOT, 'Rename', 'Cancel'],
+      ['Change picture', LIVE_BOT, 'Change picture', 'Cancel'],
+      ['Remove from Slack', LIVE_BOT, 'Remove from Slack', 'Keep it'],
+    ])('the %s dialog', async (_, bot, item, decline) => {
+      renderIt(ready(true, bot));
+      await choose('@quill', item);
+      const dialog = await screen.findByRole('dialog');
+      expectClean();
+      fireEvent.click(within(dialog).getByRole('button', { name: decline }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
+    it('the Set up again and Take over dialogs', async () => {
+      const { unmount } = renderIt(ready(true, { ...LIVE_BOT, approverGone: true }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
+      const first = await screen.findByRole('dialog');
+      expectClean();
+      fireEvent.click(within(first).getByRole('button', { name: 'Keep it' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      unmount();
+      renderIt(ready(true, { ...LIVE_BOT, needsClaim: true }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Take over' }));
+      const second = await screen.findByRole('dialog');
+      expectClean();
+      fireEvent.click(within(second).getByRole('button', { name: 'Not now' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
+    it('the form after Set up again, with the removed notice and the left-over note', async () => {
+      const reRead = deferred<AgentSlackRead>();
+      fetchStatus.mockResolvedValueOnce(ready(true, { ...LIVE_BOT, approverGone: true })).mockReturnValueOnce(reRead.promise);
+      disconnectBot.mockResolvedValueOnce({ appDeleted: false });
+      render(<AgentSlack agentId="a1" agentName="Quill" />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
+      fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Set up again' }));
+      await screen.findByText('Loading Slack settings…');
+      reRead.resolve(ready(true, { state: 'none', configTokenStored: false }));
+      await screen.findByText(/was removed from Slack/);
+      await screen.findByText(/couldn.t confirm its Slack app was deleted/);
+      expectClean();
+    });
   });
 
   it('the install-it-myself path is the one place the token words show', async () => {

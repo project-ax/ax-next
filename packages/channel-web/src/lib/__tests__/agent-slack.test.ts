@@ -63,7 +63,13 @@ const LIVE_BOT = {
   viewerIsApprover: false,
   installId: BOT_ID,
 };
-const PEOPLE = { approver: 'Ada Lovelace', approverGone: false, viewerIsApprover: false };
+const PEOPLE = {
+  botName: 'Quill Bot',
+  handle: 'quill_bot' as string | null,
+  approver: 'Ada Lovelace',
+  approverGone: false,
+  viewerIsApprover: false,
+};
 
 beforeEach(() => {
   calls = [];
@@ -622,11 +628,7 @@ describe('what an error says', () => {
 
   it('agentSlackBotChangeErrorCopy: every code has its sentence and its field', () => {
     const copy = (code: string, reason: string | null = null, who = 'Ada'): unknown =>
-      agentSlackBotChangeErrorCopy(new AgentSlackError(400, code, reason), {
-        approver: who,
-        approverGone: false,
-        viewerIsApprover: false,
-      });
+      agentSlackBotChangeErrorCopy(new AgentSlackError(400, code, reason), { ...PEOPLE, approver: who });
     expect(copy('invalid-bot-name', 'empty')).toEqual({ field: 'botName', message: 'Give the bot a name.' });
     expect(copy('invalid-bot-name', 'nope')).toEqual({ field: 'botName', message: "Slack can't use that name. Try another." });
     expect(copy('bot-name-taken')).toEqual({
@@ -637,11 +639,11 @@ describe('what an error says', () => {
     expect(copy('invalid-icon')).toEqual({ field: null, message: "We couldn't use that picture. Try another image." });
     expect(copy('slack-config-token', null, 'Ada Lovelace')).toEqual({
       field: null,
-      message: "This bot's Slack token needs replacing by Ada Lovelace.",
+      message: "Changes to @quill_bot can't reach Slack right now. Ask Ada Lovelace to reconnect it.",
     });
     expect(copy('slack-config-token', null, 'A teammate')).toEqual({
       field: null,
-      message: "This bot's Slack token needs replacing by A teammate.",
+      message: "Changes to @quill_bot can't reach Slack right now. Ask A teammate to reconnect it.",
     });
     expect(copy('slack-app-gone')).toEqual({
       field: null,
@@ -654,26 +656,28 @@ describe('what an error says', () => {
     expect(AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged).toBe('Slack has the new picture.');
   });
 
-  it('agentSlackBotChangeErrorCopy: a dead token says who can fix it: the viewer, nobody (the approver left), or the approver', () => {
+  it('agentSlackBotChangeErrorCopy: a dead token says what to do and who can: the viewer, nobody (the approver left), or the approver', () => {
     const dead = new AgentSlackError(502, 'slack-config-token');
-    expect(agentSlackBotChangeErrorCopy(dead, { approver: 'Ada', approverGone: false, viewerIsApprover: true })).toEqual({
+    expect(agentSlackBotChangeErrorCopy(dead, { ...PEOPLE, viewerIsApprover: true })).toEqual({
       field: null,
-      message: 'Your Slack token stopped working. Replace it under Slack token, then try again.',
+      message: "Changes to @quill_bot can't reach Slack right now. Reconnect it, then try again.",
     });
-    expect(agentSlackBotChangeErrorCopy(dead, { approver: 'A teammate', approverGone: true, viewerIsApprover: false })).toEqual({
+    expect(agentSlackBotChangeErrorCopy(dead, { ...PEOPLE, approver: 'A teammate', approverGone: true })).toEqual({
       field: null,
-      message:
-        "This bot's Slack token stopped working, and the person who set it up has left. Rebuild the bot to change it.",
+      message: '@quill_bot needs to be set up again before it can be changed.',
     });
     expect(agentSlackBotChangeErrorCopy(dead, PEOPLE)).toEqual({
       field: null,
-      message: "This bot's Slack token needs replacing by Ada Lovelace.",
+      message: "Changes to @quill_bot can't reach Slack right now. Ask Ada Lovelace to reconnect it.",
     });
-    // The viewer being the approver wins: they can replace their own token.
-    expect(agentSlackBotChangeErrorCopy(dead, { approver: 'Ada', approverGone: true, viewerIsApprover: true }).message).toBe(
-      AGENT_SLACK_BOT_CHANGE_COPY.yourTokenNeedsReplacing,
+    // The viewer being the approver wins: they can reconnect their own token.
+    expect(agentSlackBotChangeErrorCopy(dead, { ...PEOPLE, approverGone: true, viewerIsApprover: true }).message).toBe(
+      AGENT_SLACK_CARD_COPY.reconnectThenRetry('@quill_bot'),
     );
-    expect(AGENT_SLACK_BOT_CHANGE_COPY.tokenDeadApproverLeft).toMatch(/^This bot's Slack token stopped working/);
+    // No handle: the bot's name.
+    expect(agentSlackBotChangeErrorCopy(dead, { ...PEOPLE, handle: null }).message).toBe(
+      "Changes to Quill Bot can't reach Slack right now. Ask Ada Lovelace to reconnect it.",
+    );
   });
 
   it('agentSlackBotStale: 409 not-live reads the status again; bot-name-taken does not', () => {

@@ -550,12 +550,6 @@ export function agentSlackBotErrorCopy(err: unknown): {
 }
 
 export const AGENT_SLACK_BOT_CHANGE_COPY = Object.freeze({
-  tokenNeedsReplacing: (approver: string): string => `This bot's Slack token needs replacing by ${approver}.`,
-  // The viewer set the bot up, so the fix is theirs (TASK-1173).
-  yourTokenNeedsReplacing: 'Your Slack token stopped working. Replace it under Slack token, then try again.',
-  // Nobody can replace it: only a rebuild changes the bot now.
-  tokenDeadApproverLeft:
-    "This bot's Slack token stopped working, and the person who set it up has left. Rebuild the bot to change it.",
   appGone: "Slack no longer has this bot's app. It may have been deleted on api.slack.com/apps.",
   badPicture: "We couldn't use that picture. Try another image.",
   pictureChanged: 'Slack has the new picture.',
@@ -563,11 +557,12 @@ export const AGENT_SLACK_BOT_CHANGE_COPY = Object.freeze({
 
 /**
  * One sentence for a refused rename or picture change, and whether it belongs under the name field.
- * A dead token names who can fix it: the viewer (they set the bot up), nobody (the person who did has left), or the approver.
+ * A dead token says what to do and who can: the viewer set the bot up (`reconnectThenRetry`), the person who did
+ * has left (`setUpAgainFirst`), or anyone else (`askToReconnect`, naming that person), in that priority.
  */
 export function agentSlackBotChangeErrorCopy(
   err: unknown,
-  bot: { approver: string; approverGone: boolean; viewerIsApprover: boolean },
+  bot: Pick<Extract<AgentSlackBot, { state: 'live' }>, 'botName' | 'handle' | 'approver' | 'approverGone' | 'viewerIsApprover'>,
 ): { field: 'botName' | null; message: string } {
   if (err instanceof AgentSlackError) {
     switch (err.code) {
@@ -585,10 +580,10 @@ export function agentSlackBotChangeErrorCopy(
         return {
           field: null,
           message: bot.viewerIsApprover
-            ? AGENT_SLACK_BOT_CHANGE_COPY.yourTokenNeedsReplacing
+            ? AGENT_SLACK_CARD_COPY.reconnectThenRetry(botWho(bot))
             : bot.approverGone
-              ? AGENT_SLACK_BOT_CHANGE_COPY.tokenDeadApproverLeft
-              : AGENT_SLACK_BOT_CHANGE_COPY.tokenNeedsReplacing(bot.approver),
+              ? AGENT_SLACK_CARD_COPY.setUpAgainFirst(botWho(bot))
+              : AGENT_SLACK_CARD_COPY.askToReconnect(botWho(bot), bot.approver),
         };
       case 'slack-app-gone':
         return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.appGone };

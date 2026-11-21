@@ -1,9 +1,9 @@
 /**
  * An agent's Slack section in its settings (TASK-1094): one card for the
  * agent's own bot (`AgentSlackBot`, TASK-1168, TASK-1187), whose title says
- * which of three states it is in (not in Slack, waiting, live), and the
- * channels the bot has answered in, each with its memory setting in the row's
- * ⋯ (`AgentSlackBotChannels`, TASK-1180). A team agent reaches channels only
+ * which of three states it is in (not in Slack, waiting, live). Once it is
+ * live, the card holds the channels the bot has answered in, each with its
+ * memory setting in the row's ⋯ (`AgentSlackBotChannels`, TASK-1180). A team agent reaches channels only
  * through its own bot (TASK-1186), so nothing is connected here through the
  * shared Slack app. Everyone gets the card: someone who can't manage the agent
  * reads that it isn't in Slack yet, until it is.
@@ -22,7 +22,6 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { logRequestFailure } from '@/lib/http';
 import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
-import { AgentSlackBotChannels } from './AgentSlackBotChannels';
 import type { RebuildFrom } from './AgentSlackBotLifecycle';
 import { fetchAgentSlack, type AgentSlackRead } from '@/lib/agent-slack';
 
@@ -42,7 +41,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   // bot section: a cancel reads the status again, and the loading face replaces
   // everything below this component until it lands.
   const [leftOver, setLeftOver] = useState<BotCancelled | null>(null);
-  // The bot a Rebuild just took away, so the request form that follows can offer its name back (TASK-1173).
+  // The bot Set up again just took away, so the request form that follows can offer its name back (TASK-1173).
   const [rebuilding, setRebuilding] = useState<RebuildFrom | null>(null);
   const [leftOverFor, setLeftOverFor] = useState(agentId);
   if (leftOverFor !== agentId) {
@@ -119,15 +118,6 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
           <p className="text-[13px] text-muted-foreground">
             Slack isn&apos;t connected to this workspace yet. An admin can connect it in Admin settings.
           </p>
-          {state.bot.state === 'live' && (state.botChannels ?? []).length > 0 && (
-            <AgentSlackBotChannels
-              agentId={agentId}
-              canManage={state.canManage}
-              invite={{ botName: state.bot.botName, handle: state.bot.handle }}
-              channels={state.botChannels ?? []}
-              onStale={read}
-            />
-          )}
           {state.bot.state !== 'none' ? (
             <AgentSlackBot
               key={agentId}
@@ -135,6 +125,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
               agentName={agentName}
               bot={state.bot}
               canManage={state.canManage}
+              channels={state.botChannels ?? []}
               {...botCallbacks}
               onChanged={read}
             />
@@ -188,21 +179,13 @@ function ReadySection({
   const botChannels = ready.botChannels ?? [];
   return (
     <div className="flex flex-col gap-5">
-      {bot.state === 'live' && botChannels.length > 0 && (
-        <AgentSlackBotChannels
-          agentId={agentId}
-          canManage={canManage}
-          invite={{ botName: bot.botName, handle: bot.handle }}
-          channels={botChannels}
-          onStale={onStale}
-        />
-      )}
       <AgentSlackBot
         agentId={agentId}
         agentName={agentName}
         bot={bot}
         canManage={canManage}
         sharedConnected
+        channels={botChannels}
         {...botCallbacks}
         onChanged={onStale}
       />

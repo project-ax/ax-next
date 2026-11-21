@@ -2,7 +2,7 @@
  * The two pieces of Slack's configuration-token step that more than one
  * surface shows (TASK-1167): the link to Slack's app settings, where the token
  * is generated, and the write-only field the token is pasted into. Admin ›
- * Slack and an agent's "Its own Slack bot" section both use them, so the two
+ * Slack and an agent's Slack card both use them, so the two
  * can't drift on how a token is asked for.
  */
 import type { RefObject } from 'react';
