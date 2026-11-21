@@ -65,8 +65,8 @@ import { checkUser } from './user-auth.js';
  *                                             its approver (403 not-approver for anyone else, TASK-1173)
  *   POST /settings/slack/:agentId/bot/claim   { installId } → {}, a live bot whose requester is no
  *                                             longer a team admin (the domain asks the rights again,
- *                                             and answers 409 no-bot unless `installId` is the
- *                                             agent's live bot, TASK-1173)
+ *                                             and answers 409 not-live without a live bot and 409
+ *                                             no-bot when `installId` is another bot's, TASK-1173)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}, while it has an open request
  *
