@@ -1026,7 +1026,8 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
   answering is "try again", and private marks the binding and the thread
   before the answer runs.
 - `groups:read` is the bot's seventh scope. Settings show a private channel's
-  row as "Private channels aren't remembered." instead of the switch.
+  row as "Private channels aren't remembered." instead of "Not remembered"
+  and the row's ⋯ (TASK-1187 moved the switch into that ⋯).
 - **Known gaps, accepted.** A channel made private can still be captured for
   up to a minute, while the check's kept public answer lasts (TASK-1184's
   window). What was captured while a channel was public stays in memory. A bot

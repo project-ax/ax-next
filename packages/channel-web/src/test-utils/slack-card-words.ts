@@ -22,5 +22,6 @@ export function slackCardText(root: Element = document.body): string {
   const texts: string[] = [];
   for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n.textContent ?? '');
   const labels = [...root.querySelectorAll('[aria-label]')].map((el) => el.getAttribute('aria-label') ?? '');
-  return [...texts, ...labels].join('\n');
+  // `textContent` too: a phrase split across text nodes ("own {kind} bot" in JSX) only reads whole there.
+  return [...texts, root.textContent ?? '', ...labels].join('\n');
 }

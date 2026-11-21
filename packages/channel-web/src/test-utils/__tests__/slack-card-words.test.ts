@@ -55,4 +55,15 @@ describe('slack card words matcher', () => {
     document.body.innerHTML = '<button>Rebuild</button><button>Rename</button>';
     expect(slackCardWordsFound(slackCardText())).toEqual(['Rebuild']);
   });
+
+  it('slackCardText sees a phrase split across text nodes', () => {
+    // JSX interpolation (`its own {kind} bot`) splits one sentence into several text nodes.
+    document.body.innerHTML = '<p>its own <b>Slack</b> bot</p>';
+    expect(slackCardWordsFound(slackCardText())).toContain('own Slack bot');
+    document.body.innerHTML = '';
+    const p = document.createElement('p');
+    p.append('the shared ', 'app');
+    document.body.append(p);
+    expect(slackCardWordsFound(slackCardText())).toContain('shared app');
+  });
 });
