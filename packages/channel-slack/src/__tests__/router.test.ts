@@ -204,7 +204,7 @@ const CHANNEL_INFO: Record<string, SlackChannel> = {
 
 /**
  * Slack's `provided` on a `missing_scope` (TASK-1184): every scope the token
- * holds. A team agent's own bot's (all the shared app's too), with and
+ * holds. A team agent's own bot's (all of them are the shared app's too), with and
  * without channels:read.
  */
 const HOLDS_CHANNELS_READ = DEDICATED_BOT_SCOPES.join(',');

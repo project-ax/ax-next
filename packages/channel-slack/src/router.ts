@@ -645,34 +645,45 @@ async function routeMention(
     // kept for the agent and channel stays), so the agent's settings stop
     // listing it and memory stops learning from its threads. Slack not
     // answering says nothing about the channel: no turn, and the binding stays.
-    const channel = await d.channelCheck.check(installId, botToken, m.channel);
-    if (channel.kind === 'token-scope') {
-      // The install's own token can't read any public channel (its app lost
-      // channels:read): nothing about this channel, so the binding stays. No
-      // retry fixes it, so no "try again": a team admin must look, as for a
-      // broken connection (tier `unavailable`, step 5).
-      log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
-      await tell(install.kind === 'shared' ? COPY.channelUnavailable : COPY.botUnavailable);
-      return;
-    }
-    if (channel.kind === 'unknown') {
-      log('error', 'slack_event_failed', { stage: 'channel-check', code: channel.code });
-      await tell(COPY.turnFailed);
-      return;
-    }
-    if (channel.kind === 'refused') {
-      let removed: boolean;
-      try {
-        removed = await d.channels.remove(installId, m.channel, agentId);
-      } catch (err) {
-        await failed('channel-remove', err);
-        return;
+    const channelNow = await d.channelCheck.check(installId, botToken, m.channel);
+    // Only `allowed` goes on to the turn; every other kind returns, and a kind
+    // added later fails to compile (the `never` below) rather than run a turn.
+    if (channelNow.kind !== 'allowed') {
+      switch (channelNow.kind) {
+        case 'token-scope': {
+          // The install's own token can't read any public channel (its app lost
+          // channels:read): nothing about this channel, so the binding stays. No
+          // retry fixes it, so no "try again": a team admin must look, as for a
+          // broken connection (tier `unavailable`, step 5).
+          log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
+          await tell(install.kind === 'shared' ? COPY.channelUnavailable : COPY.botUnavailable);
+          return;
+        }
+        case 'unknown': {
+          log('error', 'slack_event_failed', { stage: 'channel-check', code: channelNow.code });
+          await tell(COPY.turnFailed);
+          return;
+        }
+        case 'refused': {
+          let removed: boolean;
+          try {
+            removed = await d.channels.remove(installId, m.channel, agentId);
+          } catch (err) {
+            await failed('channel-remove', err);
+            return;
+          }
+          if (removed) log('info', 'slack_channel_disconnected', { reason: 'channel-not-allowed', code: channelNow.code });
+          log('info', 'slack_turns_dropped', { reason: 'channel-not-allowed', count: 1, code: channelNow.code });
+          // Only the turn whose removal took the binding says so: once, however many were waiting.
+          if (removed) await tell(COPY.channelNoLongerAllowed);
+          return;
+        }
+        default: {
+          const unhandled: never = channelNow;
+          void unhandled;
+          return;
+        }
       }
-      if (removed) log('info', 'slack_channel_disconnected', { reason: 'channel-not-allowed', code: channel.code });
-      log('info', 'slack_turns_dropped', { reason: 'channel-not-allowed', count: 1, code: channel.code });
-      // Only the turn whose removal took the binding says so: once, however many were waiting.
-      if (removed) await tell(COPY.channelNoLongerAllowed);
-      return;
     }
     // 9. The memory switch, before anything is said in the conversation. The
     // store reads the switch in the same statement that records the thread,
