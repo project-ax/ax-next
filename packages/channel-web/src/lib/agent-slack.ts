@@ -472,6 +472,8 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
   notRemembered: 'Not remembered',
   dontRemember: "Don't remember this channel",
   rememberAgain: 'Remember this channel',
+  /** The Not in Slack card's consent line: what adding the bot means for the manager who does it. */
+  outsidersUseYourAccess: 'When someone outside the team mentions it, it answers them with your access.',
   helpLine: (who: string): string =>
     `When ${who} needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set ${who} up.`,
   setUpAgain: (who: string): string => `${who} needs to be set up again. The person who added it to Slack has left.`,

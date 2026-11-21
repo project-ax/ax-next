@@ -730,6 +730,9 @@ describe("the Slack card's words (TASK-1187)", () => {
     expect(C.notRemembered).toBe('Not remembered');
     expect(C.dontRemember).toBe("Don't remember this channel");
     expect(C.rememberAgain).toBe('Remember this channel');
+    expect(C.outsidersUseYourAccess).toBe(
+      'When someone outside the team mentions it, it answers them with your access.',
+    );
     expect(C.helpLine(who)).toBe(
       'When @quill needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set @quill up.',
     );

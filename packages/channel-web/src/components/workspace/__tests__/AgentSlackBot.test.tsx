@@ -85,6 +85,8 @@ const QUIET = { leftOver: null, rebuilding: null, onCancelled: () => {}, onRebui
 /** The Live card's last line, for the bot called @quill_bot. */
 const LIVE_HELP_LINE =
   'When @quill_bot needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set @quill_bot up.';
+/** The Not in Slack card's consent line, just above its help line: what adding it means for the manager. */
+const ACCESS_LINE = 'When someone outside the team mentions it, it answers them with your access.';
 /** The Not in Slack card's last line, for the agent called Quill. */
 const HELP_LINE =
   'When Quill needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set Quill up.';
@@ -169,6 +171,7 @@ describe('none', () => {
       add,
       screen.getByText("We'll ask an admin to approve it."),
       screen.getByRole('button', { name: 'I can install Slack apps myself' }),
+      screen.getByText(ACCESS_LINE),
       screen.getByText(HELP_LINE),
     );
     expect(screen.queryByLabelText('Refresh token')).toBeNull();
@@ -199,6 +202,7 @@ describe('none', () => {
       token,
       screen.getByRole('button', { name: 'Add to Slack' }),
       screen.getByRole('button', { name: 'Ask an admin instead' }),
+      screen.getByText(ACCESS_LINE),
       screen.getByText(HELP_LINE),
     );
 

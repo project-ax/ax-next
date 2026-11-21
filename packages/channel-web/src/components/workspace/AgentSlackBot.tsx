@@ -457,6 +457,7 @@ function RequestForm({
         >
           {way === 'admin' ? AGENT_SLACK_CARD_COPY.selfPathLink : AGENT_SLACK_CARD_COPY.adminPathLink}
         </Button>
+        <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.outsidersUseYourAccess}</p>
         <p className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.helpLine(agentName)}</p>
       </SlackCard>
     </form>
