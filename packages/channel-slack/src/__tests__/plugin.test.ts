@@ -3113,6 +3113,70 @@ describe('@ax/channel-slack plugin', () => {
     expect(await askMemory(harness.bus, outsiderThread)).toEqual(OUTSIDER_THREAD);
   });
 
+  /*
+    TASK-1184, through the wiring: every channel turn asks Slack about its
+    channel first, with the check plugin.ts builds. Without it, a channel made
+    private after it was connected kept getting answers.
+  */
+  it('a mention in a connected #support that Slack now says is private runs no turn: the binding goes from Postgres and its sender is told once (TASK-1184)', async () => {
+    const slack = fakeSlackFetch();
+    // fakeSlackFetch, except that #support has been made private since it was connected.
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const answered = await slack.fetchImpl(input, init);
+      if (String(input) !== 'https://slack.com/api/conversations.info') return answered;
+      const channel = {
+        id: SUPPORT_CH,
+        name: 'support',
+        is_channel: true,
+        is_private: true,
+        is_archived: false,
+        is_ext_shared: false,
+        is_pending_ext_shared: false,
+        is_member: true,
+      };
+      return new Response(JSON.stringify({ ok: true, channel }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const { s, call } = await boot({ fetchImpl });
+    await insertActiveInstall();
+    s.vault.set(secretRef(INSTALL_ID, 'signing-secret'), SIGNING_SECRET);
+    s.vault.set(secretRef(INSTALL_ID, 'bot-token'), BOT_TOKEN);
+    const channels = createChannelStore(probe);
+    await channels.upsert({
+      installId: INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      connectedByUserId: ADMIN.id,
+      channelName: 'support',
+    });
+    const body = mentionBody('Ev07ABCDEF30', '1763035300.000300', 'are you still here?', ADA_SLACK);
+    const delivered = await call(
+      'POST',
+      '/slack/events/:installId',
+      request('POST', `/slack/events/${INSTALL_ID}`, { params: { installId: INSTALL_ID }, body, headers: signed(body) }),
+    );
+    expect(delivered.status).toBe(200);
+
+    // The turn either ran or told its sender something: wait for whichever comes first.
+    const told = () => slack.calls.filter((c) => c.method === 'chat.postEphemeral');
+    await vi.waitFor(() => expect(told().length + s.invokes!.length).toBeGreaterThan(0));
+    expect(s.invokes).toEqual([]);
+    expect(told()).toEqual([
+      {
+        method: 'chat.postEphemeral',
+        auth: `Bearer ${BOT_TOKEN}`,
+        body: { channel: SUPPORT_CH, user: ADA_SLACK, text: COPY.channelNoLongerAllowed },
+      },
+    ]);
+    expect(await channels.get(INSTALL_ID, SUPPORT_CH)).toBeNull();
+    // Asked once, with the install's own token, about this channel.
+    expect(slack.calls.filter((c) => c.method === 'conversations.info')).toEqual([
+      { method: 'conversations.info', auth: `Bearer ${BOT_TOKEN}`, body: { channel: SUPPORT_CH } },
+    ]);
+  });
+
   it('the memory veto is on the bus before the database: a pass while init waits for it is answered once the store is ready', async () => {
     // A thread kept out of memory before this restart.
     await runMigrations(probe);
