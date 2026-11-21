@@ -72,8 +72,10 @@ import { InstallStoreError, type BotRequest, type InstallStore } from './store.j
  * connect and Allow, and a DM that fails or never answers must never change
  * an answer. The notices never reject (bot-request-dms.ts catches its own),
  * so there's nothing to catch here. Whom to DM, and whether the requester
- * hears, is decided there, not here. A cancel tells nobody: an admin who
- * clicks Decline on its DM is told it was already handled.
+ * hears, is decided there, not here. A cancel that took the request tells
+ * nobody, but forgets its DMs (`forget`), so a fan-out still running sends
+ * no more: an admin who clicks Decline on a DM about it is told it was
+ * already handled.
  *
  * Admin › Slack's list names each request as its requester sees it: the agent
  * and its team as `agents:resolve` and `teams:list-for-user` (optional) answer
@@ -129,7 +131,7 @@ export interface BotRequestsDeps {
   /** The one create path an approve makes the bot through. */
   bots: Pick<Bots, 'create'>;
   /** The request's Slack DMs: told once the lock is free, never awaited, never under the lock. */
-  dms: Pick<BotRequestDms, 'opened' | 'closed'>;
+  dms: Pick<BotRequestDms, 'opened' | 'closed' | 'forget'>;
   /** The one app lock, shared with Admin › Slack and the bots domain. Not re-entrant. */
   lock: Mutex;
   /** Only an https origin can make a bot, so nothing is asked over plain http. */
@@ -155,9 +157,11 @@ export interface BotRequests {
   /**
    * The team takes its request back (the route let only a team admin of the
    * agent through). Takes the app lock, so it waits for an approve in
-   * flight. 200 `{}`, logged `slack_bot_request_cancelled { requestId }`; 409
-   * `not-requested` when the agent has no open request (an approve got
-   * there first: the agent now shows its pending bot).
+   * flight. 200 `{}`, logged `slack_bot_request_cancelled { requestId }`;
+   * once the lock is free, its DMs are forgotten (`dms.forget`), so a
+   * fan-out still running stops. 409 `not-requested` when the agent has no
+   * open request (an approve got there first: the agent now shows its
+   * pending bot), and nothing is forgotten.
    */
   cancel(i: { agentId: string }): Promise<BotReply>;
   /**
@@ -334,12 +338,15 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
   }
 
   async function cancel(i: { agentId: string }): Promise<BotReply> {
-    return d.lock.run(async () => {
+    const cancelled = await d.lock.run(async (): Promise<string | null> => {
       const requestId = await d.installs.removeBotRequestForAgent(i.agentId);
-      if (requestId === null) return json(409, { error: 'not-requested' });
-      log('info', 'slack_bot_request_cancelled', { requestId });
-      return json(200, {});
+      if (requestId !== null) log('info', 'slack_bot_request_cancelled', { requestId });
+      return requestId;
     });
+    if (cancelled === null) return json(409, { error: 'not-requested' });
+    // Once the lock is free, never awaited: its DMs are forgotten, so a fan-out still running stops.
+    void d.dms.forget({ requestId: cancelled });
+    return json(200, {});
   }
 
   async function approve(i: {

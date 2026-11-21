@@ -77,11 +77,17 @@ import type { InstallRow, InstallStore } from './store.js';
  * clicked in joins that list in the same step, if the fan-out hasn't
  * recorded it yet, and the fan-out then leaves it to the close.
  *
- * Off the request path (D5). Every method runs its work tracked by the
- * plugin's lifetime (shutdown drains it), takes no lock, and returns a
- * promise that never rejects. Callers call after the app lock is free and
- * never await it: a DM that fails never changes an answer, and the request
- * still waits in Admin › Slack.
+ * A cancel (bot-requests.ts → `forget`) redraws nothing: it marks the
+ * request closing and drops its record at once, so a fan-out still running
+ * sends no more, and its slot is free. A Decline clicked in a DM about it
+ * finds the request gone.
+ *
+ * Off the request path (D5). Every method that awaits anything runs it
+ * tracked by the plugin's lifetime (shutdown drains it; `forget` awaits
+ * nothing), takes no lock, and returns a promise that never rejects.
+ * Callers call after the app lock is free and never await it: a DM that
+ * fails never changes an answer, and the request still waits in Admin ›
+ * Slack.
  *
  * What the bot says is COPY's. Outside names (the requester's display name,
  * never their email; the bot's and the agent's names) reach Slack only as the
@@ -141,6 +147,14 @@ export interface BotRequestDms {
     byUserId: string;
     clicked?: PostedDm;
   }): Promise<void>;
+  /**
+   * A request was taken back (its team cancelled it): forget its DMs. A
+   * fan-out still running sends no more, and nothing is redrawn: a Decline
+   * clicked in one finds the request gone. Call it after the app lock is
+   * free. It has nothing to await (all of it is done before it returns), so
+   * nothing is left for shutdown to drain. Never rejects.
+   */
+  forget(i: { requestId: string }): Promise<void>;
   /**
    * A team agent's own bot just went live (its approver's Allow): when an AX
    * admin approved it for someone else, its requester hears. Call it after
@@ -578,6 +592,14 @@ export function createBotRequestDms(d: BotRequestDmsDeps): BotRequestDms {
       } catch (err) {
         failed({ requestId: i.requestId }, 'close', logCode(err));
       }
+    },
+
+    async forget(i) {
+      // As a close marks it, before anything else: the fan-out posts nothing more from here on.
+      const found = records.get(i.requestId);
+      if (found === undefined) return;
+      found.closing = true;
+      records.delete(i.requestId);
     },
 
     async live(i) {

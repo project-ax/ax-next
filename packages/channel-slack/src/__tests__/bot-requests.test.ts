@@ -149,7 +149,7 @@ function watchLock(lock: Mutex): Mutex & { held: () => boolean } {
 
 /** One call to the DMs (bot-request-dms.ts), and whether the app lock was held when it came. */
 interface Notice {
-  method: 'opened' | 'closed';
+  method: 'opened' | 'closed' | 'forget';
   input: unknown;
   lockHeld: boolean;
 }
@@ -166,7 +166,11 @@ function recordDms(lock: { held: () => boolean }) {
       state.calls.push({ method, input, lockHeld: lock.held() });
       return state.never ? new Promise<void>(() => {}) : Promise.resolve();
     };
-  const dms: Pick<BotRequestDms, 'opened' | 'closed'> = { opened: notice('opened'), closed: notice('closed') };
+  const dms: Pick<BotRequestDms, 'opened' | 'closed' | 'forget'> = {
+    opened: notice('opened'),
+    closed: notice('closed'),
+    forget: notice('forget'),
+  };
   return { dms, state };
 }
 
@@ -684,6 +688,19 @@ describe('cancel', () => {
     expect(w.slack.calls).toEqual([]);
     expect(w.vaultCalls).toEqual([]);
     expect(w.lines).toEqual([{ level: 'info', msg: 'slack_bot_request_cancelled', fields: { requestId: REQUEST } }]);
+  });
+
+  it("forgets the request's DMs by its id once the lock is free, so a fan-out still running stops; a refused cancel forgets nothing", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+
+    expect(await w.cancel()).toEqual({ status: 200, body: {} });
+    expect(w.dms.calls).toEqual([{ method: 'forget', input: { requestId: REQUEST }, lockHeld: false }]);
+
+    // None open any more: 409, and nothing more is forgotten.
+    expect(await w.cancel()).toEqual(NOT_REQUESTED);
+    expect(w.dms.calls).toHaveLength(1);
   });
 
   it('with no open request is 409 not-requested: a pending bot is no request, and stays', async () => {
@@ -1535,8 +1552,16 @@ describe("a request's DMs", () => {
     expect(await soon(w.decline(SALES_REQUEST))).toEqual({ status: 200, body: {} });
     // The next step that takes the lock still gets it.
     expect(await soon(w.cancel(SALES.id))).toEqual(NOT_REQUESTED);
+    // A cancel that took a request: its forget never settles either, and the cancel still answers.
+    await w.memory.store.insertBotRequest({
+      requestId: 'Q2FuY2VsbGVkU2FsZXNBc2s',
+      agentId: SALES.id,
+      requestedByUserId: SAM,
+      botName: 'Sales Desk',
+    });
+    expect(await soon(w.cancel(SALES.id))).toEqual({ status: 200, body: {} });
 
-    expect(w.dms.calls.map((c) => c.method)).toEqual(['opened', 'closed', 'closed']);
+    expect(w.dms.calls.map((c) => c.method)).toEqual(['opened', 'closed', 'closed', 'forget']);
   });
 });
 

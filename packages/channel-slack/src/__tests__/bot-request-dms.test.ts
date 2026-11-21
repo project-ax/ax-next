@@ -1212,6 +1212,53 @@ describe('closed', () => {
   });
 });
 
+// ── forget ──────────────────────────────────────────────────────────────────
+
+describe('forget', () => {
+  it('a cancel during the fan-out: no DM goes out once it is known, nobody else is looked up, and nothing is redrawn', async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY, LIN);
+    // Kay is being looked up when the team cancels.
+    const kay = w.slack.hold('usersInfo', KAY.slackId);
+    const opening = w.open();
+    await kay.reached;
+    await expect(w.dms.forget({ requestId: REQUEST })).resolves.toBeUndefined();
+    kay.release();
+    await opening;
+
+    expect(dmedSlackIds(w)).toEqual([GRACE.slackId]);
+    expect(lookedUp(w)).toEqual([GRACE.email, KAY.email]);
+    // Grace's DM keeps its buttons: a Decline there finds the request gone.
+    expect(updates(w)).toEqual([]);
+    expect(w.lines).toEqual([sentLine(1, 2)]);
+  }, RACE_TIMEOUT_MS);
+
+  it("frees the request's record and its slot: a close after it redraws nothing, and the oldest other record is kept", async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE);
+    // Each from a requester of its own, so the limit on asks never gets in the way.
+    for (let n = 0; n < BOT_REQUEST_DM_RECORDS_MAX; n += 1) {
+      await w.open({ requestId: requestIdOf(n), requesterUserId: `usr_requester_${n}` });
+    }
+    // One is cancelled, then one more is asked: with that slot free, nothing older is forgotten.
+    await w.dms.forget({ requestId: requestIdOf(5) });
+    await w.open({ requestId: requestIdOf(BOT_REQUEST_DM_RECORDS_MAX), requesterUserId: 'usr_requester_last' });
+    forget(w);
+
+    await w.close({ requestId: requestIdOf(0) });
+    expect(updates(w).map((u) => [u['channel'], u['ts']])).toEqual([[dmOf(GRACE.slackId), tsOf(1)]]);
+    forget(w);
+    await w.close({ requestId: requestIdOf(5) });
+    expect(w.slack.calls).toEqual([]);
+
+    // One nothing was kept for, or forgotten twice: nothing, and never a rejection.
+    await expect(w.dms.forget({ requestId: requestIdOf(5) })).resolves.toBeUndefined();
+    await expect(w.dms.forget({ requestId: requestIdOf(99) })).resolves.toBeUndefined();
+    expect(w.slack.calls).toEqual([]);
+    expect(w.lines).toEqual([]);
+  });
+});
+
 // ── The requester's DMs ─────────────────────────────────────────────────────
 
 describe('live', () => {
