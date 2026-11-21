@@ -158,6 +158,31 @@ export interface IsApprovedEmailOutput {
   approved: boolean;
 }
 
+/**
+ * `auth:list-admins` input (TASK-1170): nothing.
+ *
+ * CONTRACT — every auth implementation registering this hook MUST keep these:
+ *   - Host-internal only. Never an HTTP route or an IPC action.
+ *   - Every account that is an admin NOW and whose email a provider verified.
+ *     An admin whose email nobody verified is left out: an unproved address
+ *     could be someone else's, and the caller writes to that address's owner.
+ *   - Each as `{ userId, email }`, the verified email as stored. Nothing else:
+ *     no name, no role, no domain verdict.
+ *   - Oldest account first (then by id), so callers that cap the list keep the
+ *     same people. `{ admins: [] }` when there are none.
+ *   - A fault (the accounts can't be read) throws. It is never answered as
+ *     `{ admins: [] }`, which would read as "nobody to tell".
+ *   - No log line, whatever the answer: the addresses are personal data.
+ * Callers use the email only to find that person in another system they
+ * already trust, and must prove the match there (channel-slack maps the
+ * other system's confirmed email back through `auth:find-user-by-email`).
+ */
+export type ListAdminsInput = Record<string, never>;
+/** `auth:list-admins` output. See `ListAdminsInput` for the contract. */
+export interface ListAdminsOutput {
+  admins: Array<{ userId: string; email: string }>;
+}
+
 export interface CreateBootstrapUserInput {
   displayName: string;
   email?: string;

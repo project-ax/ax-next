@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { HookBus, PluginError, makeAgentContext, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { createBotCallbackRoute } from '../bot-callback.js';
+import type { BotRequestDms } from '../bot-request-dms.js';
 import { createBots } from '../bots.js';
 import type { RouteRequest, RouteResponse } from '../http-types.js';
 import { OAUTH_STATE_BYTES, OAUTH_STATE_TTL_MS, SLACK_TOKEN_MAX } from '../limits.js';
@@ -53,6 +54,9 @@ import { memoryStore, type Row } from './memory-install-store.js';
     - an AX admin who approved a team admin's request in Admin › Slack
       (TASK-1169) finishes it while still an AX admin, and lands back in
       Admin › Slack (`from=admin`), never on the agent's settings;
+    - a connected Allow tells the bot request's DMs (TASK-1170,
+      bot-request-dms.ts, a recording fake here) the bot is live, once, only
+      once the app lock is free, and never waits for them;
     - no redirect or log line carries a code, a state, a token or a Slack id.
 */
 
@@ -185,6 +189,26 @@ interface Line {
 }
 
 /**
+ * `lock`, and whether a step is running under it right now: what a call made
+ * from inside a locked step would see, and one made after it never does.
+ */
+function watchLock(lock: Mutex): Mutex & { held: () => boolean } {
+  let running = 0;
+  return {
+    run: (fn) =>
+      lock.run(async () => {
+        running += 1;
+        try {
+          return await fn();
+        } finally {
+          running -= 1;
+        }
+      }),
+    held: () => running > 0,
+  };
+}
+
+/**
  * The shared app live, with its secrets and Ada's token; Grace's token stored;
  * Ada and Grace team admins of the support agent's team, Mel a member.
  */
@@ -230,7 +254,19 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
 
   const memory = memoryStore(() => nowMs, trail);
   const slack = fakeSlack(trail);
-  const lock = o.lock ?? createMutex();
+  const lock = watchLock(o.lock ?? createMutex());
+  /**
+   * bot-request-dms.ts, recorded: each bot it was told went live, and whether
+   * the app lock was held then. Its promise settles at once, or never when
+   * `never` is set: a Slack that never answers.
+   */
+  const dms = { calls: [] as Array<{ installId: string; lockHeld: boolean }>, never: false };
+  const notices: Pick<BotRequestDms, 'live'> = {
+    live: (i) => {
+      dms.calls.push({ installId: i.installId, lockHeld: lock.held() });
+      return dms.never ? new Promise<void>(() => {}) : Promise.resolve();
+    },
+  };
   const publicOrigin = o.publicOrigin ?? ORIGIN;
   const bots = createBots({
     bus,
@@ -248,6 +284,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
     installs: memory.store,
     lock,
     bots,
+    dms: notices,
     publicOrigin,
     logger,
     now: () => nowMs,
@@ -272,6 +309,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex; agent?: FakeAgent } = {
     answers,
     route,
     bots,
+    dms,
     ctxOf,
     advance(ms: number): void {
       nowMs += ms;
@@ -348,6 +386,7 @@ function forget(w: World): void {
   w.vaultCalls.length = 0;
   w.people.calls.length = 0;
   w.lines.length = 0;
+  w.dms.calls.length = 0;
 }
 
 /** The shared app live in SHARED_TEAM, with its secrets and Ada's token; Grace's own token stored. */
@@ -427,6 +466,15 @@ async function holdLock(lock: Mutex): Promise<{ free: () => void; done: Promise<
 }
 
 const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+/** What `p` answers, or 'still waiting' when it hasn't once every step that can run has run. */
+async function soon<T>(p: Promise<T>): Promise<T | 'still waiting'> {
+  const waited = (async () => {
+    for (let i = 0; i < 10; i += 1) await settle();
+    return 'still waiting' as const;
+  })();
+  return Promise.race([p, waited]);
+}
 
 // ── The route ───────────────────────────────────────────────────────────────
 
@@ -1023,6 +1071,85 @@ describe('GET /slack/bots/oauth/callback', () => {
     forget(w);
 
     expect(await w.callback({ code: CODE, state: stateIn(reply.body) }, ADA)).toStrictEqual(redirect(toAgent('connected')));
+  });
+
+  it("a connected Allow tells the DMs the bot is live, once, after the lock; a refused, cancelled, expired, mismatched or failed one doesn't", async () => {
+    // Hedy's Allow on the bot she approved for Grace (TASK-1169): it goes live.
+    const { w, installId, state } = await approved();
+    expect(await w.callback({ code: CODE, state }, HEDY)).toStrictEqual(redirect(toAdmin('connected')));
+    // Never under the app lock: a slow Slack must not hold up the next approve, connect or Allow.
+    expect(w.dms.calls).toEqual([{ installId, lockHeld: false }]);
+    // Once: the state is spent, so a replay tells nothing more.
+    expect(await w.callback({ code: CODE, state }, HEDY)).toStrictEqual(redirect(home('failed')));
+    expect(w.dms.calls).toHaveLength(1);
+
+    // The self path is told too: whether anyone hears is bot-request-dms.ts's to decide, not the callback's.
+    const self = await requested();
+    expect(await self.w.callback({ code: CODE, state: self.state })).toStrictEqual(redirect(toAgent('connected')));
+    expect(self.w.dms.calls).toEqual([{ installId: self.installId, lockHeld: false }]);
+
+    // None of these went live, so nothing is said.
+    const visits: Array<[string, (x: World, state: string) => Promise<Answered>]> = [
+      ['signed out', (x, s) => x.callback({ code: CODE, state: s }, null)],
+      ["someone else's browser", (x, s) => x.callback({ code: CODE, state: s }, GRACE)],
+      ['a garbled state', (x) => x.callback({ code: CODE, state: 'not-a-state' }, HEDY)],
+      ['cancelled', (x, s) => x.callback({ error: 'access_denied', state: s }, HEDY)],
+      [
+        'expired',
+        (x, s) => {
+          x.advance(OAUTH_STATE_TTL_MS);
+          return x.callback({ code: CODE, state: s }, HEDY);
+        },
+      ],
+      [
+        'another workspace',
+        (x, s) => {
+          x.slack.on.oauthAccess = async () => ({ ...GRANT, teamId: 'T07OTHERTEAM' });
+          return x.callback({ code: CODE, state: s }, HEDY);
+        },
+      ],
+      [
+        'Slack refusing the code',
+        (x, s) => {
+          x.slack.on.oauthAccess = async () => {
+            throw new SlackApiError('oauth.v2.access', 'invalid_code');
+          };
+          return x.callback({ code: CODE, state: s }, HEDY);
+        },
+      ],
+      [
+        'no longer an AX admin',
+        (x, s) => {
+          x.users.get(HEDY)!.isAdmin = false;
+          return x.callback({ code: CODE, state: s }, HEDY);
+        },
+      ],
+      [
+        'a store fault mid-callback',
+        (x, s) => {
+          x.memory.failures.set('consumeOAuthState', connectionReset());
+          return x.callback({ code: CODE, state: s }, HEDY);
+        },
+      ],
+    ];
+    for (const [what, visit] of visits) {
+      const x = await approved();
+      const answered = await visit(x.w, x.state);
+      expect(answered.location, what).not.toContain('connected');
+      expect(x.w.row(x.installId).status, what).toBe('pending');
+      expect(x.w.dms.calls, what).toEqual([]);
+    }
+  });
+
+  it("a live notice that never settles doesn't hold the redirect, or the next visit that takes the lock", async () => {
+    const { w, state } = await approved();
+    // Slack never answers, so neither does the notice.
+    w.dms.never = true;
+
+    expect(await soon(w.callback({ code: CODE, state }, HEDY))).toStrictEqual(redirect(toAdmin('connected')));
+    // The lock is free: the next visit takes it, and answers.
+    expect(await soon(w.callback({ code: CODE, state }, HEDY))).toStrictEqual(redirect(home('failed')));
+    expect(w.dms.calls).toHaveLength(1);
   });
 
   it('no redirect or log line carries the code, the state, a token or a Slack id', async () => {

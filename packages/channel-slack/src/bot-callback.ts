@@ -1,4 +1,5 @@
 import { makeAgentContext, type HookBus, type Logger } from '@ax/core';
+import type { BotRequestDms } from './bot-request-dms.js';
 import type { BotFinishRefusal, Bots } from './bots.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { logCode } from './log-code.js';
@@ -47,6 +48,13 @@ import { checkUser } from './user-auth.js';
  * CSRF check, which lets any GET through: the state is what proves the visit
  * came from the person's own install link. It reads no body.
  *
+ * A bot that went live is handed to its request's DMs (TASK-1170,
+ * bot-request-dms.ts `live`), which tell its requester when an AX admin
+ * approved it for them (the self path's own browser already knows). Every
+ * connected Allow is handed on, and nothing else is: whom to tell is decided
+ * there. Only once the lock is free, and never awaited: a Slack DM must not
+ * hold up the next Slack-app step, or this browser's redirect.
+ *
  * Log lines are code-only: `slack_bot_install_refused { installId?, reason }`
  * for a visit that didn't finish (at info for a cancel, a stale or garbled
  * link, or a signed-out browser; at warn otherwise), `slack_bot_connected
@@ -61,6 +69,8 @@ export interface BotCallbackDeps {
   /** The one app lock (plugin.ts), held from the state's peek to the bot's handle. Not re-entrant. */
   lock: Mutex;
   bots: Pick<Bots, 'finish'>;
+  /** A bot request's DMs: told of each bot that went live, once the lock is free, never awaited. */
+  dms: Pick<BotRequestDms, 'live'>;
   /** Where the browser is sent back to: the app's root. */
   publicOrigin: string;
   logger: Logger;
@@ -75,6 +85,12 @@ type Outcome = 'connected' | 'cancelled' | 'failed';
  * person's: the bot's agent, Admin › Slack (`admin`), or nowhere in particular.
  */
 type Landing = { agentId: string } | 'admin' | null;
+
+/** What a visit's step under the lock answers: where the browser goes, and the bot that went live, if one did. */
+interface Visited {
+  location: string;
+  live: string | null;
+}
 
 const PLUGIN = '@ax/channel-slack';
 
@@ -172,7 +188,9 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
     // No agent in the ctx: these lookups act for nobody's agent.
     const ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: '', userId: actorUserId, logger: d.logger });
 
-    return d.lock.run(async () => {
+    const visited = await d.lock.run(async (): Promise<Visited> => {
+      /** Where the browser goes when nothing went live. */
+      const away = (location: string): Visited => ({ location, live: null });
       let installId: string | undefined;
       let landing: Landing = null;
       try {
@@ -181,18 +199,18 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
         const peeked = await d.installs.peekOAuthState(stateHash, 'bot');
         if (peeked === null) {
           refused('invalid-state');
-          return back('failed');
+          return away(back('failed'));
         }
         installId = peeked.installId;
         if (peeked.userId !== actorUserId) {
           refused('state-user-mismatch', installId);
-          return back('failed');
+          return away(back('failed'));
         }
         const spent = await d.installs.consumeOAuthState(stateHash, 'bot');
         // Spent by another visit since the peek.
         if (spent === null) {
           refused('invalid-state');
-          return back('failed');
+          return away(back('failed'));
         }
         // The visit is the state's own person's: from here on the address
         // says where to take them, read from the bot's row, never from the request.
@@ -200,34 +218,37 @@ export function createBotCallbackRoute(d: BotCallbackDeps): RouteSpec {
         landing = landingFor(install);
         if (spent.expiresAt.getTime() <= d.now()) {
           refused('expired', installId);
-          return back('failed', landing);
+          return away(back('failed', landing));
         }
         if ('error' in slack) {
           // Only the code picks the outcome; Slack's text goes nowhere.
           const cancelled = slack.error === 'access_denied';
           refused(cancelled ? 'cancelled' : 'slack-error', installId);
-          return back(cancelled ? 'cancelled' : 'failed', landing);
+          return away(back(cancelled ? 'cancelled' : 'failed', landing));
         }
         if (install === null) {
           refused('not-pending', installId);
-          return back('failed');
+          return away(back('failed'));
         }
         const done = await d.bots.finish({ actorUserId, ctx, install, code: slack.code });
         if (done.outcome === 'failed') {
           if (!LOGGED_BY_STEP.has(done.reason)) refused(done.reason, installId);
-          return back('failed', landing);
+          return away(back('failed', landing));
         }
         log('info', 'slack_bot_connected', { installId });
-        return back('connected', landing);
+        return { location: back('connected', landing), live: install.installId };
       } catch (err) {
         log('error', 'slack_bot_failed', {
           ...(installId !== undefined ? { installId } : {}),
           stage: 'callback',
           code: logCode(err),
         });
-        return back('failed', landing);
+        return away(back('failed', landing));
       }
     });
+    // Once the lock is free, never awaited: its request's DMs decide who hears it is live.
+    if (visited.live !== null) void d.dms.live({ installId: visited.live });
+    return visited.location;
   }
 
   return {

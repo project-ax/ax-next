@@ -59,6 +59,24 @@ const ARGS: Record<string, unknown[][]> = {
     ['Ops', 'channel'],
     ['Ops', 'everyone'],
   ],
+  // A bot request's DMs (TASK-1170). The subject is plain_text: benign args only (its hostile case is in blocks.test.ts).
+  botRequestSubject: [
+    [{ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' }],
+    [{ requester: 'Sam', botName: 'Support Bot', agentName: null }],
+  ],
+  botRequestApproved: [['Sam'], [HOSTILE]],
+  botRequestDeclined: [['Sam'], [HOSTILE]],
+  botLiveForOwner: [
+    [{ botName: 'Support Bot', handle: 'supportbot' }, [], 0],
+    [{ botName: 'Support Bot', handle: null }, ['support', 'ops'], 0],
+    [{ botName: HOSTILE, handle: HOSTILE }, [HOSTILE], 0],
+    [{ botName: HOSTILE, handle: HOSTILE }, [HOSTILE], 3],
+    [{ botName: HOSTILE, handle: null }, [HOSTILE, 'a', 'b'], 3],
+    [{ botName: 'Ops', handle: 'here' }, ['a'], 0],
+    [{ botName: 'Ops', handle: 'channel' }, ['a'], 0],
+    [{ botName: 'Ops', handle: 'everyone' }, ['a'], 0],
+  ],
+  botDeclinedForOwner: [['Support Bot'], [HOSTILE], ['here'], ['channel']],
   // `/ax disconnect` for an agent whose own bot is live (TASK-1168): the bot's @handle or its name.
   slashDisconnectedOwnBot: [
     [{ botName: 'Support Bot', handle: 'supportbot' }],
@@ -154,6 +172,19 @@ describe('COPY: everything the bot says in Slack', () => {
         'slashFailed',
         'answersAsOwnBot',
         'botUnavailable',
+        'botRequestAsked',
+        'botRequestSubject',
+        'botRequestApprove',
+        'botRequestDecline',
+        'botRequestHow',
+        'botRequestApproved',
+        'botRequestDeclined',
+        'botRequestOnlyAdmin',
+        'botRequestHandled',
+        'botRequestRequesterFallback',
+        'botRequestAdminFallback',
+        'botLiveForOwner',
+        'botDeclinedForOwner',
       ].sort(),
     );
   });
@@ -519,5 +550,75 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
     expect(COPY.slashWorking).not.toMatch(/\bI'll\b|\bI will\b|\btell you\b|\blet you know\b/i);
     // It says where to look instead.
     expect(COPY.slashWorking).toMatch(/Slack settings in the web app/);
+  });
+
+  it("a bot request's DM lines: no <, > or Markdown link of their own, and none names the product (TASK-1170)", () => {
+    const lines = everyLine().filter(([k]) => /^(botRequest|botLive|botDeclined)/.test(k));
+    expect(lines.length).toBeGreaterThan(11);
+    for (const [key, line] of lines) {
+      const bare = line.split('&lt;').join('').split('&gt;').join('');
+      expect(bare, key).not.toMatch(/[<>]/);
+      expect(line, key).not.toMatch(/\]\(/);
+      expect(line, key).not.toMatch(/\bAX\b/);
+    }
+  });
+
+  it('a hostile name shows escaped and marked in the answered lines (TASK-1170)', () => {
+    for (const line of [COPY.botRequestApproved(HOSTILE), COPY.botRequestDeclined(HOSTILE)]) {
+      expect(line.split(ZWSP).join('')).toContain('&lt;!channel&gt; &amp; &lt;@U1&gt; @here');
+      expect(line).toContain(ZWSP);
+    }
+    expect(COPY.botRequestApproved('Sam')).toBe('Sam approved this.');
+    expect(COPY.botRequestDeclined('Sam')).toBe('Sam declined this.');
+  });
+
+  it('the live line names the @handle, or the bot without one, and lists the channels that need it (TASK-1170)', () => {
+    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: 'supportbot' }, [], 0)).toBe(
+      '@supportbot is live. Invite it to a channel with /invite @supportbot.',
+    );
+    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: null }, [], 0)).toBe(
+      'Support Bot is live. Invite it to a channel with /invite.',
+    );
+    expect(COPY.botLiveForOwner({ botName: 'Support Bot', handle: 'supportbot' }, ['a'], 0)).toBe(
+      '@supportbot is live. Invite it to a channel with /invite @supportbot. These channels still need it: #a. Run /invite in each one.',
+    );
+    expect(COPY.botLiveForOwner({ botName: 'B', handle: 'b' }, ['a', 'c', 'd'], 0)).toContain(
+      'still need it: #a, #c and #d. Run /invite',
+    );
+    expect(COPY.botLiveForOwner({ botName: 'B', handle: 'b' }, ['a', 'c', 'd'], 4)).toContain(
+      'still need it: #a, #c, #d and 4 more. Run /invite',
+    );
+    // After the line's own `@`, a broadcast word gets its mark.
+    expect(COPY.botLiveForOwner({ botName: 'Ops', handle: 'here' }, [], 0)).toContain(`@${ZWSP}here is live`);
+    expect(COPY.botLiveForOwner({ botName: HOSTILE, handle: null }, [HOSTILE], 0).split(ZWSP).join('')).toContain(
+      '&lt;!channel&gt; &amp; &lt;@U1&gt; @here is live',
+    );
+  });
+
+  it('the declined line says how to ask again (TASK-1170)', () => {
+    expect(COPY.botDeclinedForOwner('Support Bot')).toBe(
+      "An admin declined your request for @Support Bot. You can ask again from the agent's Slack settings in the web app.",
+    );
+    expect(COPY.botDeclinedForOwner('here')).toContain(`@${ZWSP}here.`);
+  });
+
+  it('the subject has a variant with the agent and one without; the notification names nobody (TASK-1170)', () => {
+    expect(COPY.botRequestSubject({ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' })).toBe(
+      'Sam wants to add @Support Bot (Support agent).',
+    );
+    expect(COPY.botRequestSubject({ requester: 'A team admin', botName: 'Support Bot', agentName: null })).toBe(
+      'A team admin wants to add @Support Bot for a team agent.',
+    );
+    expect(COPY.botRequestAsked).toBe('A team asked for its own Slack bot.');
+  });
+
+  it('a person with no display name is named by their role, never an email, and the role names no product (TASK-1170)', () => {
+    // The requester in an admin's DM subject, and who approved or declined in its redraw.
+    expect(COPY.botRequestRequesterFallback).toBe('A team admin');
+    expect(COPY.botRequestAdminFallback).toBe('An admin');
+    expect(COPY.botRequestDeclined(COPY.botRequestAdminFallback)).toBe('An admin declined this.');
+    expect(COPY.botRequestSubject({ requester: COPY.botRequestRequesterFallback, botName: 'B', agentName: null })).toBe(
+      'A team admin wants to add @B for a team agent.',
+    );
   });
 });

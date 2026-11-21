@@ -32,7 +32,9 @@ import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
  * only the refresh token that rotate mints, as the admin's own: the paste is
  * never stored. The picture is never a 400: icon.ts's verdict goes to the
  * domain, which skips an unusable one, and logs why, once the app exists.
- * Decline reads no body.
+ * Decline reads no body: the domain is handed the request in the path and
+ * the admin the gate let through, whom the request's Slack DMs then name
+ * (TASK-1170).
  *
  * No answer carries a token or a person's id. A fault is a 500, logged
  * `slack_admin_failed { stage, code }`, as the rest of Admin › Slack logs
@@ -121,8 +123,9 @@ export function createBotRequestAdminRoutes(d: BotRequestAdminRoutesDeps): Route
     });
   }
 
-  async function decline(_req: RouteRequest, _actor: AdminActor, requestId: string): Promise<Reply> {
-    return d.requests.decline({ requestId });
+  async function decline(_req: RouteRequest, actor: AdminActor, requestId: string): Promise<Reply> {
+    // Who declined is the admin the gate let through: the request's Slack DMs name her.
+    return d.requests.decline({ requestId, actorUserId: actor.id });
   }
 
   /**

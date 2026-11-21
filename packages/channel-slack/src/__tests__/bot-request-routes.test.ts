@@ -376,13 +376,21 @@ describe('POST /admin/slack/bot-requests/:requestId/approve', () => {
 });
 
 describe('POST /admin/slack/bot-requests/:requestId/decline', () => {
-  it('hands the domain the request in the path, and never reads a body', async () => {
+  it("hands the domain the request in the path and the admin's id, and never reads a body", async () => {
     const w = world();
     expect(await w.decline({ body: 'garbage' })).toEqual({ status: 200, body: {} });
-    expect(await w.decline({ body: { requestId: 'U2FsZXNCb3RBc2swMDAwMg' }, as: GRACE })).toEqual({ status: 200, body: {} });
-    expect(w.domain.calls).toEqual([
-      { method: 'decline', input: { requestId: REQUEST } },
-      { method: 'decline', input: { requestId: REQUEST } },
+    // A body naming another request, another person, or a Slack message to redraw, changes nothing.
+    expect(
+      await w.decline({
+        body: { requestId: 'U2FsZXNCb3RBc2swMDAwMg', actorUserId: ADA.id, clicked: { channel: 'D07ADADM001', ts: '1763640000.000001' } },
+        as: GRACE,
+      }),
+    ).toEqual({ status: 200, body: {} });
+    // Who declined is the AX admin the gate let through: the DMs' redraw names her (bot-request-dms.ts).
+    // Only a Slack click names a DM to redraw (bot-request-click.ts): never this route.
+    expect(w.domain.calls).toStrictEqual([
+      { method: 'decline', input: { requestId: REQUEST, actorUserId: ADA.id } },
+      { method: 'decline', input: { requestId: REQUEST, actorUserId: GRACE.id } },
     ]);
   });
 });

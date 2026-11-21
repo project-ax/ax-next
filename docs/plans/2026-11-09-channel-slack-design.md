@@ -341,11 +341,13 @@ Renewing it only trades it for a new one, and it **outlives `auth.revoke`**
 Nine bot scopes, each for one job:
 
 - `app_mentions:read`: hear an @mention in a channel.
-- `chat:write`: reply in the thread.
+- `chat:write`: reply in the thread. It also DMs people about a bot request
+  (TASK-1170).
 - `im:history`: read a DM sent to the bot.
 - `reactions:write`: put a 👀 on a message while the agent works on it.
 - `users:read` and `users:read.email`: the identity check (who is this, and is
-  that email an AX account).
+  that email an AX account). They also find an AX admin, or a bot's requester,
+  by email (TASK-1170). No new scope.
 - `channels:read`: look up a channel's flags and list the public ones to pick
   from (TASK-1094).
 - `channels:join`: the bot joins the public channel itself at connect, so
@@ -423,7 +425,9 @@ A team agent that wants its own `@ada`:
    it themselves: the request goes straight to step 3 with them as the approver.
    If they can't, it goes to the AX admins as a DM from the shared bot,
    **"Vinay wants to add @ada (Support team agent). [Approve] [Decline]"**, and
-   the same request shows up in AX admin settings. Either way, Slack's own
+   the same request shows up in AX admin settings. As built (TASK-1170),
+   Approve is a link to Admin › Slack, so tokens never pass through Slack, and
+   the notification names nobody. Either way, Slack's own
    install screen still decides in the end: only someone allowed to install
    apps there can click Allow.
 3. **Approve** asks the approver for **their own** configuration refresh
@@ -439,7 +443,9 @@ A team agent that wants its own `@ada`:
    tokens would make a second approval break the first. An approver whose
    stored token is live pastes nothing: approving uses it.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
-   bot's real `name` field as read back from `users.info`. Until then the agent keeps
+   bot's real `name` field as read back from `users.info`. As built
+   (TASK-1170), they hear it from the shared bot, and only when someone else
+   approved. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
 
 Everything except Allow is automatic. In the spike, Slack sent no challenge and
@@ -699,6 +705,48 @@ member" when auth no longer has them), when it was added, and its status. It
 has no agent or team column yet. If auth can't answer for an approver, the
 whole list fails and says so, with Try again: an outage that read as names
 would hide everyone who has left.
+
+**As built (TASK-1170).** When a team admin asks an AX admin for their agent's
+own bot, the shared bot DMs the admins, and the requester hears back.
+- **Who gets a DM.** `auth:list-admins` lists the admins (see section 6). For
+  each one except the requester, up to 20: `users.lookupByEmail` finds the
+  Slack id, the same `users.info` admission check as any sender must admit
+  them (full member, confirmed email), and `auth:find-user-by-email` on that
+  confirmed email must answer the same AX user. That's the Decline click's own
+  identity rule, so everyone who is DMed can also Decline. A deployment whose
+  only admin came from the setup wizard has an unverified email until they sign
+  in with Google or GitHub, so `auth:list-admins` answers no one there and
+  nobody is DMed. The request still waits in Admin › Slack.
+- **What the DM says.** The agent's and the bot's names and the requester's
+  display name go in as plain text, and the notification names nobody. Approve
+  is a link to `/?admin=slack` (channel-web opens Admin › Slack for an admin,
+  with no toast). Decline is a button.
+- **Bounds.** The DM records live in memory: at most 200, kept 7 days. One
+  requester starts at most 3 fan-outs per 10 minutes, and a fan-out stops at
+  its first temporary Slack failure. All of it runs after the app lock is
+  released, never fails an answer, and logs only codes.
+- **Redraws.** An approve that made the bot, and every decline, redraw each
+  DM with who approved or declined it. A cancel, an agent's deletion and a
+  reset don't, but a cancel does forget the request's DMs, so a fan-out still
+  running sends no more. After a restart (or past the 200-record or 7-day
+  bound), old DMs aren't redrawn when someone else answers. The request itself
+  is on Postgres, so a Decline clicked in one still declines a request that's
+  open, and the DM it was clicked in is redrawn (under the plain ask, since its
+  subject is gone). On a request that's already closed, the click says "This
+  request was already handled."
+- **The Decline click.** It goes through the interactions route to its own
+  gate: bot token, admission, `auth:find-user-by-email`, then `auth:get-user`
+  must say admin. Only then does anything read the request, so a non-admin
+  learns nothing about it. Then it runs the same decline Admin › Slack runs.
+- **The owner's DMs.** From the shared bot, only when the approver or decliner
+  isn't the requester: "is live" (with `/invite` and the agent's shared-app
+  channels, which now need the bot), or "An admin declined ...".
+- **Unmeasured.** `chat.postMessage` to a user id with `chat:write` only is
+  from Slack's docs, not measured. If Slack refuses, nobody is DMed (logged),
+  and the request still waits in Admin › Slack. The walk checks it. The DMs land
+  in the person's DM with the shared bot, where their personal agent also
+  answers. The bot's own messages never start a turn (`admission.ts
+  screenEvent`).
 
 ## 5. How a turn runs
 
@@ -988,8 +1036,22 @@ can't read the domains itself (don't copy the list into it).
 - **Caller risk:** reading `approved` as "has an account". It says nothing of
   the sort.
 
-**No other new hooks** (apart from `auth:is-approved-email` above, and
-TASK-1095 adds none). TASK-1095 adds one more public route,
+**Admins to tell about a bot request** are a third service hook on the auth
+plugin, `auth:list-admins`: `{} → { admins: [{ userId, email }] }` (TASK-1170).
+
+- **Rules:** every account that is an admin now and whose email a provider
+  verified, oldest first (then by id). Nothing else: no name, no role, no domain
+  verdict. A fault throws; it never answers "nobody". It logs nothing.
+- **Caller allowlist:** the same repo scan, `channel-slack-boundaries.test.js`.
+- **Alternate implementation:** an OIDC or SCIM directory group of admins.
+- **Leaky field names:** none.
+- **Caller risk:** using `email` as a Slack identity on its own. channel-slack
+  re-proves every DM target through `users.info` and maps the confirmed email
+  back through `auth:find-user-by-email`.
+
+**No other new hooks** (apart from `auth:is-approved-email` and
+`auth:list-admins` above, and TASK-1095 adds none). TASK-1170 adds no routes
+either: the interactions route gains a Decline action id. TASK-1095 adds one more public route,
 `POST /slack/interactions/<installId>`, signed like the events and `/ax`
 routes (the signature, the install and the admission check run before the body
 is read), and decisions' attendance now covers origin `'slack'`.
@@ -1278,5 +1340,6 @@ approving a second app never breaks the first).
   handle, and refuses connecting the agent through the shared app once its bot
   is live. TASK-1172 did Disconnect and the Admin › Slack list. TASK-1180 gave
   each bot channel its memory switch, and keeps the agent's switch for a
-  channel after a Disconnect.
+  channel after a Disconnect. TASK-1170 DMs the admins about a request and
+  tells the owner how it went.
 - **9. Walk (walk).**

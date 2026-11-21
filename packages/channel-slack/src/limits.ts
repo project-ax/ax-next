@@ -64,6 +64,39 @@ export const LEFTOVER_APPS_MAX = 10;
  */
 export const BOT_REQUESTS_MAX = 20;
 
+// ── A bot request's DMs (TASK-1170, bot-request-dms.ts) ─────────────────────
+
+/**
+ * The most AX admins one bot request is DMed to, in the order auth lists
+ * them (oldest account first). Each costs up to three Slack calls, one of
+ * them users.info, whose budget every sender's admission shares.
+ */
+export const BOT_REQUEST_DMS_MAX = 20;
+/**
+ * The most fan-outs one requester starts per BOT_REQUEST_FANOUT_WINDOW_MS. An
+ * ask/cancel loop would otherwise have the shared bot DM every admin each
+ * time; three still lets a team admin cancel and ask again after a typo.
+ */
+export const BOT_REQUEST_FANOUTS_MAX = 3;
+/** The window BOT_REQUEST_FANOUTS_MAX counts in: 10 minutes. Kept in memory, so a restart starts it over. */
+export const BOT_REQUEST_FANOUT_WINDOW_MS = 600_000;
+/**
+ * The most requests whose DMs are remembered for their redraw (each DM's IM
+ * and ts, in memory). Past it the oldest is forgotten: its DMs keep their
+ * buttons when someone else answers. A Decline clicked in one still declines
+ * a request that is open, and redraws that DM; on one already closed, it says
+ * the request was already handled.
+ */
+export const BOT_REQUEST_DM_RECORDS_MAX = 200;
+/** How long a request's DMs are remembered for their redraw: 7 days. */
+export const BOT_REQUEST_DM_TTL_MS = 604_800_000;
+/**
+ * The most channels a requester's "your bot is live" DM names: the agent's
+ * shared-app channels that now need the bot invited. The rest are counted
+ * ("and 3 more"); the agent's Slack settings list every one.
+ */
+export const BOT_LIVE_DM_CHANNELS_MAX = 10;
+
 // ── Events ingress ──────────────────────────────────────────────────────────
 
 /** How far a request's timestamp may be from our clock, either way. */

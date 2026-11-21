@@ -63,6 +63,7 @@ import {
   withoutSlackInstallReturn,
   type SlackInstallOutcome,
 } from './lib/slack-install-return';
+import { readSlackAdminLink, withoutSlackAdminLink } from './lib/slack-admin-link';
 import {
   SLACK_BOT_APPROVED_RETURN_MESSAGES,
   SLACK_BOT_RETURN_MESSAGES,
@@ -176,6 +177,16 @@ export const App = () => {
     );
   }, [slackBotReturn]);
 
+  // TASK-1170 — an AX admin's DM about a bot request links to `/?admin=slack`.
+  // Read once and taken out of the address bar; AppContent opens Admin › Slack
+  // for an admin and does nothing for anyone else.
+  const [slackAdminLink] = useState(() => readSlackAdminLink(window.location.search));
+  useEffect(() => {
+    if (!slackAdminLink) return;
+    const { pathname, search, hash } = window.location;
+    window.history.replaceState(window.history.state, '', `${pathname}${withoutSlackAdminLink(search)}${hash}`);
+  }, [slackAdminLink]);
+
   useEffect(() => {
     // `/chat` and `/chat/*` land on `/` (TASK-360). First thing, before any
     // branch below reads the path; a REPLACE, so a bookmark to the old chat
@@ -264,19 +275,22 @@ export const App = () => {
       </>
     );
   }
-  return <AppContent user={mode.user} slackReturn={slackReturn} slackBotReturn={slackBotReturn} />;
+  return <AppContent user={mode.user} slackReturn={slackReturn} slackBotReturn={slackBotReturn} slackAdminLink={slackAdminLink} />;
 };
 
 const AppContent = ({
   user,
   slackReturn = null,
   slackBotReturn = null,
+  slackAdminLink = false,
 }: {
   user: AuthUser;
   /** TASK-1093 — what Slack's Allow page sent this person back with, if anything. */
   slackReturn?: SlackInstallOutcome | null;
   /** TASK-1167 — what Slack's Allow page sent this person back with for an agent's own bot, if anything. */
   slackBotReturn?: SlackBotReturn | null;
+  /** TASK-1170 — the person followed an Approve link (`/?admin=slack`). */
+  slackAdminLink?: boolean;
 }) => {
   useHydrateAgents(); // before the first-run gate, which reads the result
   const { agents, agentsStatus } = useAgentStore();
@@ -287,15 +301,19 @@ const AppContent = ({
   // same place. For anyone else `from=admin` means nothing: no toast, no Settings.
   const slackBotAdminReturn =
     user.role === 'admin' && slackBotReturn !== null && slackBotReturn.fromAdmin ? slackBotReturn : null;
+  // TASK-1170 — the Approve link in an admin's DM: Admin › Slack, no toast. Nothing for anyone else.
+  const slackAdminOpen = user.role === 'admin' && slackAdminLink;
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true. An
   // admin back from Slack lands in it, on Admin › Slack.
-  const [adminSettingsOpen, setAdminSettingsOpen] = useState(slackOutcome !== null || slackBotAdminReturn !== null);
+  const [adminSettingsOpen, setAdminSettingsOpen] = useState(
+    slackOutcome !== null || slackBotAdminReturn !== null || slackAdminOpen,
+  );
   // Which tab Settings opens on — set only by a caller that knows where the
   // person needs to go (the rail's paused-memory "Fix this", TASK-627; Slack's
   // install return, TASK-1093).
   const [adminSettingsTab, setAdminSettingsTab] = useState<AdminTabId | undefined>(
-    slackOutcome !== null || slackBotAdminReturn !== null ? 'slack' : undefined,
+    slackOutcome !== null || slackBotAdminReturn !== null || slackAdminOpen ? 'slack' : undefined,
   );
   // And says what happened, once (a ref, so StrictMode's second effect run
   // doesn't say it twice). A fixed sentence per outcome, nothing from the URL.
