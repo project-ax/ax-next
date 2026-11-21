@@ -774,7 +774,7 @@ export function agentSlackBotReplaceErrorCopy(err: unknown): { field: 'refreshTo
 
 /**
  * A Replace that says what we drew is out of date: anything `agentSlackBotStale`
- * says, or 403 `not-approver` (the bot was rebuilt or claimed in another tab, so
+ * says, or 403 `not-approver` (the bot was rebuilt in another tab, so
  * the viewer isn't its approver now). Read the status again.
  */
 export function agentSlackBotReplaceStale(err: unknown): boolean {
