@@ -8,7 +8,8 @@
 // object the checks produced (`ReadySend`) and runs once, after every check
 // passed, with no less than MIN_SEND_BUDGET_MS of the budget left. What it
 // answers is returned as is. If it throws, the answer is `unknown`, because
-// the call may have landed.
+// the call may have landed. An answer the transport marked unforeseen (its
+// own reply mapping failed: `unforeseenMark`) is logged like the catch-all's.
 //
 // The handler is TOTAL: it never throws, and every failure it answers itself
 // is a closed code (`HandlerFailure`). The log line carries codes only:
@@ -16,7 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { PluginError, isOwnerlessId, makeAgentContext, type AgentContext } from '@ax/core';
-import { CALL_LIMITS } from './call-server-tool.js';
+import { CALL_LIMITS, unforeseenMark } from './call-server-tool.js';
 import { connectorHeaders, type ResolvedConnector } from './connector-headers.js';
 import { loggableCode } from './loggable-code.js';
 import { assertAllowedServerUrl } from './safe-fetch.js';
@@ -193,10 +194,13 @@ export function createConnectorCallHandler<O extends { outcome: string }>(opts: 
     const deadline = now() + CALL_LIMITS.budgetMs;
     const state: { sent: boolean; connectorId?: string } = { sent: false };
     let out: O | HandlerFailure;
-    // Set only by the catch-all, so its answer cannot pass for a genuine one.
+    // Set only by the catch-all, or by the transport's own mark on an answer
+    // it made up when its reply mapping failed, so neither can pass for a
+    // genuine one.
     let unexpected: { code?: string } | null = null;
     try {
       out = await attempt(callerCtx, rawInput, deadline, state);
+      unexpected = unforeseenMark(out) ?? null;
     } catch (err) {
       // 10. Something we did not foresee. Before the send nothing went out;
       //     after it, the call may have landed.

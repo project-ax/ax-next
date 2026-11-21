@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ToolDescriptor } from '@ax/core';
 import { ToolListOutputSchema, ToolRegisterOutputSchema } from '../tool-dispatcher-plugin.js';
+import { ConnectorCallToolResultOutputSchema } from '../connector-inventory/types.js';
 
 // ARCH-13 drift guard for the tool-dispatcher's `tool:register` / `tool:list`
 // returns schemas. A fully-populated ToolDescriptor must round-trip without
@@ -62,5 +63,27 @@ describe('tool-dispatcher return schemas', () => {
       tools: [{ ...descriptor, flushWorkspaceBeforeCall: true }],
     });
     expect(parsed).toEqual({ tools: [descriptor] });
+  });
+});
+
+// `connectors:call-tool-result`: the content blocks are opaque, so a block's
+// extra keys survive the bus; only `type` is required.
+describe('connectors:call-tool-result return schema', () => {
+  it('keeps extra block keys', () => {
+    const answer = {
+      outcome: 'succeeded',
+      content: [{ type: 'image', data: 'aGk=', mimeType: 'image/png', annotations: { audience: ['user'] } }],
+    };
+    expect(ConnectorCallToolResultOutputSchema.parse(answer)).toEqual(answer);
+  });
+
+  it('rejects a block with no type', () => {
+    expect(ConnectorCallToolResultOutputSchema.safeParse({ outcome: 'succeeded', content: [{ text: 'x' }] }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects an unknown outcome with a failed reason', () => {
+    expect(ConnectorCallToolResultOutputSchema.safeParse({ outcome: 'unknown', reason: 'tool-error' }).success).toBe(false);
   });
 });

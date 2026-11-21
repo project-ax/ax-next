@@ -231,3 +231,56 @@ export const ConnectorCallToolOutputSchema: z.ZodType<ConnectorCallToolOutput> =
   z.object({ outcome: z.literal('failed'), reason: z.enum(FAILED_REASONS) }).strict(),
   z.object({ outcome: z.literal('unknown'), reason: z.enum(['timeout', 'interrupted']) }).strict(),
 ]);
+
+// ---------------------------------------------------------------------------
+// `connectors:call-tool-result` (service). The same checks as
+// `connectors:call-tool` (the shared core, connector-call.ts), and the reply's
+// content blocks on success and on a tool error. Its intended caller is
+// @ax/apps-bridge, which serves an external apps platform; nothing in the
+// hook enforces that (see SECURITY.md).
+//
+// Boundary review:
+//   - Alternate impl: a non-MCP connector runtime (a REST/OpenAPI adapter)
+//     answering the same toolKey with `{ outcome, content }`.
+//   - Payload field names that might leak: none. `content` is opaque typed
+//     blocks; `toolKey` is the canonical permission key (see above).
+//   - Server text: `connectors:call-tool` carries none because its answers
+//     reach people and models inside AX. This hook's content goes only to the
+//     apps platform, never to a model or a screen inside AX, so that rule
+//     doesn't apply here. The content is still untrusted and capped (2 MiB
+//     per reply), and nothing else in the answer carries server text: a
+//     JSON-RPC error's message is still never read.
+//   - Subscriber risk: none. It is a service hook with one implementer, and
+//     nothing fires.
+//   - Wire surface: none. Not an IPC action, not a `tool:execute:<name>`.
+// ---------------------------------------------------------------------------
+
+/** One block of a tool reply: opaque apart from its `type`. Untrusted. */
+export type ConnectorResultContentBlock = { type: string } & Record<string, unknown>;
+
+export type ConnectorCallToolResultOutput =
+  | { outcome: 'succeeded'; content: ConnectorResultContentBlock[] }
+  | { outcome: 'failed'; reason: 'tool-error'; content: ConnectorResultContentBlock[] }
+  | { outcome: 'failed'; reason: Exclude<ConnectorCallFailedReason, 'tool-error'> }
+  | { outcome: 'unknown'; reason: ConnectorCallUnknownReason };
+
+/**
+ * A block is read for its `type` only; every other key passes through
+ * unread. Mirrored by `ContentBlockSchema` in @ax/apps-bridge-contract's
+ * wire.ts (a parallel copy: change both).
+ */
+export const ConnectorResultContentBlockSchema = z.object({ type: z.string().min(1).max(64) }).passthrough();
+
+/** The bus holds the hook to these shapes: content only on success and on a tool error. */
+export const ConnectorCallToolResultOutputSchema: z.ZodType<ConnectorCallToolResultOutput> = z.union([
+  z.object({ outcome: z.literal('succeeded'), content: z.array(ConnectorResultContentBlockSchema) }).strict(),
+  z
+    .object({
+      outcome: z.literal('failed'),
+      reason: z.literal('tool-error'),
+      content: z.array(ConnectorResultContentBlockSchema),
+    })
+    .strict(),
+  z.object({ outcome: z.literal('failed'), reason: z.enum(FAILED_REASONS).exclude(['tool-error']) }).strict(),
+  z.object({ outcome: z.literal('unknown'), reason: z.enum(['timeout', 'interrupted']) }).strict(),
+]);
