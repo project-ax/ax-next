@@ -453,6 +453,37 @@ describe('createChannelCheck', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('private wins even when a refusal also landed: private, then archived, then the older public', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    const second = check.check(INSTALL, TOKEN, CH);
+    const third = check.check(INSTALL, TOKEN, CH);
+    asks[1]!.answer(live(CH, { isPrivate: true }));
+    expect(await second).toEqual(PRIVATE);
+    asks[2]!.answer(live(CH, { isArchived: true }));
+    expect(await third).toEqual({ kind: 'refused', code: 'archived' });
+    asks[0]!.answer(live(CH));
+    expect(await first).toEqual(PRIVATE);
+  });
+
+  it('a private answer that a refusal overtook still counts: the older public answer after it is told private', async () => {
+    const { asks, check } = held();
+    const first = check.check(INSTALL, TOKEN, CH);
+    const second = check.check(INSTALL, TOKEN, CH);
+    const third = check.check(INSTALL, TOKEN, CH);
+    asks[2]!.answer(live(CH, { isArchived: true }));
+    expect(await third).toEqual({ kind: 'refused', code: 'archived' });
+    asks[1]!.answer(live(CH, { isPrivate: true }));
+    expect(await second).toEqual(PRIVATE);
+    asks[0]!.answer(live(CH));
+    expect(await first).toEqual(PRIVATE);
+    // Nothing was kept: a refusal overtook them all.
+    const fourth = check.check(INSTALL, TOKEN, CH);
+    expect(asks).toHaveLength(4);
+    asks[3]!.answer(live(CH));
+    expect(await fourth).toEqual(PUBLIC);
+  });
+
   it('a private answer still on its way when a refusal lands is not kept either', async () => {
     const { asks, check } = held();
     const first = check.check(INSTALL, TOKEN, CH);

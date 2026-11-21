@@ -16,7 +16,8 @@ import type { SkillReach } from './turn-registry.js';
  * The `channel*` lines (with `queueFull`, `turnFailed`, TASK-1167's
  * `botUnavailable` and TASK-1186's `sharedBotInChannel`) can reach a channel
  * mention's sender privately, before its turn starts or in place of one
- * (router.ts), and the `prompt*` and `decision*` lines surround an approval
+ * (router.ts); `botUnavailable` also answers an Allow click whose bot can't
+ * read channels (answers.ts, TASK-1188). The `prompt*` and `decision*` lines surround an approval
  * prompt (blocks.ts). Both go out as mrkdwn, not Markdown (but for the
  * prompt's two button labels, which are plain_text): a link is a bare URL,
  * and no line holds a `<` or `>` of its own (mrkdwn reads `<…>` as a link).
@@ -230,7 +231,8 @@ export const COPY = {
     runs until a team admin claims the bot in the web app; members are still
     answered. Every admitted sender reads it when the agent itself is gone,
     or when the bot's own token can't read public channels any more
-    (TASK-1184): no retry fixes either, a team admin must look.
+    (TASK-1184), at a mention or at an Allow click (TASK-1188): no retry
+    fixes either, a team admin must look.
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
 

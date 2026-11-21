@@ -943,12 +943,15 @@ describe('the click gate: each step refuses on its own (each case valid on every
     expect(told).toEqual([line]);
   });
 
-  it('step 8: a binding that says private asks the check not to take a kept public answer', async () => {
-    const w = await world({ channelNow: { kind: 'allowed', isPrivate: true } });
-    await w.channels.store.setPrivate(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, true);
+  it.each([
+    ['private', true],
+    ['public', false],
+  ] as const)("step 8: the check is told the binding's privacy (%s), so only a private one refuses a kept public answer", async (_n, isPrivate) => {
+    const w = await world({ channelNow: { kind: 'allowed', isPrivate } });
+    await w.channels.store.setPrivate(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, isPrivate);
     const prompt = w.open(MEL_SUPPORT);
     await w.onClick(INSTALL, w.clickOn(prompt));
-    expect(w.channelCheckOpts).toEqual([{ knownPrivate: true }]);
+    expect(w.channelCheckOpts).toEqual([{ knownPrivate: isPrivate }]);
   });
 
   it('step 8: the binding goes between its read and the privacy write: the prompt closes as disconnected, and nothing runs', async () => {

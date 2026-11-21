@@ -973,7 +973,11 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
   takes a kept public answer (the check's `knownPrivate`, so only Slack asked
   after the binding was read can clear it, whichever replica kept the old
   answer), and a public answer a private one overtook in flight is reported
-  private to its own turn. The thread record ORs privacy into its sticky
+  private to its own turn, even when a refusal also landed. One order it
+  can't see: a public answer landing before a private one asked after it (the
+  channel made public and private again within one Slack call, or Slack
+  answering from stale data). That turn writes public, until the next turn's
+  check sets it private again. Accepted. The thread record ORs privacy into its sticky
   `not_remembered`, the same flag a switch that is off sets.
 - The capture veto refuses a thread whose binding says private now, or whose
   turn ran while it was private (`channel-not-remembered`, the switch's
@@ -1000,9 +1004,10 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
   channel is from Slack's docs; the TASK-1189 walk measures it.
   **Outsiders' turns in a private channel** run as the bot's requester, in a
   conversation the requester owns (as in any channel), so a team admin who
-  isn't in the private channel can read those turns in the web app. Accepted
-  for now and filed as a follow-up for a product decision (answer only
-  members there, or hide those conversations).
+  isn't in the private channel can read those turns in the web app. **Not a
+  settled decision:** shipped as built, and handed to the board as a
+  follow-up for a human product decision (answer only members there, or hide
+  those conversations).
 
 ### 4. Permission, in one sentence
 

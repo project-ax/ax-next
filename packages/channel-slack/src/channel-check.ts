@@ -67,8 +67,13 @@ import { SlackApiError, type SlackApi, type SlackChannel } from './slack-api.js'
  * Private is the stricter allowed answer, so in the same way a public answer
  * still on its way when a private one lands is not kept (the private one
  * is), and its own turn is told private instead (private wins): a turn
- * that heard public would write public over the private one. Otherwise its
- * own turn still gets it, as every turn gets its own answer.
+ * that heard public would write public over the private one; this holds
+ * whether or not a refusal also landed. Otherwise its own turn still gets
+ * it, as every turn gets its own answer. What this can't see: a public
+ * answer that lands BEFORE a private one asked later (the channel made
+ * public and private again within one ask, or Slack answering from stale
+ * data). That turn writes public, and the binding says so until the next
+ * turn's check (the design's §4b.3 known gaps).
  *
  * In-process and bounded (`max` channels, the oldest forgotten first), like
  * the event-id dedupe and the signing-secret cache; an install and channel
@@ -219,7 +224,9 @@ export function createChannelCheck(o: {
       if (kept !== undefined && now() < kept.until && (kept.isPrivate || opts?.knownPrivate !== true)) {
         return { kind: 'allowed', isPrivate: kept.isPrivate };
       }
-      if (kept === undefined || now() >= kept.until) allowedUntil.delete(key);
+      // Expired, or a public answer a private binding won't take: the answer
+      // this ask brings replaces it either way.
+      allowedUntil.delete(key);
 
       const flight = asking.get(key) ?? { inFlight: 0, refusals: 0, privates: 0 };
       asking.set(key, flight);
@@ -232,18 +239,20 @@ export function createChannelCheck(o: {
           // What another ask kept, or still brings back, may be from before this.
           flight.refusals += 1;
           allowedUntil.delete(key);
-        } else if (result.kind === 'allowed' && flight.refusals === refusalsBefore) {
+        } else if (result.kind === 'allowed') {
+          // Only an answer no refusal overtook is kept; private wins whether or not one did.
+          const unrefused = flight.refusals === refusalsBefore;
           if (result.isPrivate) {
             // A public answer still on its way may be from before this.
             flight.privates += 1;
-            keep(key, true);
-          } else if (flight.privates === privatesBefore) {
-            keep(key, false);
-          } else {
+            if (unrefused) keep(key, true);
+          } else if (flight.privates !== privatesBefore) {
             // Private wins: a private answer landed while this one was on
             // its way, so this one may describe the channel as it was
             // before. Its turn is told private, and so writes no public.
             return { kind: 'allowed', isPrivate: true };
+          } else if (unrefused) {
+            keep(key, false);
           }
         }
         return result;

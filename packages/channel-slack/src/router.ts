@@ -681,8 +681,10 @@ async function routeMention(
     // binding still says public would let a pass learn from it. Public is
     // written over private only from an answer asked after `now` was read
     // (the check's `knownPrivate`), and a public answer a private one
-    // overtook is told private (private wins), so a stale public answer,
-    // kept on this replica or another, never clears a newer private one.
+    // overtook is told private (private wins), so a public answer kept on
+    // this replica or another, or overtaken in flight, never clears a newer
+    // private one. (One that lands before a later private answer still can:
+    // channel-check.ts says when.)
     if (now.isPrivate !== channelNow.isPrivate) {
       try {
         await d.channels.setPrivate(installId, m.channel, agentId, channelNow.isPrivate);
