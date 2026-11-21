@@ -214,6 +214,18 @@ export function memoryStore(clock: () => number, trail: string[]) {
       // Only the date: the row's person never moves (TASK-1175).
       r.configTokenAddedAt = new Date(addedAt.getTime());
     },
+    async claimBot(installId, userId) {
+      await enter('claimBot', [installId, userId]);
+      const r = rows.get(installId);
+      if (r === undefined || r.kind !== 'bot' || r.status !== 'active') {
+        throw new InstallStoreError('install-not-active');
+      }
+      // The real store moves the install's channel bindings in the same
+      // statement. Here they live in memory-channel-store.ts, which this
+      // store can't see, so that half is pinned on Postgres only
+      // (store.test.ts).
+      r.requestedByUserId = userId;
+    },
     async remove(installId, o) {
       await enter('remove', [installId, o]);
       // One statement in the real store: the app is remembered only with its
