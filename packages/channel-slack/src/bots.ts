@@ -521,7 +521,7 @@ export function createBots(d: BotDeps): Bots {
     }
   };
 
-  /** A bot's install link: its own callback, and the six scopes its manifest grants. */
+  /** A bot's install link: its own callback, and the scopes its manifest grants (seven since TASK-1188). */
   const botLink = (installId: string): InstallLink => ({
     redirectUrl: botUrls(d.publicOrigin, installId).redirectUrl,
     scopes: DEDICATED_BOT_SCOPES,

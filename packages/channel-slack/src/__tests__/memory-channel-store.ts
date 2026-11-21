@@ -14,6 +14,7 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
  * `recordThread` changes only `notRemembered`, `external` and
  * `speakerNames`, and neither flag ever goes back to false. `recordThread`
  * takes `notRemembered` from the named agent's binding as it is at the write
+ * (its switch off, or the channel private) or the turn's own `isPrivate`
  * and `external` from the turn's mode (anything but `attended` is external),
  * and answers `no-binding` (writing nothing) when there is no binding, and
  * `reconnected` (writing nothing) for an outsider's turn whose `runAs` no
@@ -83,6 +84,7 @@ export function memoryChannelStore() {
         connectedByUserId: b.connectedByUserId,
         channelName,
         remember: b.remember ?? true,
+        isPrivate: b.isPrivate ?? false,
         createdAt: new Date(created),
       });
       return 'connected';
@@ -103,6 +105,18 @@ export function memoryChannelStore() {
       }
       switches.set(switchKey(agentId, channelId), remember);
       return true;
+    },
+    async setPrivate(installId, channelId, agentId, isPrivate) {
+      calls.push('setPrivate');
+      const row = rows.get(key(installId, channelId));
+      if (row === undefined || row.agentId !== agentId) return false;
+      row.isPrivate = isPrivate;
+      return true;
+    },
+    async markNotRemembered(conversationId) {
+      calls.push('markNotRemembered');
+      const known = threads.get(conversationId);
+      if (known !== undefined) known.notRemembered = true;
     },
     async keptRemember(agentId, channelId) {
       calls.push('keptRemember');
@@ -139,7 +153,7 @@ export function memoryChannelStore() {
       if (binding === undefined || binding.agentId !== t.agentId) return 'no-binding';
       const external = t.mode !== 'attended';
       if (external && binding.connectedByUserId !== (t.mode === 'external' ? t.runAs : undefined)) return 'reconnected';
-      const notRemembered = !binding.remember;
+      const notRemembered = !binding.remember || binding.isPrivate || t.isPrivate !== false;
       const turnNames = t.mode === 'attended' ? t.speakerNames : [];
       const known = threads.get(t.conversationId);
       threads.set(

@@ -142,6 +142,14 @@ describe('fetchAgentSlack', () => {
       expect(((await fetchAgentSlack('a1')) as { botChannels?: unknown }).botChannels).toEqual([BOT_ROW]);
       answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, remember: 'yes' }] }));
       await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+      // A private channel's row says so (TASK-1188), and the settings show it isn't remembered.
+      answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, isPrivate: true }, { ...BOT_ROW, channelId: 'C2', isPrivate: false }] }));
+      expect(((await fetchAgentSlack('a1')) as { botChannels?: unknown }).botChannels).toEqual([
+        { ...BOT_ROW, isPrivate: true },
+        { ...BOT_ROW, channelId: 'C2', isPrivate: false },
+      ]);
+      answer = () => json(200, make({ botChannels: [{ ...BOT_ROW, isPrivate: 'yes' }] }));
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
       answer = () => json(200, make({ botChannels: [{ channelId: 'C1', remember: true }] }));
       await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
       answer = () => json(200, make({ botChannels: {} }));

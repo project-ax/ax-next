@@ -1,6 +1,8 @@
 /**
  * The channels the agent's own Slack bot has answered in, each with the same
- * "remember this channel" switch (TASK-1180). Only the switch is here: no
+ * "remember this channel" switch (TASK-1180), or, for a private channel, a
+ * line saying it isn't remembered (TASK-1188: the agent answers there and
+ * memory never learns from it, whatever the switch says). Only that is here: no
  * Disconnect (the bot answers where it was invited) and no "Connected by"
  * (nobody connected it).
  *
@@ -84,14 +86,18 @@ export function AgentSlackBotChannels({
                   <Hash aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
                   <span className="truncate">{row.name}</span>
                 </span>
-                <SlackRememberField
-                  id={`slack-bot-remember-${row.channelId}`}
-                  agentName={agentName}
-                  remember={row.remember}
-                  canManage={canManage}
-                  busy={pending.has(row.channelId)}
-                  onChange={(on) => void remember(row, on)}
-                />
+                {row.isPrivate === true ? (
+                  <p className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_COPY.privateChannelNotRemembered}</p>
+                ) : (
+                  <SlackRememberField
+                    id={`slack-bot-remember-${row.channelId}`}
+                    agentName={agentName}
+                    remember={row.remember}
+                    canManage={canManage}
+                    busy={pending.has(row.channelId)}
+                    onChange={(on) => void remember(row, on)}
+                  />
+                )}
                 {errors[row.channelId] !== undefined && (
                   <p role="alert" className="text-[12.5px] text-destructive">
                     {errors[row.channelId]}

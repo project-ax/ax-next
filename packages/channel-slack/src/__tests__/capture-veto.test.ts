@@ -62,6 +62,7 @@ const binding = (o: Partial<ChannelBinding> = {}): ChannelBinding => ({
   connectedByUserId: 'usr_ada',
   channelName: 'support',
   remember: true,
+  isPrivate: false,
   createdAt: new Date('2026-11-13T09:00:00Z'),
   ...o,
 });
@@ -144,6 +145,15 @@ describe('channelCaptureVeto: what the switch refuses', () => {
     ['the switch is off now', { threads: { [THREAD]: thread() }, binding: binding({ remember: false }) }],
     ['the channel is no longer connected (disconnected, or its install removed)', { threads: { [THREAD]: thread() }, binding: null }],
     ['the channel is connected to another agent now', { threads: { [THREAD]: thread() }, binding: binding({ agentId: 'agt_sales' }) }],
+    // TASK-1188 (design §4b.3): a private channel is answered in and never
+    // remembered, whatever its switch says. Its turns mark their threads,
+    // and its binding refuses every thread of it while it stays private:
+    // one with no turn since the channel was made private too.
+    ['the channel is private now, its switch on, the thread from before', { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: true }) }],
+    [
+      'a private flag that is anything but false (fails closed)',
+      { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: undefined as unknown as boolean }) },
+    ],
   ] as const)('refuses: %s', async (_name, world) => {
     expect(await channelCaptureVeto(channelsWith(world), pass(), { conversationId: THREAD })).toEqual(REFUSED);
   });

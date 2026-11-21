@@ -148,6 +148,12 @@ Knowledge flows one way: shared → private, never back. What the agent learned
 in #support can be recalled anywhere. What someone said privately is never
 recalled in a channel.
 
+A **private Slack channel** is a shared turn too (others see the reply), so
+recall there is shared-only. But nothing said in one is captured, whatever its
+switch says (TASK-1188, §4b.3): shared memory is recalled in every channel and
+in members' web chats, so a private channel's words would surface in public
+ones. Capture happens in public channels only.
+
 - The owner's memory view labels shared statements so they can be deleted. It
   says "Shared" for now. Naming the channel ("learned in #support") is not done
   by TASK-1094: memory never sees a channel name, and showing one needs memory
@@ -358,6 +364,9 @@ retired three of them, marked below.)
   nobody has to invite it (TASK-1094). *Retired by §4b.1 (TASK-1186).*
 - `commands`: the `/ax` slash command (TASK-1094). *Retired by §4b.1
   (TASK-1186).*
+- `groups:read` (team bot only, TASK-1188): read a private channel's flags,
+  so the bot answers there and never remembers it (§4b.3). The shared app
+  doesn't ask for it.
 
 Events stay `app_mention` and `message.im`; the App Home messages tab is on
 (without it nobody can DM the app). Interactivity is on (TASK-1095): the
@@ -399,12 +408,16 @@ Rules, the same on both sides:
   (`agents:can-set-shared-credential`, always asked with `isAdmin: false`).
   Workspace admins don't count. A personal agent can't be connected. A person
   who can't see the agent is told nothing about it.
-- **The channel:** public only. Private, archived and Slack Connect channels
-  (including a pending one) are refused. The bot joins the channel itself, after
-  those checks pass.
+- **The channel:** public only (phase 1's shared app). Private, archived and
+  Slack Connect channels (including a pending one) are refused. The bot joins
+  the channel itself, after those checks pass. *Since §4b (TASK-1186,
+  TASK-1188):* only a team agent's own bot is in channels, and it answers in a
+  private channel it was invited to, never remembering it. Archived and Slack
+  Connect stay refused.
   Slack is asked again when each turn starts, and its answer is trusted for a
   minute (TASK-1184). A turn that finds its connected channel has since become
-  private, archived or Slack Connect never runs, and the channel is
+  archived or Slack Connect never runs (private, since TASK-1188: it runs,
+  and memory is refused), and the channel is
   disconnected, as a team admin's Disconnect would do it. The person whose turn
   found it is told once, privately. If Slack can't answer, no turn runs either.
   A channel shared with another company seldom gets that far: Slack flags its
@@ -947,6 +960,59 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
 - **Unchanged and not shown:** outsiders' words are never remembered, and
   facts about the speaker are never saved to shared memory (§2a).
 
+**As built (TASK-1188).**
+
+- `connectable()` (`channels.ts`) no longer tests `is_private`. It still needs
+  Slack's `is_channel`, so a group DM, and a private group from before March
+  2021 (Slack still describes those with `is_channel` false), stay refused.
+- The turn-start check (`channel-check.ts`) answers `allowed` with `isPrivate`
+  (only Slack's literal `false` is public: absent or unreadable is private).
+  The binding stores it (`channel_slack_v1_channels.is_private`): written at
+  the bind, and again by any turn whose check finds it changed, before the
+  thread is recorded. **Private wins:** a binding that says private never
+  takes a kept public answer (the check's `knownPrivate`, so only Slack asked
+  after the binding was read can clear it, whichever replica kept the old
+  answer), and a public answer a private one overtook in flight is reported
+  private to its own turn, even when a refusal also landed. One order it
+  can't see: a public answer landing before a private one (Slack answering
+  from stale data, or the channel made public and private again while turns
+  that read the binding as private were in flight; those write nothing). That
+  turn writes public, and the binding stays public until a turn that read it
+  public hears private, up to a minute on a replica that kept the public
+  answer. The same kind of window as TASK-1184's minute, and part of the
+  human follow-up below. (Writing private on every private turn, not only
+  when it changed, would close most of it at one no-op write per turn.) The thread record ORs privacy into its sticky
+  `not_remembered`, the same flag a switch that is off sets.
+- The capture veto refuses a thread whose binding says private now, or whose
+  turn ran while it was private (`channel-not-remembered`, the switch's
+  refusal). So the observer and `memory_note` are both refused, whatever the
+  switch says. Public → private stops capture for every thread of the channel
+  at once; private → public lets new threads in (switch on), and a thread a
+  private turn ran in stays out for good.
+- The Allow continuation (`answers.ts` step 8) runs the same check (closing
+  TASK-1184's gap): archived or Slack Connect closes the prompt, Slack not
+  answering is "try again", and private marks the binding and the thread
+  before the answer runs.
+- `groups:read` is the bot's seventh scope. Settings show a private channel's
+  row as "Private channels aren't remembered." instead of the switch.
+- **Known gaps, accepted.** A channel made private can still be captured for
+  up to a minute, while the check's kept public answer lasts (TASK-1184's
+  window). What was captured while a channel was public stays in memory. A bot
+  Allowed before `groups:read` still can't read a private channel: Slack says
+  `missing_scope`, which stays a refusal (the channel is disconnected), so such
+  a bot needs Rebuild. A private channel whose binding goes (disconnected) leaves
+  threads marked not remembered, and a later boot may keep that as the
+  channel's switch off (`migrations.ts`' thread backfill), so if the channel is
+  public by the time the bot binds it again, it starts off: the safe side.
+  Whether `conversations.info` needs exactly `groups:read` for a private
+  channel is from Slack's docs; the TASK-1189 walk measures it.
+  **Outsiders' turns in a private channel** run as the bot's requester, in a
+  conversation the requester owns (as in any channel), so a team admin who
+  isn't in the private channel can read those turns in the web app. **Not a
+  settled decision:** shipped as built, and handed to the board as a
+  follow-up for a human product decision (answer only members there, or hide
+  those conversations).
+
 ### 4. Permission, in one sentence
 
 The card's help line: **"If @fern needs your OK for something, it asks the
@@ -1458,7 +1524,8 @@ bindings are the only ones left.
   turn that starts inside that minute still runs, and a turn already running
   finishes. A refusal or a failure is never kept, and an allowed answer that a
   refusal overtook is dropped, so nothing stays open past the minute.
-- **Continuations aren't checked again, for up to a day.** After an Allow,
+- **Continuations aren't checked again, for up to a day.** *Closed by
+  TASK-1188: the Allow's gate now runs the same check (§4b.3 as built).* After an Allow,
   the continuation streams into the thread of the turn that asked. The
   Allow's own gate (`answers.ts`) only checks that the channel is still
   connected to the agent, and a prompt can be answered for 24 hours

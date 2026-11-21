@@ -886,7 +886,7 @@ describe('the section', () => {
           workspaceName: 'Canopy Works',
           canManage,
           bot: LIVE,
-          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk', remember: true }],
+          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk', remember: true, isPrivate: false }],
         },
       });
     }
@@ -1770,9 +1770,11 @@ describe("a bot channel's memory switch (TASK-1180)", () => {
     await answerOnBot(w, SUPPORT_CH);
     await answerOnBot(w, BOT_ONLY_CH, 'alpha-room');
     expect(await w.memory.store.setRemember(OWN_BOT.installId, SUPPORT_CH, SUPPORT.id, false)).toBe(true);
+    // #alpha-room is private now (TASK-1188): never remembered, whatever its switch says, and the row says so.
+    expect(await w.memory.store.setPrivate(OWN_BOT.installId, BOT_ONLY_CH, SUPPORT.id, true)).toBe(true);
     const botChannels = [
-      { channelId: SUPPORT_CH, name: 'support-desk', remember: false },
-      { channelId: BOT_ONLY_CH, name: 'alpha-room', remember: true },
+      { channelId: SUPPORT_CH, name: 'support-desk', remember: false, isPrivate: false },
+      { channelId: BOT_ONLY_CH, name: 'alpha-room', remember: true, isPrivate: true },
     ];
 
     for (const [as, canManage] of [
