@@ -928,7 +928,8 @@ sentence ("@fern isn't in Slack yet", "Waiting for an admin to approve ...",
   is already stored. Then the button installs the bot directly. The form has
   one link-button that flips its label: "I can install Slack apps myself" and
   "Ask an admin instead". It is not a two-way choice.
-- **Waiting names the bot**, not an @handle.
+- **Waiting names the bot**, not an @handle, and says what happens next: "Once
+  an admin approves it, Quill Bot is ready to invite to channels."
 - **`approverGone` shows alone.** No other problem row sits beside it.
 - **The token rows are not on page load.** They appear only after a Rename or
   Change picture finds the token dead, and they don't survive a reload.
@@ -941,8 +942,13 @@ sentence ("@fern isn't in Slack yet", "Waiting for an admin to approve ...",
 - **The memory switch is the channel row's ⋯ item** ("Don't remember this
   channel" or "Remember this channel"). Storage, route and locks are
   unchanged.
-- **The help line** (who @fern asks when it needs an OK) is on the Not in
-  Slack and Live cards.
+- **The help line** (who @fern asks when it needs an OK: the person who
+  mentioned it, or the team admin who set it up for people outside the team)
+  is on the Not in Slack and Live cards.
+- **Live tells people where to type the invite**: "In any Slack channel, type
+  `/invite @fern`" (with no handle: "In any Slack channel, type /invite and
+  pick it."). The outsiders row says why: the team admin who set the bot up
+  isn't a team admin anymore.
 - **A words test** (`slack-card-words.test.ts`) fails if the plumbing words
   come back into the agent settings.
 

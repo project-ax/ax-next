@@ -712,12 +712,15 @@ describe("the Slack card's words (TASK-1187)", () => {
       "@quill was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.",
     );
     expect(C.waitingForAdmin(botName)).toBe('Waiting for an admin to approve Quill Bot');
-    expect(C.askedOn('Nov 3')).toBe('Asked on Nov 3.');
+    expect(C.askedOn('Nov 3', botName)).toBe(
+      'Asked on Nov 3. Once an admin approves it, Quill Bot is ready to invite to channels.',
+    );
     expect(C.finishInSlack(botName)).toBe('Almost there: finish adding Quill Bot in Slack');
     expect(C.waitingForPerson(approver, botName)).toBe('Waiting for Ada Lovelace to finish adding Quill Bot in Slack');
     expect(C.cancelling).toBe('Cancelling…');
     expect(C.inSlack(who)).toBe('@quill is in Slack');
-    expect(C.inviteNoHandle).toBe('Invite it to a channel with /invite.');
+    expect(C.inviteLead).toBe('In any Slack channel, type ');
+    expect(C.inviteNoHandle).toBe('In any Slack channel, type /invite and pick it.');
     expect(C.channelsLead({ botName, handle: 'quill' })).toBe(
       '@quill has answered in these channels. It remembers what team members say there.',
     );
@@ -728,14 +731,16 @@ describe("the Slack card's words (TASK-1187)", () => {
     expect(C.dontRemember).toBe("Don't remember this channel");
     expect(C.rememberAgain).toBe('Remember this channel');
     expect(C.helpLine(who)).toBe(
-      'If @quill needs your OK for something, it asks the person who asked. For people outside the team, it asks the team admin who set @quill up.',
+      'When @quill needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set @quill up.',
     );
     expect(C.setUpAgain(who)).toBe('@quill needs to be set up again. The person who added it to Slack has left.');
     expect(C.changesCantReach(who)).toBe("Changes to @quill can't reach Slack right now.");
     expect(C.askToReconnect(who, approver)).toBe(
       "Changes to @quill can't reach Slack right now. Ask Ada Lovelace to reconnect it.",
     );
-    expect(C.outsidersCantUse(who)).toBe("People outside the team can't use @quill right now.");
+    expect(C.outsidersCantUse(who)).toBe(
+      "People outside the team can't use @quill right now, because the team admin who set it up isn't a team admin anymore.",
+    );
     expect(C.teamAdminCanFix).toBe(' A team admin can fix this.');
     expect(C.onceSlackIsBack).toBe(' You can do this here once Slack is connected again.');
     expect(C.reconnectThenRetry(who)).toBe("Changes to @quill can't reach Slack right now. Reconnect it, then try again.");

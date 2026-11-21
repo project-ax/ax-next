@@ -11,13 +11,10 @@ import {
   AgentSlackError,
   cancelSlackBot,
   cancelSlackBotRequest,
-  claimAgentSlackBot,
   disconnectSlackBot,
   fetchAgentSlack,
   renameAgentSlackBot,
-  replaceAgentSlackBotToken,
   requestSlackBot,
-  setAgentSlackBotPicture,
   setSlackBotChannelRemember,
   type AgentSlackBot,
   type AgentSlackRead,
@@ -195,7 +192,7 @@ describe("the agent's own bot, in the ready section", () => {
     ).toBeInTheDocument();
     const list = within(card).getByRole('list', { name: 'Channels @quill has answered in' });
     expect(within(list).getByText('help')).toBeInTheDocument();
-    expect(card.querySelector('[data-slot="card-description"]')).toHaveTextContent('Invite it to a channel: /invite @quill');
+    expect(card.querySelector('[data-slot="card-description"]')).toHaveTextContent('In any Slack channel, type /invite @quill');
     // The only button on the card is a ⋯ or two: nothing hangs outside the menus.
     const menu = await openMenu('@quill');
     expect(within(menu).getByRole('menuitem', { name: 'Remove from Slack' })).toBeInTheDocument();
@@ -235,7 +232,7 @@ describe("the agent's own bot, in the ready section", () => {
     async (canManage) => {
       renderIt(ready(canManage, LIVE_BOT));
       expect(await liveTitle('@quill')).toBeInTheDocument();
-      expect(screen.getByText('Invite it to a channel:', { exact: false })).toBeInTheDocument();
+      expect(screen.getByText('In any Slack channel, type', { exact: false })).toBeInTheDocument();
       expect(screen.queryByText(/isn't answering in any channels yet/)).toBeNull();
       expect(screen.queryByText(/isn't connected to any Slack channels yet/)).toBeNull();
       expect(screen.queryByText(/still need/)).toBeNull();

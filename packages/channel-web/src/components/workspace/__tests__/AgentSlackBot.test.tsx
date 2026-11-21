@@ -84,10 +84,10 @@ const LIVE: Bot = {
 const QUIET = { leftOver: null, rebuilding: null, onCancelled: () => {}, onRebuilt: () => {}, onRequesting: () => {} };
 /** The Live card's last line, for the bot called @quill_bot. */
 const LIVE_HELP_LINE =
-  'If @quill_bot needs your OK for something, it asks the person who asked. For people outside the team, it asks the team admin who set @quill_bot up.';
+  'When @quill_bot needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set @quill_bot up.';
 /** The Not in Slack card's last line, for the agent called Quill. */
 const HELP_LINE =
-  'If Quill needs your OK for something, it asks the person who asked. For people outside the team, it asks the team admin who set Quill up.';
+  'When Quill needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set Quill up.';
 
 function renderIt(bot: Bot, canManage = true, onChanged = vi.fn()) {
   render(<AgentSlackBot agentId="a1" agentName="Quill" bot={bot} canManage={canManage} {...QUIET} onChanged={onChanged} />);
@@ -713,7 +713,7 @@ describe('requested', () => {
     renderIt(REQUESTED);
     expect(screen.getByRole('heading', { level: 3, name: 'Waiting for an admin to approve Quill Bot' })).toBeInTheDocument();
     const date = new Date('2026-11-20T10:00:00.000Z').toLocaleDateString(undefined, { dateStyle: 'medium' });
-    expect(screen.getByText(`Asked on ${date}.`)).toBeInTheDocument();
+    expect(screen.getByText(`Asked on ${date}. Once an admin approves it, Quill Bot is ready to invite to channels.`)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Continue in Slack' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Cancel request' })).toBeNull();
     const menu = await openMenu('Quill Bot');
@@ -722,7 +722,7 @@ describe('requested', () => {
 
   it('a date we cannot read shows as it came', () => {
     renderIt({ ...REQUESTED, requestedAt: 'last week' });
-    expect(screen.getByText('Asked on last week.')).toBeInTheDocument();
+    expect(screen.getByText('Asked on last week. Once an admin approves it, Quill Bot is ready to invite to channels.')).toBeInTheDocument();
   });
 
   it('anyone else sees the card saying Quill is not in Slack yet, never the request', () => {
@@ -779,7 +779,7 @@ describe('requested', () => {
 const MEMBER_LIVE: Bot = { ...LIVE, installId: null };
 const MINE: Bot = { ...LIVE, viewerIsApprover: true };
 const TOKEN = fakeConfigRefreshToken('CARDREPLACESECRET');
-const HANDLE_LINE = 'Invite it to a channel: /invite @quill_bot';
+const HANDLE_LINE = 'In any Slack channel, type /invite @quill_bot';
 const CHANNELS = [
   { channelId: 'C1', name: 'help', remember: true },
   { channelId: 'C2', name: 'random', remember: false },
@@ -823,8 +823,8 @@ describe('live', () => {
   it('with no handle the title and the line name the bot', () => {
     renderIt({ ...LIVE, handle: null } as Bot);
     expect(screen.getByRole('heading', { name: 'Quill Bot is in Slack' })).toBeInTheDocument();
-    expect(screen.getByText('Invite it to a channel with /invite.')).toBeInTheDocument();
-    expect(screen.getByText(/If Quill Bot needs your OK/)).toBeInTheDocument();
+    expect(screen.getByText('In any Slack channel, type /invite and pick it.')).toBeInTheDocument();
+    expect(screen.getByText(/When Quill Bot needs an OK/)).toBeInTheDocument();
   });
 
   it('with no install id to name (an older server) a manager has no Remove from Slack', async () => {
@@ -976,7 +976,8 @@ describe('live', () => {
 describe('live: problems, one action each', () => {
   const GONE: Bot = { ...LIVE, approverGone: true };
   const SET_UP_AGAIN = '@quill_bot needs to be set up again. The person who added it to Slack has left.';
-  const OUTSIDERS = "People outside the team can't use @quill_bot right now.";
+  const OUTSIDERS =
+    "People outside the team can't use @quill_bot right now, because the team admin who set it up isn't a team admin anymore.";
 
   it('nothing wrong: no problem row at all', () => {
     renderIt(LIVE);

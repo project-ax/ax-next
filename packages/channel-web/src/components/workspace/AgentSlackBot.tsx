@@ -497,7 +497,7 @@ function Requested({
   return (
     <SlackCard
       title={AGENT_SLACK_CARD_COPY.waitingForAdmin(bot.botName)}
-      description={AGENT_SLACK_CARD_COPY.askedOn(slackShortDate(bot.requestedAt))}
+      description={AGENT_SLACK_CARD_COPY.askedOn(slackShortDate(bot.requestedAt), bot.botName)}
       menu={
         <AgentSlackMenu
           label={`Actions for ${bot.botName}`}
@@ -691,7 +691,8 @@ function Live({
       description={
         bot.handle !== null ? (
           <>
-            Invite it to a channel: <code className="font-mono">/invite @{bot.handle}</code>
+            {C.inviteLead}
+            <code className="font-mono">/invite @{bot.handle}</code>
           </>
         ) : (
           C.inviteNoHandle

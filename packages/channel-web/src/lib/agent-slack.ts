@@ -457,25 +457,29 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
   removedNotice: (who: string): string =>
     `${who} was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.`,
   waitingForAdmin: (botName: string): string => `Waiting for an admin to approve ${botName}`,
-  askedOn: (date: string): string => `Asked on ${date}.`,
+  askedOn: (date: string, botName: string): string =>
+    `Asked on ${date}. Once an admin approves it, ${botName} is ready to invite to channels.`,
   finishInSlack: (botName: string): string => `Almost there: finish adding ${botName} in Slack`,
   waitingForPerson: (person: string, botName: string): string =>
     `Waiting for ${person} to finish adding ${botName} in Slack`,
   cancelling: 'Cancelling…',
   inSlack: (who: string): string => `${who} is in Slack`,
-  inviteNoHandle: 'Invite it to a channel with /invite.',
+  /** Before the live handle's own `/invite @handle`, which the card sets in <code>. */
+  inviteLead: 'In any Slack channel, type ',
+  inviteNoHandle: 'In any Slack channel, type /invite and pick it.',
   channelsLead: (t: InviteTarget): string =>
     `${botWho(t)} has answered in these channels. It remembers what team members say there.`,
   notRemembered: 'Not remembered',
   dontRemember: "Don't remember this channel",
   rememberAgain: 'Remember this channel',
   helpLine: (who: string): string =>
-    `If ${who} needs your OK for something, it asks the person who asked. For people outside the team, it asks the team admin who set ${who} up.`,
+    `When ${who} needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set ${who} up.`,
   setUpAgain: (who: string): string => `${who} needs to be set up again. The person who added it to Slack has left.`,
   changesCantReach: (who: string): string => `Changes to ${who} can't reach Slack right now.`,
   askToReconnect: (who: string, approver: string): string =>
     `Changes to ${who} can't reach Slack right now. Ask ${approver} to reconnect it.`,
-  outsidersCantUse: (who: string): string => `People outside the team can't use ${who} right now.`,
+  outsidersCantUse: (who: string): string =>
+    `People outside the team can't use ${who} right now, because the team admin who set it up isn't a team admin anymore.`,
   teamAdminCanFix: ' A team admin can fix this.',
   onceSlackIsBack: ' You can do this here once Slack is connected again.',
   reconnectThenRetry: (who: string): string => `Changes to ${who} can't reach Slack right now. Reconnect it, then try again.`,
