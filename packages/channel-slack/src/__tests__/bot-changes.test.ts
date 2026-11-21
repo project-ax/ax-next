@@ -627,6 +627,19 @@ describe('rename', () => {
       { level: 'warn', msg: 'slack_bot_handle_legacy', fields: { installId: SUPPORT_BOT } },
       RENAMED,
     ]);
+
+    // A row from before TASK-1185 that still holds the legacy username, and
+    // a re-read that still finds no display name: nothing to write, but the
+    // fallback is logged all the same, changed or not.
+    const unchanged = await seeded();
+    supportRow(unchanged).botHandle = 'fernwalk';
+    unchanged.slack.on.usersInfo = noDisplayName({ name: 'fernwalk' });
+    expect(await unchanged.rename('fern-two')).toEqual({ status: 200, body: { botName: 'fern-two' } });
+    expect(unchanged.memory.calls.filter((c) => c.method === 'setBotHandle')).toEqual([]);
+    expect(unchanged.lines).toEqual([
+      { level: 'warn', msg: 'slack_bot_handle_legacy', fields: { installId: SUPPORT_BOT } },
+      RENAMED,
+    ]);
   });
 
   it("R3 refuses a name the shared bot, another bot, another bot's handle, or an open bot request has, by the 21-char key, before the vault or Slack; its own name in another case is fine", async () => {
@@ -1666,6 +1679,12 @@ describe('answers and logs', () => {
       w.slack.on.usersInfo = shownAs('quilldesk');
     });
     await changed.rename(NEW_NAME);
+    // No display name: the legacy username is kept, and its fallback logged (code-only).
+    const legacy = await add((w) => {
+      w.slack.on.usersInfo = noDisplayName({ name: BOT_USER.name });
+    });
+    await legacy.rename(NEW_NAME);
+    expect(legacy.lines.map((l) => l.msg)).toContain('slack_bot_handle_legacy');
 
     // R2's failures, each in its own world.
     const handleFailures: Array<(w: World) => void> = [
