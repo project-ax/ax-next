@@ -1120,6 +1120,21 @@ describe('closed', () => {
     ]);
   });
 
+  it('the clicked DM goes first and the others keep their order, each redrawn once', async () => {
+    const w = await world();
+    w.auth.admins = listed(GRACE, KAY, LIN);
+    await w.open();
+    forget(w);
+
+    await w.close({ outcome: 'declined', byUserId: KAY.id, clicked: { channel: dmOf(KAY.slackId), ts: tsOf(2) } });
+
+    expect(updates(w)).toEqual([
+      { channel: dmOf(KAY.slackId), ts: tsOf(2), ...answered('Kay McNulty declined this.') },
+      { channel: dmOf(GRACE.slackId), ts: tsOf(1), ...answered('Kay McNulty declined this.') },
+      { channel: dmOf(LIN.slackId), ts: tsOf(3), ...answered('Kay McNulty declined this.') },
+    ]);
+  });
+
   it("a clicked DM the record doesn't list (its post timed out, but Slack delivered it) is redrawn too, under the record's subject", async () => {
     const w = await world();
     w.auth.admins = listed(GRACE, KAY);
