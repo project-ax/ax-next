@@ -17,6 +17,7 @@ import { createAgentSlackRoutes } from './agent-routes.js';
 import { subscribeAgentsDeleted } from './agents-deleted.js';
 import { createClickHandler } from './answers.js';
 import { createBotCallbackRoute } from './bot-callback.js';
+import { createBotChanges } from './bot-changes.js';
 import { createBotRequestClickHandler } from './bot-request-click.js';
 import { createBotRequestDms } from './bot-request-dms.js';
 import { createBotRequestAdminRoutes } from './bot-request-routes.js';
@@ -97,10 +98,12 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   GET  /settings/slack/:agentId{,/available}, POST …/{connect,disconnect,
 //        remember}  — a team agent's channels, from its settings: any member
 //        reads, a team admin of its team manages, CSRF-checked (agent-routes.ts)
-//   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect}  — the
-//        agent's own Slack bot (TASK-1167, bots.ts): a team admin of its team
-//        asks for it, picks it back up in Slack, cancels it, or disconnects it
-//        (TASK-1172); CSRF-checked
+//   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,/rename,/icon}
+//        — the agent's own Slack bot (TASK-1167, bots.ts): a team admin of its
+//        team asks for it, picks it back up in Slack, cancels it, or
+//        disconnects it (TASK-1172), and once it's live renames it or changes
+//        its picture (TASK-1171, bot-changes.ts) with its approver's token;
+//        CSRF-checked
 //   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
 //        to approve it, without a token, and takes that ask back (TASK-1169,
 //        bot-requests.ts); CSRF-checked
@@ -439,6 +442,19 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           logger,
           randomBytes,
         });
+        // Renaming a live bot or changing its picture (TASK-1171) uses its
+        // approver's configuration token, so it takes the same lock as every
+        // other use of a person's token, on the same cached secret store.
+        const botChanges = createBotChanges({
+          installs: store,
+          secrets,
+          api,
+          lock: appLock,
+          publicOrigin,
+          logger,
+          now,
+          randomBytes,
+        });
 
         const routes: RouteSpec[] = [
           ...createAdminRoutes({
@@ -540,9 +556,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
             }),
           },
           // These keep http-server's CSRF check: the caller is a signed-in browser.
-          // The bot routes reach the same `bots` as agents:deleted, under the one app lock,
-          // and the ask routes the same `botRequests` as Admin › Slack.
-          ...createAgentSlackRoutes(channelDeps, bots, botRequests),
+          // The bot routes reach the same `bots` as agents:deleted, and `botChanges`,
+          // both under the one app lock, and the ask routes the same `botRequests`
+          // as Admin › Slack.
+          ...createAgentSlackRoutes(channelDeps, bots, botRequests, botChanges),
           // Where Slack sends a bot's approver back after Allow: signed in, the
           // OAuth state bound to them, and the bot finished under the same lock.
           // A bot that went live is handed to its request's DMs once the lock is free.

@@ -5,8 +5,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  AGENT_SLACK_BOT_CHANGE_COPY,
   AGENT_SLACK_COPY,
   AgentSlackError,
+  agentSlackBotChangeErrorCopy,
+  renameAgentSlackBot,
+  setAgentSlackBotPicture,
   agentSlackBotErrorCopy,
   agentSlackBotStale,
   askSlackBotApproval,
@@ -519,5 +523,71 @@ describe('what an error says', () => {
     expect(agentSlackWriteStale(new AgentSlackError(500, 'internal'))).toBe(false);
     expect(agentSlackWriteStale(new AgentSlackError(502, 'slack-error'))).toBe(false);
     expect(agentSlackWriteStale(new Error('network'))).toBe(false);
+  });
+
+  it('renameAgentSlackBot posts { botName } to /bot/rename with the write headers and reads back the name', async () => {
+    answer = () => json(200, { botName: 'Quill 2' });
+    await expect(renameAgentSlackBot('a 1', 'Quill 2')).resolves.toEqual({ botName: 'Quill 2' });
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%201/bot/rename',
+      method: 'POST',
+      credentials: 'include',
+      body: { botName: 'Quill 2' },
+    });
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    answer = () => json(200, {});
+    await expect(renameAgentSlackBot('a1', 'Q')).rejects.toMatchObject({ code: 'bad-response' });
+    answer = () => json(200, { botName: '' });
+    await expect(renameAgentSlackBot('a1', 'Q')).rejects.toMatchObject({ code: 'bad-response' });
+    answer = () => json(409, { error: 'not-live' });
+    const err = await renameAgentSlackBot('a1', 'Q').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentSlackError);
+    expect(err).toMatchObject({ status: 409, code: 'not-live' });
+  });
+
+  it('setAgentSlackBotPicture posts { iconPng } to /bot/icon', async () => {
+    answer = () => json(200, {});
+    await expect(setAgentSlackBotPicture('a 1', 'B64')).resolves.toBeUndefined();
+    expect(calls[0]).toMatchObject({ url: '/settings/slack/a%201/bot/icon', method: 'POST', body: { iconPng: 'B64' } });
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    answer = () => json(400, { error: 'invalid-icon', reason: 'icon-bad-size' });
+    const err = await setAgentSlackBotPicture('a1', 'B64').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentSlackError);
+    expect(err).toMatchObject({ status: 400, code: 'invalid-icon', reason: 'icon-bad-size' });
+  });
+
+  it('agentSlackBotChangeErrorCopy: every code has its sentence and its field', () => {
+    const copy = (code: string, reason: string | null = null, who = 'Ada'): unknown =>
+      agentSlackBotChangeErrorCopy(new AgentSlackError(400, code, reason), who);
+    expect(copy('invalid-bot-name', 'empty')).toEqual({ field: 'botName', message: 'Give the bot a name.' });
+    expect(copy('invalid-bot-name', 'nope')).toEqual({ field: 'botName', message: "Slack can't use that name. Try another." });
+    expect(copy('bot-name-taken')).toEqual({
+      field: 'botName',
+      message: 'Another Slack bot here already uses that name. Pick another.',
+    });
+    expect(copy('slack-name')).toEqual({ field: 'botName', message: "Slack didn't accept that bot name. Try another." });
+    expect(copy('invalid-icon')).toEqual({ field: null, message: "We couldn't use that picture. Try another image." });
+    expect(copy('slack-config-token', null, 'Ada Lovelace')).toEqual({
+      field: null,
+      message: "This bot's Slack token needs replacing by Ada Lovelace.",
+    });
+    expect(copy('slack-config-token', null, 'A teammate')).toEqual({
+      field: null,
+      message: "This bot's Slack token needs replacing by A teammate.",
+    });
+    expect(copy('slack-app-gone')).toEqual({
+      field: null,
+      message: "Slack no longer has this bot's app. It may have been deleted on api.slack.com/apps.",
+    });
+    expect((copy('public-origin-not-https') as { message: string }).message).toMatch(/isn't https/);
+    expect(copy('slack-error')).toEqual({ field: null, message: 'Something went wrong talking to Slack. Try again in a minute.' });
+    expect(copy('internal')).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
+    expect(agentSlackBotChangeErrorCopy(new TypeError('x'), 'Ada')).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
+    expect(AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged).toBe('Slack has the new picture.');
+  });
+
+  it('agentSlackBotStale: 409 not-live reads the status again; bot-name-taken does not', () => {
+    expect(agentSlackBotStale(new AgentSlackError(409, 'not-live'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(409, 'bot-name-taken'))).toBe(false);
   });
 });

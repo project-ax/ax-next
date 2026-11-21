@@ -1998,7 +1998,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(requestCalls[0]!.body).toEqual({ refresh_token: CONFIG_REFRESH_TOKEN });
     expect(requestCalls[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
     expect(requestCalls[2]!.body['app_id']).toBe(OWN_APP_ID);
-    const adaSuccessor = rotatedRefreshToken(rotateSeq);
+    let adaSuccessor = rotatedRefreshToken(rotateSeq);
 
     // 2. Allow comes back to the bot's own callback, for the person who asked.
     const installUrl = new URL((requested.body as { installUrl: string }).installUrl);
@@ -2096,6 +2096,64 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(line).toContain(`@${OWN_BOT_HANDLE}`);
     expect(aside.map((c) => c.method)).not.toContain('chat.startStream');
     expect(invokes).toHaveLength(2);
+
+    // 5b. Ada renames the live bot (TASK-1171). Her own token rotates, Slack gets the WHOLE
+    // manifest the request sent with only the two name fields changed, and the row shows the
+    // new name once Slack said yes. Slack's users.info keeps the handle (the fake's does).
+    actor = { id: 'usr_ada', isAdmin: false };
+    const ownRenameMark = slackCalls.length;
+    expect(
+      await callRoute('POST', '/settings/slack/:agentId/bot/rename', {
+        params: { agentId },
+        rawPath: `/settings/slack/${agentId}/bot/rename`,
+        body: jsonBody({ botName: 'Support Desk' }),
+      }),
+    ).toMatchObject({ status: 200, body: { botName: 'Support Desk' } });
+    const ownRenameCalls = slackCalls.slice(ownRenameMark);
+    expect(ownRenameCalls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.manifest.update', 'users.info']);
+    expect(ownRenameCalls[0]!.body).toEqual({ refresh_token: adaSuccessor });
+    const ownUpdate = ownRenameCalls[1]!;
+    expect(ownUpdate.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
+    expect(ownUpdate.body['app_id']).toBe(OWN_APP_ID);
+    const ownRenamedManifest = JSON.parse(String(requestCalls[1]!.body['manifest'])) as {
+      display_information: { name: string };
+      features: { bot_user: { display_name: string } };
+    };
+    ownRenamedManifest.display_information.name = 'Support Desk';
+    ownRenamedManifest.features.bot_user.display_name = 'Support Desk';
+    expect(JSON.parse(String(ownUpdate.body['manifest']))).toEqual(ownRenamedManifest);
+    expect(await query("SELECT bot_name, bot_handle FROM channel_slack_v1_installs WHERE kind = 'bot'")).toEqual([
+      { bot_name: 'Support Desk', bot_handle: OWN_BOT_HANDLE },
+    ]);
+    // Slack retired the token it just rotated: the route kept the new one.
+    expect(await readConfigToken('usr_ada')).toBe(rotatedRefreshToken(rotateSeq));
+    expect(rotatedRefreshToken(rotateSeq)).not.toBe(adaSuccessor);
+    adaSuccessor = rotatedRefreshToken(rotateSeq);
+
+    // 5c. Ada changes its picture: her token rotates, the PNG goes up for the bot's own app, and
+    // the row does not move.
+    const iconMark = slackCalls.length;
+    expect(
+      await callRoute('POST', '/settings/slack/:agentId/bot/icon', {
+        params: { agentId },
+        rawPath: `/settings/slack/${agentId}/bot/icon`,
+        body: jsonBody({ iconPng: ICON_PNG.toString('base64') }),
+      }),
+    ).toMatchObject({ status: 200, body: {} });
+    actor = null;
+    const picCalls = slackCalls.slice(iconMark);
+    expect(picCalls.map((c) => c.method)).toEqual(['tooling.tokens.rotate', 'apps.icon.set']);
+    expect(picCalls[0]!.body).toEqual({ refresh_token: adaSuccessor });
+    expect(picCalls[1]!.auth).toBe(`Bearer ${ROTATED_ACCESS_TOKEN}`);
+    expect(picCalls[1]!.body['app_id']).toBe(OWN_APP_ID);
+    const picFile = picCalls[1]!.body['file'];
+    if (!(picFile instanceof File)) throw new Error('apps.icon.set got no file');
+    expect(Buffer.from(await picFile.arrayBuffer()).equals(ICON_PNG)).toBe(true);
+    expect(await query("SELECT bot_name, bot_handle FROM channel_slack_v1_installs WHERE kind = 'bot'")).toEqual([
+      { bot_name: 'Support Desk', bot_handle: OWN_BOT_HANDLE },
+    ]);
+    adaSuccessor = rotatedRefreshToken(rotateSeq);
+    expect(await readConfigToken('usr_ada')).toBe(adaSuccessor);
 
     // 6. Admin > Slack's Disconnect takes the shared app and leaves the bot, its refs and Ada's
     // token. The shared install's person (ADMIN) approved no bot, so their token goes.

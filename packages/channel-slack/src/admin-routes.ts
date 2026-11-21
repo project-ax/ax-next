@@ -31,6 +31,7 @@ import {
   isRecord,
   refreshTokenError,
   sha256Hex,
+  type AppChangeRefusal,
   type InstallLink,
 } from './slack-apps.js';
 import { SlackApiError, type CreatedApp, type RotatedConfigToken, type SlackApi } from './slack-api.js';
@@ -213,26 +214,10 @@ export const OAUTH_CALLBACK_PATH = '/admin/slack/oauth/callback';
 
 type InstallOutcome = 'connected' | 'cancelled' | 'failed';
 
-/** Why Slack didn't take a rename, as the admin is told it (a 502). */
-type RenameRefusal = 'slack-config-token' | 'slack-app-gone' | 'slack-name' | 'slack-error';
-
 /** A route's answer, written once at the end: JSON with a status, or a redirect. */
 type Reply = { status: number; body: unknown } | { location: string };
 
 const PLUGIN = '@ax/channel-slack';
-/**
- * Slack refusing a rename over the STORED configuration token itself, which
- * no retry fixes. Either it is dead (REFRESH_TOKEN_REFUSED), or it works but
- * its owner can't manage this app (`no_permission`,
- * `app_not_owned_by_manager_app`, both listed for `apps.manifest.update`).
- * The remedy is the same for all: Replace the token with one whose owner can
- * manage the app.
- */
-const CONFIG_TOKEN_REFUSED: ReadonlySet<string> = new Set([
-  ...REFRESH_TOKEN_REFUSED,
-  'no_permission',
-  'app_not_owned_by_manager_app',
-]);
 /**
  * Slack refusing Replace's check (TASK-1128): the newly pasted token works,
  * but its owner can't manage this app (`no_permission`,
@@ -277,21 +262,6 @@ const QUIET_REFUSALS: ReadonlySet<string> = new Set([
 
 const json = (status: number, body: unknown): Reply => ({ status, body });
 const INTERNAL = json(500, { error: 'internal' });
-
-/**
- * What a rename's failed Slack step tells the admin. Only the update carries
- * the name, so only it can mean `slack-name`, and only it can find the app
- * gone (`slack-app-gone`). Everything else is `slack-error`: a rename sends
- * the same manifest every time, so trying again is always safe.
- */
-function renameError(stage: string, err: unknown): RenameRefusal {
-  if (!(err instanceof SlackApiError)) return 'slack-error';
-  if (CONFIG_TOKEN_REFUSED.has(err.code)) return 'slack-config-token';
-  if (stage === 'update-app' && err.code === 'invalid_manifest') return 'slack-name';
-  // A retry can't bring back an app that was deleted on Slack's side.
-  if (stage === 'update-app' && err.code === 'app_not_found') return 'slack-app-gone';
-  return 'slack-error';
-}
 
 /**
  * What a replace's failed check tells the admin. `slack-refresh-token`: the
@@ -610,37 +580,19 @@ export function createAdminRoutes(d: AdminRoutesDeps): RouteSpec[] {
   }
 
   /**
-   * Send Slack the app's whole manifest under `botName`, with an access token
-   * minted from its person's stored refresh token and used once. Slack
-   * replaces the manifest on update, so a part of one would drop the rest
-   * (the approval buttons, `/ax`, the scopes). Null when Slack took it, else
-   * what the admin is told. A vault fault reading the token, or a person id
-   * that can't name one, throws: the route's 500.
-   *
-   * The new refresh token is stored first. If that fails, nothing is sent
-   * (`'token-not-kept'`): a retry soon after may still work with the old one.
+   * Send Slack the app's whole manifest under `botName`, through the shared
+   * change step (`changeApp`, slack-apps.ts: its person's stored token,
+   * rotated, the successor saved first). Slack replaces the manifest on
+   * update, so a part of one would drop the rest (the approval buttons,
+   * `/ax`, the scopes). Null when Slack took it, else what the admin is
+   * told. A vault fault reading the token, or a person id that can't name
+   * one, throws: the route's 500.
    */
-  async function updateSlackApp(
-    install: InstallRow,
-    botName: string,
-  ): Promise<RenameRefusal | 'token-not-kept' | null> {
-    const refreshToken = await d.secrets.getConfigToken(install);
-    if (refreshToken === null) {
-      log('warn', 'slack_admin_failed', { installId: install.installId, stage: 'config-token', code: 'missing' });
-      return 'slack-config-token';
-    }
+  function updateSlackApp(install: InstallRow, botName: string): Promise<AppChangeRefusal | 'token-not-kept' | null> {
     const manifest = buildAppManifest(botName, slackUrls(d.publicOrigin, install.installId));
-    let stage = 'rotate';
-    try {
-      const minted = await d.api.rotateConfigToken(refreshToken);
-      if (!(await saveRotatedToken(install, minted.refreshToken))) return 'token-not-kept';
-      stage = 'update-app';
-      await d.api.updateApp(minted.accessToken, install.appId, manifest);
-      return null;
-    } catch (err) {
-      failed(stage, err, install.installId);
-      return renameError(stage, err);
-    }
+    return steps.changeApp(install, 'update-app', (accessToken) =>
+      d.api.updateApp(accessToken, install.appId, manifest),
+    );
   }
 
   /**
