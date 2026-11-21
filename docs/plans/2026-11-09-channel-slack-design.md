@@ -1,6 +1,6 @@
 # Slack channel (design)
 
-**Status:** proposed 2026-11-09. Spike (TASK-1090) done 2026-11-12; §7 has the answers. Memory decided 2026-11-12 (§2a).
+**Status:** proposed 2026-11-09. Spike (TASK-1090) done 2026-11-12; §7 has the answers. Memory decided 2026-11-12 (§2a). Simpler UX around one bot per team agent proposed 2026-11-21 (§4b).
 **Owner:** Vinay · **Started:** 2026-11-09 · **Code cited at:** `5474a59c9` (main)
 **Cards:** TASK-1090–1099 (§9).
 
@@ -48,6 +48,8 @@ the owner chose to put there.
    workspace once. After that, every agent works in Slack through the shared
    app straight away. A dedicated bot with its own @name is an extra that an
    admin approves with one click on Slack's own install screen (phase 2).
+   *Proposed 2026-11-21 (§4b):* team agents reach channels only through
+   their own bot, so for channels this "straight away" no longer holds.
 8. **The shared app's name defaults to the AX instance's name.** We take it from
    `branding:get` and turn it into a valid name (§7 Q3), falling back to `ax`.
    The admin can change it when connecting the workspace and rename it later.
@@ -767,6 +769,148 @@ own bot, the shared bot DMs the admins, and the requester hears back.
   answers. The bot's own messages never start a turn (`admission.ts
   screenEvent`).
 
+## 4b. One bot per team agent: the simpler Slack (proposed 2026-11-21)
+
+**Why.** After the phase 2 walk (TASK-1174), Vinay found the Slack bot
+experience "VERY confusing": too many things to understand. To put a team agent
+in a channel today, a person meets about eight ideas: the shared app vs. the
+agent's own bot, personal vs. team agents, public vs. private channels, a
+memory switch per channel, requester vs. approver vs. owner, what happens when
+one of those people leaves (Rebuild, Claim), members vs. outsiders and whose
+name an outsider's turn runs under, and the "moved channels" list.
+
+**The fixed point (decided 2026-11-21, Vinay): every team agent in a channel
+is its own bot.** People type `@juniper`, `@moss` or `@fern` directly.
+*Rejected:* one shared `@canopy` bot that posts under each agent's name
+(`chat:write.customize`) and asks "which agent?" when it's invited. Vinay:
+"it's much easier for a user to just directly @juniper or @moss or @fern
+instead of @canopy and then selecting a bot." This section simplifies around
+that bot, not away from it.
+
+**What a person needs to know.** Two sentences:
+
+- **DM the shared bot to talk to your own agent.**
+- **Invite `@fern` (or `@moss`, or `@juniper`) to a channel to bring in a team
+  agent.**
+
+Everything below exists to make those two sentences the whole story. Nothing
+here loosens a security rule from §1–§4. It changes what people see and which
+paths exist, not who may do what.
+
+### 1. A team agent reaches channels only through its own bot
+
+- **No new shared-app channel connections.** The agent settings' "Connect a
+  channel" picker and `/ax connect` stop offering team agents. Inviting the
+  agent's own bot is the only way in. That also retires the rules that only
+  exist because there were two ways in: "answers only its new @handle", the
+  moved-channels list (TASK-1168) and the shared connection's switch.
+- **Existing shared-app connections keep working** until the agent's own bot
+  is live. Then the TASK-1168 list tells the team where to `/invite` it, as
+  built. How many prod channels this affects is §8 Q7.
+- **The shared bot keeps two jobs:** DMs with each person's personal agent,
+  and the DMs about bot requests (TASK-1170).
+- **The cost.** §1 decision 7 said every agent works in Slack straight away
+  through the shared app. For channels that's no longer true: a team agent
+  needs its own approved bot first. The admin-request DM (TASK-1170) keeps
+  that to one Approve click for an AX admin, and a team admin who can install
+  Slack apps approves it themselves.
+
+**Several bots in one channel are supported**, and the code already allows it.
+The shared app's one-agent-per-channel rule comes from its single @handle (the
+`channel_slack_v1_channels` key is `(install_id, channel_id)`, and every agent
+on the shared app shares one install). Each bot is its own install, so `@fern`,
+`@moss` and `@juniper` can all sit in `#support`, each answering only its own
+mentions. Three things to know:
+
+- **Bots never answer bots.** `screenEvent` (`admission.ts`) drops any message
+  with a `bot_id`, which is what keeps two bots from looping. So "@fern, ask
+  @moss" never reaches `@moss`: a person has to mention `@moss`. This is
+  deliberate, and the help text says so.
+- **One message that mentions two bots should get two replies** in the
+  thread: Slack sends each app its own `app_mention`, and each runs its own
+  turn. **Unmeasured:** the next walk checks it.
+- **Slack's app limit.** Each bot is one installed app. Free Slack allows 10.
+  Canopy is on a paid plan (§4), so this is a line on the request form.
+
+### 2. Setting up a bot: one button, with the plumbing out of sight
+
+The agent's Slack settings become one card with three states:
+
+| State | What the card shows |
+|---|---|
+| Not in Slack | **Add to Slack**, with the bot's name prefilled from the agent's name. |
+| Waiting | "Waiting for an admin to approve @fern." Cancel sits in the ⋯ menu. |
+| Live | "@fern is in Slack. Invite it to a channel: `/invite @fern`", then the channels it has answered in. Rename, Change picture and Remove from Slack sit in the ⋯ menu. |
+
+- **Asking an AX admin is the default.** "I can install Slack apps myself" is
+  a quiet link under the button that opens the configuration-token paste.
+  Today the form opens with a two-way choice, "Who sets it up in Slack?".
+- **These words leave the agent settings:** approver, requester, claim,
+  rebuild, shared app, own bot, and configuration token (except on the
+  install-it-myself path). Admin › Slack keeps them. Admins are the right
+  audience for the plumbing, and the list there is unchanged.
+- **Status shows only when something is wrong**, on the card, with exactly one
+  action. The flows behind the actions are the ones built in TASK-1173:
+
+  | What's wrong | What the card says | Behind it |
+  |---|---|---|
+  | The token stopped working, and you made the bot | "@fern lost its connection to Slack." **Reconnect** | Replace |
+  | The token stopped working, and someone else made the bot | "@fern lost its connection to Slack. Ask <name> to reconnect it." | (none for this viewer) |
+  | Whoever made the bot has left | "@fern needs to be set up again." **Set up again** | Rebuild |
+  | The team admin people outside AX run as is no longer a team admin | "People outside AX can't use @fern right now." **Take over** | Claim |
+
+### 3. Memory: one rule, and no switch on screen
+
+**@fern remembers what members say in public channels. It doesn't remember
+private channels.** That's the whole rule a person sees. DMs with a personal
+agent are unchanged (private memory, as today), and team bots have no DMs.
+
+- **Private channels become allowed.** A bot invited to a private channel
+  answers there. The turn is `shared` (others see the reply), so recall is
+  shared-only, as in any channel, and capture is refused, as when the switch
+  is off. Why refuse capture there: shared memory is recalled in every channel
+  and in members' web chats, so a private channel's words would surface in
+  public ones.
+- **This hooks into TASK-1184**, which (as built) re-checks a bound channel's
+  flags at turn start and refuses private, archived and Slack Connect
+  channels. Its private branch changes from "refuse" to "answer, don't
+  remember". Archived and Slack Connect stay refused.
+- **One new scope for the bot: `groups:read`**, so `conversations.info` can
+  read a private channel's flags. Adding a scope means Slack asks for Allow
+  again on an installed app. No team bot is deployed to prod yet (phase 2 is
+  merged, not deployed), so if this ships before phase 2 deploys, that costs
+  nothing. Kind's walk bots get rebuilt.
+- **The per-channel switch stays built but moves out of the way.** It's still
+  on by default, stored and locked as built (TASK-1180, TASK-1182), but it
+  moves into each channel's ⋯ menu as "Don't remember this channel".
+- **Unchanged and not shown:** outsiders' words are never remembered, and
+  facts about the speaker are never saved to shared memory (§2a).
+
+### 4. Permission, in one sentence
+
+The card's help line: **"If @fern needs your OK for something, it asks the
+person who asked. For people outside AX, it asks the team admin who set @fern
+up."** Who a turn runs as, attended vs. external, and Today's approval cards
+stay as built (§2, §4). People just don't have to learn the words.
+
+### Order and cards
+
+Land this **before phase 2 deploys**, so nobody in prod meets the confusing
+version first. Cards to file once this section merges:
+
+- **A. Channels only through a bot.** Stop new shared-app connects for team
+  agents (the settings picker and `/ax connect`); keep existing connections
+  until the agent's bot is live. Waits on §8 Q7.
+- **B. One Slack card per agent.** The three states, the ⋯ menu (with the
+  memory switch in it), problem-only status with one action each, and a copy
+  pass with the `ux-designer` agent. UI only.
+- **C. Private channels: answer, don't remember.** Add `groups:read` to the bot
+  manifest, and switch TASK-1184's private branch from refuse to capture-off.
+  Depends on TASK-1184.
+- **D. Walk (walk).** Several bots in one channel, including one message that
+  mentions two of them; a private channel (answers, nothing remembered); the
+  new card states. Depends on A, B and C.
+
 ## 5. How a turn runs
 
 1. **Incoming events.** Each request arrives at `POST /slack/events/<installId>`.
@@ -1303,6 +1447,12 @@ and the configuration token revoked. "Tested" means we watched it happen;
    decomposing phase 2. **Stored once per person** (decided 2026-11-20, Vinay;
    TASK-1175): one rotating token per approver, used for every Slack app they
    made through AX.
+7. **How many prod channels are connected to team agents through the shared
+   app?** §4b stops new ones. Existing ones keep answering until each agent
+   has its own bot, and then need a `/invite`. The count says whether that's a
+   footnote or a migration worth a DM to each team. Needs a read-only prod
+   query, which needs Vinay's OK first. Run it alongside the phase 2 deploy
+   prerequisite (channels switched off, then disconnected).
 
 ## 9. Delivery
 
@@ -1361,4 +1511,8 @@ approving a second app never breaks the first).
   each bot channel its memory switch, and keeps the agent's switch for a
   channel after a Disconnect. TASK-1170 DMs the admins about a request and
   tells the owner how it went.
-- **9. Walk (walk).**
+- **9. Walk (walk).** Done 2026-11-21 (TASK-1174, passed).
+
+**Phase 2b: one bot per team agent, simpler (§4b)**
+
+- Cards A–D in §4b ("Order and cards"). Land them before phase 2 deploys.
