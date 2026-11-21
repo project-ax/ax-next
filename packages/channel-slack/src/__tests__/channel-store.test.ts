@@ -449,7 +449,7 @@ describe('remove and setRemember act only on the named agent', () => {
   TASK-1180. The agent's memory switch for a channel is kept apart from its
   bindings, so a Disconnect (of the channel, of Slack in Admin › Slack, or a
   removed bot) never loses the team's OFF before the agent's own bot first
-  answers there (router.ts reads it). setRemember writes it in the statement
+  answers there (bindBot reads it). setRemember writes it in the statement
   that flips the bindings, and flips every binding of that agent in that
   channel, on any install: a bot channel switched off stays off on the shared
   binding too, which the shared bot answers with again once the bot is gone.
@@ -629,6 +629,130 @@ describe('the switch kept for the agent and channel (TASK-1180)', () => {
     expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
     expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(true);
     expect((await channels.get(INSTALL, GENERAL))?.remember).toBe(true);
+  });
+});
+
+/*
+  TASK-1182. A team agent's own bot's first bind of a channel (bindBot) reads
+  the switch the team last set for the agent there and writes the binding
+  with it, in one transaction under the lock a flip takes: the agent's
+  binding of the channel on the shared app's install, else the kept switch,
+  else on. Another agent's binding there is never read, and the bind keeps
+  nothing: it isn't a flip.
+*/
+describe("a team agent's own bot's first bind (bindBot)", () => {
+  /** The bot's binding goes on its own install, OTHER_INSTALL; INSTALL is the shared app's. */
+  const bind = (shared: string | null) =>
+    channels.bindBot(
+      { installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB, channelName: 'support' },
+      shared,
+    );
+  /** Switched off, then disconnected: the off is kept and there's no shared binding. */
+  const keptOff = async () => {
+    await connect();
+    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+  };
+
+  it.each([
+    ["this agent's shared binding is off", () => connect({ remember: false }), INSTALL, false],
+    ["this agent's shared binding is on, beside an older off kept", async () => { await keptOff(); await connect(); }, INSTALL, true],
+    ['no shared binding, an off kept', keptOff, INSTALL, false],
+    ['no shared app, an off kept', keptOff, null, false],
+    ["another agent's shared binding is off: that agent's switch, never read", () => connect({ agentId: OTHER_AGENT, remember: false }), INSTALL, true],
+    ['nothing anywhere', async () => {}, INSTALL, true],
+  ] as const)('%s: the bot binds with it', async (_case, setup, shared, want) => {
+    await setup();
+    const kept = await channels.keptRemember(AGENT, SUPPORT);
+    expect(await bind(shared)).toBe(want);
+    expect(await channels.get(OTHER_INSTALL, SUPPORT)).toEqual({
+      installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB,
+      channelName: 'support', remember: want, createdAt: expect.any(Date),
+    });
+    // Not a flip: the bind keeps nothing.
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(kept);
+  });
+
+  /*
+    Under REPEATABLE READ (or SERIALIZABLE) a transaction's one snapshot is
+    taken by its first statement, the switch lock itself, before the wait, so
+    a lock-taker that didn't ask for READ COMMITTED would decide with what it
+    saw before the other side committed. Each test runs one side on a pool
+    whose sessions default to REPEATABLE READ, and plays the other side in a
+    session of its own that holds the switch lock, as the real one does.
+  */
+  async function underRepeatableRead<T>(
+    start: (store: ChannelStore) => Promise<T>,
+    otherSide: (holder: pg.PoolClient) => Promise<void>,
+  ): Promise<T> {
+    const repeatable = new pg.Pool({ connectionString: container.getConnectionUri(), max: 2 });
+    repeatable.on('connect', (client) => {
+      void client.query('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    });
+    const onRepeatable = new Kysely<ChannelSlackDatabase>({ dialect: new PostgresDialect({ pool: repeatable }) });
+    const holder = await pool.connect();
+    let running: Promise<T> | undefined;
+    try {
+      // The session default really is REPEATABLE READ there.
+      const level = await sql<{ level: string }>`SELECT current_setting('transaction_isolation') AS level`.execute(
+        onRepeatable,
+      );
+      expect(level.rows[0]?.level).toBe('repeatable read');
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 18427161))', [
+        JSON.stringify([AGENT, SUPPORT]),
+      ]);
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      running = start(createChannelStore(onRepeatable));
+      await vi.waitFor(async () => expect(await sessionsWaitingOn(holderPid)).toBe(1), { timeout: 10_000 });
+      await otherSide(holder);
+      await holder.query('COMMIT');
+      return await running;
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      holder.release();
+      await running?.catch(() => {});
+      await onRepeatable.destroy();
+    }
+  }
+
+  it("reads a flip that ends while it waits for the switch lock, whatever the server's default isolation", async () => {
+    await connect();
+    const bound = await underRepeatableRead(
+      (store) =>
+        store.bindBot(
+          { installId: OTHER_INSTALL, channelId: SUPPORT, agentId: AGENT, connectedByUserId: BOB, channelName: 'support' },
+          INSTALL,
+        ),
+      // The flip, committed while the bind waits.
+      async (holder) => {
+        await holder.query('UPDATE channel_slack_v1_channels SET remember = false WHERE channel_id = $1 AND agent_id = $2', [
+          SUPPORT,
+          AGENT,
+        ]);
+      },
+    );
+    expect(bound).toBe(false);
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
+  });
+
+  it("a flip reaches a bind that ends while it waits for the switch lock, whatever the server's default isolation", async () => {
+    await connect();
+    const flipped = await underRepeatableRead(
+      (store) => store.setRemember(INSTALL, SUPPORT, AGENT, false),
+      // The bot's first bind, committed on while the flip waits.
+      async (holder) => {
+        await holder.query(
+          `INSERT INTO channel_slack_v1_channels (install_id, channel_id, agent_id, connected_by_user_id, channel_name, remember)
+           VALUES ($1, $2, $3, $4, 'support', true)`,
+          [OTHER_INSTALL, SUPPORT, AGENT, BOB],
+        );
+      },
+    );
+    expect(flipped).toBe(true);
+    expect((await channels.get(OTHER_INSTALL, SUPPORT))?.remember).toBe(false);
+    expect((await channels.get(INSTALL, SUPPORT))?.remember).toBe(false);
+    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
   });
 });
 

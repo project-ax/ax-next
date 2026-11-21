@@ -3445,3 +3445,132 @@ describe('@ax/channel-slack plugin', () => {
     expect(await askMemory(harness.bus, t2)).toEqual(NOT_REMEMBERED);
   });
 });
+
+// ── TASK-1182 ───────────────────────────────────────────────────────────────
+
+/** The sessions waiting on a lock `pid` holds: Postgres's own word that one side is blocked, never a sleep. */
+async function waitingOn(pid: number): Promise<number[]> {
+  const r = await sql<{ pid: number }>`
+    SELECT pid FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))
+  `.execute(probe);
+  return r.rows.map((row) => row.pid);
+}
+
+/*
+  TASK-1182: a memory switch flip and the agent's own bot's first bind in a
+  channel take one lock on the agent and channel, so whichever comes second
+  sees what the other wrote. Before the fix they could interleave, and the
+  bot's binding kept the switch from before the flip: the channel was
+  remembered although the team's last choice was off. Each test stops one
+  side partway with a session of its own, and moves on only when Postgres
+  says the other side is waiting, never after a sleep.
+*/
+describe("a memory switch flip and the agent's own bot's first bind take turns (TASK-1182)", () => {
+  /** TASK-1180's world with the bot not yet answered in #support; its mention, and the shared switch turned off, through the wiring. */
+  async function race() {
+    const slack = botChannelSlackFetch();
+    const { s, call, harness } = await boot({ fetchImpl: slack.fetchImpl });
+    await seedSupportBot(s);
+    const channels = createChannelStore(probe);
+    expect(await channels.remove(BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id)).toBe(true);
+    const mention = (eventId: string, ts: string) => {
+      const body = botMentionBody(eventId, ts, 'hello there');
+      return call('POST', '/slack/events/:installId', request('POST', `/slack/events/${BOT_INSTALL_ID}`, {
+        params: { installId: BOT_INSTALL_ID }, body, headers: signed(body, NOW_MS, BOT_SIGNING_SECRET),
+      }));
+    };
+    const switchOff = () =>
+      call('POST', '/settings/slack/:agentId/remember', request('POST', `/settings/slack/${TEAM_AGENT.id}/remember`, {
+        as: ADMIN.id, params: { agentId: TEAM_AGENT.id },
+        body: Buffer.from(JSON.stringify({ channelId: SUPPORT_CH, remember: false })),
+      }));
+    return { s, harness, channels, mention, switchOff };
+  }
+
+  /** The one waiter on `pid`, once there is one. */
+  async function waiterOn(pid: number): Promise<number> {
+    let waiter = 0;
+    await vi.waitFor(async () => {
+      const [found] = await waitingOn(pid);
+      expect(found).toBeDefined();
+      waiter = found!;
+    }, { timeout: 10_000 });
+    return waiter;
+  }
+
+  it('the flip first: the bind waits for it, starts off, and memory stays out of the thread', async () => {
+    const { s, harness, channels, mention, switchOff } = await race();
+    // Holding the shared binding's row stops the flip inside its write, after its snapshot.
+    const holder = await probePool.connect();
+    let flip: Promise<Answer> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query(
+        'SELECT 1 FROM channel_slack_v1_channels WHERE install_id = $1 AND channel_id = $2 FOR UPDATE',
+        [INSTALL_ID, SUPPORT_CH],
+      );
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      flip = switchOff();
+      const flipPid = await waiterOn(holderPid);
+      expect((await mention('Ev07ABCDEF61', '1763036300.000700')).status).toBe(200);
+      // Before the fix the bind doesn't wait: it binds with the switch it reads, still on.
+      await vi.waitFor(async () => {
+        const waits = (await waitingOn(flipPid)).length === 1;
+        expect(waits || (await channels.get(BOT_INSTALL_ID, SUPPORT_CH)) !== null).toBe(true);
+      }, { timeout: 10_000 });
+      await holder.query('COMMIT');
+      expect(await flip).toEqual({ status: 200, body: {}, done: true });
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      holder.release();
+      void flip?.catch(() => {});
+    }
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBe(false);
+    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036300.000700`;
+    expect((await channels.getThread(thread))?.notRemembered).toBe(true);
+    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
+  });
+
+  it('the bind first: the flip waits for it, then turns the binding it wrote off too', async () => {
+    const { s, harness, channels, mention, switchOff } = await race();
+    // An uncommitted row under the bot binding's key stops the bind at its write, after its read.
+    const holder = await probePool.connect();
+    let flip: Promise<Answer> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query(
+        `INSERT INTO channel_slack_v1_channels (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
+         VALUES ($1, $2, $3, $4, 'support')`,
+        [BOT_INSTALL_ID, SUPPORT_CH, TEAM_AGENT.id, GRACE],
+      );
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      expect((await mention('Ev07ABCDEF62', '1763036400.000800')).status).toBe(200);
+      const bindPid = await waiterOn(holderPid);
+      let flipped = false;
+      flip = switchOff().finally(() => {
+        flipped = true;
+      });
+      // Before the fix the flip doesn't wait: it can't see the binding the bind is about to write.
+      await vi.waitFor(async () => {
+        expect(flipped || (await waitingOn(bindPid)).length === 1).toBe(true);
+      }, { timeout: 10_000 });
+      await holder.query('ROLLBACK');
+      expect(await flip).toEqual({ status: 200, body: {}, done: true });
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      holder.release();
+      void flip?.catch(() => {});
+    }
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    expect((await channels.get(BOT_INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect((await channels.get(INSTALL_ID, SUPPORT_CH))?.remember).toBe(false);
+    expect(await channels.keptRemember(TEAM_AGENT.id, SUPPORT_CH)).toBe(false);
+    // Not the thread's flag: the turn may record it just before the flip commits or just after.
+    // Memory is refused either way, once the bot's binding is off.
+    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763036400.000800`;
+    expect(await askMemory(harness.bus, thread)).toEqual(NOT_REMEMBERED);
+  });
+});

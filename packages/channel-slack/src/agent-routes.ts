@@ -554,9 +554,9 @@ export function createAgentSlackRoutes(
    * The shared connection's switch. Once the agent's own bot has answered in
    * the channel, the switch there is the bot channel's (`…/bot/remember`), so
    * this one answers `409 own-bot` and writes nothing. Before that it is what
-   * the bot will start from there (router.ts), so it flips as before: the
-   * agent's bindings of the channel and the switch kept for it
-   * (channel-store.ts `setRemember`).
+   * the bot will start from there (channel-store.ts `bindBot`), so it flips
+   * as before: the agent's bindings of the channel and the switch kept for
+   * it (channel-store.ts `setRemember`).
    */
   async function remember(a: Asked): Promise<Reply> {
     const rights = await manages(a);

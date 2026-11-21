@@ -147,10 +147,10 @@ export interface RouterDeps extends TurnDeps {
    * again when its turn starts; the thread map the memory switch's veto
    * reads, written just before the turn's agent runs; and the binding a team
    * agent's own bot writes at its first mention in a channel (TASK-1167),
-   * with the switch kept for the agent and channel when the agent has no
-   * shared binding of it to start from (TASK-1180).
+   * with the switch the team last set for the agent there, under the lock a
+   * flip takes (`bindBot`, TASK-1182).
    */
-  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'upsert' | 'keptRemember'>;
+  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
 }
@@ -860,15 +860,20 @@ type BindOutcome =
  * is to the bot's one agent, connected by its requester, whom the channel's
  * outsiders run as (channel-store.ts); read back, so it is the one stored.
  * Its memory switch is the one the team last set for the agent in this
- * channel (startingRemember), so a channel the team chose not to have
- * remembered stays that way: the agent's live binding of it on the shared
- * app (TASK-1179), else the switch kept for the agent and channel, which
- * outlives a Disconnect and a rebuilt bot (TASK-1180), else on, as any new
- * connection is. It's written by the insert itself, so no turn ever reads it
- * on. The bot never joins a channel: it is in this one because someone
- * invited it. A store failure throws; a failed read of the shared app's
- * install or binding, or of the kept switch, throws before anything is
- * written.
+ * channel, so a channel the team chose not to have remembered stays that
+ * way: the agent's live binding of it on the shared app (TASK-1179), else
+ * the switch kept for the agent and channel, which outlives a Disconnect and
+ * a rebuilt bot (TASK-1180), else on, as any new connection is. The store
+ * reads it and writes the binding with it in one transaction, under the
+ * lock a flip takes (channel-store.ts `bindBot`, TASK-1182), so no turn
+ * ever reads it on, and a flip at the same moment lands either before the
+ * read or on the binding written. The shared app's install is read first,
+ * outside that transaction, so the transaction needs no second database
+ * connection. A stale answer is harmless: with no shared binding the store
+ * falls back to the kept switch, which every flip writes. The bot never
+ * joins a channel: it is in this one because someone invited it. A store
+ * failure throws; a failed read of the shared app's install, or of the
+ * switch, throws before anything is written.
  */
 async function bindBotChannel(
   d: RouterDeps,
@@ -889,53 +894,26 @@ async function bindBotChannel(
   if (info.id !== channelId) return { ok: false, reason: 'channel-not-allowed', code: 'id-mismatch' };
   if (!connectable(info)) return { ok: false, reason: 'channel-not-allowed' };
 
-  const remember = await startingRemember(d, install.agentId, channelId);
+  // Read before bindBot's transaction, so that transaction never needs a second connection.
+  const shared = await d.installs.current();
   const wrote = {
     installId: install.installId,
     channelId,
     agentId: install.agentId,
     connectedByUserId: install.requestedByUserId,
     channelName: info.name,
-    remember,
   };
   // `taken` can't happen here (only this writes a bot's bindings, always
   // for its agent); if it ever did, the read below finds the other agent's
   // binding, which the caller refuses.
-  await d.channels.upsert(wrote);
+  const remember = await d.channels.bindBot(wrote, shared?.installId ?? null);
   const stored = await d.channels.get(install.installId, channelId);
   // Gone again already (the bot removed meanwhile): what was written. The
   // turn's own re-read then finds the install gone and drops it.
   return {
     ok: true,
-    binding: stored ?? { ...wrote, channelName: cleanChannelName(info.name), createdAt: new Date() },
+    binding: stored ?? { ...wrote, remember, channelName: cleanChannelName(info.name), createdAt: new Date() },
   };
-}
-
-/**
- * What a team agent's own bot binds a channel with: the agent's live binding
- * of it on the shared app (sharedRemember), else the switch kept for the
- * agent and channel (TASK-1180), else on. The live binding comes first: a
- * fresh connect keeps no switch, so it is never staler than the kept one,
- * which only matters once that binding is gone. A store failure throws: the
- * switch is never guessed.
- */
-async function startingRemember(d: RouterDeps, agentId: string, channelId: string): Promise<boolean> {
-  return (
-    (await sharedRemember(d, agentId, channelId)) ?? (await d.channels.keptRemember(agentId, channelId)) ?? true
-  );
-}
-
-/**
- * The memory switch of this agent's binding of the channel on the shared
- * app (TASK-1179): what the team chose for it there. Null when the shared
- * app isn't installed, or doesn't connect the channel to this agent: another
- * agent's switch is about that agent's memory. A store failure throws.
- */
-async function sharedRemember(d: RouterDeps, agentId: string, channelId: string): Promise<boolean | null> {
-  const shared = await d.installs.current();
-  if (shared === null) return null;
-  const binding = await d.channels.get(shared.installId, channelId);
-  return binding === null || binding.agentId !== agentId ? null : binding.remember;
 }
 
 /**
