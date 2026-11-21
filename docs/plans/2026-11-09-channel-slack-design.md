@@ -906,7 +906,7 @@ stay as built (§2, §4). People just don't have to learn the words.
 ### Order and cards
 
 Land this **before phase 2 deploys**, so nobody in prod meets the confusing
-version first. Cards to file once this section merges:
+version first. Filed 2026-11-21 as TASK-1186 (A), TASK-1187 (B), TASK-1188 (C) and TASK-1189 (D):
 
 - **A. Channels only through a bot.** Remove the shared app's channel path
   (the settings picker, `/ax`, shared-app channel turns, the moved-channels
@@ -1526,4 +1526,4 @@ approving a second app never breaks the first).
 
 **Phase 2b: one bot per team agent, simpler (§4b)**
 
-- Cards A–D in §4b ("Order and cards"). Land them before phase 2 deploys.
+- TASK-1186–1189, cards A–D in §4b ("Order and cards"). Land them before phase 2 deploys.
