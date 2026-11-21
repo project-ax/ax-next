@@ -906,6 +906,10 @@ describe("a claim moves a live bot's requester and its bindings together (TASK-1
     const other = await liveBot({ agentId: 'agt_sales', connectedByUserId: 'usr_sam', requestedByUserId: 'usr_sam' });
     await bind(other, 'C07CHANNEL3', 'agt_sales', 'usr_sam');
     await backdateBindings();
+    // One of the bot's channels has memory off. A claim writes no memory
+    // switch (so it needs no switch lock, TASK-1182): the bindings check
+    // below compares every column, `remember` included.
+    await sql`UPDATE channel_slack_v1_channels SET remember = false WHERE install_id = ${claimed} AND channel_id = 'C07CHANNEL2'`.execute(db);
     const before = { shared: await rawRow(shared), claimed: await rawRow(claimed), other: await rawRow(other) };
     const bindingsBefore = await bindingRows();
     expect(bindingsBefore).toHaveLength(4);
