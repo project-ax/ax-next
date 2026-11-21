@@ -1,7 +1,7 @@
 /**
  * Bot requests in Admin › Slack (TASK-1169): the list an AX admin approves or
  * declines from. A team admin who can't install Slack apps asks for their
- * agent's own bot (agent settings, "Ask an AX admin"); each ask lands here.
+ * agent's own bot (agent settings, "Add to Slack"); each ask lands here.
  * It sits under the connected card, and renders nothing at all when no one
  * has asked.
  *

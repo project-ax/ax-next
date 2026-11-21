@@ -1,21 +1,24 @@
 /**
- * Rebuild and Claim, the two things a team admin does about a live bot that
- * needs attention (TASK-1173). Both are confirmations opened from `AgentSlackBot`'s
- * `Live` view, and both name the bot the page showed by its install id, so a page
- * drawn before the bot changed can't touch the new one: the server answers a stale
- * id with a refusal `agentSlackBotStale` knows, the dialog closes and the status is
- * read again.
+ * Set up again and Take over, the two things a team admin does about a live bot
+ * that needs attention (TASK-1173, TASK-1187). Code names: `RebuildBotDialog`
+ * and `ClaimBotDialog`. Both are confirmations opened from `AgentSlackBot`'s
+ * `Live` card (a problem row's one button), and both name the bot the page
+ * showed by its install id, so a page drawn before the bot changed can't touch
+ * the new one: the server answers a stale id with a refusal `agentSlackBotStale`
+ * knows, the dialog closes and the status is read again.
  *
- *   Rebuild  the person who set the bot up has left, so nobody can replace its
- *            Slack token any more. It disconnects the bot (the same call as
- *            Disconnect: the Slack app is deleted with the leaver's stored token,
- *            or left on the list of apps we couldn't delete), then the page opens
- *            the request form with the old name offered back.
- *   Claim    the person who asked for the bot is no longer a team admin. Claiming
- *            makes the viewer the one whose access people outside the team borrow.
+ *   Set up again  the person who added the bot to Slack has left, so nobody can
+ *                 replace its Slack token any more. It removes the bot (the same
+ *                 call as Remove from Slack: the Slack app is deleted with the
+ *                 leaver's stored token, or left on the list of apps we couldn't
+ *                 delete), then the page opens the request form with the old
+ *                 name offered back.
+ *   Take over     the person who asked for the bot is no longer a team admin.
+ *                 Taking over makes the viewer the one whose access people
+ *                 outside the team borrow.
  *
  * Every sentence is pinned here or comes from `lib/agent-slack.ts`. These words
- * never name the product.
+ * never name the product, the plumbing or a role.
  */
 import { useState, type ReactNode } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -40,7 +43,7 @@ import {
 import { logRequestFailure } from '@/lib/http';
 import type { BotCancelled } from './AgentSlackBot';
 
-/** The bot a Rebuild took away, so the form can offer its name back. */
+/** The bot Set up again took away, so the form can offer its name back. */
 export interface RebuildFrom {
   botName: string;
   handle: string | null;
@@ -63,7 +66,7 @@ function whoIs(bot: Pick<Live, 'botName' | 'handle'>): string {
   return bot.handle !== null ? `@${bot.handle}` : bot.botName;
 }
 
-/** The name of a bot a Rebuild took away, as the form's notice says it. */
+/** The name of a bot Set up again took away, as the form's notice says it. */
 export function rebuildWho(from: RebuildFrom): string {
   return whoIs(from);
 }
@@ -130,7 +133,7 @@ function ConfirmDialog({
 }
 
 /**
- * Asks before rebuilding a bot whose approver has left. Confirming disconnects
+ * Asks before setting a bot up again when the person who added it has left. Confirming removes
  * the bot the dialog shows (by `installId`), hands up how it went, then the
  * bot it was, then reads the status again, in that order: the status read
  * replaces everything below the page with its loading face, so what it needs
@@ -197,11 +200,11 @@ export function RebuildBotDialog({
       }}
       busy={busy}
       error={error}
-      title={`Rebuild ${who}?`}
-      description={`We'll disconnect ${who} and delete its Slack app. Then you set up a new bot here. It gets a new @handle, so every channel needs /invite again. If Slack won't let us delete the old app, it may need deleting by hand in Slack's app settings.`}
+      title={`Set up ${who} again?`}
+      description={`We'll remove ${who} from Slack and delete its Slack app. Then you add it again here. It's a new bot in Slack, so invite it to each channel again. If Slack won't let us delete the old app, it may need deleting by hand in Slack's app settings.`}
       decline="Keep it"
-      confirm="Rebuild"
-      busyLabel="Disconnecting…"
+      confirm="Set up again"
+      busyLabel="Removing…"
       variant="destructive"
       onConfirm={() => void confirm()}
     />
@@ -209,7 +212,7 @@ export function RebuildBotDialog({
 }
 
 /**
- * Asks before claiming a bot whose requester is no longer a team admin.
+ * Asks before taking over a bot whose requester is no longer a team admin.
  * Confirming claims the bot the dialog shows (by `installId`) and reads the
  * status again. A refusal that says there was nothing to claim (someone else
  * got there first, or the requester is back) closes silently and reads again.
@@ -263,11 +266,11 @@ export function ClaimBotDialog({
       }}
       busy={busy}
       error={error}
-      title={`Claim ${who}?`}
-      description={`Right now ${who} answers only team members. Once you claim it, it answers people outside the team with your access, and anything it needs approved waits in your Today.`}
+      title={`Take over ${who}?`}
+      description={`Right now ${who} answers only team members. Once you take over, it answers people outside the team with your access, and anything it needs approved waits in your Today.`}
       decline="Not now"
-      confirm="Claim it"
-      busyLabel="Claiming…"
+      confirm="Take over"
+      busyLabel="Taking over…"
       variant="default"
       onConfirm={() => void confirm()}
     />

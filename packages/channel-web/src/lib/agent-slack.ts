@@ -446,9 +446,60 @@ export const AGENT_SLACK_COPY = Object.freeze({
   generic: 'Something went wrong. Try again in a minute.',
   rememberFailed: "We couldn't change that, so nothing is different. Try again.",
   privateChannelNotRemembered: "Private channels aren't remembered.",
-  botChannelsNotice: (t: InviteTarget): string =>
-    t.handle !== null ? `@${t.handle} has answered in these channels.` : `${t.botName} has answered in these channels.`,
 });
+
+/** How the card names a live bot: its @handle, or its name when Slack never said one. */
+export function botWho(t: InviteTarget): string {
+  return t.handle !== null ? `@${t.handle}` : t.botName;
+}
+
+/** Every line of an agent's Slack card (TASK-1187). Plain words: no roles, no plumbing, no product name. */
+export const AGENT_SLACK_CARD_COPY = Object.freeze({
+  notInSlack: (agentName: string): string => `${agentName} isn't in Slack yet`,
+  addItLead: 'Add it to Slack, and people can mention it in channels.',
+  teamAdminCanAdd: 'A team admin can add it.',
+  adminWillApprove: "We'll ask an admin to approve it.",
+  selfPathLink: 'I can install Slack apps myself',
+  adminPathLink: 'Ask an admin instead',
+  slackHasFinalSay: 'Slack has the final say: only someone allowed to install apps in your Slack workspace can add it.',
+  removedNotice: (who: string): string =>
+    `${who} was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.`,
+  waitingForAdmin: (botName: string): string => `Waiting for an admin to approve ${botName}`,
+  askedOn: (date: string, botName: string): string =>
+    `Asked on ${date}. Once an admin approves it, ${botName} is ready to invite to channels.`,
+  finishInSlack: (botName: string): string => `Almost there: finish adding ${botName} in Slack`,
+  waitingForPerson: (person: string, botName: string): string =>
+    `Waiting for ${person} to finish adding ${botName} in Slack`,
+  cancelling: 'Cancelling…',
+  inSlack: (who: string): string => `${who} is in Slack`,
+  /** Before the live handle's own `/invite @handle`, which the card sets in <code>. */
+  inviteLead: 'In any Slack channel, type ',
+  inviteNoHandle: 'In any Slack channel, type /invite and pick it.',
+  channelsLead: (t: InviteTarget): string =>
+    `${botWho(t)} has answered in these channels. It remembers what team members say in public channels, never in private ones.`,
+  notRemembered: 'Not remembered',
+  dontRemember: "Don't remember this channel",
+  rememberAgain: 'Remember this channel',
+  /** The Not in Slack card's consent line: what adding the bot means for the manager who does it. */
+  outsidersUseYourAccess: 'When someone outside the team mentions it, it answers them with your access.',
+  helpLine: (who: string): string =>
+    `When ${who} needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set ${who} up.`,
+  setUpAgain: (who: string): string => `${who} needs to be set up again. The person who added it to Slack has left.`,
+  changesCantReach: (who: string): string => `Changes to ${who} can't reach Slack right now.`,
+  askToReconnect: (who: string, approver: string): string =>
+    `Changes to ${who} can't reach Slack right now. Ask ${approver} to reconnect it.`,
+  outsidersCantUse: (who: string): string =>
+    `People outside the team can't use ${who} right now, because the team admin who set it up isn't a team admin anymore.`,
+  teamAdminCanFix: ' A team admin can fix this.',
+  onceSlackIsBack: ' You can do this here once Slack is connected again.',
+  reconnectThenRetry: (who: string): string => `Changes to ${who} can't reach Slack right now. Reconnect it, then try again.`,
+  setUpAgainFirst: (who: string): string => `${who} needs to be set up again before it can be changed.`,
+});
+
+/** A Rename or Change picture refused because the bot's Slack token no longer works. */
+export function agentSlackBotTokenDead(err: unknown): boolean {
+  return err instanceof AgentSlackError && err.code === 'slack-config-token';
+}
 
 /**
  * A remember the server refused because what we drew is gone or
@@ -513,12 +564,6 @@ export function agentSlackBotErrorCopy(err: unknown): {
 }
 
 export const AGENT_SLACK_BOT_CHANGE_COPY = Object.freeze({
-  tokenNeedsReplacing: (approver: string): string => `This bot's Slack token needs replacing by ${approver}.`,
-  // The viewer set the bot up, so the fix is theirs (TASK-1173).
-  yourTokenNeedsReplacing: 'Your Slack token stopped working. Replace it under Slack token, then try again.',
-  // Nobody can replace it: only a rebuild changes the bot now.
-  tokenDeadApproverLeft:
-    "This bot's Slack token stopped working, and the person who set it up has left. Rebuild the bot to change it.",
   appGone: "Slack no longer has this bot's app. It may have been deleted on api.slack.com/apps.",
   badPicture: "We couldn't use that picture. Try another image.",
   pictureChanged: 'Slack has the new picture.',
@@ -526,11 +571,12 @@ export const AGENT_SLACK_BOT_CHANGE_COPY = Object.freeze({
 
 /**
  * One sentence for a refused rename or picture change, and whether it belongs under the name field.
- * A dead token names who can fix it: the viewer (they set the bot up), nobody (the person who did has left), or the approver.
+ * A dead token says what to do and who can: the viewer set the bot up (`reconnectThenRetry`), the person who did
+ * has left (`setUpAgainFirst`), or anyone else (`askToReconnect`, naming that person), in that priority.
  */
 export function agentSlackBotChangeErrorCopy(
   err: unknown,
-  bot: { approver: string; approverGone: boolean; viewerIsApprover: boolean },
+  bot: Pick<Extract<AgentSlackBot, { state: 'live' }>, 'botName' | 'handle' | 'approver' | 'approverGone' | 'viewerIsApprover'>,
 ): { field: 'botName' | null; message: string } {
   if (err instanceof AgentSlackError) {
     switch (err.code) {
@@ -548,10 +594,10 @@ export function agentSlackBotChangeErrorCopy(
         return {
           field: null,
           message: bot.viewerIsApprover
-            ? AGENT_SLACK_BOT_CHANGE_COPY.yourTokenNeedsReplacing
+            ? AGENT_SLACK_CARD_COPY.reconnectThenRetry(botWho(bot))
             : bot.approverGone
-              ? AGENT_SLACK_BOT_CHANGE_COPY.tokenDeadApproverLeft
-              : AGENT_SLACK_BOT_CHANGE_COPY.tokenNeedsReplacing(bot.approver),
+              ? AGENT_SLACK_CARD_COPY.setUpAgainFirst(botWho(bot))
+              : AGENT_SLACK_CARD_COPY.askToReconnect(botWho(bot), bot.approver),
         };
       case 'slack-app-gone':
         return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.appGone };

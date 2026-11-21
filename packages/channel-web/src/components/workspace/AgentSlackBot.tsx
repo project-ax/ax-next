@@ -1,53 +1,75 @@
 /**
- * "Its own Slack bot" in a team agent's Slack settings (TASK-1167): give the
- * agent its own name in Slack, so people mention it directly instead of going
- * through the shared bot.
+ * An agent's Slack card (TASK-1167, TASK-1187): one card in a team agent's
+ * Slack settings for the agent's own bot, the one people mention directly in
+ * Slack. Its title says where things stand, in a sentence; what a person can
+ * do about it is the one button for the next step, or an item in the card's ⋯
+ * (`AgentSlackMenu`).
  *
  * What `bot` says (the status `GET /settings/slack/:agentId` carries) decides
- * what shows:
- *   none     a manager sees the form: first a choice of who sets it up in
- *            Slack ("Ask an AX admin" for someone who can't install apps, or
- *            "I can install apps in Slack"), then the bot's name, and, on the
- *            self path only and only if the server holds no configuration
- *            token for them, the steps and the field to paste one into;
- *            everyone else sees nothing. The choice opens on "self" when a
- *            token is stored and on "admin" when it isn't.
- *   requested a manager sees that an AX admin hasn't approved it yet, with
- *            "Cancel request" (no Slack app exists, so nothing is left over)
- *   pending  a manager sees where it stands, with "Continue in Slack" for the
- *            person who started it, and "Cancel request"; a cancel whose Slack
- *            app couldn't be deleted leaves a note saying where to find it
- *   live     everyone sees the @handle and how to invite it; a manager also
- *            sees who set it up, can rename it or change its picture
- *            (TASK-1171, `AgentSlackBotChanges`), and can disconnect it
- *            (TASK-1172): it leaves
- *            its channels and its Slack app is deleted. The Disconnect names
- *            the bot it showed by its install id, so a page drawn before the
- *            bot was replaced can't take the new one (the server says
- *            `no-bot`, and the page reads the status again); with no id (an
- *            older server) there is no Disconnect. A disconnect whose Slack
- *            app couldn't be deleted leaves the same kind of note a cancel
- *            does
- *   live, needing attention (TASK-1173): when the person who set it up has
- *            left, nobody can replace its Slack token, so everyone sees that it
- *            needs rebuilding and a manager (while the shared app is connected)
- *            can "Rebuild bot": disconnect it, then ask for a new one with the
- *            old name offered back. When the person who asked for it is no
- *            longer a team admin, a manager can "Claim bot" and it answers
- *            people outside the team with theirs. Both name the bot the page
- *            showed by its install id (`AgentSlackBotLifecycle`)
+ * the state:
+ *   none     Not in Slack. A manager reads "<agent> isn't in Slack yet" and
+ *            gets the bot's name (the agent's, or the one Set up again took
+ *            away) and "Add to Slack", which by default asks an admin. A quiet
+ *            link, "I can install Slack apps myself", switches to the
+ *            install-it-myself path: the steps and the field to paste a
+ *            configuration token into, unless the server holds one for the
+ *            person. The form opens on that path when it does (they have
+ *            installed Slack apps here before, and asking an admin could mean
+ *            asking themselves); "Ask an admin instead" switches back.
+ *   requested Waiting for an admin to approve it. The ⋯ holds "Cancel
+ *            request" (no Slack app exists yet, so nothing is left over).
+ *   pending  Almost there: the person who started it finishes it with
+ *            "Continue in Slack", and any other manager reads who is finishing
+ *            it. The ⋯ holds "Cancel request", which names the pending bot by
+ *            its install id (with none, from an older server, there is no ⋯).
+ *            A cancel whose Slack app couldn't be deleted leaves a note
+ *            saying where to find it.
+ *   live     the title is "<@handle> is in Slack" and the line under it says
+ *            how to invite it. A manager's ⋯ holds Rename, Change picture
+ *            (TASK-1171, `AgentSlackBotChanges`) and Remove from Slack
+ *            (TASK-1172): it leaves its channels and its Slack app is deleted.
+ *            Remove names the bot it showed by its install id, so a page drawn
+ *            before the bot was replaced can't take the new one (the server
+ *            says `no-bot`, and the page reads the status again); with no id
+ *            (an older server) there is no Remove. A removal whose Slack app
+ *            couldn't be deleted leaves the same kind of note a cancel does.
+ *            The channels the bot has answered in sit inside the card
+ *            (`AgentSlackBotChannels`), then a help line on who is asked when
+ *            it needs an OK.
+ *   live, with a problem (TASK-1173, TASK-1187): a problem shows only when
+ *            there is one, as a row with its sentence and at most one button.
+ *            The person who added it has left: it needs to be set up again
+ *            (a manager, while Slack is connected, gets "Set up again": remove
+ *            it, then ask for a new one with the old name offered back); this
+ *            row shows alone, because setting it up again fixes the rest. The
+ *            person who asked for it is no longer a team admin: people outside
+ *            the team can't use it, and a manager gets "Take over". A change
+ *            (rename, picture) refused because the bot's Slack token stopped
+ *            working: the card says changes can't reach Slack, and the person
+ *            who set it up gets "Reconnect" (the status says nothing about the
+ *            token, so this appears only once a change has found it dead).
+ *            Both name the bot the page showed by its install id
+ *            (`AgentSlackBotLifecycle`).
  *
- * Asking an AX admin sends the name and nothing else: no token, no picture
- * (the admin's browser draws it at Approve).
+ * Until the bot is live, anyone who doesn't manage the agent sees only that it
+ * isn't in Slack yet and that a team admin can add it: a request is the
+ * managers' business.
+ *
+ * Asking an admin sends the name and nothing else: no token, no picture (the
+ * admin's browser draws it at Approve).
  *
  * THE PASTED TOKEN NEVER LIVES IN REACT STATE. It is an uncontrolled password
  * input (as in Admin › Slack), read once on submit and cleared as the request
- * goes out, whatever Slack says. Nothing on the page ever shows a stored one:
- * the only fact the server gives is whether the viewer has one.
+ * goes out, whatever Slack says; switching to asking an admin unmounts it with
+ * whatever was pasted. Nothing on the page ever shows a stored one: the only
+ * fact the server gives is whether the viewer has one.
  *
- * Every sentence comes from `lib/agent-slack.ts` or the pinned copy below;
- * nothing from a response is shown but names (the bot's, its approver's) and
- * the handle Slack gave the bot.
+ * Every sentence comes from `lib/agent-slack.ts` (the card's own are
+ * `AGENT_SLACK_CARD_COPY`) or the pinned copy below; nothing from a response
+ * is shown but names (the bot's, its approver's) and the handle Slack gave the
+ * bot. Not in Slack and Waiting never name a role, the plumbing or the product;
+ * the install-it-myself path is where the token words belong (the words scan
+ * is in `AgentSlack.test.tsx`).
  */
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -61,26 +83,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-} from '@/components/ui/field';
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Spinner } from '@/components/ui/spinner';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
-import { BotChanges } from './AgentSlackBotChanges';
+import { AgentSlackMenu } from './AgentSlackMenu';
+import { AgentSlackBotChannels } from './AgentSlackBotChannels';
+import { PictureDialog, ReconnectDialog, RenameDialog } from './AgentSlackBotChanges';
 import { ClaimBotDialog, RebuildBotDialog, rebuildWho, type RebuildFrom } from './AgentSlackBotLifecycle';
 import {
+  AGENT_SLACK_BOT_CHANGE_COPY,
+  AGENT_SLACK_CARD_COPY,
   agentSlackBotErrorCopy,
   agentSlackBotStale,
   askSlackBotApproval,
+  botWho,
   cancelSlackBot,
   cancelSlackBotRequest,
   continueSlackBot,
@@ -88,10 +105,14 @@ import {
   requestSlackBot,
   slackShortDate,
   type AgentSlackBot as Bot,
+  type BotChannelRow,
 } from '@/lib/agent-slack';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
+import { cn } from '@/lib/utils';
+import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 
 /**
  * What a successful cancel (of a pending request) or disconnect (of a live
@@ -127,19 +148,21 @@ export interface AgentSlackBotProps {
    */
   leftOver: BotCancelled | null;
   /**
-   * The bot a Rebuild just took away, so the request form can offer its name
-   * back and say a replacement is next (TASK-1173). Held by the caller for the
-   * same reason as `leftOver`.
+   * The bot Set up again just took away, so the request form can offer its name
+   * back and say it was removed from Slack (TASK-1173). Held by the caller for
+   * the same reason as `leftOver`.
    */
   rebuilding: RebuildFrom | null;
+  /** The channels the live bot has answered in, drawn inside its card (live only). */
+  channels?: BotChannelRow[];
   /**
-   * Slack is connected. A bot request needs it, so Rebuild (which ends in a
+   * Slack is connected. A bot request needs it, so Set up again (which ends in a
    * new request) is offered only then.
    */
   sharedConnected?: boolean;
   /** The request was cancelled or the bot disconnected (the status is read again right after). */
   onCancelled: (cancelled: BotCancelled) => void;
-  /** A Rebuild disconnected the bot: remember which one, for the form that follows. */
+  /** Set up again removed the bot: remember which one, for the form that follows. */
   onRebuilt: (from: RebuildFrom) => void;
   /** A new bot is being asked for: whatever an old cancel left to say is moot. */
   onRequesting: () => void;
@@ -147,7 +170,7 @@ export interface AgentSlackBotProps {
   onChanged: () => void;
 }
 
-/** Who sets the bot up in Slack: an AX admin for the person, or the person themselves. */
+/** Who adds the bot in Slack: an admin, asked for the person, or the person themselves (the install-it-myself path). */
 type Way = 'admin' | 'self';
 
 /** A button's busy face: a spinner and what it's doing. */
@@ -160,17 +183,45 @@ function Busy({ children }: { children: ReactNode }) {
   );
 }
 
-function Section({ description, children }: { description?: ReactNode; children: ReactNode }) {
+/**
+ * The frame every state draws (TASK-1187). The title is where things stand, in
+ * a sentence and as a heading, so a screen reader hears the state when it moves
+ * by heading; the ⋯, when there is one, sits on its right.
+ */
+function SlackCard({
+  title,
+  description,
+  menu,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  menu?: ReactNode;
+  children?: ReactNode;
+}) {
   return (
     <Card variant="settings">
-      <CardHeader>
-        <CardTitle role="heading" aria-level={3} className="text-base">
-          Its own Slack bot
-        </CardTitle>
-        {description !== undefined && <CardDescription>{description}</CardDescription>}
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
+          <CardTitle role="heading" aria-level={3} className="text-base">
+            {title}
+          </CardTitle>
+          {description !== undefined && <CardDescription>{description}</CardDescription>}
+        </div>
+        {menu}
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">{children}</CardContent>
+      {children !== undefined && <CardContent className="flex flex-col gap-4">{children}</CardContent>}
     </Card>
+  );
+}
+
+/** A cancel on its way: a quiet status line. The spinner is decoration, so its own status role stays hidden. */
+function Cancelling() {
+  return (
+    <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+      <Spinner aria-hidden="true" />
+      {AGENT_SLACK_CARD_COPY.cancelling}
+    </p>
   );
 }
 
@@ -185,7 +236,7 @@ export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
   return (
     <Alert>
       <AlertDescription>
-        {leftOver.how === 'disconnected' ? 'We disconnected the bot' : 'We cancelled the request'}, but we
+        {leftOver.how === 'disconnected' ? 'We removed the bot from Slack' : 'We cancelled the request'}, but we
         couldn&apos;t confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete.{' '}
         {/* Slack's app page lists only your own apps, so the link is only any use to the one who made it. */}
         {leftOver.approverIsViewer ? (
@@ -206,6 +257,7 @@ export function AgentSlackBot({
   bot,
   canManage,
   sharedConnected = false,
+  channels = [],
   leftOver,
   rebuilding,
   onCancelled,
@@ -213,9 +265,15 @@ export function AgentSlackBot({
   onRequesting,
   onChanged,
 }: AgentSlackBotProps) {
+  // Until it's live, someone who doesn't manage the agent learns only that, and who can change it.
+  if (!canManage && bot.state !== 'live') {
+    return (
+      <SlackCard title={AGENT_SLACK_CARD_COPY.notInSlack(agentName)} description={AGENT_SLACK_CARD_COPY.teamAdminCanAdd} />
+    );
+  }
   switch (bot.state) {
     case 'none':
-      return canManage ? (
+      return (
         <RequestForm
           agentId={agentId}
           agentName={agentName}
@@ -225,10 +283,7 @@ export function AgentSlackBot({
             <>
               {rebuilding !== null && (
                 <Alert>
-                  <AlertDescription>
-                    {rebuildWho(rebuilding)} is disconnected. Set up its replacement below. It gets a new @handle, so
-                    invite it to each channel again.
-                  </AlertDescription>
+                  <AlertDescription>{AGENT_SLACK_CARD_COPY.removedNotice(rebuildWho(rebuilding))}</AlertDescription>
                 </Alert>
               )}
               {leftOver !== null && !leftOver.appDeleted && <AppLeftOverNote leftOver={leftOver} />}
@@ -237,13 +292,11 @@ export function AgentSlackBot({
           onRequesting={onRequesting}
           onChanged={onChanged}
         />
-      ) : null;
+      );
     case 'requested':
-      return canManage ? <Requested agentId={agentId} bot={bot} onChanged={onChanged} /> : null;
+      return <Requested agentId={agentId} bot={bot} onChanged={onChanged} />;
     case 'pending':
-      return canManage ? (
-        <Pending agentId={agentId} bot={bot} onCancelled={onCancelled} onChanged={onChanged} />
-      ) : null;
+      return <Pending agentId={agentId} bot={bot} onCancelled={onCancelled} onChanged={onChanged} />;
     case 'live':
       return (
         <Live
@@ -251,6 +304,7 @@ export function AgentSlackBot({
           bot={bot}
           canManage={canManage}
           sharedConnected={sharedConnected}
+          channels={channels}
           onCancelled={onCancelled}
           onRebuilt={onRebuilt}
           onChanged={onChanged}
@@ -271,7 +325,7 @@ function RequestForm({
   agentId: string;
   agentName: string;
   configTokenStored: boolean;
-  /** The name to start with: the one a Rebuild took away, else the agent's. */
+  /** The name to start with: the one Set up again took away, else the agent's. */
   initialBotName?: string | undefined;
   /** Something to say before the form: what a cancel just left behind. */
   notice: ReactNode;
@@ -338,70 +392,9 @@ function RequestForm({
 
   return (
     <form onSubmit={(e) => void submit(e)}>
-      <Section
-        description={`Give ${agentName} its own name in Slack. People mention it directly, and you add it to a channel with /invite. When someone outside the team mentions it, it answers them with your access.`}
-      >
+      <SlackCard title={AGENT_SLACK_CARD_COPY.notInSlack(agentName)} description={AGENT_SLACK_CARD_COPY.addItLead}>
         {notice}
-        <FieldSet>
-          <FieldLegend variant="label">Who sets it up in Slack?</FieldLegend>
-          <RadioGroup
-            value={way}
-            disabled={busy}
-            onValueChange={(v) => {
-              if (v === 'admin' || v === 'self') setWay(v);
-            }}
-          >
-            <Field orientation="horizontal" data-disabled={busy || undefined}>
-              <RadioGroupItem value="admin" id="slack-bot-way-admin" />
-              <FieldContent>
-                <FieldLabel htmlFor="slack-bot-way-admin">Ask an AX admin</FieldLabel>
-                <FieldDescription>
-                  We&apos;ll ask your AX admins. One of them approves it and finishes it in Slack, so you don&apos;t
-                  need a token.
-                </FieldDescription>
-              </FieldContent>
-            </Field>
-            <Field orientation="horizontal" data-disabled={busy || undefined}>
-              <RadioGroupItem value="self" id="slack-bot-way-self" />
-              <FieldContent>
-                <FieldLabel htmlFor="slack-bot-way-self">I can install apps in Slack</FieldLabel>
-                <FieldDescription>
-                  You set it up with your own Slack configuration token, then click Allow in Slack.
-                </FieldDescription>
-              </FieldContent>
-            </Field>
-          </RadioGroup>
-          <FieldDescription>
-            Either way, Slack has the final say: only someone allowed to install apps in your Slack workspace can add
-            it.
-          </FieldDescription>
-        </FieldSet>
-        {way === 'admin' ? null : showToken ? (
-          <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
-            <li>
-              Open <SlackAppsLink />. Under <strong>Your App Configuration Tokens</strong>, click{' '}
-              <strong>Generate Token</strong> for your workspace.
-            </li>
-            <li>
-              Paste the refresh token below. We keep it for every Slack app you set up here, so you only do this
-              once.
-            </li>
-          </ol>
-        ) : (
-          <p className="text-sm text-muted-foreground">We&apos;ll use the configuration token you gave us before.</p>
-        )}
-        <FieldGroup>
-          {showToken && (
-            <TokenField
-              id="slack-bot-refresh-token"
-              label="Refresh token"
-              hint="Starts with xoxe-"
-              inputRef={tokenRef}
-              error={tokenError}
-              disabled={busy}
-              required
-            />
-          )}
+        <FieldGroup className="gap-4">
           <Field data-invalid={nameError !== null || undefined}>
             <FieldLabel htmlFor="slack-agent-bot-name">Bot name</FieldLabel>
             <Input
@@ -415,33 +408,69 @@ function RequestForm({
             />
             {nameError !== null && <FieldError id="slack-agent-bot-name-error">{nameError}</FieldError>}
           </Field>
+          {/* The install-it-myself path: the one place on the card the token words belong. */}
+          {way === 'self' &&
+            (showToken ? (
+              <>
+                <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
+                  <li>
+                    Open <SlackAppsLink />. Under <strong>Your App Configuration Tokens</strong>, click{' '}
+                    <strong>Generate Token</strong> for your workspace.
+                  </li>
+                  <li>
+                    Paste the refresh token below. We keep it for every Slack app you set up here, so you only do
+                    this once.
+                  </li>
+                </ol>
+                <TokenField
+                  id="slack-bot-refresh-token"
+                  label="Refresh token"
+                  hint="Starts with xoxe-"
+                  inputRef={tokenRef}
+                  error={tokenError}
+                  disabled={busy}
+                  required
+                />
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                We&apos;ll use the configuration token you gave us before.
+              </p>
+            ))}
+          {way === 'self' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.slackHasFinalSay}</p>}
         </FieldGroup>
         {formError !== null && (
           <Alert variant="destructive">
             <AlertDescription>{formError}</AlertDescription>
           </Alert>
         )}
-        <div>
-          <Button type="submit" disabled={busy}>
-            {way === 'admin' ? (
-              busy ? (
-                <Busy>Asking…</Busy>
-              ) : (
-                'Ask an AX admin'
-              )
-            ) : busy ? (
-              <Busy>Creating…</Busy>
-            ) : (
-              'Create the Slack bot'
-            )}
-          </Button>
-        </div>
-      </Section>
+        <Button type="submit" className="self-start" disabled={busy}>
+          {busy ? <Busy>{way === 'admin' ? 'Asking…' : 'Adding…'}</Busy> : 'Add to Slack'}
+        </Button>
+        {way === 'admin' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.adminWillApprove}</p>}
+        {/* One link that flips the way, so focus stays on it when its words change. Not a submit: type="button". */}
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto self-start p-0"
+          disabled={busy}
+          onClick={() => {
+            // The old way's refusal (form-level or under a field) is not this way's.
+            setError(null);
+            setWay(way === 'admin' ? 'self' : 'admin');
+          }}
+        >
+          {way === 'admin' ? AGENT_SLACK_CARD_COPY.selfPathLink : AGENT_SLACK_CARD_COPY.adminPathLink}
+        </Button>
+        <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.outsidersUseYourAccess}</p>
+        <p className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.helpLine(agentName)}</p>
+      </SlackCard>
     </form>
   );
 }
 
-/** Waiting for an AX admin. Nothing exists in Slack yet, so a cancel leaves nothing behind. */
+/** Waiting for an admin. Nothing exists in Slack yet, so a cancel leaves nothing behind. */
 function Requested({
   agentId,
   bot,
@@ -473,20 +502,24 @@ function Requested({
   }
 
   return (
-    <Section>
-      <p className="text-sm">Waiting for an AX admin to approve {bot.botName}.</p>
-      <p className="text-[12.5px] text-muted-foreground">Asked on {slackShortDate(bot.requestedAt)}.</p>
+    <SlackCard
+      title={AGENT_SLACK_CARD_COPY.waitingForAdmin(bot.botName)}
+      description={AGENT_SLACK_CARD_COPY.askedOn(slackShortDate(bot.requestedAt), bot.botName)}
+      menu={
+        <AgentSlackMenu
+          label={`Actions for ${bot.botName}`}
+          disabled={busy}
+          items={[{ label: 'Cancel request', onSelect: () => void cancel() }]}
+        />
+      }
+    >
       {error !== null && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div>
-        <Button variant="outline" disabled={busy} onClick={() => void cancel()}>
-          {busy ? <Busy>Cancelling…</Busy> : 'Cancel request'}
-        </Button>
-      </div>
-    </Section>
+      {busy && <Cancelling />}
+    </SlackCard>
   );
 }
 
@@ -533,31 +566,94 @@ function Pending({
   }
 
   return (
-    <Section>
-      <p className="text-sm">
-        {bot.canContinue
-          ? `Almost there: finish adding ${bot.botName} in Slack.`
-          : `${bot.approver} is finishing this in Slack.`}
-      </p>
+    <SlackCard
+      title={
+        bot.canContinue
+          ? AGENT_SLACK_CARD_COPY.finishInSlack(bot.botName)
+          : AGENT_SLACK_CARD_COPY.waitingForPerson(bot.approver, bot.botName)
+      }
+      menu={
+        <AgentSlackMenu
+          label={`Actions for ${bot.botName}`}
+          disabled={busy !== null}
+          // No install id (an older server): nothing to name, so no Cancel request, and so no ⋯.
+          items={installId !== null ? [{ label: 'Cancel request', onSelect: () => void run('cancel') }] : []}
+        />
+      }
+    >
+      {bot.canContinue && (
+        <Button className="self-start" disabled={busy !== null} onClick={() => void run('continue')}>
+          {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
+        </Button>
+      )}
       {error !== null && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div className="flex flex-wrap gap-2">
-        {bot.canContinue && (
-          <Button disabled={busy !== null} onClick={() => void run('continue')}>
-            {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
-          </Button>
-        )}
-        {installId !== null && (
-          <Button variant="outline" disabled={busy !== null} onClick={() => void run('cancel')}>
-            {busy === 'cancel' ? <Busy>Cancelling…</Busy> : 'Cancel request'}
-          </Button>
-        )}
-      </div>
-    </Section>
+      {busy === 'cancel' && <Cancelling />}
+    </SlackCard>
   );
+}
+
+type LiveBot = Extract<Bot, { state: 'live' }>;
+type LiveDialog = 'rename' | 'picture' | 'reconnect' | 'remove' | 'setUpAgain' | 'takeOver';
+interface Problem {
+  key: string;
+  text: string;
+  action: { label: string; dialog: LiveDialog } | null;
+}
+
+/**
+ * What is wrong with a live bot, in the order the card shows it, each with at
+ * most one action. The person who added it having left shows alone: setting it
+ * up again fixes everything below it. `tokenDead` is the card's own knowledge,
+ * from a change that was refused (the status never says).
+ */
+function problems({
+  bot,
+  who,
+  canManage,
+  installId,
+  sharedConnected,
+  tokenDead,
+}: {
+  bot: LiveBot;
+  who: string;
+  canManage: boolean;
+  installId: string | null;
+  sharedConnected: boolean;
+  tokenDead: boolean;
+}): Problem[] {
+  const C = AGENT_SLACK_CARD_COPY;
+  if (bot.approverGone) {
+    const canSetUpAgain = installId !== null && sharedConnected;
+    return [
+      {
+        key: 'set-up-again',
+        text:
+          C.setUpAgain(who) +
+          (canSetUpAgain ? '' : canManage && !sharedConnected ? C.onceSlackIsBack : C.teamAdminCanFix),
+        action: canSetUpAgain ? { label: 'Set up again', dialog: 'setUpAgain' } : null,
+      },
+    ];
+  }
+  const rows: Problem[] = [];
+  if (tokenDead) {
+    rows.push(
+      canManage && bot.viewerIsApprover
+        ? { key: 'token', text: C.changesCantReach(who), action: { label: 'Reconnect', dialog: 'reconnect' } }
+        : { key: 'token', text: C.askToReconnect(who, bot.approver), action: null },
+    );
+  }
+  if (bot.needsClaim) {
+    rows.push({
+      key: 'take-over',
+      text: C.outsidersCantUse(who) + (installId !== null ? '' : C.teamAdminCanFix),
+      action: installId !== null ? { label: 'Take over', dialog: 'takeOver' } : null,
+    });
+  }
+  return rows;
 }
 
 function Live({
@@ -565,114 +661,169 @@ function Live({
   bot,
   canManage,
   sharedConnected,
+  channels,
   onCancelled,
   onRebuilt,
   onChanged,
 }: {
   agentId: string;
-  bot: Extract<Bot, { state: 'live' }>;
+  bot: LiveBot;
   canManage: boolean;
   sharedConnected: boolean;
+  channels: BotChannelRow[];
   onCancelled: (cancelled: BotCancelled) => void;
   onRebuilt: (from: RebuildFrom) => void;
   onChanged: () => void;
 }) {
-  const handle = bot.handle;
-  const [asking, setAsking] = useState(false);
-  const [rebuilding, setRebuilding] = useState(false);
-  const [claiming, setClaiming] = useState(false);
-  // The key Disconnect, Rebuild and Claim take: only a manager gets one, and with none there is nothing to name.
+  const who = botWho(bot);
+  const [dialog, setDialog] = useState<LiveDialog | null>(null);
+  // A refused rename or picture change found the bot's Slack token dead; held until the status is read again.
+  const [tokenDead, setTokenDead] = useState(false);
+  // What just landed without a re-read: a picture, or a token. Opening any dialog clears it.
+  const [saved, setSaved] = useState<'picture' | 'token' | null>(null);
+  const open = (d: LiveDialog) => {
+    setSaved(null);
+    setDialog(d);
+  };
+  // A reconnect unmounts the token row that held the Reconnect button the dialog would return focus to, so the notice takes it.
+  const savedNotice = useRef<HTMLDivElement>(null);
+  const focusSavedNotice = (e: Event) => {
+    if (savedNotice.current === null) return;
+    e.preventDefault();
+    savedNotice.current.focus();
+  };
+  const closeDialog = (next: boolean) => {
+    if (!next) setDialog(null);
+  };
+  // The key Remove from Slack, Set up again and Take over take: only a manager gets one, and with none there is nothing to name.
   const installId = canManage ? bot.installId : null;
-  const canRebuild = installId !== null && sharedConnected;
+  const C = AGENT_SLACK_CARD_COPY;
+  const rows = problems({ bot, who, canManage, installId, sharedConnected, tokenDead });
   return (
-    <Section>
-      <p className="text-sm">
-        {handle !== null
-          ? `@${handle} is live. Invite it to a channel with /invite @${handle}.`
-          : `${bot.botName} is live. Invite it to a channel with /invite.`}
-      </p>
-      {canManage && (
-        <p className="text-[12.5px] text-muted-foreground">
-          {bot.viewerIsApprover
-            ? 'You set it up.'
-            : bot.approverGone
-              ? 'Set up by someone who has left.'
-              : `Set up by ${bot.approver}.`}
-        </p>
-      )}
-      {bot.approverGone && (
-        <Alert>
+    <SlackCard
+      title={C.inSlack(who)}
+      description={
+        bot.handle !== null ? (
+          <>
+            {C.inviteLead}
+            <code className="font-mono">/invite @{bot.handle}</code>
+          </>
+        ) : (
+          C.inviteNoHandle
+        )
+      }
+      menu={
+        canManage ? (
+          <AgentSlackMenu
+            label={`Actions for ${who}`}
+            items={[
+              { label: 'Rename', onSelect: () => open('rename') },
+              { label: 'Change picture', onSelect: () => open('picture') },
+              ...(installId !== null
+                ? [{ label: 'Remove from Slack', onSelect: () => open('remove'), destructive: true }]
+                : []),
+            ]}
+          />
+        ) : undefined
+      }
+    >
+      {rows.map((row) => {
+        const action = row.action;
+        return (
+          <Alert key={row.key}>
+            <AlertDescription className="flex flex-col items-start gap-3">
+              <p>{row.text}</p>
+              {action !== null && (
+                <Button variant="outline" size="sm" onClick={() => open(action.dialog)}>
+                  {action.label}
+                </Button>
+              )}
+            </AlertDescription>
+          </Alert>
+        );
+      })}
+      {saved !== null && (
+        // Where focus lands after a Reconnect: a visible ring for a keyboard user (the TASK-427 landing rule).
+        <Alert ref={savedNotice} tabIndex={-1} className={cn('rounded-sm', RESOLUTION_FOCUS_RING)}>
           <AlertDescription>
-            {`${bot.botName} needs rebuilding. The person who set it up has left, so nobody can replace its Slack token any more.${
-              canRebuild
-                ? ' Rebuild it to set it up again under your own token.'
-                : canManage
-                  ? ' Once Slack is connected again, you can rebuild it here.'
-                  : ' A team admin can rebuild it.'
-            }`}
+            {saved === 'picture' ? AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged : BOT_TOKEN_COPY.replaced(bot.botName)}
           </AlertDescription>
         </Alert>
       )}
-      {bot.needsClaim && (
-        <p className="text-sm text-muted-foreground">
-          {bot.botName} needs a team admin to claim it. Until then it answers team members only.
-        </p>
+      {channels.length > 0 && (
+        <AgentSlackBotChannels agentId={agentId} canManage={canManage} invite={bot} channels={channels} onStale={onChanged} />
       )}
-      {bot.needsClaim && installId !== null && (
-        <div>
-          <Button variant="outline" onClick={() => setClaiming(true)}>
-            Claim bot
-          </Button>
-          <ClaimBotDialog
-            open={claiming}
-            onClose={() => setClaiming(false)}
+      <p className="text-[12.5px] text-muted-foreground">{C.helpLine(who)}</p>
+      {canManage && (
+        <>
+          <RenameDialog
+            open={dialog === 'rename'}
+            onOpenChange={closeDialog}
             agentId={agentId}
             bot={bot}
-            installId={installId}
+            onTokenDead={() => setTokenDead(true)}
             onChanged={onChanged}
           />
-        </div>
+          <PictureDialog
+            open={dialog === 'picture'}
+            onOpenChange={closeDialog}
+            agentId={agentId}
+            bot={bot}
+            onTokenDead={() => setTokenDead(true)}
+            onSaved={() => setSaved('picture')}
+            onChanged={onChanged}
+          />
+          <ReconnectDialog
+            open={dialog === 'reconnect'}
+            onOpenChange={closeDialog}
+            agentId={agentId}
+            bot={bot}
+            onReconnected={() => {
+              setTokenDead(false);
+              setSaved('token');
+            }}
+            onCloseAutoFocus={focusSavedNotice}
+            onStale={onChanged}
+          />
+        </>
       )}
-      {canManage && <BotChanges agentId={agentId} bot={bot} onChanged={onChanged} />}
       {installId !== null && (
-        <div className="flex flex-wrap gap-2">
-          {canRebuild && (
-            <>
-              <Button variant="outline" onClick={() => setRebuilding(true)}>
-                Rebuild bot
-              </Button>
-              <RebuildBotDialog
-                open={rebuilding}
-                onClose={() => setRebuilding(false)}
-                agentId={agentId}
-                bot={bot}
-                installId={installId}
-                onCancelled={onCancelled}
-                onRebuilt={onRebuilt}
-                onChanged={onChanged}
-              />
-            </>
-          )}
-          <Button variant="outline" onClick={() => setAsking(true)}>
-            Disconnect bot
-          </Button>
+        <>
           <DisconnectBotDialog
-            open={asking}
-            onClose={() => setAsking(false)}
+            open={dialog === 'remove'}
+            onClose={() => setDialog(null)}
             agentId={agentId}
             bot={bot}
             installId={installId}
             onCancelled={onCancelled}
             onChanged={onChanged}
           />
-        </div>
+          <RebuildBotDialog
+            open={dialog === 'setUpAgain'}
+            onClose={() => setDialog(null)}
+            agentId={agentId}
+            bot={bot}
+            installId={installId}
+            onCancelled={onCancelled}
+            onRebuilt={onRebuilt}
+            onChanged={onChanged}
+          />
+          <ClaimBotDialog
+            open={dialog === 'takeOver'}
+            onClose={() => setDialog(null)}
+            agentId={agentId}
+            bot={bot}
+            installId={installId}
+            onChanged={onChanged}
+          />
+        </>
       )}
-    </Section>
+    </SlackCard>
   );
 }
 
 /**
- * Asks before taking a live bot away: it leaves its channels, and its Slack
+ * Asks before removing a live bot from Slack: it leaves its channels, and its Slack
  * app is deleted. Confirming names the bot the dialog shows by `installId`.
  */
 function DisconnectBotDialog({
@@ -695,7 +846,7 @@ function DisconnectBotDialog({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const who = bot.handle !== null ? `@${bot.handle}` : bot.botName;
+  const who = botWho(bot);
 
   const close = (next: boolean) => {
     if (busy || next) return;
@@ -736,7 +887,7 @@ function DisconnectBotDialog({
     <Dialog open={open} onOpenChange={close}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{`Disconnect ${who}?`}</DialogTitle>
+          <DialogTitle>{`Remove ${who} from Slack?`}</DialogTitle>
           <DialogDescription>
             {`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
           </DialogDescription>
@@ -751,7 +902,7 @@ function DisconnectBotDialog({
             Keep it
           </Button>
           <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>Disconnecting…</Busy> : 'Disconnect'}
+            {busy ? <Busy>Removing…</Busy> : 'Remove'}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1,41 +1,35 @@
 /**
- * Rename a team agent's live Slack bot, or change its picture (TASK-1171), and,
- * for the person who set it up, replace their Slack token (TASK-1173). Shown to
- * a manager on the live view (`AgentSlackBot`'s `Live`).
+ * The three dialogs a manager opens from the live card (TASK-1171, TASK-1173,
+ * TASK-1187): Rename and Change picture (from the card's ⋯), and Reconnect (from
+ * the card's "Changes to … can't reach Slack right now" row). `AgentSlackBot`'s
+ * `Live` owns which is open; each dialog owns its own busy state.
  *
  * Rename and picture go to the server, which uses the token of whoever set the
  * bot up: nobody approves anything again and nobody has to invite the bot
- * again. If that token stopped working, nothing changes and the dialog says who
- * can fix it (`agentSlackBotChangeErrorCopy`): the viewer under "Slack token"
- * when they set the bot up, nobody when that person has left (only a rebuild
- * changes the bot then), else that person by name.
+ * again. If that token stopped working, nothing changes and the dialog says what
+ * to do and who can (`agentSlackBotChangeErrorCopy`), and calls `onTokenDead`
+ * so the card can show its problem row with Reconnect (the status carries no
+ * word about the token, so a refused change is how the page finds out).
  *
  * Rename is modelled on Admin › Slack's `RenameDialog`: the dialog owns `busy`
  * and ignores close requests while Slack answers, the form under
  * `DialogContent` remounts on every opening (prefilled, no leftover error), and
  * the dialog closes itself before it calls back. A rename that lands reads the
- * status again; the "Bot name" row then shows the new name, and the @handle
- * the server read again after the rename (the display name people type,
- * which follows it: TASK-1185).
+ * status again; the card's title then shows the @handle the server read again
+ * after the rename (the display name people type, which follows it: TASK-1185).
  *
  * Change picture is modelled on BrandingTab's hidden file input. The browser
  * draws the pick on a white square (`drawPickedSlackAvatar`) and shows exactly
  * that, and the PNG shown is the PNG sent. AX keeps no copy, so a saved picture
- * changes nothing in the status: it says Slack has it and doesn't read again.
+ * changes nothing in the status: `onSaved` tells the card to say Slack has it,
+ * and nothing is read again.
  *
- * The "Slack token" row shows only to the person who set the bot up
- * (`viewerIsApprover`; the server answers anyone else 403 `not-approver`). Its
- * Replace token opens the shared `BotTokenReplaceDialog` (components/slack),
- * which Admin › Slack opens too, and where the pasted token is write-only. The
- * token is the person's one token for this Slack workspace, so the notice says
- * it now serves every Slack app they set up. Like a picture, a replace changes
- * nothing the status shows (the token has no date of its own), so it doesn't
- * read again.
- *
- * A refusal that says the page is out of date (the bot was disconnected, or a
- * new request is pending; for a replace also 403 `not-approver`, the bot
- * rebuilt in another tab under someone else's token) closes the dialog and
- * reads the status again.
+ * Reconnect is the shared `BotTokenReplaceDialog` (components/slack), which
+ * Admin › Slack opens too, and where the pasted token is write-only. Like a
+ * picture, a reconnect changes nothing in the status: `onReconnected` tells the
+ * card to clear its row and say the token was replaced. The server answers
+ * anyone but the person who set the bot up 403 `not-approver`, so the card
+ * offers it only to them.
  *
  * Every sentence comes from `lib/agent-slack.ts`, `lib/slack-token-copy.ts`, the
  * shared dialog, or the pinned copy below.
@@ -61,6 +55,7 @@ import {
   agentSlackBotReplaceErrorCopy,
   agentSlackBotReplaceStale,
   agentSlackBotStale,
+  agentSlackBotTokenDead,
   renameAgentSlackBot,
   replaceAgentSlackBotToken,
   setAgentSlackBotPicture,
@@ -69,7 +64,6 @@ import {
 import { ALLOWED_LOGO_TYPES } from '@/lib/branding';
 import { logRequestFailure } from '@/lib/http';
 import { drawPickedSlackAvatar } from '@/lib/slack-avatar';
-import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 
 type Live = Extract<Bot, { state: 'live' }>;
 type ChangeError = { field: 'botName' | null; message: string };
@@ -84,89 +78,38 @@ function Busy({ children }: { children: ReactNode }) {
   );
 }
 
-export function BotChanges({
+export function ReconnectDialog({
+  open,
+  onOpenChange,
   agentId,
   bot,
-  onChanged,
+  onReconnected,
+  onCloseAutoFocus,
+  onStale,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   agentId: string;
   bot: Live;
-  /** A rename landed, or a refusal said the page is stale: read the status again. */
-  onChanged: () => void;
+  /** The token was replaced: nothing in the status changes, so the card says so itself. */
+  onReconnected: () => void;
+  /** Where focus goes when the dialog closes; `preventDefault()` keeps it from going back to the opener. */
+  onCloseAutoFocus?: (event: Event) => void;
+  /** A refusal that says the page is out of date: read the status again. */
+  onStale: () => void;
 }) {
-  const [renaming, setRenaming] = useState(false);
-  const [changing, setChanging] = useState(false);
-  const [replacing, setReplacing] = useState(false);
-  // What just landed without a re-read: a picture, or a token. Opening any dialog clears it.
-  const [saved, setSaved] = useState<'picture' | 'token' | null>(null);
-  const openDialog = (setOpen: (open: boolean) => void) => {
-    setSaved(null);
-    setOpen(true);
-  };
   return (
-    <div className="flex flex-col gap-3">
-      <dl className="flex flex-col text-sm">
-        <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
-          <dt>Bot name</dt>
-          <dd className="flex items-center gap-3">
-            <span className="text-muted-foreground">{bot.botName}</span>
-            <Button variant="outline" size="sm" onClick={() => openDialog(setRenaming)}>
-              Rename
-            </Button>
-          </dd>
-        </div>
-        <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
-          <dt>Picture</dt>
-          <dd>
-            <Button variant="outline" size="sm" onClick={() => openDialog(setChanging)}>
-              Change picture
-            </Button>
-          </dd>
-        </div>
-        {bot.viewerIsApprover && (
-          <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
-            <dt>Slack token</dt>
-            <dd>
-              <Button variant="outline" size="sm" onClick={() => openDialog(setReplacing)}>
-                Replace token
-              </Button>
-            </dd>
-          </div>
-        )}
-      </dl>
-      {saved !== null && (
-        <Alert>
-          <AlertDescription>
-            {saved === 'picture' ? AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged : BOT_TOKEN_COPY.replaced(bot.botName)}
-          </AlertDescription>
-        </Alert>
-      )}
-      <RenameDialog
-        open={renaming}
-        onOpenChange={setRenaming}
-        agentId={agentId}
-        bot={bot}
-        onChanged={onChanged}
-      />
-      <PictureDialog
-        open={changing}
-        onOpenChange={setChanging}
-        agentId={agentId}
-        bot={bot}
-        onSaved={() => setSaved('picture')}
-        onChanged={onChanged}
-      />
-      <BotTokenReplaceDialog
-        open={replacing}
-        onOpenChange={setReplacing}
-        botName={bot.botName}
-        replace={(refreshToken) => replaceAgentSlackBotToken(agentId, refreshToken)}
-        errorCopy={agentSlackBotReplaceErrorCopy}
-        isStale={agentSlackBotReplaceStale}
-        onReplaced={() => setSaved('token')}
-        onStale={onChanged}
-      />
-    </div>
+    <BotTokenReplaceDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      botName={bot.botName}
+      replace={(refreshToken) => replaceAgentSlackBotToken(agentId, refreshToken)}
+      errorCopy={agentSlackBotReplaceErrorCopy}
+      isStale={agentSlackBotReplaceStale}
+      onReplaced={onReconnected}
+      {...(onCloseAutoFocus !== undefined ? { onCloseAutoFocus } : {})}
+      onStale={onStale}
+    />
   );
 }
 
@@ -183,17 +126,20 @@ function useBusyDialog(onOpenChange: (open: boolean) => void) {
   return { busy, setBusy, close };
 }
 
-function RenameDialog({
+export function RenameDialog({
   open,
   onOpenChange,
   agentId,
   bot,
+  onTokenDead,
   onChanged,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   agentId: string;
   bot: Live;
+  /** A refusal said the bot's token stopped working: the card shows its row. */
+  onTokenDead: () => void;
   onChanged: () => void;
 }) {
   const { busy, setBusy, close } = useBusyDialog(onOpenChange);
@@ -203,6 +149,7 @@ function RenameDialog({
         <RenameForm
           agentId={agentId}
           bot={bot}
+          onTokenDead={onTokenDead}
           busy={busy}
           setBusy={setBusy}
           onCancel={() => close(false)}
@@ -221,6 +168,7 @@ function RenameDialog({
 function RenameForm({
   agentId,
   bot,
+  onTokenDead,
   busy,
   setBusy,
   onCancel,
@@ -228,6 +176,7 @@ function RenameForm({
 }: {
   agentId: string;
   bot: Live;
+  onTokenDead: () => void;
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onCancel: () => void;
@@ -257,6 +206,7 @@ function RenameForm({
         onDone();
         return;
       }
+      if (agentSlackBotTokenDead(err)) onTokenDead();
       setError(agentSlackBotChangeErrorCopy(err, bot));
     }
   }
@@ -308,11 +258,12 @@ function RenameForm({
   );
 }
 
-function PictureDialog({
+export function PictureDialog({
   open,
   onOpenChange,
   agentId,
   bot,
+  onTokenDead,
   onSaved,
   onChanged,
 }: {
@@ -320,6 +271,8 @@ function PictureDialog({
   onOpenChange: (open: boolean) => void;
   agentId: string;
   bot: Live;
+  /** A refusal said the bot's token stopped working: the card shows its row. */
+  onTokenDead: () => void;
   onSaved: () => void;
   onChanged: () => void;
 }) {
@@ -330,6 +283,7 @@ function PictureDialog({
         <PictureForm
           agentId={agentId}
           bot={bot}
+          onTokenDead={onTokenDead}
           busy={busy}
           setBusy={setBusy}
           onCancel={() => close(false)}
@@ -352,6 +306,7 @@ function PictureDialog({
 function PictureForm({
   agentId,
   bot,
+  onTokenDead,
   busy,
   setBusy,
   onCancel,
@@ -360,6 +315,7 @@ function PictureForm({
 }: {
   agentId: string;
   bot: Live;
+  onTokenDead: () => void;
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onCancel: () => void;
@@ -395,6 +351,7 @@ function PictureForm({
         onStale();
         return;
       }
+      if (agentSlackBotTokenDead(err)) onTokenDead();
       setError(agentSlackBotChangeErrorCopy(err, bot));
     }
   }
