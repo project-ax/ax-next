@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pngHeader } from './fake-png.js';
 import { BOT_PREFIX, fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { CHANNEL_LIST_PAGE_LIMIT, SLACK_RESPONSE_CAP_BYTES } from '../limits.js';
-import { buildAppManifest, slackUrls } from '../manifest.js';
+import { BOT_SCOPES, buildAppManifest, slackUrls } from '../manifest.js';
 import { SlackApiError, createSlackApi, type SlackApi, type SlackChannel } from '../slack-api.js';
 
 // Distinctive secrets, so a leak into an error is easy to spot.
@@ -921,17 +921,30 @@ describe('conversations', () => {
     }
   });
 
-  it("missing_scope keeps the scope Slack says the call needed as `needed`, never in the message; a refusal naming none has none", async () => {
+  it("missing_scope keeps the scopes Slack says the call needed as `needed` and the token's own as `provided`, never in the message; a refusal naming none has neither", async () => {
     const api = (code: string) => createSlackApi({ fetchImpl: fakeSlack(() => refusal(code)).fetchImpl });
     const scoped = await failure(api('missing_scope').conversationsInfo(BOT, 'C012AB3CD'));
     expect(scoped.code).toBe('missing_scope');
     expect(scoped.needed).toBe('channels:read');
+    // What the token holds: channel-check.ts reads it to tell a token's missing scope from a channel's.
+    expect(scoped.provided).toBe('chat:write,users:read');
     expect(scoped.message).toBe('slack conversations.info: missing_scope');
-    // What the token has is never read.
-    expect('provided' in scoped).toBe(false);
+    expect(String(scoped) + (scoped.stack ?? '')).not.toContain('chat:write');
 
     const unscoped = await failure(api('channel_not_found').conversationsInfo(BOT, 'C012AB3CD'));
     expect('needed' in unscoped).toBe(false);
+    expect('provided' in unscoped).toBe(false);
+  });
+
+  it('any refusal that names scopes keeps them, whatever its code: nothing checks for missing_scope first', async () => {
+    const named = { ok: false, error: 'channel_not_found', needed: 'groups:read', provided: 'channels:read' };
+    const api = createSlackApi({
+      fetchImpl: fakeSlack(() => new Response(JSON.stringify(named), { status: 200 })).fetchImpl,
+    });
+    const err = await failure(api.conversationsInfo(BOT, 'C012AB3CD'));
+    expect(err.code).toBe('channel_not_found');
+    expect(err.needed).toBe('groups:read');
+    expect(err.provided).toBe('channels:read');
   });
 
   it('a refusing flag (private, archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
@@ -1117,15 +1130,61 @@ describe('failures', () => {
     }
   });
 
-  it('a lowercase-hex secret Slack echoes as its `needed` is never kept', async () => {
+  it("Slack's `provided` is kept only when it reads as scope names: lowercase letters, _ . : and commas, at most 1000", async () => {
+    // Every scope the shared app's token holds, as Slack lists them.
+    const shared = BOT_SCOPES.join(',');
+    const cases: Array<[unknown, string | null]> = [
+      ['channels:read', 'channels:read'],
+      [shared, shared],
+      ['a'.repeat(1000), 'a'.repeat(1000)],
+      ['a'.repeat(1001), null],
+      ['', null],
+      ['Channels:read', null],
+      ['chat:write, channels:read', null],
+      ['channels:read\n', null],
+      ['channels:read2', null],
+      // A hyphen isn't in the alphabet (neither manifest asks for incoming-webhook): the whole list goes.
+      ['incoming-webhook,channels:read', null],
+      ['<script>', null],
+      [['channels:read'], null],
+      [{ scope: 'channels:read' }, null],
+      [42, null],
+      [true, null],
+      [null, null],
+      [undefined, null],
+    ];
+    for (const [provided, kept] of cases) {
+      const api = createSlackApi({
+        fetchImpl: fakeSlack(
+          () =>
+            new Response(JSON.stringify({ ok: false, error: 'missing_scope', needed: 'channels:read', provided }), {
+              status: 200,
+            }),
+        ).fetchImpl,
+      });
+      const err = await failure(api.conversationsInfo(BOT, 'C012AB3CD'));
+      expect(err.code, JSON.stringify(provided)).toBe('missing_scope');
+      expect(err.message).toBe('slack conversations.info: missing_scope');
+      // One unreadable list never costs the other.
+      expect(err.needed, JSON.stringify(provided)).toBe('channels:read');
+      if (kept === null) expect('provided' in err, JSON.stringify(provided)).toBe(false);
+      else expect(err.provided, JSON.stringify(provided)).toBe(kept);
+    }
+  });
+
+  it('a lowercase-hex secret Slack echoes as its `needed` or `provided` is never kept', async () => {
     for (const echoed of ['0a1b2c3d'.repeat(4), '8f742231b10e8888abcd99', 'c0ffee_1234']) {
       const api = createSlackApi({
         fetchImpl: fakeSlack(
-          () => new Response(JSON.stringify({ ok: false, error: 'missing_scope', needed: echoed }), { status: 200 }),
+          () =>
+            new Response(JSON.stringify({ ok: false, error: 'missing_scope', needed: echoed, provided: echoed }), {
+              status: 200,
+            }),
         ).fetchImpl,
       });
       const err = await failure(api.conversationsInfo(BOT, 'C012AB3CD'));
       expect('needed' in err, echoed).toBe(false);
+      expect('provided' in err, echoed).toBe(false);
       expect(JSON.stringify(err) + String(err) + (err.stack ?? '')).not.toContain(echoed);
     }
   });

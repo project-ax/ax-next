@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CHANNEL_REFUSED_CODES, createChannelCheck } from '../channel-check.js';
+import { CHANNEL_REFUSED_CODES, channelInfoFailure, createChannelCheck } from '../channel-check.js';
 import { connectable } from '../channels.js';
+import { BOT_SCOPES, DEDICATED_BOT_SCOPES } from '../manifest.js';
 import { SlackApiError, type SlackChannel } from '../slack-api.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 
@@ -14,6 +15,16 @@ const OTHER_TOKEN = fakeBotToken('OTHERCHECKSECRET');
 const TTL = 60_000;
 /** The clock when each test starts. */
 const START = 1_000_000;
+/** Slack's `provided`: every scope a team agent's own bot holds (all the shared app's too), with and without channels:read. */
+const HOLDS = DEDICATED_BOT_SCOPES.join(',');
+const LACKS = DEDICATED_BOT_SCOPES.filter((s) => s !== 'channels:read').join(',');
+/** Every scope conversations.info takes: what Slack may say is `needed` from a token that holds none of them (unmeasured). */
+const EVERY_INFO_SCOPE = 'channels:read,groups:read,mpim:read,im:read';
+
+/** Slack's `missing_scope`, naming what the call needed and what the token holds, as it says them. */
+function missingScope(scopes: { needed?: string; provided?: string }): SlackApiError {
+  return new SlackApiError('conversations.info', 'missing_scope', undefined, scopes);
+}
 
 /** A public, live channel of this workspace, as conversations.info answers once slack-api.ts narrows it. */
 function live(id: string, over: Partial<SlackChannel> = {}): SlackChannel {
@@ -152,29 +163,73 @@ describe('createChannelCheck', () => {
   /*
     A bot token keeps its string when its app is reinstalled, but its scopes
     follow the app's configuration then. One that lost `channels:read` reads
-    no channel at all, and Slack says so in `needed`: that is about the token,
-    not this channel, so its binding must stay.
+    no channel at all: that is about the token, not this channel, so its
+    binding must stay. Slack's `provided` (the scopes the token holds) says
+    so, whatever `needed` names: nobody has measured `needed` here, and Slack
+    may name every scope the method takes. Only an answer without `provided`
+    falls back to `needed`.
   */
-  it("a missing_scope whose needed is exactly channels:read is the token's, not the channel's: unknown, never kept", async () => {
-    const { calls, check } = setup(() => new SlackApiError('conversations.info', 'missing_scope', undefined, 'channels:read'));
+  it.each([
+    ["the token's own scopes lack channels:read, and Slack needs every scope the method takes", { needed: EVERY_INFO_SCOPE, provided: LACKS }],
+    ["the token's own scopes lack channels:read, and Slack needs groups:read", { needed: 'groups:read', provided: LACKS }],
+    ["the token's own scopes lack channels:read, and Slack names nothing needed", { provided: LACKS }],
+    ['Slack says nothing of the scopes the token holds, and needs exactly channels:read', { needed: 'channels:read' }],
+  ] as const)("a missing_scope where %s is the token's, not the channel's: unknown, never kept", async (_n, scopes) => {
+    const { calls, check } = setup(() => missingScope(scopes));
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'unknown', code: 'missing_scope' });
     await check.check(INSTALL, TOKEN, CH);
     expect(calls).toHaveLength(2);
   });
 
   it.each([
-    ['names no scope', undefined],
-    ['needs groups:read', 'groups:read'],
-    ['needs channels:read and more', 'channels:read,groups:read'],
-    ['needs another channels scope', 'channels:history'],
-  ] as const)('any other missing_scope (Slack %s) is still a refusal', async (_n, needed) => {
-    const { check } = setup(() => new SlackApiError('conversations.info', 'missing_scope', undefined, needed));
+    ['the token holds channels:read, and Slack needs groups:read (a private channel)', { needed: 'groups:read', provided: HOLDS }],
+    ['the token holds channels:read, and Slack needs every scope the method takes', { needed: EVERY_INFO_SCOPE, provided: HOLDS }],
+    // The token's own scopes decide, whatever Slack says is needed.
+    ['the token holds channels:read, though Slack needs exactly channels:read', { needed: 'channels:read', provided: HOLDS }],
+    ['Slack says nothing of the scopes at all', {}],
+    ['Slack says nothing of the token, and needs groups:read', { needed: 'groups:read' }],
+    ['Slack says nothing of the token, and needs channels:read and more', { needed: 'channels:read,groups:read' }],
+    ['Slack says nothing of the token, and needs another channels scope', { needed: 'channels:history' }],
+  ] as const)('a missing_scope where %s is still a refusal', async (_n, scopes) => {
+    const { check } = setup(() => missingScope(scopes));
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'missing_scope' });
   });
 
-  it('only missing_scope reads needed: a channel_not_found that names channels:read is still a refusal', async () => {
-    const { check } = setup(() => new SlackApiError('conversations.info', 'channel_not_found', undefined, 'channels:read'));
+  it("only missing_scope reads the scopes: a channel_not_found from a token without channels:read is still a refusal", async () => {
+    const { check } = setup(
+      () => new SlackApiError('conversations.info', 'channel_not_found', undefined, { needed: 'channels:read', provided: LACKS }),
+    );
     expect(await check.check(INSTALL, TOKEN, CH)).toEqual({ kind: 'refused', code: 'channel_not_found' });
+  });
+
+  it('both apps hold channels:read, the scope a missing_scope is read against: a token without it is not ours as built', () => {
+    expect(BOT_SCOPES).toContain('channels:read');
+    expect(DEDICATED_BOT_SCOPES).toContain('channels:read');
+  });
+
+  // router.ts `bindBotChannel` reads a failure with channelInfoFailure too: a bind and every later turn agree.
+  it("channelInfoFailure is exactly the check's reading of every failure", async () => {
+    const failures: Error[] = [
+      new SlackApiError('conversations.info', 'channel_not_found'),
+      missingScope({}),
+      missingScope({ needed: 'groups:read', provided: HOLDS }),
+      missingScope({ needed: 'channels:read', provided: HOLDS }),
+      missingScope({ needed: EVERY_INFO_SCOPE, provided: LACKS }),
+      missingScope({ needed: 'channels:read' }),
+      new SlackApiError('conversations.info', 'ratelimited'),
+      new SlackApiError('conversations.info', 'token_revoked'),
+      new Error('socket hang up'),
+      Object.assign(new Error('not from Slack'), { code: 'channel_not_found' }),
+    ];
+    const kinds = new Set<string>();
+    for (const err of failures) {
+      const { check } = setup(() => err);
+      const read = channelInfoFailure(err);
+      kinds.add(read.kind);
+      expect(await check.check(INSTALL, TOKEN, CH), err.message).toEqual(read);
+    }
+    // The list reaches both readings: the comparison compared something.
+    expect([...kinds].sort()).toEqual(['refused', 'unknown']);
   });
 
   it('CHANNEL_REFUSED_CODES is exactly channel_not_found and missing_scope', () => {

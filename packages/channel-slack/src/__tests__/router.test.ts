@@ -17,6 +17,7 @@ import {
   TURN_END_GRACE_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
+import { DEDICATED_BOT_SCOPES } from '../manifest.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { createEventRouter } from '../router.js';
@@ -200,6 +201,21 @@ const CHANNEL_INFO: Record<string, SlackChannel> = {
   [SUPPORT]: slackChannel(SUPPORT, 'support'),
   [OPS]: slackChannel(OPS, 'ops'),
 };
+
+/**
+ * Slack's `provided` on a `missing_scope` (TASK-1184): every scope the token
+ * holds. A team agent's own bot's (all the shared app's too), with and
+ * without channels:read.
+ */
+const HOLDS_CHANNELS_READ = DEDICATED_BOT_SCOPES.join(',');
+const LACKS_CHANNELS_READ = DEDICATED_BOT_SCOPES.filter((s) => s !== 'channels:read').join(',');
+/** Every scope conversations.info takes: what Slack may say is `needed` from a token that holds none of them (unmeasured). */
+const EVERY_INFO_SCOPE = 'channels:read,groups:read,mpim:read,im:read';
+
+/** conversations.info's `missing_scope`, naming what the call needed and what the token holds, as Slack says them. */
+function missingScopeNaming(scopes: { needed?: string; provided?: string }): SlackApiError {
+  return new SlackApiError('conversations.info', 'missing_scope', undefined, scopes);
+}
 
 function agent(id: string, ownerId: string, createdAt: string, team = false) {
   return {
@@ -2974,6 +2990,11 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       new SlackApiError('conversations.info', 'missing_scope'),
       { code: 'missing_scope' },
     ],
+    [
+      'a private channel, by a missing scope the bot holds channels:read beside (Slack names groups:read)',
+      missingScopeNaming({ needed: 'groups:read', provided: HOLDS_CHANNELS_READ }),
+      { code: 'missing_scope' },
+    ],
   ] as const)('%s: no binding, no turn, no line', async (_name, info, code) => {
     const w = world({ channelInfo: () => info });
     w.putInstall(OWN_BOT);
@@ -2997,6 +3018,37 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     };
     expect(w.lines).toEqual([ignored, ignored]);
   });
+
+  /*
+    TASK-1184 review round 2 (R4): a bot whose token can't read public
+    channels at all (its app reinstalled without channels:read) learns
+    nothing about this channel from Slack's missing_scope. It was silence, as
+    for a private channel; it binds nothing, and says so.
+  */
+  it.each([
+    ["Slack's provided lacks channels:read, whatever it needs", { needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ }],
+    ['no provided, and Slack needs exactly channels:read', { needed: 'channels:read' }],
+  ] as const)(
+    "a missing_scope that is the bot token's own (%s) binds nothing and runs nothing, and its sender is told",
+    async (_name, scopes) => {
+      const w = world({ channelInfo: () => missingScopeNaming(scopes) });
+      w.putInstall(OWN_BOT);
+      await w.dispatch(OWN_BOT, botMention());
+      await w.idle();
+
+      expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
+      expect(w.channels.calls).toEqual(['get']);
+      expect(w.invokes).toEqual([]);
+      expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: ALICE, text: COPY.turnFailed }]);
+      expect(w.lines).toEqual([
+        {
+          level: 'error',
+          msg: 'slack_event_failed',
+          fields: { installId: OWN_BOT_ID, stage: 'channel-info', code: 'missing_scope' },
+        },
+      ]);
+    },
+  );
 
   it('a conversations.info that fails tells the admitted sender privately to try again, binds nothing and runs nothing', async () => {
     const w = world({ channelInfo: () => new SlackApiError('conversations.info', 'ratelimited') });
@@ -3471,6 +3523,11 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
     ['shared with another company', slackChannel(SUPPORT, 'support', { isExtShared: true }), 'shared'],
     ['invited to Slack Connect', slackChannel(SUPPORT, 'support', { isPendingExtShared: true }), 'shared'],
     ['hidden by its missing scope (the walk measured this)', missingScope(), 'missing_scope'],
+    [
+      'hidden by a missing scope its token holds channels:read beside (Slack names groups:read)',
+      missingScopeNaming({ needed: 'groups:read', provided: HOLDS_CHANNELS_READ }),
+      'missing_scope',
+    ],
     ['not found', new SlackApiError('conversations.info', 'channel_not_found'), 'channel_not_found'],
   ];
 
@@ -3603,10 +3660,16 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
     ['a network failure', new Error('socket hang up'), 'unknown'],
     ['an answer about another channel', slackChannel(OPS, 'ops'), 'id-mismatch'],
     // The app's configuration lost channels:read and it was reinstalled: the
-    // token kept its string, reads no channel at all, and Slack names the scope.
+    // token kept its string, and reads no channel at all. Slack's provided
+    // says so, whatever it needs; without one, a need of exactly channels:read.
     [
-      'its token missing channels:read itself',
-      new SlackApiError('conversations.info', 'missing_scope', undefined, 'channels:read'),
+      'its token lacks channels:read, as the scopes it holds say',
+      missingScopeNaming({ needed: EVERY_INFO_SCOPE, provided: LACKS_CHANNELS_READ }),
+      'missing_scope',
+    ],
+    [
+      'its token lacks channels:read, as Slack needs exactly that one',
+      missingScopeNaming({ needed: 'channels:read' }),
       'missing_scope',
     ],
   ] as const)(

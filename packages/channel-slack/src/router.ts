@@ -10,7 +10,7 @@ import {
   type DirectMessage,
   type Mention,
 } from './admission.js';
-import { CHANNEL_REFUSED_CODES, type ChannelCheck } from './channel-check.js';
+import { channelInfoFailure, type ChannelCheck } from './channel-check.js';
 import { decideTier, runsAsConnector, type SenderFacts } from './channel-route.js';
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { agentAccess, connectable, teamAdminAccess, type AgentAccess } from './channels.js';
@@ -20,7 +20,7 @@ import { channelSenderLabel, dmSenderLabel, senderLabelNames } from './format.js
 import { cleanChannelName } from './label.js';
 import { logCode } from './log-code.js';
 import type { SecretStore } from './secrets.js';
-import { SlackApiError, type SlackChannel } from './slack-api.js';
+import type { SlackChannel } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
 import type { KeyedQueue } from './turn-queue.js';
 import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
@@ -124,8 +124,10 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *     channel, shows one the agent settings could connect (channels.ts
  *     `connectable`): to the bot's one agent, connected by its requester.
  *     Slack is asked again when each turn starts, as on the shared app (step
- *     8). A channel refused at its first mention is silence; a binding naming
- *     any other agent runs nothing;
+ *     8). A channel refused at its first mention is silence; Slack failing,
+ *     or saying the bot's token can't read any public channel (the turn-start
+ *     check's reading, channel-check.ts `channelInfoFailure`), is "try
+ *     again"; a binding naming any other agent runs nothing;
  *   - an outsider's turn runs as that requester, and only while they are
  *     still a team admin of the agent's team (channels.ts `teamAdminAccess`);
  *     otherwise an outsider is told privately (`botUnavailable`) and gets
@@ -815,8 +817,8 @@ async function reachShared(
  * with no binding is never "no agent here" (the bot serves its one agent
  * wherever it was invited). Then the channel's binding, or the one this
  * first mention there writes (bindBotChannel): a channel it refuses is
- * silence, Slack failing is "try again". A binding naming any agent but the
- * bot's runs nothing.
+ * silence, Slack failing is "try again", and so is a token that can't read
+ * any public channel. A binding naming any agent but the bot's runs nothing.
  */
 async function reachOwnBot(
   d: RouterDeps,
@@ -926,10 +928,12 @@ async function bindBotChannel(
   try {
     info = await d.api.conversationsInfo(botToken, channelId);
   } catch (err) {
-    if (err instanceof SlackApiError && CHANNEL_REFUSED_CODES.has(err.code)) {
-      return { ok: false, reason: 'channel-not-allowed', code: err.code };
-    }
-    return { ok: false, reason: 'slack-error', code: logCode(err) };
+    // The turn-start check's own reading (channel-check.ts), so this bind and
+    // every later turn agree: a token that can't read public channels at all
+    // is no refusal of this channel.
+    const failure = channelInfoFailure(err);
+    if (failure.kind === 'refused') return { ok: false, reason: 'channel-not-allowed', code: failure.code };
+    return { ok: false, reason: 'slack-error', code: failure.code };
   }
   // Every check reads this answer, so it must be about the channel the mention came from.
   if (info.id !== channelId) return { ok: false, reason: 'channel-not-allowed', code: 'id-mismatch' };

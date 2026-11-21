@@ -41,13 +41,14 @@
  * `too-large`, `bad-response`, `timeout`, `network`. No digits: a secret
  * Slack echoed back as its error would be lowercase hex. Any refusal (an
  * `ok: false` answer, whatever its code) that names the scopes the call
- * needed keeps them as `needed` when they read as scope names (lowercase
- * letters, `_`, `.`, `:` and `,`, at most 200 characters: no digits
- * either), and drops them otherwise. Slack's documented case is
- * `missing_scope`, but nothing here checks the code first. The message
- * never holds them. An error never carries a token, a URL, a header, an
- * underlying error, or any byte of the answer but those two, so it is safe
- * to log as it is.
+ * needed keeps them as `needed`, and one that names the scopes the token
+ * holds keeps those as `provided`, each only when it reads as scope names
+ * (lowercase letters, `_`, `.`, `:` and `,`, no digits either; at most 200
+ * characters for `needed`, 1000 for `provided`, the token's whole list),
+ * and drops it otherwise. Slack's documented case is `missing_scope`, but
+ * nothing here checks the code first. The message never holds them. An
+ * error never carries a token, a URL, a header, an underlying error, or any
+ * byte of the answer but those three, so it is safe to log as it is.
  *
  * `rotateConfigToken` hands back the refresh token Slack mints with the
  * access token. Slack retires the refresh token it was sent some time after
@@ -84,14 +85,28 @@ export class SlackApiError extends Error {
    * names (createSlackApi). Never in the message.
    */
   declare readonly needed?: string;
+  /**
+   * The scopes Slack says the token holds, comma-separated, on any refusal
+   * whose answer names them, as for `needed`. channel-check.ts reads it to
+   * tell a token that can't read public channels from a channel it can't
+   * read. Kept only when it reads as scope names (createSlackApi). Never in
+   * the message.
+   */
+  declare readonly provided?: string;
 
-  constructor(method: string, code: string, retryAfterMs?: number, needed?: string) {
+  constructor(
+    method: string,
+    code: string,
+    retryAfterMs?: number,
+    scopes: { needed?: string | undefined; provided?: string | undefined } = {},
+  ) {
     super(`slack ${method}: ${code}`);
     this.name = 'SlackApiError';
     this.method = method;
     this.code = code;
     if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
-    if (needed !== undefined) this.needed = needed;
+    if (scopes.needed !== undefined) this.needed = scopes.needed;
+    if (scopes.provided !== undefined) this.provided = scopes.provided;
   }
 }
 
@@ -309,11 +324,13 @@ const JSON_TYPE = 'application/json; charset=utf-8';
 const SLACK_CODE = /^[a-z_]{1,64}$/;
 const UNREADABLE_SLACK_CODE = 'slack-error';
 /**
- * Slack's `needed` on a refusal: scope names, comma-separated
+ * Slack's `needed` and `provided` on a refusal: scope names, comma-separated
  * (`channels:read`, `users:read.email`). No digits, as for a code: a secret
  * echoed back would be lowercase hex. Anything else is dropped, never kept.
+ * `provided` lists every scope the token holds, so it gets more room.
  */
-const SLACK_SCOPES = /^[a-z_.:,]{1,200}$/;
+const SLACK_NEEDED = /^[a-z_.:,]{1,200}$/;
+const SLACK_PROVIDED = /^[a-z_.:,]{1,1000}$/;
 /** Printable ASCII with no space, so a secret can never break a header. */
 const SLACK_TOKEN = new RegExp(`^[\\x21-\\x7e]{1,${SLACK_TOKEN_MAX}}$`);
 const DIGITS = /^\d+$/;
@@ -334,8 +351,8 @@ function codeOf(value: unknown): string {
   return typeof value === 'string' && SLACK_CODE.test(value) ? value : UNREADABLE_SLACK_CODE;
 }
 
-function scopesOf(value: unknown): string | undefined {
-  return typeof value === 'string' && SLACK_SCOPES.test(value) ? value : undefined;
+function scopesOf(value: unknown, shape: RegExp): string | undefined {
+  return typeof value === 'string' && shape.test(value) ? value : undefined;
 }
 
 /**
@@ -453,8 +470,11 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       headers['authorization'] = `Basic ${pair}`;
     }
     const payload = payloadOf(body);
-    const fail = (code: string, retryAfter?: number, needed?: string): SlackApiError =>
-      new SlackApiError(method, code, retryAfter, needed);
+    const fail = (
+      code: string,
+      retryAfter?: number,
+      scopes?: { needed: string | undefined; provided: string | undefined },
+    ): SlackApiError => new SlackApiError(method, code, retryAfter, scopes);
 
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), timeoutMs);
@@ -515,7 +535,10 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       if (answer['ok'] === false) {
         const code = codeOf(answer['error']);
         const wait = code === 'ratelimited' ? retryAfterMs(res.headers.get('retry-after')) : undefined;
-        throw fail(code, wait, scopesOf(answer['needed']));
+        throw fail(code, wait, {
+          needed: scopesOf(answer['needed'], SLACK_NEEDED),
+          provided: scopesOf(answer['provided'], SLACK_PROVIDED),
+        });
       }
       throw fail('bad-response');
     } finally {
