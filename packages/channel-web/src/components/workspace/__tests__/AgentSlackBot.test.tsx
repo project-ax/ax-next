@@ -1199,6 +1199,16 @@ describe('live: problems, one action each', () => {
     expect(rows[1]).toHaveTextContent(OUTSIDERS);
   });
 
+  it('approver gone shows alone even with a dead token found: one problem row, no token row, no Reconnect', async () => {
+    renderIt({ ...LIVE, approverGone: true, viewerIsApprover: true } as Bot);
+    await findDeadToken();
+    const rows = screen.getAllByRole('alert');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('needs to be set up again');
+    expect(rows[0]).not.toHaveTextContent("can't reach Slack");
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+  });
+
   it('a member never sees a token row: there is no menu, so nothing can find the dead token', () => {
     renderIt(MEMBER_LIVE, false);
     expect(screen.queryByRole('alert')).toBeNull();
