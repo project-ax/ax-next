@@ -442,6 +442,53 @@ export const AGENT_SLACK_COPY = Object.freeze({
     t.handle !== null ? `@${t.handle} has answered in these channels.` : `${t.botName} has answered in these channels.`,
 });
 
+/** How the card names a live bot: its @handle, or its name when Slack never said one. */
+export function botWho(t: InviteTarget): string {
+  return t.handle !== null ? `@${t.handle}` : t.botName;
+}
+
+/** Every line of an agent's Slack card (TASK-1187). Plain words: no roles, no plumbing, no product name. */
+export const AGENT_SLACK_CARD_COPY = Object.freeze({
+  notInSlack: (agentName: string): string => `${agentName} isn't in Slack yet`,
+  addItLead: 'Add it to Slack, and people can mention it in channels.',
+  teamAdminCanAdd: 'A team admin can add it.',
+  adminWillApprove: "We'll ask an admin to approve it.",
+  selfPathLink: 'I can install Slack apps myself',
+  adminPathLink: 'Ask an admin instead',
+  slackHasFinalSay: 'Slack has the final say: only someone allowed to install apps in your Slack workspace can add it.',
+  removedNotice: (who: string): string =>
+    `${who} was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.`,
+  waitingForAdmin: (botName: string): string => `Waiting for an admin to approve ${botName}`,
+  askedOn: (date: string): string => `Asked on ${date}.`,
+  finishInSlack: (botName: string): string => `Almost there: finish adding ${botName} in Slack`,
+  waitingForPerson: (person: string, botName: string): string =>
+    `Waiting for ${person} to finish adding ${botName} in Slack`,
+  cancelling: 'Cancelling…',
+  inSlack: (who: string): string => `${who} is in Slack`,
+  inviteNoHandle: 'Invite it to a channel with /invite.',
+  channelsLead: (t: InviteTarget): string =>
+    `${botWho(t)} has answered in these channels. It remembers what team members say there.`,
+  notRemembered: 'Not remembered',
+  dontRemember: "Don't remember this channel",
+  rememberAgain: 'Remember this channel',
+  helpLine: (who: string): string =>
+    `If ${who} needs your OK for something, it asks the person who asked. For people outside the team, it asks the team admin who set ${who} up.`,
+  setUpAgain: (who: string): string => `${who} needs to be set up again. The person who added it to Slack has left.`,
+  changesCantReach: (who: string): string => `Changes to ${who} can't reach Slack right now.`,
+  askToReconnect: (who: string, approver: string): string =>
+    `Changes to ${who} can't reach Slack right now. Ask ${approver} to reconnect it.`,
+  outsidersCantUse: (who: string): string => `People outside the team can't use ${who} right now.`,
+  teamAdminCanFix: ' A team admin can fix this.',
+  onceSlackIsBack: ' You can do this here once Slack is connected again.',
+  reconnectThenRetry: (who: string): string => `Changes to ${who} can't reach Slack right now. Reconnect it, then try again.`,
+  setUpAgainFirst: (who: string): string => `${who} needs to be set up again before it can be changed.`,
+});
+
+/** A Rename or Change picture refused because the bot's Slack token no longer works. */
+export function agentSlackBotTokenDead(err: unknown): boolean {
+  return err instanceof AgentSlackError && err.code === 'slack-config-token';
+}
+
 /**
  * A remember the server refused because what we drew is gone or
  * no longer ours to change (403, 404, 409): read it again. Only a 5xx or a

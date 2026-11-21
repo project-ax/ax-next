@@ -6,8 +6,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGENT_SLACK_BOT_CHANGE_COPY,
+  AGENT_SLACK_CARD_COPY,
   AGENT_SLACK_COPY,
   AgentSlackError,
+  agentSlackBotTokenDead,
+  botWho,
   agentSlackBotChangeErrorCopy,
   agentSlackBotReplaceErrorCopy,
   agentSlackBotReplaceStale,
@@ -27,6 +30,7 @@ import {
   fetchAgentSlack,
   setSlackBotChannelRemember,
 } from '../agent-slack';
+import { slackCardWordsFound } from '../../test-utils/slack-card-words';
 import { BOT_TOKEN_COPY } from '../slack-token-copy';
 import { fakeConfigRefreshToken } from '../../test-utils/fake-slack-tokens';
 
@@ -680,5 +684,78 @@ describe('what an error says', () => {
   it('agentSlackBotStale: 409 not-live reads the status again; bot-name-taken does not', () => {
     expect(agentSlackBotStale(new AgentSlackError(409, 'not-live'))).toBe(true);
     expect(agentSlackBotStale(new AgentSlackError(409, 'bot-name-taken'))).toBe(false);
+  });
+});
+
+describe("the Slack card's words (TASK-1187)", () => {
+  const who = '@quill';
+  const agentName = 'Quill';
+  const botName = 'Quill Bot';
+  const approver = 'Ada Lovelace';
+  const C = AGENT_SLACK_CARD_COPY;
+
+  it('botWho names the @handle, else the bot name', () => {
+    expect(botWho({ botName, handle: 'quill' })).toBe('@quill');
+    expect(botWho({ botName, handle: null })).toBe('Quill Bot');
+  });
+
+  it('every card line, word for word', () => {
+    expect(C.notInSlack(agentName)).toBe("Quill isn't in Slack yet");
+    expect(C.addItLead).toBe('Add it to Slack, and people can mention it in channels.');
+    expect(C.teamAdminCanAdd).toBe('A team admin can add it.');
+    expect(C.adminWillApprove).toBe("We'll ask an admin to approve it.");
+    expect(C.selfPathLink).toBe('I can install Slack apps myself');
+    expect(C.adminPathLink).toBe('Ask an admin instead');
+    expect(C.slackHasFinalSay).toBe(
+      'Slack has the final say: only someone allowed to install apps in your Slack workspace can add it.',
+    );
+    expect(C.removedNotice(who)).toBe(
+      "@quill was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.",
+    );
+    expect(C.waitingForAdmin(botName)).toBe('Waiting for an admin to approve Quill Bot');
+    expect(C.askedOn('Nov 3')).toBe('Asked on Nov 3.');
+    expect(C.finishInSlack(botName)).toBe('Almost there: finish adding Quill Bot in Slack');
+    expect(C.waitingForPerson(approver, botName)).toBe('Waiting for Ada Lovelace to finish adding Quill Bot in Slack');
+    expect(C.cancelling).toBe('Cancelling…');
+    expect(C.inSlack(who)).toBe('@quill is in Slack');
+    expect(C.inviteNoHandle).toBe('Invite it to a channel with /invite.');
+    expect(C.channelsLead({ botName, handle: 'quill' })).toBe(
+      '@quill has answered in these channels. It remembers what team members say there.',
+    );
+    expect(C.channelsLead({ botName, handle: null })).toBe(
+      'Quill Bot has answered in these channels. It remembers what team members say there.',
+    );
+    expect(C.notRemembered).toBe('Not remembered');
+    expect(C.dontRemember).toBe("Don't remember this channel");
+    expect(C.rememberAgain).toBe('Remember this channel');
+    expect(C.helpLine(who)).toBe(
+      'If @quill needs your OK for something, it asks the person who asked. For people outside the team, it asks the team admin who set @quill up.',
+    );
+    expect(C.setUpAgain(who)).toBe('@quill needs to be set up again. The person who added it to Slack has left.');
+    expect(C.changesCantReach(who)).toBe("Changes to @quill can't reach Slack right now.");
+    expect(C.askToReconnect(who, approver)).toBe(
+      "Changes to @quill can't reach Slack right now. Ask Ada Lovelace to reconnect it.",
+    );
+    expect(C.outsidersCantUse(who)).toBe("People outside the team can't use @quill right now.");
+    expect(C.teamAdminCanFix).toBe(' A team admin can fix this.');
+    expect(C.onceSlackIsBack).toBe(' You can do this here once Slack is connected again.');
+    expect(C.reconnectThenRetry(who)).toBe("Changes to @quill can't reach Slack right now. Reconnect it, then try again.");
+    expect(C.setUpAgainFirst(who)).toBe('@quill needs to be set up again before it can be changed.');
+  });
+
+  it('agentSlackBotTokenDead: only a slack-config-token refusal', () => {
+    expect(agentSlackBotTokenDead(new AgentSlackError(502, 'slack-config-token'))).toBe(true);
+    expect(agentSlackBotTokenDead(new AgentSlackError(502, 'slack-token'))).toBe(false);
+    expect(agentSlackBotTokenDead(new AgentSlackError(502, 'slack-error'))).toBe(false);
+    expect(agentSlackBotTokenDead(new AgentSlackError(409, 'not-live'))).toBe(false);
+    expect(agentSlackBotTokenDead(new TypeError('x'))).toBe(false);
+  });
+
+  it('no card line names a role, a plumbing word or the product', () => {
+    for (const v of Object.values(C)) {
+      const line = typeof v === 'function' ? (v as (...a: unknown[]) => string)(who, approver) : v;
+      expect(slackCardWordsFound(line), line).toEqual([]);
+    }
+    expect(slackCardWordsFound(C.channelsLead({ botName, handle: 'quill' }))).toEqual([]);
   });
 });
