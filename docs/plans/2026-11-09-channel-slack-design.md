@@ -226,7 +226,10 @@ recalled in a channel.
   its connections, so a Disconnect (of the channel, or of Slack in
   Admin › Slack) doesn't lose it: the agent's own bot starts there where the
   team left it, unless the channel was connected again since (then the new
-  connection's switch wins). A brand-new channel still starts on.
+  connection's switch wins). One exception, from before this was built: a
+  channel switched off and disconnected before TASK-1180 deployed, with no
+  conversation there while it was off, left nothing behind to read, so the
+  bot starts on there. A brand-new channel still starts on.
 - **Instructions and files aren't covered by this.** A channel agent's
   instructions and files are readable in every turn. The connect screen says
   plainly that they're visible to anyone in the channel.
@@ -544,8 +547,14 @@ the requester.
   at boot for connections made before it existed (off wins when an agent has
   two connections of one channel that disagree). The boot fill also keeps an
   off for a channel that was switched off and disconnected before the table
-  existed, read from its threads that weren't remembered. The boot fill only
-  ever moves a kept switch toward off. It goes only with the agent.
+  existed, read from its threads that weren't remembered. With no such
+  thread (switched off and disconnected before deploy, with no conversation
+  in between), nothing records the off, and the bot starts on there. The boot
+  fill only ever moves a kept switch toward off. A flip to on that commits
+  while the boot fill runs can still be moved back to off, because the fill
+  read the bindings before the flip: the bindings and the page show on, and
+  the bot starts off only if every binding goes before it answers there. It
+  goes only with the agent.
   We keep it when it's set rather than copying it when the bot goes live, so
   it doesn't matter what got disconnected first.
 - Each of the bot's channels has its own switch in the agent's settings. Only
