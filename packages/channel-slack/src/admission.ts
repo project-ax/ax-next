@@ -134,7 +134,7 @@ export function admitSlackUser(user: unknown, teamId: string): Admission {
  * sender: that would hand them someone else's email, and so their agent.
  */
 export async function admitSender(
-  api: SlackApi,
+  api: Pick<SlackApi, 'usersInfo'>,
   botToken: string,
   slackUserId: string,
   teamId: string,
@@ -165,6 +165,17 @@ const TEMPORARY_LOOKUP_CODE =
   /^(?:ratelimited|timeout|network|http-5\d\d|internal_error|fatal_error|service_unavailable|request_timeout)$/;
 
 /**
+ * Whether a failed Slack call's code (slack-api.ts) says only that Slack, or
+ * the way to it, was briefly not there (`TEMPORARY_LOOKUP_CODE`): worth a
+ * later try, and no verdict on anyone. The one list: admission reads it
+ * below, and a bot request's DMs stop their fan-out on it
+ * (bot-request-dms.ts).
+ */
+export function isTemporarySlackCode(code: string | undefined): boolean {
+  return code !== undefined && TEMPORARY_LOOKUP_CODE.test(code);
+}
+
+/**
  * A users.info failure that says nothing about the sender, only that Slack was
  * briefly unavailable. The sender may well be a member waiting on an answer,
  * so in a 1:1 DM (where only they can see it) the router says "try again"
@@ -173,7 +184,7 @@ const TEMPORARY_LOOKUP_CODE =
  * is about the install or the account, which no retry fixes.
  */
 export function isTemporaryLookupFailure(a: Admission): boolean {
-  return !a.ok && a.reason === 'lookup-failed' && a.code !== undefined && TEMPORARY_LOOKUP_CODE.test(a.code);
+  return !a.ok && a.reason === 'lookup-failed' && isTemporarySlackCode(a.code);
 }
 
 // ── Where: which events are answered at all ─────────────────────────────────

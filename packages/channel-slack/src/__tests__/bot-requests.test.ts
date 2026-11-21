@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { HookBus, makeAgentContext, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
+import type { BotRequestDms } from '../bot-request-dms.js';
 import { createBotRequests, type AdminBotRequestList } from '../bot-requests.js';
 import { createBots } from '../bots.js';
 import { parseIconPng, type ParsedIcon } from '../icon.js';
@@ -34,6 +35,12 @@ import { memoryStore, type Row } from './memory-install-store.js';
   open whenever it makes nothing. Admin › Slack's list names each request as its
   requester sees it, and carries no id but the request's own; no log line
   carries a name, an id or a token.
+
+  A request's Slack DMs (TASK-1170, bot-request-dms.ts) are a recording fake
+  here: an ask that opened a request tells them once, and an approve that made
+  the bot or a decline that took the request closes them, each only once the
+  app lock is free and never awaited, so a slow or stuck Slack holds up no
+  answer and no other Slack-app step.
 */
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -120,6 +127,53 @@ interface Reply {
   body: unknown;
 }
 
+/**
+ * `lock`, and whether a step is running under it right now: what a call made
+ * from inside a locked step would see, and one made after it never does.
+ */
+function watchLock(lock: Mutex): Mutex & { held: () => boolean } {
+  let running = 0;
+  return {
+    run: (fn) =>
+      lock.run(async () => {
+        running += 1;
+        try {
+          return await fn();
+        } finally {
+          running -= 1;
+        }
+      }),
+    held: () => running > 0,
+  };
+}
+
+/** One call to the DMs (bot-request-dms.ts), and whether the app lock was held when it came. */
+interface Notice {
+  method: 'opened' | 'closed' | 'forget';
+  input: unknown;
+  lockHeld: boolean;
+}
+
+/**
+ * bot-request-dms.ts, recorded. Its promise settles at once, or never when
+ * `never` is set: a Slack that never answers.
+ */
+function recordDms(lock: { held: () => boolean }) {
+  const state = { calls: [] as Notice[], never: false };
+  const notice =
+    (method: Notice['method']) =>
+    (input: unknown): Promise<void> => {
+      state.calls.push({ method, input, lockHeld: lock.held() });
+      return state.never ? new Promise<void>(() => {}) : Promise.resolve();
+    };
+  const dms: Pick<BotRequestDms, 'opened' | 'closed' | 'forget'> = {
+    opened: notice('opened'),
+    closed: notice('closed'),
+    forget: notice('forget'),
+  };
+  return { dms, state };
+}
+
 function world(o: { publicOrigin?: string; lock?: Mutex; teams?: boolean } = {}) {
   /** Every vault, store and Slack call, in order. */
   const trail: string[] = [];
@@ -173,7 +227,8 @@ function world(o: { publicOrigin?: string; lock?: Mutex; teams?: boolean } = {})
   const clock = { ms: NOW_MS };
   const memory = memoryStore(() => clock.ms, trail);
   const slack = fakeSlack(trail);
-  const lock = o.lock ?? createMutex();
+  const lock = watchLock(o.lock ?? createMutex());
+  const notices = recordDms(lock);
   const secrets = createSecretStore(bus, { logger });
   const publicOrigin = o.publicOrigin ?? ORIGIN;
   const bots = createBots({
@@ -192,6 +247,7 @@ function world(o: { publicOrigin?: string; lock?: Mutex; teams?: boolean } = {})
     installs: memory.store,
     secrets,
     bots,
+    dms: notices.dms,
     lock,
     publicOrigin,
     logger,
@@ -225,6 +281,8 @@ function world(o: { publicOrigin?: string; lock?: Mutex; teams?: boolean } = {})
     replies,
     lock,
     bots,
+    /** What the DMs were told, in order (bot-request-dms.ts, recorded). */
+    dms: notices.state,
     ctxOf,
     /** A team admin asks: Ada, for the support agent, under BOT_NAME, unless told otherwise. */
     ask: async (a: { as: string; agentId?: string | undefined; botName?: string | undefined }): Promise<Reply> =>
@@ -255,7 +313,13 @@ function world(o: { publicOrigin?: string; lock?: Mutex; teams?: boolean } = {})
           icon: a.icon === undefined ? ICON : a.icon,
         }),
       ),
-    decline: async (requestId: string = REQUEST): Promise<Reply> => keep(await requests.decline({ requestId })),
+    /** An AX admin declines REQUEST: Grace, unless told otherwise; `clicked` is the DM a Slack Decline came from. */
+    decline: async (
+      requestId: string = REQUEST,
+      as: string = GRACE,
+      clicked?: { channel: string; ts: string },
+    ): Promise<Reply> =>
+      keep(await requests.decline({ requestId, actorUserId: as, ...(clicked !== undefined ? { clicked } : {}) })),
   };
 }
 
@@ -272,6 +336,7 @@ function forget(w: World): void {
   w.auth.asked.length = 0;
   w.teams.asked.length = 0;
   w.lines.length = 0;
+  w.dms.calls.length = 0;
 }
 
 /** The shared app, connected by Kay: live unless told otherwise. */
@@ -367,6 +432,11 @@ function failRotate(w: World, err: unknown): void {
 /** Let every queued step that can run, run. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** What `p` answers, or 'still waiting' when it hasn't once every step that can run has run. */
+async function soon<T>(p: Promise<T>): Promise<T | 'still waiting'> {
+  return Promise.race([p, settle().then(() => 'still waiting' as const)]);
 }
 
 /**
@@ -528,7 +598,32 @@ describe('ask', () => {
       expect(w.slack.calls, c.what).toEqual([]);
       expect(w.vaultCalls, c.what).toEqual([]);
       expect(w.lines, c.what).toEqual([]);
+      // Nothing opened, so no admin is told of anything.
+      expect(w.dms.calls, c.what).toEqual([]);
     }
+  });
+
+  it('an opened request tells the admins once, after the lock is free, with its id, agent, requester and name; a refused ask tells nobody', async () => {
+    const w = world();
+    await seedShared(w);
+
+    expect(await w.ask({ as: ADA })).toEqual({ status: 200, body: {} });
+
+    const [request] = [...w.memory.requests.values()];
+    expect(w.dms.calls).toEqual([
+      {
+        method: 'opened',
+        input: { requestId: request!.requestId, agentId: SUPPORT.id, requesterUserId: ADA, botName: BOT_NAME },
+        // Never under the app lock: a slow Slack must not hold up approvals, connects or Allows.
+        lockHeld: false,
+      },
+    ]);
+
+    // Refused: a second ask for the agent, a member who isn't a team admin, someone off the team.
+    expect(await w.ask({ as: ADA, botName: 'Care Desk' })).toEqual({ status: 409, body: { error: 'bot-requested' } });
+    expect(await w.ask({ as: BOB })).toEqual({ status: 403, body: { error: 'forbidden' } });
+    expect(await w.ask({ as: SAM })).toEqual(NOT_FOUND);
+    expect(w.dms.calls).toHaveLength(1);
   });
 
   it('asks the rights again inside the lock: an agent deleted, or an admin demoted, while it waited opens nothing', async () => {
@@ -560,6 +655,7 @@ describe('ask', () => {
 
       expect(await asked, what).toEqual(want);
       expect(w.memory.requests.size, what).toBe(0);
+      expect(w.dms.calls, what).toEqual([]);
     }
   });
 
@@ -572,6 +668,7 @@ describe('ask', () => {
 
     expect(w.memory.requests.size).toBe(0);
     expect(w.lines).toEqual([]);
+    expect(w.dms.calls).toEqual([]);
   });
 });
 
@@ -591,6 +688,19 @@ describe('cancel', () => {
     expect(w.slack.calls).toEqual([]);
     expect(w.vaultCalls).toEqual([]);
     expect(w.lines).toEqual([{ level: 'info', msg: 'slack_bot_request_cancelled', fields: { requestId: REQUEST } }]);
+  });
+
+  it("forgets the request's DMs by its id once the lock is free, so a fan-out still running stops; a refused cancel forgets nothing", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+
+    expect(await w.cancel()).toEqual({ status: 200, body: {} });
+    expect(w.dms.calls).toEqual([{ method: 'forget', input: { requestId: REQUEST }, lockHeld: false }]);
+
+    // None open any more: 409, and nothing more is forgotten.
+    expect(await w.cancel()).toEqual(NOT_REQUESTED);
+    expect(w.dms.calls).toHaveLength(1);
   });
 
   it('with no open request is 409 not-requested: a pending bot is no request, and stays', async () => {
@@ -997,6 +1107,77 @@ describe('approve', () => {
     ]);
   });
 
+  it('an approve that made the bot closes the DMs as approved by her, after the lock; one that made nothing (409/502/404) closes nothing', async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+
+    expect(await w.approve({ as: GRACE })).toEqual(INSTALL_LINK);
+
+    expect(w.dms.calls).toEqual([
+      {
+        method: 'closed',
+        // Whose request it was and its name, read under the lock before `create` took it.
+        input: { requestId: REQUEST, requesterUserId: ADA, botName: BOT_NAME, outcome: 'approved', byUserId: GRACE },
+        lockHeld: false,
+      },
+    ]);
+
+    // Each of these makes nothing: the request stays open, and its DMs keep their buttons.
+    const cases: Array<[string, (w: World) => void, Parameters<World['approve']>[0], Reply]> = [
+      ['no token stored and none pasted', () => {}, { as: GRACE }, { status: 409, body: { error: 'config-token-needed' } }],
+      [
+        'a dead stored token',
+        (x) => {
+          x.vault.set(configTokenRef(GRACE), GRACE_STORED);
+          failRotate(x, new SlackApiError('tooling.tokens.rotate', 'invalid_refresh_token'));
+        },
+        { as: GRACE },
+        { status: 502, body: { error: 'slack-config-token' } },
+      ],
+      [
+        'a requester who is no longer a team admin',
+        (x) => {
+          x.vault.set(configTokenRef(GRACE), GRACE_STORED);
+          x.people.setRole(CARE_TEAM, ADA, 'member');
+        },
+        { as: GRACE },
+        { status: 409, body: { error: 'requester-not-admin' } },
+      ],
+      [
+        'an agent that is gone',
+        (x) => {
+          x.vault.set(configTokenRef(GRACE), GRACE_STORED);
+          x.people.agents.delete(SUPPORT.id);
+        },
+        { as: GRACE },
+        { status: 409, body: { error: 'agent-gone' } },
+      ],
+      ['an unknown request', () => {}, { as: GRACE, requestId: SALES_REQUEST }, NOT_FOUND],
+      ['someone who is not an AX admin', () => {}, { as: ADA }, { status: 403, body: { error: 'forbidden' } }],
+    ];
+    for (const [what, arrange, approve, want] of cases) {
+      const x = world();
+      await seedShared(x);
+      await seedRequest(x);
+      arrange(x);
+
+      expect(await x.approve(approve), what).toEqual(want);
+
+      expect(x.dms.calls, what).toEqual([]);
+    }
+
+    // A fault that throws (the route's 500) closes nothing either.
+    const faulted = world();
+    await seedShared(faulted);
+    await seedRequest(faulted);
+    faulted.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    faulted.auth.fault = connectionReset();
+    await expect(faulted.approve({ as: GRACE })).rejects.toThrow();
+    expect(faulted.dms.calls).toEqual([]);
+  });
+
   it("a pasted token wins over a stored one: it is rotated once, and its successor kept as the AX admin's own; the paste is never stored", async () => {
     const w = world();
     await seedShared(w);
@@ -1193,6 +1374,8 @@ describe('approve', () => {
     expect(w.vault.get(configTokenRef(KAY))).toBe(KAY_STORED);
     expect(bots(w)).toHaveLength(1);
     expect(supportBot(w)).toMatchObject({ connectedByUserId: GRACE });
+    // One app, one close: the second approve found the request gone.
+    expect(w.dms.calls.map((c) => [c.method, (c.input as { byUserId: string }).byUserId])).toEqual([['closed', GRACE]]);
 
     // A double click.
     const d = world();
@@ -1237,7 +1420,7 @@ describe('approve', () => {
 // ── decline ─────────────────────────────────────────────────────────────────
 
 describe('decline', () => {
-  it('removes it, and says so by its id alone; no token, no Slack', async () => {
+  it('reads it, removes it, and says so by its id alone; no token, no Slack', async () => {
     const w = world();
     await seedShared(w);
     await seedRequest(w);
@@ -1246,7 +1429,8 @@ describe('decline', () => {
     expect(await w.decline()).toEqual({ status: 200, body: {} });
 
     expect([...w.memory.requests.keys()]).toEqual([SALES_REQUEST]);
-    expect(w.trail).toEqual(['store:removeBotRequest']);
+    // Read first, under the lock: the delete would lose whose it was and its name.
+    expect(w.trail).toEqual(['store:getBotRequest', 'store:removeBotRequest']);
     expect(w.people.calls).toEqual([]);
     expect(w.slack.calls).toEqual([]);
     expect(w.lines).toEqual([{ level: 'info', msg: 'slack_bot_request_declined', fields: { requestId: REQUEST } }]);
@@ -1260,7 +1444,72 @@ describe('decline', () => {
     expect(await w.decline(SALES_REQUEST)).toEqual(NOT_FOUND);
 
     expect(w.memory.requests.has(REQUEST)).toBe(true);
+    expect(w.trail).toEqual(['store:getBotRequest']);
     expect(w.lines).toEqual([]);
+  });
+
+  it('closes the DMs as declined by who declined, after the lock; a gone request is 404 and closes nothing', async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+
+    expect(await w.decline(REQUEST, KAY)).toEqual({ status: 200, body: {} });
+
+    expect(w.dms.calls).toEqual([
+      {
+        method: 'closed',
+        // Whose request it was and its name, read before it was deleted; and who declined it.
+        input: { requestId: REQUEST, requesterUserId: ADA, botName: BOT_NAME, outcome: 'declined', byUserId: KAY },
+        lockHeld: false,
+      },
+    ]);
+
+    // Gone now: a second Decline (another admin, a double click) is 404 and closes nothing more.
+    expect(await w.decline(REQUEST, GRACE)).toEqual(NOT_FOUND);
+    expect(w.dms.calls).toHaveLength(1);
+
+    // One that is gone by the time the delete runs: 404, nothing logged, nothing closed.
+    const raced = world();
+    await seedShared(raced);
+    await seedRequest(raced);
+    raced.memory.store.removeBotRequest = async () => false;
+    expect(await raced.decline()).toEqual(NOT_FOUND);
+    expect(raced.lines).toEqual([]);
+    expect(raced.dms.calls).toEqual([]);
+
+    // A store fault throws (the route's 500), and closes nothing.
+    for (const step of ['getBotRequest', 'removeBotRequest'] as const) {
+      const faulted = world();
+      await seedShared(faulted);
+      await seedRequest(faulted);
+      faulted.memory.failures.set(step, connectionReset());
+      await expect(faulted.decline(), step).rejects.toThrow();
+      expect(faulted.dms.calls, step).toEqual([]);
+    }
+  });
+
+  it("a Slack Decline's clicked DM goes on to the DMs' close, so that DM is redrawn even with nothing kept for it; Admin › Slack's decline names none", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w);
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: 'Sales Desk' });
+    const clicked = { channel: 'D07KAYDM001', ts: '1763640000.000007' };
+
+    expect(await w.decline(REQUEST, KAY, clicked)).toEqual({ status: 200, body: {} });
+    expect(await w.decline(SALES_REQUEST, GRACE)).toEqual({ status: 200, body: {} });
+
+    expect(w.dms.calls).toStrictEqual([
+      {
+        method: 'closed',
+        input: { requestId: REQUEST, requesterUserId: ADA, botName: BOT_NAME, outcome: 'declined', byUserId: KAY, clicked },
+        lockHeld: false,
+      },
+      {
+        method: 'closed',
+        input: { requestId: SALES_REQUEST, requesterUserId: SAM, botName: 'Sales Desk', outcome: 'declined', byUserId: GRACE },
+        lockHeld: false,
+      },
+    ]);
   });
 
   it('waits for an approve in flight, then finds the request gone: 404 not-found, and the bot stays', async () => {
@@ -1281,6 +1530,38 @@ describe('decline', () => {
     expect(await approving).toEqual(INSTALL_LINK);
     expect(await declining).toEqual(NOT_FOUND);
     expect(supportBot(w)).toMatchObject({ status: 'pending', connectedByUserId: GRACE });
+    // The DMs close once, as approved: the decline found nothing to close.
+    expect(w.dms.calls.map((c) => [c.method, (c.input as { outcome: string }).outcome])).toEqual([['closed', 'approved']]);
+  });
+});
+
+// ── The DMs ─────────────────────────────────────────────────────────────────
+
+describe("a request's DMs", () => {
+  it("a notice that never settles doesn't hold the answer: an ask, an approve and a decline still answer, and the lock is free for the next step", async () => {
+    const w = world();
+    await seedShared(w);
+    await seedRequest(w, { requestId: SALES_REQUEST, agentId: SALES.id, by: SAM, botName: 'Sales Desk' });
+    w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+    // Slack never answers, so neither does any notice.
+    w.dms.never = true;
+
+    expect(await soon(w.ask({ as: ADA }))).toEqual({ status: 200, body: {} });
+    const asked = [...w.memory.requests.values()].find((r) => r.agentId === SUPPORT.id)!.requestId;
+    expect(await soon(w.approve({ as: GRACE, requestId: asked }))).toEqual(INSTALL_LINK);
+    expect(await soon(w.decline(SALES_REQUEST))).toEqual({ status: 200, body: {} });
+    // The next step that takes the lock still gets it.
+    expect(await soon(w.cancel(SALES.id))).toEqual(NOT_REQUESTED);
+    // A cancel that took a request: its forget never settles either, and the cancel still answers.
+    await w.memory.store.insertBotRequest({
+      requestId: 'Q2FuY2VsbGVkU2FsZXNBc2s',
+      agentId: SALES.id,
+      requestedByUserId: SAM,
+      botName: 'Sales Desk',
+    });
+    expect(await soon(w.cancel(SALES.id))).toEqual({ status: 200, body: {} });
+
+    expect(w.dms.calls.map((c) => c.method)).toEqual(['opened', 'closed', 'closed', 'forget']);
   });
 });
 

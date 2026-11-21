@@ -13,6 +13,8 @@ export type {
   FindUserByEmailOutput,
   IsApprovedEmailInput,
   IsApprovedEmailOutput,
+  ListAdminsInput,
+  ListAdminsOutput,
   GetUserInput,
   GetUserOutput,
   HttpRequestLike,

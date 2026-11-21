@@ -320,6 +320,8 @@ function fakeSlack(
       return { ts: call.ts };
     },
     updateMessage: notHere,
+    postDirect: notHere,
+    usersLookupByEmail: notHere,
     async postEphemeral(token, a) {
       record('postEphemeral', token, { ...a });
     },

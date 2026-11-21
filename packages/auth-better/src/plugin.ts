@@ -32,6 +32,8 @@ import type {
   HttpRequestLike,
   IsApprovedEmailInput,
   IsApprovedEmailOutput,
+  ListAdminsInput,
+  ListAdminsOutput,
   User,
 } from './types.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from './migrations.js';
@@ -72,6 +74,17 @@ const FindUserByEmailOutputSchema = z.object({ userId: z.string().min(1) }).stri
 // `auth:is-approved-email` answers yes or no and nothing else: an edit that
 // adds a key (a user id, the matched domain) fails as `invalid-return`.
 const IsApprovedEmailOutputSchema = z.object({ approved: z.boolean() }).strict();
+
+// `auth:list-admins` answers `{ userId, email }` per admin and nothing else: an
+// edit that adds a key (a name, a role, a domain verdict) to an entry or to the
+// answer fails as `invalid-return`.
+const ListAdminsOutputSchema = z
+  .object({
+    admins: z.array(
+      z.object({ userId: z.string().min(1), email: z.string().min(1) }).strict(),
+    ),
+  })
+  .strict();
 
 /**
  * Config surface for `@ax/auth-better`. All fields optional; defaults
@@ -121,6 +134,9 @@ export interface AuthBetterConfig {
 //     for @ax/channel-slack; returns only `{ userId }` or null
 //   - auth:is-approved-email (TASK-1094): host-internal "is this email on an
 //     approved domain?" for @ax/channel-slack; reads no account
+//   - auth:list-admins (TASK-1170): host-internal list of the admins with a
+//     verified email, for @ax/channel-slack's DMs; returns only
+//     `{ userId, email }`
 //   - `/auth/*` splat route forwards to better-auth's WebStandards handler
 //   - auth:providers-changed subscriber rebuilds the handler in place
 //
@@ -169,6 +185,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:get-user',
         'auth:find-user-by-email',
         'auth:is-approved-email',
+        'auth:list-admins',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
       ],
@@ -327,6 +344,17 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         PLUGIN_NAME,
         (_ctx, input) => isApprovedEmail(localDb, input),
         { returns: IsApprovedEmailOutputSchema },
+      );
+
+      // Host-internal list of the admins with a verified email, for
+      // @ax/channel-slack's DMs about a bot request (TASK-1170): never an HTTP
+      // route or an IPC action. listAdmins gets no ctx, so it can't log the
+      // addresses. The contract is on ListAdminsInput in types.ts.
+      bus.registerService<ListAdminsInput, ListAdminsOutput>(
+        'auth:list-admins',
+        PLUGIN_NAME,
+        (_ctx) => listAdmins(localDb),
+        { returns: ListAdminsOutputSchema },
       );
 
       bus.registerService<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
@@ -599,6 +627,25 @@ async function getUserById(
     .select(['id', 'email', 'name', 'role'])
     .executeTakeFirst();
   return row === undefined ? null : rowToUser(row);
+}
+
+/**
+ * `auth:list-admins`: every admin whose email a provider verified, oldest
+ * first, then by id. The contract is on ListAdminsInput in types.ts. It reads
+ * the table on every call, so a demoted admin is gone from the next answer.
+ * It takes no input and no ctx, so it logs nothing, and a database fault
+ * throws instead of reading as "no admins".
+ */
+async function listAdmins(db: Kysely<AuthBetterDatabase>): Promise<ListAdminsOutput> {
+  const rows = await db
+    .selectFrom('auth_better_v1_users')
+    .select(['id', 'email'])
+    .where('role', '=', 'admin')
+    .where('email_verified', '=', true)
+    .orderBy('created_at', 'asc')
+    .orderBy('id', 'asc')
+    .execute();
+  return { admins: rows.map((r) => ({ userId: r.id, email: r.email })) };
 }
 
 /**

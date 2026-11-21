@@ -268,6 +268,8 @@ function fakeSlack() {
     oauthAccess: notHere,
     postMessage: notHere,
     postBlocks: notHere,
+    postDirect: notHere,
+    usersLookupByEmail: notHere,
     updateMessage: notHere,
     startStream: notHere,
     appendStream: notHere,
@@ -558,6 +560,9 @@ function world(
     logger,
     now,
     onClick: async () => {
+      throw new Error('the ingress cases never reach a click');
+    },
+    onBotRequestClick: async () => {
       throw new Error('the ingress cases never reach a click');
     },
   });

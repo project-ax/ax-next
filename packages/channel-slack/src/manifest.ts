@@ -22,10 +22,12 @@
  *
  * What each scope is for:
  * - app_mentions:read  hear `@bot` in a channel.
- * - chat:write         reply (DMs and channels the bot has joined).
+ * - chat:write         reply (DMs and channels the bot has joined), and DM
+ *   people about a bot request (TASK-1170).
  * - im:history         read DMs sent to the bot.
  * - reactions:write    the eyes reaction while the agent works.
- * - users:read, users:read.email  resolve a sender to a workspace email.
+ * - users:read, users:read.email  resolve a sender to a workspace email, and
+ *   find an AX admin or a bot's requester by email (TASK-1170).
  * - channels:read      look up a public channel's name and membership.
  * - channels:join      join a public channel when an admin connects it.
  * - commands           the `/ax` slash command. Deliberately NOT requested:

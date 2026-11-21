@@ -42,6 +42,10 @@ export type PromptAction = 'allow' | 'deny';
 export const ACTION_ALLOW = 'ax_prompt_allow';
 /** The Deny button's `action_id`. */
 export const ACTION_DENY = 'ax_prompt_deny';
+/** A bot request DM's Approve button (TASK-1170): a URL button, so its click is ignored. */
+export const ACTION_BOT_REQUEST_APPROVE = 'ax_bot_request_approve';
+/** A bot request DM's Decline button; its `value` is the request id. */
+export const ACTION_BOT_REQUEST_DECLINE = 'ax_bot_request_decline';
 
 /**
  * The action a clicked button's `action_id` names: one of the two above,
@@ -68,8 +72,8 @@ function mrkdwn(line: string): SlackBlock {
  * refuses a section with empty text, so a subject with nothing printable
  * left reads as the generic ask.
  */
-function subjectSection(subject: string): SlackBlock {
-  return { type: 'section', text: plainText(cleanPromptSubject(subject) || COPY.heldAsked) };
+function subjectSection(subject: string, fallback: string = COPY.heldAsked): SlackBlock {
+  return { type: 'section', text: plainText(cleanPromptSubject(subject) || fallback) };
 }
 
 /**
@@ -128,5 +132,58 @@ export function linkOnlyBlocks(i: { subject: string; line: string }): { text: st
   return {
     text: COPY.heldAsked,
     blocks: [subjectSection(i.subject), { type: 'context', elements: [mrkdwn(i.line)] }],
+  };
+}
+
+/**
+ * An admin's DM about a bot request (TASK-1170): the subject (plain_text,
+ * outside names), Approve (a URL into the web app's Admin > Slack; it
+ * carries no value) and Decline (its value is the request id), then how
+ * Approve works. `text` is the notification and the fallback: it names
+ * nobody. A subject with nothing printable left reads as that same line.
+ */
+export function botRequestBlocks(i: { subject: string; requestId: string; approveUrl: string }): {
+  text: string;
+  blocks: SlackBlock[];
+} {
+  return {
+    text: COPY.botRequestAsked,
+    blocks: [
+      subjectSection(i.subject, COPY.botRequestAsked),
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: plainText(COPY.botRequestApprove),
+            style: 'primary',
+            url: i.approveUrl,
+            action_id: ACTION_BOT_REQUEST_APPROVE,
+          },
+          {
+            type: 'button',
+            text: plainText(COPY.botRequestDecline),
+            action_id: ACTION_BOT_REQUEST_DECLINE,
+            value: i.requestId,
+          },
+        ],
+      },
+      { type: 'context', elements: [mrkdwn(COPY.botRequestHow)] },
+    ],
+  };
+}
+
+/**
+ * The same DM once answered: the same subject (give it exactly as
+ * `botRequestBlocks` got it), then `line` (a COPY line) where the buttons
+ * were. Nothing is left to click. `text` is `line`.
+ */
+export function botRequestOutcomeBlocks(i: { subject: string; line: string }): {
+  text: string;
+  blocks: SlackBlock[];
+} {
+  return {
+    text: i.line,
+    blocks: [subjectSection(i.subject, COPY.botRequestAsked), { type: 'context', elements: [mrkdwn(i.line)] }],
   };
 }

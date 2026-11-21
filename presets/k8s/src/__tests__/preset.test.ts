@@ -1301,6 +1301,8 @@ describe('@ax/preset-k8s wiring', () => {
       'auth:find-user-by-email',
       // A channel mention from a member with no account: is their email on an approved domain?
       'auth:is-approved-email',
+      // A bot request's DMs (TASK-1170): who the AX admins are, with a verified email.
+      'auth:list-admins',
       'agents:list-for-user',
       // Connecting a channel to a team agent: who may see it, who may manage it.
       'agents:resolve',
