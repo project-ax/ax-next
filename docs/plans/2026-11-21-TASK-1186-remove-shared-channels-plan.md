@@ -56,7 +56,7 @@ git fetch origin && git log --oneline origin/main | grep -m1 'TASK-1184'
 1. **A leftover shared binding.** Someone mentions the shared bot in a channel that still has a binding row on the shared install. An older replica could have written one after boot, or the boot delete hasn't run yet. Expect no binding read, no turn, and one private line. Test: Task 3, step 1, first test.
 2. **A shared binding switched OFF at deploy, with no kept switch.** After boot the binding is gone and the kept switch is OFF, so the agent's bot later starts OFF there. Test: Task 2, migration test.
 3. **Bindings that aren't the shared install's.** Boot with a bot's binding and with a binding whose install row is missing. Both stay: only rows whose install is `kind = 'shared'` go. Test: Task 2, migration test.
-4. **`/ax` typed before the admin's Disconnect + Connect.** Slack posts to `/slack/commands/<id>`. Nothing serves that path any more, so the answer is 405 and no handler runs. Test: Task 4, canary assertion.
+4. **`/ax` typed before the admin's Disconnect + Connect.** Slack posts to `/slack/commands/<id>`. Nothing serves that path any more, so the answer is 403 (the CSRF check refuses a request with no CSRF header before routing; as built, Task 4) and no handler runs. Test: Task 4, canary assertion.
 5. **The `ready` status with and without `channels`.** channel-web parses a `ready` answer that has no `channels` (the new server). It also parses one that still has `channels` (a host one deploy behind), ignoring the key. Test: Task 6, step 1.
 
 ---
@@ -490,7 +490,7 @@ Steps:
   - **§4 "Channels it was already in" (`:477`) and "As built (TASK-1168)" (`:485`).** Mark both the same way.
   - **§4b.1.** Add an "As built (TASK-1186)" paragraph covering:
     - a shared-bot channel mention gets `COPY.sharedBotInChannel`, and only an admitted sender sees it;
-    - `/ax` and its route are gone (an unserved POST answers 405);
+    - `/ax` and its route are gone (a POST from Slack, which carries no CSRF header, is refused with 403 before routing);
     - the shared manifest has six scopes;
     - every boot deletes the shared install's bindings after the backfills;
     - a bot's first bind reads only the kept switch.
@@ -544,6 +544,6 @@ Steps:
   - The public route `POST /slack/commands/:installId` is gone, along with `conversations.list` and `conversations.join` egress.
   - The agent-settings routes no longer hold the Slack client or the vault.
   - Untrusted input: a shared-bot channel mention now reaches only `users.info` and one ephemeral line. No text goes anywhere.
-- **Deploy note** (prod and kind): after the deploy, go to Admin › Slack → **Disconnect**, then **Connect**. The shared app then sheds the three scopes and `/ax`. Until then, `/ax` in Slack fails, because the route answers 405. The first boot deletes the shared install's channel bindings, and keeps any switch that was off as the agent's kept switch.
+- **Deploy note** (prod and kind): after the deploy, go to Admin › Slack → **Disconnect**, then **Connect**. The shared app then sheds the three scopes and `/ax`. Until then, `/ax` in Slack fails, because the host answers 403 (CSRF refuses it before routing). The first boot deletes the shared install's channel bindings, and keeps any switch that was off as the agent's kept switch.
 - **Boundary review:** not applicable, because no hook changed.
 - **TASK-1184:** say which case applied (Step 0).
