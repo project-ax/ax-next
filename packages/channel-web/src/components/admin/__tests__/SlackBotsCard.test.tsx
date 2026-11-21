@@ -34,6 +34,7 @@ const PENDING: AdminSlackBot = {
   approver: 'Grace Hopper',
   state: 'pending',
   addedAt: ADDED,
+  viewerIsApprover: false,
 };
 const LIVE: AdminSlackBot = {
   installId: 'U2FsZXNCb3RJbnN0YWxsMQ',
@@ -42,6 +43,7 @@ const LIVE: AdminSlackBot = {
   approver: 'Sam Sales',
   state: 'live',
   addedAt: ADDED,
+  viewerIsApprover: false,
 };
 const ORPHAN: AdminSlackBot = { ...LIVE, approver: null };
 

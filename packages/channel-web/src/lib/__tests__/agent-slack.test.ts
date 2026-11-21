@@ -9,6 +9,10 @@ import {
   AGENT_SLACK_COPY,
   AgentSlackError,
   agentSlackBotChangeErrorCopy,
+  agentSlackBotReplaceErrorCopy,
+  agentSlackBotReplaceStale,
+  claimAgentSlackBot,
+  replaceAgentSlackBotToken,
   renameAgentSlackBot,
   setAgentSlackBotPicture,
   agentSlackBotErrorCopy,
@@ -29,6 +33,7 @@ import {
   setSlackBotChannelRemember,
   setSlackChannelRemember,
 } from '../agent-slack';
+import { BOT_TOKEN_COPY } from '../slack-token-copy';
 import { fakeConfigRefreshToken } from '../../test-utils/fake-slack-tokens';
 
 interface Call {
@@ -50,7 +55,17 @@ function json(status: number, body: unknown): Response {
 const BOT_ID = 'Hb7Kq2Lw8vNc5Xr1Bm7KdA';
 const NO_BOT = { state: 'none', configTokenStored: true };
 const PENDING_BOT = { state: 'pending', botName: 'Quill', approver: 'Ada', canContinue: true, installId: BOT_ID };
-const LIVE_BOT = { state: 'live', botName: 'Quill', handle: 'quill', approver: 'Ada', needsClaim: false, installId: BOT_ID };
+const LIVE_BOT = {
+  state: 'live',
+  botName: 'Quill',
+  handle: 'quill',
+  approver: 'Ada',
+  needsClaim: false,
+  approverGone: false,
+  viewerIsApprover: false,
+  installId: BOT_ID,
+};
+const PEOPLE = { approver: 'Ada Lovelace', approverGone: false, viewerIsApprover: false };
 
 const ROW = { channelId: 'C1', name: 'support', remember: false, connectedBy: 'Ada', needsReconnect: false, needsInvite: false };
 
@@ -163,6 +178,26 @@ describe('fetchAgentSlack', () => {
       await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ state: 'ready', bot });
       answer = () => json(200, { state: 'no-workspace', canManage: true, bot });
       await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', canManage: true, bot });
+    }
+  });
+
+  it('a live bot without approverGone or viewerIsApprover (an older host) reads them as false; present, each must be a boolean', async () => {
+    const ready = { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, channels: [] };
+    const { approverGone: _g, viewerIsApprover: _v, ...older } = LIVE_BOT;
+    answer = () => json(200, { ...ready, bot: older });
+    await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ state: 'ready', bot: LIVE_BOT });
+    answer = () => json(200, { ...ready, bot: { ...LIVE_BOT, approverGone: true, viewerIsApprover: true } });
+    await expect(fetchAgentSlack('a1')).resolves.toMatchObject({
+      bot: { approverGone: true, viewerIsApprover: true },
+    });
+    for (const bad of [
+      { ...LIVE_BOT, approverGone: 'yes' },
+      { ...LIVE_BOT, approverGone: null },
+      { ...LIVE_BOT, viewerIsApprover: 1 },
+      { ...LIVE_BOT, viewerIsApprover: null },
+    ]) {
+      answer = () => json(200, { ...ready, bot: bad });
+      await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
     }
   });
 
@@ -364,11 +399,15 @@ describe("the agent's own bot", () => {
     await expect(continueSlackBot('a1')).rejects.toMatchObject({ code: 'bad-response' });
 
     answer = () => json(200, { appDeleted: false });
-    await expect(cancelSlackBot('a1')).resolves.toEqual({ appDeleted: false });
-    expect(calls.at(-1)).toMatchObject({ url: '/settings/slack/a1/bot/cancel', method: 'POST' });
+    await expect(cancelSlackBot('a1', BOT_ID)).resolves.toEqual({ appDeleted: false });
+    expect(calls.at(-1)).toMatchObject({
+      url: '/settings/slack/a1/bot/cancel',
+      method: 'POST',
+      body: { installId: BOT_ID },
+    });
     expect(calls.at(-1)?.headers['x-requested-with']).toBe('ax-admin');
     answer = () => json(200, { appDeleted: 'yes' });
-    await expect(cancelSlackBot('a1')).rejects.toMatchObject({ code: 'bad-response' });
+    await expect(cancelSlackBot('a1', BOT_ID)).rejects.toMatchObject({ code: 'bad-response' });
   });
 
   it('askSlackBotApproval posts { botName } to /bot-request with the write headers', async () => {
@@ -507,6 +546,94 @@ describe("the agent's own bot", () => {
   });
 });
 
+describe("replacing, and claiming, an agent's own bot", () => {
+  it('replaceAgentSlackBotToken posts { refreshToken } alone to /bot/replace-token with the write headers', async () => {
+    const token = fakeConfigRefreshToken('replace');
+    await expect(replaceAgentSlackBotToken('a/1', token)).resolves.toBeUndefined();
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%2F1/bot/replace-token',
+      method: 'POST',
+      credentials: 'include',
+      body: { refreshToken: token },
+    });
+    expect(Object.keys(calls[0]?.body as object)).toEqual(['refreshToken']);
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+  });
+
+  it('claimAgentSlackBot posts { installId } alone to /bot/claim with the write headers', async () => {
+    await expect(claimAgentSlackBot('a/1', BOT_ID)).resolves.toBeUndefined();
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%2F1/bot/claim',
+      method: 'POST',
+      credentials: 'include',
+      body: { installId: BOT_ID },
+    });
+    expect(Object.keys(calls[0]?.body as object)).toEqual(['installId']);
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+  });
+
+  it("both throw an AgentSlackError with the answer's code", async () => {
+    answer = () => json(403, { error: 'not-approver' });
+    const refused = await replaceAgentSlackBotToken('a1', fakeConfigRefreshToken('x')).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(AgentSlackError);
+    expect(refused).toMatchObject({ status: 403, code: 'not-approver' });
+    answer = () => json(409, { error: 'claim-not-needed' });
+    const notNeeded = await claimAgentSlackBot('a1', BOT_ID).catch((e: unknown) => e);
+    expect(notNeeded).toBeInstanceOf(AgentSlackError);
+    expect(notNeeded).toMatchObject({ status: 409, code: 'claim-not-needed' });
+  });
+
+  it('agentSlackBotStale: 409 claim-not-needed reads the status again', () => {
+    expect(agentSlackBotStale(new AgentSlackError(409, 'claim-not-needed'))).toBe(true);
+    expect(agentSlackBotStale(new AgentSlackError(403, 'not-approver'))).toBe(false);
+  });
+
+  it('agentSlackBotReplaceStale: what agentSlackBotStale says, and 403 not-approver (the bot was handed on)', () => {
+    expect(agentSlackBotReplaceStale(new AgentSlackError(403, 'not-approver'))).toBe(true);
+    expect(agentSlackBotReplaceStale(new AgentSlackError(409, 'not-live'))).toBe(true);
+    expect(agentSlackBotReplaceStale(new AgentSlackError(409, 'no-bot'))).toBe(true);
+    expect(agentSlackBotReplaceStale(new AgentSlackError(403, 'forbidden'))).toBe(true);
+    expect(agentSlackBotReplaceStale(new AgentSlackError(404, 'not-found'))).toBe(true);
+    expect(agentSlackBotReplaceStale(new AgentSlackError(502, 'slack-not-app-manager'))).toBe(false);
+    expect(agentSlackBotReplaceStale(new AgentSlackError(400, 'invalid-refresh-token'))).toBe(false);
+    expect(agentSlackBotReplaceStale(new Error('x'))).toBe(false);
+  });
+
+  it('agentSlackBotReplaceErrorCopy: every code has its sentence and its field', () => {
+    const copy = (code: string): { field: string | null; message: string } =>
+      agentSlackBotReplaceErrorCopy(new AgentSlackError(400, code));
+    expect(copy('invalid-refresh-token')).toEqual({
+      field: 'refreshToken',
+      message: "That doesn't look like a refresh token. It starts with xoxe-.",
+    });
+    expect(copy('slack-refresh-token')).toEqual({
+      field: 'refreshToken',
+      message: "Slack didn't accept the refresh token. Generate a new token and try again.",
+    });
+    expect(copy('slack-not-app-manager')).toEqual({
+      field: 'refreshToken',
+      message:
+        "Slack says that token can't manage this bot. Only the person who set a bot up can replace its token, with a new token of their own from this Slack workspace.",
+    });
+    expect(copy('public-origin-not-https').field).toBeNull();
+    expect(copy('public-origin-not-https').message).toMatch(/isn't https/);
+    expect(copy('slack-error')).toEqual({ field: null, message: 'Something went wrong talking to Slack. Try again in a minute.' });
+    expect(copy('internal')).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
+    expect(copy('something-new')).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
+    expect(agentSlackBotReplaceErrorCopy(new TypeError('x'))).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
+  });
+
+  it('BOT_TOKEN_COPY words the refusal and the success', () => {
+    expect(BOT_TOKEN_COPY['slack-not-app-manager']).toBe(
+      "Slack says that token can't manage this bot. Only the person who set a bot up can replace its token, with a new token of their own from this Slack workspace.",
+    );
+    expect(BOT_TOKEN_COPY.replaced('Quill Bot')).toBe(
+      "Token replaced. We now use it for Quill Bot and every other Slack app you set up here. Don't revoke the token you just pasted: it's the one we use now.",
+    );
+  });
+});
+
 describe('what an error says', () => {
   it('turns each refusal into its own sentence, never a code', () => {
     const e = (status: number, code: string, reason: string | null = null) => new AgentSlackError(status, code, reason);
@@ -602,7 +729,11 @@ describe('what an error says', () => {
 
   it('agentSlackBotChangeErrorCopy: every code has its sentence and its field', () => {
     const copy = (code: string, reason: string | null = null, who = 'Ada'): unknown =>
-      agentSlackBotChangeErrorCopy(new AgentSlackError(400, code, reason), who);
+      agentSlackBotChangeErrorCopy(new AgentSlackError(400, code, reason), {
+        approver: who,
+        approverGone: false,
+        viewerIsApprover: false,
+      });
     expect(copy('invalid-bot-name', 'empty')).toEqual({ field: 'botName', message: 'Give the bot a name.' });
     expect(copy('invalid-bot-name', 'nope')).toEqual({ field: 'botName', message: "Slack can't use that name. Try another." });
     expect(copy('bot-name-taken')).toEqual({
@@ -626,8 +757,30 @@ describe('what an error says', () => {
     expect((copy('public-origin-not-https') as { message: string }).message).toMatch(/isn't https/);
     expect(copy('slack-error')).toEqual({ field: null, message: 'Something went wrong talking to Slack. Try again in a minute.' });
     expect(copy('internal')).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
-    expect(agentSlackBotChangeErrorCopy(new TypeError('x'), 'Ada')).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
+    expect(agentSlackBotChangeErrorCopy(new TypeError('x'), PEOPLE)).toEqual({ field: null, message: AGENT_SLACK_COPY.generic });
     expect(AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged).toBe('Slack has the new picture.');
+  });
+
+  it('agentSlackBotChangeErrorCopy: a dead token says who can fix it: the viewer, nobody (the approver left), or the approver', () => {
+    const dead = new AgentSlackError(502, 'slack-config-token');
+    expect(agentSlackBotChangeErrorCopy(dead, { approver: 'Ada', approverGone: false, viewerIsApprover: true })).toEqual({
+      field: null,
+      message: 'Your Slack token stopped working. Replace it under Slack token, then try again.',
+    });
+    expect(agentSlackBotChangeErrorCopy(dead, { approver: 'A teammate', approverGone: true, viewerIsApprover: false })).toEqual({
+      field: null,
+      message:
+        "This bot's Slack token stopped working, and the person who set it up has left. Rebuild the bot to change it.",
+    });
+    expect(agentSlackBotChangeErrorCopy(dead, PEOPLE)).toEqual({
+      field: null,
+      message: "This bot's Slack token needs replacing by Ada Lovelace.",
+    });
+    // The viewer being the approver wins: they can replace their own token.
+    expect(agentSlackBotChangeErrorCopy(dead, { approver: 'Ada', approverGone: true, viewerIsApprover: true }).message).toBe(
+      AGENT_SLACK_BOT_CHANGE_COPY.yourTokenNeedsReplacing,
+    );
+    expect(AGENT_SLACK_BOT_CHANGE_COPY.tokenDeadApproverLeft).toMatch(/^This bot's Slack token stopped working/);
   });
 
   it('agentSlackBotStale: 409 not-live reads the status again; bot-name-taken does not', () => {

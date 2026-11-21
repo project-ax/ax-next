@@ -467,8 +467,11 @@ function Pending({
   const [busy, setBusy] = useState<'continue' | 'cancel' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Cancel names the pending bot this page showed, so a stale tab can't take back a newer request (TASK-1173).
+  const { installId } = bot;
+
   async function run(which: 'continue' | 'cancel') {
-    if (busy !== null) return;
+    if (busy !== null || (which === 'cancel' && installId === null)) return;
     setBusy(which);
     setError(null);
     try {
@@ -476,8 +479,8 @@ function Pending({
         const { installUrl } = await continueSlackBot(agentId);
         // The page is leaving for Slack, so it stays busy.
         goToSlack(installUrl);
-      } else {
-        const { appDeleted } = await cancelSlackBot(agentId);
+      } else if (installId !== null) {
+        const { appDeleted } = await cancelSlackBot(agentId, installId);
         onCancelled({ how: 'cancelled', appDeleted, approverIsViewer: bot.canContinue, approver: bot.approver });
         onChanged();
       }
@@ -510,9 +513,11 @@ function Pending({
             {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
           </Button>
         )}
-        <Button variant="outline" disabled={busy !== null} onClick={() => void run('cancel')}>
-          {busy === 'cancel' ? <Busy>Cancelling…</Busy> : 'Cancel request'}
-        </Button>
+        {installId !== null && (
+          <Button variant="outline" disabled={busy !== null} onClick={() => void run('cancel')}>
+            {busy === 'cancel' ? <Busy>Cancelling…</Busy> : 'Cancel request'}
+          </Button>
+        )}
       </div>
     </Section>
   );

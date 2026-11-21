@@ -59,6 +59,8 @@ const LIVE: Bot = {
   handle: 'quill_bot',
   approver: 'Ada Lovelace',
   needsClaim: false,
+  approverGone: false,
+  viewerIsApprover: false,
   installId: BOT_ID,
 };
 /** No cancel note, and nobody listening for one (the note's life across a re-read is `AgentSlack`'s, tested there). */
@@ -393,8 +395,14 @@ describe('pending', () => {
     const onChanged = renderIt(PENDING);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel request' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    expect(cancel).toHaveBeenCalledWith('a1');
+    expect(cancel).toHaveBeenCalledWith('a1', BOT_ID);
     expect(go).not.toHaveBeenCalled();
+  });
+
+  it('Cancel posts the pending bot\'s id, and with no id (an older host) there is no Cancel', () => {
+    renderIt({ ...PENDING, installId: null });
+    expect(screen.queryByRole('button', { name: 'Cancel request' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue in Slack' })).toBeInTheDocument();
   });
 
   it("not-approver says so in a sentence and leaves the buttons pressable", async () => {

@@ -13,7 +13,12 @@
  *        (TASK-1180: the switch for a channel the agent's own bot has answered in; the status lists them as `botChannels`)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
- *   POST /settings/slack/:agentId/bot/cancel  → { appDeleted }
+ *   POST /settings/slack/:agentId/bot/cancel  { installId } → { appDeleted }
+ *        (TASK-1173: the pending bot the page showed; 409 not-pending for any other)
+ *   POST /settings/slack/:agentId/bot/replace-token  { refreshToken } → {}
+ *        (TASK-1173: the live bot's approver replaces their configuration token; 403 not-approver for anyone else)
+ *   POST /settings/slack/:agentId/bot/claim   { installId } → {}
+ *        (TASK-1173: a team admin takes over a live bot whose requester is no longer one; 409 claim-not-needed otherwise)
  *   POST /settings/slack/:agentId/bot/disconnect  { installId } → { appDeleted }
  *        (TASK-1172: a live or pending bot, named by the install id the page showed; 409 no-bot for any other)
  *   POST /settings/slack/:agentId/bot/rename  { botName } → { botName } (TASK-1171: the live bot; 409 not-live otherwise)
@@ -29,7 +34,7 @@
  */
 import { HttpError, httpFetch } from './http';
 import { SLACK_ERROR_COPY } from './slack-admin';
-import { BOT_NAME_COPY, BOT_NAME_FALLBACK, SLACK_TOKEN_COPY } from './slack-token-copy';
+import { BOT_NAME_COPY, BOT_NAME_FALLBACK, BOT_TOKEN_COPY, SLACK_TOKEN_COPY } from './slack-token-copy';
 
 export interface SlackChannelRow {
   channelId: string;
@@ -77,13 +82,19 @@ export type AgentSlackBot =
   | { state: 'requested'; botName: string; requestedAt: string }
   /** `canContinue`: the viewer is the approver and Slack is connected, so "Continue in Slack" can finish it. */
   | { state: 'pending'; botName: string; approver: string; canContinue: boolean; installId: string | null }
-  /** `handle`: the bot's @handle, or null when Slack never said. `needsClaim`: no team admin stands behind it now. */
+  /**
+   * `handle`: the bot's @handle, or null when Slack never said. `needsClaim`: no team admin stands behind it now.
+   * `approverGone`: the person who set it up is no longer an account here, so only a rebuild can change it.
+   * `viewerIsApprover`: the viewer set it up, so they can replace its token. An older host omits both; that reads as false.
+   */
   | {
       state: 'live';
       botName: string;
       handle: string | null;
       approver: string;
       needsClaim: boolean;
+      approverGone: boolean;
+      viewerIsApprover: boolean;
       installId: string | null;
     };
 
@@ -231,13 +242,15 @@ function parseBot(value: unknown): AgentSlackBot | null {
         : null;
     }
     case 'live': {
-      const { botName, handle, approver, needsClaim, installId = null } = value;
+      const { botName, handle, approver, needsClaim, approverGone = false, viewerIsApprover = false, installId = null } = value;
       return typeof botName === 'string' &&
         (handle === null || typeof handle === 'string') &&
         typeof approver === 'string' &&
         typeof needsClaim === 'boolean' &&
+        typeof approverGone === 'boolean' &&
+        typeof viewerIsApprover === 'boolean' &&
         isInstallId(installId)
-        ? { state: 'live', botName, handle, approver, needsClaim, installId }
+        ? { state: 'live', botName, handle, approver, needsClaim, approverGone, viewerIsApprover, installId }
         : null;
     }
     default:
@@ -471,6 +484,23 @@ export async function cancelSlackBotRequest(agentId: string): Promise<void> {
   await post(agentId, '/bot-request/cancel', {});
 }
 
+/**
+ * Replace the live bot's configuration token with a new one the person pasted
+ * (TASK-1173; only the person who set the bot up may). Resolves once Slack
+ * accepted the token and the server holds it.
+ */
+export async function replaceAgentSlackBotToken(agentId: string, refreshToken: string): Promise<void> {
+  await post(agentId, '/bot/replace-token', { refreshToken });
+}
+
+/**
+ * Take over a live bot whose requester is no longer a team admin (TASK-1173),
+ * named by the install id the page showed.
+ */
+export async function claimAgentSlackBot(agentId: string, installId: string): Promise<void> {
+  await post(agentId, '/bot/claim', { installId });
+}
+
 /** A fresh install link for the pending bot (its approver only). */
 export async function continueSlackBot(agentId: string): Promise<{ installUrl: string }> {
   const answer = await post(agentId, '/bot/install-url', {});
@@ -480,8 +510,8 @@ export async function continueSlackBot(agentId: string): Promise<{ installUrl: s
 }
 
 /** Take back the pending request. `appDeleted` is false when the Slack app is left for its owner to delete. */
-export async function cancelSlackBot(agentId: string): Promise<{ appDeleted: boolean }> {
-  const answer = await post(agentId, '/bot/cancel', {});
+export async function cancelSlackBot(agentId: string, installId: string): Promise<{ appDeleted: boolean }> {
+  const answer = await post(agentId, '/bot/cancel', { installId });
   const appDeleted = isRecord(answer.body) ? answer.body['appDeleted'] : undefined;
   if (typeof appDeleted !== 'boolean') throw badResponse(answer.status);
   return { appDeleted };
@@ -647,15 +677,23 @@ export function agentSlackBotErrorCopy(err: unknown): {
 
 export const AGENT_SLACK_BOT_CHANGE_COPY = Object.freeze({
   tokenNeedsReplacing: (approver: string): string => `This bot's Slack token needs replacing by ${approver}.`,
+  // The viewer set the bot up, so the fix is theirs (TASK-1173).
+  yourTokenNeedsReplacing: 'Your Slack token stopped working. Replace it under Slack token, then try again.',
+  // Nobody can replace it: only a rebuild changes the bot now.
+  tokenDeadApproverLeft:
+    "This bot's Slack token stopped working, and the person who set it up has left. Rebuild the bot to change it.",
   appGone: "Slack no longer has this bot's app. It may have been deleted on api.slack.com/apps.",
   badPicture: "We couldn't use that picture. Try another image.",
   pictureChanged: 'Slack has the new picture.',
 });
 
-/** One sentence for a refused rename or picture change, and whether it belongs under the name field. */
+/**
+ * One sentence for a refused rename or picture change, and whether it belongs under the name field.
+ * A dead token names who can fix it: the viewer (they set the bot up), nobody (the person who did has left), or the approver.
+ */
 export function agentSlackBotChangeErrorCopy(
   err: unknown,
-  approver: string,
+  bot: { approver: string; approverGone: boolean; viewerIsApprover: boolean },
 ): { field: 'botName' | null; message: string } {
   if (err instanceof AgentSlackError) {
     switch (err.code) {
@@ -670,7 +708,14 @@ export function agentSlackBotChangeErrorCopy(
       case 'invalid-icon':
         return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.badPicture };
       case 'slack-config-token':
-        return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.tokenNeedsReplacing(approver) };
+        return {
+          field: null,
+          message: bot.viewerIsApprover
+            ? AGENT_SLACK_BOT_CHANGE_COPY.yourTokenNeedsReplacing
+            : bot.approverGone
+              ? AGENT_SLACK_BOT_CHANGE_COPY.tokenDeadApproverLeft
+              : AGENT_SLACK_BOT_CHANGE_COPY.tokenNeedsReplacing(bot.approver),
+        };
       case 'slack-app-gone':
         return { field: null, message: AGENT_SLACK_BOT_CHANGE_COPY.appGone };
       case 'public-origin-not-https':
@@ -700,6 +745,38 @@ export function agentSlackBotStale(err: unknown): boolean {
       err.code === 'not-requested' ||
       err.code === 'personal-agent' ||
       err.code === 'no-bot' ||
-      err.code === 'not-live')
+      err.code === 'not-live' ||
+      err.code === 'claim-not-needed')
   );
+}
+
+/**
+ * The sentence a refused Replace becomes, and where it goes: under the token
+ * field for a token we or Slack turned away, nowhere in particular otherwise.
+ * Never a raw code.
+ */
+export function agentSlackBotReplaceErrorCopy(err: unknown): { field: 'refreshToken' | null; message: string } {
+  if (err instanceof AgentSlackError) {
+    switch (err.code) {
+      case 'invalid-refresh-token':
+      case 'slack-refresh-token':
+        return { field: 'refreshToken', message: SLACK_TOKEN_COPY[err.code] };
+      case 'slack-not-app-manager':
+        return { field: 'refreshToken', message: BOT_TOKEN_COPY['slack-not-app-manager'] };
+      case 'public-origin-not-https':
+        return { field: null, message: SLACK_ERROR_COPY['public-origin-not-https'] };
+      case 'slack-error':
+        return { field: null, message: SLACK_ERROR_COPY.generic };
+    }
+  }
+  return { field: null, message: AGENT_SLACK_COPY.generic };
+}
+
+/**
+ * A Replace that says what we drew is out of date: anything `agentSlackBotStale`
+ * says, or 403 `not-approver` (the bot was rebuilt or claimed in another tab, so
+ * the viewer isn't its approver now). Read the status again.
+ */
+export function agentSlackBotReplaceStale(err: unknown): boolean {
+  return agentSlackBotStale(err) || (err instanceof AgentSlackError && err.status === 403 && err.code === 'not-approver');
 }

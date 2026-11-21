@@ -35,6 +35,8 @@ const LIVE: Extract<Bot, { state: 'live' }> = {
   handle: 'quill_bot',
   approver: 'Ada Lovelace',
   needsClaim: false,
+  approverGone: false,
+  viewerIsApprover: false,
   installId: 'Hb7Kq2Lw8vNc5Xr1Bm7KdA',
 };
 

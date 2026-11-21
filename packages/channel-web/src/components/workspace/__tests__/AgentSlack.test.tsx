@@ -73,6 +73,8 @@ const LIVE_BOT: AgentSlackBot = {
   handle: 'quill',
   approver: 'Ada Lovelace',
   needsClaim: false,
+  approverGone: false,
+  viewerIsApprover: false,
   installId: BOT_ID,
 };
 
@@ -316,7 +318,7 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
       "Or delete it yourself: open it in Slack's app settings and click Delete App at the bottom of the page.",
     );
     expect(within(note).getByRole('link', { name: "Slack's app settings" })).toBeInTheDocument();
-    expect(cancel).toHaveBeenCalledWith('a1');
+    expect(cancel).toHaveBeenCalledWith('a1', BOT_ID);
     expect(note.textContent).not.toMatch(/\bAX\b/);
   });
 

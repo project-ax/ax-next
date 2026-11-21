@@ -995,6 +995,7 @@ describe("Team agents' own bots", () => {
     approver: 'Sam Sales',
     state: 'live' as const,
     addedAt: CONNECTED_AT,
+    viewerIsApprover: false,
   };
 
   it('the team bots card sits below the status, outlives the status re-read its disconnect asks for, and keeps its note', async () => {

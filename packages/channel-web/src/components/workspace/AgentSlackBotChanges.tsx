@@ -223,7 +223,7 @@ function RenameForm({
         onDone();
         return;
       }
-      setError(agentSlackBotChangeErrorCopy(err, bot.approver));
+      setError(agentSlackBotChangeErrorCopy(err, bot));
     }
   }
 
@@ -361,7 +361,7 @@ function PictureForm({
         onStale();
         return;
       }
-      setError(agentSlackBotChangeErrorCopy(err, bot.approver));
+      setError(agentSlackBotChangeErrorCopy(err, bot));
     }
   }
 
