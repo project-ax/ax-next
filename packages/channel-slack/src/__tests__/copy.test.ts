@@ -622,3 +622,17 @@ describe('COPY: the /ax replies (mrkdwn)', () => {
     );
   });
 });
+
+describe("COPY: a bot's @handle is its display name, shown as people type it (TASK-1185)", () => {
+  // A display name keeps its hyphen, upper case and space (bots.ts handleFrom),
+  // and every line that names the bot by its handle shows it after `@` unchanged.
+  it.each(['fern-walk', 'Fern Walk'])('%s', (handle) => {
+    const bot = { botName: 'Fern', handle };
+    expect(COPY.answersAsOwnBot('Fern', handle)).toBe(`Fern answers as @${handle} now. Invite it with /invite @${handle}.`);
+    expect(COPY.slashDisconnectedOwnBot(bot)).toBe(
+      `Disconnected. If @${handle} is in this channel, it still answers here: remove it with /kick @${handle}.`,
+    );
+    expect(COPY.slashOwnBot('Fern', bot)).toContain(`with /invite @${handle} instead.`);
+    expect(COPY.botLiveForOwner(bot, [], 0)).toBe(`@${handle} is live. Invite it to a channel with /invite @${handle}.`);
+  });
+});

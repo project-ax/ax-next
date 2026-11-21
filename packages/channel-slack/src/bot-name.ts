@@ -5,9 +5,14 @@
  * and two real installs (`.claude/memory/decisions/2026-11-12-TASK-1090.md`):
  * ASCII letters, digits, space, `-`, `_` and `.` only (`Café` is refused as
  * `bad_username`); the words `slackbot`, `here`, `channel` and `everyone` are
- * reserved; the app name holds at most 35 characters, and the @handle Slack
- * derives from it is lowercased, loses its hyphens (`ax-spike-a` became
- * `axspikea`) and is cut to 21. Slack accepts duplicate names
+ * reserved; the app name holds at most 35 characters, and the legacy username
+ * (users.info `name`) Slack derives from it once, at the install, is
+ * lowercased, loses its hyphens (`ax-spike-a` became `axspikea`) and is cut
+ * to 21. That username is NOT the @handle people type: the @-mention, the
+ * autocomplete and `/invite` use the bot's display name, which is this name
+ * as given and follows a rename (TASK-1185, measured in the TASK-1174 walk:
+ * `fern-walk` gave the username `fernwalk`, and people type `@fern-walk`).
+ * Slack accepts duplicate names
  * silently, so uniqueness is ours to enforce, and is (TASK-1167): one name per
  * bot across the shared bot and every team agent's bot, compared by
  * `botNameKey`, so a name that would collide on Slack's handle is refused too.

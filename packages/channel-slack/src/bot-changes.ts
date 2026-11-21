@@ -21,8 +21,9 @@ import { InstallStoreError, type InstallRow, type InstallStore } from './store.j
  *     bot-name.ts compares; the bot's own name and handle are free to vary).
  *     Then it sends Slack the bot's WHOLE manifest with the new name (Slack
  *     keeps nothing it isn't sent), stores the name only once Slack took it,
- *     and last reads the bot user's @handle again, best-effort: whether Slack
- *     changes it on a rename is unmeasured (design §7 Q3).
+ *     and last reads the bot user's @handle again, best-effort: the handle
+ *     people type is the display name, which follows a rename, while Slack's
+ *     legacy username does not (TASK-1185; bots.ts `handleFrom`).
  *   - `setPicture` sends Slack the PNG agent-routes.ts already checked
  *     (`parseIconPng`), with `apps.icon.set`, and nothing else: no manifest,
  *     and no row write. AX keeps no copy of it.
@@ -200,8 +201,10 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
    * never throws: Slack already took the name and the row has it. A missing
    * token or bot user, a failed read, an answer about anyone but the bot, a
    * name outside the rule, or a store fault keeps the stored handle, logged
-   * code-only. Kept, not cleared: it stays in the names in use, and Slack may
-   * well not have changed it. The caller holds the app lock.
+   * code-only. Kept, not cleared: it stays in the names in use. A row whose
+   * handle is still the legacy username from before TASK-1185 gets the
+   * display name here, on its next rename (no backfill). The caller holds
+   * the app lock.
    */
   async function refreshHandle(bot: InstallRow): Promise<void> {
     const installId = bot.installId;

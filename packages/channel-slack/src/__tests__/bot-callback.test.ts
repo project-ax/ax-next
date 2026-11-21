@@ -101,8 +101,8 @@ const HEDY_STORED = fakeConfigRefreshToken('HEDYSTOREDSECRET');
 const REQUEST = 'U3VwcG9ydEJvdEFzazAwMQ';
 
 const BOT_NAME = 'Support Helper';
-/** What Slack named the new bot user (fake-slack-config.ts BOT_USER). */
-const HANDLE = 'supporthelper';
+/** The new bot user's @handle: its display name, the name it was asked for (fake-slack-config.ts BOT_USER). */
+const HANDLE = BOT_USER.real_name;
 /** Text a failure's message carries, which no log line may repeat. */
 const FAILURE_CANARY = 'failure-text-canary-5be2';
 
@@ -829,10 +829,19 @@ describe('GET /slack/bots/oauth/callback', () => {
     }
   });
 
-  it('users.info failing, a name outside the handle pattern, or a reserved one (channel, here, everyone): active with a null handle', async () => {
+  it('users.info failing, or no display name and a legacy name outside the handle pattern or reserved (channel, here, everyone): active with a null handle', async () => {
+    // No display name anywhere, unless `fields` says one: only the legacy `name` is left.
     const answer = (fields: Record<string, unknown>): SlackBehaviour['usersInfo'] => async () => ({
       ...structuredClone(BOT_USER),
+      real_name: '',
+      profile: { ...structuredClone(BOT_USER.profile), display_name: '', real_name: '' },
       ...fields,
+    });
+    // Every display field says `shown`, and the legacy name is unusable too.
+    const allShownAs = (shown: unknown): Record<string, unknown> => ({
+      name: '',
+      real_name: shown,
+      profile: { ...structuredClone(BOT_USER.profile), display_name: shown, real_name: shown },
     });
     const cases: Array<[label: string, usersInfo: SlackBehaviour['usersInfo'], line: Line]> = [];
     const unusable = (label: string, fields: Record<string, unknown>, code = 'unusable-handle'): void => {
@@ -854,6 +863,18 @@ describe('GET /slack/bots/oauth/callback', () => {
     unusable('81 characters', { name: 'a'.repeat(81) });
     unusable('not a string', { name: 42 });
     unusable('no name at all', { name: undefined });
+    // A display name a copy line can't show, or one Slack would never take as a bot name, is no handle either.
+    for (const reserved of ['here', 'Channel', 'EVERYONE', 'slack-bot', 'slack_bot']) {
+      unusable(`a reserved display name: ${reserved}`, allShownAs(reserved));
+    }
+    unusable('a display name that mentions', allShownAs('<!channel>'));
+    unusable('a display name with an @', allShownAs('@fern'));
+    unusable('a display name with an accent', allShownAs('Café'));
+    unusable('a display name with untidy spaces', allShownAs(' fern  walk '));
+    unusable('a display name of 36 characters', allShownAs('a'.repeat(36)));
+    unusable('a display name with no letter or digit', allShownAs('-._'));
+    unusable('a display name not a string', allShownAs(42));
+    unusable('a profile not an object', { name: '', profile: 'fern-walk' });
     // An answer about some other user is no answer about the bot.
     unusable('another user', { id: 'U07SOMEONE1' }, 'user-mismatch');
 
@@ -894,6 +915,9 @@ describe('GET /slack/bots/oauth/callback', () => {
       });
     const cases: Array<[label: string, usersInfo: SlackBehaviour['usersInfo'], handle: string]> = [
       ['the profile display name', fern({ display_name: 'fern-walk', real_name: 'fern-walk' }), 'fern-walk'],
+      // In order: the display name, then the profile's real name, then the top-level one.
+      ['the display name first', fern({ display_name: 'fern-walk', real_name: 'Fern Profile' }, 'Fern Top'), 'fern-walk'],
+      ['then the profile real name', fern({ display_name: '', real_name: 'Fern Profile' }, 'Fern Top'), 'Fern Profile'],
       // A bot user's display_name may be empty: its real_name carries the name.
       ['no display name: the profile real name', fern({ display_name: '', real_name: 'fern-walk' }), 'fern-walk'],
       ['only the top-level real name', fern({ display_name: '', real_name: '' }), 'fern-walk'],
@@ -903,6 +927,7 @@ describe('GET /slack/bots/oauth/callback', () => {
       ['an unusable display name', fern({ display_name: '@here', real_name: 'fern-walk' }), 'fern-walk'],
       // Nothing but the legacy username: the last resort.
       ['no display name anywhere', fern({ display_name: '', real_name: '' }, ''), 'fernwalk'],
+      ['every display name unusable', fern({ display_name: 'here', real_name: '<!here>' }, 'slack-bot'), 'fernwalk'],
     ];
     for (const [label, usersInfo, handle] of cases) {
       const { w, installId, state } = await requested();
@@ -913,10 +938,15 @@ describe('GET /slack/bots/oauth/callback', () => {
     }
   });
 
-  it('a handle inside the pattern is kept as Slack gave it', async () => {
+  it('with no display name, a legacy name inside the pattern is kept as Slack gave it', async () => {
     for (const name of ['a', '0bot', 'support.helper_2-x', 'a'.repeat(80)]) {
       const { w, installId, state } = await requested();
-      w.slack.on.usersInfo = async () => ({ ...structuredClone(BOT_USER), name });
+      w.slack.on.usersInfo = async () => ({
+        ...structuredClone(BOT_USER),
+        name,
+        real_name: '',
+        profile: { ...structuredClone(BOT_USER.profile), display_name: '', real_name: '' },
+      });
 
       expect(await w.callback({ code: CODE, state }), name).toStrictEqual(redirect(toAgent('connected')));
       expect(w.row(installId).botHandle, name).toBe(name);

@@ -110,8 +110,8 @@ const PASTED = fakeConfigRefreshToken('GRACEPASTEDSECRET');
 const PASTED_AGAIN = fakeConfigRefreshToken('GRACEPASTEDAGAINSECRET');
 
 const OLD_NAME = 'Support Helper';
-/** The support bot user's @handle, as Slack named it at the Allow. The fake's users.info keeps it. */
-const OLD_HANDLE = BOT_USER.name;
+/** The support bot user's @handle: its display name, as the Allow kept it. The fake's users.info keeps it. */
+const OLD_HANDLE = BOT_USER.real_name;
 const NEW_NAME = 'Quill Desk';
 /** The picture the browser drew: a 512 px PNG's header, all parseIconPng reads. */
 const PNG = pngHeader(512, 512);
@@ -372,6 +372,16 @@ function answer(fields: Record<string, unknown>): SlackBehaviour['usersInfo'] {
   return async () => ({ ...structuredClone(BOT_USER), ...fields });
 }
 
+/** users.info showing the bot user as `name` (its real_name, as Slack shows a bot's display name). */
+function shownAs(name: string): SlackBehaviour['usersInfo'] {
+  return answer({ real_name: name, profile: { ...structuredClone(BOT_USER.profile), display_name: '', real_name: name } });
+}
+
+/** users.info with no display name anywhere, and `fields` in place of its own: only the legacy `name` is left. */
+function noDisplayName(fields: Record<string, unknown>): SlackBehaviour['usersInfo'] {
+  return answer({ real_name: '', profile: { ...structuredClone(BOT_USER.profile), display_name: '', real_name: '' }, ...fields });
+}
+
 /** Slack's update refusing with `code`. */
 function failUpdate(w: World, code: string): void {
   w.slack.on.updateApp = async () => {
@@ -491,7 +501,7 @@ describe('rename', () => {
   it('R2 keeps the handle Slack reports after the rename: written only when usable and changed; anything else keeps the stored one and still answers 200', async () => {
     // Slack changed the bot user's name: kept, written once.
     const changed = await seeded();
-    changed.slack.on.usersInfo = answer({ name: 'quilldesk' });
+    changed.slack.on.usersInfo = shownAs('quilldesk');
     expect(await changed.rename(NEW_NAME)).toEqual({ status: 200, body: { botName: NEW_NAME } });
     expect(supportRow(changed)).toMatchObject({ botName: NEW_NAME, botHandle: 'quilldesk' });
     expect(changed.trail).toEqual([...ONE_RENAME, 'store:setBotHandle']);
@@ -500,7 +510,7 @@ describe('rename', () => {
     ]);
     expect(changed.lines).toEqual([RENAMED]);
 
-    // Slack kept it (as the TASK-1090 spike saw): nothing to write.
+    // Slack still shows the stored one: nothing to write.
     const same = await seeded();
     expect(await same.rename(NEW_NAME)).toEqual({ status: 200, body: { botName: NEW_NAME } });
     expect(same.trail).not.toContain('store:setBotHandle');
@@ -509,17 +519,17 @@ describe('rename', () => {
     // Anything else: the stored handle stays, one code-only line says why, and the rename still answers 200.
     const cases: Array<[label: string, breakIt: (w: World) => void, level: 'warn' | 'error', code: string]> = [
       [
-        'a reserved word',
+        'no display name, and a reserved legacy name',
         (w) => {
-          w.slack.on.usersInfo = answer({ name: 'channel' });
+          w.slack.on.usersInfo = noDisplayName({ name: 'channel' });
         },
         'warn',
         'unusable-handle',
       ],
       [
-        'the display name, not a handle',
+        'no display name, and a legacy name outside the pattern',
         (w) => {
-          w.slack.on.usersInfo = answer({ name: NEW_NAME });
+          w.slack.on.usersInfo = noDisplayName({ name: NEW_NAME });
         },
         'warn',
         'unusable-handle',
@@ -569,7 +579,7 @@ describe('rename', () => {
       [
         'the store refusing the new handle',
         (w) => {
-          w.slack.on.usersInfo = answer({ name: 'quilldesk' });
+          w.slack.on.usersInfo = shownAs('quilldesk');
           w.memory.failures.set('setBotHandle', connectionReset());
         },
         'error',
@@ -1642,14 +1652,14 @@ describe('answers and logs', () => {
     await fine.setPicture();
     // A handle Slack changed.
     const changed = await add((w) => {
-      w.slack.on.usersInfo = answer({ name: 'quilldesk' });
+      w.slack.on.usersInfo = shownAs('quilldesk');
     });
     await changed.rename(NEW_NAME);
 
     // R2's failures, each in its own world.
     const handleFailures: Array<(w: World) => void> = [
       (w) => {
-        w.slack.on.usersInfo = answer({ name: 'channel' });
+        w.slack.on.usersInfo = noDisplayName({ name: 'channel' });
       },
       (w) => {
         w.slack.on.usersInfo = answer({ id: 'U07SOMEONE1' });
@@ -1666,7 +1676,7 @@ describe('answers and logs', () => {
         w.vaultFailures.set('credentials:get bot-token', connectionReset());
       },
       (w) => {
-        w.slack.on.usersInfo = answer({ name: 'quilldesk' });
+        w.slack.on.usersInfo = shownAs('quilldesk');
         w.memory.failures.set('setBotHandle', connectionReset());
       },
     ];

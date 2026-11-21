@@ -443,7 +443,12 @@ A team agent that wants its own `@ada`:
    tokens would make a second approval break the first. An approver whose
    stored token is live pastes nothing: approving uses it.
 4. The owner hears "@ada is live — `/invite @ada` to a channel", along with the
-   bot's real `name` field as read back from `users.info`. As built
+   bot's @handle as read back from `users.info`: its display name
+   (`profile.display_name`, else `real_name`), and the legacy `name` field
+   only when Slack shows no usable display name. The `name` field is NOT
+   what people type: it drops hyphens and never follows a rename (TASK-1185,
+   measured in the TASK-1174 walk: `fern-walk` gave `name` `fernwalk`, while
+   people type `@fern-walk`). As built
    (TASK-1170), they hear it from the shared bot, and only when someone else
    approved. Until then the agent keeps
    working through the shared app, so waiting never blocks anyone.
@@ -635,10 +640,11 @@ no reinstall.
   the shared bot, the other bots, the other bots' handles or an open bot
   request (TASK-1169). The bot itself is left out of that check, so keeping
   its own name is fine. AX sends the whole bot manifest with
-  `apps.manifest.update`, then re-reads the bot user's `name` with
+  `apps.manifest.update`, then re-reads the bot user's display name with
   `users.info` into the handle, best-effort: if that read fails, the old handle
-  stays. We haven't measured whether Slack changes the handle on a rename
-  (§7 Q3).
+  stays. The display name follows a rename; the legacy `name` field does not
+  (TASK-1174 walk: after `fern-walk` → `fern-two`, autocomplete offered
+  `@fern-two` while `name` stayed `fernwalk`; TASK-1185).
 - Change picture is drawn in the admin's browser on a white 512 px square and
   sent with `apps.icon.set` only. AX keeps no copy.
 - If Slack refuses the token, or answers `no_permission` or

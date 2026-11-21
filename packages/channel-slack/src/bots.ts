@@ -1,6 +1,6 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { isAxAdmin } from './ax-admin.js';
-import { RESERVED_BOT_NAMES, isBotNameTaken } from './bot-name.js';
+import { RESERVED_BOT_NAMES, checkBotName, isBotNameTaken } from './bot-name.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
 import { INSTALL_ID_BYTES } from './limits.js';
@@ -427,31 +427,60 @@ export interface Bots {
  */
 const APPROVER_FALLBACK = 'A teammate';
 /**
- * A bot user's @handle we keep: Slack's `name` field as its username rules
- * allow it. Copy lines show it as `@<handle>`, so it is also never a
- * RESERVED_BOT_NAMES word (`@channel`, `@here` and `@everyone` ping a whole
- * channel).
+ * The legacy username we keep when Slack gives no usable display name:
+ * Slack's `name` field as its username rules allow it. Copy lines show a
+ * handle as `@<handle>`, so it is also never a RESERVED_BOT_NAMES word
+ * (`@channel`, `@here` and `@everyone` ping a whole channel).
  */
 const HANDLE_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 
 /**
+ * Whether `s` is a display name we keep as the bot's @handle: exactly a bot
+ * name Slack takes (`checkBotName`, and unchanged by its tidying), so only
+ * `[A-Za-z0-9 ._-]`, at most 35 characters, and never a reserved word by its
+ * handle key (`here`, `Channel`, `slack-bot`). Never cleaned into something
+ * else.
+ */
+function isDisplayHandle(s: unknown): s is string {
+  if (typeof s !== 'string' || s === '') return false;
+  const check = checkBotName(s);
+  return check.ok && check.name === s;
+}
+
+/**
  * Slack's `users.info` answer about `botUserId` as the @handle we keep, or
  * why not. Read at the Allow (`keepHandle`) and after a rename
- * (bot-changes.ts). It is Slack's text, so this is its one check before it
- * is stored, and it is never cleaned into something else: an answer about
- * anyone but the bot is `user-mismatch`, and a `name` outside HANDLE_RE, or a
- * reserved word, is `unusable-handle`.
+ * (bot-changes.ts).
+ *
+ * The @handle people type, and Slack's autocomplete offers, is the bot user's
+ * display name: the manifest's `bot_user.display_name`, which follows a
+ * rename. Slack's `name` is the legacy username it derived once, at the
+ * install: lowercased, hyphens dropped, and never changed by a rename
+ * (MEASURED in the TASK-1174 walk: `fern-walk` gave `name` `fernwalk`, and
+ * after a rename to `fern-two` autocomplete offered `@fern-two` while `name`
+ * stayed `fernwalk`). So the display name wins: `profile.display_name`, else
+ * `profile.real_name`, else `real_name` (a bot user's display_name may be
+ * empty, and its real_name follows a rename: the TASK-1090 spike), and `name`
+ * only when none of those is usable.
+ *
+ * It is Slack's text, so this is its one check before it is stored, and it is
+ * never cleaned into something else: an answer about anyone but the bot is
+ * `user-mismatch`, and no usable field at all is `unusable-handle`.
  */
 export function handleFrom(
   user: unknown,
   botUserId: string,
 ): { ok: true; handle: string } | { ok: false; code: 'user-mismatch' | 'unusable-handle' } {
   if (!isRecord(user) || user['id'] !== botUserId) return { ok: false, code: 'user-mismatch' };
-  const handle = user['name'];
-  if (typeof handle !== 'string' || !HANDLE_RE.test(handle) || RESERVED_BOT_NAMES.has(handle)) {
+  const profile = isRecord(user['profile']) ? user['profile'] : {};
+  for (const displayed of [profile['display_name'], profile['real_name'], user['real_name']]) {
+    if (isDisplayHandle(displayed)) return { ok: true, handle: displayed };
+  }
+  const legacy = user['name'];
+  if (typeof legacy !== 'string' || !HANDLE_RE.test(legacy) || RESERVED_BOT_NAMES.has(legacy)) {
     return { ok: false, code: 'unusable-handle' };
   }
-  return { ok: true, handle };
+  return { ok: true, handle: legacy };
 }
 
 const json = (status: number, body: unknown): BotReply => ({ status, body });
