@@ -473,6 +473,23 @@ describe('none', () => {
     expect(screen.getByRole('button', { name: 'Add to Slack' })).toBeEnabled();
   });
 
+  it('switching ways drops the old way\'s error: a form-level line, and a field line under the name', async () => {
+    request.mockRejectedValueOnce(refusal(502, 'slack-unconfirmed'));
+    renderIt(NONE_STORED);
+    submit();
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an admin instead' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    request.mockRejectedValueOnce(refusal(409, 'bot-name-taken'));
+    fireEvent.click(screen.getByRole('button', { name: 'I can install Slack apps myself' }));
+    submit('Quill Bot');
+    expect(await screen.findByText('Another Slack bot here already uses that name. Pick another.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an admin instead' }));
+    expect(screen.queryByText('Another Slack bot here already uses that name. Pick another.')).toBeNull();
+    expect(screen.getByLabelText('Bot name')).not.toHaveAttribute('aria-invalid');
+  });
+
   it.each([
     ['invalid-refresh-token', 400, "That doesn't look like a refresh token. It starts with xoxe-."],
     ['slack-refresh-token', 502, "Slack didn't accept the refresh token. Generate a new token and try again."],

@@ -453,7 +453,11 @@ function RequestForm({
           size="sm"
           className="h-auto self-start p-0"
           disabled={busy}
-          onClick={() => setWay(way === 'admin' ? 'self' : 'admin')}
+          onClick={() => {
+            // The old way's refusal (form-level or under a field) is not this way's.
+            setError(null);
+            setWay(way === 'admin' ? 'self' : 'admin');
+          }}
         >
           {way === 'admin' ? AGENT_SLACK_CARD_COPY.selfPathLink : AGENT_SLACK_CARD_COPY.adminPathLink}
         </Button>
