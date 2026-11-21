@@ -168,6 +168,24 @@ describe("the agent's own bot, in the ready section", () => {
     expect(screen.queryByRole('button', { name: /Reconnect/ })).toBeNull();
   });
 
+  it.each(['none', 'requested', 'pending'] as const)(
+    'a member who cannot manage the agent, with no live bot (%s), is told it is not in Slack yet rather than shown nothing',
+    async (botState) => {
+      const bot =
+        botState === 'none'
+          ? NO_BOT
+          : ({ ...LIVE_BOT, state: botState } as unknown as AgentSlackBot);
+      renderIt(ready(false, bot));
+      expect(await screen.findByText("Quill isn't in Slack yet. A team admin can add it.")).toBeInTheDocument();
+    },
+  );
+
+  it('a manager with no bot sees the setup form, not the "not in Slack yet" line', async () => {
+    renderIt(ready(true, NO_BOT));
+    await screen.findByRole('button', { name: /./ });
+    expect(screen.queryByText(/isn't in Slack yet/)).toBeNull();
+  });
+
   it.each([true, false])(
     'live, with no channel left to invite: no "no channels" line (manager: %s), and the live line still says how to invite it',
     async (canManage) => {

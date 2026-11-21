@@ -184,6 +184,15 @@ function ReadySection({
 }) {
   const { canManage, bot } = ready;
   const botChannels = ready.botChannels ?? [];
+  // A member who can't manage the agent sees nothing from the bot card until its
+  // bot is live, so say where things stand instead of an empty section.
+  if (!canManage && bot.state !== 'live') {
+    return (
+      <p className="text-[13px] text-muted-foreground">
+        {agentName} isn&apos;t in Slack yet. A team admin can add it.
+      </p>
+    );
+  }
   return (
     <div className="flex flex-col gap-5">
       {bot.state === 'live' && botChannels.length > 0 && (
