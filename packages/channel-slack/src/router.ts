@@ -143,7 +143,8 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *  9b. The channel's memory notice (memory-notice.ts, TASK-1203; design
  *      §4c): the first turn in a channel since it was bound (or since the
  *      notice existed, for a binding made before it) tells everyone there,
- *      in a top-level post, that what the bot hears is shared with its team.
+ *      in a top-level post, that what the bot hears is shared with anyone
+ *      who talks to it.
  *      One turn claims it, on whichever replica (channel-store.ts
  *      `claimNotice`), and only that one posts; one Slack refuses is given
  *      back, so the next turn tries again, except in an announcement-only

@@ -182,7 +182,8 @@ export async function liveOwnBot(
  *
  * Public or private (TASK-1188): a bot answers in a private channel it was
  * invited to, and memory learns from it like any other channel (TASK-1203,
- * design §4c: a team agent's memory is shared with its team). Inviting the
+ * design §4c: a team agent's memory is shared with anyone who talks to
+ * it). Inviting the
  * bot is a member's own act. Slack Connect and archived stay refused, and so
  * does anything Slack doesn't call a channel (a group DM; a private group
  * from before March 2021, which Slack still describes with `is_channel`
