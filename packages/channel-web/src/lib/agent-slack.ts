@@ -94,8 +94,6 @@ export type AgentSlackStatus =
       bot: AgentSlackBot;
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
-      /** The agent's team, by name, for the card's memory line. Absent when the host can't say (the card says "its team"). */
-      agentTeamName?: string;
     }
   | {
       state: 'personal-agent';
@@ -114,8 +112,6 @@ export type AgentSlackStatus =
       bot: AgentSlackBot;
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
-      /** The agent's team, by name, for the card's memory line. Absent when the host can't say (the card says "its team"). */
-      agentTeamName?: string;
     };
 
 /** `unavailable`: this server doesn't run the Slack plugin (or can't show us the agent). */
@@ -236,15 +232,6 @@ function parseBotChannels(value: unknown): BotChannelRow[] | undefined | null {
   return rows;
 }
 
-/**
- * The agent's team's name: absent reads as absent; present, it is a non-empty
- * string or the whole answer is bad. `null` is "malformed".
- */
-function parseTeamName(value: unknown): string | undefined | null {
-  if (value === undefined) return undefined;
-  return typeof value === 'string' && value !== '' ? value : null;
-}
-
 function parseStatus(body: unknown): AgentSlackStatus | null {
   if (!isRecord(body)) return null;
   switch (body['state']) {
@@ -253,14 +240,12 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       if (bot === null) return null;
       const canManage = 'canManage' in body ? body['canManage'] : bot.state === 'pending';
       const botChannels = parseBotChannels(body['botChannels']);
-      const agentTeamName = parseTeamName(body['agentTeamName']);
-      if (typeof canManage !== 'boolean' || botChannels === null || agentTeamName === null) return null;
+      if (typeof canManage !== 'boolean' || botChannels === null) return null;
       return {
         state: 'no-workspace',
         canManage,
         bot,
         ...(botChannels !== undefined ? { botChannels } : {}),
-        ...(agentTeamName !== undefined ? { agentTeamName } : {}),
       };
     }
     case 'personal-agent': {
@@ -281,8 +266,7 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       const bot = parseBot(body['bot']);
       if (bot === null) return null;
       const botChannels = parseBotChannels(body['botChannels']);
-      const agentTeamName = parseTeamName(body['agentTeamName']);
-      if (botChannels === null || agentTeamName === null) return null;
+      if (botChannels === null) return null;
       return {
         state: 'ready',
         botName,
@@ -290,7 +274,6 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
         canManage,
         bot,
         ...(botChannels !== undefined ? { botChannels } : {}),
-        ...(agentTeamName !== undefined ? { agentTeamName } : {}),
       };
     }
     default:
@@ -480,11 +463,12 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
   inviteNoHandle: 'In any Slack channel, type /invite and pick it.',
   channelsLead: (t: InviteTarget): string => `${botWho(t)} has answered in these channels.`,
   /**
-   * What the agent hears is shared with its team (TASK-1203), on the manager's form and the Live card. By the
-   * agent's NAME on both, never the bot's @handle (the ux pass). `team`: the team's name, when it could be read.
+   * What the agent hears is shared with anyone who talks to it (TASK-1203, reworded by TASK-1209), on the
+   * manager's form and the Live card. By the agent's NAME on both, never the bot's @handle (the ux pass).
+   * It names no team: anyone who can talk to the agent can be told what it remembers.
    */
-  memoryShared: (who: string, team: string | undefined): string =>
-    `What ${who} hears is shared with everyone on ${team ?? 'its team'}, and ${who} may bring it up elsewhere.`,
+  memoryShared: (who: string): string =>
+    `What ${who} hears is shared with anyone who talks to ${who}, and ${who} may bring it up elsewhere.`,
   /** The Not in Slack card's consent line: what adding the bot means for the manager who does it. */
   outsidersUseYourAccess: 'When someone outside the team mentions it, it answers them with your access.',
   helpLine: (who: string): string =>

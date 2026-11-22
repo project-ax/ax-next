@@ -1,15 +1,13 @@
-import type { AgentContext, HookBus } from '@ax/core';
 import type { ChannelStore } from './channel-store.js';
 import { COPY } from './copy.js';
 import { logCode } from './log-code.js';
 import { SlackApiError, type SlackApi } from './slack-api.js';
-import { agentTeamName } from './team-name.js';
 
 /**
  * A channel's memory notice (TASK-1203; design
  * docs/plans/2026-11-09-channel-slack-design.md §4c). A team agent's memory
- * is shared with its whole team, so what its own bot hears in a channel can
- * come up anywhere the agent works. Each channel is told so once, by the bot
+ * is shared with anyone who talks to it, so what its own bot hears in a
+ * channel can come up anywhere the agent works, for anyone there. Each channel is told so once, by the bot
  * itself: a top-level post for everyone there (COPY.memoryNotice), at the
  * channel's first turn (router.ts step 9b). A team bot hears only mentions,
  * so its first turn in a channel is where what it hears there starts; and a
@@ -35,21 +33,19 @@ import { agentTeamName } from './team-name.js';
  * binding's after a remove and rebind. A crash between the claim and the post leaves that binding untold
  * (accepted: rare).
  *
- * The team is named as the person the turn runs as sees it (team-name.ts
- * `agentTeamName`); its name is from outside, so COPY escapes it. Without
- * one the notice says "my team".
+ * The notice is one fixed line and names nobody: no team, no person (it used
+ * to name the agent's team, until TASK-1209 let anyone who talks to the bot
+ * read what it remembers, which "everyone on {team}" would understate).
  *
  * Nothing here stops the turn: it never throws. Log lines are code-only:
  * `slack_notice_posted` (with `stage: 'thread'` when it went in the thread),
  * `slack_notice_top_level_refused { code }` (info: an admins-only channel),
  * `slack_notice_failed { stage, code }` (stage `claim`, `post`, `thread` or
- * `release`) and `slack_team_name_failed { code }`, never
- * a name, an id or a token, and never `slack_event_failed`, which means the
+ * `release`), never a name, an id or a token, and never `slack_event_failed`, which means the
  * event's work stopped.
  */
 
 export interface MemoryNoticeDeps {
-  bus: HookBus;
   api: Pick<SlackApi, 'postToChannel'>;
   channels: Pick<ChannelStore, 'claimNotice' | 'releaseNotice'>;
 }
@@ -58,15 +54,13 @@ type NoticeLog = (level: 'info' | 'warn', msg: string, fields?: Record<string, s
 
 /**
  * Claim the channel's notice; post it only when the claim won; give the
- * claim back when the post fails. `userId` is the person the turn runs as;
- * `ctx` is a lookup ctx for them; `threadTs` is the thread the bot is about
+ * claim back when the post fails. `threadTs` is the thread the bot is about
  * to reply in (an announcement-only channel's notice goes there). Resolves
  * once done, never rejects.
  */
 export async function postMemoryNotice(
   d: MemoryNoticeDeps,
-  ctx: AgentContext,
-  i: { installId: string; channelId: string; threadTs: string; agentId: string; botToken: string; userId: string },
+  i: { installId: string; channelId: string; threadTs: string; agentId: string; botToken: string },
   log: NoticeLog,
 ): Promise<void> {
   /** A log line never changes what happens next. */
@@ -89,10 +83,7 @@ export async function postMemoryNotice(
   if (claimed === null) return;
   const stamp = claimed;
 
-  const team = await agentTeamName(d.bus, ctx, { agentId: i.agentId, userId: i.userId }, (err) =>
-    say('warn', 'slack_team_name_failed', { code: logCode(err) }),
-  );
-  const text = COPY.memoryNotice(team);
+  const text = COPY.memoryNotice;
   const release = async (): Promise<void> => {
     try {
       // Only this turn's own claim: a binding removed and made again meanwhile keeps its new one.

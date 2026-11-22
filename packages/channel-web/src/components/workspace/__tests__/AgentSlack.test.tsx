@@ -58,9 +58,8 @@ const LIVE_BOT: AgentSlackBot = {
   installId: BOT_ID,
 };
 
-/** `agentTeamName`: the team the status names (the words scan runs with it set); `null` leaves it out. */
-function ready(canManage = true, bot: AgentSlackBot = NO_BOT, agentTeamName: string | null = 'Support'): AgentSlackRead {
-  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, bot, ...(agentTeamName !== null ? { agentTeamName } : {}) };
+function ready(canManage = true, bot: AgentSlackBot = NO_BOT): AgentSlackRead {
+  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, bot };
 }
 
 function renderIt(status: AgentSlackRead) {
@@ -505,11 +504,10 @@ describe('a bot set up again (TASK-1173)', () => {
   });
 });
 
-describe("what the agent hears is shared with its team (TASK-1203)", () => {
-  const SHARED = 'What Quill hears is shared with everyone on Support, and Quill may bring it up elsewhere.';
-  const SHARED_NO_TEAM = 'What Quill hears is shared with everyone on its team, and Quill may bring it up elsewhere.';
+describe("what the agent hears is shared with anyone who talks to it (TASK-1203, TASK-1209)", () => {
+  const SHARED = 'What Quill hears is shared with anyone who talks to Quill, and Quill may bring it up elsewhere.';
 
-  it("a manager's form says it by the agent's name, with the team the status named", async () => {
+  it("a manager's form says it by the agent's name", async () => {
     renderIt(ready(true, NO_BOT));
     await screen.findByRole('button', { name: 'Add to Slack' });
     expect(screen.getByText(SHARED)).toBeInTheDocument();
@@ -523,15 +521,9 @@ describe("what the agent hears is shared with its team (TASK-1203)", () => {
   });
 
   it('with Slack not connected, a live bot still says it', async () => {
-    renderIt({ state: 'no-workspace', canManage: true, bot: LIVE_BOT, agentTeamName: 'Support' });
+    renderIt({ state: 'no-workspace', canManage: true, bot: LIVE_BOT });
     await liveTitle('@quill');
     expect(screen.getByText(SHARED)).toBeInTheDocument();
-  });
-
-  it("a status without a team name says 'its team'", async () => {
-    renderIt(ready(true, LIVE_BOT, null));
-    await liveTitle('@quill');
-    expect(screen.getByText(SHARED_NO_TEAM)).toBeInTheDocument();
   });
 });
 

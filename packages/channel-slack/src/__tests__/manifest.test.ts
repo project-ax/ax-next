@@ -206,7 +206,7 @@ describe('the dedicated bot manifest', () => {
     expect(buildBotManifest('Ada Bot', botUrls(ORIGIN, INSTALL_ID))).toStrictEqual({
       display_information: {
         name: 'Ada Bot',
-        description: 'What I hear is shared with everyone on my team, and I may bring it up elsewhere.',
+        description: 'What I hear is shared with anyone who talks to me, and I may bring it up elsewhere.',
       },
       features: {
         app_home: {
@@ -254,13 +254,13 @@ describe('the dedicated bot manifest', () => {
     expect(Object.isFrozen(DEDICATED_BOT_EVENTS)).toBe(true);
   });
 
-  it("a team bot's profile says what it hears is shared with its team, within Slack's 140 characters (TASK-1203)", () => {
+  it("a team bot's profile says what it hears is shared with anyone who talks to it, within Slack's 140 characters (TASK-1203)", () => {
     const description = (
       buildBotManifest('Ada Bot', botUrls(ORIGIN, INSTALL_ID)).display_information as { description: string }
     ).description;
     expect(description).toBe(DEDICATED_BOT_DESCRIPTION);
     expect(description).toBe(
-      'What I hear is shared with everyone on my team, and I may bring it up elsewhere.',
+      'What I hear is shared with anyone who talks to me, and I may bring it up elsewhere.',
     );
     expect(description.length).toBeLessThanOrEqual(140);
   });

@@ -583,124 +583,34 @@ describe('channel-web agent-workspace BFF', () => {
     });
   });
 
-  describe('teamName (TASK-1203)', () => {
-    /*
-      A team agent's chat says whose team shares its memory. The name rides on
-      the memory read only, comes from the READER's own team list, and is
-      cleaned; the owner id itself never goes out.
-    */
-    /** The suite's beforeEach already registered a personal `agents:resolve`; start clean. */
-    function freshBus(): void {
-      bus = new HookBus();
-      bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
-      bus.registerService('conversations:list', 'conversations', async () => []);
-      bus.registerService('conversations:get', 'conversations', async () => {
-        throw notFound();
-      });
-      registerAuth({ id: 'u1', isAdmin: false });
-    }
-    function registerTeamAgent(over: { visibility?: 'personal' | 'team'; ownerId?: string } = {}): void {
-      bus.registerService('agents:resolve', 'agents', async () => ({
-        agent: {
-          id: 'a1',
-          displayName: 'Inbox',
-          visibility: over.visibility ?? 'team',
-          ownerId: over.ownerId ?? 'team-1',
-          ownerType: 'team',
-        },
-      }));
-    }
-    function registerFacts(): void {
-      bus.registerService('memory:recall', 'memory', async () => ({ statements: [], degraded: [] }));
-    }
-    function registerTeams(teams: Array<{ id: string; displayName: string }>): void {
-      bus.registerService('teams:list-for-user', 'teams', async () => ({ teams }));
-    }
-    async function memoryOf(): Promise<{ statusCode: number | undefined; body: unknown; memory: Record<string, unknown> }> {
-      const h = makeWorkspaceHandlers({ bus, initCtx });
-      const { res, captured } = mkRes();
-      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-      return {
-        statusCode: captured.statusCode,
-        body: captured.body,
-        memory: (captured.body as { memory: Record<string, unknown> }).memory,
-      };
-    }
-
-    it("a team agent's detail names its team in memory.teamName, cleaned, when the reader's team list has it (TASK-1203)", async () => {
-      freshBus();
-      registerFacts();
-      registerTeamAgent();
-      registerTeams([
-        { id: 'team-0', displayName: 'Other' },
-        { id: 'team-1', displayName: '  Sup\u202Eport \n Crew  ' },
-      ]);
-      const { statusCode, memory, body } = await memoryOf();
-      expect(statusCode).toBe(200);
-      expect(memory.teamName).toBe('Sup port Crew');
-      // The owner's id is read to find the name and never sent.
-      expect(JSON.stringify(body)).not.toContain('team-1');
+  it("a team agent's memory read names no team, and never asks the teams service or sends the owner's id (TASK-1209)", async () => {
+    // TASK-1203 named the team under the composer. TASK-1209 dropped it: anyone who talks to the agent
+    // can hear its memory back, so the line says "anyone who talks to" and a team name no longer fits.
+    bus = new HookBus();
+    bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
+    bus.registerService('conversations:list', 'conversations', async () => []);
+    bus.registerService('conversations:get', 'conversations', async () => {
+      throw notFound();
     });
-
-    it('a personal agent, or one whose team the reader\'s list lacks, or with the teams service absent or throwing, has no teamName, and the read still answers 200', async () => {
-      // personal agent
-      freshBus();
-      registerFacts();
-      registerTeamAgent({ visibility: 'personal' });
-      registerTeams([{ id: 'team-1', displayName: 'Support' }]);
-      let r = await memoryOf();
-      expect(r.statusCode).toBe(200);
-      expect('teamName' in r.memory).toBe(false);
-
-      // team the reader is not on
-      freshBus();
-      registerFacts();
-      registerTeamAgent();
-      registerTeams([{ id: 'team-9', displayName: 'Elsewhere' }]);
-      r = await memoryOf();
-      expect(r.statusCode).toBe(200);
-      expect('teamName' in r.memory).toBe(false);
-
-      // teams service absent
-      freshBus();
-      registerFacts();
-      registerTeamAgent();
-      r = await memoryOf();
-      expect(r.statusCode).toBe(200);
-      expect(r.memory.factsVisibility).toBe('team');
-      expect('teamName' in r.memory).toBe(false);
-
-      // teams service throwing: logged under the shared lookup's generic key (not the picker's "team ids"), and the read goes on
-      bus.registerService('teams:list-for-user', 'teams', async () => {
-        throw new Error('boom');
-      });
-      const warn = vi.spyOn(initCtx.logger, 'warn');
-      try {
-        r = await memoryOf();
-        expect(r.statusCode).toBe(200);
-        expect('teamName' in r.memory).toBe(false);
-        expect(warn.mock.calls.map((c) => c[0])).toContain('chat_list_teams_failed');
-        expect(warn.mock.calls.map((c) => c[0])).not.toContain('chat_list_team_ids_failed');
-      } finally {
-        warn.mockRestore();
-      }
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:resolve', 'agents', async () => ({
+      agent: { id: 'a1', displayName: 'Inbox', visibility: 'team', ownerId: 'team-1', ownerType: 'team' },
+    }));
+    bus.registerService('memory:recall', 'memory', async () => ({ statements: [], degraded: [] }));
+    let asked = 0;
+    bus.registerService('teams:list-for-user', 'teams', async () => {
+      asked += 1;
+      return { teams: [{ id: 'team-1', displayName: 'Support' }] };
     });
-
-    it("teamName rides only with factsAvailable: without facts the reader's teams aren't even asked", async () => {
-      freshBus();
-      registerTeamAgent();
-      // A counting teams service: a team name nobody shows is a lookup nobody should pay for.
-      let asked = 0;
-      bus.registerService('teams:list-for-user', 'teams', async () => {
-        asked += 1;
-        return { teams: [{ id: 'team-1', displayName: 'Support' }] };
-      });
-      const r = await memoryOf();
-      expect(r.statusCode).toBe(200);
-      expect('teamName' in r.memory).toBe(false);
-      expect('factsAvailable' in r.memory).toBe(false);
-      expect(asked).toBe(0);
-    });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect(captured.statusCode).toBe(200);
+    const memory = (captured.body as { memory: Record<string, unknown> }).memory;
+    expect(memory.factsVisibility).toBe('team');
+    expect('teamName' in memory).toBe(false);
+    expect(JSON.stringify(captured.body)).not.toContain('team-1');
+    expect(asked).toBe(0);
   });
 
   describe('factsExtraction (memory:status)', () => {

@@ -778,16 +778,10 @@ async function routeMention(
     }
     // 9b. The channel's memory notice (TASK-1203, design §4c), at its first
     // turn: after the record, so a turn dropped above tells nobody; before
-    // the agent runs, so the channel reads it before the reply. The team is
-    // named as the person this turn runs as sees it. It never throws: the
-    // turn goes on whatever becomes of the notice.
+    // the agent runs, so the channel reads it before the reply. It never
+    // throws: the turn goes on whatever becomes of the notice.
     // An announcement-only channel's goes in this turn's thread, where the reply goes.
-    await postMemoryNotice(
-      d,
-      lookupCtx(runAs),
-      { installId, channelId: m.channel, threadTs, agentId, botToken, userId: runAs },
-      log,
-    );
+    await postMemoryNotice(d, { installId, channelId: m.channel, threadTs, agentId, botToken }, log);
     // 10. Whether memory will learn from this thread, read back from the row
     // just written, with the flags capture-veto.ts reads first: so the agent
     // is told when it won't (TASK-1191), rather than promise to remember: an

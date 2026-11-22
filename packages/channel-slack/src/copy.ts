@@ -40,7 +40,7 @@ import type { SkillReach } from './turn-registry.js';
  *
  * `memoryNotice` is the one line a team agent's own bot posts in a channel
  * for everyone there (TASK-1203; memory-notice.ts): top-level, as mrkdwn
- * text, with the team's name through `shown`.
+ * text. It names no team: anyone who talks to the bot can read its memory.
  */
 
 /**
@@ -255,17 +255,12 @@ export const COPY = {
   /*
     Posted once per binding, top-level in the channel (no thread), on the
     first turn in a newly bound channel, or in one bound before this notice
-    existed (design §4c): a team agent's memory is shared with its team, so
-    what it hears in a channel can come up anywhere it works. In the first
-    person, like every line of the bot's own. `team` is the agent's team's
-    display name, from outside (an admin typed it), so it goes through
-    `shown`: it can't ping, link or broadcast. With no name to show (no
-    teams service, or a name nobody can read) it says "my team".
+    existed (design §4c): a team agent's memory is shared with anyone who
+    talks to it, so what it hears in a channel can come up anywhere it works.
+    In the first person, like every line of the bot's own. Fixed text: it
+    names nobody, so nothing from outside reaches it.
   */
-  memoryNotice: (team: string | null) => {
-    const named = team === null ? '' : shown(team).trim();
-    return `Heads up: what I hear in this channel is shared with everyone on ${named === '' ? 'my team' : named}, and I may bring it up elsewhere.`;
-  },
+  memoryNotice: 'Heads up: what I hear in this channel is shared with anyone who talks to me, and I may bring it up elsewhere.',
 
   // ── A bot request's DMs (TASK-1170; blocks.ts, bot-request-dms.ts) ──
   // The admin DM's notification and fallback: it names nobody.
