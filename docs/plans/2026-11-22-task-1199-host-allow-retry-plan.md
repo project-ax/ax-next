@@ -226,3 +226,10 @@ Exact copy, where `${list}` is the safe hosts, each backticked, joined by `', '`
 1. **PRODUCT (Vinay): should a channel host Allow outlive its session?** It could last per agent (like the web's "Always for this agent" through `host-grants:grant`) or per thread/conversation. Today a new Slack thread, or an idle-retired session, blocks the host again (walk A.5's second half).
 2. **Slack note lead:** `SLACK_NOTE_LEAD` (`turn-note.ts:68`) says the system never puts anything but the not-remembered line before the label. The runner's `System message (not from the user):` lines (this one, and decision-resolved openings) now can appear there. Name them in the lead once TASK-1202/1203 land.
 3. **Web host Allow confirmation:** after "Just this once" or "Always", the card just vanishes, with no "Allowed. Ask again and it'll try." like Slack's `hostAllowed`. Raise it in a ux-design pass.
+
+## Post-review changes (supersede the text above where they differ)
+
+- `packages/channel-slack/src/turn-note.ts` WAS edited (review round 1, Major): the lead names `System message (not from the user):` lines as the system's. Follow-up 2 is done here and is not a card.
+- The block note's last sentence is "If they tell you they allowed it, or ask you to try again, do." (round 1).
+- The runner logs one line when drained hosts all fail the host-shape filter (round 1).
+- The aisdk parity e2e asserts the line in the prompt the provider receives (round 1).

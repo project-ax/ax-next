@@ -2359,9 +2359,16 @@ describe('runRunner — hosts allowed since the last turn (TASK-1199)', () => {
 
   it('a host allowed between turns: the next turn starts with the now-allowed line, the earlier one does not', async () => {
     drainAnswers([], ['example.com']);
-    const { code, seen } = await run([said('first', 1), said('second', 2)]);
-    expect(code).toBe(0);
-    expect(seen).toEqual(['first', `${NOW_ALLOWED}\n\nsecond`]);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { code, seen } = await run([said('first', 1), said('second', 2)]);
+      expect(code).toBe(0);
+      expect(seen).toEqual(['first', `${NOW_ALLOWED}\n\nsecond`]);
+      // An empty drain and a successful one are both quiet.
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).not.toContain('drain-allowed-hosts');
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it('a failing drain leaves the message as the person wrote it', async () => {
