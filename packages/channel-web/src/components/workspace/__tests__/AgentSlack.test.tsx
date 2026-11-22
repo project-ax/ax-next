@@ -58,9 +58,9 @@ const LIVE_BOT: AgentSlackBot = {
   installId: BOT_ID,
 };
 
-/** `teamName`: the team the status names (the words scan runs with it set); `null` leaves it out. */
-function ready(canManage = true, bot: AgentSlackBot = NO_BOT, teamName: string | null = 'Support'): AgentSlackRead {
-  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, bot, ...(teamName !== null ? { teamName } : {}) };
+/** `agentTeamName`: the team the status names (the words scan runs with it set); `null` leaves it out. */
+function ready(canManage = true, bot: AgentSlackBot = NO_BOT, agentTeamName: string | null = 'Support'): AgentSlackRead {
+  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, bot, ...(agentTeamName !== null ? { agentTeamName } : {}) };
 }
 
 function renderIt(status: AgentSlackRead) {
@@ -523,7 +523,7 @@ describe("what the agent hears is shared with its team (TASK-1203)", () => {
   });
 
   it('with Slack not connected, a live bot still says it', async () => {
-    renderIt({ state: 'no-workspace', canManage: true, bot: LIVE_BOT, teamName: 'Support' });
+    renderIt({ state: 'no-workspace', canManage: true, bot: LIVE_BOT, agentTeamName: 'Support' });
     await liveTitle('@quill');
     expect(screen.getByText(SHARED)).toBeInTheDocument();
   });

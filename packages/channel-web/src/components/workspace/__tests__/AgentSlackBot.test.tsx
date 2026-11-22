@@ -92,14 +92,14 @@ const ACCESS_LINE = 'When someone outside the team mentions it, it answers them 
 const HELP_LINE =
   'When Quill needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set Quill up.';
 
-function renderIt(bot: Bot, canManage = true, onChanged = vi.fn(), teamName?: string) {
+function renderIt(bot: Bot, canManage = true, onChanged = vi.fn(), agentTeamName?: string) {
   render(
     <AgentSlackBot
       agentId="a1"
       agentName="Quill"
       bot={bot}
       canManage={canManage}
-      {...(teamName !== undefined ? { teamName } : {})}
+      {...(agentTeamName !== undefined ? { agentTeamName } : {})}
       {...QUIET}
       onChanged={onChanged}
     />,

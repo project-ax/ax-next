@@ -134,17 +134,17 @@ describe('fetchAgentSlack', () => {
     await expect(fetchAgentSlack('a1')).resolves.toEqual(without);
   });
 
-  it('parses teamName on ready and no-workspace, and refuses a non-string one (TASK-1203)', async () => {
+  it('parses agentTeamName on ready and no-workspace, and refuses a non-string one (TASK-1203)', async () => {
     const ready = { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, bot: NO_BOT };
     const noWorkspace = { state: 'no-workspace', canManage: true, bot: NO_BOT };
     for (const base of [ready, noWorkspace]) {
-      answer = () => json(200, { ...base, teamName: 'Support' });
-      await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ teamName: 'Support' });
+      answer = () => json(200, { ...base, agentTeamName: 'Support' });
+      await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ agentTeamName: 'Support' });
       // Absent: a personal agent, no teams service, or an older host. The key stays off the read.
       answer = () => json(200, base);
-      expect(await fetchAgentSlack('a1')).not.toHaveProperty('teamName');
+      expect(await fetchAgentSlack('a1')).not.toHaveProperty('agentTeamName');
       for (const bad of [7, null, true, {}, ['Support'], '']) {
-        answer = () => json(200, { ...base, teamName: bad });
+        answer = () => json(200, { ...base, agentTeamName: bad });
         await expect(fetchAgentSlack('a1'), String(JSON.stringify(bad))).rejects.toMatchObject({ code: 'bad-response' });
       }
     }

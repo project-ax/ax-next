@@ -123,7 +123,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
               key={agentId}
               agentId={agentId}
               agentName={agentName}
-              {...teamProp(state.teamName)}
+              {...teamProp(state.agentTeamName)}
               bot={state.bot}
               canManage={state.canManage}
               channels={state.botChannels ?? []}
@@ -159,7 +159,8 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
 }
 
 /** The team's name for the card's memory line, only when the host gave one (exactOptionalPropertyTypes). */
-const teamProp = (teamName: string | undefined): { teamName?: string } => (teamName !== undefined ? { teamName } : {});
+const teamProp = (agentTeamName: string | undefined): { agentTeamName?: string } =>
+  agentTeamName !== undefined ? { agentTeamName } : {};
 
 function ReadySection({
   agentId,
@@ -186,7 +187,7 @@ function ReadySection({
       <AgentSlackBot
         agentId={agentId}
         agentName={agentName}
-        {...teamProp(ready.teamName)}
+        {...teamProp(ready.agentTeamName)}
         bot={bot}
         canManage={canManage}
         sharedConnected

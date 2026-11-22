@@ -95,7 +95,7 @@ export type AgentSlackStatus =
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
       /** The agent's team, by name, for the card's memory line. Absent when the host can't say (the card says "its team"). */
-      teamName?: string;
+      agentTeamName?: string;
     }
   | {
       state: 'personal-agent';
@@ -115,7 +115,7 @@ export type AgentSlackStatus =
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
       /** The agent's team, by name, for the card's memory line. Absent when the host can't say (the card says "its team"). */
-      teamName?: string;
+      agentTeamName?: string;
     };
 
 /** `unavailable`: this server doesn't run the Slack plugin (or can't show us the agent). */
@@ -253,14 +253,14 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       if (bot === null) return null;
       const canManage = 'canManage' in body ? body['canManage'] : bot.state === 'pending';
       const botChannels = parseBotChannels(body['botChannels']);
-      const teamName = parseTeamName(body['teamName']);
-      if (typeof canManage !== 'boolean' || botChannels === null || teamName === null) return null;
+      const agentTeamName = parseTeamName(body['agentTeamName']);
+      if (typeof canManage !== 'boolean' || botChannels === null || agentTeamName === null) return null;
       return {
         state: 'no-workspace',
         canManage,
         bot,
         ...(botChannels !== undefined ? { botChannels } : {}),
-        ...(teamName !== undefined ? { teamName } : {}),
+        ...(agentTeamName !== undefined ? { agentTeamName } : {}),
       };
     }
     case 'personal-agent': {
@@ -281,8 +281,8 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       const bot = parseBot(body['bot']);
       if (bot === null) return null;
       const botChannels = parseBotChannels(body['botChannels']);
-      const teamName = parseTeamName(body['teamName']);
-      if (botChannels === null || teamName === null) return null;
+      const agentTeamName = parseTeamName(body['agentTeamName']);
+      if (botChannels === null || agentTeamName === null) return null;
       return {
         state: 'ready',
         botName,
@@ -290,7 +290,7 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
         canManage,
         bot,
         ...(botChannels !== undefined ? { botChannels } : {}),
-        ...(teamName !== undefined ? { teamName } : {}),
+        ...(agentTeamName !== undefined ? { agentTeamName } : {}),
       };
     }
     default:

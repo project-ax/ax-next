@@ -812,7 +812,7 @@ describe('the section', () => {
     const w = world();
     // No teams service at all: no name, and the answer is what it always was.
     const bare = await w.status(SUPPORT.id, ADA);
-    expect(bare.body).not.toHaveProperty('teamName');
+    expect(bare.body).not.toHaveProperty('agentTeamName');
 
     const asked: string[] = [];
     w.bus.registerService('teams:list-for-user', '@ax/teams', async (_ctx, raw) => {
@@ -833,7 +833,7 @@ describe('the section', () => {
         workspaceName: 'Canopy Works',
         canManage: true,
         bot: NO_BOT,
-        teamName: 'Customer Care',
+        agentTeamName: 'Customer Care',
       },
     });
     // A plain member sees it too, and the person asked is the viewer.
@@ -845,7 +845,7 @@ describe('the section', () => {
         workspaceName: 'Canopy Works',
         canManage: false,
         bot: NO_BOT,
-        teamName: 'Customer Care',
+        agentTeamName: 'Customer Care',
       },
     });
     expect(asked).toEqual([ADA.id, MEL.id]);
@@ -854,13 +854,13 @@ describe('the section', () => {
     w.state.install = null;
     expect(await w.status(SUPPORT.id, ADA)).toEqual({
       status: 200,
-      body: { state: 'no-workspace', canManage: true, bot: NO_BOT, teamName: 'Customer Care' },
+      body: { state: 'no-workspace', canManage: true, bot: NO_BOT, agentTeamName: 'Customer Care' },
     });
 
     // A personal agent has no team, and the answer says none.
     w.state.install = { ...INSTALL };
     const personal = await w.status(PATS.id, PAT);
-    expect(personal.body).not.toHaveProperty('teamName');
+    expect(personal.body).not.toHaveProperty('agentTeamName');
   });
 
   it("a team name the teams service can't give is left out, and the status still answers (TASK-1203)", async () => {
@@ -871,7 +871,7 @@ describe('the section', () => {
     const out = await w.status(SUPPORT.id, ADA);
     expect(out.status).toBe(200);
     expect(out.body).toMatchObject({ state: 'ready', canManage: true });
-    expect(out.body).not.toHaveProperty('teamName');
+    expect(out.body).not.toHaveProperty('agentTeamName');
     // The fault is logged by code only: never the error's words.
     const warned = w.lines.filter((l) => l.level === 'warn');
     expect(warned).toHaveLength(1);

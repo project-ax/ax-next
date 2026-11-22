@@ -102,14 +102,14 @@ export type AgentSlackStatus =
    * `bot`: a live bot outlives the shared install (Admin › Slack's Disconnect
    * leaves it alone). `canManage`: the person reading manages the agent (as
    * `ready` says it), so they can still disconnect that bot (TASK-1172).
-   * `botChannels`, `teamName`: as `ready` says them.
+   * `botChannels`, `agentTeamName`: as `ready` says them.
    */
   | {
       state: 'no-workspace';
       canManage: boolean;
       bot: AgentSlackBot;
       botChannels?: AgentSlackBotChannel[];
-      teamName?: string;
+      agentTeamName?: string;
     }
   /**
    * `answersDms`: a DM from the owner reaches THIS agent, their oldest
@@ -134,8 +134,10 @@ export type AgentSlackStatus =
        * the card says what the agent hears is shared with it). Cleaned to one
        * line, and present only when it can be read (a team agent, @ax/teams
        * there, the viewer on that team): the card says "its team" without one.
+       * The AX team, so `agentTeamName`: in Slack's words a team is the
+       * workspace, which `workspaceName` names.
        */
-      teamName?: string;
+      agentTeamName?: string;
     };
 
 export const AGENT_SLACK_PATH = '/settings/slack/:agentId';
@@ -409,14 +411,14 @@ export function createAgentSlackRoutes(
     const team = await agentTeamName(d.bus, a.ctx, { agentId: a.agentId, userId: a.userId }, (err) =>
       log('warn', 'slack_team_name_failed', { code: logCode(err) }),
     );
-    const teamName = team === null ? {} : { teamName: team };
+    const agentTeamNameField = team === null ? {} : { agentTeamName: team };
     if (!sharedActive) {
       return json(200, {
         state: 'no-workspace',
         canManage: manage.ok,
         bot,
         ...botChannels,
-        ...teamName,
+        ...agentTeamNameField,
       } satisfies AgentSlackStatus);
     }
     const out: AgentSlackStatus = {
@@ -426,7 +428,7 @@ export function createAgentSlackRoutes(
       canManage: manage.ok,
       bot,
       ...botChannels,
-      ...teamName,
+      ...agentTeamNameField,
     };
     return json(200, out);
   }
