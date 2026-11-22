@@ -95,12 +95,11 @@ const GENERAL = {
   previous_names: ['specifics', 'abstractions'],
 };
 
-/** GENERAL, narrowed: exactly these fields, nothing else Slack sent. */
+/** GENERAL, narrowed: exactly these fields, nothing else Slack sent (its `is_private` included: TASK-1203). */
 const GENERAL_OUT: SlackChannel = {
   id: 'C012AB3CD',
   name: 'general',
   isChannel: true,
-  isPrivate: false,
   isArchived: false,
   isExtShared: false,
   isPendingExtShared: false,
@@ -846,7 +845,7 @@ describe('conversations', () => {
     expect(err.provided).toBe('channels:read');
   });
 
-  it('a refusing flag (private, archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
+  it('a refusing flag (archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
     const flags = [
       ['is_archived', 'isArchived'],
       ['is_ext_shared', 'isExtShared'],
@@ -875,23 +874,15 @@ describe('conversations', () => {
     }
   });
 
-  // TASK-1188: public is what lets memory learn from a channel, so only Slack's plain `false` is public.
-  it('isPrivate is false only when Slack says literally false: absent, null or anything else is private', async () => {
-    const cases: Array<[unknown, boolean]> = [
-      [false, false],
-      [undefined, true],
-      [null, true],
-      [true, true],
-      ['false', true],
-      [0, true],
-      ['', true],
-      [{}, true],
-    ];
-    for (const [value, isPrivate] of cases) {
+  // TASK-1203 (design §4c): a private channel is answered in and remembered like any other, so nothing
+  // reads Slack's `is_private`: one fewer untrusted flag narrowed (invariant 5).
+  it("conversations.info's is_private is not read: a private channel narrows to the same SlackChannel as a public one (TASK-1203)", async () => {
+    // `undefined` is dropped by JSON.stringify: the field is absent.
+    for (const value of [true, false, undefined, null, 'false']) {
       const channel = { ...GENERAL, is_private: value };
       const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson({ channel })).fetchImpl });
       const out = await api.conversationsInfo(BOT, 'C012AB3CD');
-      expect(out.isPrivate, `is_private: ${JSON.stringify(value)}`).toBe(isPrivate);
+      expect(out, `is_private: ${JSON.stringify(value)}`).toStrictEqual(GENERAL_OUT);
     }
   });
 

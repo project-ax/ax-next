@@ -216,13 +216,16 @@ const OPS_AGENT: FakeAgent = {
   ownerId: OPS_TEAM,
 };
 
-/** A public, live channel of this workspace, as conversations.info answers once slack-api.ts narrows it. */
+/**
+ * A live channel of this workspace, as conversations.info answers once
+ * slack-api.ts narrows it: public or private alike, since it reads no
+ * `is_private` (TASK-1203).
+ */
 function slackChannel(id: string, name: string, over: Partial<SlackChannel> = {}): SlackChannel {
   return {
     id,
     name,
     isChannel: true,
-    isPrivate: false,
     isArchived: false,
     isExtShared: false,
     isPendingExtShared: false,
@@ -2843,9 +2846,7 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
   it.each([
     // A private channel is bound (TASK-1188), and remembered like any other (TASK-1203, below); one Slack doesn't
     // call a channel is not.
-    ['a private group Slack does not call a channel', slackChannel(SUPPORT, 'support', { isChannel: false, isPrivate: true }), {}],
-    ['a private channel that is archived', slackChannel(SUPPORT, 'support', { isPrivate: true, isArchived: true }), {}],
-    ['a private Slack Connect channel', slackChannel(SUPPORT, 'support', { isPrivate: true, isExtShared: true }), {}],
+    ['a private group Slack does not call a channel', slackChannel(SUPPORT, 'support', { isChannel: false }), {}],
     ['an archived channel', slackChannel(SUPPORT, 'support', { isArchived: true }), {}],
     ['a Slack Connect channel', slackChannel(SUPPORT, 'support', { isExtShared: true }), {}],
     ['a channel about to be shared with another company', slackChannel(SUPPORT, 'support', { isPendingExtShared: true }), {}],
@@ -3230,9 +3231,7 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
   const REFUSED: Array<[string, SlackChannel | Error, string]> = [
     ['a private group Slack does not call a channel', slackChannel(SUPPORT, 'support', { isChannel: false }), 'not-a-channel'],
     ['archived', slackChannel(SUPPORT, 'support', { isArchived: true }), 'archived'],
-    ['made private and archived', slackChannel(SUPPORT, 'support', { isPrivate: true, isArchived: true }), 'archived'],
     ['shared with another company', slackChannel(SUPPORT, 'support', { isExtShared: true }), 'shared'],
-    ['made private and shared with another company', slackChannel(SUPPORT, 'support', { isPrivate: true, isExtShared: true }), 'shared'],
     ['invited to Slack Connect', slackChannel(SUPPORT, 'support', { isPendingExtShared: true }), 'shared'],
     ['hidden by its missing scope (the walk measured this, before groups:read)', missingScope(), 'missing_scope'],
     [
@@ -3487,13 +3486,17 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
   private channel is remembered like any other. A team bot invited to one
   answers there as in any channel (audience `shared`, TASK-1188), and a
   member's thread there is recorded remembered: memory's observer pass and
-  `memory_note` both learn from it. Nothing here reads the channel's privacy.
+  `memory_note` both learn from it. Nothing here reads the channel's privacy,
+  and nothing can: slack-api.ts narrows no `is_private`, so Slack's answer
+  about a private channel reaches the router as a public one's does
+  (plugin.test.ts pins the same from Slack's own `is_private: true`).
   Before this card the turn wrote the binding private and recorded each
   thread not remembered, so memory was refused both ways. A thread marked
   before this card stays refused: memory's cursor already skipped its turns.
 */
 describe('createEventRouter: a private channel is remembered like any other (TASK-1203)', () => {
-  const PRIVATE_SUPPORT = slackChannel(SUPPORT, 'support', { isPrivate: true });
+  /** #support, private: what the router hears of it, the same as of a public channel (above). */
+  const PRIVATE_SUPPORT = slackChannel(SUPPORT, 'support');
 
   /** Memory's two questions about a conversation: its observer pass, and `memory_note` in a turn. */
   async function memoryAsks(store: ChannelStore, conversationId: string) {
@@ -3607,9 +3610,11 @@ describe("createEventRouter: a thread memory won't learn from says so in the tur
   });
 
   // TASK-1203 (design §4c): a private channel is remembered like any other.
-  // Before the fix its turn started with the line.
+  // Before the fix its turn started with the line. slack-api.ts reads no
+  // `is_private`, so #support made private reaches the router as a public
+  // channel does (plugin.test.ts pins it from Slack's own flag).
   it("a member's turn in a private channel: the label first, no line (TASK-1203)", async () => {
-    const w = botWorld({ channelInfo: () => slackChannel(SUPPORT, 'support', { isPrivate: true }) });
+    const w = botWorld({ channelInfo: () => slackChannel(SUPPORT, 'support') });
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
     expect(w.threadWrites).toEqual([expect.objectContaining({ notRemembered: false })]);

@@ -15,9 +15,9 @@
  *   - every field of an answer is narrowed with typeof checks before use, and
  *     ids and secrets must also have a plausible length and alphabet. A
  *     channel's refusing flags (archived, Slack Connect) fail closed: any
- *     value but absent, null or `false` counts as set. `is_private` keeps
- *     memory out (TASK-1188), so it fails closed harder: only `false` is
- *     public.
+ *     value but absent, null or `false` counts as set. `is_private` is not
+ *     read at all: a private channel is answered in and remembered like any
+ *     other (TASK-1203), so nothing needs it.
  *
  * Encoding, per method (MEASURED from docs.slack.dev, 2026-11-12):
  * `tooling.tokens.rotate`, `oauth.v2.access`, `users.info` and
@@ -153,15 +153,14 @@ export interface OAuthInstall {
  * A channel as `conversations.info` describes it, narrowed. `name` is
  * Slack's raw text: whoever shows or stores it cleans it first. The flags
  * that refuse a channel (`isArchived`, `isExtShared`, `isPendingExtShared`)
- * fail closed; `isPrivate` (answered in, never remembered: TASK-1188) is
- * false only when Slack says literally `false`; `isChannel` is true only when
- * Slack says literally `true`.
+ * fail closed; `isChannel` is true only when Slack says literally `true`.
+ * Nothing about privacy: public or private, a channel is answered in and
+ * remembered alike (TASK-1203, design §4c).
  */
 export interface SlackChannel {
   id: string;
   name: string;
   isChannel: boolean;
-  isPrivate: boolean;
   isArchived: boolean;
   isExtShared: boolean;
   isPendingExtShared: boolean;
@@ -358,9 +357,6 @@ function channelOf(raw: unknown): SlackChannel | null {
     id,
     name,
     isChannel: raw['is_channel'] === true,
-    // Only a plain `false` is public (TASK-1188): absent, null or unreadable is
-    // private, since public is what lets memory learn from a channel.
-    isPrivate: raw['is_private'] !== false,
     isArchived: flagged(raw, 'is_archived'),
     isExtShared: flagged(raw, 'is_ext_shared'),
     isPendingExtShared: flagged(raw, 'is_pending_ext_shared'),

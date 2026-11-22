@@ -356,7 +356,7 @@ async function world(o: WorldOptions = {}) {
     async check(installId: string, botToken: string, channelId: string): Promise<ChannelCheckResult> {
       channelChecks.push([installId, botToken, channelId]);
       if (o.channelNow === 'hang') return never();
-      return o.channelNow ?? { kind: 'allowed', isPrivate: false };
+      return o.channelNow ?? { kind: 'allowed' };
     },
   };
 
@@ -922,9 +922,10 @@ describe('the click gate: each step refuses on its own (each case valid on every
 
   // TASK-1203 (design §4c): a private channel is remembered like any other.
   // Before the fix an Allow there wrote the binding private and marked the
-  // held turn's thread not remembered for good, before the answer ran.
+  // held turn's thread not remembered for good, before the answer ran. The
+  // check says only `allowed` now, private channel or public.
   it('step 8: #support is private now: the answer runs, and nothing marks the thread or touches the binding (TASK-1203)', async () => {
-    const w = await world({ channelNow: { kind: 'allowed', isPrivate: true } });
+    const w = await world({ channelNow: { kind: 'allowed' } });
     const prompt = w.open(MEL_SUPPORT);
     // The held turn's thread, recorded remembered.
     await w.channels.store.recordThread({
