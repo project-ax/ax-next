@@ -670,13 +670,20 @@ describe('channel-web agent-workspace BFF', () => {
       expect(r.memory.factsVisibility).toBe('team');
       expect('teamName' in r.memory).toBe(false);
 
-      // teams service throwing
+      // teams service throwing: logged under the shared lookup's generic key (not the picker's "team ids"), and the read goes on
       bus.registerService('teams:list-for-user', 'teams', async () => {
         throw new Error('boom');
       });
-      r = await memoryOf();
-      expect(r.statusCode).toBe(200);
-      expect('teamName' in r.memory).toBe(false);
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        r = await memoryOf();
+        expect(r.statusCode).toBe(200);
+        expect('teamName' in r.memory).toBe(false);
+        expect(warn.mock.calls.map((c) => c[0])).toContain('chat_list_teams_failed');
+        expect(warn.mock.calls.map((c) => c[0])).not.toContain('chat_list_team_ids_failed');
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it("teamName rides only with factsAvailable: without facts the reader's teams aren't even asked", async () => {

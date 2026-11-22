@@ -211,7 +211,9 @@ interface AgentsListForUserInput {
   teamIds?: string[];
 }
 /** Minimal local re-declaration of @ax/teams' `teams:list-for-user` output
- *  (Invariant #2 — no cross-plugin import). We read only each team's id. */
+ *  (Invariant #2 — no cross-plugin import). We read each team's id (the
+ *  picker's team agents) and display name (the agent detail's memory line,
+ *  TASK-1203), nothing else. */
 interface TeamsListForUserOutput {
   teams: Array<{ id: string; displayName: string }>;
 }
@@ -384,7 +386,10 @@ export interface ChatRouteDeps {
  *
  * Exported because the agent-workspace roster (routes-workspace.ts) needs the
  * exact same read — one source of truth (invariant #4) beats two copies that
- * quietly disagree about whether team agents count.
+ * quietly disagree about whether team agents count. The agent detail's
+ * memory line reads a team's display name through it too (TASK-1203), so a
+ * failure logs under the generic `chat_list_teams_failed`, whichever caller
+ * it was.
  */
 export async function listTeamsForUser(
   bus: HookBus,
@@ -400,7 +405,7 @@ export async function listTeamsForUser(
     );
     return out.teams.map((t) => ({ id: t.id, displayName: t.displayName }));
   } catch (err) {
-    ctx.logger.warn('chat_list_team_ids_failed', {
+    ctx.logger.warn('chat_list_teams_failed', {
       userId,
       error: err instanceof Error ? err.message : String(err),
     });
