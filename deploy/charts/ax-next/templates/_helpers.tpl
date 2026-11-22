@@ -403,6 +403,10 @@ it also needs, at minimum (each is in-process today and says so at its site):
     turn-registry.ts): two replicas could each run a turn in one Slack
     thread at once, and a turn's chat events must reach the replica that
     started it.
+  - @ax/apps-bridge's rate limits and in-flight call counts (limits.ts,
+    when appsBridge.enabled): each replica would keep its own sliding
+    windows and in-flight caps, so an apps platform spread across N replicas
+    would get N times the per-platform and per-app budgets.
 
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica blob backend, s3) lands. Better to fail the `helm
@@ -466,6 +470,43 @@ Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- if not $appFramed -}}
 {{- fail (printf "contentOrigin.frameAncestors (%s) does not include the app's own origin, so the app could not show artifact pages. Add it: --set contentOrigin.frameAncestors={https://%s}" (join "," $co.frameAncestors) $appHost) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+ax-next.validateAppsBridge — the apps connector bridge (@ax/apps-bridge), when
+switched on, needs every one of its identity values.
+
+The host reads AX_APPS_BRIDGE_PLATFORM_ID as the bridge's on switch and then
+refuses to boot while any caller or viewer value is blank, so a half-filled
+appsBridge block would crash-loop the pod. We fail the render instead and
+name the --set to use. Blank means empty or only whitespace, as the host
+trims each value. --set-string, because a numeric subject (a workload
+identity's unique id) would otherwise arrive as a number.
+
+Read through `dig`: a value removed with --set key=null reads as blank, not as
+a nil-pointer error. The schema already refused a platform id outside its
+grammar, a max age outside 30-3600 and a malformed allowFrom peer; the host
+checks the rest (https JWKS URLs, lengths) again at boot.
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateAppsBridge" -}}
+{{- if (include "ax-next.bool" .Values.appsBridge.enabled) -}}
+{{- $ab := .Values.appsBridge -}}
+{{- $keys := list "platformId" "caller.issuer" "caller.jwksUrl" "caller.audience" "caller.subject" "viewer.issuer" "viewer.jwksUrl" "viewer.audience" -}}
+{{- range $key := $keys -}}
+{{- $path := splitList "." $key -}}
+{{- $value := "" -}}
+{{- if eq (len $path) 1 -}}
+{{- $value = dig (index $path 0) "" $ab -}}
+{{- else -}}
+{{- $value = dig (index $path 0) (index $path 1) "" $ab -}}
+{{- end -}}
+{{- if not (trim (toString $value)) -}}
+{{- fail (printf "appsBridge.enabled is true but appsBridge.%s is empty. The apps connector bridge needs platformId, caller.issuer, caller.jwksUrl, caller.audience, caller.subject, viewer.issuer, viewer.jwksUrl and viewer.audience: --set-string appsBridge.%s=<value> (see 'Apps connector bridge (optional)' in deploy/GKE.md), or turn it off with --set appsBridge.enabled=false." $key $key) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

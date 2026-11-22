@@ -2189,6 +2189,105 @@ serve:
 After this, `/chat` callers need `Authorization: Bearer $SERVE_TOKEN`. (The
 token's in a Secret, not your values/shell history — same posture as the DB DSN.)
 
+### Apps connector bridge (optional)
+
+Skip this unless you run an **apps platform**: a separate service where agents
+build small internal web apps. The bridge lets those apps call MCP connector
+tools through AX, using sign-ins people already made on their AX agents. No
+credential leaves AX; only tool results do. What an app may call is decided in
+AX (link, grant, approve), never by the platform.
+
+It's off by default, and off means the chart renders nothing for it. When on,
+it listens on its own port, `9092`, beside the app's.
+
+**It never goes on the Ingress.** That's on purpose: the bridge is a door for
+one service, not for the internet. Opening it is up to us, the operator, in
+two parts:
+
+1. **An internal LoadBalancer Service of our own**, selecting the host pod and
+   targeting its `apps-bridge` port. On GKE:
+
+   ```yaml
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: ax-next-apps-bridge
+     namespace: ax-next
+     annotations:
+       networking.gke.io/load-balancer-type: "Internal"
+   spec:
+     type: LoadBalancer
+     # Keep the caller's own address, so the NetworkPolicy's ipBlock can match
+     # it. With the default (Cluster), a hop between nodes can swap it for a
+     # node's address.
+     externalTrafficPolicy: Local
+     loadBalancerSourceRanges: ["PLATFORM_EGRESS_CIDR"]   # the platform's egress range
+     selector:
+       app.kubernetes.io/name: ax-next-host       # <release>-host; check the chart's host Service
+     ports:
+       - name: apps-bridge
+         port: 443
+         targetPort: apps-bridge
+   ```
+
+   The bridge speaks plain HTTP. If the platform's path to it leaves a network
+   we trust, put TLS in front (an internal Application Load Balancer, or a
+   mesh). Every request is authenticated either way, but the tool results it
+   sends back deserve better than crossing the wire in the clear.
+
+2. **`appsBridge.allowFrom`**: the NetworkPolicy peers admitted to that port,
+   copied as-is into the host policy (`ipBlock`, `namespaceSelector`,
+   `podSelector`). For the Service above, that's the same source range.
+   **Empty admits nobody**, and nobody else is admitted either, not even the
+   host's own namespace. If something in the cluster needs to call it, list it
+   here.
+
+Then add to `gke-values.local.yaml` and re-run the install:
+
+```yaml
+appsBridge:
+  enabled: true
+  platformId: canopy-apps            # lowercase, digits, inner hyphens; ≤63 chars
+  caller:                            # the platform itself, on every request
+    issuer: https://accounts.google.com
+    jwksUrl: https://www.googleapis.com/oauth2/v3/certs
+    audience: https://ax-apps-bridge.internal.example.net
+    subject: "112233445566778899001" # quote it: it's a number-shaped string
+  viewer:                            # the person using an app, when it acts as them
+    issuer: https://cloud.google.com/iap
+    jwksUrl: https://www.gstatic.com/iap/verify/public_key-jwk
+    audience: /projects/PROJECT_NUMBER/global/backendServices/SERVICE_ID
+    maxAgeSeconds: 600               # 30–3600
+  allowFrom:
+    - ipBlock:
+        cidr: PLATFORM_EGRESS_CIDR       # the same range as the Service above
+```
+
+**The caller's audience and subject come from the platform's workload
+identity.** Every request carries an OIDC ID token minted for the platform's
+own identity, and its `sub` must equal `caller.subject` exactly. On GCP that's
+a Google-signed ID token: `audience` is whatever audience the platform asks
+Google for (agree on one string with whoever runs it), and `subject` is the
+platform service account's unique id:
+
+```bash
+gcloud iam service-accounts describe PLATFORM_SA@PROJECT.iam.gserviceaccount.com \
+  --format='value(uniqueId)'
+```
+
+Any OIDC issuer works; Google is just the example. The `viewer` values come
+from whatever sign-in gateway sits in front of the platform's apps (IAP above).
+Its token must carry `email`, which is how AX finds the person.
+
+A blank required value fails `helm template` with the `--set-string` to use.
+Use `--set-string`, not `--set`, for these: `--set` would turn a numeric subject
+into a number, and the schema refuses it. The host checks the values again at
+boot (JWKS URLs must be https) and won't start on a bad one, so a typo shows up
+as a crash-looping pod with the variable named in its log.
+
+The bridge keeps its rate limits in memory, which is one more reason the host
+stays at one replica.
+
 ---
 
 ## Memory: facts memory is the default

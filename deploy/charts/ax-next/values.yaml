@@ -81,6 +81,10 @@ host:
     # different site from the app (contentOrigin.publicOrigin, below). Ingress
     # points its own hostname here. Never reachable from runner pods.
     content: 9091
+    # The apps connector bridge's own listener (@ax/apps-bridge), rendered
+    # only when appsBridge.enabled. NEVER on the Ingress: the host
+    # NetworkPolicy admits appsBridge.allowFrom peers here and nobody else.
+    appsBridge: 9092
   # Service port that runner pods connect to for IPC. The host Service
   # maps :ipcServicePort → :ports.ipc (containerPort). Decoupled from
   # ports.ipc so operators can front the host with the conventional :80
@@ -95,6 +99,9 @@ host:
   # Service port for the content origin. Maps :contentServicePort →
   # :ports.content (the `content-http` port the Ingress content rule targets).
   contentServicePort: 9091
+  # Service port for the apps connector bridge (only when appsBridge.enabled).
+  # Maps :appsBridgeServicePort → :ports.appsBridge (the `apps-bridge` port).
+  appsBridgeServicePort: 9092
   # The memory limit is the host's AND the artifact-HTML worker's: the worker (a child
   # process of the host, in this container) takes a share of it for its heap, read from
   # the container's cgroup when each worker starts: 30% of the limit less 112 MB, at most
@@ -740,6 +747,62 @@ ingress:
 contentOrigin:
   publicOrigin: ""
   frameAncestors: []
+
+# ─── Apps connector bridge (optional, @ax/apps-bridge) ───────────
+# Lets ONE outside apps platform call MCP connector tools through AX, using
+# sign-ins people already made on their AX agents. No credential leaves AX;
+# only tool results do. Off by default, and off means nothing renders: no env,
+# no port, no Service port, no NetworkPolicy rule.
+#
+# When on, the bridge listens on its own port (host.ports.appsBridge, 9092).
+# The chart NEVER puts that port on the Ingress. Reaching it is the operator's
+# job: an internal LoadBalancer Service of your own, selecting the host pod,
+# plus `allowFrom` for the addresses it arrives from (deploy/GKE.md, "Apps
+# connector bridge (optional)").
+#
+# Every value below except maxAgeSeconds and allowFrom is required when
+# enabled; a blank one fails the render with the --set to use. Use
+# --set-string for them: a numeric subject (a workload identity's unique id)
+# would otherwise arrive as a number, and the schema refuses it.
+#
+# platformId — the platform's id: lowercase letters, digits and inner
+#              hyphens, at most 63 characters. Everything the platform links
+#              or is granted is keyed by it.
+# caller     — the platform's OWN identity. Every request carries an OIDC ID
+#              token, checked against this issuer, JWKS URL and audience, and
+#              its `sub` must equal `subject` exactly. The audience and
+#              subject come from the platform's workload identity (on GKE, the
+#              audience it asks Google to mint a token for, and its service
+#              account's unique id).
+# viewer     — the person using an app, when an app acts as them: a JWT the
+#              platform's sign-in gateway gave it, checked against this issuer,
+#              JWKS URL and audience, at most maxAgeSeconds old (30-3600).
+# allowFrom  — NetworkPolicy peers (ipBlock / namespaceSelector / podSelector),
+#              rendered verbatim as the `from` of the one rule that admits the
+#              bridge port. EMPTY ADMITS NOBODY: the port gets no rule, so the
+#              policy denies it. Nobody else is admitted to it, not even the
+#              host's own namespace: list in-cluster callers here too. Only
+#              enforced while networkPolicies.enabled (the default).
+#
+# JWKS URLs must be https. The host checks all of these again at boot and
+# refuses to start on a bad one.
+#
+# Single host replica only: the bridge's rate limits and in-flight counts are
+# kept in memory. validateHostReplicas already pins `replicas` to 1.
+appsBridge:
+  enabled: false
+  platformId: ""
+  caller:
+    issuer: ""
+    jwksUrl: ""
+    audience: ""
+    subject: ""
+  viewer:
+    issuer: ""
+    jwksUrl: ""
+    audience: ""
+    maxAgeSeconds: 600
+  allowFrom: []
 
 # ─── Skills / capability acquisition ─────────────────────────────
 # JIT open mode (design decision #5 / §10). When true, the agent may
