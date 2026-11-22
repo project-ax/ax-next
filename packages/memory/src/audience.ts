@@ -22,7 +22,12 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * to it (TASK-1209, design §4c), so a turn from any source this build knows
  * reads it unscoped, whatever its audience stamp: a member's, a member's
  * routine, an outsider's. A turn from a source this build doesn't know reads
- * shared statements only on every agent: it fails closed. An outsider's turn
+ * shared statements only on every agent: it fails closed. That covers a
+ * context a host plugin built, and a source added to `AgentContextSource`
+ * later. It does NOT cover a stored session source a newer build wrote:
+ * session-postgres and ipc-core read that as `'external'` before memory sees
+ * it, so on a team agent it reads everything, as an outsider does (see
+ * {@link recallAudienceScope}, step 2). An outsider's turn
  * still never shows the requester's own memory as the person talking
  * (`augment.ts`, `memory:recall`'s `aboutText`).
  *
@@ -73,9 +78,19 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * 2. A team agent, in a turn from a source this build doesn't know:
  *    `{ audience: 'shared' }`, whatever its stamp, backstop and all. It fails
  *    closed, as `isOutsiderTurn` does (TASK-1209's security review): a
- *    source added later, or one a newer build stored, may bring a reader
- *    nobody has decided on. The `switch` is exhaustive, so a source added to
- *    `AgentContextSource` doesn't compile until it is placed here.
+ *    source added later may bring a reader nobody has decided on. The
+ *    `switch` is exhaustive, so a source added to `AgentContextSource`
+ *    doesn't compile until it is placed here.
+ *
+ *    That is all this step covers: compile-time exhaustiveness, and at run
+ *    time a context a host plugin built with a value outside the type. A
+ *    STORED session source this build doesn't know (one a newer build wrote)
+ *    never reaches memory raw: session-postgres (`normalizeSource`) and
+ *    ipc-core (`sessionSource`) read it as `'external'`, so on a team agent
+ *    it reads everything at step 1, as an outsider does. Accepted (TASK-1209):
+ *    under Vinay's decision that is exactly an outsider's read, and it only
+ *    happens while two builds share one database. Carrying an "unrecognized
+ *    source" mark through the session record and IPC is a follow-up.
  * 3. An outsider's turn on any other agent (`isOutsiderTurn`, which fails
  *    closed for a source this build doesn't know): `{ audience: 'shared' }`,
  *    whatever the turn's audience stamp. Someone without access to the agent
@@ -83,7 +98,8 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  *    see it, backstop and all. A private stamp or none fails closed here
  *    (TASK-1204 review F3): channel-slack stamps an outsider's turn shared,
  *    but a stored session source this build doesn't know reads as external
- *    with no audience stamp (`ipc-core` auth).
+ *    with no audience stamp (`ipc-core` auth). On a personal agent this step
+ *    is what keeps that session to shared rows.
  * 4. Anything else: `{ audience: 'shared' }` for a shared turn, and for an
  *    audience this build does not know (`audienceOf` reads that as shared,
  *    the least recall). Nothing at all for a private turn, whose reads are

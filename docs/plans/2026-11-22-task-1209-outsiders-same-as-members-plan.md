@@ -474,3 +474,4 @@ Harness: `MemoryHarnessOptions.authUser?: (userId: string) => unknown | Promise<
   2. Member names in the `/memory` export's `## user:<id>` headings.
   3. Find a teammate's facts by name in a `query`.
   4. ~~Optional `teams:is-member` gate on names, if review wants it.~~ Done in this PR (coordinator security review of Task 4).
+  5. Carry an "unrecognized source" mark from the session record through IPC, so a stored session source a newer build wrote fails closed on a team agent too. Today session-postgres `normalizeSource` and ipc-core `sessionSource` read it as `external` before memory sees it, so on a team agent it reads what an outsider reads (accepted: version skew only). `recallAudienceScope`'s fail-closed default covers host-built contexts and compile-time exhaustiveness, not stored sessions.

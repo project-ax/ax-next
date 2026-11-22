@@ -295,8 +295,10 @@ export interface AgentContext {
    * agent's memory is shared with anyone who talks to it (design §4c,
    * TASK-1209): a member's, a routine's or an outsider's turn on it
    * recalls everything whatever this field says, and a member's turn files
-   * their facts under them. A turn from a source this build doesn't know
-   * recalls only shared statements, on any agent. An outsider's turn, on any
+   * their facts under them. A turn whose `source` is outside
+   * `AgentContextSource` recalls only shared statements, on any agent (a
+   * stored session source this build doesn't know never gets that far: the
+   * session store and IPC read it as `'external'`). An outsider's turn, on any
    * agent and whatever this field says, stores no person fact. Host-stamped
    * only: never taken from an IPC payload.
    * It decides memory, not approvals; instructions and files are not
