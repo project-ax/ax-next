@@ -38,7 +38,8 @@ import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { loadProjectedMcpServers } from './projected-mcp-servers.js';
 import {
-  DISABLED_BUILTINS,
+  ALLOWED_SDK_BUILTINS,
+  DENIED_SDK_BUILTINS,
   MCP_HOST_SERVER_NAME,
   MCP_SANDBOX_SERVER_NAME,
   activityPhraseForSdkName,
@@ -532,9 +533,15 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // names. Host-catalog denies were already dropped from `tools` by
           // runner-core; this covers SDK built-ins (`Bash`) and connector MCP
           // tools. Enforcement stays host-side on tool.pre-call.
+          //
+          // TASK-1200: `tools` is the ALLOWLIST of SDK built-ins — the SDK loads
+          // no other built-in, deferred ones (`CronCreate`, …, reachable through
+          // `ToolSearch`) included. Every other known built-in is ALSO named in
+          // `disallowedTools`, so either list alone still keeps them out.
+          tools: [...ALLOWED_SDK_BUILTINS],
           disallowedTools: [
             ...new Set<string>([
-              ...DISABLED_BUILTINS,
+              ...DENIED_SDK_BUILTINS,
               ...sdkDisallowedToolNames(agentConfig.disallowedTools ?? []),
             ]),
           ],

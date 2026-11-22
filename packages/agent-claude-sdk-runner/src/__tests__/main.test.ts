@@ -568,6 +568,7 @@ describe('main()', () => {
         model: string;
         allowedTools: string[];
         disallowedTools: string[];
+        tools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
         systemPrompt: string;
@@ -589,6 +590,14 @@ describe('main()', () => {
     };
     expect(queryArg.options.disallowedTools).toEqual(
       expect.arrayContaining(['WebFetch', 'WebSearch', 'Task', 'AskUserQuestion']),
+    );
+    // TASK-1200: the SDK's `tools` option is the allowlist of built-ins, and
+    // the schedulers are denied on top of it.
+    expect(queryArg.options.tools).toEqual([
+      'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'Skill', 'ToolSearch',
+    ]);
+    expect(queryArg.options.disallowedTools).toEqual(
+      expect.arrayContaining(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger']),
     );
     // I-P0-1: positive guard that Skill is NOT denied. If a future refactor
     // re-adds Skill to DISABLED_BUILTINS or otherwise reintroduces a deny,

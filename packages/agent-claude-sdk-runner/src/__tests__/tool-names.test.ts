@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ALLOWED_SDK_BUILTINS,
   CONNECTOR_TOOL_NAMESPACE_RE,
+  DENIED_SDK_BUILTINS,
   DISABLED_BUILTINS,
+  KNOWN_SDK_BUILTINS,
   DISABLED_BUILTIN_REASONS,
   MCP_HOST_SERVER_NAME,
   MCP_SANDBOX_SERVER_NAME,
@@ -15,12 +18,31 @@ describe('classifySdkToolName', () => {
     expect(classifySdkToolName('Bash')).toEqual({ kind: 'builtin', axName: 'Bash' });
   });
 
-  it('classifies an unknown built-in name as builtin (pass-through)', () => {
-    // Unknown-to-us names pass through — it may be a new SDK tool that our
-    // host-side subscribers need to see by its real name. We don't hardcode
-    // the full built-in list here.
-    expect(classifySdkToolName('Edit')).toEqual({ kind: 'builtin', axName: 'Edit' });
-    expect(classifySdkToolName('Read')).toEqual({ kind: 'builtin', axName: 'Read' });
+  it.each(ALLOWED_SDK_BUILTINS)('classifies the allowed built-in %s as builtin (pass-through)', (name) => {
+    expect(classifySdkToolName(name)).toEqual({ kind: 'builtin', axName: name });
+  });
+
+  // TASK-1200: CronCreate scheduled a sandbox-local job that skipped the
+  // routine_create hold. Every built-in outside the allowlist fails closed.
+  it.each(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger', 'SendMessage', 'Monitor', 'PushNotification', 'EnterWorktree'])(
+    'classifies %s as disabled (outside the allowlist)',
+    (name) => {
+      const klass = classifySdkToolName(name);
+      expect(klass.kind).toBe('disabled');
+      expect(klass).toMatchObject({ name });
+      if (klass.kind === 'disabled') expect(klass.reason).toContain(name);
+    },
+  );
+
+  it('fails closed on a built-in name the pinned SDK did not ship (a future tool, or the Agent alias)', () => {
+    for (const name of ['Agent', 'SomeFutureTool']) {
+      expect(classifySdkToolName(name).kind).toBe('disabled');
+    }
+  });
+
+  it('points a refused scheduler at routine_create', () => {
+    const klass = classifySdkToolName('CronCreate');
+    expect(klass.kind === 'disabled' && klass.reason).toContain('routine_create');
   });
 
   it.each(DISABLED_BUILTINS)('classifies %s as disabled, carrying its own reason', (name) => {
@@ -214,6 +236,40 @@ describe('classifySdkToolName', () => {
     // the host shouldn't encode. Host-side subscribers will reject nameless
     // tool calls on their own terms.
     expect(classifySdkToolName('')).toEqual({ kind: 'builtin', axName: '' });
+  });
+});
+
+describe('the SDK built-in allowlist (TASK-1200)', () => {
+  const allowed = new Set<string>(ALLOWED_SDK_BUILTINS);
+  const denied = new Set<string>(DENIED_SDK_BUILTINS);
+
+  it('denies every known built-in that is not allowlisted, and nothing that is', () => {
+    for (const name of KNOWN_SDK_BUILTINS) {
+      expect(allowed.has(name) || denied.has(name), `${name} is neither allowed nor denied`).toBe(true);
+      expect(allowed.has(name) && denied.has(name), `${name} is both allowed and denied`).toBe(false);
+    }
+  });
+
+  it('keeps the schedulers, agent spawners and messengers out', () => {
+    for (const name of [
+      'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger',
+      'Monitor', 'PushNotification', 'SendMessage', 'TeamCreate', 'TeamDelete',
+      'Task', 'WebFetch', 'WebSearch', 'AskUserQuestion', 'EnterWorktree', 'ExitWorktree',
+    ]) {
+      expect(denied.has(name), name).toBe(true);
+      expect(allowed.has(name), name).toBe(false);
+    }
+  });
+
+  it('allowlists only known built-ins, and keeps ToolSearch (AX host tools are deferred behind it)', () => {
+    const known = new Set<string>(KNOWN_SDK_BUILTINS);
+    for (const name of ALLOWED_SDK_BUILTINS) expect(known.has(name), name).toBe(true);
+    expect(allowed.has('ToolSearch')).toBe(true);
+    expect(allowed.has('Skill')).toBe(true);
+  });
+
+  it('still lists the four built-ins with their own reasons (rail rows) as denied', () => {
+    for (const name of DISABLED_BUILTINS) expect(denied.has(name), name).toBe(true);
   });
 });
 

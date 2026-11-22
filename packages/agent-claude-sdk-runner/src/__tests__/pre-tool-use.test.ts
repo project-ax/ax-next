@@ -205,6 +205,25 @@ describe('createPreToolUseHook', () => {
     });
   });
 
+  // TASK-1200: the walk's agent loaded CronCreate through ToolSearch and
+  // scheduled a sandbox-local job. Behind the `tools` allowlist, the hook
+  // refuses any built-in outside it, without a round-trip to the host.
+  it('denies CronCreate (a built-in outside the allowlist) without touching IPC', async () => {
+    const { client, calls } = mkClient(async () => {
+      throw new Error('IPC should not be reached for disabled tools');
+    });
+    const hook = createPreToolUseHook({ client, idGen: () => 'id-cron' });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'CronCreate', tool_input: { cron: '3 9 * * 1-5', prompt: 'good morning' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([]);
+    const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('deny');
+    expect(hso.permissionDecisionReason).toContain('routine_create');
+  });
+
   // TASK-238. `disallowedTools` keeps all four out of the model's context, so
   // this branch is defence in depth and does not run in a healthy session (see
   // pre-tool-use.ts). What is pinned here is that when it DOES run, the four
@@ -283,7 +302,6 @@ describe('createPreToolUseHook', () => {
       { tool_name: 'Write', tool_input: { file_path: '/files/CLAUDE.local.md', content: 'x' } },
       { tool_name: 'Glob', tool_input: { pattern: '**/*.md', path: '.claude' } },
       { tool_name: 'Grep', tool_input: { pattern: 'x', path: '/files/.ax' } },
-      { tool_name: 'NotebookEdit', tool_input: { notebook_path: '.ax/n.ipynb', new_source: 'x' } },
     ];
     for (const c of cases) {
       const label = `${c.tool_name} ${JSON.stringify(c.tool_input)}`;
