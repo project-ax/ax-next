@@ -3990,6 +3990,19 @@ describe('createEventRouter: the agent reads the people a message mentions by na
     }
   });
 
+  it("the rewrite reaches the sender's words only: a sender named like a mention keeps that name in the label", async () => {
+    const original = SLACK_USERS[ALICE];
+    SLACK_USERS[ALICE] = member(ALICE, 'Alice@CanopyWorks.com', `&lt;@${OWN_BOT_USER_ID}&gt;`);
+    try {
+      const w = botWorld();
+      await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}> hi` }));
+      await w.idle();
+      expect(w.invokes.map(contentOf)).toEqual([`[Slack · #support · &lt;@${OWN_BOT_USER_ID}&gt; (${ALICE})]: @[supportbot (you)] hi`]);
+    } finally {
+      SLACK_USERS[ALICE] = original;
+    }
+  });
+
   it("a name that tries to end early stays inside its brackets: its tail is never the sender's words", async () => {
     const w = botWorld();
     await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}> check with <@${TAILER}> about the deck` }));

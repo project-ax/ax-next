@@ -164,7 +164,11 @@ export const CHANNEL_CHECK_MAX = 1_000;
  * a rename shows in the agent's text within this long.
  */
 export const MENTION_NAME_TTL_MS = 600_000;
-/** At most this many mentioned people's names are kept, the oldest forgotten first. */
+/**
+ * At most this many mentioned people's names are kept, the oldest forgotten
+ * first; and at most this many installs' rate-limit pauses (mention-names.ts),
+ * expired ones forgotten first.
+ */
 export const MENTION_NAME_CACHE_MAX = 1_000;
 /**
  * At most this many users.info calls are spent naming the people one message

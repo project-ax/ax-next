@@ -73,8 +73,8 @@ export function createMentionNames(o: {
   const pausedUntil = new Map<string, number>();
 
   const pause = (installId: string, retryAfterMs: number | undefined): void => {
-    // A non-finite wait (NaN) would pause for good: `until <= now` is never true.
-    const asked = retryAfterMs !== undefined && Number.isFinite(retryAfterMs) ? retryAfterMs : RETRY_AFTER_DEFAULT_MS;
+    // A NaN wait would pause for good (`until <= now` is never true); Infinity is capped below.
+    const asked = retryAfterMs !== undefined && !Number.isNaN(retryAfterMs) ? retryAfterMs : RETRY_AFTER_DEFAULT_MS;
     const wait = Math.min(Math.max(asked, 0), RETRY_AFTER_CAP_MS);
     const until = Math.max(pausedUntil.get(installId) ?? 0, now() + wait);
     pausedUntil.delete(installId);

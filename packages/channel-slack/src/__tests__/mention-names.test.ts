@@ -110,7 +110,7 @@ describe('createMentionNames (TASK-1190)', () => {
     expect(ids(w.asked)).toEqual(['A', 'B', 'C']);
   });
 
-  it('at most max installs stay paused, the oldest forgotten first; a NaN Retry-After waits the default', async () => {
+  it('at most max installs stay paused, the oldest forgotten first', async () => {
     const limited = new SlackApiError('users.info', 'ratelimited', 30_000);
     const w = world({ L: limited, B: user('B', 'Bob') }, { max: 2 });
     await w.lookup(['L'], new Map(), TEAM, 'i1');
@@ -120,12 +120,37 @@ describe('createMentionNames (TASK-1190)', () => {
     expect(await w.lookup(['B'], new Map(), TEAM, 'i1')).toMatchObject({ paused: 0 });
     expect(await w.lookup(['X'], new Map(), TEAM, 'i2')).toMatchObject({ paused: 1 });
     expect(await w.lookup(['X'], new Map(), TEAM, 'i3')).toMatchObject({ paused: 1 });
+  });
 
+  it('a full pause map forgets an expired pause before a live one', async () => {
+    const w = world(
+      {
+        L30: new SlackApiError('users.info', 'ratelimited', 30_000),
+        L1: new SlackApiError('users.info', 'ratelimited', 1_000),
+      },
+      { max: 2 },
+    );
+    await w.lookup(['L30'], new Map(), TEAM, 'i1');
+    await w.lookup(['L1'], new Map(), TEAM, 'i2');
+    w.tick(1_000);
+    await w.lookup(['L30'], new Map(), TEAM, 'i3');
+    // i2's pause had expired, so it went; i1's live pause stays.
+    expect(await w.lookup(['X'], new Map(), TEAM, 'i1')).toMatchObject({ paused: 1 });
+  });
+
+  it('a NaN Retry-After waits the default; Infinity waits the cap', async () => {
     const n = world({ L: new SlackApiError('users.info', 'ratelimited', Number.NaN), B: user('B', 'Bob') });
     await n.lookup(['L']);
     expect(await n.lookup(['B'])).toMatchObject({ paused: 1 });
     n.tick(RETRY_AFTER_DEFAULT_MS);
     expect((await n.lookup(['B'])).names.get('B')).toBe('Bob');
+
+    const f = world({ L: new SlackApiError('users.info', 'ratelimited', Number.POSITIVE_INFINITY), B: user('B', 'Bob') });
+    await f.lookup(['L']);
+    f.tick(RETRY_AFTER_CAP_MS - 1);
+    expect(await f.lookup(['B'])).toMatchObject({ paused: 1 });
+    f.tick(1);
+    expect((await f.lookup(['B'])).names.get('B')).toBe('Bob');
   });
 
   it('a huge Retry-After is capped at RETRY_AFTER_CAP_MS', async () => {

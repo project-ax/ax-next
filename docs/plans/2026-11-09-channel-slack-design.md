@@ -82,7 +82,9 @@ it. The write-path audit is in
 
 The Slack sender's name and ID go into the message *content*, for example
 `[Slack · #support · Alice (U123)]: …`. In a 1:1 DM (TASK-1093) it reads
-`[Slack · DM · Alice (U123)]: <text>`: the sender's Slack display name (else
+`[Slack · DM · Alice (U123)]: <text>` (a channel turn memory won't learn from
+starts with one fixed not-remembered line before it, TASK-1191): the sender's
+Slack display name (else
 their real name), with brackets and parentheses of every script removed so a
 name can't close the label early. `<text>` is the message as its sender typed
 it: Slack's `&amp;`, `&lt;` and `&gt;` escaping is undone, and each person it
