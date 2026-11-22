@@ -134,22 +134,6 @@ describe('fetchAgentSlack', () => {
     await expect(fetchAgentSlack('a1')).resolves.toEqual(without);
   });
 
-  it('parses agentTeamName on ready and no-workspace, and refuses a non-string one (TASK-1203)', async () => {
-    const ready = { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, bot: NO_BOT };
-    const noWorkspace = { state: 'no-workspace', canManage: true, bot: NO_BOT };
-    for (const base of [ready, noWorkspace]) {
-      answer = () => json(200, { ...base, agentTeamName: 'Support' });
-      await expect(fetchAgentSlack('a1')).resolves.toMatchObject({ agentTeamName: 'Support' });
-      // Absent: a personal agent, no teams service, or an older host. The key stays off the read.
-      answer = () => json(200, base);
-      expect(await fetchAgentSlack('a1')).not.toHaveProperty('agentTeamName');
-      for (const bad of [7, null, true, {}, ['Support'], '']) {
-        answer = () => json(200, { ...base, agentTeamName: bad });
-        await expect(fetchAgentSlack('a1'), String(JSON.stringify(bad))).rejects.toMatchObject({ code: 'bad-response' });
-      }
-    }
-  });
-
   it("reads the agent's own bot's channels on ready and no-workspace; an older host that omits them reads none; a malformed one is a bad response (TASK-1180)", async () => {
     const BOT_ROW = { channelId: 'C0BOTSUP01', name: 'help' };
     const ready = (extra: Record<string, unknown>) => ({ state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage: true, bot: LIVE_BOT, ...extra });
@@ -723,12 +707,9 @@ describe("the Slack card's words (TASK-1187)", () => {
     expect(C.inviteNoHandle).toBe('In any Slack channel, type /invite and pick it.');
     expect(C.channelsLead({ botName, handle: 'quill' })).toBe('@quill has answered in these channels.');
     expect(C.channelsLead({ botName, handle: null })).toBe('Quill Bot has answered in these channels.');
-    // The agent's NAME, never its @handle (the ux pass), and the team's name when it's known.
-    expect(C.memoryShared('Quill', 'Support')).toBe(
-      'What Quill hears is shared with everyone on Support, and Quill may bring it up elsewhere.',
-    );
-    expect(C.memoryShared('Quill', undefined)).toBe(
-      'What Quill hears is shared with everyone on its team, and Quill may bring it up elsewhere.',
+    // The agent's NAME, never its @handle (the ux pass). It names no team (TASK-1209).
+    expect(C.memoryShared('Quill')).toBe(
+      'What Quill hears is shared with anyone who talks to Quill, and Quill may bring it up elsewhere.',
     );
     expect(C.outsidersUseYourAccess).toBe(
       'When someone outside the team mentions it, it answers them with your access.',
@@ -764,7 +745,6 @@ describe("the Slack card's words (TASK-1187)", () => {
       expect(slackCardWordsFound(line), line).toEqual([]);
     }
     expect(slackCardWordsFound(C.channelsLead({ botName, handle: 'quill' }))).toEqual([]);
-    expect(slackCardWordsFound(C.memoryShared('Quill', 'Support'))).toEqual([]);
-    expect(slackCardWordsFound(C.memoryShared('Quill', undefined))).toEqual([]);
+    expect(slackCardWordsFound(C.memoryShared('Quill'))).toEqual([]);
   });
 });

@@ -111,10 +111,10 @@ export interface ChannelStore {
   /**
    * Claim the memory notice of THIS agent's binding of the channel (TASK-1203,
    * design §4c: the post telling the channel what the bot hears there is
-   * shared with its team), in ONE conditional statement, so of any number of
-   * claims at once, on any replica, exactly one wins. That one gets the
-   * claim's stamp (opaque: hand it back to `releaseNotice` as is), and posts
-   * the notice. Null when the notice was claimed before, or the channel
+   * shared with anyone who talks to it), in ONE conditional statement, so of
+   * any number of claims at once, on any replica, exactly one wins. That one
+   * gets the claim's stamp (opaque: hand it back to `releaseNotice` as is),
+   * and posts the notice. Null when the notice was claimed before, or the channel
    * isn't this agent's (any more), or isn't bound at all; nothing changed. A
    * binding removed and made again is new, and claims again.
    */

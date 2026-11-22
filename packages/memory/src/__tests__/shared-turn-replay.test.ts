@@ -24,7 +24,8 @@ import { ALICE, answerSpeakerNames, BOB, makeMemoryHarness, type MemoryHarness }
  *   TASK-1204 the speaker rule dropped it (the walk's log for that session:
  *   `skipped`, `only-speaker-facts`, `speakerFacts: 1`; the walk's "recorded 1"
  *   was a different session's echo). Under TASK-1204 a team agent's member
- *   turn files it under the member's own key, and every member's turn reads it.
+ *   turn files it under the member's own key, and every member's turn reads
+ *   it, and since TASK-1209 so does an outsider's.
  * - The echo turns. "reply with exactly: hello <!channel>, testing" came back
  *   as `assistant | replied_with | hello <!channel>, testing` in 4 of 5 trials
  *   (and `replied_with` in 2 of 5 for "alpha beta gamma"). The act of replying
@@ -188,14 +189,14 @@ async function replayWalk(): Promise<MemoryHarness> {
 }
 
 describe('walk TASK-1192 replayed: a team fact said in a channel is kept, the agent\'s own replies are not (TASK-1198)', () => {
-  it('keeps the standup, filed under the member who said it and kept with the team', async () => {
+  it('keeps the standup, filed under the member who said it, stamped with the channel turn', async () => {
     const h = await replayWalk();
     expect(storedRows(h).filter((r) => r.value.includes('9:30'))).toEqual([
       {
         about: `user:${VINAY}`,
         relation: 'team_standup_time',
         value: 'Team standup is at 9:30 every weekday',
-        audience: 'private',
+        audience: 'shared',
       },
     ]);
   });
@@ -228,9 +229,10 @@ describe('walk TASK-1192 replayed: a team fact said in a channel is kept, the ag
     expect(await recallTool(h, bobAsks, 'team standup')).toContain('9:30 every weekday');
   });
 
-  it("an outsider's turn in the channel never recalls it: the team's memory isn't the public's", async () => {
+  // TASK-1209: a team agent's memory is shared with anyone who talks to it.
+  it("an outsider's turn in the channel recalls it too", async () => {
     const h = await replayWalk();
     const outsider = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
-    expect(await recallTool(h, outsider, 'team standup')).not.toContain('9:30');
+    expect(await recallTool(h, outsider, 'team standup')).toContain('9:30');
   });
 });

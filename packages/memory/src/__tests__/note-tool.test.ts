@@ -996,8 +996,7 @@ describe("memory_note in a team agent's channel turn (TASK-1204)", () => {
     return readRows(h.databasePath).map(({ about, audience, provenance }) => ({ about, audience, provenance }));
   }
 
-  // Stamped private (review F2): what a member says about themself is the
-  // team's, not the room's, so an outsider's turn never recalls it.
+  // Stamped with the turn, like any note (TASK-1209): the room heard it.
   it.each(['user', 'vinay', 'Vinay', 'vinay_pulim', 'UHTE83XE1', 'user_vinay'])(
     "a member's note about themself (%j) is saved under their own key",
     async (about) => {
@@ -1006,7 +1005,7 @@ describe("memory_note in a team agent's channel turn (TASK-1204)", () => {
 
       expect(await note(h, { about, ...STANDUP }, memberCtx(h))).toEqual({ ok: true });
 
-      expect(filed(h)).toEqual([{ about: `user:${ALICE}`, audience: 'private', provenance: 'agent' }]);
+      expect(filed(h)).toEqual([{ about: `user:${ALICE}`, audience: 'shared', provenance: 'agent' }]);
       // One ask: the write is handed the note's names.
       expect(asked).toEqual([{ conversationId: 'conv-channel' }]);
     },
@@ -1054,8 +1053,8 @@ describe("memory_note in a team agent's channel turn (TASK-1204)", () => {
 
   // Review focus 5: the twin check sees the canonical key, so a note
   // restating what the observer already filed under the member is not a
-  // second row. And it sees a private row (review F2: the member's own key is
-  // stamped private), because a member's reads have no audience scope.
+  // second row. (A member's reads have no audience scope, so the twin check
+  // would see the row whatever its stamp.)
   it("a member's note and the observer's fact land on one row", async () => {
     const h = await teamHarness({
       llm: () => ({
@@ -1088,13 +1087,13 @@ describe("memory_note in a team agent's channel turn (TASK-1204)", () => {
     await h.settleObserver();
     const rows = (): Array<Array<string | null>> =>
       readRows(h.databasePath).map((r) => [r.about, r.value, r.provenance, r.audience]);
-    expect(rows()).toEqual([[`user:${ALICE}`, 'teal', 'extracted', 'private']]);
+    expect(rows()).toEqual([[`user:${ALICE}`, 'teal', 'extracted', 'shared']]);
 
     expect(await note(h, { about: 'vinay', relation: 'favorite_color', value: 'teal' }, memberCtx(h))).toEqual({
       ok: true,
     });
 
-    expect(rows()).toEqual([[`user:${ALICE}`, 'teal', 'extracted', 'private']]);
+    expect(rows()).toEqual([[`user:${ALICE}`, 'teal', 'extracted', 'shared']]);
   });
 
   it('in an outsider turn on a team agent, a note about the person is still refused', async () => {

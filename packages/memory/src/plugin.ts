@@ -1,10 +1,10 @@
 import {
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS as CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
-  audienceOf,
   isOutsiderTurn,
   parseModelRef,
   type AgentContext,
+  type AgentContextSource,
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
@@ -13,7 +13,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
-import { recallFacts, recordFacts, speakerScope, type SpeakerScope } from './audience.js';
+import { recallAudienceScope, recallFacts, recordFacts, speakerScope, type SpeakerScope } from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
@@ -67,6 +67,7 @@ import {
   selectProfileRows,
 } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
+import { AUTH_GET_USER_HOOK, memberLabels, TEAMMATE_TEXT, TEAMS_IS_MEMBER_HOOK } from './member-names.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall, registerMemoryUse } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
 import {
@@ -186,12 +187,13 @@ export { CAPTURE_REFUSED_EVENT };
 
 /**
  * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
- * view because people without access to the agent can read its replies
- * (TASK-1091): a personal agent's session that isn't private, or an
- * outsider's on any agent, whatever its audience stamp (TASK-1204). A team
- * agent member's session keeps its view in every audience, so this never
- * fires for one. Bindings: `agentId` and `reason: 'shared-audience'` (an
- * outsider's session is one, whatever it is stamped).
+ * view because its recall reads shared rows only (TASK-1091): a personal
+ * agent's session that isn't private or is an outsider's, whatever its
+ * audience stamp, and a session from a source this build doesn't know on any
+ * agent. A team agent's session from a source this build knows, an
+ * outsider's included, keeps its view in every audience (TASK-1209), so this
+ * never fires for one. Bindings: `agentId` and `reason: 'shared-audience'`
+ * (an outsider's session is one, whatever it is stamped).
  */
 export const MEMORY_MOUNT_WITHHELD_EVENT = 'memory_mount_withheld';
 
@@ -336,10 +338,9 @@ interface EngineFactRecord {
   /**
    * Who could see the turn this row was learned in (TASK-1091): `'shared'`,
    * `'private'`, or absent on a row stored before audiences existed, which
-   * reads as private. What a team agent's member said about themself is
-   * `'private'` whatever the turn: the team's, not the room's (TASK-1204,
-   * `recordFacts`). `recallFacts` refuses a non-shared row in a shared read;
-   * `toMemoryStatement` refuses any other value and forwards only `'shared'`.
+   * reads as private. No exception (TASK-1209, `recordFacts`). `recallFacts`
+   * refuses a non-shared row in a shared read; `toMemoryStatement` refuses
+   * any other value and forwards only `'shared'`.
    */
   audience?: string;
 }
@@ -397,8 +398,9 @@ export interface MemoryPluginConfig {
    * `memory:export:flush` and `sandbox:memory-mounts`. Without it there is no
    * file view; recall is unaffected. A session whose recall reads shared rows
    * only never gets the view: `sandbox:memory-mounts` answers a personal
-   * agent's shared session no mount (TASK-1091), and an outsider's on a team
-   * agent (TASK-1204). A team agent member's session gets it in every audience.
+   * agent's shared or outsider's session no mount (TASK-1091), nor one from a
+   * source this build doesn't know on any agent. A team agent's session gets
+   * it in every audience, an outsider's included (TASK-1209).
    */
   exports?: MemoryExportConfig;
 }
@@ -647,6 +649,20 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               hook,
               degradation: NO_RECEIPTS_DEGRADATION,
             }))),
+        // TASK-1209: on a team agent another member's memories read by their
+        // display name (`member-names.ts`), asked only about a proven current
+        // member of the agent's team. Only labels depend on either, so
+        // without one of them they read "a teammate" and every read still
+        // answers.
+        {
+          hook: AUTH_GET_USER_HOOK,
+          degradation: 'on a team agent, another member\'s memories read "a teammate" instead of their name',
+        },
+        {
+          hook: TEAMS_IS_MEMBER_HOOK,
+          degradation:
+            'on a team agent, another member\'s memories read "a teammate" instead of their name: nobody is proven a current member of the team, so nobody is named',
+        },
       ],
       subscribes: [CHAT_END_HOOK, ...(incrementalCfg !== undefined ? [CHAT_TURN_END_HOOK] : [])],
     },
@@ -690,37 +706,42 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // read first. A caller the agent refuses is refused here, never
             // answered with an empty list that reads like a withheld view.
             const access = await resolveMemoryAccess(bus, ownerCtx);
-            // TASK-1091. The export holds every fact the agent has, scoped by
-            // owner but not by audience, so a session whose replies people
-            // without access to the agent can read gets no file view where
-            // its recall reads shared rows only: mounting it would hand the
-            // room every row recall withholds. That is, as in
-            // `recallAudienceScope`:
+            // TASK-1091, TASK-1209. The export holds every fact the agent
+            // has, scoped by owner but not by audience, so a session gets no
+            // file view wherever its recall reads shared rows only: mounting
+            // it would hand the room every row recall withholds. So the view
+            // follows `recallAudienceScope`, the rule recall itself uses, and
+            // the two can't drift apart:
             //
-            // - an outsider's session, on any agent, whatever its audience
-            //   stamp (TASK-1204, design §4c: a team agent's memory is shared
-            //   with the team, not with people outside AX). Someone without
-            //   access reads its replies, so a private stamp or none fails
-            //   closed (review F3), e.g. a stored session source this build
-            //   doesn't know, which ipc-core reads as external with no stamp.
-            // - a personal agent's session that isn't private.
+            // - on a personal agent, a session that isn't private, and an
+            //   outsider's session whatever its audience stamp (review F3:
+            //   someone without access reads its replies, so a private stamp
+            //   or none fails closed);
+            // - on any agent, a session whose source is outside
+            //   `AgentContextSource`, which only a host-built context can
+            //   carry (on a team agent too: TASK-1209's security review).
             //
-            // A member's session on a team agent keeps the view in every
-            // audience, as its recall reads everything.
+            // A team agent's session from a source this build knows keeps the
+            // view in every audience, an outsider's included (TASK-1209,
+            // design §4c), as its recall reads everything. That includes a
+            // stored session source a newer build wrote: session-postgres and
+            // ipc-core read it as `'external'` whatever its stamp, so it is
+            // withheld on a personal agent (the outsider rule above) and
+            // mounted on a team agent, like any outsider's (accepted; see
+            // `recallAudienceScope`, step 2).
             //
             // The owner's audience and source are the session's own:
             // host-stamped, and out of the runner's reach. The turn opening
-            // the session names an outsider too (the orchestrator copies one
-            // from the other), and either is enough, as for the k8s
-            // provider's read-only home. `audienceOf` and `isOutsiderTurn`
-            // fail closed: an audience this build doesn't know withholds the
-            // view wherever a shared one does, and a source it doesn't know
-            // reads as an outsider's. Decided before the flush: nothing is
-            // granted, so there is nothing to write.
-            const outsider =
-              isOutsiderTurn(owner.source === undefined ? {} : { source: owner.source }) || isOutsiderTurn(ctx);
-            const shared = audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private';
-            if (outsider || (shared && access.visibility !== 'team')) {
+            // the session has a source too (the orchestrator copies one from
+            // the other), and either one whose recall is scoped is enough, as
+            // an outsider's is for the k8s provider's read-only home. Both
+            // are asked with the session's audience. Decided before the
+            // flush: nothing is granted, so there is nothing to write.
+            const sessionAudience = owner.audience === undefined ? {} : { audience: owner.audience };
+            const readsScoped = (source: AgentContextSource | undefined): boolean =>
+              recallAudienceScope({ ...sessionAudience, ...(source === undefined ? {} : { source }) }, access)
+                .audience === 'shared';
+            if (readsScoped(owner.source) || readsScoped(ctx.source)) {
               ctx.logger.info(MEMORY_MOUNT_WITHHELD_EVENT, {
                 agentId: owner.agentId,
                 reason: 'shared-audience',
@@ -813,9 +834,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
             // `recallFacts`, like every engine read here: it adds the turn's
             // audience scope (TASK-1091), last, and refuses a row a shared
-            // turn may not see. On a team agent only an outsider's turn has
-            // that scope; a member's read has none, in any audience
-            // (TASK-1204).
+            // turn may not see. On a team agent neither a member's turn, in
+            // any audience (TASK-1204), nor an outsider's (TASK-1209) has
+            // that scope; one from a source this build doesn't know does.
             const raw = await recallFacts<EngineRecallOutput>(
               bus,
               ctx,
@@ -1052,13 +1073,19 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // The person talking, rendered `you`. In an outsider's turn
           // (TASK-1204) that is never the caller: the turn runs as the
           // requester who answers for the channel. So there no row is `you`,
-          // and the requester's key reads as any other member's. (No writer
-          // in this build stores a shared row under a person's key, so an
-          // outsider's turn meets one only from an engine import or a writer
-          // added later: defense in depth.)
+          // and the requester's key reads as any other member's. On a team
+          // agent an outsider's turn reads every row (TASK-1209), the
+          // requester's own included, so this is what keeps their memory
+          // from reading as the person talking.
           // (`about: 'user'` and `profile: true` above still mean the caller's
           // own key: only owner routes send them.)
           const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
+          // Every other member's key on this page, by their display name
+          // (TASK-1209): only on a team agent, only in a turn whose recall
+          // reads everything, only for a current member of its team, and
+          // never failing the read. Empty on a personal agent, which asks
+          // nobody.
+          const labels = await memberLabels(bus, ctx, access, page.map((row) => row.about), ownSubject);
 
           // Per-answer conversation ordinals (design doc "Signal" section,
           // TASK-611): a copy of `page` sorted chronologically the same way
@@ -1098,13 +1125,17 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               return {
                 ...mapped,
                 // Another person's speaker subject is `user:<their id>`; a
-                // caller is never handed that id, only that it is someone else.
+                // caller is never handed that id. On a team agent a current
+                // member's reads as their display name where `memberLabels`
+                // has one; anyone else's, "a teammate". Only the caller's own
+                // key reads `you`.
                 aboutText:
                   ownSubject !== undefined && row.about === ownSubject
                     ? 'you'
-                    : row.about.startsWith(`${SPEAKER_SUBJECT}:`)
-                      ? 'a teammate'
-                      : row.about.replace(/_/g, ' '),
+                    : (labels.get(row.about) ??
+                      (row.about.startsWith(`${SPEAKER_SUBJECT}:`)
+                        ? TEAMMATE_TEXT
+                        : row.about.replace(/_/g, ' '))),
                 // No until suffix: `closure` owns closure, and a "→ superseded"
                 // beside a Forgotten badge is the contradiction TASK-526 fixed.
                 whenText: formatEvidenceWhen({ when: mapped.when }, asOf),
@@ -1581,7 +1612,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // TASK-1146). There `ctx.userId` is the requester, never the person
         // talking. A team agent's MEMBER turn runs as the member who wrote it,
         // so it files what they say about themself under their own key,
-        // stamped private: the team's, and no outsider's turn recalls it.
+        // stamped with the turn like the rest (TASK-1209).
         // (From Slack no outsider's turn is captured: channel-slack's
         // `memory:pre-capture` veto refuses every thread an outsider talks
         // in, TASK-1094.)
@@ -2186,10 +2217,12 @@ const PRIOR_ROWS_PER_ABOUT = 200;
  * the caller fails open (see `TwinCheck`).
  *
  * Audience-scoped too, like every engine read (`recallFacts`, handed the
- * resolved `access`): a shared turn checks its statements against shared rows
- * only, as if no private row existed, and a team agent member's turn against
- * every row, in any audience (TASK-1204). The same holds for the two reads
- * below.
+ * resolved `access`): a turn with the shared scope (a personal agent's shared
+ * or outsider's turn, and one from a source this build doesn't know on any
+ * agent) checks its statements against shared rows only, as if no private
+ * row existed, and a member's or an outsider's turn on a team agent against
+ * every row, in any audience (TASK-1204, TASK-1209). The same holds for the
+ * two reads below.
  */
 async function readPriorRows(
   bus: HookBus,

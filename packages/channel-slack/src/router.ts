@@ -143,7 +143,8 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *  9b. The channel's memory notice (memory-notice.ts, TASK-1203; design
  *      §4c): the first turn in a channel since it was bound (or since the
  *      notice existed, for a binding made before it) tells everyone there,
- *      in a top-level post, that what the bot hears is shared with its team.
+ *      in a top-level post, that what the bot hears is shared with anyone
+ *      who talks to it.
  *      One turn claims it, on whichever replica (channel-store.ts
  *      `claimNotice`), and only that one posts; one Slack refuses is given
  *      back, so the next turn tries again, except in an announcement-only
@@ -778,16 +779,10 @@ async function routeMention(
     }
     // 9b. The channel's memory notice (TASK-1203, design §4c), at its first
     // turn: after the record, so a turn dropped above tells nobody; before
-    // the agent runs, so the channel reads it before the reply. The team is
-    // named as the person this turn runs as sees it. It never throws: the
-    // turn goes on whatever becomes of the notice.
+    // the agent runs, so the channel reads it before the reply. It never
+    // throws: the turn goes on whatever becomes of the notice.
     // An announcement-only channel's goes in this turn's thread, where the reply goes.
-    await postMemoryNotice(
-      d,
-      lookupCtx(runAs),
-      { installId, channelId: m.channel, threadTs, agentId, botToken, userId: runAs },
-      log,
-    );
+    await postMemoryNotice(d, { installId, channelId: m.channel, threadTs, agentId, botToken }, log);
     // 10. Whether memory will learn from this thread, read back from the row
     // just written, with the flags capture-veto.ts reads first: so the agent
     // is told when it won't (TASK-1191), rather than promise to remember: an

@@ -9,8 +9,8 @@ import type { BotRequest } from './store.js';
  * team by name as `teams:list-for-user` (optional: @ax/teams) lists that
  * person's own teams. Each name is cleaned to one line (label.ts) and read
  * when shown, never stored (invariant 4): Admin › Slack's list of bot
- * requests (bot-requests.ts), a bot request's DMs (bot-request-dms.ts), and
- * a team bot's memory notice (memory-notice.ts) name them from here.
+ * requests (bot-requests.ts) and a bot request's DMs (bot-request-dms.ts)
+ * name them from here.
  *
  * Every name here is from outside (a person typed it): cleaned, never
  * escaped, so a caller that shows one in Slack passes it through copy.ts
@@ -29,7 +29,7 @@ export interface SeenAgent {
 
 /**
  * The agent as its requester sees it (Admin › Slack's list, a bot request's
- * DMs, and a team bot's memory notice through `agentTeamName`): only an
+ * DMs): only an
  * answer about this agent, as a team agent, names it. One they can't see
  * (they left the team) or one that's gone has no name, quietly; nor does one
  * whose name has nothing printable, or any other fault, which is handed to
@@ -94,33 +94,4 @@ export async function teamNamesOf(
     if (label !== '') names.set(id, label);
   }
   return names;
-}
-
-/**
- * The name of `agentId`'s team as `userId` sees it, cleaned to one line, or
- * null (TASK-1203: what a team bot's memory notice names). `userId` is
- * someone on the team, so their own team list names it: the person a
- * channel turn runs as (a member, or the bot's requester, checked a team
- * admin for an outsider's turn). Null without @ax/teams, and then nothing
- * is asked at all; null too for a personal agent or one they can't see, a
- * team their list doesn't name, or a name with nothing printable. A lookup
- * that fails is null, its fault handed to `onFault`; forbidden and
- * not-found are quiet. Never throws.
- */
-export async function agentTeamName(
-  bus: HookBus,
-  ctx: AgentContext,
-  i: { agentId: string; userId: string },
-  onFault: (err: unknown) => void,
-): Promise<string | null> {
-  try {
-    if (!bus.hasService('teams:list-for-user')) return null;
-    const agent = await agentSeenBy(bus, ctx, { agentId: i.agentId, requestedByUserId: i.userId }, onFault);
-    if (agent.teamId === null) return null;
-    return (await teamNamesOf(bus, ctx, i.userId, onFault)).get(agent.teamId) ?? null;
-  } catch {
-    // Only an `onFault` that threw gets here (both lookups catch their own
-    // faults): it was told already, and nothing is left to tell. No name.
-    return null;
-  }
 }

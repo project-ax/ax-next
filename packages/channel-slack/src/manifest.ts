@@ -89,7 +89,7 @@ const APP_DESCRIPTION = 'Talk to your AX agent.';
  * this text gets it at its next one.
  */
 export const DEDICATED_BOT_DESCRIPTION =
-  'What I hear is shared with everyone on my team, and I may bring it up elsewhere.';
+  'What I hear is shared with anyone who talks to me, and I may bring it up elsewhere.';
 
 export interface SlackUrls {
   /** Where Slack delivers events for this install. */

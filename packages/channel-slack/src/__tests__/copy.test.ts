@@ -63,8 +63,6 @@ const ARGS: Record<string, unknown[][]> = {
     [{ botName: 'Ops', handle: 'everyone' }, ['a'], 0],
   ],
   botDeclinedForOwner: [['Support Bot'], [HOSTILE], ['here'], ['channel']],
-  // A channel's memory notice (TASK-1203): the team's name, typed by an admin, or null when it can't be read.
-  memoryNotice: [['Support'], [HOSTILE], [null]],
 };
 
 /** Every string the bot can say, with the ones that take arguments filled in. */
@@ -419,30 +417,15 @@ describe('COPY: what a channel mention can get privately, in place of its turn o
 });
 
 describe("COPY: a channel's memory notice (TASK-1203; design §4c)", () => {
-  it("the memory notice names the team, or says 'my team' (TASK-1203)", () => {
-    expect(COPY.memoryNotice('Support')).toBe(
-      'Heads up: what I hear in this channel is shared with everyone on Support, and I may bring it up elsewhere.',
+  it('says anyone who talks to the bot can hear it back, and names no team (TASK-1209)', () => {
+    expect(COPY.memoryNotice).toBe(
+      'Heads up: what I hear in this channel is shared with anyone who talks to me, and I may bring it up elsewhere.',
     );
-    expect(COPY.memoryNotice(null)).toBe(
-      'Heads up: what I hear in this channel is shared with everyone on my team, and I may bring it up elsewhere.',
-    );
-    // A name with nothing in it reads as no name, never as "everyone on , and".
-    for (const blank of ['', '   ']) expect(COPY.memoryNotice(blank), JSON.stringify(blank)).toBe(COPY.memoryNotice(null));
   });
 
   it('is plain mrkdwn of its own: no < or >, no Markdown link, no link at all', () => {
-    for (const team of ['Support', null]) {
-      const line = COPY.memoryNotice(team);
-      expect(line).not.toMatch(/[<>]/);
-      expect(line).not.toMatch(/\]\(|https?:/);
-    }
-  });
-
-  it('a hostile team name is escaped and marked: it opens no link, mention or broadcast', () => {
-    const line = COPY.memoryNotice(HOSTILE);
-    expect(line.split(ZWSP).join('')).toContain('everyone on &lt;!channel&gt; &amp; &lt;@U1&gt; @here, and I may');
-    expect(line).toContain(ZWSP);
-    expect(spellsMention(decodeSlackEntities(line))).toBe(false);
+    expect(COPY.memoryNotice).not.toMatch(/[<>]/);
+    expect(COPY.memoryNotice).not.toMatch(/\]\(|https?:/);
   });
 });
 

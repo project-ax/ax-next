@@ -858,12 +858,6 @@ export interface AgentMemoryRead {
   factsAvailable?: boolean;
   factsVisibility?: 'personal' | 'team';
   /**
-   * TASK-1203 — the team that shares a team agent's memory, as the reader's
-   * own team list names it. Absent for personal agents and whenever it can't
-   * be read.
-   */
-  teamName?: string;
-  /**
    * Present only when the memory engine reports that it has stopped learning
    * new facts for this user (their last extraction had no model key to run
    * on). Absent means "not known to be paused", not "definitely fine".
@@ -902,10 +896,10 @@ export interface FactMemoryStatement {
   savedBy?: 'person' | 'agent';
   /**
    * `shared` = learned in a shared conversation, where people without access
-   * to this agent could see it (TASK-1091). A team member's fact about
-   * themself is stored private wherever it was said, so it has no badge even
-   * when it came from a channel (TASK-1204). Absent on private memories. Display
-   * only: it is never sent back to the server.
+   * to this agent could see it (TASK-1091). It is where the row was learned,
+   * with no exceptions (TASK-1209): a team member's fact about themself said in
+   * a channel carries it too. Absent on private memories. Display only: it is
+   * never sent back to the server.
    */
   audience?: 'shared';
   /**

@@ -327,8 +327,7 @@ export async function registerMemoryNote(
         }
         const slot = deriveSlot(input.relation as string);
         // `recordFacts`, like every engine write: it stamps the turn's
-        // audience on the note (TASK-1091; private for a team agent member's
-        // note about themself, TASK-1204), and sends it only because `about`
+        // audience on the note (TASK-1091), and sends it only because `about`
         // is already where `speakerSubject` files it. Handed the names this
         // note was answered with, so a note asks once (TASK-1146), and the
         // access resolved above, so it knows whose memory this is (TASK-1204).

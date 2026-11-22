@@ -1882,7 +1882,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       const first = noticesIn(await channelTurnCalls(mark));
       expect(first).toHaveLength(1);
       expect(first[0]!.body['text']).toBe(
-        'Heads up: what I hear in this channel is shared with everyone on Support, and I may bring it up elsewhere.',
+        'Heads up: what I hear in this channel is shared with anyone who talks to me, and I may bring it up elsewhere.',
       );
 
       // A second turn, in a new thread: the channel has been told already.

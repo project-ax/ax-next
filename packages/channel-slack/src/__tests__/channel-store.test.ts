@@ -954,7 +954,8 @@ describe("the speakers' names on a member's thread (TASK-1146)", () => {
 // ── A private channel is remembered like any other (TASK-1203) ──────────────
 
 /*
-  TASK-1203 (design §4c): a team agent's memory is shared with its team, so
+  TASK-1203 (design §4c): a team agent's memory is shared with anyone who
+  talks to it (TASK-1209), so
   a private channel's threads are remembered like any channel's. Nothing
   marks a thread not remembered any more, and nothing reads a binding's
   privacy. A thread marked before this card (a turn while its channel was
@@ -993,7 +994,7 @@ describe('a private channel is remembered like any other (TASK-1203)', () => {
 
 /*
   TASK-1203 (design §4c): a team bot tells each channel, once, that what it
-  hears is shared with its team. The notice goes with a channel's first turn
+  hears is shared with anyone who talks to it (TASK-1209). The notice goes with a channel's first turn
   (router.ts), and a turn on any replica may be that first one, so the
   binding records it: claimed before the post, in one conditional UPDATE, so
   of any number of claims exactly one wins and only its replica posts. A post

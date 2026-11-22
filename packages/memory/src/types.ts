@@ -82,6 +82,15 @@ export interface MemoryStatement {
    */
   savedBy?: 'person' | 'agent';
   whenText?: string;
+  /**
+   * Who or what the row is about, as a person reads it. `you` for the caller's
+   * own key, and for no one else: never in an outsider's turn, never for a
+   * member whose name reads as "you". On a team agent the key of another
+   * current member of its team reads as their display name (TASK-1209,
+   * `member-names.ts`). Any other person's key reads `a teammate`, as it does
+   * on a personal agent. Never a raw id, never an email. Any other subject
+   * reads as its words (`launch_plan` → `launch plan`).
+   */
   aboutText?: string;
   /**
    * A 1-based ordinal LOCAL TO ONE ANSWER. Two statements carrying the same
@@ -113,11 +122,10 @@ export interface MemoryStatement {
   sourceTurnId?: string;
   /**
    * `'shared'` when the statement was learned in a conversation people
-   * without access to the agent could read (TASK-1091), except a team
-   * member's fact about themself, which is stored private wherever it was
-   * said so outsiders never recall it (TASK-1204). A read-only display
-   * field: absent for a private row and for one stored before memory kept
-   * audiences, and refused on every input payload.
+   * without access to the agent could read (TASK-1091), with no exception
+   * (TASK-1209). A read-only display field: absent for a private row and for
+   * one stored before memory kept audiences, and refused on every input
+   * payload.
    */
   audience?: 'shared';
 }

@@ -190,10 +190,13 @@ export const MEMORY_HISTORY_TOGGLE_HELPER =
 export type MemoryVisibility = 'personal' | 'team' | undefined;
 
 export const MEMORY_TEAM_NOTICE =
-  'Memories saved with this shared agent are visible to its team. Team members can fix or forget them.';
-/** TASK-1203 — said under a team agent's composer. */
-export function memorySharedWith(agentName: string, teamName: string | undefined): string {
-  return `${agentName}'s memory is shared with everyone on ${teamName ?? 'its team'}.`;
+  'Memories saved with this shared agent can come up for anyone who talks to it. Team members can fix or forget them.';
+/**
+ * TASK-1203 — said under a team agent's composer. Names no team (TASK-1209):
+ * anyone who talks to the agent can be told what it remembers.
+ */
+export function memorySharedWith(agentName: string): string {
+  return `${agentName}'s memory is shared with anyone who talks to ${agentName}.`;
 }
 export const MEMORY_PERSONAL_NOTICE =
   'Memories saved with this personal agent are private to you.';

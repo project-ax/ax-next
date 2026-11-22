@@ -13,7 +13,6 @@ import { logCode } from './log-code.js';
 import { personalAgentFor } from './router.js';
 import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
 import type { InstallStore } from './store.js';
-import { agentTeamName } from './team-name.js';
 import { checkUser } from './user-auth.js';
 
 /**
@@ -102,14 +101,13 @@ export type AgentSlackStatus =
    * `bot`: a live bot outlives the shared install (Admin › Slack's Disconnect
    * leaves it alone). `canManage`: the person reading manages the agent (as
    * `ready` says it), so they can still disconnect that bot (TASK-1172).
-   * `botChannels`, `agentTeamName`: as `ready` says them.
+   * `botChannels`: as `ready` says it.
    */
   | {
       state: 'no-workspace';
       canManage: boolean;
       bot: AgentSlackBot;
       botChannels?: AgentSlackBotChannel[];
-      agentTeamName?: string;
     }
   /**
    * `answersDms`: a DM from the owner reaches THIS agent, their oldest
@@ -129,15 +127,6 @@ export type AgentSlackStatus =
        * answer doesn't show.
        */
       botChannels?: AgentSlackBotChannel[];
-      /**
-       * The name of the agent's team, as the person reading sees it (TASK-1203:
-       * the card says what the agent hears is shared with it). Cleaned to one
-       * line, and present only when it can be read (a team agent, @ax/teams
-       * there, the viewer on that team): the card says "its team" without one.
-       * The AX team, so `agentTeamName`: in Slack's words a team is the
-       * workspace, which `workspaceName` names.
-       */
-      agentTeamName?: string;
     };
 
 export const AGENT_SLACK_PATH = '/settings/slack/:agentId';
@@ -407,18 +396,12 @@ export function createAgentSlackRoutes(
         : {
             botChannels: ownBindings.map((b): AgentSlackBotChannel => ({ channelId: b.channelId, name: b.channelName })),
           };
-    // The card says the agent's memory is shared with its team, by name when the viewer's own team list gives it.
-    const team = await agentTeamName(d.bus, a.ctx, { agentId: a.agentId, userId: a.userId }, (err) =>
-      log('warn', 'slack_team_name_failed', { code: logCode(err) }),
-    );
-    const agentTeamNameField = team === null ? {} : { agentTeamName: team };
     if (!sharedActive) {
       return json(200, {
         state: 'no-workspace',
         canManage: manage.ok,
         bot,
         ...botChannels,
-        ...agentTeamNameField,
       } satisfies AgentSlackStatus);
     }
     const out: AgentSlackStatus = {
@@ -428,7 +411,6 @@ export function createAgentSlackRoutes(
       canManage: manage.ok,
       bot,
       ...botChannels,
-      ...agentTeamNameField,
     };
     return json(200, out);
   }

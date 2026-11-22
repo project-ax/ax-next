@@ -1,6 +1,6 @@
 /**
  * TASK-1203 — a team agent's chat says, under the composer, that its memory is
- * shared with the team. The line belongs to the composer: it is tied to the
+ * shared with anyone who talks to it. The line belongs to the composer: it is tied to the
  * field with `aria-describedby`, and it goes where the composer goes (a
  * read-only Slack thread has neither).
  */
@@ -44,26 +44,18 @@ function renderConversation(over: Partial<ComponentProps<typeof AgentConversatio
 }
 
 describe('memorySharedWith', () => {
-  it('names the team, or says "its team" when the name is unknown', () => {
-    expect(memorySharedWith('Fern', 'Support')).toBe("Fern's memory is shared with everyone on Support.");
-    expect(memorySharedWith('Fern', undefined)).toBe(
-      "Fern's memory is shared with everyone on its team.",
-    );
+  it('says anyone who talks to the agent can hear its memory back, and names no team (TASK-1209)', () => {
+    expect(memorySharedWith('Fern')).toBe("Fern's memory is shared with anyone who talks to Fern.");
   });
 });
 
 describe('AgentConversation — the composer note (TASK-1203)', () => {
-  it("a team agent's chat says its memory is shared with the team, under the composer, and the field is described by it", () => {
-    renderConversation({ composerNote: memorySharedWith('Fern', 'Support') });
-    const line = screen.getByText("Fern's memory is shared with everyone on Support.");
+  it("a team agent's chat says its memory is shared with anyone who talks to it, under the composer, and the field is described by it", () => {
+    renderConversation({ composerNote: memorySharedWith('Fern') });
+    const line = screen.getByText("Fern's memory is shared with anyone who talks to Fern.");
     expect(line.id).not.toBe('');
     expect(screen.getByPlaceholderText('Message Fern').getAttribute('aria-describedby')).toBe(line.id);
     expect(line.className).toContain('text-muted-foreground');
-  });
-
-  it("without a team name it says 'its team'", () => {
-    renderConversation({ composerNote: memorySharedWith('Fern', undefined) });
-    expect(screen.getByText("Fern's memory is shared with everyone on its team.")).toBeTruthy();
   });
 
   it("a personal agent's chat has no such line", () => {
@@ -76,7 +68,7 @@ describe('AgentConversation — the composer note (TASK-1203)', () => {
     renderConversation({
       readOnly: true,
       readOnlyNote: 'Reply in Slack.',
-      composerNote: memorySharedWith('Fern', 'Support'),
+      composerNote: memorySharedWith('Fern'),
     });
     expect(screen.queryByText(/memory is shared/)).toBeNull();
   });

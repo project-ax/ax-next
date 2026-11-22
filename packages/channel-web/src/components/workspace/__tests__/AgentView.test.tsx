@@ -2609,19 +2609,18 @@ describe('a Slack DM thread', () => {
 });
 
 describe('a team agent\'s chat (TASK-1203)', () => {
-  it('says its memory is shared with the named team; a personal agent says nothing', async () => {
+  it('says its memory is shared with anyone who talks to it; a personal agent says nothing', async () => {
     agentMock.mockResolvedValue(
       detail({
         memory: {
           rules: { status: 'unavailable', doc: null },
           factsAvailable: true,
           factsVisibility: 'team',
-          teamName: 'Support',
         },
       }),
     );
     const first = renderView();
-    expect(await screen.findByText("Quill's memory is shared with everyone on Support.")).toBeTruthy();
+    expect(await screen.findByText("Quill's memory is shared with anyone who talks to Quill.")).toBeTruthy();
     first.unmount();
 
     agentMock.mockResolvedValue(
@@ -2632,15 +2631,5 @@ describe('a team agent\'s chat (TASK-1203)', () => {
     renderView();
     await screen.findByPlaceholderText('Message Quill');
     expect(screen.queryByText(/memory is shared/)).toBeNull();
-  });
-
-  it('falls back to "its team" when the read carries no team name', async () => {
-    agentMock.mockResolvedValue(
-      detail({
-        memory: { rules: { status: 'unavailable', doc: null }, factsAvailable: true, factsVisibility: 'team' },
-      }),
-    );
-    renderView();
-    expect(await screen.findByText("Quill's memory is shared with everyone on its team.")).toBeTruthy();
   });
 });

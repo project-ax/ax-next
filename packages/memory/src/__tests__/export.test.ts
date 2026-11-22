@@ -2,11 +2,11 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentContext } from '@ax/core';
+import type { AgentContext, AgentContextSource } from '@ax/core';
 import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
-import { volumeAgentKey } from '../export-volume.js';
+import { memoryMountSpec, volumeAgentKey } from '../export-volume.js';
 import { createMemoryPlugin } from '../plugin.js';
 import {
   ALICE,
@@ -308,22 +308,21 @@ describe('sandbox:memory-mounts resolver', () => {
     expect(await readdir(hostRoot)).not.toEqual([]);
   });
 
-  // §4c shares a team agent's memory with the team, not with people outside
-  // AX. The export holds every row, so an outsider's session gets no view, as
-  // its recall reads shared rows only. Whatever its audience stamp (review
-  // F3): someone without access to the agent reads its replies, so a private
-  // stamp, or none, fails closed (no live producer sends one). A source this
-  // build doesn't know reads as an outsider's, like `isOutsiderTurn`. On a
-  // personal agent too.
+  // The export holds every row, so a session gets no view wherever its recall
+  // reads shared rows only (`recallAudienceScope`). On a personal agent that
+  // is an outsider's session whatever its audience stamp (review F3: someone
+  // without access to the agent reads its replies, so a private stamp, or
+  // none, fails closed; no live producer sends one). On any agent it is a
+  // session from a source this build doesn't know, which fails closed on a
+  // team agent too (TASK-1209's security review).
   it.each([
-    ['team', "an outsider's shared", { audience: 'shared', source: 'external' }],
-    ['team', "an outsider's unknown-audience", { audience: 'public', source: 'external' }],
     ['team', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
-    ['team', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
-    ['team', "an outsider's unstamped", { source: 'external' }],
     ['team', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
+    ['team', 'an unknown-source unstamped', { source: 'satellite' }],
     ['personal', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
     ['personal', "an outsider's unstamped", { source: 'external' }],
+    ['personal', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
+    ['personal', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
   ] as const)('a %s agent: %s session gets no mount and nothing is flushed', async (visibility, _label, session) => {
     const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility } });
     await engineRecord(h.bus, h.ctx(), [
@@ -349,27 +348,73 @@ describe('sandbox:memory-mounts resolver', () => {
     ]);
   });
 
+  // TASK-1209 (design §4c): a team agent's memory is shared with anyone who
+  // talks to it, so an outsider's session keeps the read-only view in every
+  // audience, as its recall reads everything: the private row included.
+  it.each([
+    ["an outsider's shared", { audience: 'shared', source: 'external' }],
+    ["an outsider's unknown-audience", { audience: 'public', source: 'external' }],
+    ["an outsider's private-stamped", { audience: 'private', source: 'external' }],
+    ["an outsider's unstamped", { source: 'external' }],
+  ] as const)('%s session of a team agent gets its mount, flushed', async (_label, session) => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility: 'team' } });
+    // Straight into the engine: `remember` would schedule an export of its own.
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: 'launch_plan',
+        relation: 'codename',
+        value: 'Nightjar',
+        when: '2026-09-01T00:00:00.000Z',
+        ownerUserId: ALICE,
+        audience: 'private',
+      },
+    ]);
+    expect(await readdir(hostRoot)).toEqual([]);
+
+    const { mounts } = await resolveMounts({ agentId: 'agent-1', userId: ALICE, ...session });
+
+    expect(mounts).toEqual([memoryMountSpec('agent-1', { hostRoot, backing: BACKING })]);
+    // The flush ran, and the view holds the private row.
+    const files = (await readdir(hostRoot, { recursive: true, withFileTypes: true })).filter((e) => e.isFile());
+    const texts = await Promise.all(files.map((e) => readFile(join(e.parentPath, e.name), 'utf-8')));
+    expect(texts.join('\n')).toContain('Nightjar');
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([]);
+  });
+
   // The session's owner and the turn opening it agree (the orchestrator copies
-  // one from the other). When they don't, either naming an outsider withholds
-  // the view, as the k8s provider's read-only home does.
-  it("a team agent's shared session opened by an outsider's turn gets no mount", async () => {
+  // one from the other). When they don't, either one whose recall reads
+  // shared rows only withholds the view. On a team agent an outsider's turn
+  // opening the session isn't one (TASK-1209); a turn from a source this
+  // build doesn't know still is.
+  it("a team agent's shared session opened by an outsider's turn gets its mount", async () => {
     const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility: 'team' } });
     await h.remember({ about: 'user', relation: 'lives in', value: 'Portland' });
     const opening = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
 
-    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' }, opening)).toEqual({
-      mounts: [],
-    });
-    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(1);
-    // Even when the owner record says private (review F3): either naming an
-    // outsider withholds it, whatever the stamp.
-    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' }, opening)).toEqual({
-      mounts: [],
-    });
-    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(2);
-    // A member's turn opening the same session gets the view.
-    expect((await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' })).mounts).toHaveLength(1);
+    expect((await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' }, opening)).mounts).toHaveLength(1);
+    // And when the owner record says private.
+    expect((await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' }, opening)).mounts).toHaveLength(1);
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(0);
     expect(await readdir(hostRoot)).not.toEqual([]);
+
+    // A turn from a source this build doesn't know opening it: fail closed.
+    const unknown = h.ctx({ conversationId: 'conv-odd', source: 'satellite' as AgentContextSource, audience: 'shared' });
+    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' }, unknown)).toEqual({ mounts: [] });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(1);
+  });
+
+  // Unchanged on a personal agent: an outsider's turn opening even a session
+  // whose owner record says private withholds the view.
+  it("a personal agent's private session opened by an outsider's turn gets no mount", async () => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness();
+    const opening = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+
+    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' }, opening)).toEqual({ mounts: [] });
+    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE }, opening)).toEqual({ mounts: [] });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(2);
+    expect(await readdir(hostRoot)).toEqual([]);
+    // The control: the owner's own turn opening it gets the view.
+    expect((await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' })).mounts).toHaveLength(1);
   });
 
   // The access check comes first now, so a caller the agent refuses hears

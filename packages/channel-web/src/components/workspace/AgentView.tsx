@@ -2247,7 +2247,7 @@ export function AgentView({
                 readOnly={inSlack}
                 {...(inSlack ? { readOnlyNote: CONVERSATION_IN_SLACK, onNewChat: startNewChat } : {})}
                 {...(detail.memory?.factsVisibility === 'team'
-                  ? { composerNote: memorySharedWith(agent.name, detail.memory.teamName) }
+                  ? { composerNote: memorySharedWith(agent.name) }
                   : {})}
                 busy={streaming || sending}
                 {...(streaming ? { onStop: () => void stop() } : {})}

@@ -4,6 +4,7 @@ import {
   PluginError,
   type AgentContext,
   type AgentContextAudience,
+  type AgentContextSource,
   type HookBus,
 } from '@ax/core';
 
@@ -16,21 +17,28 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 /**
  * The audience of a memory READ (TASK-1091): on a personal agent, a turn whose
  * reply people without access to the agent can read recalls only what was
- * learned where they could see it. A team agent's memory is the team's
- * (TASK-1204, design §4c), so a member's reads aren't scoped by audience in
- * any session; an outsider's turn on it keeps shared-only recall, since §4c
- * shares it with the team, not with people outside AX, and never shows the
- * requester's own memory as the person talking (`augment.ts`,
- * `memory:recall`'s `aboutText`).
+ * learned where they could see it, and so does an outsider's turn there,
+ * whatever its stamp. A team agent's memory is shared with anyone who talks
+ * to it (TASK-1209, design §4c), so a turn from any source this build knows
+ * reads it unscoped, whatever its audience stamp: a member's, a member's
+ * routine, an outsider's. A turn from a source this build doesn't know reads
+ * shared statements only on every agent: it fails closed. That covers a
+ * context a host plugin built, and a source added to `AgentContextSource`
+ * later. It does NOT cover a stored session source a newer build wrote:
+ * session-postgres and ipc-core read that as `'external'` before memory sees
+ * it, so on a team agent it reads everything, as an outsider does (see
+ * {@link recallAudienceScope}, step 2). An outsider's turn
+ * still never shows the requester's own memory as the person talking
+ * (`augment.ts`, `memory:recall`'s `aboutText`).
  *
- * And of a memory WRITE: every statement is stamped with
- * the audience of the turn it was learned in, and a turn that isn't private
- * files a person subject only where {@link speakerSubject} says (TASK-1204):
- * a team agent's member turn files the speaker's facts under the speaker's
- * own key, stamped private, since they're the team's and not the room's
- * ({@link recordFacts}), and any other shared turn stores nothing under
- * `user`, `user:<id>`, or a subject made of the speakers' names that
- * `memory:pre-capture` answered with (TASK-1146; {@link breaksSpeakerRule}).
+ * And of a memory WRITE: every statement is stamped with the audience of the
+ * turn it was learned in, with no exception (TASK-1209, {@link recordFacts}),
+ * and a turn that isn't private files a person subject only where
+ * {@link speakerSubject} says (TASK-1204): a team agent's member turn files
+ * the speaker's facts under the speaker's own key, and any other shared turn
+ * stores nothing under `user`, `user:<id>`, or a subject made of the
+ * speakers' names that `memory:pre-capture` answered with (TASK-1146;
+ * {@link breaksSpeakerRule}).
  *
  * `ctx.audience` is stamped by the host and never read off a payload (see
  * `FORBIDDEN_PAYLOAD_FIELDS` in `plugin.ts`), so this scope comes from `ctx`
@@ -41,45 +49,87 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * Every engine read in this package goes through {@link recallFacts}: the
  * `memory:recall` reads, the injected block, and the observer's and the note
  * tool's twin reads. So a turn with the shared scope (a personal agent's
- * shared turn, an outsider's turn on any agent) behaves as if private rows did
- * not exist, rather than missing them in one place and meeting them in
- * another, and a team agent's member turn meets them everywhere. Every engine
- * write goes through {@link recordFacts} the same way.
+ * shared turn or outsider's turn, and a turn from a source this build doesn't
+ * know on any agent) behaves as if private rows did not exist, rather than
+ * missing them in one place and meeting them in another, and a known
+ * source's turn on a team agent meets them everywhere. Every engine write
+ * goes through {@link recordFacts} the same way.
  */
 
 /**
  * The engine recall scope for a turn, decided in this order:
  *
- * 1. An outsider's turn (`isOutsiderTurn`, which fails closed for a source
- *    this build doesn't know): `{ audience: 'shared' }` on every agent,
+ * 1. A team agent, in a turn from a source this build knows (TASK-1209,
+ *    design §4c): nothing at all. Its memory is shared with anyone who talks
+ *    to it, so each of these reads what a member's private turn reads:
+ *    - a member's turn (`'user'`, or no source: the web chat, an owner
+ *      route), in any audience (TASK-1204);
+ *    - a member's own scheduled run (`'routine'`). TASK-1204 already read
+ *      it unscoped, and this keeps that: it runs as the member, and nobody
+ *      else is in it;
+ *    - an outsider's turn (`'external'`), whatever its stamp (TASK-1209,
+ *      Vinay's decision). That removes a privacy boundary on purpose: an
+ *      outsider can be told what members said in private web chats, and
+ *      §4c's notices tell the room.
+ *
+ *    An audience this build doesn't know reads everything here too, on
+ *    purpose: on a team agent the audience stamp isn't what decides who may
+ *    read. The source is.
+ * 2. A team agent, in a turn from a source this build doesn't know:
+ *    `{ audience: 'shared' }`, whatever its stamp, backstop and all. It fails
+ *    closed, as `isOutsiderTurn` does (TASK-1209's security review): a
+ *    source added later may bring a reader nobody has decided on. The
+ *    `switch` is exhaustive, so a source added to `AgentContextSource`
+ *    doesn't compile until it is placed here.
+ *
+ *    That is all this step covers: compile-time exhaustiveness, and at run
+ *    time a context a host plugin built with a value outside the type. A
+ *    STORED session source this build doesn't know (one a newer build wrote)
+ *    never reaches memory raw: session-postgres (`normalizeSource`) and
+ *    ipc-core (`sessionSource`) read it as `'external'`, so on a team agent
+ *    it reads everything at step 1, as an outsider does. Accepted (TASK-1209):
+ *    under Vinay's decision that is exactly an outsider's read, and it only
+ *    happens while two builds share one database. Carrying an "unrecognized
+ *    source" mark through the session record and IPC is a follow-up.
+ * 3. An outsider's turn on any other agent (`isOutsiderTurn`, which fails
+ *    closed for a source this build doesn't know): `{ audience: 'shared' }`,
  *    whatever the turn's audience stamp. Someone without access to the agent
  *    reads its reply, so it recalls only what was learned where they could
- *    see it, backstop and all: §4c shares a team agent's memory with the
- *    team, not with people outside AX. A private stamp or none fails closed
- *    here (TASK-1204 review), channel-slack stamps an outsider's turn shared,
+ *    see it, backstop and all. A private stamp or none fails closed here
+ *    (TASK-1204 review F3): channel-slack stamps an outsider's turn shared,
  *    but a stored session source this build doesn't know reads as external
- *    with no audience stamp (`ipc-core` auth), and that now fails closed. (The orchestrator's security review
- *    reversed the planner's "every session" on a team agent; lifting it is
- *    this step, for team agents.)
- * 2. A team agent's MEMBER turn, in any audience (TASK-1204, design §4c):
- *    nothing at all. Its memory is the team's, so a member's shared turn
- *    reads what their private one reads. That removes a privacy boundary on
- *    purpose: a member's channel question already shows recall to everyone
- *    in the channel, and §4c's notices tell the room. An audience this build
- *    doesn't know reads everything here too, as a member reads everything
- *    anyway.
- * 3. Anything else: `{ audience: 'shared' }` for a shared turn, and for an
+ *    whatever its audience stamp (`ipc-core` auth). On a personal agent this
+ *    step is what keeps that session to shared rows.
+ * 4. Anything else: `{ audience: 'shared' }` for a shared turn, and for an
  *    audience this build does not know (`audienceOf` reads that as shared,
  *    the least recall). Nothing at all for a private turn, whose reads are
- *    exactly what they were before audiences existed. A visibility this build
- *    doesn't know isn't `'team'`, so it lands here and keeps the scope.
+ *    exactly what they were before audiences existed.
+ *
+ * A visibility this build doesn't know isn't `'team'`, so it skips steps 1
+ * and 2 and keeps a personal agent's rules, the fail-closed outsider step
+ * included.
  */
 export function recallAudienceScope(
   ctx: Pick<AgentContext, 'audience' | 'source'>,
   access: Pick<MemoryAccess, 'visibility'>,
 ): { audience?: 'shared' } {
+  if (access.visibility === 'team') {
+    const source: AgentContextSource | undefined = ctx.source;
+    switch (source) {
+      case undefined:
+      case 'user':
+      case 'routine':
+      case 'external':
+        return {};
+      default: {
+        // A source this build doesn't know: fail closed.
+        const _exhaustive: never = source;
+        void _exhaustive;
+        return { audience: 'shared' };
+      }
+    }
+  }
   if (isOutsiderTurn(ctx)) return { audience: 'shared' };
-  if (access.visibility === 'team') return {};
   return audienceOf(ctx) === 'shared' ? { audience: 'shared' } : {};
 }
 
@@ -88,8 +138,9 @@ export function recallAudienceScope(
  * ({@link recallAudienceScope}: whose memory `access` says this is decides
  * whether there is one). Any `audience` a caller built into `input` is dropped
  * first, whatever the turn and the agent. Spreading the scope last isn't
- * enough on its own: a private turn's scope is empty, and so is a team agent
- * member's in any audience, so it would let a caller's value through.
+ * enough on its own: a private turn's scope is empty, and so is that of a
+ * turn on a team agent from a source this build knows, so it would let a
+ * caller's value through.
  *
  * `access` is REQUIRED, so no read can forget whose memory it is in. Every
  * caller already resolved it (`resolveMemoryAccess`), so this makes no
@@ -97,9 +148,11 @@ export function recallAudienceScope(
  *
  * ## The backstop
  *
- * Only for a read with the shared scope (a personal agent's shared turn, and
- * an outsider's turn on any agent): a team agent member's read asks for every
- * row, so every row is its answer.
+ * Only for a read with the shared scope (a personal agent's shared turn or
+ * outsider's turn, and a turn from a source this build doesn't know on any
+ * agent). It keys off that scope, never off the agent's visibility. A read
+ * on a team agent from a source this build knows, an outsider's included
+ * (TASK-1209), asks for every row, so every row is its answer.
  *
  * A shared read whose answer holds any row not stamped `'shared'` throws
  * `invalid-return` instead of returning it. Both in-repo engines drop an
@@ -190,8 +243,11 @@ export function isPersonSubject(about: string): boolean {
  * space/joiner, BOM), lowercased, accents dropped (NFD, then every combining
  * mark, so `José` and `jose` are one word), then each run of letters and
  * digits. Anything else (`_`, `-`, `.`, a space) separates words.
+ *
+ * Also how `member-names.ts` tells whether a member's display name would read
+ * as the person talking or as the agent (TASK-1209).
  */
-function nameWords(text: string): string[] {
+export function nameWords(text: string): string[] {
   return (
     text
       .normalize('NFKC')
@@ -405,10 +461,7 @@ export function speakerScope(
  *      key (TASK-1204 review F9). One list, `self-report.ts`'s, so the two
  *      can't drift. Accepted: a member's own fact the extractor writes as
  *      bare `agent` is kept as written too (a missed attribution, never a
- *      misfiled one); `agent_smith` is still theirs. Since a missed
- *      attribution keeps the turn's shared stamp, such a fact (like any
- *      self-fact the names rule can't recognize) can reach an outsider's
- *      recall; accepted, same class.
+ *      misfiled one); `agent_smith` is still theirs.
  *   3. `user`, or the runner's own key `user:<userId>`: the runner's key.
  *   4. A subject made of the speakers' names ({@link namesASpeaker}): the
  *      runner's key. The names are how memory recognizes the speaker in a
@@ -461,32 +514,21 @@ export function speakerSubject(
  * The stamp comes from `ctx` (`audienceOf`, so an audience this build does
  * not know stamps `'shared'`, the least recall) and OVERWRITES anything a
  * statement carried, so no caller-built statement picks its own audience.
- * Every row is stamped, private ones included: a row stored from now on
- * says who could see the turn it was learned in, or (the exception below)
- * that it is a member's fact about themself.
+ * Every row is stamped, private ones included, with the audience of the turn
+ * it was learned in, and with no exception (TASK-1209). So what a team
+ * agent's member says about themself in a channel is stamped shared like the
+ * rest of that turn, and the owner's memory view shows its "Shared" badge,
+ * which follows the stamp.
  *
- * With one exception, which only ever narrows (TASK-1204 review): in a team
- * agent's member turn (`'team'`), a statement filed under the member's own
- * key (`user:<access.userId>`) is stamped `'private'`. That is what the
- * member said about themself, and design §4c shares a team agent's memory
- * with the team, not with people outside AX. A private row reaches every
- * member's turn, whose reads have no audience scope, and no outsider's turn,
- * whose reads are shared-only ({@link recallAudienceScope}), backstop and
- * all. Stamped here, at the write, because §6.1 forbids filtering a read's
- * answer afterwards. Everything else in that turn (the work, a third party
- * by name, the agent) keeps the turn's stamp, and nothing else ever gets
- * this one: a private turn stamps private anyway, and every other shared
- * turn files no person key at all. The subject decides it only after the
- * backstop below has checked it is already where {@link speakerSubject}
- * files it, so the only way to the private stamp is to be about the runner.
- *
- * Only a read's audience scope reads the stamp. Twin matching never
- * compares stamps (a twin read in a shared-scoped turn carries the scope
- * like any read), and slot
- * chains are audience-blind, so a member's channel fact closes their
- * web-chat one in the same slot as before. One visible effect: the owner's
- * memory view shows no "Shared" badge on such a row, though it was said
- * where the room could see it, because the badge follows the stamp.
+ * The stamp gates a read only where that read has the shared scope
+ * ({@link recallAudienceScope}): on a personal agent, where "learned where
+ * the room could see it" and "the room may read it" are one thing, and for a
+ * source this build doesn't know on any agent. A member's or an outsider's
+ * read on a team agent has no scope, and an agent's visibility never
+ * changes, so on a team agent the stamp is the badge and nothing more. Twin
+ * matching never compares stamps (a twin read in a shared-scoped turn
+ * carries the scope like any read), and slot chains are audience-blind, so a
+ * member's channel fact closes their web-chat one in the same slot.
  *
  * `statements` is typed `object`, not a record of fields: the observer's
  * statements are an interface, which TypeScript won't widen to an index
@@ -550,21 +592,13 @@ export async function recordFacts<TOut>(
     const names = speakerNames ?? (await askSpeakerNames(bus, ctx, hookName));
     refuseUnfiled(scope, input.statements, access.userId, names, hookName);
   }
-  // The one subject a team agent's member turn stamps private: the member's
-  // own key. Every statement that reaches here is already filed where
-  // `speakerSubject` says, so this is exactly what they said about themself.
-  const ownKey = scope === 'team' ? rewriteSpeaker(SPEAKER_SUBJECT, access.userId) : undefined;
   return bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {
     ...input,
     // `Array.from`, not `map`: `map` keeps a hole, and the engines' own `map`
     // would then skip it unseen. Here it becomes a statement with no subject,
-    // which the engine refuses, and the whole batch with it. (`?.` for the
-    // same hole: it names nobody, so it gets the turn's stamp.)
-    statements: Array.from(input.statements, (statement) => ({
-      ...statement,
-      audience:
-        ownKey !== undefined && (statement as { about?: unknown } | undefined)?.about === ownKey ? 'private' : audience,
-    })),
+    // stamped like the rest, which the engine refuses, and the whole batch
+    // with it.
+    statements: Array.from(input.statements, (statement) => ({ ...statement, audience })),
   });
 }
 

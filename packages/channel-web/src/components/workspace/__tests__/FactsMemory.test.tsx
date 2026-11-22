@@ -778,7 +778,7 @@ describe('MemorySurface', () => {
     );
     expect(
       screen.getByText(
-        /Memories saved with this shared agent are visible to its team\. Team members can fix or forget them\./,
+        /Memories saved with this shared agent can come up for anyone who talks to it\. Team members can fix or forget them\./,
       ),
     ).toBeInTheDocument();
     expect(
@@ -814,7 +814,7 @@ describe('MemorySurface', () => {
       screen.getByText('Memories saved with this personal agent are private to you.'),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/visible to its team|visible to the team/),
+      screen.queryByText(/anyone who talks to it|visible to the team/),
     ).toBeNull();
 
     fireEvent.click(await memoryAction('Forget: Boston'));
@@ -831,7 +831,7 @@ describe('MemorySurface', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(await screen.findByText('Boston')).toBeInTheDocument();
     expect(
-      screen.queryByText(/private to you|visible to its team/),
+      screen.queryByText(/private to you|anyone who talks to it/),
     ).toBeNull();
     fireEvent.click(await memoryAction('Forget: Boston'));
     expect(

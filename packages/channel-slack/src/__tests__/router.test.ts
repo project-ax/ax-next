@@ -2289,7 +2289,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
     ]);
     expect(w.lines).toEqual([
       { level: 'info', msg: 'slack_sender_not_mapped', fields: { installId: OWN_BOT_ID } },
-      // #support's first turn tells the channel its memory is shared with the team (TASK-1203).
+      // #support's first turn tells the channel its memory is shared with anyone who talks to the bot (TASK-1203).
       { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID } },
     ]);
   });
@@ -2861,7 +2861,7 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.lanes).toEqual([{ lane: 'conversation', key: `conv:${botKey(MENTION_TS)}`, group: OWN_BOT_ID }]);
     expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([
       { level: 'info', msg: 'slack_bot_channel_bound', fields: { installId: OWN_BOT_ID } },
-      // The channel's first turn tells it its memory is shared with the team (TASK-1203).
+      // The channel's first turn tells it its memory is shared with anyone who talks to the bot (TASK-1203).
       { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID } },
     ]);
 
@@ -3526,8 +3526,8 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
 // ── A private channel is remembered like any other (TASK-1203) ──────────────
 
 /*
-  TASK-1203 (design §4c): a team agent's memory is shared with its team, so a
-  private channel is remembered like any other. A team bot invited to one
+  TASK-1203 (design §4c): a team agent's memory is shared with anyone who
+  talks to it, so a private channel is remembered like any other. A team bot invited to one
   answers there as in any channel (audience `shared`, TASK-1188), and a
   member's thread there is recorded remembered: memory's observer pass and
   `memory_note` both learn from it. Nothing here reads the channel's privacy,
@@ -3633,8 +3633,8 @@ describe('createEventRouter: a private channel is remembered like any other (TAS
 // ── A channel's memory notice, at its first turn (TASK-1203) ────────────────
 
 /*
-  TASK-1203 (design §4c): a team agent's memory is shared with its team, so
-  every channel its bot answers in is told so, once, by the bot itself:
+  TASK-1203 (design §4c): a team agent's memory is shared with anyone who
+  talks to it, so every channel its bot answers in is told so, once, by the bot itself:
   top-level, for everyone there, at the channel's first turn. #support's
   binding in botWorld was made before any notice (no claim on it), like a
   binding from before this card; a first mention binds one fresh.
@@ -3653,10 +3653,9 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 
-    // One post, with the bot's own token, in the channel itself (no thread), naming the agent's team.
-    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }]]);
-    // The team as Alice, whose turn it is, sees it.
-    expect(w.teamsAsked).toEqual(['usr_alice']);
+    // One post, with the bot's own token, in the channel itself (no thread). It names no team, so nobody's team list is read for it.
+    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice }]]);
+    expect(w.teamsAsked).toEqual([]);
     // Before the reply, which still goes to her thread, unchanged.
     const order = methods(w.slack.calls);
     expect(order.indexOf('postToChannel')).toBeGreaterThan(-1);
@@ -3672,7 +3671,6 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.idle();
     expect(w.invokes).toHaveLength(3);
     expect(notices(w)).toHaveLength(1);
-    expect(w.teamsAsked).toEqual(['usr_alice']);
     expect(posted(w)).toHaveLength(1);
   });
 
@@ -3682,8 +3680,7 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
     expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeDefined();
-    // No teams service: "my team".
-    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice(null) }]]);
+    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice }]]);
     expect(w.invokes).toHaveLength(1);
   });
 
@@ -3701,7 +3698,7 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.dispatch(OWN_BOT, botMention({ threadTs: parent }));
     await w.idle();
 
-    const text = COPY.memoryNotice('Customer Support');
+    const text = COPY.memoryNotice;
     expect(notices(w)).toEqual([
       [OWN_BOT_TOKEN, { channel: SUPPORT, text }],
       [OWN_BOT_TOKEN, { channel: SUPPORT, text, threadTs: parent }],
@@ -3722,7 +3719,7 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 
-    const text = COPY.memoryNotice('Customer Support');
+    const text = COPY.memoryNotice;
     // Top-level first; then the same words in the thread the reply goes to (the mention's own ts starts it).
     expect(notices(w)).toEqual([
       [OWN_BOT_TOKEN, { channel: SUPPORT, text }],
@@ -3745,7 +3742,6 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.idle();
     expect(w.invokes).toHaveLength(2);
     expect(notices(w)).toHaveLength(2);
-    expect(w.teamsAsked).toEqual(['usr_alice']);
   });
 
   it('a notice Slack refuses for a passing reason (rate limit, 5xx) is posted at the next turn, and both turns run', async () => {
@@ -3773,8 +3769,8 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.idle();
     expect(w.invokes).toHaveLength(2);
     expect(notices(w)).toEqual([
-      [OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }],
-      [OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }],
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice }],
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice }],
     ]);
     expect(posted(w)).toHaveLength(1);
     await w.dispatch(OWN_BOT, botMention({ ts: '1763035302.000302', text: `<@${OWN_BOT_USER_ID}> and then?` }));
@@ -3803,9 +3799,8 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     await w.idle();
 
     expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source])).toEqual([['usr_ada', 'external']]);
-    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }]]);
-    // The team is read as the person the turn runs as, never as the outsider.
-    expect(w.teamsAsked).toEqual(['usr_ada']);
+    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice }]]);
+    expect(w.teamsAsked).toEqual([]);
 
     // A member's turn after it finds the channel told.
     await w.dispatch(OWN_BOT, second());
