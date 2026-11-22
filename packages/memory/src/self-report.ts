@@ -143,11 +143,14 @@
  *
  * Walk TASK-1192 found Slack test turns ("reply with exactly: hello
  * <!channel>, testing") stored as `assistant | replied_with | hello
- * <!channel>, testing`, and shown back in the agent's instructions. A reply
- * verb (`replied`, `responded`, `echoed`) names the act of answering, and
- * its object is the answer word for word: the transcript already holds it.
- * So they join {@link ACTION_VERBS}. An answer worth recalling is filed by
- * the pinned prompt under what it was (`recommended`, `listed`, `stated`).
+ * <!channel>, testing`, and shown back in the agent's instructions. That
+ * predicate names the act of answering, not what was supplied: an answer
+ * worth recalling the pinned prompt files under what it was (`recommended`,
+ * `listed`, `stated`). So {@link REPLY_PREDICATE} drops `echoed`, and
+ * `replied`/`responded` bare or with `with`. Not `replied_to_<person>`:
+ * measured over the 500 LongMemEval banks' 86,819 agent rows, those hold
+ * messages it drafted for someone (names, links), which it supplied. Kept
+ * too, though it's narration: `replied_in_french`, `responded_to_request`.
  *
  * What the agent SUPPLIED stays: recommendations, lists, values, forecasts,
  * explanations, the plans and drafts it wrote. It is the pinned prompt's
@@ -408,11 +411,14 @@ const MEMORY_OP_PREDICATE =
 const ACTION_VERBS = new Set(['published', 'unpublished', 'republished', 'deployed', 'redeployed', 'ran', 'reran',
   'executed', 'committed', 'pushed', 'installed', 'uninstalled', 'reinstalled', 'fixed', 'patched', 'refactored',
   'uploaded', 'downloaded', 'deleted', 'restarted', 'configured', 'reconfigured', 'migrated', 'saved', 'sent',
-  'posted', 'opened', 'attached', 'exported', 'imported', 'cloned', 'forked', 'moved', 'invoked', 'triggered',
-  // TASK-1198: the act of replying. `replied_with | hello <!channel>, testing` is the reply itself, and
-  // the transcript is its source of truth. What it said worth keeping, the extractor files under what it
-  // was (`recommended`, `listed`, `stated`), not under the act of saying it.
-  'replied', 'responded', 'echoed']);
+  'posted', 'opened', 'attached', 'exported', 'imported', 'cloned', 'forked', 'moved', 'invoked', 'triggered']);
+/**
+ * TASK-1198: the act of replying. `echoed` drops on its own; `replied` and
+ * `responded` only bare or followed by `with` (`replied_with | hello
+ * <!channel>, testing`). `replied_to_sarah | told her the call is Tuesday via
+ * https://…` is a message it wrote for someone, which it supplied, so it stays.
+ */
+const REPLY_PREDICATE = /^(?:echoed(?:_|$)|(?:replied|responded)(?:_with(?:_|$)|$))/;
 // Narration only when the head of the verb's object is an artifact noun: "created a meal plan", "wrote
 // a haiku", "built a 12-week training plan" and "tested the hypothesis" are content. `setup` stands for
 // the two words `set_up`.
@@ -468,9 +474,10 @@ const NO_ACCESS_PREDICATE =
  * {@link NO_ACCESS_PREDICATE} it needs no object check. Measured: walk
  * TASK-1192 stored `lacks_capability`, and five replays of the same turn
  * all wrote `lacks_slack_messaging_capability`, which
- * {@link LIMITATION_PREDICATE}'s modifier list never reaches.
+ * {@link LIMITATION_PREDICATE}'s modifier list never reaches. Not the noun
+ * `lack_of | evidence for X`: that's a topic's.
  */
-const LACKS_PREDICATE = /^(?:lacks?|lacked)(?:_|$)/;
+const LACKS_PREDICATE = /^(?:lacks?|lacked)(?!_of(?:_|$))(?:_|$)/;
 /**
  * An object that starts with the assistant's own limit, for a limitation
  * predicate that isn't a holder: "cannot browse the internet", "unable to
@@ -572,7 +579,7 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
   if (NO_ACCESS_PREDICATE.test(normalized) || LACKS_PREDICATE.test(normalized)) return 'capability';
   const setUp = words[0] === 'set' && words[1] === 'up';
   const verb = setUp ? 'setup' : (words[0] ?? '');
-  if (ACTION_VERBS.has(verb)) return 'action-narration';
+  if (ACTION_VERBS.has(verb) || REPLY_PREDICATE.test(normalized)) return 'action-narration';
   if (!ARTIFACT_VERBS.has(verb)) return 'other';
   // The verb's object runs to its first preposition, and its last word, the
   // head, is what was made: `created_artifact_for_q3_sales_review` made an

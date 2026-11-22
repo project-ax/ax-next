@@ -439,6 +439,14 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'added', 'a vegetarian option: lentil curry'],
     ['assistant', 'compiled', 'a list of 10 trails'],
     ['assistant', 'drafted_email', 'Subject: Q3 update'],
+    // TASK-1198: a reply it wrote for someone is what it supplied (LongMemEval rows, abridged).
+    ['assistant', 'replied_to_sarah_gudeman', 'Told Sarah Gudeman (Practice Lead at BranchPattern) to book a call via https://bit.ly/Meet-With-ForTreesClub'],
+    ['assistant', 'replied_to_facebook_comment', 'Thanked Ana and linked the volunteer sign-up form'],
+    // Present tense is a standing behaviour, not narration.
+    ['assistant', 'replies_with', 'a one-line summary first, then details'],
+    ['assistant', 'responds_in', 'Spanish when asked in Spanish'],
+    // `lack_of` is a topic's: the noun, not the agent lacking something.
+    ['assistant', 'lack_of_evidence', 'for the claim that coffee stunts growth'],
     // Everyday nouns: a routine, skills or a workflow it wrote for the person.
     ['assistant', 'created_workout_routine', 'Mon push, Tue pull, Wed legs'],
     ['assistant', 'updated_workout_routine', 'Mon push, Tue pull, Wed legs, Thu rest'],
@@ -543,6 +551,9 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'created_bar_chart', 'Q3 revenue by region'],
     ['assistant', 'created_artifact_successfully', 'the Q3 dashboard'],
     ['assistant', 'created_dashboard_and_report', 'for Q3'],
+    // TASK-1198: a reply in other words than bare or `with` (narration, kept).
+    ['assistant', 'replied_in_french', 'Bonjour'],
+    ['assistant', 'responded_to_request', 'for a summary of the call'],
   ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
@@ -553,6 +564,10 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['agent', 'published_artifact', 'x'], // `agent` is an everyday noun (TASK-1136)
     ['the_agent', 'published', 'the listing on Zillow'],
     ['vinay', 'stated_limitation', 'no weekend meetings'],
+    // TASK-1198: a reply verb or a lack is the agent's only when it's the subject.
+    ['user', 'replied_with', 'a counter-offer of $450k'],
+    ['landlord', 'responded', 'the lease renews in March'],
+    ['vinay', 'lacks_capability', 'admin rights on the billing account'],
   ])('keeps %s | %s | %s: not the assistant', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBeNull();
@@ -631,19 +646,6 @@ describe("the assistant's narration of its own actions, and what it says it can'
 // for `speakerSubject` too. A team agent's member turn files a subject made of
 // the speaker's names under the speaker, and a member whose display name is
 // "AI Assistant" or "Agent Smith" must not pull the agent's facts with it.
-describe('a reply verb or a lack is the agent\'s only when the agent is the subject (TASK-1198)', () => {
-  it.each([
-    ['user', 'replied_with', 'a counter-offer of $450k'],
-    ['landlord', 'responded', 'the lease renews in March'],
-    ['vinay', 'lacks_capability', 'admin rights on the billing account'],
-    ['billing_service', 'lacks_capability', 'refunds over $500'],
-  ])('keeps %s | %s | %s', (subject, predicate, object) => {
-    const fact = { subject, predicate, object };
-    expect(classifyAgentFact(fact)).toBeNull();
-    expect(isAgentContextSelfReport(fact)).toBe(false);
-  });
-});
-
 describe('isAgentSubject: the subjects classifyAgentFact reads as the agent itself', () => {
   it.each([
     'assistant',
