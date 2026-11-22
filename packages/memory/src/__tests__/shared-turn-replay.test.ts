@@ -216,7 +216,8 @@ describe('walk TASK-1192 replayed: a team fact said in a channel is kept, the ag
     const vinayAsks = channelTurn(h, VINAY, 'conv-question');
     const block = await augment(h, vinayAsks);
     expect(block).toContain('9:30 every weekday');
-    // The walk's instructions held three rows about the agent itself; none now.
+    // The walk's three rows about the agent itself; none now. (Live replays still
+    // store others, `assistant | requested_admin_…`: a follow-up, not this card.)
     expect(block).not.toContain('replied_with');
     expect(block).not.toContain('lacks_capability');
     expect(block).not.toMatch(/— assistant /);

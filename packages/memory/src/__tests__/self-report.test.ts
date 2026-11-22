@@ -441,8 +441,8 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'drafted_email', 'Subject: Q3 update'],
     // TASK-1198: a reply it wrote for someone is what it supplied (LongMemEval rows, abridged).
     ['assistant', 'replied_to_sarah_gudeman', 'Told Sarah Gudeman (Practice Lead at BranchPattern) to book a call via https://bit.ly/Meet-With-ForTreesClub'],
-    ['assistant', 'replied_to_facebook_comment', 'Thanked Ana and linked the volunteer sign-up form'],
-    // Present tense is a standing behaviour, not narration.
+    ['assistant', 'replied_to_facebook_comment', 'Replied to a comment praising the baked goods, thanking the commenter'],
+    // A pin, not evidence (no version dropped these): present tense is a standing behaviour.
     ['assistant', 'replies_with', 'a one-line summary first, then details'],
     ['assistant', 'responds_in', 'Spanish when asked in Spanish'],
     // `lack_of` is a topic's: the noun, not the agent lacking something.
@@ -568,6 +568,7 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['user', 'replied_with', 'a counter-offer of $450k'],
     ['landlord', 'responded', 'the lease renews in March'],
     ['vinay', 'lacks_capability', 'admin rights on the billing account'],
+    ['billing_service', 'lacks_capability', 'refunds over $500'],
   ])('keeps %s | %s | %s: not the assistant', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBeNull();
