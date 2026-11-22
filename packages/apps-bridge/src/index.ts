@@ -8,6 +8,7 @@ export {
   type AppLink,
   type AppsBridgeStore,
   type ClaimLinkCodeResult,
+  TOOL_NAMESPACE_RE,
   type ViewerApproval,
 } from './store.js';
 export { subscribeCleanup } from './cleanup.js';

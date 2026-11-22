@@ -108,6 +108,28 @@ export interface AppsBridgeStore {
   deleteForAgent(agentId: string): Promise<{ codes: number; links: number; approvals: number }>;
   /** That connector's grants on every app, on every platform; their approvals cascade. */
   deleteGrantsForConnector(connectorId: string): Promise<number>;
+  /**
+   * One transaction: every grant whose tool keys name any of these tool
+   * namespaces (`mcp.<namespace>.<tool>`), on every app and platform (their
+   * approvals cascade, uncounted), then every remaining approval whose tool
+   * snapshot names one. A namespace belongs to one owner's connector, so this
+   * never touches another owner's connector that shares the id. Each
+   * namespace must match {@link TOOL_NAMESPACE_RE}, or it throws.
+   */
+  deleteForToolNamespaces(namespaces: readonly string[]): Promise<{ grants: number; approvals: number }>;
+}
+
+/** A link code's sha256, hex. The store refuses anything else, so a raw code is never written or looked up. */
+const CODE_HASH_RE = /^[0-9a-f]{64}$/;
+
+/** A connector tool namespace: the second segment of a tool key (`mcp.<namespace>.<tool>`). */
+export const TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
+
+/** Throws without echoing the value: it may be a raw code passed by mistake. */
+function assertCodeHash(codeHash: string): void {
+  if (typeof codeHash !== 'string' || !CODE_HASH_RE.test(codeHash)) {
+    throw new Error('apps-bridge store: a link code hash must be 64 lowercase hex characters');
+  }
 }
 
 const PG_UNIQUE_VIOLATION = '23505';
@@ -171,6 +193,7 @@ const LINK_COLUMNS = ['platform_id', 'app_id', 'agent_id', 'linked_by_user_id', 
 export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridgeStore {
   return {
     async mintLinkCode(c) {
+      assertCodeHash(c.codeHash);
       await db.transaction().execute(async (trx) => {
         // Serialize mints per agent: two racing mints would otherwise each
         // trim against a table without the other's row and leave 11 open.
@@ -199,6 +222,7 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
     },
 
     async peekLinkCode(codeHash, now) {
+      assertCodeHash(codeHash);
       const row = await db
         .selectFrom('apps_bridge_v1_link_codes')
         .select(['user_id', 'agent_id'])
@@ -209,6 +233,7 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
     },
 
     async claimLinkCode(c) {
+      assertCodeHash(c.codeHash);
       try {
         return await db.transaction().execute(async (trx): Promise<ClaimLinkCodeResult> => {
           // 1. Lock the code. A second claim of the same code waits here, then
@@ -261,6 +286,7 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
     },
 
     async getLinkByCode(platformId, appId, codeHash) {
+      assertCodeHash(codeHash);
       const row = await db
         .selectFrom('apps_bridge_v1_links')
         .select(LINK_COLUMNS)
@@ -439,6 +465,25 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
     async deleteGrantsForConnector(connectorId) {
       const r = await db.deleteFrom('apps_bridge_v1_grants').where('connector_id', '=', connectorId).executeTakeFirst();
       return rows(r.numDeletedRows);
+    },
+
+    async deleteForToolNamespaces(namespaces) {
+      for (const ns of namespaces) {
+        if (typeof ns !== 'string' || !TOOL_NAMESPACE_RE.test(ns)) {
+          throw new Error('apps-bridge store: not a tool namespace');
+        }
+      }
+      if (namespaces.length === 0) return { grants: 0, approvals: 0 };
+      const list = [...new Set(namespaces)];
+      // Any key of the array whose second dot segment is one of the namespaces.
+      // A namespace has no dot, so a tool name's own dots never reach the match.
+      const names = (column: 'tool_keys') =>
+        sql<boolean>`EXISTS (SELECT 1 FROM unnest(${sql.ref(column)}) AS k(key) WHERE k.key LIKE 'mcp.%' AND split_part(k.key, '.', 2) = ANY(${list}::text[]))`;
+      return db.transaction().execute(async (trx) => {
+        const grants = await trx.deleteFrom('apps_bridge_v1_grants').where(names('tool_keys')).executeTakeFirst();
+        const approvals = await trx.deleteFrom('apps_bridge_v1_viewer_approvals').where(names('tool_keys')).executeTakeFirst();
+        return { grants: rows(grants.numDeletedRows), approvals: rows(approvals.numDeletedRows) };
+      });
     },
   };
 }

@@ -462,4 +462,71 @@ describe('apps-bridge store', () => {
     expect(await count(db, 'apps_bridge_v1_links')).toBe(2);
     expect(await store.deleteGrantsForConnector(GITHUB)).toBe(0);
   });
+
+  it('deleteForToolNamespaces removes grants and approval snapshots naming any of those namespaces', async () => {
+    const { db, store } = await freshDb();
+    const NS_ADA = 'c0123456789';   // KEY_A, KEY_B: Ada's github connector
+    const NS_BOB = 'cabcdefabcd';   // KEY_C: Bob's github connector, same id, other owner
+    const NS_OTHER = 'c9999999999';
+    const KEY_DOTTED = `mcp.${NS_OTHER}.tool.with.dots`;
+    await link(store, 1, { appId: APP });
+    await link(store, 2, { appId: OTHER_APP, agentId: OTHER_AGENT });
+    // Ada's app: a github grant on her namespace (mixed with another), and a linear grant elsewhere.
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'viewer', toolKeys: [KEY_DOTTED, KEY_B] });
+    await store.putGrant({ platformId: P, appId: APP, connectorId: LINEAR, mode: 'viewer', toolKeys: [KEY_DOTTED] });
+    // Bob's app: a github grant on Bob's namespace (same connector id, different owner).
+    await store.putGrant({ platformId: P, appId: OTHER_APP, connectorId: GITHUB, mode: 'viewer', toolKeys: [KEY_C] });
+    await store.putApproval({ viewerUserId: BOB, platformId: P, appId: APP, connectorId: GITHUB, agentId: 'agt_bob', toolKeys: [KEY_B] });
+    // An approval under a grant that survives, whose snapshot still names Ada's namespace.
+    await store.putApproval({ viewerUserId: BOB, platformId: P, appId: APP, connectorId: LINEAR, agentId: 'agt_bob', toolKeys: [KEY_A] });
+    await store.putApproval({ viewerUserId: ADA, platformId: P, appId: OTHER_APP, connectorId: GITHUB, agentId: 'agt_ada', toolKeys: [KEY_C] });
+
+    // The github grant on APP goes (its approval cascades, uncounted); the
+    // linear grant stays but the approval snapshot naming Ada's namespace goes.
+    expect(await store.deleteForToolNamespaces([NS_ADA])).toEqual({ grants: 1, approvals: 1 });
+    const grants = await db.selectFrom('apps_bridge_v1_grants').select(['app_id', 'connector_id']).orderBy('app_id').orderBy('connector_id').execute();
+    expect(grants).toEqual([{ app_id: APP, connector_id: LINEAR }, { app_id: OTHER_APP, connector_id: GITHUB }]);
+    const approvals = await db.selectFrom('apps_bridge_v1_viewer_approvals').select(['viewer_user_id', 'app_id']).execute();
+    expect(approvals).toEqual([{ viewer_user_id: ADA, app_id: OTHER_APP }]);
+
+    // Only namespace-shaped values are accepted (a tool name's own dots never
+    // reach the match: the namespace is the key's second segment).
+    await expect(store.deleteForToolNamespaces(['with'])).rejects.toThrow();
+    await expect(store.deleteForToolNamespaces(['%'])).rejects.toThrow();
+    expect(await store.deleteForToolNamespaces([NS_OTHER, NS_BOB])).toEqual({ grants: 2, approvals: 0 });
+    expect(await count(db, 'apps_bridge_v1_grants')).toBe(0);
+    expect(await count(db, 'apps_bridge_v1_viewer_approvals')).toBe(0);
+    expect(await store.deleteForToolNamespaces([])).toEqual({ grants: 0, approvals: 0 });
+    expect(await count(db, 'apps_bridge_v1_links')).toBe(2);
+  });
+
+  it('a raw link code is refused wherever a code hash is expected, without echoing it, and nothing is stored', async () => {
+    const { db, store } = await freshDb();
+    const raw = 'axl_abcdefghijklmnopqrstuvwxyz234567';
+    const calls: Array<() => Promise<unknown>> = [
+      () => store.mintLinkCode({ codeHash: raw, userId: ADA, agentId: AGENT, expiresAt: minutes(15), now: T0 }),
+      () => store.peekLinkCode(raw, T0),
+      () => store.claimLinkCode({ codeHash: raw, platformId: P, appId: APP, appName: 'x', now: T0 }),
+      () => store.getLinkByCode(P, APP, raw),
+      // Upper-case hex and the wrong length are refused too.
+      () => store.peekLinkCode(hash(1).toUpperCase().replace(/0/g, 'A'), T0),
+      () => store.peekLinkCode(hash(1).slice(1), T0),
+    ];
+    for (const call of calls) {
+      const err = await call().then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(String((err as Error).message)).not.toContain(raw);
+      expect(String((err as Error).message)).not.toContain('abcdefghijklmnop');
+    }
+    expect(await count(db, 'apps_bridge_v1_link_codes')).toBe(0);
+    expect(await count(db, 'apps_bridge_v1_links')).toBe(0);
+
+    // The table refuses one too, whoever writes it.
+    await expect(
+      sql`INSERT INTO apps_bridge_v1_link_codes (code_hash, user_id, agent_id, expires_at) VALUES (${raw}, 'u', 'a', now())`.execute(db),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(
+      sql`INSERT INTO apps_bridge_v1_links (platform_id, app_id, agent_id, linked_by_user_id, app_name, link_code_hash) VALUES ('p', 'a', 'g', 'u', 'n', ${raw})`.execute(db),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
 });

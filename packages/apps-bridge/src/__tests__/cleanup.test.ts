@@ -32,7 +32,11 @@ const AGENT = 'agt_support';
 const OTHER_AGENT = 'agt_sales';
 const ADA = 'usr_ada';
 const BOB = 'usr_bob';
-const KEY = 'mcp.c0123456789.create_issue';
+const NS_GITHUB_ADA = 'c0123456789';
+const NS_GITHUB_BOB = 'cabcdefabcd';
+const KEY_GITHUB_ADA = `mcp.${NS_GITHUB_ADA}.create_issue`;
+const KEY_GITHUB_BOB = `mcp.${NS_GITHUB_BOB}.create_issue`;
+const KEY_LINEAR = 'mcp.c1111111111.search';
 const T0 = new Date('2026-11-21T12:00:00.000Z');
 
 interface Line { level: string; msg: string; bindings: Record<string, unknown> | undefined }
@@ -68,13 +72,15 @@ async function seed(store: AppsBridgeStore): Promise<void> {
   await mint(2, OTHER_AGENT);
   await link(3, 'app_support', AGENT);
   await link(4, 'app_sales', OTHER_AGENT);
-  await store.putGrant({ platformId: P, appId: 'app_support', connectorId: 'github', mode: 'viewer', toolKeys: [KEY] });
-  await store.putGrant({ platformId: P, appId: 'app_sales', connectorId: 'github', mode: 'viewer', toolKeys: [KEY] });
-  await store.putGrant({ platformId: P, appId: 'app_sales', connectorId: 'linear', mode: 'builder', toolKeys: [KEY] });
-  await store.putApproval({ viewerUserId: BOB, platformId: P, appId: 'app_support', connectorId: 'github', agentId: 'agt_bob', toolKeys: [KEY] });
+  // Two different owners' connectors share the id `github`, so their tools
+  // live under different namespaces (a namespace hashes owner, id and server).
+  await store.putGrant({ platformId: P, appId: 'app_support', connectorId: 'github', mode: 'viewer', toolKeys: [KEY_GITHUB_ADA] });
+  await store.putGrant({ platformId: P, appId: 'app_sales', connectorId: 'github', mode: 'viewer', toolKeys: [KEY_GITHUB_BOB] });
+  await store.putGrant({ platformId: P, appId: 'app_sales', connectorId: 'linear', mode: 'builder', toolKeys: [KEY_LINEAR] });
+  await store.putApproval({ viewerUserId: BOB, platformId: P, appId: 'app_support', connectorId: 'github', agentId: 'agt_bob', toolKeys: [KEY_GITHUB_ADA] });
   // Ada's approval on the sales app borrows AGENT.
-  await store.putApproval({ viewerUserId: ADA, platformId: P, appId: 'app_sales', connectorId: 'github', agentId: AGENT, toolKeys: [KEY] });
-  await store.putApproval({ viewerUserId: BOB, platformId: P, appId: 'app_sales', connectorId: 'github', agentId: 'agt_bob', toolKeys: [KEY] });
+  await store.putApproval({ viewerUserId: ADA, platformId: P, appId: 'app_sales', connectorId: 'github', agentId: AGENT, toolKeys: [KEY_GITHUB_BOB] });
+  await store.putApproval({ viewerUserId: BOB, platformId: P, appId: 'app_sales', connectorId: 'github', agentId: 'agt_bob', toolKeys: [KEY_GITHUB_BOB] });
 }
 
 async function snapshot(): Promise<Record<string, unknown[]>> {
@@ -106,25 +112,55 @@ describe('apps-bridge cleanup subscribers', () => {
     expect(lines.filter((l) => l.msg === 'hook_subscriber_failed')).toEqual([]);
   });
 
-  it('connectors:deleted removes grants only when the id is no longer live', async () => {
+  it('connectors:deleted removes the grants and approvals on its tool namespaces, whether or not the id is still live', async () => {
     const { h, store } = await boot();
     await seed(store);
-    const ctx = h.ctx();
+    const lines: Line[] = [];
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'connectors', userId: 'system', logger: capturingLogger(lines) });
     const before = await snapshot();
 
-    await h.bus.fire('connectors:deleted', ctx, { connectorId: 'github', toolNamespaces: [], idStillLive: true });
-    expect(await snapshot()).toEqual(before);
+    // Ada deletes her `github`; Bob's `github` keeps the id live. Ada's
+    // namespace goes anyway: re-created with the same servers it would
+    // derive the same namespace, and the app must not silently regain it.
+    await h.bus.fire('connectors:deleted', ctx, {
+      connectorId: 'github',
+      toolNamespaces: [{ server: 'main', toolNamespace: NS_GITHUB_ADA }],
+      idStillLive: true,
+    });
+    const afterAda = await snapshot();
+    expect(afterAda.grants).toEqual([{ app_id: 'app_sales', connector_id: 'github' }, { app_id: 'app_sales', connector_id: 'linear' }]);
+    expect(afterAda.approvals).toEqual((before.approvals ?? []).filter((a) => (a as { app_id: string }).app_id === 'app_sales'));
+    expect(afterAda.links).toEqual(before.links);
+    expect(afterAda.codes).toEqual(before.codes);
+    const cleaned = lines.filter((l) => l.msg === 'apps_bridge_connector_cleaned');
+    expect(cleaned).toEqual([{ level: 'info', msg: 'apps_bridge_connector_cleaned', bindings: { grants: 1, approvals: 0 } }]);
 
-    // A missing idStillLive keeps everything too: we fail toward keeping data.
-    await h.bus.fire('connectors:deleted', ctx, { connectorId: 'github', toolNamespaces: [] });
-    expect(await snapshot()).toEqual(before);
+    // A namespace nobody granted, still live: nothing goes, and it still logs one line.
+    await h.bus.fire('connectors:deleted', ctx, {
+      connectorId: 'github',
+      toolNamespaces: [{ server: 'main', toolNamespace: 'c5555555555' }],
+      idStillLive: true,
+    });
+    expect(await snapshot()).toEqual(afterAda);
+    expect(lines.filter((l) => l.msg === 'apps_bridge_connector_cleaned').at(-1)?.bindings).toEqual({ grants: 0, approvals: 0 });
 
+    // A missing idStillLive is malformed: everything is kept.
+    await h.bus.fire('connectors:deleted', ctx, { connectorId: 'github', toolNamespaces: [{ server: 'main', toolNamespace: NS_GITHUB_BOB }] });
+    expect(await snapshot()).toEqual(afterAda);
+
+    // The last `github` goes (no namespaces in the event): every grant under the id goes.
     await h.bus.fire('connectors:deleted', ctx, { connectorId: 'github', toolNamespaces: [], idStillLive: false });
     const after = await snapshot();
     expect(after.grants).toEqual([{ app_id: 'app_sales', connector_id: 'linear' }]);
     expect(after.approvals).toEqual([]);
     expect(after.links).toEqual(before.links);
     expect(after.codes).toEqual(before.codes);
+    expect(lines.filter((l) => l.msg === 'apps_bridge_connector_cleaned').at(-1)?.bindings).toEqual({ grants: 1, approvals: 0 });
+
+    for (const l of lines.filter((x) => x.msg === 'apps_bridge_connector_cleaned')) {
+      expect(Object.keys(l.bindings ?? {}).sort()).toEqual(['approvals', 'grants']);
+    }
+    expect(lines.filter((l) => l.msg === 'hook_subscriber_failed')).toEqual([]);
   });
 
   it('a malformed payload is logged and ignored, never thrown', async () => {
@@ -137,7 +173,7 @@ describe('apps-bridge cleanup subscribers', () => {
     for (const payload of [{}, { agentId: 7 }, { agentId: '' }, null, 'agt_support']) {
       await h.bus.fire('agents:deleted', ctx, payload);
     }
-    for (const payload of [{}, { connectorId: 7, idStillLive: false }, { connectorId: '../x', idStillLive: false }]) {
+    for (const payload of [{}, { connectorId: 7, toolNamespaces: [], idStillLive: false }, { connectorId: '../x', toolNamespaces: [], idStillLive: false }, { connectorId: 'github', idStillLive: false }]) {
       await h.bus.fire('connectors:deleted', ctx, payload);
     }
     expect(await snapshot()).toEqual(before);
@@ -146,7 +182,7 @@ describe('apps-bridge cleanup subscribers', () => {
     expect(lines.filter((l) => l.msg === 'hook_subscriber_failed')).toEqual([]);
 
     const ignored = lines.filter((l) => l.msg === 'apps_bridge_cleanup_ignored');
-    expect(ignored).toHaveLength(8);
+    expect(ignored).toHaveLength(9);
     for (const l of ignored) {
       expect(l.level).toBe('warn');
       // A code and the hook, nothing quoted from the payload.

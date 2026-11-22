@@ -8,15 +8,16 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *   apps_bridge_v1_link_codes — open link codes. A person mints one in their
  *     agent's settings and pastes it into an outside app, which claims it to
  *     link itself to that agent. Only `sha256(code)` (hex) is kept, never the
- *     code. `created_at` is written from the caller's clock, the same clock
+ *     code, and a CHECK refuses anything but 64 lowercase hex characters, so
+ *     a raw code can't land here by mistake. `created_at` is written from the caller's clock, the same clock
  *     that decides expiry, so "the newest 10 per agent" is deterministic.
  *
  *   apps_bridge_v1_links — one row per linked app: which agent an outside
  *     app (`app_id`, the platform's opaque id) borrows connectors from, on
  *     which platform. The primary key makes it one agent per app id.
  *     `app_name` is display-only and already normalized. `link_code_hash` is
- *     the code that made the link, so a retried claim of that code can be
- *     answered with the same link.
+ *     the hash of the code that made the link (same hex-only CHECK), so a
+ *     retried claim of that code can be answered with the same link.
  *
  *   apps_bridge_v1_grants — which of the linked agent's connectors the app
  *     may call, in which mode, and which tools (`tool_keys`, in the order
@@ -82,7 +83,7 @@ export interface AppsBridgeDatabase {
 export async function runAppsBridgeMigration(db: Kysely<AppsBridgeDatabase>): Promise<void> {
   await sql`
     CREATE TABLE IF NOT EXISTS apps_bridge_v1_link_codes (
-      code_hash TEXT PRIMARY KEY,
+      code_hash TEXT PRIMARY KEY CHECK (code_hash ~ '^[0-9a-f]{64}$'),
       user_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL,
@@ -99,7 +100,7 @@ export async function runAppsBridgeMigration(db: Kysely<AppsBridgeDatabase>): Pr
       agent_id TEXT NOT NULL,
       linked_by_user_id TEXT NOT NULL,
       app_name TEXT NOT NULL,
-      link_code_hash TEXT NOT NULL,
+      link_code_hash TEXT NOT NULL CHECK (link_code_hash ~ '^[0-9a-f]{64}$'),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (platform_id, app_id)
     )
