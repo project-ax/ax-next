@@ -10,9 +10,12 @@ import { ALICE, answerSpeakerNames, BOB, makeMemoryHarness, type MemoryHarness }
  *
  * The turns are the walk's own transcripts (kind, 2026-11-22, Fern in
  * #walk-two-bots). The extractor replies are what the REAL pinned extractor
- * (`z-ai/glm-5.3-flash:nitro`) returned for those turns, captured verbatim on
- * 2026-11-22 (5 trials per turn; one representative reply each). The suite
- * never calls a model, so the replies are pinned here.
+ * (`z-ai/glm-5.3-flash:nitro`) returned for those turns on 2026-11-22 (5
+ * trials per turn; one representative reply each), with `network`,
+ * `validStart` and `invalidatesPrevious` filled in by the stub. The bot turn's
+ * is the walk's own stored row instead (the replay wrote
+ * `lacks_slack_messaging_capability`, pinned in `self-report.test.ts`). The
+ * suite never calls a model, so the replies are pinned here.
  *
  * What the replay measured:
  *
@@ -30,6 +33,7 @@ import { ALICE, answerSpeakerNames, BOB, makeMemoryHarness, type MemoryHarness }
 
 let harness: MemoryHarness | undefined;
 afterEach(async () => {
+  unmatched.length = 0;
   await harness?.teardown();
   harness = undefined;
 });
@@ -78,7 +82,7 @@ const BOT_TURN = [
   },
 ];
 
-/** The real extractor's replies, verbatim but for `validStart`. */
+/** The extractor's replies: subject, predicate and object as it wrote them. */
 const REPLIES: Array<[marker: string, facts: Array<Record<string, string>>]> = [
   [
     'our team standup',
@@ -118,12 +122,19 @@ const REPLIES: Array<[marker: string, facts: Array<Record<string, string>>]> = [
   ],
 ];
 
+/** Extraction prompts no pinned reply matched, for `replayWalk` to refuse. */
+const unmatched: string[] = [];
+
 function extractor(input: LlmCallInput): LlmCallOutput {
   const prompt = String(input.messages[0]?.content ?? '');
-  const facts = REPLIES.find(([marker]) => prompt.includes(marker))?.[1] ?? [];
+  const facts = REPLIES.find(([marker]) => prompt.includes(marker))?.[1];
+  // A turn no reply matches would extract nothing, and every "not stored"
+  // assertion below would pass for nothing. Counted rather than thrown: the
+  // observer catches a throw and logs it, which would pass for nothing too.
+  if (facts === undefined) unmatched.push(prompt.slice(-200));
   return {
     text: JSON.stringify({
-      facts: facts.map((f) => ({ network: 'world', validStart: WHEN, invalidatesPrevious: false, ...f })),
+      facts: (facts ?? []).map((f) => ({ network: 'world', validStart: WHEN, invalidatesPrevious: false, ...f })),
     }),
     stopReason: 'end_turn',
     usage: { inputTokens: 1, outputTokens: 1 },
@@ -170,6 +181,9 @@ async function replayWalk(): Promise<MemoryHarness> {
   ];
   for (const [conversationId] of threads) answerSpeakerNames(h.bus, VINAY_LABEL, conversationId);
   for (const [conversationId, turn] of threads) await observeTurn(h, channelTurn(h, VINAY, conversationId), turn);
+  // One extraction per thread, and each one matched its pinned reply.
+  expect(h.llmCalls).toHaveLength(threads.length);
+  expect(unmatched).toEqual([]);
   return h;
 }
 
