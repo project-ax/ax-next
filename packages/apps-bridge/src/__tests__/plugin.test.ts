@@ -32,7 +32,21 @@ const SUB = 'platform@example.test';
 const unreached: ServiceHandler = async () => {
   throw new Error('not expected in this test');
 };
+/** Every settings route the plugin mounted, and whether it was taken down again. */
+let mounted: Array<{ method: string; path: string; bypassCsrf: unknown; unregistered: number }> = [];
 const SERVICES: Record<string, ServiceHandler> = {
+  'http:register-route': async (_ctx, input) => {
+    const spec = input as { method: string; path: string; bypassCsrf?: unknown };
+    const row = { method: spec.method, path: spec.path, bypassCsrf: spec.bypassCsrf, unregistered: 0 };
+    mounted.push(row);
+    return {
+      unregister: () => {
+        row.unregistered++;
+      },
+    };
+  },
+  'auth:require-user': unreached,
+  'agents:list-for-user': unreached,
   'auth:find-user-by-email': unreached,
   'agents:resolve': unreached,
   'agents:can-manage-connectors': unreached,
@@ -46,6 +60,7 @@ const SERVICES: Record<string, ServiceHandler> = {
 let harness: TestHarness | undefined;
 let issuer: FakeOidcIssuer | undefined;
 afterEach(async () => {
+  mounted = [];
   await harness?.close();
   harness = undefined;
   await issuer?.close();
@@ -81,6 +96,9 @@ describe('apps-bridge plugin lifecycle', () => {
   it('declares every hook it calls', () => {
     expect(createAppsBridgePlugin({ publicOrigin: 'https://ax.test' }).manifest.calls).toEqual([
       'database:get-instance',
+      'http:register-route',
+      'auth:require-user',
+      'agents:list-for-user',
       'auth:find-user-by-email',
       'agents:resolve',
       'agents:can-manage-connectors',
@@ -90,6 +108,27 @@ describe('apps-bridge plugin lifecycle', () => {
       'tool-policy:evaluate',
       'connectors:call-tool-result',
     ]);
+  });
+
+  it('init mounts the settings routes (bridge on or off, none bypassing CSRF) and shutdown takes each down once', async () => {
+    const plugin = await boot();
+    expect(mounted.map((r) => `${r.method} ${r.path}`).sort()).toEqual(
+      [
+        'GET /settings/apps/:agentId',
+        'POST /settings/apps/:agentId/link-code',
+        'POST /settings/apps/:agentId/unlink',
+        'POST /settings/apps/:agentId/grant',
+        'POST /settings/apps/:agentId/ungrant',
+        'POST /settings/apps/:agentId/revoke',
+        'GET /settings/app-approval/:platformId/:appId/:connectorId',
+        'POST /settings/app-approval/:platformId/:appId/:connectorId',
+      ].sort(),
+    );
+    for (const r of mounted) expect(r.bypassCsrf).toBeUndefined();
+    expect(mounted.every((r) => r.unregistered === 0)).toBe(true);
+    await plugin.shutdown?.();
+    await plugin.shutdown?.();
+    expect(mounted.map((r) => r.unregistered)).toEqual(mounted.map(() => 1));
   });
 
   it('refuses a bad config at construction', () => {

@@ -1294,6 +1294,9 @@ describe('@ax/preset-k8s wiring', () => {
     expect(bridge!.manifest.registers).toEqual([]);
     expect(bridge!.manifest.calls).toEqual([
       'database:get-instance',
+      'http:register-route',
+      'auth:require-user',
+      'agents:list-for-user',
       'auth:find-user-by-email',
       'agents:resolve',
       'agents:can-manage-connectors',

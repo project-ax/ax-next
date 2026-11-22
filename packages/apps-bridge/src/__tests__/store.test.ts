@@ -373,6 +373,51 @@ describe('apps-bridge store', () => {
     expect(await count(db, 'apps_bridge_v1_grants')).toBe(0);
   });
 
+  it('putGrant with an agentId: a link to another agent is no-link and writes nothing', async () => {
+    const { db, store } = await freshDb();
+    await link(store, 1);
+    expect(
+      await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'builder', toolKeys: [KEY_A], agentId: OTHER_AGENT }),
+    ).toBe('no-link');
+    expect(await count(db, 'apps_bridge_v1_grants')).toBe(0);
+    const ok = await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'builder', toolKeys: [KEY_A], agentId: AGENT });
+    expect(ok).toMatchObject({ connectorId: GITHUB, mode: 'builder', toolKeys: [KEY_A] });
+  });
+
+  it("putGrant: a mode change clears that grant's viewer approvals, so old consent can't come back; the same mode keeps them", async () => {
+    const { store } = await freshDb();
+    await link(store, 1);
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'viewer', toolKeys: [KEY_A, KEY_B] });
+    await store.putGrant({ platformId: P, appId: APP, connectorId: LINEAR, mode: 'viewer', toolKeys: [KEY_C] });
+    await store.putApproval({ viewerUserId: BOB, platformId: P, appId: APP, connectorId: GITHUB, agentId: 'agt_bob', toolKeys: [KEY_A] });
+    await store.putApproval({ viewerUserId: ADA, platformId: P, appId: APP, connectorId: GITHUB, agentId: 'agt_ada', toolKeys: [KEY_A] });
+    await store.putApproval({ viewerUserId: BOB, platformId: P, appId: APP, connectorId: LINEAR, agentId: 'agt_bob', toolKeys: [KEY_C] });
+
+    // Same mode, new tools: consent stays (each approval keeps its own snapshot).
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'viewer', toolKeys: [KEY_B] });
+    expect(await store.getApproval(BOB, P, APP, GITHUB)).toMatchObject({ toolKeys: [KEY_A] });
+
+    // viewer -> builder: every approval on that grant goes, and only those.
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'builder', toolKeys: [KEY_A] });
+    expect(await store.getApproval(BOB, P, APP, GITHUB)).toBeNull();
+    expect(await store.getApproval(ADA, P, APP, GITHUB)).toBeNull();
+    expect(await store.getApproval(BOB, P, APP, LINEAR)).not.toBeNull();
+
+    // ...and back to viewer: nothing comes back.
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'viewer', toolKeys: [KEY_A] });
+    expect(await store.getApproval(BOB, P, APP, GITHUB)).toBeNull();
+  });
+
+  it('putApproval on a builder-mode grant is no-grant and writes nothing', async () => {
+    const { db, store } = await freshDb();
+    await link(store, 1);
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'builder', toolKeys: [KEY_A] });
+    expect(
+      await store.putApproval({ viewerUserId: BOB, platformId: P, appId: APP, connectorId: GITHUB, agentId: 'agt_bob', toolKeys: [KEY_A] }),
+    ).toBe('no-grant');
+    expect(await count(db, 'apps_bridge_v1_viewer_approvals')).toBe(0);
+  });
+
   it('unlinking cascades grants and approvals; removing a grant cascades its approvals', async () => {
     const { db, store } = await freshDb();
     await link(store, 1);

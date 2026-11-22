@@ -7,6 +7,7 @@ import { assertAppsBridgeConfig, type AppsBridgeConfig } from './config.js';
 import { createBridgeLimiter, type BridgeLimiter } from './limits.js';
 import { startBridgeListener, type BridgeListener } from './listener.js';
 import { runAppsBridgeMigration, type AppsBridgeDatabase } from './migrations.js';
+import { registerSettingsRoutes } from './settings-routes.js';
 import { createAppsBridgeStore } from './store.js';
 import { createCallerVerifier, createViewerVerifier, type CallerVerdict } from './verify-token.js';
 
@@ -24,6 +25,11 @@ export interface AppsBridgePlugin extends Plugin {
  * own listener (listener.ts): bound in `startAdmission()`, closed to new
  * connections in `stopAdmission()`, and closed for good in `shutdown()`.
  * Without `config.bridge` nothing listens.
+ *
+ * Either way it mounts the Apps settings and approve routes on the public
+ * listener (settings-routes.ts) in `init()` and takes them down in
+ * `shutdown()`. With the bridge off they say so (`{ enabled: false }`, or
+ * 409 `bridge-off` on a write) and touch nothing.
  */
 export function createAppsBridgePlugin(config: AppsBridgeConfig): AppsBridgePlugin {
   assertAppsBridgeConfig(config);
@@ -33,6 +39,8 @@ export function createAppsBridgePlugin(config: AppsBridgeConfig): AppsBridgePlug
   const publicOrigin = new URL(config.publicOrigin).origin;
 
   let unsubscribe: (() => void) | undefined;
+  /** The settings routes' unregisters, newest last. */
+  let routeUndos: Array<() => void> = [];
   /** Built in init() when the bridge is on; the listener is started from it. */
   let wired: { deps: BridgeDeps; verifyCaller: (token: string) => Promise<CallerVerdict>; limiter: BridgeLimiter } | undefined;
   let listener: BridgeListener | undefined;
@@ -45,6 +53,11 @@ export function createAppsBridgePlugin(config: AppsBridgeConfig): AppsBridgePlug
       registers: [],
       calls: [
         'database:get-instance',
+        // The settings and approve routes (settings-routes.ts): the signed-in
+        // person, and the viewer's own personal agents.
+        'http:register-route',
+        'auth:require-user',
+        'agents:list-for-user',
         'auth:find-user-by-email',
         'agents:resolve',
         'agents:can-manage-connectors',
@@ -69,26 +82,31 @@ export function createAppsBridgePlugin(config: AppsBridgeConfig): AppsBridgePlug
       };
 
       const bridge = config.bridge;
-      if (bridge === undefined) return;
-      const limiter = createBridgeLimiter({ now });
-      // A local structural view of the bus (no Bus type from @ax/core).
-      const bridgeBus: BridgeBus = bus;
-      // One limiter for the listener (takePlatform, acquire) and the
-      // answers (takeApp), so every window is counted in one place.
-      wired = {
-        deps: {
-          bus: bridgeBus,
-          store,
-          platformId: bridge.platformId,
-          publicOrigin,
-          verifyViewer: createViewerVerifier(bridge.viewer, { now }),
+      if (bridge !== undefined) {
+        const limiter = createBridgeLimiter({ now });
+        // A local structural view of the bus (no Bus type from @ax/core).
+        const bridgeBus: BridgeBus = bus;
+        // One limiter for the listener (takePlatform, acquire) and the
+        // answers (takeApp), so every window is counted in one place.
+        wired = {
+          deps: {
+            bus: bridgeBus,
+            store,
+            platformId: bridge.platformId,
+            publicOrigin,
+            verifyViewer: createViewerVerifier(bridge.viewer, { now }),
+            limiter,
+            logger: initCtx.logger,
+            now,
+          },
+          verifyCaller: createCallerVerifier(bridge.caller, { now }),
           limiter,
-          logger: initCtx.logger,
-          now,
-        },
-        verifyCaller: createCallerVerifier(bridge.caller, { now }),
-        limiter,
-      };
+        };
+      }
+      // Last, so nothing after it can fail with routes up (a failed
+      // registration takes its own earlier routes down). Mounted with the
+      // bridge off too: the Apps section then says it is off.
+      routeUndos = await registerSettingsRoutes(bus, { store, platformId: bridge?.platformId, logger: initCtx.logger, now });
     },
 
     async startAdmission() {
@@ -120,6 +138,14 @@ export function createAppsBridgePlugin(config: AppsBridgeConfig): AppsBridgePlug
       stopped = true;
       unsubscribe?.();
       unsubscribe = undefined;
+      // Newest first; one that throws doesn't keep the rest up.
+      for (const undo of routeUndos.splice(0).reverse()) {
+        try {
+          undo();
+        } catch {
+          // http-server's to report.
+        }
+      }
       await listener?.close();
     },
 

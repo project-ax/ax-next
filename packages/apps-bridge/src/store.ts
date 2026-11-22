@@ -89,14 +89,29 @@ export interface AppsBridgeStore {
   getGrant(platformId: string, appId: string, connectorId: string): Promise<AppGrant | null>;
   /** Ordered by connector id. */
   listGrants(platformId: string, appId: string): Promise<AppGrant[]>;
-  /** Upsert: replaces mode and tool keys (order kept), moves `updatedAt`. No link → `'no-link'`. */
-  putGrant(g: Pick<AppGrant, 'platformId' | 'appId' | 'connectorId' | 'mode' | 'toolKeys'>): Promise<AppGrant | 'no-link'>;
+  /**
+   * Upsert: replaces mode and tool keys (order kept), moves `updatedAt`. No
+   * link → `'no-link'`; with `agentId`, a link to any other agent is
+   * `'no-link'` too. One transaction: the link is locked (`FOR SHARE`) while
+   * the grant is written, so it can't be removed or moved under the write;
+   * and a grant whose mode changes loses every viewer approval on it, so old
+   * consent never comes back when it is switched back to viewer mode.
+   */
+  putGrant(
+    g: Pick<AppGrant, 'platformId' | 'appId' | 'connectorId' | 'mode' | 'toolKeys'> & { agentId?: string },
+  ): Promise<AppGrant | 'no-link'>;
   /** Its approvals cascade. */
   deleteGrant(platformId: string, appId: string, connectorId: string): Promise<boolean>;
   getApproval(viewerUserId: string, platformId: string, appId: string, connectorId: string): Promise<ViewerApproval | null>;
   /** Ordered by app id, then connector id. */
   listApprovalsForViewerAgent(viewerUserId: string, platformId: string, agentId: string): Promise<ViewerApproval[]>;
-  /** Upsert: replaces the agent and the tool snapshot; `createdAt` stays the first approval's. No grant → `'no-grant'`. */
+  /**
+   * Upsert: replaces the agent and the tool snapshot; `createdAt` stays the
+   * first approval's. No grant, or a grant not in viewer mode → `'no-grant'`.
+   * The grant row is locked (`FOR SHARE`) while the approval is written, so a
+   * racing mode change either sees this approval (and clears it) or makes
+   * this one `'no-grant'`.
+   */
   putApproval(a: Omit<ViewerApproval, 'createdAt'>): Promise<'saved' | 'no-grant'>;
   /** Removes the approval only when it borrows `agentId`. */
   deleteApproval(viewerUserId: string, platformId: string, appId: string, connectorId: string, agentId: string): Promise<boolean>;
@@ -133,7 +148,6 @@ function assertCodeHash(codeHash: string): void {
 }
 
 const PG_UNIQUE_VIOLATION = '23505';
-const PG_FOREIGN_KEY_VIOLATION = '23503';
 
 function pgCode(err: unknown): unknown {
   return typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
@@ -352,8 +366,26 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
     },
 
     async putGrant(g) {
-      try {
-        const row = await db
+      return db.transaction().execute(async (trx): Promise<AppGrant | 'no-link'> => {
+        // The link stays put (no unlink, no re-link to another agent) until this commits.
+        let linkQuery = trx
+          .selectFrom('apps_bridge_v1_links')
+          .select('agent_id')
+          .where('platform_id', '=', g.platformId)
+          .where('app_id', '=', g.appId);
+        if (g.agentId !== undefined) linkQuery = linkQuery.where('agent_id', '=', g.agentId);
+        const linked = await linkQuery.forShare().executeTakeFirst();
+        if (linked === undefined) return 'no-link';
+
+        const before = await trx
+          .selectFrom('apps_bridge_v1_grants')
+          .select('mode')
+          .where('platform_id', '=', g.platformId)
+          .where('app_id', '=', g.appId)
+          .where('connector_id', '=', g.connectorId)
+          .forUpdate()
+          .executeTakeFirst();
+        const row = await trx
           .insertInto('apps_bridge_v1_grants')
           .values({
             platform_id: g.platformId,
@@ -371,11 +403,16 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
           )
           .returningAll()
           .executeTakeFirstOrThrow();
+        if (before !== undefined && before.mode !== g.mode) {
+          await trx
+            .deleteFrom('apps_bridge_v1_viewer_approvals')
+            .where('platform_id', '=', g.platformId)
+            .where('app_id', '=', g.appId)
+            .where('connector_id', '=', g.connectorId)
+            .execute();
+        }
         return toGrant(row);
-      } catch (err) {
-        if (pgCode(err) === PG_FOREIGN_KEY_VIOLATION) return 'no-link';
-        throw err;
-      }
+      });
     },
 
     async deleteGrant(platformId, appId, connectorId) {
@@ -414,8 +451,19 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
     },
 
     async putApproval(a) {
-      try {
-        await db
+      return db.transaction().execute(async (trx): Promise<'saved' | 'no-grant'> => {
+        // A mode change waits for this commit (and then clears this approval),
+        // or commits first and leaves no viewer-mode grant to approve.
+        const grant = await trx
+          .selectFrom('apps_bridge_v1_grants')
+          .select('mode')
+          .where('platform_id', '=', a.platformId)
+          .where('app_id', '=', a.appId)
+          .where('connector_id', '=', a.connectorId)
+          .forShare()
+          .executeTakeFirst();
+        if (grant === undefined || grant.mode !== 'viewer') return 'no-grant';
+        await trx
           .insertInto('apps_bridge_v1_viewer_approvals')
           .values({
             viewer_user_id: a.viewerUserId,
@@ -432,10 +480,7 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
           )
           .execute();
         return 'saved';
-      } catch (err) {
-        if (pgCode(err) === PG_FOREIGN_KEY_VIOLATION) return 'no-grant';
-        throw err;
-      }
+      });
     },
 
     async deleteApproval(viewerUserId, platformId, appId, connectorId, agentId) {

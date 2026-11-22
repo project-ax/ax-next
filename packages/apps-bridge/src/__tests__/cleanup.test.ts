@@ -51,18 +51,24 @@ async function boot(): Promise<{ h: TestHarness; store: AppsBridgeStore }> {
   const connectionString = await server.database();
   harness = await createTestHarness({
     // The hooks the bridge's manifest calls; the cleanup subscribers reach none of them.
-    services: Object.fromEntries(
-      [
-        'auth:find-user-by-email',
-        'agents:resolve',
-        'agents:can-manage-connectors',
-        'connectors:list',
-        'connectors:list-effective',
-        'connectors:describe-tools',
-        'tool-policy:evaluate',
-        'connectors:call-tool-result',
-      ].map((hook) => [hook, async () => { throw new Error(`${hook} not expected in the cleanup tests`); }]),
-    ),
+    services: {
+      // The settings routes mount at init (settings-routes.ts); these tests never call them.
+      'http:register-route': async () => ({ unregister: () => {} }),
+      ...Object.fromEntries(
+        [
+          'auth:require-user',
+          'agents:list-for-user',
+          'auth:find-user-by-email',
+          'agents:resolve',
+          'agents:can-manage-connectors',
+          'connectors:list',
+          'connectors:list-effective',
+          'connectors:describe-tools',
+          'tool-policy:evaluate',
+          'connectors:call-tool-result',
+        ].map((hook) => [hook, async () => { throw new Error(`${hook} not expected in the cleanup tests`); }]),
+      ),
+    },
     plugins: [createDatabasePostgresPlugin({ connectionString }), createAppsBridgePlugin({ publicOrigin: 'http://ax.test' })],
   });
   db = new Kysely<AppsBridgeDatabase>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 4 }) }) });

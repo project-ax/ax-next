@@ -14,7 +14,9 @@ import {
  * minting sweeps expired codes and keeps an agent's newest ten; a claim links
  * once and burns the code, keeps it on `already-linked`, and answers
  * `invalid` for a gone or expired code; a link's grants and a grant's
- * approvals cascade; `putGrant` needs a link and `putApproval` a grant.
+ * approvals cascade; `putGrant` needs a link (to `agentId`, when given) and
+ * clears the grant's approvals when its mode changes; `putApproval` needs a
+ * viewer-mode grant.
  *
  * Every method is async and copies what it hands out, so a test can't edit
  * the store through a returned object. Tests replace a method (vi.spyOn) to
@@ -158,9 +160,13 @@ export function createFakeStore(): FakeStore {
     },
 
     async putGrant(g) {
-      if (!links.has(linkKey(g.platformId, g.appId))) return 'no-link';
+      const l = links.get(linkKey(g.platformId, g.appId));
+      if (l === undefined || (g.agentId !== undefined && l.agentId !== g.agentId)) return 'no-link';
       const key = grantKey(g.platformId, g.appId, g.connectorId);
       const existing = grants.get(key);
+      if (existing !== undefined && existing.mode !== g.mode) {
+        dropApprovalsWhere((a) => a.platformId === g.platformId && a.appId === g.appId && a.connectorId === g.connectorId);
+      }
       const at = new Date();
       const row: AppGrant = {
         platformId: g.platformId,
@@ -194,7 +200,7 @@ export function createFakeStore(): FakeStore {
     },
 
     async putApproval(a) {
-      if (!grants.has(grantKey(a.platformId, a.appId, a.connectorId))) return 'no-grant';
+      if (grants.get(grantKey(a.platformId, a.appId, a.connectorId))?.mode !== 'viewer') return 'no-grant';
       const key = approvalKey(a.viewerUserId, a.platformId, a.appId, a.connectorId);
       const existing = approvals.get(key);
       approvals.set(key, { ...a, toolKeys: [...a.toolKeys], createdAt: existing?.createdAt ?? new Date() });
