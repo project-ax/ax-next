@@ -12,8 +12,9 @@
  *
  * Pinned behaviors:
  *   - POSTs to `/auth/sign-in/social` (NOT a GET to `/auth/sign-in/google`)
- *   - body carries `{ provider: 'google', callbackURL: '/' }`, or the share
- *     page's own path when sign-in starts on `/a/<code>` (and only then)
+ *   - body carries `{ provider: 'google', callbackURL: '/' }`, or the page's
+ *     own path when sign-in starts on a share page (`/a/<code>`) or an apps
+ *     approve page (`/apps/approve/<p>/<a>/<c>`), and only then
  *   - sends credentials + the `X-Requested-With: ax-admin` CSRF header
  *   - navigates to the `url` better-auth returns
  */
@@ -120,5 +121,28 @@ describe('signInWithGoogle(callbackPath) — where sign-in comes back to', () =>
     fetchMock.mockResolvedValueOnce(socialOk('https://accounts.google.com/o/oauth2/auth?x=4'));
     await signInWithGoogle(p);
     expect(sentCallback()).toBe('/');
+  });
+
+  it('an approve page path comes back after sign-in; anything else still lands on /', async () => {
+    const approve = '/apps/approve/canopy/app_01JDZ8M5Q4X7RT3VKF0N2C9H6B/linear';
+    fetchMock.mockResolvedValueOnce(socialOk('https://accounts.google.com/o/oauth2/auth?x=5'));
+    await signInWithGoogle(approve);
+    expect(sentCallback()).toBe(approve);
+
+    for (const junk of [
+      '/apps/approve/x',
+      `${approve}/`,
+      `${approve}/extra`,
+      `${approve}?next=https://evil.example`,
+      '/apps/approve/canopy/../linear',
+      `//evil.example${approve}`,
+      `https://evil.example${approve}`,
+      '/apps/approve/Canopy/app_01JDZ8M5Q4X7RT3VKF0N2C9H6B/linear',
+    ]) {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(socialOk('https://accounts.google.com/o/oauth2/auth?x=6'));
+      await signInWithGoogle(junk);
+      expect(sentCallback(), junk).toBe('/');
+    }
   });
 });
