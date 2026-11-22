@@ -824,11 +824,30 @@ describe('the section', () => {
           .map((id) => ({ id, displayName: id === SUPPORT_TEAM ? 'Customer Care' : 'Sales', createdBy: ADA.id, createdAt: new Date(0) })),
       };
     });
-    const named = await w.status(SUPPORT.id, ADA);
-    expect(named.status).toBe(200);
-    expect(named.body).toMatchObject({ state: 'ready', teamName: 'Customer Care' });
+    // Exactly the ready answer it always was, plus the name.
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({
+      status: 200,
+      body: {
+        state: 'ready',
+        botName: 'canopy-works',
+        workspaceName: 'Canopy Works',
+        canManage: true,
+        bot: NO_BOT,
+        teamName: 'Customer Care',
+      },
+    });
     // A plain member sees it too, and the person asked is the viewer.
-    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ body: { teamName: 'Customer Care' } });
+    expect(await w.status(SUPPORT.id, MEL)).toEqual({
+      status: 200,
+      body: {
+        state: 'ready',
+        botName: 'canopy-works',
+        workspaceName: 'Canopy Works',
+        canManage: false,
+        bot: NO_BOT,
+        teamName: 'Customer Care',
+      },
+    });
     expect(asked).toEqual([ADA.id, MEL.id]);
 
     // Not connected to Slack: the card still shows, so the answer still names the team.
