@@ -38,7 +38,8 @@ import { SlackApiError, type SlackApi } from './slack-api.js';
  * `postLinkOnly` instead: its subject and a line sending the person to the
  * web app (blocks.ts `linkOnlyBlocks`), nothing to click, and nothing opened.
  *
- * Never rejects.
+ * `postPrompt` and `postLinkOnly` never reject. `postLine` (a plain line
+ * after the prompts) throws what its last try threw, for its caller to log.
  */
 
 export interface PromptPostDeps {
