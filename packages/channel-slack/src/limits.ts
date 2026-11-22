@@ -286,7 +286,9 @@ export const PROMPT_HOST_MAX = 253;
  * agent asked to use, a skill's link to the web app) one reply posts after
  * it. Each is a message in the thread, and Slack takes about one a second
  * per channel; anything past this is counted in the log
- * (`slack_permission_skipped`), and the agent asks again when it needs to.
+ * (`slack_permission_skipped`). Skills past it get one line after the
+ * prompts, counting them and pointing at Today, where they wait (TASK-1155);
+ * a host past it is asked about again when the agent needs it.
  */
 export const PERMISSION_PROMPTS_PER_TURN_MAX = 3;
 /**

@@ -44,6 +44,7 @@ const ARGS: Record<string, unknown[][]> = {
   ],
   skillNeedsWeb: [[TODAY], [HOSTILE]],
   skillFailed: [[TODAY], [HOSTILE]],
+  moreSkillsInToday: [[1, TODAY], [2, TODAY]],
   // A bot request's DMs (TASK-1170). The subject is plain_text: benign args only (its hostile case is in blocks.test.ts).
   botRequestSubject: [
     [{ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' }],
@@ -114,6 +115,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'skillDenied',
         'skillNeedsWeb',
         'skillFailed',
+        'moreSkillsInToday',
         'noAgent',
         'notMapped',
         'queueFull',
@@ -160,6 +162,14 @@ describe('COPY: everything the bot says in Slack', () => {
     // Whoever reads the owner's line can't approve the call: no link to send them anywhere.
     expect(COPY.heldForOwner).not.toMatch(/\]\(|https?:/);
     expect(COPY.heldForOwner).not.toBe(COPY.heldForSender(TODAY));
+  });
+
+  it("the line for skills past the cap links Today as Markdown, as heldForSender does, and names only a count (TASK-1155)", () => {
+    expect(COPY.moreSkillsInToday(1, TODAY)).toContain(`[Today](${TODAY})`);
+    expect(COPY.moreSkillsInToday(2, TODAY)).toContain(`[Today](${TODAY})`);
+    expect(COPY.moreSkillsInToday(2, TODAY)).toContain('2 more skills');
+    expect(COPY.moreSkillsInToday(1, TODAY)).not.toBe(COPY.moreSkillsInToday(2, TODAY));
+    expect(COPY.moreSkillsInToday).toHaveLength(2);
   });
 
   it("a held call's lines can't name the tool, its connector or the owner: they take nothing but Today's link", () => {

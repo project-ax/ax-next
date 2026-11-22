@@ -21,7 +21,7 @@ import {
 } from './limits.js';
 import { logCode } from './log-code.js';
 import { ADD_HOST, hostSubject, skillPromptFor } from './permission-prompts.js';
-import { postLinkOnly, postPrompt } from './prompt-post.js';
+import { postLine, postLinkOnly, postPrompt } from './prompt-post.js';
 import type { Prompt, PromptContext, PromptRegistry, PromptSubject } from './prompts.js';
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
@@ -70,7 +70,9 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * The two `chat:permission-request` cards get a prompt too, in a DM or an
  * attended turn only (permission-prompts.ts): after the reply, and after a
  * held call's prompt, in the order the cards came, one per host and one per
- * skill, at most PERMISSION_PROMPTS_PER_TURN_MAX between them.
+ * skill, at most PERMISSION_PROMPTS_PER_TURN_MAX between them. Skills past
+ * the cap get one line after the prompts instead, saying how many more wait
+ * in Today (TASK-1155); hosts past it get nothing.
  *
  *   - A host the sandbox was refused while the turn ran (the egress wall's
  *     card) is shown only once it passes the egress proxy's own HOST_RE,
@@ -90,7 +92,8 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * and count once the turn has ended (`slack_permission_skipped`):
  * `outsider` (the turn's writer can't answer it here), `unavailable`
  * (nothing to call on a host's Allow: no `proxy:add-host`), `invalid-host`,
- * or `cap`. A woken turn's cards are asked about even when it said nothing
+ * or `cap` (each host or skill past the cap once, however many cards asked
+ * for it). A woken turn's cards are asked about even when it said nothing
  * else, or never began: a card is all some continuations have to say.
  *
  * The reply ends at the first of: the turn's `chat:turn-end` (complete), its
@@ -668,6 +671,18 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     kept than the cap: anything else is only counted.
   */
   const permissions: Array<{ key: string; ask: Ask }> = [];
+  /*
+    The skills asked about past the cap (TASK-1155): no prompt each, but one
+    line after the prompts saying how many more wait in Today, where every
+    skill card waits too. Without it the agent's reply says it asked and the
+    thread shows nothing. Telling the agent instead can't work from here: the
+    card is a fire-only event, with no path back to request_capability's
+    result, and the request does wait in Today, so "I asked" is true; it's
+    the person who needs telling. A host past the cap gets no line: nothing
+    about a blocked host waits in Today, and the agent never said it asked.
+  */
+  const moreSkills = new Set<string>();
+  const overCap = new Set<string>();
   const skipped = new Map<PermissionSkip, number>();
   const skip = (reason: PermissionSkip): void => {
     skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
@@ -710,6 +725,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     // One prompt per host, one per skill: a repeat is that prompt, never one over the cap.
     if (permissions.some((q) => q.key === card.key)) return;
     if (permissions.length >= PERMISSION_PROMPTS_PER_TURN_MAX) {
+      // A repeat of one already past the cap is that one, counted once.
+      if (overCap.has(card.key)) return;
+      overCap.add(card.key);
+      if (p.kind === 'skill') moreSkills.add(card.key);
       skip('cap');
       return;
     }
@@ -719,6 +738,17 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   const askPermissions = async (): Promise<void> => {
     if (asking === null) return;
     for (const { ask } of permissions) await askInThread(d, asking.prompts, s.botToken, asking.context, ask, todayLink);
+    if (moreSkills.size > 0) {
+      try {
+        await postLine(
+          { api: d.api, botToken: s.botToken, clock: d.clock },
+          asking.context,
+          COPY.moreSkillsInToday(moreSkills.size, todayLink),
+        );
+      } catch (err) {
+        quietly(() => d.logger.warn('slack_reply_failed', { installId, stage: 'more-skills', code: logCode(err) }));
+      }
+    }
   };
 
   // Registered before agent:invoke: a fast turn's first chunk can beat the
