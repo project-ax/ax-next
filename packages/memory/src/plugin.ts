@@ -1,10 +1,10 @@
 import {
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS as CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
-  audienceOf,
   isOutsiderTurn,
   parseModelRef,
   type AgentContext,
+  type AgentContextSource,
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
@@ -13,7 +13,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
-import { recallFacts, recordFacts, speakerScope, type SpeakerScope } from './audience.js';
+import { recallAudienceScope, recallFacts, recordFacts, speakerScope, type SpeakerScope } from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
@@ -186,12 +186,13 @@ export { CAPTURE_REFUSED_EVENT };
 
 /**
  * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
- * view because people without access to the agent can read its replies
- * (TASK-1091): a personal agent's session that isn't private, or an
- * outsider's on any agent, whatever its audience stamp (TASK-1204). A team
- * agent member's session keeps its view in every audience, so this never
- * fires for one. Bindings: `agentId` and `reason: 'shared-audience'` (an
- * outsider's session is one, whatever it is stamped).
+ * view because its recall reads shared rows only (TASK-1091): a personal
+ * agent's session that isn't private or is an outsider's, whatever its
+ * audience stamp, and a session from a source this build doesn't know on any
+ * agent. A team agent's session from a source this build knows, an
+ * outsider's included, keeps its view in every audience (TASK-1209), so this
+ * never fires for one. Bindings: `agentId` and `reason: 'shared-audience'`
+ * (an outsider's session is one, whatever it is stamped).
  */
 export const MEMORY_MOUNT_WITHHELD_EVENT = 'memory_mount_withheld';
 
@@ -397,8 +398,9 @@ export interface MemoryPluginConfig {
    * `memory:export:flush` and `sandbox:memory-mounts`. Without it there is no
    * file view; recall is unaffected. A session whose recall reads shared rows
    * only never gets the view: `sandbox:memory-mounts` answers a personal
-   * agent's shared session no mount (TASK-1091), and an outsider's on a team
-   * agent (TASK-1204). A team agent member's session gets it in every audience.
+   * agent's shared or outsider's session no mount (TASK-1091), nor one from a
+   * source this build doesn't know on any agent. A team agent's session gets
+   * it in every audience, an outsider's included (TASK-1209).
    */
   exports?: MemoryExportConfig;
 }
@@ -690,37 +692,38 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // read first. A caller the agent refuses is refused here, never
             // answered with an empty list that reads like a withheld view.
             const access = await resolveMemoryAccess(bus, ownerCtx);
-            // TASK-1091. The export holds every fact the agent has, scoped by
-            // owner but not by audience, so a session whose replies people
-            // without access to the agent can read gets no file view where
-            // its recall reads shared rows only: mounting it would hand the
-            // room every row recall withholds. That is, as in
-            // `recallAudienceScope`:
+            // TASK-1091, TASK-1209. The export holds every fact the agent
+            // has, scoped by owner but not by audience, so a session gets no
+            // file view wherever its recall reads shared rows only: mounting
+            // it would hand the room every row recall withholds. So the view
+            // follows `recallAudienceScope`, the rule recall itself uses, and
+            // the two can't drift apart:
             //
-            // - an outsider's session, on any agent, whatever its audience
-            //   stamp (TASK-1204, design §4c: a team agent's memory is shared
-            //   with the team, not with people outside AX). Someone without
-            //   access reads its replies, so a private stamp or none fails
-            //   closed (review F3), e.g. a stored session source this build
-            //   doesn't know, which ipc-core reads as external with no stamp.
-            // - a personal agent's session that isn't private.
+            // - on a personal agent, a session that isn't private, and an
+            //   outsider's session whatever its audience stamp (review F3:
+            //   someone without access reads its replies, so a private stamp
+            //   or none fails closed);
+            // - on any agent, a session from a source this build doesn't
+            //   know, e.g. a stored session source a newer build wrote, which
+            //   ipc-core reads as external with no stamp (on a team agent
+            //   too: TASK-1209's security review).
             //
-            // A member's session on a team agent keeps the view in every
-            // audience, as its recall reads everything.
+            // A team agent's session from a source this build knows keeps the
+            // view in every audience, an outsider's included (TASK-1209,
+            // design §4c), as its recall reads everything.
             //
             // The owner's audience and source are the session's own:
             // host-stamped, and out of the runner's reach. The turn opening
-            // the session names an outsider too (the orchestrator copies one
-            // from the other), and either is enough, as for the k8s
-            // provider's read-only home. `audienceOf` and `isOutsiderTurn`
-            // fail closed: an audience this build doesn't know withholds the
-            // view wherever a shared one does, and a source it doesn't know
-            // reads as an outsider's. Decided before the flush: nothing is
-            // granted, so there is nothing to write.
-            const outsider =
-              isOutsiderTurn(owner.source === undefined ? {} : { source: owner.source }) || isOutsiderTurn(ctx);
-            const shared = audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private';
-            if (outsider || (shared && access.visibility !== 'team')) {
+            // the session has a source too (the orchestrator copies one from
+            // the other), and either one whose recall is scoped is enough, as
+            // an outsider's is for the k8s provider's read-only home. Both
+            // are asked with the session's audience. Decided before the
+            // flush: nothing is granted, so there is nothing to write.
+            const sessionAudience = owner.audience === undefined ? {} : { audience: owner.audience };
+            const readsScoped = (source: AgentContextSource | undefined): boolean =>
+              recallAudienceScope({ ...sessionAudience, ...(source === undefined ? {} : { source }) }, access)
+                .audience === 'shared';
+            if (readsScoped(owner.source) || readsScoped(ctx.source)) {
               ctx.logger.info(MEMORY_MOUNT_WITHHELD_EVENT, {
                 agentId: owner.agentId,
                 reason: 'shared-audience',
