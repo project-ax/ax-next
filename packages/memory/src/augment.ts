@@ -11,7 +11,9 @@
  * | **Digest** | distinct non-speaker subjects, ranked, top ~20 |
  *
  * An outsider's turn has no Profile (TASK-1204): it runs as the requester who
- * answers for the channel, who is never the person talking.
+ * answers for the channel, who is never the person talking. On a team agent
+ * it recalls everything else a member's turn does (TASK-1209), and the
+ * requester's key reads as any member's.
  *
  * Soft cap ~800 tokens; over it, parts drop **digest → recent → profile**. The
  * degraded notice and the section heading never drop.
@@ -184,9 +186,10 @@ interface EngineFactRecord {
   // row from the person's own turn can bring back a value they retracted.
   sourceRole?: string;
   // Checked by `recallFacts` on a read with the shared scope (TASK-1091: a
-  // personal agent's shared turn, an outsider's turn on any agent), never
-  // rendered: every row that reaches the block is one this turn may see. A
-  // team agent member's turn may see every row (TASK-1204).
+  // personal agent's shared turn or outsider's turn), never rendered: every
+  // row that reaches the block is one this turn may see. Every turn on a team
+  // agent may see every row, a member's (TASK-1204) and an outsider's
+  // (TASK-1209).
   audience?: string;
 }
 
@@ -597,20 +600,18 @@ export async function buildMemoryBlock(
   // and the one subject the Digest leaves out. In an outsider's turn
   // (TASK-1204) the caller is the requester who answers for the channel, never
   // the person talking, so there is no self: no Profile (not even read),
-  // nobody rendered `you`, and nothing left out of the Digest. An outsider's
-  // turn reads shared rows only, and no writer in this build stores one under
-  // a person's key (what a team agent's member says about themself is
-  // stamped private, `recordFacts`), so this is defense in depth: a shared
-  // row under the requester's key (an engine import, a writer added later)
-  // is still never shown as the speaker's.
+  // nobody rendered `you`, and nothing left out of the Digest. On a team
+  // agent an outsider's turn reads every row (TASK-1209), the requester's
+  // own included, so this is what keeps the requester's memory from reading
+  // as the speaker's: their key reads as any member's.
   const self = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, access.userId);
   const ownerScope = memoryReadScope(access);
 
   const recall = async (input: Record<string, unknown>): Promise<EngineRecallOutput> => {
-    // A shared turn's block holds shared statements only (TASK-1091):
-    // `recallFacts` adds that scope last and refuses a row outside it. On a
-    // team agent only an outsider's turn keeps it; a member's block reads
-    // everything (TASK-1204).
+    // On a personal agent, a shared or outsider's turn's block holds shared
+    // statements only (TASK-1091): `recallFacts` adds that scope last and
+    // refuses a row outside it. On a team agent every turn's block reads
+    // everything, a member's (TASK-1204) and an outsider's (TASK-1209).
     const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, factsRecallHook, {
       ...ownerScope,
       activeOnly: true,

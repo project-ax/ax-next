@@ -289,12 +289,14 @@ export interface AgentContext {
   /**
    * Whose memory this turn may read and write. `'private'` (or absent) is
    * the owner's own conversation. `'shared'` is a turn other people are
-   * part of (e.g. a channel). On a personal agent it recalls only shared
-   * statements and stores no speaker facts. A team agent's memory is the
-   * team's (design §4c): a member's turn there recalls everything and files
-   * their facts under them. An outsider's turn (`isOutsiderTurn`), on any
-   * agent and whatever this field says, keeps shared-only recall and stores
-   * no person fact. Host-stamped only: never taken from an IPC payload.
+   * part of (e.g. a channel). On a personal agent a shared turn recalls
+   * only shared statements and stores no speaker facts, and so does an
+   * outsider's turn (`isOutsiderTurn`) whatever this field says. A team
+   * agent's memory is shared with anyone who talks to it (design §4c,
+   * TASK-1209): every turn on it recalls everything, and a member's turn
+   * files their facts under them. An outsider's turn, on any agent and
+   * whatever this field says, stores no person fact. Host-stamped only:
+   * never taken from an IPC payload.
    * It decides memory, not approvals; instructions and files are not
    * governed by it (an outsider's `source` is what makes files read-only). Must stay constant for a conversation, because memory
    * extracts a conversation in batches under the latest turn's audience.
