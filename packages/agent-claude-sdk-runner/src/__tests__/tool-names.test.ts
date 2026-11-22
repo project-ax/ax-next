@@ -39,11 +39,15 @@ describe('classifySdkToolName', () => {
   });
 
   it('refuses Agent (the wire name for Task) with the Task sentence', () => {
-    expect(classifySdkToolName('Agent')).toEqual({
-      kind: 'disabled',
-      name: 'Agent',
-      reason: DISABLED_BUILTIN_REASONS.Task,
-    });
+    const klass = classifySdkToolName('Agent');
+    expect(klass).toMatchObject({ kind: 'disabled', name: 'Agent' });
+    expect(klass.kind === 'disabled' && klass.reason).toMatch(/^Agent \(Task\) is disabled: it would start a helper agent/);
+  });
+
+  it('fails closed on a future built-in whatever its spelling (digits, underscores)', () => {
+    for (const name of ['Web_Fetch2', 'cron_create', 'X1']) {
+      expect(classifySdkToolName(name), name).toMatchObject({ kind: 'disabled', name });
+    }
   });
 
   it.each(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger'])(
@@ -210,10 +214,10 @@ describe('classifySdkToolName', () => {
       expect(classifySdkToolName(name)).toEqual({ kind: 'builtin', axName: name });
     });
 
-    it('does not lift a namespace-looking name without the mcp__ lead', () => {
-      expect(classifySdkToolName('xmcp__c0123456789__x')).toEqual({
-        kind: 'builtin',
-        axName: 'xmcp__c0123456789__x',
+    it('does not lift a namespace-looking name without the mcp__ lead (refused: not an allowed built-in)', () => {
+      expect(classifySdkToolName('xmcp__c0123456789__x')).toMatchObject({
+        kind: 'disabled',
+        name: 'xmcp__c0123456789__x',
       });
     });
 
@@ -246,11 +250,10 @@ describe('classifySdkToolName', () => {
     });
   });
 
-  it('treats empty string as builtin pass-through (no crash)', () => {
-    // Empty is degenerate — propagate rather than invent classification logic
-    // the host shouldn't encode. Host-side subscribers will reject nameless
-    // tool calls on their own terms.
-    expect(classifySdkToolName('')).toEqual({ kind: 'builtin', axName: '' });
+  it('refuses an empty name (fails closed, no crash)', () => {
+    // Empty is degenerate. Since TASK-1200 any non-`mcp__` name off the
+    // allowlist is refused, and '' is no exception.
+    expect(classifySdkToolName('')).toMatchObject({ kind: 'disabled', name: '' });
   });
 });
 
@@ -277,7 +280,7 @@ describe('the SDK built-in allowlist (TASK-1200)', () => {
     }
   });
 
-  it('allowlists only known built-ins, and keeps ToolSearch (AX host tools are deferred behind it)', () => {
+  it('allowlists only known built-ins, and keeps ToolSearch and Skill', () => {
     const known = new Set<string>(KNOWN_SDK_BUILTINS);
     for (const name of ALLOWED_SDK_BUILTINS) expect(known.has(name), name).toBe(true);
     expect(allowed.has('ToolSearch')).toBe(true);

@@ -34,7 +34,8 @@
 //      `ALLOWED_SDK_BUILTINS` is kept from the agent (see that constant), and
 //      the classifier refuses any built-in name outside the allowlist. The
 //      four keep their own refusal sentences and their `@ax/tool-policy`
-//      rail rows; the rest share one sentence.
+//      rail rows; `Agent` (Task's wire name) reuses Task's, the scheduling
+//      built-ins share one sentence, and everything else shares another.
 //
 //      WHERE THE ENFORCEMENT ACTUALLY LIVES: `main.ts` passes
 //      `ALLOWED_SDK_BUILTINS` as the SDK's `tools` option (the base set of
@@ -225,11 +226,6 @@ export const DENIED_SDK_BUILTINS: readonly string[] = [
   ),
 ];
 
-/**
- * Refusal sentence for a built-in outside the allowlist that has no reason of
- * its own in `DISABLED_BUILTIN_REASONS`. Like those, it is only ever read if
- * the `tools` allowlist and `disallowedTools` have both regressed.
- */
 const SCHEDULING_BUILTINS: readonly string[] = [
   'CronCreate',
   'CronDelete',
@@ -238,9 +234,14 @@ const SCHEDULING_BUILTINS: readonly string[] = [
   'RemoteTrigger',
 ];
 
+/**
+ * Refusal sentence for a built-in outside the allowlist that is not one of the
+ * four in `DISABLED_BUILTIN_REASONS`. Like those, it is only ever read if the
+ * `tools` allowlist and `disallowedTools` have both regressed.
+ */
 function notAllowedReason(name: string): string {
   // `Agent` is the name `Task` goes out under on the wire; same refusal.
-  if (name === 'Agent') return DISABLED_BUILTIN_REASONS.Task;
+  if (name === 'Agent') return `Agent (Task) ${DISABLED_BUILTIN_REASONS.Task.replace(/^Task /, '')}`;
   if (SCHEDULING_BUILTINS.includes(name)) {
     return (
       `${name} is disabled: a schedule made with it lives only in this session ` +
@@ -280,7 +281,8 @@ function isAllowedSdkBuiltin(sdkName: string): boolean {
  * held honest from outside instead —
  * `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads this array as
  * text and fails if the rail stops matching. Which matters most when a new SDK
- * arrives and `SECURITY.md` sends the upgrader here to add a name.
+ * arrives and adds a name here on purpose (SECURITY.md now sends upgraders to
+ * `KNOWN_SDK_BUILTINS` / `ALLOWED_SDK_BUILTINS` instead).
  */
 export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
   WebFetch:
@@ -411,16 +413,19 @@ export function classifySdkToolName(sdkName: string): SdkToolClass {
       axName: `mcp.${connector.toolNamespace}.${connector.tool}`,
     };
   }
-  // An SDK built-in name (PascalCase) outside the allowlist fails CLOSED —
-  // whether or not it is in `KNOWN_SDK_BUILTINS`, so a built-in a new SDK
-  // added (or an alias like `Agent` for `Task`) is refused, not passed on
-  // (TASK-1200). Defence in depth behind the `tools` option.
-  if (SDK_BUILTIN_NAME_RE.test(sdkName) && !isAllowedSdkBuiltin(sdkName)) {
+  // Every non-`mcp__` name at this boundary is a CLI built-in (our host,
+  // sandbox and connector tools all arrive `mcp__`-prefixed). One outside the
+  // allowlist fails CLOSED — whether or not it is in `KNOWN_SDK_BUILTINS`, and
+  // whatever its spelling, so a built-in a new SDK added (or an alias like
+  // `Agent` for `Task`) is refused, not passed on (TASK-1200). Defence in
+  // depth behind the `tools` option.
+  if (!sdkName.startsWith(MCP_PREFIX) && !isAllowedSdkBuiltin(sdkName)) {
     return { kind: 'disabled', name: sdkName, reason: notAllowedReason(sdkName) };
   }
   // Fallback: pass the name through unchanged. Covers the allowed SDK
   // built-ins (Bash, Read, Edit, …) AND unknown-to-us MCP tools from other
-  // servers. Host-side subscribers see the verbatim name and decide.
+  // servers (`mcp__linear__x`). Host-side subscribers see the verbatim name
+  // and decide.
   return { kind: 'builtin', axName: sdkName };
 }
 

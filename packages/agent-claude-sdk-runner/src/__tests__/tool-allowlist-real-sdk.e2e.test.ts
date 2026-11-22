@@ -169,7 +169,7 @@ function hostTools() {
  * (the `tools` allowlist and the denied built-ins); without it the CLI loads
  * its default built-in set.
  */
-async function runOneTurn(runner: boolean): Promise<SDKMessage[]> {
+async function runOneTurn(runner: boolean | 'tools-only'): Promise<SDKMessage[]> {
   async function* prompt(): AsyncGenerator<SDKUserMessage> {
     yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: 'post good morning every weekday at 9' } } as SDKUserMessage;
   }
@@ -202,9 +202,11 @@ async function runOneTurn(runner: boolean): Promise<SDKMessage[]> {
       allowedTools: ['Skill'],
       canUseTool: async (_name: string, input: Record<string, unknown>) =>
         ({ behavior: 'allow' as const, updatedInput: input }),
-      ...(runner
-        ? { tools: [...ALLOWED_SDK_BUILTINS], disallowedTools: [...DENIED_SDK_BUILTINS] }
-        : {}),
+      ...(runner === 'tools-only'
+        ? { tools: [...ALLOWED_SDK_BUILTINS] }
+        : runner
+          ? { tools: [...ALLOWED_SDK_BUILTINS], disallowedTools: [...DENIED_SDK_BUILTINS] }
+          : {}),
       model: 'claude-sonnet-4-5',
     },
   });
@@ -280,9 +282,26 @@ describe.skipIf(!HAVE_BINARY)('SDK built-in allowlist on the real claude-sdk bin
     expect(found).not.toContain('CronCreate');
     expect(found).not.toContain('ScheduleWakeup');
     expect(offered.length).toBeGreaterThanOrEqual(2);
-    const denied = new Set<string>(DENIED_SDK_BUILTINS);
+    const allowed = new Set<string>(ALLOWED_SDK_BUILTINS);
     for (const call of offered) {
-      expect(call.filter((n) => denied.has(n))).toEqual([]);
+      expect(call.filter((n) => !n.startsWith('mcp__') && !allowed.has(n))).toEqual([]);
+    }
+  }, 60_000);
+
+  // The `tools` allowlist on its own is what keeps out a built-in nobody has
+  // listed yet (a denylist cannot name it), so pin that it alone filters the
+  // deferred pool ToolSearch draws from.
+  it('FIX, tools allowlist alone: ToolSearch cannot load CronCreate and the wire carries only allowlisted built-ins', async () => {
+    searchFor = SEARCH_QUERY;
+    await runOneTurn('tools-only');
+    const found = searchedToolNames();
+    expect(found).toContain(ROUTINE_TOOL);
+    expect(found).not.toContain('CronCreate');
+    expect(found).not.toContain('ScheduleWakeup');
+    expect(offered.length).toBeGreaterThanOrEqual(2);
+    const allowed = new Set<string>(ALLOWED_SDK_BUILTINS);
+    for (const call of offered) {
+      expect(call.filter((n) => !n.startsWith('mcp__') && !allowed.has(n))).toEqual([]);
     }
   }, 60_000);
 });
