@@ -679,14 +679,20 @@ describe('channel-web agent-workspace BFF', () => {
       expect('teamName' in r.memory).toBe(false);
     });
 
-    it('teamName rides only with factsAvailable', async () => {
+    it("teamName rides only with factsAvailable: without facts the reader's teams aren't even asked", async () => {
       freshBus();
       registerTeamAgent();
-      registerTeams([{ id: 'team-1', displayName: 'Support' }]);
+      // A counting teams service: a team name nobody shows is a lookup nobody should pay for.
+      let asked = 0;
+      bus.registerService('teams:list-for-user', 'teams', async () => {
+        asked += 1;
+        return { teams: [{ id: 'team-1', displayName: 'Support' }] };
+      });
       const r = await memoryOf();
       expect(r.statusCode).toBe(200);
       expect('teamName' in r.memory).toBe(false);
       expect('factsAvailable' in r.memory).toBe(false);
+      expect(asked).toBe(0);
     });
   });
 
