@@ -251,9 +251,8 @@ describe('postMemoryNotice', () => {
   });
 
   it("a failed post releases only its own claim: a binding made again meanwhile keeps the new one's (review F7)", async () => {
-    let w: ReturnType<typeof world>;
     // While turn 1's post is failing, the channel is disconnected and bound again, and the new binding's turn claims.
-    w = world({
+    const w: ReturnType<typeof world> = world({
       postFails: (n) => {
         if (n !== 1) return undefined;
         const at = `${INSTALL_ID}/${SUPPORT_CH}`;
