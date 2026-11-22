@@ -16,6 +16,12 @@ What changes:
 
 What didn't change: an outsider's words are still never remembered, an outsider's turn still files no fact about them, Slack Connect channels are still refused, and personal agents behave exactly as before (and make no name lookups).
 
+Not done yet (follow-ups, and we'd rather list them than have you find them):
+
+- **The `/memory` export still shows raw ids.** Its headings and lines still say `user:<id>` for a teammate, and on a team agent that file is now visible in outsiders' sessions too. No name, no email, but an internal id we'd rather not hand out.
+- **A member named like the agent isn't refused.** We refuse names that read as "you" or as the word "agent", but not one that matches the agent's own name (a member who calls themself "Fern" on Fern's team reads as "Fern").
+- **A stalled name lookup has no deadline of its own.** If the team or account lookup hangs, recall waits on it, until whatever limit the turn itself has.
+
 The plain version: anyone who talks to a team agent can now hear back what its members told it. We think that's what people expect from a shared agent, and we'd rather say it out loud than pretend otherwise. This ships alongside the notice copy, never before it.
 
 `@ax/core` and `@ax/memory-facts-contract` only get doc comments (the `audience` contract and the stamp a statement carries).
