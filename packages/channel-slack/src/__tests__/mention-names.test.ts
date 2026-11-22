@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { RETRY_AFTER_CAP_MS } from '../limits.js';
 import { createMentionNames } from '../mention-names.js';
 import { SlackApiError } from '../slack-api.js';
 
@@ -23,8 +24,8 @@ function world(answers: Record<string, unknown>, o: { perMessage?: number; max?:
     max: o.max ?? 10,
     perMessage: o.perMessage ?? 5,
   });
-  const lookup = (ids: string[], known: Map<string, string> = new Map(), teamId = TEAM) =>
-    names.lookup({ botToken: TOKEN, teamId, ids, known });
+  const lookup = (ids: string[], known: Map<string, string> = new Map(), teamId = TEAM, installId = 'inst-a') =>
+    names.lookup({ installId, botToken: TOKEN, teamId, ids, known });
   return { lookup, asked, tick: (ms: number) => (t += ms) };
 }
 
@@ -57,7 +58,7 @@ describe('createMentionNames (TASK-1190)', () => {
   it('a failure is counted with its code and never kept; a found name is kept until ttlMs, per workspace', async () => {
     const w = world({ U1: user('U1', 'Bob'), U2: new SlackApiError('users.info', 'internal_error') });
     const first = await w.lookup(['U1', 'U2']);
-    expect(first).toMatchObject({ failed: 1, skipped: 0, code: 'internal_error' });
+    expect(first).toMatchObject({ failed: 1, capped: 0, paused: 0, code: 'internal_error' });
     expect(first.names.has('U2')).toBe(false);
     await w.lookup(['U1', 'U2']);
     expect(ids(w.asked)).toEqual(['U1', 'U2', 'U2']);
@@ -79,17 +80,43 @@ describe('createMentionNames (TASK-1190)', () => {
     expect(ids(w.asked)).toEqual(['MOSS']);
   });
 
-  it("after a rate limit nobody is asked until Slack's Retry-After has passed; those ids are skipped", async () => {
-    const w = world({ A: new SlackApiError('users.info', 'ratelimited', 2_000), B: user('B', 'Bob') });
-    expect(await w.lookup(['A'])).toMatchObject({ failed: 1, skipped: 0, code: 'ratelimited' });
+  it("after a rate limit nobody is asked until Slack's Retry-After has passed; those ids are paused, while known and kept names still resolve", async () => {
+    const w = world(
+      { A: new SlackApiError('users.info', 'ratelimited', 2_000), B: user('B', 'Bob'), K: user('K', 'Kay') },
+      { ttlMs: 60_000 },
+    );
+    await w.lookup(['K']);
+    // A failure finishing first doesn't hide the rate limit's code.
+    expect(await w.lookup(['X', 'A'])).toMatchObject({ failed: 2, paused: 0, code: 'ratelimited' });
     w.tick(1_999);
-    const paused = await w.lookup(['B', 'C']);
-    expect(paused).toMatchObject({ failed: 0, skipped: 2 });
-    expect(paused.names.size).toBe(0);
-    expect(ids(w.asked)).toEqual(['A']);
+    const paused = await w.lookup(['B', 'C', 'K', 'OWN'], new Map([['OWN', 'moss (you)']]));
+    expect(paused).toMatchObject({ failed: 0, capped: 0, paused: 2 });
+    expect([...paused.names]).toEqual([
+      ['K', 'Kay'],
+      ['OWN', 'moss (you)'],
+    ]);
+    expect(ids(w.asked)).toEqual(['K', 'X', 'A']);
     w.tick(1);
     expect((await w.lookup(['B'])).names.get('B')).toBe('Bob');
-    expect(ids(w.asked)).toEqual(['A', 'B']);
+    expect(ids(w.asked)).toEqual(['K', 'X', 'A', 'B']);
+  });
+
+  it("one install's rate limit never pauses another's lookups, in its own workspace or the same one", async () => {
+    const w = world({ A: new SlackApiError('users.info', 'ratelimited', 30_000), B: user('B', 'Bob'), C: user('C', 'Carol') });
+    await w.lookup(['A'], new Map(), TEAM, 'inst-a');
+    expect(await w.lookup(['B'], new Map(), 'T07OTHER', 'inst-b')).toMatchObject({ failed: 0, capped: 0, paused: 0 });
+    expect((await w.lookup(['C'], new Map(), TEAM, 'inst-c')).names.get('C')).toBe('Carol');
+    expect(await w.lookup(['C'], new Map(), 'T07FRESH', 'inst-a')).toMatchObject({ paused: 1 });
+    expect(ids(w.asked)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('a huge Retry-After is capped at RETRY_AFTER_CAP_MS', async () => {
+    const w = world({ A: new SlackApiError('users.info', 'ratelimited', 86_400_000), B: user('B', 'Bob') });
+    await w.lookup(['A']);
+    w.tick(RETRY_AFTER_CAP_MS - 1);
+    expect(await w.lookup(['B'])).toMatchObject({ paused: 1 });
+    w.tick(1);
+    expect((await w.lookup(['B'])).names.get('B')).toBe('Bob');
   });
 
   it('asks at most perMessage; kept names do not count against it', async () => {

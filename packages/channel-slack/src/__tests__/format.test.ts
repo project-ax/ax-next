@@ -549,7 +549,7 @@ describe('inboundText (TASK-1190)', () => {
   ]);
 
   it('writes each <@U…> and <@U…|label> as @ and its name, never the id or the label', () => {
-    expect(inboundText('<@U07OWN> ask <@U07BOB|bobby> and <@U07BOB>', names)).toBe('@moss (you) ask @Bob Jones and @Bob Jones');
+    expect(inboundText('<@U07OWN> ask <@U07BOB|bobby> and <@U07BOB>', names)).toBe('@[moss (you)] ask @[Bob Jones] and @[Bob Jones]');
   });
 
   it('an id with no name, or an empty one, reads as @someone: its |label is never the fallback', () => {
@@ -559,7 +559,7 @@ describe('inboundText (TASK-1190)', () => {
 
   it("undoes Slack's three entities in the same pass, so a typed &lt;@U…&gt; stays text and a name is never decoded", () => {
     expect(inboundText('x &lt; 3 &amp;&amp; &lt;@U07BOB&gt; &amp;lt;', names)).toBe('x < 3 && <@U07BOB> &lt;');
-    expect(inboundText('<@U07AMP>', new Map([['U07AMP', 'R&amp;D']]))).toBe('@R&amp;D');
+    expect(inboundText('<@U07AMP>', new Map([['U07AMP', 'R&amp;D']]))).toBe('@[R&amp;D]');
   });
 
   it('leaves channel, broadcast and link references as Slack wrote them', () => {

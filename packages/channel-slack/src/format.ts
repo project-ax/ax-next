@@ -277,8 +277,11 @@ export function mentionedUserIds(text: string): string[] {
 /**
  * A message's text as the agent reads it (TASK-1190): Slack's entities
  * undone as `decodeSlackEntities` does, and each user reference, `<@U…>` or
- * `<@U…|label>`, written as `@` and the name `names` holds for its id, or
- * `@someone` when it holds none. Never the raw id: an agent can't tell who
+ * `<@U…|label>`, written as `@[` the name `names` holds for its id `]`, or
+ * `@someone` when it holds none. The brackets mark where another person's
+ * Slack name ends and the sender's words go on: the names are
+ * `cleanSenderName`'d, which leaves no bracket in them, so a name can't close
+ * its own early and pass its tail off as the sender's request. Never the raw id: an agent can't tell who
  * one is (the TASK-1189 walk: a bot read its own id as somebody else's).
  * One left-to-right pass, so a typed `&lt;@U1&gt;` stays the text it was and a
  * name is never decoded again. The names are display text the caller
@@ -290,7 +293,7 @@ export function inboundText(text: string, names: ReadonlyMap<string, string>): s
     (whole, id: string | undefined, entity: string | undefined) => {
       if (id !== undefined) {
         const name = names.get(id);
-        return `@${name !== undefined && name !== '' ? name : UNNAMED_MENTION}`;
+        return name !== undefined && name !== '' ? `@[${name}]` : `@${UNNAMED_MENTION}`;
       }
       return (entity !== undefined ? SLACK_ENTITIES[entity] : undefined) ?? whole;
     },
@@ -302,8 +305,10 @@ export function inboundText(text: string, names: ReadonlyMap<string, string>): s
  * `channelSenderLabel`): no
  * control, bidi or invisible characters, no brackets or parentheses of any
  * script (Unicode's opening and closing punctuation, so fullwidth `（` and
- * `［` too: a name can't close the label early and start a second one, nor
- * spell a mention's "(you)", TASK-1190), single spaces,
+ * `［` too: a name can't close the label, or a mention's `@[…]`, early and
+ * start a second one; nor spell a mention's "(you)" with them, TASK-1190;
+ * a few symbol lookalikes such as `⎛ ⎞` are not punctuation and remain),
+ * single spaces,
  * at most SENDER_NAME_MAX code units. Empty when nothing printable is left.
  * The name is the sender's own Slack profile text: untrusted, for the model
  * to read, never used for identity.

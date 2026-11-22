@@ -1,5 +1,5 @@
 import { mentionedUserName } from './admission.js';
-import { RETRY_AFTER_DEFAULT_MS } from './limits.js';
+import { RETRY_AFTER_CAP_MS, RETRY_AFTER_DEFAULT_MS } from './limits.js';
 import { logCode } from './log-code.js';
 import { SlackApiError, type SlackApi } from './slack-api.js';
 
@@ -25,24 +25,32 @@ import { SlackApiError, type SlackApi } from './slack-api.js';
  * arrived, bounded (`max`, the oldest forgotten first), in memory like the
  * channel check's answers: a busy channel naming the same people costs no
  * call per message. A failure is never kept, so the next message asks again, except a
- * rate limit: then nobody is asked until Slack's Retry-After has passed
- * (RETRY_AFTER_DEFAULT_MS when it gave none), so the users.info budget a
- * sender's admission needs isn't spent on display names. Those ids are
- * `skipped`, like ids past `perMessage`.
+ * rate limit: then nobody is asked WITH THAT INSTALL'S TOKEN until Slack's
+ * Retry-After has passed (RETRY_AFTER_DEFAULT_MS when it gave none, never
+ * more than RETRY_AFTER_CAP_MS), so the users.info budget a sender's
+ * admission needs isn't spent on display names. Slack's limits are per app
+ * and workspace, and every install is its own app token, so the pause is per
+ * install: one bot rate-limited never pauses another's lookups. At most `max`
+ * installs are paused at once (expired pauses go first, then the oldest).
+ * Ids not asked (`paused`, or `capped` past `perMessage`) read `@someone`.
  */
 export interface MentionNames {
   /**
    * `ids`' names: `known` first, then kept ones, then users.info. Never
    * rejects. `failed` counts lookups that threw, and `code` is the first
-   * one's (Slack's own, or logCode's); `skipped` counts ids never asked
-   * (past `perMessage`, or during a rate limit). For the caller to log.
+   * one's (Slack's own, or logCode's; `ratelimited` whenever one was);
+   * `capped` counts ids never asked because the message passed `perMessage`,
+   * `paused` those never asked because this install is rate-limited. Known
+   * and kept names resolve either way. For the caller to log.
    */
   lookup(i: {
+    /** The install whose bot token asks: its own rate-limit pause. */
+    installId: string;
     botToken: string;
     teamId: string;
     ids: readonly string[];
     known: ReadonlyMap<string, string>;
-  }): Promise<{ names: Map<string, string>; failed: number; skipped: number; code?: string }>;
+  }): Promise<{ names: Map<string, string>; failed: number; capped: number; paused: number; code?: string }>;
 }
 
 export function createMentionNames(o: {
@@ -61,8 +69,32 @@ export function createMentionNames(o: {
   const { api, now, ttlMs, max, perMessage } = o;
   /** `${teamId}/${userId}` → the name, and when it stops being good. Insertion order is age. */
   const kept = new Map<string, { name: string; until: number }>();
-  /** Epoch ms before which nobody is asked: Slack rate-limited the last ask. */
-  let pausedUntil = 0;
+  /** installId → epoch ms before which its token asks nobody: Slack rate-limited it. Insertion order is age. */
+  const pausedUntil = new Map<string, number>();
+
+  const pause = (installId: string, retryAfterMs: number | undefined): void => {
+    const wait = Math.min(Math.max(retryAfterMs ?? RETRY_AFTER_DEFAULT_MS, 0), RETRY_AFTER_CAP_MS);
+    const until = Math.max(pausedUntil.get(installId) ?? 0, now() + wait);
+    pausedUntil.delete(installId);
+    const t = now();
+    for (const [key, at] of pausedUntil) if (at <= t) pausedUntil.delete(key);
+    while (pausedUntil.size >= max) {
+      const oldest = pausedUntil.keys().next();
+      if (oldest.done === true) break;
+      pausedUntil.delete(oldest.value);
+    }
+    pausedUntil.set(installId, until);
+  };
+
+  const isPaused = (installId: string): boolean => {
+    const until = pausedUntil.get(installId);
+    if (until === undefined) return false;
+    if (until <= now()) {
+      pausedUntil.delete(installId);
+      return false;
+    }
+    return true;
+  };
 
   const keep = (key: string, name: string): void => {
     kept.delete(key);
@@ -85,11 +117,12 @@ export function createMentionNames(o: {
   };
 
   return {
-    async lookup({ botToken, teamId, ids, known }) {
+    async lookup({ installId, botToken, teamId, ids, known }) {
       const names = new Map<string, string>();
       const ask: string[] = [];
-      let skipped = 0;
-      const paused = now() < pausedUntil;
+      let capped = 0;
+      let pausedIds = 0;
+      const paused = isPaused(installId);
       for (const id of ids) {
         if (names.has(id) || ask.includes(id)) continue;
         const given = known.get(id);
@@ -102,8 +135,9 @@ export function createMentionNames(o: {
           names.set(id, k);
           continue;
         }
-        if (!paused && ask.length < perMessage) ask.push(id);
-        else skipped += 1;
+        if (paused) pausedIds += 1;
+        else if (ask.length < perMessage) ask.push(id);
+        else capped += 1;
       }
       let failed = 0;
       let code: string | undefined;
@@ -118,12 +152,14 @@ export function createMentionNames(o: {
             failed += 1;
             code ??= logCode(err);
             if (err instanceof SlackApiError && err.code === 'ratelimited') {
-              pausedUntil = Math.max(pausedUntil, now() + (err.retryAfterMs ?? RETRY_AFTER_DEFAULT_MS));
+              code = 'ratelimited';
+              pause(installId, err.retryAfterMs);
             }
           }
         }),
       );
-      return code === undefined ? { names, failed, skipped } : { names, failed, skipped, code };
+      const counts = { names, failed, capped, paused: pausedIds };
+      return code === undefined ? counts : { ...counts, code };
     },
   };
 }
