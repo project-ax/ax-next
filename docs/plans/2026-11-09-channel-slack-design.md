@@ -1209,8 +1209,10 @@ version first. Filed 2026-11-21 as TASK-1186 (A), TASK-1187 (B), TASK-1188 (C) a
    - **Permission cards** (TASK-1095, PR B) are two more prompts, asked after
      the reply in a DM or an attended turn and never in an outsider's turn,
      through the same click gate as a held call. At most 3 per reply, one per
-     host and one per skill. They are not the held-call prompt: held calls are
-     resolved by `decisions:approve` and `decisions:dismiss`, never by these.
+     host and one per skill. Skills past the 3 get one line after the
+     prompts, counting them and linking Today, where they wait (TASK-1155).
+     They are not the held-call prompt: held calls are resolved by
+     `decisions:approve` and `decisions:dismiss`, never by these.
      - **A host the sandbox was refused** ("Wants to connect to <host>"). The
        host is whatever the sandbox tried to reach, so it is shown only once it
        passes the egress proxy's own host pattern (a plain lowercase DNS name),
