@@ -676,6 +676,9 @@ importers:
       '@ax/agents':
         specifier: workspace:*
         version: link:../agents
+      '@ax/apps-bridge-contract':
+        specifier: workspace:*
+        version: link:../apps-bridge-contract
       '@ax/conversations':
         specifier: workspace:*
         version: link:../conversations

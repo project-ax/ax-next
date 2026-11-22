@@ -268,6 +268,13 @@ describe('agent settings (TASK-888)', () => {
     expect(AGENT_SETTINGS_SECTIONS.indexOf('slack')).toBe(AGENT_SETTINGS_SECTIONS.indexOf('connectors') + 1);
   });
 
+  it('/workspace/agents/a1/settings/apps round-trips', () => {
+    const route = { kind: 'agent-settings', id: 'a1', section: 'apps' } as const;
+    expect(workspaceRoutePath(route)).toBe('/workspace/agents/a1/settings/apps');
+    expect(parseWorkspaceRoute('/workspace/agents/a1/settings/apps')).toEqual(route);
+    expect(AGENT_SETTINGS_SECTIONS.indexOf('apps')).toBe(AGENT_SETTINGS_SECTIONS.indexOf('slack') + 1);
+  });
+
   it('reads a bare /settings as Instructions', () => {
     expect(parseWorkspaceRoute('/workspace/agents/a1/settings')).toEqual({
       kind: 'agent-settings',
