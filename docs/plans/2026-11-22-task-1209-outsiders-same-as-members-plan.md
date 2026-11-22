@@ -9,6 +9,7 @@
 - `sandbox:memory-mounts` withholds only on personal agents.
 - `recordFacts` loses TASK-1204's private-stamp exception.
 - A new `member-names.ts` asks the existing `auth:get-user` hook (declared in `optionalCalls`) for display names. It's used by `memory:recall`'s `aboutText` (the memory view, the `memory_recall` tool, recall receipts) and by the injected block's Recent and Digest. Team agents only.
+  - *(Coordinator security review of Task 4: it asks only about a current member of the agent's team, proven first by the existing `teams:is-member` hook, also declared in `optionalCalls`. Any other `user:<id>` reads "a teammate" with no `auth:get-user` call.)*
 
 No new hook, and no hook signature change.
 
@@ -47,6 +48,7 @@ No new hook, and no hook signature change.
   - **Wire:** none new. The channel-web route already forwards the answer.
 - **`@ax/memory` manifest:** `optionalCalls` gains `auth:get-user`. That is a capability, not a hook surface.
   - It adds a boot edge memory → auth-better. No cycle: auth-better calls only `database:get-instance`, `http:register-route` and `credentials:envelope-*`, and none of those reach memory. `presets/memory`'s boot-graph test checks it.
+  - *(Coordinator security review: it also gains `teams:is-member`, so names are asked only about current members of the agent's team. That adds a boot edge memory → teams. No cycle: teams calls only `database:get-instance`, plus `http:register-route` and `auth:require-user` with its admin routes. The boot-graph test checks it.)*
 - **`sandbox:memory-mounts`, `memory:recall`:** same shapes, wider answers for outsiders on team agents. The security note covers it.
 
 ## Global Constraints
@@ -273,7 +275,7 @@ git commit -m "feat(memory): an outsider's turn on a team agent recalls what a m
 - A name is cleaned and clamped, and a reserved name falls back.
 - Failures are soft and logged by code only.
 - Display names are persisted in recall receipts' snapshots (`recall-receipts.ts:88`), as rendered.
-- Residual: `auth:get-user` isn't team-scoped, so a writer who already knows another account's id can store `user:<that id>` and have it shown by name. Accepted (decisions shard). A `teams:is-member` gate is a follow-up if review wants it.
+- ~~Residual: `auth:get-user` isn't team-scoped, so a writer who already knows another account's id can store `user:<that id>` and have it shown by name. Accepted (decisions shard). A `teams:is-member` gate is a follow-up if review wants it.~~ *Closed by the coordinator's security review of Task 4.* A stored subject is model output, so `user:<id>` can name any account. So memory asks `teams:is-member` about the agent's team (`MemoryAccess.teamId`) first. It asks `auth:get-user` only about an id answered exactly `member: true`. A non-member, a former member, an odd answer, a throw, no team id or no service: that id reads "a teammate", with no `auth:get-user` call (decisions shard).
 - Residual: outsiders on a team agent now see members' AX display names beside their facts. Decided ("outsiders the same as insiders").
 
 **Files:**
@@ -306,7 +308,7 @@ export function memberName(raw: unknown): string | undefined;
 export async function memberLabels(
   bus: HookBus,
   ctx: AgentContext,
-  access: Pick<MemoryAccess, 'visibility'>,
+  access: Pick<MemoryAccess, 'visibility' | 'teamId'>, // `teamId`: coordinator security review
   subjects: Iterable<string>,
   self: string | undefined,
 ): Promise<ReadonlyMap<string, string>>;
@@ -325,6 +327,7 @@ const name = clampCodeUnits(flat, MEMBER_NAME_MAX).trimEnd();
 2. Collect the distinct subjects with a `memberKeyId` that aren't `self`. With none, return an empty map.
 3. With no service (`bus.hasService`), map each one to `TEAMMATE_TEXT`.
 4. Otherwise make one `bus.call(AUTH_GET_USER_HOOK, ctx, { userId })` per distinct id, in parallel. An answer counts only if it is a non-null, non-array object whose `id === userId`. Then the label is `memberName(answer.displayName) ?? TEAMMATE_TEXT`.
+   - *(Coordinator security review: first, per id, `bus.call(TEAMS_IS_MEMBER_HOOK, ctx, { teamId: access.teamId, userId })`. Ask `auth:get-user` only when it answered exactly `member: true`. No team id, or no `teams:is-member` service: no lookups at all.)*
 5. A throw labels that member `TEAMMATE_TEXT`. Remember the first error, and after all lookups call `ctx.logger.warn(MEMBER_NAMES_FAILED_EVENT, { agentId: ctx.agentId, ...faultLogFields(err) })` once, inside a `try`.
 
 `isPersonSubject` comes from `./audience.js` and `isAgentSubject` from `./self-report.js`.
@@ -333,7 +336,7 @@ In `memory:recall`: `const labels = await memberLabels(bus, ctx, access, page.ma
 `aboutText: ownSubject !== undefined && row.about === ownSubject ? 'you' : labels.get(row.about) ?? (row.about.startsWith(`${SPEAKER_SUBJECT}:`) ? TEAMMATE_TEXT : row.about.replace(/_/g, ' '))`.
 A personal agent gets an empty map, so its output is unchanged.
 
-Manifest, appended after the storage entries: `{ hook: AUTH_GET_USER_HOOK, degradation: "on a team agent, another member's memories read \"a teammate\" instead of their name" }`.
+Manifest, appended after the storage entries: `{ hook: AUTH_GET_USER_HOOK, degradation: "on a team agent, another member's memories read \"a teammate\" instead of their name" }`. *(Coordinator security review: then `{ hook: TEAMS_IS_MEMBER_HOOK, … }`, with the same "a teammate" degradation.)*
 
 Harness: `MemoryHarnessOptions.authUser?: (userId: string) => unknown | Promise<unknown>` registers `auth:get-user` (plugin `'@ax/test-auth'`) and pushes each `userId` to a new `MemoryHarness.authCalls: string[]`. Without the option, no service is registered and `authCalls` stays `[]`.
 
@@ -464,10 +467,10 @@ Harness: `MemoryHarnessOptions.authUser?: (userId: string) => unknown | Promise<
 ## PR body must say
 
 - **Capture is unchanged, on purpose (Vinay, 2026-11-22, "keep both").** Outsiders' words are never remembered, and Slack Connect stays refused.
-- **Security note** (one, from Tasks 1–5's walks). One privacy boundary is removed on purpose. The new capability is `auth:get-user` (display name only). Account-holder text now reaches the prompt, cleaned. Residuals: names of accounts whose ids a writer knows; members' names visible to outsiders; names frozen in receipts.
+- **Security note** (one, from Tasks 1–5's walks). One privacy boundary is removed on purpose. The new capability is `auth:get-user` (display name only), asked only about current members of the agent's team, proven by `teams:is-member` (coordinator security review). Account-holder text now reaches the prompt, cleaned. Residuals: members' names visible to outsiders; names frozen in receipts.
 - **Deploy gate.** Ship with TASK-1204, TASK-1203 and the copy follow-up, never before: the notices are what replace the boundary.
 - **Follow-ups:**
   1. Notice copy "anyone who talks to [Fern]" in channel-slack and channel-web: the four strings above, `MEMORY_TEAM_NOTICE`, and channel-web `workspace-types.ts:897-904`'s stale F2 doc on `FactMemoryStatement.audience`.
   2. Member names in the `/memory` export's `## user:<id>` headings.
   3. Find a teammate's facts by name in a `query`.
-  4. Optional `teams:is-member` gate on names, if review wants it.
+  4. ~~Optional `teams:is-member` gate on names, if review wants it.~~ Done in this PR (coordinator security review of Task 4).

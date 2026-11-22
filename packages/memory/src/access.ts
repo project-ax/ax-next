@@ -8,6 +8,12 @@ export const AGENTS_RESOLVE_HOOK = 'agents:resolve';
 export interface MemoryAccess {
   userId: string;
   visibility: 'personal' | 'team';
+  /**
+   * The team that owns a team agent (`agents:resolve`'s `ownerId`), and only
+   * there. Memory asks `teams:is-member` about it before it names a member
+   * (TASK-1209, `member-names.ts`).
+   */
+  teamId?: string;
 }
 
 export async function resolveMemoryAccess(
@@ -55,7 +61,9 @@ export async function resolveMemoryAccess(
       message: 'This personal memory belongs to another person',
     });
   }
-  return { userId, visibility: agent.visibility as 'personal' | 'team' };
+  return agent.visibility === 'team'
+    ? { userId, visibility: 'team', teamId: agent.ownerId }
+    : { userId, visibility: 'personal' };
 }
 
 export function memoryReadScope(access: MemoryAccess): { ownerUserId?: string } {

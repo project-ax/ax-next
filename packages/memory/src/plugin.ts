@@ -67,7 +67,7 @@ import {
   selectProfileRows,
 } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
-import { AUTH_GET_USER_HOOK, memberLabels, TEAMMATE_TEXT } from './member-names.js';
+import { AUTH_GET_USER_HOOK, memberLabels, TEAMMATE_TEXT, TEAMS_IS_MEMBER_HOOK } from './member-names.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall, registerMemoryUse } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
 import {
@@ -650,11 +650,18 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               degradation: NO_RECEIPTS_DEGRADATION,
             }))),
         // TASK-1209: on a team agent another member's memories read by their
-        // display name (`member-names.ts`). Only labels depend on it, so
-        // without it they read "a teammate" and every read still answers.
+        // display name (`member-names.ts`), asked only about a proven current
+        // member of the agent's team. Only labels depend on either, so
+        // without one of them they read "a teammate" and every read still
+        // answers.
         {
           hook: AUTH_GET_USER_HOOK,
           degradation: 'on a team agent, another member\'s memories read "a teammate" instead of their name',
+        },
+        {
+          hook: TEAMS_IS_MEMBER_HOOK,
+          degradation:
+            'on a team agent, another member\'s memories read "a teammate" instead of their name: nobody is proven a current member of the team, so nobody is named',
         },
       ],
       subscribes: [CHAT_END_HOOK, ...(incrementalCfg !== undefined ? [CHAT_TURN_END_HOOK] : [])],
@@ -1071,8 +1078,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
           // Every other member's key on this page, by their display name
           // (TASK-1209): only on a team agent, only in a turn whose recall
-          // reads everything, and never failing the read. Empty on a
-          // personal agent, which asks nobody.
+          // reads everything, only for a current member of its team, and
+          // never failing the read. Empty on a personal agent, which asks
+          // nobody.
           const labels = await memberLabels(bus, ctx, access, page.map((row) => row.about), ownSubject);
 
           // Per-answer conversation ordinals (design doc "Signal" section,
@@ -1113,9 +1121,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               return {
                 ...mapped,
                 // Another person's speaker subject is `user:<their id>`; a
-                // caller is never handed that id. On a team agent it reads as
-                // their display name where `memberLabels` has one, else
-                // "a teammate". Only the caller's own key reads `you`.
+                // caller is never handed that id. On a team agent a current
+                // member's reads as their display name where `memberLabels`
+                // has one; anyone else's, "a teammate". Only the caller's own
+                // key reads `you`.
                 aboutText:
                   ownSubject !== undefined && row.about === ownSubject
                     ? 'you'

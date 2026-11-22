@@ -114,21 +114,26 @@ describe('@ax/memory — manifest', () => {
       'storage:get',
       'storage:set',
       'auth:get-user',
+      'teams:is-member',
     ]);
     expect(manifest.optionalCalls?.[0]?.degradation).toContain('chat:end');
   });
 
   // TASK-1209: a team agent's memories about a member read by that member's
-  // display name. Nothing about recall depends on it, so it degrades.
-  it("names auth:get-user as OPTIONAL: without it a teammate's memories read 'a teammate'", () => {
-    for (const config of [{}, { incremental: false }] as const) {
-      const { manifest } = createMemoryPlugin(config);
-      expect(manifest.calls).not.toContain('auth:get-user');
-      const entries = (manifest.optionalCalls ?? []).filter((oc) => oc.hook === 'auth:get-user');
-      expect(entries).toHaveLength(1);
-      expect(entries[0]!.degradation).toMatch(/a teammate/);
-    }
-  });
+  // display name, asked only about a proven current member of the agent's
+  // team. Nothing about recall depends on either, so both degrade.
+  it.each(['auth:get-user', 'teams:is-member'])(
+    "names %s as OPTIONAL: without it a teammate's memories read 'a teammate'",
+    (hook) => {
+      for (const config of [{}, { incremental: false }] as const) {
+        const { manifest } = createMemoryPlugin(config);
+        expect(manifest.calls).not.toContain(hook);
+        const entries = (manifest.optionalCalls ?? []).filter((oc) => oc.hook === hook);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]!.degradation).toMatch(/a teammate/);
+      }
+    },
+  );
 
   it('names the transcript and cursor store as OPTIONAL — without them extraction waits for chat:end', () => {
     const { manifest } = createMemoryPlugin();
@@ -144,6 +149,7 @@ describe('@ax/memory — manifest', () => {
       'storage:get',
       'storage:set',
       'auth:get-user',
+      'teams:is-member',
     ]);
     for (const entry of off!.filter((oc) => oc.hook.startsWith('storage:'))) {
       expect(entry.degradation).not.toMatch(/chat:end/);

@@ -109,12 +109,16 @@ export interface MemoryHarness {
    * registered at all.
    */
   authCalls: string[];
+  /** Every id `teams:is-member` was asked about, in order (TASK-1209). */
+  memberCalls: string[];
   teardown: () => Promise<void>;
 }
 
 export const DEFAULT_AGENT = 'agent-1';
 export const ALICE = 'user-alice';
 export const BOB = 'user-bob';
+/** The team that owns a team agent here: `agents:resolve`'s `ownerId`. */
+export const TEAM_ID = 'team-1';
 
 export interface MemoryHarnessOptions {
   /**
@@ -137,6 +141,14 @@ export interface MemoryHarnessOptions {
    * describes.
    */
   authUser?: (userId: string) => unknown | Promise<unknown>;
+  /**
+   * `teams:is-member` (TASK-1209: memory names only current members of the
+   * agent's team). By default it answers from `agent.members` for
+   * {@link TEAM_ID}, the same people `agents:resolve` lets in, as
+   * `@ax/agents`' ACL does. `false` registers no such service; a function
+   * answers (or throws) in its place.
+   */
+  teamsIsMember?: false | ((input: { teamId: string; userId: string }) => unknown | Promise<unknown>);
 }
 
 export async function makeMemoryHarness(
@@ -170,6 +182,23 @@ export async function makeMemoryHarness(
     ownerUserId: options.agent?.ownerUserId,
     members: teamMembers,
   });
+
+  const memberCalls: string[] = [];
+  if (options.teamsIsMember !== false) {
+    const answer =
+      options.teamsIsMember ??
+      ((input: { teamId: string; userId: string }) => ({
+        member: input.teamId === TEAM_ID && teamMembers.has(input.userId),
+      }));
+    bus.registerService<{ teamId: string; userId: string }, unknown>(
+      'teams:is-member',
+      '@ax/test-teams',
+      async (_ctx, input) => {
+        memberCalls.push(input.userId);
+        return answer(input);
+      },
+    );
+  }
 
   const authCalls: string[] = [];
   if (options.authUser !== undefined) {
@@ -229,6 +258,7 @@ export async function makeMemoryHarness(
     toolDescriptors,
     teamMembers,
     authCalls,
+    memberCalls,
     settleObserver: async () => {
       // Loop: a settle can race a run that starts another. Bounded so a
       // pathological test cannot hang the suite.
@@ -286,7 +316,7 @@ export function registerMemoryAgents(
     return {
       agent: {
         id: input.agentId,
-        ownerId: visibility === 'team' ? 'team-1' : ownerUserId,
+        ownerId: visibility === 'team' ? TEAM_ID : ownerUserId,
         ownerType: visibility === 'team' ? 'team' : 'user',
         visibility,
       },

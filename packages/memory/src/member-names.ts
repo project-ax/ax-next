@@ -28,6 +28,21 @@
  * (it fails closed), and it is told no names either: its members read "a
  * teammate", with no lookup.
  *
+ * ## Whose names
+ *
+ * Only a CURRENT member of the agent's own team (TASK-1209's security
+ * review). A subject is model output shaped by chat, so a stored
+ * `user:<id>` can name any account at all, and `auth:get-user` answers for
+ * any account. So memory first asks `teams:is-member` about the agent's team
+ * (`MemoryAccess.teamId`), the same source `@ax/agents` decides team access
+ * with, and asks `auth:get-user` only about an id that hook answered
+ * `member: true` for. Anything else fails closed for that id, with no
+ * `auth:get-user` call: a non-member, a former member, an answer this can't
+ * read, a throw, no team id, and no `teams:is-member` service at all. Each id
+ * is its own question: `@ax/teams` throws on an id it can't hold (over 256
+ * characters), and one such stored subject mustn't blank every name in an
+ * answer.
+ *
  * ## A name is untrusted text
  *
  * A member can rename themself to anything, at any length. So a name is
@@ -64,13 +79,17 @@ import { SPEAKER_SUBJECT } from './subject.js';
 /** The hook that names an account by id (`@ax/auth-better`). */
 export const AUTH_GET_USER_HOOK = 'auth:get-user';
 
+/** The hook that says whether an account is a current member of a team (`@ax/teams`). */
+export const TEAMS_IS_MEMBER_HOOK = 'teams:is-member';
+
 /** What another member's key reads as when memory has no name to show. */
 export const TEAMMATE_TEXT = 'a teammate';
 
 /**
  * Logged once per {@link memberLabels} call in which a lookup threw. Bindings
- * are `agentId` and the error's codes (`faultLogFields`) only: an error's
- * message may quote the id, the name or the email.
+ * are `agentId`, `hook` (which of the two lookups threw first) and that
+ * error's codes (`faultLogFields`) only: an error's message may quote the id,
+ * the name or the email.
  */
 export const MEMBER_NAMES_FAILED_EVENT = 'memory_member_names_failed';
 
@@ -123,13 +142,15 @@ export function memberName(raw: unknown): string | undefined {
  * caller's own key, which reads `you`), nor a subject that isn't a member key.
  * Empty on any other agent, with no lookup at all.
  *
- * One `auth:get-user` per distinct member, in parallel, and only in a turn
- * whose recall reads everything (see the file header). Never throws.
+ * Only in a turn whose recall reads everything, and only for a current member
+ * of the agent's team (see the file header): per distinct id, one
+ * `teams:is-member`, then one `auth:get-user` if and only if it answered
+ * `member: true`. Ids are asked in parallel. Never throws.
  */
 export async function memberLabels(
   bus: HookBus,
   ctx: AgentContext,
-  access: Pick<MemoryAccess, 'visibility'>,
+  access: Pick<MemoryAccess, 'visibility' | 'teamId'>,
   subjects: Iterable<string>,
   self: string | undefined,
 ): Promise<ReadonlyMap<string, string>> {
@@ -143,36 +164,61 @@ export async function memberLabels(
     ids.set(about, id);
     labels.set(about, TEAMMATE_TEXT);
   }
+  const teamId = access.teamId;
   if (
     ids.size === 0 ||
     // The recall rule itself: a turn whose reads are scoped (a source this
     // build doesn't know, which fails closed) is told no names.
     recallAudienceScope(ctx, access).audience !== undefined ||
+    // No team to ask about, or nobody to ask: no member is proven, so
+    // nobody is named.
+    typeof teamId !== 'string' ||
+    teamId === '' ||
+    !bus.hasService(TEAMS_IS_MEMBER_HOOK) ||
     !bus.hasService(AUTH_GET_USER_HOOK)
   ) {
     return labels;
   }
-  const faults: unknown[] = [];
+  const faults: Array<{ hook: string; err: unknown }> = [];
   await Promise.all(
     [...ids].map(async ([about, userId]) => {
+      let membership: unknown;
+      try {
+        membership = await bus.call<{ teamId: string; userId: string }, unknown>(TEAMS_IS_MEMBER_HOOK, ctx, {
+          teamId,
+          userId,
+        });
+      } catch (err) {
+        faults.push({ hook: TEAMS_IS_MEMBER_HOOK, err });
+        return;
+      }
+      // Exactly `member: true`: anything else is no proof of membership.
+      if (!isRecord(membership) || membership.member !== true) return;
       try {
         const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
-        if (user === null || typeof user !== 'object' || Array.isArray(user)) return;
-        const answer = user as { id?: unknown; displayName?: unknown };
-        if (answer.id !== userId) return;
-        const name = memberName(answer.displayName);
+        if (!isRecord(user) || user.id !== userId) return;
+        const name = memberName(user.displayName);
         if (name !== undefined) labels.set(about, name);
       } catch (err) {
-        faults.push(err);
+        faults.push({ hook: AUTH_GET_USER_HOOK, err });
       }
     }),
   );
-  if (faults.length > 0) {
+  const first = faults[0];
+  if (first !== undefined) {
     try {
-      ctx.logger.warn(MEMBER_NAMES_FAILED_EVENT, { agentId: ctx.agentId, ...faultLogFields(faults[0]) });
+      ctx.logger.warn(MEMBER_NAMES_FAILED_EVENT, {
+        agentId: ctx.agentId,
+        hook: first.hook,
+        ...faultLogFields(first.err),
+      });
     } catch {
       // A label is cosmetic, and so is the warning about one.
     }
   }
   return labels;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

@@ -17,6 +17,7 @@ import {
   memberLabels,
   memberName,
   TEAMMATE_TEXT,
+  TEAMS_IS_MEMBER_HOOK,
 } from '../member-names.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import type { MemoryRecallOutput } from '../types.js';
@@ -51,10 +52,18 @@ async function makeHarness(options: MemoryHarnessOptions = {}): Promise<MemoryHa
   return harness;
 }
 
-const TEAM = { visibility: 'team' } as const;
+/** A team agent, for the harness (whose `agents:resolve` says it belongs to `TEAM_ID`). */
+const TEAM_AGENT = { visibility: 'team' } as const;
+/** The team that owns the agent in the unit tests below, and who is in it now. */
+const UNIT_TEAM = 'team-unit';
+const UNIT_MEMBERS = new Set(['u-alice', 'u-bob', 'u-carol', 'u-dave']);
+/** A team agent's access, as `resolveMemoryAccess` answers it. */
+const TEAM = { visibility: 'team', teamId: UNIT_TEAM } as const;
 const PERSONAL = { visibility: 'personal' } as const;
 const JAN = '2026-01-15T00:00:00.000Z';
 const CHANNEL = 'conv-channel';
+/** An account auth knows, who is not on the agent's team. */
+const EVE = 'user-eve';
 
 describe('member names (TASK-1209)', () => {
   describe('memberName', () => {
@@ -139,14 +148,37 @@ describe('member names (TASK-1209)', () => {
   });
 
   describe('memberLabels', () => {
-    function authBus(answer: (userId: string) => unknown): { bus: HookBus; asked: string[] } {
+    type IsMember = (input: { teamId: string; userId: string }) => unknown;
+    const onTheTeam: IsMember = ({ teamId, userId }) => ({ member: teamId === UNIT_TEAM && UNIT_MEMBERS.has(userId) });
+
+    /**
+     * A bare bus with `auth:get-user` answering `answer`, and `teams:is-member`
+     * answering `isMember` (by default: `UNIT_MEMBERS` are on `UNIT_TEAM`), or
+     * no such service with `false`. `asked` and `memberAsked` are the ids each
+     * was asked about.
+     */
+    function authBus(
+      answer: (userId: string) => unknown,
+      isMember: IsMember | false = onTheTeam,
+    ): { bus: HookBus; asked: string[]; memberAsked: string[] } {
       const bus = new HookBus();
       const asked: string[] = [];
+      const memberAsked: string[] = [];
       bus.registerService<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, '@ax/test-auth', async (_ctx, input) => {
         asked.push(input.userId);
         return answer(input.userId);
       });
-      return { bus, asked };
+      if (isMember !== false) {
+        bus.registerService<{ teamId: string; userId: string }, unknown>(
+          TEAMS_IS_MEMBER_HOOK,
+          '@ax/test-teams',
+          async (_ctx, input) => {
+            memberAsked.push(input.userId);
+            return isMember(input);
+          },
+        );
+      }
+      return { bus, asked, memberAsked };
     }
 
     function ctxOf(
@@ -165,19 +197,23 @@ describe('member names (TASK-1209)', () => {
     }
 
     const named = (userId: string): unknown =>
-      ({ 'u-bob': { id: 'u-bob', displayName: 'Bob Smith', email: 'bob@x.test', isAdmin: false } })[userId] ?? null;
+      ({
+        'u-bob': { id: 'u-bob', displayName: 'Bob Smith', email: 'bob@x.test', isAdmin: false },
+        'u-eve': { id: 'u-eve', displayName: 'Eve Example', email: 'eve@x.test', isAdmin: false },
+      })[userId] ?? null;
 
     it('asks nobody on a personal agent', async () => {
       const logs: LoggedEvent[] = [];
-      const { bus, asked } = authBus(named);
+      const { bus, asked, memberAsked } = authBus(named);
       const labels = await memberLabels(bus, ctxOf(logs), PERSONAL, ['user:u-bob', 'user:u-carol'], 'user:u-alice');
       expect([...labels]).toEqual([]);
       expect(asked).toEqual([]);
+      expect(memberAsked).toEqual([]);
     });
 
     it("on a team agent, asks once per other member and names only member keys", async () => {
       const logs: LoggedEvent[] = [];
-      const { bus, asked } = authBus(named);
+      const { bus, asked, memberAsked } = authBus(named);
       const labels = await memberLabels(
         bus,
         ctxOf(logs),
@@ -185,9 +221,99 @@ describe('member names (TASK-1209)', () => {
         ['user:u-bob', 'user:u-bob', 'user:u-alice', 'acme_corp', 'user'],
         'user:u-alice',
       );
+      expect(memberAsked).toEqual(['u-bob']);
       expect(asked).toEqual(['u-bob']);
       expect([...labels]).toEqual([['user:u-bob', 'Bob Smith']]);
       expect(logs).toEqual([]);
+    });
+
+    // TASK-1209's security review: a subject is model output, so `user:<id>`
+    // can name any account, and auth answers for any account. Only a proven
+    // current member of the agent's own team is looked up.
+    it("never asks auth about an account that isn't on the agent's team", async () => {
+      const logs: LoggedEvent[] = [];
+      const teams: string[] = [];
+      const { bus, asked, memberAsked } = authBus(named, (input) => {
+        teams.push(input.teamId);
+        return onTheTeam(input);
+      });
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-eve', 'user:u-bob'], undefined);
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-eve': TEAMMATE_TEXT, 'user:u-bob': 'Bob Smith' });
+      expect([...memberAsked].sort()).toEqual(['u-bob', 'u-eve']);
+      expect(teams).toEqual([UNIT_TEAM, UNIT_TEAM]);
+      expect(asked).toEqual(['u-bob']);
+      expect(logs).toEqual([]);
+    });
+
+    it('without teams:is-member, nobody is proven a member: auth is never asked', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus(named, false);
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-eve'], undefined);
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-eve': TEAMMATE_TEXT });
+      expect(asked).toEqual([]);
+      expect(logs).toEqual([]);
+    });
+
+    it('a team agent whose team is unknown names nobody', async () => {
+      const { bus, asked, memberAsked } = authBus(named);
+      for (const access of [{ visibility: 'team' }, { visibility: 'team', teamId: '' }] as const) {
+        const labels = await memberLabels(bus, ctxOf([]), access, ['user:u-bob'], undefined);
+        expect([...labels]).toEqual([['user:u-bob', TEAMMATE_TEXT]]);
+      }
+      expect(memberAsked).toEqual([]);
+      expect(asked).toEqual([]);
+    });
+
+    it.each([
+      ['null', null],
+      ['an array', []],
+      ['no member field', {}],
+      ['the string "true"', { member: 'true' }],
+      ['the number 1', { member: 1 }],
+      ['not an object', 'yes'],
+    ])('a membership answer of %s is no proof: auth is never asked', async (_label, answer) => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus(named, () => answer);
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], undefined);
+      expect([...labels]).toEqual([['user:u-bob', TEAMMATE_TEXT]]);
+      expect(asked).toEqual([]);
+      expect(logs).toEqual([]);
+    });
+
+    it('a membership check that throws: that id is never looked up; one warn, by code only', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus(
+        (userId) => ({ id: userId, displayName: 'Carol Chen', email: 'carol@x.test' }),
+        (input) => {
+          if (input.userId === 'u-bob') {
+            throw new PluginError({ code: 'store-unavailable', plugin: 'x', message: 'u-bob bob@x.test Bob' });
+          }
+          return onTheTeam(input);
+        },
+      );
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined);
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': 'Carol Chen' });
+      expect(asked).toEqual(['u-carol']);
+      const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]!.bindings).toMatchObject({
+        agentId: 'agent-1',
+        hook: TEAMS_IS_MEMBER_HOOK,
+        code: 'store-unavailable',
+      });
+      const logged = JSON.stringify(logs);
+      for (const secret of ['u-bob', 'bob@x.test', 'Bob', 'u-carol', 'Carol']) expect(logged).not.toContain(secret);
+    });
+
+    it('membership down for everyone: auth is never asked, and one warn', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus(named, () => {
+        throw new Error('teams down');
+      });
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined);
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+      expect(asked).toEqual([]);
+      expect(eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT)).toHaveLength(1);
     });
 
     it('with no auth:get-user at all, every member reads "a teammate", with no warn', async () => {
@@ -259,6 +385,7 @@ describe('member names (TASK-1209)', () => {
       await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], undefined);
       expect(eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT)[0]!.bindings).toMatchObject({
         agentId: 'agent-1',
+        hook: AUTH_GET_USER_HOOK,
         code: 'store-unavailable',
       });
     });
@@ -292,7 +419,7 @@ describe('member names (TASK-1209)', () => {
     // told no names either. Its members still never read as a raw id.
     it("asks nobody in a turn from a source this build doesn't know, on a team agent", async () => {
       const logs: LoggedEvent[] = [];
-      const { bus, asked } = authBus(named);
+      const { bus, asked, memberAsked } = authBus(named);
       for (const audience of ['shared', 'private', undefined] as const) {
         const labels = await memberLabels(
           bus,
@@ -303,6 +430,7 @@ describe('member names (TASK-1209)', () => {
         );
         expect([...labels]).toEqual([['user:u-bob', TEAMMATE_TEXT]]);
       }
+      expect(memberAsked).toEqual([]);
       expect(asked).toEqual([]);
     });
 
@@ -360,18 +488,19 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
   }
 
   it("in a member's own turn: the caller is you, a teammate reads by name, a topic by its words", async () => {
-    const h = await makeHarness({ agent: TEAM, authUser: authOver(PEOPLE) });
+    const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(PEOPLE) });
     await seedTeam(h);
     expect(aboutTexts(await h.recall({}, h.ctx()))).toEqual({
       Boston: 'Bob Smith',
       teal: 'you',
       Nightjar: 'launch plan',
     });
+    expect(h.memberCalls).toEqual([BOB]);
     expect(h.authCalls).toEqual([BOB]);
   });
 
   it('without auth:get-user, a teammate reads "a teammate"', async () => {
-    const h = await makeHarness({ agent: TEAM });
+    const h = await makeHarness({ agent: TEAM_AGENT });
     await seedTeam(h);
     expect(aboutTexts(await h.recall({}, h.ctx()))).toEqual({
       Boston: TEAMMATE_TEXT,
@@ -387,15 +516,17 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
     ]);
     expect(aboutTexts(await h.recall({}, h.ctx()))).toEqual({ tea: TEAMMATE_TEXT });
     expect(await recallTool(h, h.ctx(), 'tea')).toContain('a teammate likes: tea');
+    expect(h.memberCalls).toEqual([]);
     expect(h.authCalls).toEqual([]);
   });
 
   it("in an outsider's turn the requester reads by their name, never you", async () => {
-    const h = await makeHarness({ agent: TEAM, authUser: authOver(PEOPLE) });
+    const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(PEOPLE) });
     await seedTeam(h);
     const outsider = h.ctx({ conversationId: CHANNEL, source: 'external', audience: 'shared' });
     const out = await h.recall({}, outsider);
     expect(aboutTexts(out)).toEqual({ Boston: 'Bob Smith', teal: 'Alice Jones', Nightjar: 'launch plan' });
+    expect([...h.memberCalls].sort()).toEqual([ALICE, BOB].sort());
     expect([...h.authCalls].sort()).toEqual([ALICE, BOB].sort());
     const tool = await recallTool(h, outsider, 'teal');
     expect(tool).toContain('Alice Jones favorite color: teal');
@@ -404,7 +535,7 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
 
   it('a teammate whose name reads as "you" reads "a teammate"', async () => {
     const h = await makeHarness({
-      agent: TEAM,
+      agent: TEAM_AGENT,
       authUser: authOver({ ...PEOPLE, [BOB]: { displayName: 'You', email: 'bob@x.test' } }),
     });
     await seedTeam(h);
@@ -416,7 +547,7 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
   });
 
   it("the memory_recall tool names a teammate's fact", async () => {
-    const h = await makeHarness({ agent: TEAM, authUser: authOver(PEOPLE) });
+    const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(PEOPLE) });
     await seedTeam(h);
     const tool = await recallTool(h, h.ctx(), 'Boston');
     expect(tool).toContain('Bob Smith lives in: Boston');
@@ -425,7 +556,7 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
 
   it('never shows an email, even when auth has no name to give', async () => {
     const h = await makeHarness({
-      agent: TEAM,
+      agent: TEAM_AGENT,
       authUser: authOver({ ...PEOPLE, [BOB]: { displayName: null, email: 'bob@x.test' } }),
     });
     await seedTeam(h);
@@ -439,7 +570,7 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
 
   it('a lookup that throws still answers the recall; the log names no account', async () => {
     const h = await makeHarness({
-      agent: TEAM,
+      agent: TEAM_AGENT,
       authUser: (userId) => {
         throw new PluginError({
           code: 'store-unavailable',
@@ -466,7 +597,7 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
   // members, the requester included, read "a teammate": never a name, never
   // "you", never a raw id.
   it("a turn from a source this build doesn't know is told no names on a team agent", async () => {
-    const h = await makeHarness({ agent: TEAM, authUser: authOver(PEOPLE) });
+    const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(PEOPLE) });
     await seedTeam(h, 'shared');
     const unknown = h.ctx({ conversationId: CHANNEL, source: 'satellite' as AgentContextSource, audience: 'shared' });
     const out = await h.recall({}, unknown);
@@ -477,6 +608,91 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
       expect(text).not.toContain('Bob Smith');
       expect(text).not.toContain('Alice Jones');
     }
+    expect(h.memberCalls).toEqual([]);
     expect(h.authCalls).toEqual([]);
+  });
+
+  // TASK-1209's security review: a stored subject is model output, so
+  // `user:<id>` can name any account, and auth answers for any account. Only
+  // a current member of the agent's own team is ever looked up.
+  describe('only a current member of the team is named', () => {
+    const WITH_EVE: Record<string, Person> = {
+      ...PEOPLE,
+      [EVE]: { displayName: 'Eve Example', email: 'eve@x.test' },
+    };
+
+    /** A fact filed under an account outside the team, as a member's private turn keeps it. */
+    async function seedOutsideKey(h: MemoryHarness): Promise<void> {
+      await engineRecord(h.bus, h.ctx(), [
+        { about: `user:${EVE}`, relation: 'lives_in', value: 'Paris', when: JAN, ownerUserId: ALICE, conversationId: 'conv-alice' },
+      ]);
+    }
+
+    it("a key for an account that isn't on the team reads \"a teammate\", and auth is never asked about it", async () => {
+      const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(WITH_EVE) });
+      await seedTeam(h);
+      await seedOutsideKey(h);
+      const aliceTurn = h.ctx();
+      const outsider = h.ctx({ conversationId: CHANNEL, source: 'external', audience: 'shared' });
+      for (const ctx of [aliceTurn, outsider]) {
+        const out = await h.recall({}, ctx);
+        expect(aboutTexts(out).Paris).toBe(TEAMMATE_TEXT);
+        expect(aboutTexts(out).Boston).toBe('Bob Smith');
+        const tool = await recallTool(h, ctx, 'Paris');
+        expect(tool).toContain('a teammate lives in: Paris');
+        for (const text of [JSON.stringify(out), tool]) expect(text).not.toContain('Eve Example');
+      }
+      expect(h.memberCalls).toContain(EVE);
+      expect(h.authCalls).not.toContain(EVE);
+      expect(h.authCalls).toContain(BOB);
+    });
+
+    it('a member who has left the team is no longer named', async () => {
+      const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(PEOPLE) });
+      await seedTeam(h);
+      h.teamMembers.delete(BOB);
+      expect(aboutTexts(await h.recall({}, h.ctx())).Boston).toBe(TEAMMATE_TEXT);
+      expect(h.memberCalls).toEqual([BOB]);
+      expect(h.authCalls).toEqual([]);
+    });
+
+    it('without teams:is-member nobody is named, auth is never asked, and the recall answers', async () => {
+      const h = await makeHarness({ agent: TEAM_AGENT, authUser: authOver(PEOPLE), teamsIsMember: false });
+      await seedTeam(h);
+      expect(aboutTexts(await h.recall({}, h.ctx()))).toEqual({
+        Boston: TEAMMATE_TEXT,
+        teal: 'you',
+        Nightjar: 'launch plan',
+      });
+      expect(await recallTool(h, h.ctx(), 'Boston')).toContain('a teammate lives in: Boston');
+      expect(h.authCalls).toEqual([]);
+      expect(eventsNamed(h.logs, MEMBER_NAMES_FAILED_EVENT)).toEqual([]);
+    });
+
+    it('a membership check that throws: auth is never asked, the recall answers, the log names no account', async () => {
+      const h = await makeHarness({
+        agent: TEAM_AGENT,
+        authUser: authOver(PEOPLE),
+        teamsIsMember: ({ userId }) => {
+          throw new PluginError({
+            code: 'store-unavailable',
+            plugin: '@ax/test-teams',
+            message: `no answer for ${userId} (bob@x.test, Bob Smith)`,
+          });
+        },
+      });
+      await seedTeam(h);
+      expect(aboutTexts(await h.recall({}, h.ctx()))).toEqual({
+        Boston: TEAMMATE_TEXT,
+        teal: 'you',
+        Nightjar: 'launch plan',
+      });
+      expect(h.authCalls).toEqual([]);
+      const warns = eventsNamed(h.logs, MEMBER_NAMES_FAILED_EVENT);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'store-unavailable' });
+      const logged = JSON.stringify(h.logs);
+      for (const secret of [BOB, 'bob@x.test', 'Bob Smith']) expect(logged).not.toContain(secret);
+    });
   });
 });
