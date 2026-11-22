@@ -419,6 +419,8 @@ function world(o: {
   threadWriteFails?: boolean;
   /** The channel store fails to read the thread back after recording it (TASK-1191). */
   threadReadFails?: boolean;
+  /** The thread read back after recording it is not there (TASK-1191). */
+  threadReadMissing?: boolean;
   /**
    * Runs after the router read the binding and just before the thread is
    * recorded: what an admin could do in that gap, through the store or (a
@@ -654,6 +656,7 @@ function world(o: {
       if (o.threadReadFails === true) {
         throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
       }
+      if (o.threadReadMissing === true) return null;
       return channels.store.getThread(conversationId);
     },
     // A team agent's own bot binds a channel at its first mention there (TASK-1167), reading the
@@ -3802,8 +3805,8 @@ describe("createEventRouter: a thread memory won't learn from says so in the tur
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
     expect(await w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
-    const reply = '1763035300.000300';
-    await w.dispatch(OWN_BOT, botMention({ ts: reply, thread_ts: MENTION_TS, text: `<@${OWN_BOT_USER_ID}> and now?` }));
+    // A reply in the first mention's thread: a ts of its own, keyed on the thread's.
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301', threadTs: MENTION_TS, text: `<@${OWN_BOT_USER_ID}> and now?` }));
     await w.idle();
     // One conversation, its two turns.
     expect(new Set(w.invokes.map((i) => i.ctx.conversationId)).size).toBe(1);
@@ -3821,14 +3824,22 @@ describe("createEventRouter: a thread memory won't learn from says so in the tur
     expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: <@${OWN_BOT_USER_ID}> what is open?`]);
   });
 
+  it('the thread read back finds no row: the line (nothing says memory will learn from it)', async () => {
+    const w = botWorld({ threadReadMissing: true });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.threadWrites).toEqual([expect.objectContaining({ notRemembered: false })]);
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
+  });
+
   it("the thread can't be read back: the turn still runs, with the line, and the failure is logged by code", async () => {
     const w = botWorld({ threadReadFails: true });
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
     expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
     expect(ephemerals(w.slack.calls)).toEqual([]);
-    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([
-      { level: 'warn', msg: 'slack_event_failed', fields: { installId: OWN_BOT_ID, stage: 'thread-read', code: 'store-unavailable' } },
+    expect(w.lines.filter((l) => l.msg.endsWith('_failed'))).toEqual([
+      { level: 'warn', msg: 'slack_thread_read_failed', fields: { installId: OWN_BOT_ID, code: 'store-unavailable' } },
     ]);
   });
 });

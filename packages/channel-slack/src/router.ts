@@ -745,13 +745,17 @@ async function routeMention(
     // just written, with the flags capture-veto.ts reads first: so the agent
     // is told when it won't (TASK-1191), rather than promise to remember. A
     // thread that can't be read is told it isn't remembered: the harmless
-    // side, and no reason to drop the turn.
+    // side, and no reason to drop the turn. As the record says at this
+    // write: memory reads the switch again when it runs, so a switch turned
+    // off after this still keeps it out, untold. A woken turn after an Allow
+    // has no message of ours to carry the line (answers.ts).
     let remembered = false;
     try {
       const thread = await d.channels.getThread(conversationId);
       remembered = thread !== null && thread.notRemembered === false && thread.external === false;
     } catch (err) {
-      log('warn', 'slack_event_failed', { stage: 'thread-read', code: logCode(err) });
+      // Its own name: every `slack_event_failed` means the event's work stopped, and this turn still runs.
+      log('warn', 'slack_thread_read_failed', { code: logCode(err) });
     }
     await runTurn(d, {
       mode: external ? 'external' : 'attended',
