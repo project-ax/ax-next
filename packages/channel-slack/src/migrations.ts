@@ -28,9 +28,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     `created_at` is still when the row was made, and it orders `current()`.
  *
  *   channel_slack_v1_channels — the bindings (TASK-1094): which team agent a
- *     channel of an install is connected to (public, or private since
- *     TASK-1188: `is_private`, never remembered). The primary key makes it
- *     one agent per channel; an agent may have several channels.
+ *     channel of an install is connected to (public or private, TASK-1188;
+ *     a private one remembered like any other since TASK-1203, so no column
+ *     says which). The primary key makes it one agent per channel; an agent
+ *     may have several channels.
  *     `connected_by_user_id` is the team admin who connected it, the person a
  *     channel's outsiders run as, so every write names the binding's agent and
  *     another agent can neither take the channel nor change it
@@ -39,17 +40,27 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     agent's own bot keeps bindings across a boot: the shared app's channel
  *     path is retired (design §4b.1), and every boot deletes the shared
  *     install's rows (below, TASK-1186).
+ *     `notice_posted_at` (TASK-1203, design §4c) is when a turn claimed the
+ *     channel's memory notice, the top-level post that tells the channel
+ *     what the bot hears there is shared with its team, just before it
+ *     posted it. One conditional write claims it (channel-store.ts
+ *     `claimNotice`), so a channel is told once per binding, whichever
+ *     replica's turn comes first; a post Slack refuses clears it again, so
+ *     the next turn tries. NULL: not told yet, a binding from before this
+ *     column included. A reconnect keeps it; a binding removed and made
+ *     again starts NULL, and is told again.
  *
  *   channel_slack_v1_threads — the capture veto's map (TASK-1094): every
  *     conversation a channel turn ran in, with the install, channel and agent
  *     it belongs to. Memory asks about a bare conversation id
  *     (`memory:pre-capture`), so this is how the capture veto
  *     (capture-veto.ts) knows a conversation is a Slack channel thread at
- *     all. `not_remembered` is set by any turn that starts while the channel
- *     is private (TASK-1188), and never cleared: memory leaves its cursor
- *     where a refusal stopped it, so a thread with a turn said in private
- *     must stay refused after the channel goes public. A row set by the
- *     per-channel switch TASK-1202 removed stays set, for the same reason.
+ *     all. `not_remembered` was set by a turn that started while the
+ *     channel was private (TASK-1188), or switched off by the per-channel
+ *     switch TASK-1202 removed. Nothing sets it since TASK-1203 (a private
+ *     channel is remembered like any other), and nothing ever clears it:
+ *     memory leaves its cursor where a refusal stopped it, so a thread
+ *     marked under "this isn't remembered" must stay refused.
  *     `external` marks the conversation outsiders' turns run in (the
  *     connector's, key suffix `:external`): memory never learns from it. A
  *     conversation's key fixes it, so it never changes. `speaker_names`
@@ -100,8 +111,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *   Dropped (TASK-1202, design §4c): `channel_slack_v1_memory_switches` and
  *     the channels table's `remember` column, the per-channel memory switch.
  *     A team agent's memory is shared with its team, so no channel is
- *     switched off any more. Every boot drops them if they are still there
- *     (below).
+ *     switched off any more. And (TASK-1203) the channels table's
+ *     `is_private`: a private channel is remembered like any other, so
+ *     nothing reads a binding's privacy. Every boot drops them if they are
+ *     still there (below).
  *
  * No secret is here. They live in the credentials vault (secrets.ts): an
  * install's three under `slack:<install_id>:<name>`, and the configuration
@@ -138,10 +151,11 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * is refused outright, and store.ts still reads anything but `shared` as a
  * bot, the kind that can do less.
  *
- * The schema is additive-only but for two drops: the memory switches table
- * and the channels table's `remember` column (TASK-1202). Every step is
- * idempotent: every boot runs them all. One data step deletes rows: the
- * shared install's channel bindings, last (TASK-1186).
+ * The schema is additive-only but for three drops: the memory switches table
+ * and the channels table's `remember` column (TASK-1202), and its
+ * `is_private` (TASK-1203). Every step is idempotent: every boot runs them
+ * all. One data step deletes rows: the shared install's channel bindings,
+ * last (TASK-1186).
  */
 export interface ChannelSlackInstallsTable {
   install_id: string;
@@ -172,9 +186,10 @@ export interface ChannelSlackChannelsTable {
   agent_id: string;
   connected_by_user_id: string;
   channel_name: string;
-  is_private: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, Date | undefined, never>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
+  // TASK-1203. Written only by claimNotice and releaseNotice (channel-store.ts).
+  notice_posted_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface ChannelSlackThreadsTable {
@@ -259,15 +274,14 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
     CREATE INDEX IF NOT EXISTS channel_slack_v1_channels_agent
       ON channel_slack_v1_channels (agent_id)
   `.execute(db);
-  // Whether Slack last described the channel as private (TASK-1188, design
-  // §4b.3): a bot answers there and memory never learns from it. Written at
-  // the bind, and again whenever a turn's check (channel-check.ts) finds it
-  // changed. Every binding before this column was bound public (private ones
-  // were refused, channels.ts `connectable`), so false is what they are; a
-  // channel made private since is set at its next turn.
+  // The channel's memory notice (TASK-1203, design §4c). NULL means the
+  // channel hasn't been told yet, so a binding from before this column is
+  // told at its next turn. No default: a new binding is untold too, until
+  // its channel's first turn claims it (channel-store.ts `claimNotice`). A
+  // rollback needs nothing: older code never names the column.
   await sql`
     ALTER TABLE channel_slack_v1_channels
-      ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT false
+      ADD COLUMN IF NOT EXISTS notice_posted_at TIMESTAMPTZ NULL
   `.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS channel_slack_v1_threads (
@@ -423,6 +437,17 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
       DROP COLUMN IF EXISTS remember
   `.execute(db);
   await sql`DROP TABLE IF EXISTS channel_slack_v1_memory_switches`.execute(db);
+  // Every boot (TASK-1203, design §4c): a private channel is remembered like
+  // any other, so nothing reads a binding's privacy, and its column goes;
+  // once gone, this is a no-op. Every binding keeps the rest of its row.
+  // Thread rows are left alone: one a turn marked while its channel was
+  // private stays refused, as above. A rollback starts without help: older
+  // code re-adds the column with DEFAULT false at its own boot, and its next
+  // turn reads Slack again.
+  await sql`
+    ALTER TABLE channel_slack_v1_channels
+      DROP COLUMN IF EXISTS is_private
+  `.execute(db);
   // Last, every boot (TASK-1186): the shared app no longer serves channels
   // (design §4b.1), so the shared install's bindings are deleted, and nothing
   // writes one again; a row an older replica writes is gone at the next boot.

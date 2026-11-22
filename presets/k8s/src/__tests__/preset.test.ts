@@ -1344,8 +1344,13 @@ describe('@ax/preset-k8s wiring', () => {
         hook: 'agent:interrupt',
         degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
       },
-      // Admin › Slack's list of bot requests names each one's team; without @ax/teams it names none.
-      { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
+      // Admin › Slack's list of bot requests names each one's team, and a team bot's memory notice and Slack card
+      // name the agent's (TASK-1203); without @ax/teams none is named.
+      {
+        hook: 'teams:list-for-user',
+        degradation:
+          "Admin › Slack's list of bot requests names no team, and a team bot's memory notice and Slack card say \"my team\" or \"its team\" instead of the team's name",
+      },
       // The approval buttons (TASK-1095): a call held in a Slack turn gets Allow and Deny in the thread.
       ...[
         'decisions:recent-for-conversation',

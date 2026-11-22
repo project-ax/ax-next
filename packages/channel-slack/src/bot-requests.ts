@@ -1,18 +1,18 @@
-import { PluginError, type AgentContext, type HookBus, type Logger } from '@ax/core';
+import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { isAxAdmin } from './ax-admin.js';
 import { isBotNameTaken } from './bot-name.js';
 import type { BotRequestDms, PostedDm } from './bot-request-dms.js';
 import type { BotReply, Bots } from './bots.js';
 import { checkRights, teamAdminAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
-import { cleanLabel } from './label.js';
 import { BOT_REQUESTS_MAX, INSTALL_ID_BYTES } from './limits.js';
 import { logCode } from './log-code.js';
 import type { Mutex } from './mutex.js';
 import { personName } from './person-name.js';
 import type { SecretStore } from './secrets.js';
-import { isHttps, isRecord, namesInUse } from './slack-apps.js';
+import { isHttps, namesInUse } from './slack-apps.js';
 import { InstallStoreError, type BotRequest, type InstallStore } from './store.js';
+import { agentSeenBy, teamNamesOf } from './team-name.js';
 
 /**
  * Asking an AX admin for a team agent's own Slack bot (TASK-1169; design
@@ -79,9 +79,9 @@ import { InstallStoreError, type BotRequest, type InstallStore } from './store.j
  *
  * Admin › Slack's list names each request as its requester sees it: the agent
  * and its team as `agents:resolve` and `teams:list-for-user` (optional) answer
- * the requester, and the requester by display name, else email (only AX
- * admins read the list), each cleaned to one line (label.ts) and read when
- * shown, never stored (invariant 4). A requester who left the team, or an
+ * the requester (team-name.ts), and the requester by display name, else email
+ * (only AX admins read the list), each cleaned to one line (label.ts) and read
+ * when shown, never stored (invariant 4). A requester who left the team, or an
  * agent that's gone, reads as fallbacks (Approve then refuses). No answer
  * carries a token, or a person's, an agent's or a team's id: only names, and
  * the request's own id.
@@ -222,52 +222,6 @@ function rightsRefused(reason: Extract<Rights, { ok: false }>['reason']): BotRep
   if (reason === 'forbidden') return json(403, { error: 'forbidden' });
   if (reason === 'personal-agent') return json(409, { error: 'personal-agent' });
   return NOT_FOUND;
-}
-
-/**
- * The agent as one requester sees it: its name, cleaned to one line, or null
- * when it can't be named. `teamId` is only ever used to find its team's name.
- */
-export interface SeenAgent {
-  name: string | null;
-  teamId: string | null;
-}
-
-/**
- * The agent as its requester sees it (Admin › Slack's list, and a bot
- * request's DMs, bot-request-dms.ts): only an answer about this agent, as a
- * team agent, names it. One they can't see (they left the team) or one
- * that's gone has no name, quietly; nor does one whose name has nothing
- * printable, or any other fault, which is handed to `onFault` first (each
- * caller logs it its own way).
- */
-export async function agentSeenBy(
-  bus: HookBus,
-  ctx: AgentContext,
-  r: Pick<BotRequest, 'agentId' | 'requestedByUserId'>,
-  onFault: (err: unknown) => void,
-): Promise<SeenAgent> {
-  const unnamed: SeenAgent = { name: null, teamId: null };
-  let out: unknown;
-  try {
-    out = await bus.call<{ agentId: string; userId: string }, unknown>('agents:resolve', ctx, {
-      agentId: r.agentId,
-      userId: r.requestedByUserId,
-    });
-  } catch (err) {
-    const code = err instanceof PluginError ? err.code : undefined;
-    if (code !== 'forbidden' && code !== 'not-found') onFault(err);
-    return unnamed;
-  }
-  const agent = isRecord(out) ? out['agent'] : undefined;
-  if (!isRecord(agent) || agent['id'] !== r.agentId || agent['visibility'] !== 'team') return unnamed;
-  const name = agent['displayName'];
-  const owner = agent['ownerId'];
-  return {
-    name: (typeof name === 'string' ? cleanLabel(name) : '') || null,
-    // A team agent's owner is its team (@ax/agents): only ever matched against the requester's teams.
-    teamId: typeof owner === 'string' && owner !== '' ? owner : null,
-  };
 }
 
 export function createBotRequests(d: BotRequestsDeps): BotRequests {
@@ -419,32 +373,6 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
     return json(200, {});
   }
 
-  /**
-   * The names of the teams `userId` is on, by team id, cleaned; an empty map
-   * when the answer can't be read. A fault reads as no names, logged.
-   */
-  async function teamNamesOf(ctx: AgentContext, userId: string, requestId: string): Promise<ReadonlyMap<string, string>> {
-    const names = new Map<string, string>();
-    let out: unknown;
-    try {
-      out = await d.bus.call<{ userId: string }, unknown>('teams:list-for-user', ctx, { userId });
-    } catch (err) {
-      failed('team', err, requestId);
-      return names;
-    }
-    const teams = isRecord(out) ? out['teams'] : undefined;
-    if (!Array.isArray(teams)) return names;
-    for (const team of teams) {
-      if (!isRecord(team)) continue;
-      const id = team['id'];
-      const name = team['displayName'];
-      if (typeof id !== 'string' || typeof name !== 'string' || names.has(id)) continue;
-      const label = cleanLabel(name);
-      if (label !== '') names.set(id, label);
-    }
-    return names;
-  }
-
   /** Whether AX holds the viewer's own token: presence only. A fault (a bad id included) reads false. */
   async function viewerTokenStored(viewerUserId: string): Promise<boolean> {
     try {
@@ -474,7 +402,9 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
       if (hasTeams && agent.teamId !== null) {
         let teams = teamsOf.get(requester);
         if (teams === undefined) {
-          teams = teamNamesOf(i.ctx, requester, r.requestId);
+          // A fault reads as no names, logged against the request that asked first.
+          const requestId = r.requestId;
+          teams = teamNamesOf(d.bus, i.ctx, requester, (err) => failed('team', err, requestId));
           teamsOf.set(requester, teams);
         }
         teamName = (await teams).get(agent.teamId) ?? null;

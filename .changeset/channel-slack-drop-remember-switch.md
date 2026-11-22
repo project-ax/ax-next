@@ -11,4 +11,4 @@ If you have the app open in a browser tab during the deploy, reload it. Until yo
 
 Rolling back past this change needs the column back first: `ALTER TABLE channel_slack_v1_channels ADD COLUMN IF NOT EXISTS remember BOOLEAN NOT NULL DEFAULT true`. Without it, an image that has the TASK-1180 boot fill won't start at all, and an older image starts but every Slack channel turn fails.
 
-What stays, for now: private channels still aren't remembered, and the agent is still told so in its turn. A follow-up changes that. Words from people outside AX are never remembered, as before.
+Words from people outside AX are never remembered, as before.

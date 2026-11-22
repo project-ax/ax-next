@@ -8,9 +8,10 @@
  * off, no `im:history`) and no `channels:join` (it only answers in channels
  * it was invited to). It alone reads channels' flags: public ones
  * (`channels:read`) and, since TASK-1188 (design §4b.3), private ones it was
- * invited to (`groups:read`), where it answers and never remembers. The
- * shared app serves none (TASK-1186). Its OAuth callback is its own,
- * `BOT_OAUTH_CALLBACK_PATH`, apart from Admin › Slack's.
+ * invited to (`groups:read`), where it answers and, since TASK-1203 (design
+ * §4c), remembers like anywhere else. The shared app serves none
+ * (TASK-1186). Its OAuth callback is its own, `BOT_OAUTH_CALLBACK_PATH`,
+ * apart from Admin › Slack's.
  *
  * Everything below up to the dedicated bot section describes the shared app.
  *
@@ -53,9 +54,11 @@ export const BOT_EVENTS = Object.freeze(['app_mention', 'message.im'] as const);
  * email, and read a channel's flags (`conversations.info`): `channels:read`
  * for a public channel, `groups:read` for a private one (TASK-1188; Slack's
  * docs say `conversations.info` takes it for private channels, which the
- * TASK-1189 walk measures). The turn-start check (channel-check.ts) needs
- * those flags to tell a private channel, where it answers and never
- * remembers, from an archived or Slack Connect one, where it doesn't answer.
+ * TASK-1189 walk measures). Without it Slack won't describe a private
+ * channel to the bot at all, so the bot couldn't bind one, nor the turn-start
+ * check (channel-check.ts) tell when one was archived or shared with another
+ * company since. Its privacy itself is not read: a private channel is
+ * answered in and remembered like any other (TASK-1203, design §4c).
  * Nothing that reads DMs or group DMs, joins channels, takes commands or
  * reads channel history. Adding a scope means Slack asks an installed bot
  * for Allow again.
@@ -77,7 +80,16 @@ export const BOT_OAUTH_CALLBACK_PATH = '/slack/bots/oauth/callback';
 
 const SLACK_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
 const APP_DESCRIPTION = 'Talk to your AX agent.';
-const DEDICATED_BOT_DESCRIPTION = 'Talk to your team agent.';
+/**
+ * A team bot's Slack profile description (TASK-1203, design §4c): the same
+ * sentence the bot posts the first time it answers in a channel, in its own
+ * voice. It names no team because Slack caps a description at 140 characters
+ * and a team's name alone can run to 128. Every manifest send carries it (a
+ * create, so Set up again; a rename; a token Replace), so a bot made before
+ * this text gets it at its next one.
+ */
+export const DEDICATED_BOT_DESCRIPTION =
+  'What I hear is shared with everyone on my team, and I may bring it up elsewhere.';
 
 export interface SlackUrls {
   /** Where Slack delivers events for this install. */

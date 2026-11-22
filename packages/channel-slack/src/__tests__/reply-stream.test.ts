@@ -94,6 +94,7 @@ function fakeSlack(
     postEphemeral: notHere,
     postBlocks: notHere,
     postDirect: notHere,
+    postToChannel: notHere,
     usersLookupByEmail: notHere,
     updateMessage: notHere,
     postMessage: (token, a) => run('postMessage', token, { ...a }, () => undefined),

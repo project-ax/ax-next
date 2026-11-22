@@ -101,6 +101,7 @@ function fakeSlack(
     usersInfo: notHere,
     usersLookupByEmail: notHere,
     postDirect: notHere,
+    postToChannel: notHere,
     postEphemeral: notHere,
     async postBlocks(token, a) {
       record('postBlocks', a, token);

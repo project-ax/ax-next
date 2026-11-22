@@ -32,13 +32,12 @@ import { BOT_NAME_COPY, BOT_NAME_FALLBACK, BOT_TOKEN_COPY, SLACK_TOKEN_COPY } fr
 
 /**
  * A channel the agent's own bot has answered in (TASK-1180; the status lists
- * them as `botChannels`). `isPrivate`: Slack last described it as private,
- * where the agent answers and never remembers (TASK-1188).
+ * them as `botChannels`). Only its id and name: a private channel is
+ * remembered like any other (TASK-1203), so a row says nothing about privacy.
  */
 export interface BotChannelRow {
   channelId: string;
   name: string;
-  isPrivate?: boolean;
 }
 
 /** A live bot as the invite line names it: its @handle, or its name when Slack never said one. */
@@ -95,6 +94,8 @@ export type AgentSlackStatus =
       bot: AgentSlackBot;
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
+      /** The agent's team, by name, for the card's memory line. Absent when the host can't say (the card says "its team"). */
+      agentTeamName?: string;
     }
   | {
       state: 'personal-agent';
@@ -113,6 +114,8 @@ export type AgentSlackStatus =
       bot: AgentSlackBot;
       /** The agent's own bot's channels, oldest first, only while `bot` is live. An older host omits it; that reads as none. */
       botChannels?: BotChannelRow[];
+      /** The agent's team, by name, for the card's memory line. Absent when the host can't say (the card says "its team"). */
+      agentTeamName?: string;
     };
 
 /** `unavailable`: this server doesn't run the Slack plugin (or can't show us the agent). */
@@ -225,13 +228,21 @@ function parseBotChannels(value: unknown): BotChannelRow[] | undefined | null {
   const rows: BotChannelRow[] = [];
   for (const c of value) {
     if (!isRecord(c)) return null;
-    const { channelId, name, isPrivate } = c;
+    const { channelId, name } = c;
     if (typeof channelId !== 'string' || typeof name !== 'string') return null;
-    // Absent: an older host, which binds public channels only. Anything but a boolean is a bad answer.
-    if (isPrivate !== undefined && typeof isPrivate !== 'boolean') return null;
-    rows.push({ channelId, name, ...(isPrivate !== undefined ? { isPrivate } : {}) });
+    // Whatever else a host one deploy behind sends (a privacy flag, a memory switch) is dropped, not carried or checked.
+    rows.push({ channelId, name });
   }
   return rows;
+}
+
+/**
+ * The agent's team's name: absent reads as absent; present, it is a non-empty
+ * string or the whole answer is bad. `null` is "malformed".
+ */
+function parseTeamName(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 function parseStatus(body: unknown): AgentSlackStatus | null {
@@ -242,8 +253,15 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       if (bot === null) return null;
       const canManage = 'canManage' in body ? body['canManage'] : bot.state === 'pending';
       const botChannels = parseBotChannels(body['botChannels']);
-      if (typeof canManage !== 'boolean' || botChannels === null) return null;
-      return { state: 'no-workspace', canManage, bot, ...(botChannels !== undefined ? { botChannels } : {}) };
+      const agentTeamName = parseTeamName(body['agentTeamName']);
+      if (typeof canManage !== 'boolean' || botChannels === null || agentTeamName === null) return null;
+      return {
+        state: 'no-workspace',
+        canManage,
+        bot,
+        ...(botChannels !== undefined ? { botChannels } : {}),
+        ...(agentTeamName !== undefined ? { agentTeamName } : {}),
+      };
     }
     case 'personal-agent': {
       const { botName, answersDms = true } = body;
@@ -263,7 +281,8 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       const bot = parseBot(body['bot']);
       if (bot === null) return null;
       const botChannels = parseBotChannels(body['botChannels']);
-      if (botChannels === null) return null;
+      const agentTeamName = parseTeamName(body['agentTeamName']);
+      if (botChannels === null || agentTeamName === null) return null;
       return {
         state: 'ready',
         botName,
@@ -271,6 +290,7 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
         canManage,
         bot,
         ...(botChannels !== undefined ? { botChannels } : {}),
+        ...(agentTeamName !== undefined ? { agentTeamName } : {}),
       };
     }
     default:
@@ -429,7 +449,6 @@ export async function setAgentSlackBotPicture(agentId: string, iconPng: string):
 
 export const AGENT_SLACK_COPY = Object.freeze({
   generic: 'Something went wrong. Try again in a minute.',
-  privateChannelNotRemembered: "Private channels aren't remembered.",
 });
 
 /** How the card names a live bot: its @handle, or its name when Slack never said one. */
@@ -459,8 +478,13 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
   /** Before the live handle's own `/invite @handle`, which the card sets in <code>. */
   inviteLead: 'In any Slack channel, type ',
   inviteNoHandle: 'In any Slack channel, type /invite and pick it.',
-  channelsLead: (t: InviteTarget): string =>
-    `${botWho(t)} has answered in these channels. It remembers what team members say in public channels, never in private ones.`,
+  channelsLead: (t: InviteTarget): string => `${botWho(t)} has answered in these channels.`,
+  /**
+   * What the agent hears is shared with its team (TASK-1203), on the manager's form and the Live card. By the
+   * agent's NAME on both, never the bot's @handle (the ux pass). `team`: the team's name, when it could be read.
+   */
+  memoryShared: (who: string, team: string | undefined): string =>
+    `What ${who} hears is shared with everyone on ${team ?? 'its team'}, and ${who} may bring it up elsewhere.`,
   /** The Not in Slack card's consent line: what adding the bot means for the manager who does it. */
   outsidersUseYourAccess: 'When someone outside the team mentions it, it answers them with your access.',
   helpLine: (who: string): string =>

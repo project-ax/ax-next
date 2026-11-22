@@ -1,8 +1,8 @@
 /**
  * The channels the agent's own Slack bot has answered in (TASK-1180,
  * TASK-1187): a read-only list, one row per channel, the same for a manager
- * and a member. A private channel (TASK-1188) is answered but never
- * remembered: its row says so. A row has no ⋯, because there is nothing to
+ * and a member. A private channel is remembered like any other (TASK-1203),
+ * so its row looks like the rest. A row has no ⋯, because there is nothing to
  * change (TASK-1202 removed the per-channel memory switch). No Disconnect (the
  * bot answers where it was invited) and no "Connected by" (nobody connected
  * it).
@@ -11,7 +11,7 @@
  * (the loading face unmounts it), so a stale page never lingers.
  */
 import { Hash } from 'lucide-react';
-import { AGENT_SLACK_CARD_COPY, AGENT_SLACK_COPY, botWho, type BotChannelRow, type InviteTarget } from '@/lib/agent-slack';
+import { AGENT_SLACK_CARD_COPY, botWho, type BotChannelRow, type InviteTarget } from '@/lib/agent-slack';
 
 export interface AgentSlackBotChannelsProps {
   /** The live bot, for the lead-in line and the list's name. */
@@ -36,11 +36,6 @@ export function AgentSlackBotChannels({ invite, channels }: AgentSlackBotChannel
                 <Hash aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{row.name}</span>
               </span>
-              {row.isPrivate === true && (
-                <span className="shrink-0 text-[12.5px] text-muted-foreground">
-                  {AGENT_SLACK_COPY.privateChannelNotRemembered}
-                </span>
-              )}
             </div>
           </li>
         ))}

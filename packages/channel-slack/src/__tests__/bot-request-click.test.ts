@@ -153,6 +153,7 @@ function fakeSlack(trail: string[], o: { users: Record<string, unknown>; ephemer
     postMessage: notHere('postMessage'),
     postBlocks: notHere('postBlocks'),
     postDirect: notHere('postDirect'),
+    postToChannel: notHere('postToChannel'),
     updateMessage: notHere('updateMessage'),
     async postEphemeral(token, a) {
       record('postEphemeral', token, { ...a });

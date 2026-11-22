@@ -20,8 +20,9 @@ import type { InstallRow, InstallStore } from './store.js';
  *     refused before anything else is asked.
  *
  * A channel a bot may bind is a live channel of the install's own workspace,
- * public or private: not archived, not Slack Connect (`connectable`). In a
- * private one it answers and never remembers (TASK-1188).
+ * public or private: not archived, not Slack Connect (`connectable`). A
+ * private one is answered in (TASK-1188) and remembered like any other
+ * (TASK-1203, design §4c).
  * Slack's answers are untrusted (slack-api.ts narrows them, and its refusing
  * flags fail closed). A channel can change after it is bound, so the router
  * asks Slack again when each turn starts (channel-check.ts, TASK-1184).
@@ -179,11 +180,11 @@ export async function liveOwnBot(
  * what every channel turn is checked against before it runs
  * (channel-check.ts, TASK-1184), so the two can't disagree.
  *
- * Public or private (TASK-1188, design §4b.3): a bot answers in a private
- * channel it was invited to, and memory never learns from it (the router
- * marks the binding and each thread, and capture-veto.ts refuses). Inviting
- * the bot is a member's own act. Slack Connect and archived stay refused, and
- * so does anything Slack doesn't call a channel (a group DM; a private group
+ * Public or private (TASK-1188): a bot answers in a private channel it was
+ * invited to, and memory learns from it like any other channel (TASK-1203,
+ * design §4c: a team agent's memory is shared with its team). Inviting the
+ * bot is a member's own act. Slack Connect and archived stay refused, and so
+ * does anything Slack doesn't call a channel (a group DM; a private group
  * from before March 2021, which Slack still describes with `is_channel`
  * false).
  */
