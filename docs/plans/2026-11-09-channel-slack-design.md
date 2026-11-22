@@ -1408,9 +1408,12 @@ work subject.
 - **Subscriber risk:** a subscriber that drops or rewrites names an earlier one
   added would let facts under them through, hence append-only. A Slack member
   ID is just another name to memory. Since TASK-1204, in a team agent's member
-  turn the names are filed under the runner (`user:<ctx.userId>`), so a
-  subscriber names only people whose words the conversation's user turns carry:
-  a co-speaker named there would get their words filed under the runner.
+  turn the names are filed under the runner (`user:<ctx.userId>`), so there a
+  subscriber names ONLY the person the turn runs as. An extra name is the
+  dangerous direction there: a co-speaker, or anyone else named, would get
+  their words or facts about them filed under the runner. Everywhere else an
+  extra name only makes memory drop more. channel-slack complies: a thread's
+  names are per conversation, and a conversation holds one member's turns.
 - **Wire surface:** none. A host-only fire, never an IPC action.
 
 **Finding a user by verified email** is a new service hook on the auth plugin,

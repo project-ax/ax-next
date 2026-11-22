@@ -18,7 +18,11 @@ import { z } from 'zod';
 // it stores no statement whose subject is made of those names, except in a team
 // agent's member turn, where it files the subject under the person the turn
 // runs as. So a subscriber names only the people whose words the
-// conversation's user turns carry. An answer with
+// conversation's user turns carry, and in a team agent's member turn that is
+// ONLY the person the turn runs as (every name their messages were labelled
+// with). There an extra name is the dangerous direction: memory would file a
+// fact about that person, or their words, under the person the turn runs as.
+// Everywhere else an extra name only makes memory drop more. An answer with
 // a known key that doesn't parse is one memory can't trust, so it learns
 // nothing from it.
 //
