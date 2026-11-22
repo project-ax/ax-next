@@ -21,6 +21,15 @@
  *   - Inside a frame it says to open the link in its own tab and asks
  *     nothing of the server, so another page can't dress this one up and
  *     steer a click onto Allow.
+ *   - Allow ignores a press for `ARM_DELAY_MS` after the card appears, and
+ *     again after the tab becomes visible or the window gains focus. An app
+ *     that opens this link in a popup can't time a double-click so that its
+ *     second half lands on an Allow that is already live (one eligible agent
+ *     is picked for the viewer, so nothing else stands in the way).
+ *   - The headline's bold name is the app's own choosing, and a line under it
+ *     says so.
+ *   - While a refusal makes it read the prompt again, Allow stays off and the
+ *     reason shows at once, so nothing is sent against the old page.
  *   - The ids reach the server only through `lib/agent-apps`, which checks
  *     each against its grammar first; a bad one makes no request.
  */
@@ -28,12 +37,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApprovalPrompt, ApprovePageIds } from '@ax/apps-bridge-contract';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Field, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { WORKSPACE_ROOT_PATH } from '@/lib/workspace-route';
 import {
   AgentAppsError,
   agentAppsErrorCopy,
@@ -48,12 +58,23 @@ const NOTHING_SHARED = 'Nothing was shared.';
 const LOAD_FAILED = "We couldn't load this just now.";
 const FRAMED = 'Open this link in its own tab to continue.';
 const CHANGED = 'Something changed while this page was open, so nothing was shared. Have another look.';
-const WORKSPACE = '/workspace';
+export const APP_NAMED_ITSELF = 'The app chose this name.';
+/** How long Allow ignores a press after the card appears, or after the tab comes back into view or focus. */
+export const ARM_DELAY_MS = 500;
 
 type PageState =
   | { status: 'framed' }
   | { status: 'loading' }
-  | { status: 'ready'; prompt: ApprovalPrompt; load: number; notice: string | null }
+  | {
+      status: 'ready';
+      prompt: ApprovalPrompt;
+      /** Bumped per successful read: a fresh prompt is a fresh card (its own choice). */
+      load: number;
+      /** What went wrong last, shown on the card until the next Allow. */
+      message: string | null;
+      /** A refusal sent us to read the prompt again, and the answer isn't in yet. */
+      refreshing: boolean;
+    }
   | { status: 'not-found' }
   | { status: 'failed' }
   | { status: 'done' };
@@ -92,29 +113,59 @@ function Notice({ title, description, retry }: { title: string; description?: st
   );
 }
 
+/**
+ * When Allow may next be pressed: `ARM_DELAY_MS` after the card appeared, and
+ * pushed out again whenever the tab becomes visible or the window gains focus.
+ */
+function useArmedAt(): { current: number } {
+  const armedAt = useRef(Date.now() + ARM_DELAY_MS);
+  useEffect(() => {
+    const rearm = () => {
+      armedAt.current = Date.now() + ARM_DELAY_MS;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') rearm();
+    };
+    rearm();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', rearm);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', rearm);
+    };
+  }, []);
+  return armedAt;
+}
+
 function Approve({
   ids,
   prompt,
-  notice,
+  message,
+  refreshing,
+  onMessage,
   onDone,
   onStale,
 }: {
   ids: ApprovePageIds;
   prompt: ApprovalPrompt;
-  notice: string | null;
+  message: string | null;
+  refreshing: boolean;
+  onMessage: (text: string | null) => void;
   onDone: () => void;
-  onStale: (notice: string) => void;
+  onStale: (text: string) => void;
 }) {
   const [choice, setChoice] = useState<string | null>(() => initialChoice(prompt));
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(notice);
   const inFlight = useRef(false);
+  const armedAt = useArmedAt();
 
   const allow = useCallback(() => {
-    if (choice === null || inFlight.current) return;
+    if (choice === null || inFlight.current || refreshing) return;
+    // Too soon after the card appeared or came back into view: not a choice.
+    if (Date.now() < armedAt.current) return;
     inFlight.current = true;
     setSending(true);
-    setError(null);
+    onMessage(null);
     void (async () => {
       try {
         await approveApp(ids.platformId, ids.appId, ids.connectorId, choice, prompt.tools);
@@ -124,13 +175,13 @@ function Approve({
         console.warn('[apps-approve] approve failed', e);
         if (e instanceof AgentAppsError && e.code === 'agent-not-eligible') onStale(agentAppsErrorCopy(e));
         else if (agentAppsStale(e)) onStale(CHANGED);
-        else setError(agentAppsErrorCopy(e));
+        else onMessage(agentAppsErrorCopy(e));
       } finally {
         inFlight.current = false;
         setSending(false);
       }
     })();
-  }, [choice, ids, prompt.tools, onDone, onStale]);
+  }, [choice, refreshing, armedAt, ids, prompt.tools, onMessage, onDone, onStale]);
 
   const none = prompt.agents.length === 0;
   return (
@@ -142,6 +193,7 @@ function Approve({
           </strong>{' '}
           wants to use <bdi>{prompt.connectorName}</bdi> as you
         </CardTitle>
+        <CardDescription>{APP_NAMED_ITSELF}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
         {none ? (
@@ -163,7 +215,7 @@ function Approve({
                 ))}
               </ul>
             </div>
-            <FieldSet disabled={sending}>
+            <FieldSet disabled={sending || refreshing}>
               <FieldLegend variant="label">
                 Use <bdi>{prompt.connectorName}</bdi> from
               </FieldLegend>
@@ -180,23 +232,23 @@ function Approve({
             </FieldSet>
           </>
         )}
-        {error !== null && (
+        {message !== null && (
           <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>{message}</AlertDescription>
           </Alert>
         )}
       </CardContent>
       <CardFooter className="justify-end gap-2">
         {none ? (
           <Button asChild variant="outline">
-            <a href={WORKSPACE}>Go to your agents</a>
+            <a href={WORKSPACE_ROOT_PATH}>Go to your agents</a>
           </Button>
         ) : (
           <>
             <Button asChild variant="ghost">
-              <a href={WORKSPACE}>Not now</a>
+              <a href={WORKSPACE_ROOT_PATH}>Not now</a>
             </Button>
-            <Button type="button" disabled={choice === null || sending} onClick={allow}>
+            <Button type="button" disabled={choice === null || sending || refreshing} onClick={allow}>
               {sending && <Spinner data-icon="inline-start" />}
               Allow
             </Button>
@@ -210,7 +262,6 @@ function Approve({
 export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageIds) {
   const [state, setState] = useState<PageState>(() => (framed() ? { status: 'framed' } : { status: 'loading' }));
   const [attempt, setAttempt] = useState(0);
-  const notice = useRef<string | null>(null);
   const loads = useRef(0);
   const request = useRef(0);
   const isFramed = state.status === 'framed';
@@ -221,15 +272,23 @@ export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageI
     fetchApprovalPrompt(platformId, appId, connectorId).then(
       (prompt) => {
         if (request.current !== id) return;
-        const shown = notice.current;
-        notice.current = null;
         // No tools means nothing to say yes to: the server would refuse it as gone.
-        if (prompt.tools.length === 0) setState({ status: 'not-found' });
-        else setState({ status: 'ready', prompt, load: ++loads.current, notice: shown });
+        if (prompt.tools.length === 0) {
+          setState({ status: 'not-found' });
+          return;
+        }
+        const load = ++loads.current;
+        // A re-read after a refusal keeps saying why on the fresh card.
+        setState((prev) => ({
+          status: 'ready',
+          prompt,
+          load,
+          message: prev.status === 'ready' && prev.refreshing ? prev.message : null,
+          refreshing: false,
+        }));
       },
       (e: unknown) => {
         if (request.current !== id) return;
-        notice.current = null;
         console.warn('[apps-approve] could not load', e);
         if (e instanceof AgentAppsError && e.code === 'not-found') setState({ status: 'not-found' });
         else setState({ status: 'failed' });
@@ -244,10 +303,13 @@ export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageI
     setState({ status: 'loading' });
     setAttempt((n) => n + 1);
   }, []);
-  /** Read the prompt again behind the current page, then show `text` on the fresh one. */
+  /** Say `text` now, hold Allow off, and read the prompt again behind the current card. */
   const refresh = useCallback((text: string) => {
-    notice.current = text;
+    setState((prev) => (prev.status === 'ready' ? { ...prev, message: text, refreshing: true } : prev));
     setAttempt((n) => n + 1);
+  }, []);
+  const showMessage = useCallback((text: string | null) => {
+    setState((prev) => (prev.status === 'ready' ? { ...prev, message: text } : prev));
   }, []);
   const done = useCallback(() => setState({ status: 'done' }), []);
 
@@ -266,7 +328,9 @@ export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageI
           key={state.load}
           ids={{ platformId, appId, connectorId }}
           prompt={state.prompt}
-          notice={state.notice}
+          message={state.message}
+          refreshing={state.refreshing}
+          onMessage={showMessage}
           onDone={done}
           onStale={refresh}
         />

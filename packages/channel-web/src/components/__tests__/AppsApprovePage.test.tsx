@@ -5,11 +5,11 @@
  * what the page sends.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApprovalPrompt } from '@ax/apps-bridge-contract';
-import { AppsApprovePage } from '../AppsApprovePage';
+import { APP_NAMED_ITSELF, AppsApprovePage, ARM_DELAY_MS } from '../AppsApprovePage';
 
 const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
 const IDS = { platformId: 'canopy', appId: APP, connectorId: 'linear' } as const;
@@ -37,11 +37,15 @@ const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promis
 let originalFetch: typeof fetch;
 
 beforeEach(() => {
+  // Only the clock is fake, so Allow's arming delay can be stepped past while
+  // the library's own waits still run on real timers.
+  vi.useFakeTimers({ toFake: ['Date'] });
   originalFetch = globalThis.fetch;
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
@@ -53,6 +57,8 @@ function posts(): Array<{ url: string; init: RequestInit }> {
 }
 
 const allow = () => screen.getByRole('button', { name: 'Allow' });
+/** Step the clock past Allow's arming delay. */
+const pastArmDelay = () => vi.setSystemTime(Date.now() + ARM_DELAY_MS + 1);
 
 describe('AppsApprovePage', () => {
   it('says "<appName> wants to use <connector> as you" and lists the tools', async () => {
@@ -61,6 +67,8 @@ describe('AppsApprovePage', () => {
     const heading = await screen.findByRole('heading', { name: 'Deal Board wants to use Linear as you' });
     // The app's name is the bold part.
     expect(within(heading).getByText('Deal Board').closest('strong')).not.toBeNull();
+    // The bold name is the app's own choosing, and the page says so.
+    expect(screen.getByText(APP_NAMED_ITSELF).textContent).toBe('The app chose this name.');
     expect(screen.getByText('It will be able to use:')).toBeTruthy();
     const list = screen.getByRole('list', { name: 'It will be able to use:' });
     expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['list_issues', 'create_issue']);
@@ -136,6 +144,7 @@ describe('AppsApprovePage', () => {
     fetchMock.mockResolvedValueOnce(json(200, prompt())).mockResolvedValueOnce(json(200, {}));
     render(<AppsApprovePage {...IDS} />);
     await screen.findByRole('radio', { name: 'Scout' });
+    pastArmDelay();
     fireEvent.click(allow());
     expect(await screen.findByText('Done. You can close this tab and go back to the app.')).toBeTruthy();
     const sent = posts();
@@ -165,6 +174,7 @@ describe('AppsApprovePage', () => {
       .mockResolvedValueOnce(json(503, { error: 'unavailable' }));
     const first = render(<AppsApprovePage {...IDS} />);
     await screen.findByRole('radio', { name: 'Scout' });
+    pastArmDelay();
     fireEvent.click(allow());
     expect(
       await screen.findByText("We couldn't reach the apps service just now. Nothing changed. Please try again."),
@@ -179,12 +189,76 @@ describe('AppsApprovePage', () => {
       .mockResolvedValueOnce(json(200, prompt({ agents: [{ agentId: 'agt_3', displayName: 'Ranger' }] })));
     render(<AppsApprovePage {...IDS} />);
     await screen.findByRole('radio', { name: 'Scout' });
+    pastArmDelay();
     fireEvent.click(allow());
     expect(
       await screen.findByText("That agent can't lend this connector. Pick one of your own agents that has it."),
     ).toBeTruthy();
     expect((await screen.findByRole('radio', { name: 'Ranger' })).getAttribute('aria-checked')).toBe('true');
     expect(screen.queryByRole('radio', { name: 'Scout' })).toBeNull();
+  });
+
+  it('Allow ignores a press until the card has been in view a moment, and again after focus returns', async () => {
+    fetchMock.mockResolvedValueOnce(json(200, prompt())).mockResolvedValueOnce(json(200, {}));
+    render(<AppsApprovePage {...IDS} />);
+    await screen.findByRole('radio', { name: 'Scout' });
+    // One agent is picked already, so Allow looks live on first paint...
+    expect(allow().hasAttribute('disabled')).toBe(false);
+    // ...but a press inside the delay (a double-click timed to land here) does nothing.
+    vi.setSystemTime(Date.now() + ARM_DELAY_MS - 50);
+    fireEvent.click(allow());
+    expect(posts()).toHaveLength(0);
+
+    // The window losing and regaining focus (a popup brought forward) re-arms it.
+    pastArmDelay();
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    fireEvent.click(allow());
+    expect(posts()).toHaveLength(0);
+
+    // So does the tab coming back into view.
+    pastArmDelay();
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    fireEvent.click(allow());
+    expect(posts()).toHaveLength(0);
+
+    pastArmDelay();
+    fireEvent.click(allow());
+    expect(await screen.findByText('Done. You can close this tab and go back to the app.')).toBeTruthy();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('while a refusal re-reads the prompt, the reason shows at once and Allow stays off', async () => {
+    let answer: (r: Response) => void = () => undefined;
+    const reread = new Promise<Response>((resolve) => {
+      answer = resolve;
+    });
+    fetchMock
+      .mockResolvedValueOnce(json(200, prompt()))
+      .mockResolvedValueOnce(json(400, { error: 'agent-not-eligible' }))
+      .mockReturnValueOnce(reread);
+    render(<AppsApprovePage {...IDS} />);
+    await screen.findByRole('radio', { name: 'Scout' });
+    pastArmDelay();
+    fireEvent.click(allow());
+    const why = "That agent can't lend this connector. Pick one of your own agents that has it.";
+    // The old card is still up, the reason is on it, and Allow can't be pressed.
+    expect(await screen.findByText(why)).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Scout' })).toBeTruthy();
+    expect(allow().hasAttribute('disabled')).toBe(true);
+    fireEvent.click(allow());
+    expect(posts()).toHaveLength(1);
+
+    await act(async () => {
+      answer(json(200, prompt({ agents: [{ agentId: 'agt_3', displayName: 'Ranger' }] })));
+      await reread;
+    });
+    expect((await screen.findByRole('radio', { name: 'Ranger' })).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText(why)).toBeTruthy();
+    expect(allow().hasAttribute('disabled')).toBe(false);
   });
 
   it('a 404 shows a plain not-found state', async () => {
