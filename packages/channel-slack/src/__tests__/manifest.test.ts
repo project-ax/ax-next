@@ -281,7 +281,7 @@ describe('the dedicated bot manifest', () => {
     ]) {
       expect(DEDICATED_BOT_SCOPES).not.toContain(banned);
     }
-    // Private channels: only their flags, so it can answer there and never remember them (design §4b.3, TASK-1188).
+    // Private channels: only their flags (archived, Slack Connect), so it can answer there (design §4b.3, TASK-1188); remembered like any other since §4c (TASK-1203).
     const privateScopes = DEDICATED_BOT_SCOPES.filter((s) => /^(groups|mpim|im):/.test(s));
     expect(privateScopes).toStrictEqual(['groups:read']);
   });
