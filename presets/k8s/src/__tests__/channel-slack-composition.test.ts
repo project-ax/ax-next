@@ -157,6 +157,8 @@ const MEL: SlackPerson = { slackId: 'U07MEL00001', name: 'Mel', email: 'mel@cano
 const EVE: SlackPerson = { slackId: 'U07EVE00001', name: 'Eve', email: 'eve@evil.example' };
 const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL, EVE];
 const SUPPORT_CHANNEL = 'C07SUPPORT1';
+/** A private channel the agent's own bot is invited to: Slack describes it with `is_private: true` (TASK-1203). */
+const PRIVATE_CHANNEL = 'C07PRIVATE01';
 
 /** The install's approved sign-in domains, as auth:is-approved-email answers for them. */
 const APPROVED_DOMAINS = new Set(['canopyworks.com']);
@@ -377,16 +379,22 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
       answer = person !== undefined ? { ok: true, user: slackUser(person) } : { ok: false, error: 'user_not_found' };
       break;
     }
-    case 'conversations.info':
-      answer =
+    case 'conversations.info': {
+      const room =
         body['channel'] === SUPPORT_CHANNEL
+          ? { name: 'support-desk', isPrivate: false }
+          : body['channel'] === PRIVATE_CHANNEL
+            ? { name: 'leads', isPrivate: true }
+            : null;
+      answer =
+        room !== null
           ? {
               ok: true,
               channel: {
-                id: SUPPORT_CHANNEL,
-                name: 'support-desk',
+                id: body['channel'],
+                name: room.name,
                 is_channel: true,
-                is_private: false,
+                is_private: room.isPrivate,
                 is_archived: false,
                 is_ext_shared: false,
                 is_pending_ext_shared: false,
@@ -394,6 +402,7 @@ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => 
             }
           : { ok: false, error: 'channel_not_found' };
       break;
+    }
     case 'tooling.tokens.rotate':
       rotateSeq += 1;
       answer = {
@@ -1094,11 +1103,17 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   // ── Channel turns (TASK-1094) ──────────────────────────────────────────────
 
   /** A signed `app_mention` of the agent's own bot in the support channel, the way Slack writes it: the bot's own `<@…>` first. */
-  function botMention(from: SlackPerson, ts: string, text: string, threadTs?: string): Record<string, unknown> {
+  function botMention(
+    from: SlackPerson,
+    ts: string,
+    text: string,
+    threadTs?: string,
+    channel: string = SUPPORT_CHANNEL,
+  ): Record<string, unknown> {
     return {
       type: 'app_mention',
       user: from.slackId,
-      channel: SUPPORT_CHANNEL,
+      channel,
       ts,
       text: `<@${OWN_BOT_USER_ID}> ${text}`,
       ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
@@ -1793,6 +1808,67 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     expect(await preCapture(conv1)).toMatchObject(refused);
     expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
     await dropAgent(agentId);
+  });
+
+  it("memory and a private bot channel: a member's thread is captured with her names, like a public one's (TASK-1203)", async () => {
+    const { botId, agentId } = await supportBot();
+    invokes.length = 0;
+    const preCapture = (conversationId: string) =>
+      theBus!.fire(
+        'memory:pre-capture',
+        makeAgentContext({ sessionId: 'test', agentId, userId: 'usr_ada', conversationId }),
+        { conversationId },
+      );
+    try {
+      // Mel mentions the bot in a private channel: Slack says `is_private`, and the bot answers there.
+      const mark = slackCalls.length;
+      expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'a private question', undefined, PRIVATE_CHANNEL))).status).toBe(
+        200,
+      );
+      const turn = (await invokedTurn(1)).ctx;
+      expect(turn).toMatchObject({ userId: 'usr_mel', source: 'user' });
+      const calls = await channelTurnCalls(mark);
+      expect(calls.some((c) => c.method === 'conversations.info' && c.body['channel'] === PRIVATE_CHANNEL)).toBe(true);
+      // The thread is captured exactly as a public channel's is: the same let-through answer, with her names.
+      expect(await preCapture(turn.conversationId!)).toEqual({
+        rejected: false,
+        payload: { conversationId: turn.conversationId, speakerNames: ['Mel', 'U07MEL00001'] },
+      });
+    } finally {
+      await dropAgent(agentId);
+    }
+  });
+
+  it("a bot channel's first turn posts the memory notice once, top-level, naming the agent's team; its second turn posts none (TASK-1203)", async () => {
+    const { botId, agentId } = await supportBot();
+    invokes.length = 0;
+    /** The bot's own top-level posts in the channel: no thread, and no blocks (an approval prompt has them). */
+    const noticesIn = (calls: SlackCall[]): SlackCall[] =>
+      calls.filter(
+        (c) =>
+          c.method === 'chat.postMessage' &&
+          c.body['channel'] === SUPPORT_CHANNEL &&
+          c.body['thread_ts'] === undefined &&
+          !Array.isArray(c.body['blocks']),
+      );
+    try {
+      let mark = slackCalls.length;
+      expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'first question'))).status).toBe(200);
+      await invokedTurn(1);
+      const first = noticesIn(await channelTurnCalls(mark));
+      expect(first).toHaveLength(1);
+      expect(first[0]!.body['text']).toBe(
+        'Heads up: what I hear in this channel is shared with everyone on Support, and I may bring it up elsewhere.',
+      );
+
+      // A second turn, in a new thread: the channel has been told already.
+      mark = slackCalls.length;
+      expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'second question'))).status).toBe(200);
+      await invokedTurn(2);
+      expect(noticesIn(await channelTurnCalls(mark))).toEqual([]);
+    } finally {
+      await dropAgent(agentId);
+    }
   });
 
   it('an admin replaces the configuration token: the install and every secret stay, the plugin still reads them as the admin whose token it is, and Rename then rotates the new token (TASK-1128, TASK-1175)', async () => {
