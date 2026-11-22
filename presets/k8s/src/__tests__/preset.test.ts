@@ -321,6 +321,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/auth-better',
         '@ax/blob-store-fs',
         '@ax/branding',
+        '@ax/apps-bridge',
         '@ax/channel-slack',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
@@ -683,6 +684,8 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:inventory-tool-titles',
       // TASK-1046: the host makes an approved connector call. Not an IPC action.
       'connectors:call-tool',
+      // The apps connector bridge: the same call, but it answers with the structured outcome.
+      'connectors:call-tool-result',
     ]);
     // TASK-792: host MCP servers are retired, so the manifest is pinned
     // EXACTLY — no `tool:register`, no `http:register-route` /
@@ -1282,6 +1285,30 @@ describe('@ax/preset-k8s wiring', () => {
         connectorDirectory: { enabled: true, registryUrl: 'http://registry.test' },
       }),
     ).toThrow(expect.objectContaining({ code: 'invalid-config' }));
+  });
+
+  it('loads @ax/apps-bridge: no hooks of its own, every call satisfied (apps bridge)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const bridge = plugins.find((p) => p.manifest.name === '@ax/apps-bridge');
+    expect(bridge).toBeDefined();
+    expect(bridge!.manifest.registers).toEqual([]);
+    expect(bridge!.manifest.calls).toEqual([
+      'database:get-instance',
+      'http:register-route',
+      'auth:require-user',
+      'agents:list-for-user',
+      'auth:find-user-by-email',
+      'agents:resolve',
+      'agents:can-manage-connectors',
+      'connectors:list',
+      'connectors:list-effective',
+      'connectors:describe-tools',
+      'tool-policy:evaluate',
+      'connectors:call-tool-result',
+    ]);
+    expect(bridge!.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
+    const produced = new Set(plugins.flatMap((p) => p.manifest.registers));
+    for (const hook of bridge!.manifest.calls) expect(produced.has(hook)).toBe(true);
   });
 
   it('loads @ax/channel-slack: one system-prompt contribution of its own, every hard call satisfied, every optional one produced too (TASK-1093, TASK-1095, TASK-1131)', () => {
@@ -1977,6 +2004,39 @@ describe('loadK8sConfigFromEnv', () => {
     AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
     ...extra,
+  });
+
+  const bridgeEnv = {
+    AX_APPS_BRIDGE_PLATFORM_ID: 'acme',
+    AX_APPS_BRIDGE_CALLER_ISSUER: 'https://platform.example',
+    AX_APPS_BRIDGE_CALLER_JWKS_URL: 'https://platform.example/jwks.json',
+    AX_APPS_BRIDGE_CALLER_AUDIENCE: 'ax-bridge',
+    AX_APPS_BRIDGE_CALLER_SUBJECT: 'platform-service',
+    AX_APPS_BRIDGE_VIEWER_ISSUER: 'https://platform.example',
+    AX_APPS_BRIDGE_VIEWER_JWKS_URL: 'https://platform.example/viewer-jwks.json',
+    AX_APPS_BRIDGE_VIEWER_AUDIENCE: 'ax-bridge-viewer',
+  };
+
+  it('the bridge is off unless AX_APPS_BRIDGE_PLATFORM_ID is set', () => {
+    expect(loadK8sConfigFromEnv(minRequired()).appsBridge).toBeUndefined();
+  });
+
+  it('a full AX_APPS_BRIDGE_* set becomes appsBridge, bound on AX_HTTP_HOST', () => {
+    const cfg = loadK8sConfigFromEnv(minRequired({ ...bridgeEnv, AX_APPS_BRIDGE_PORT: '9192' }));
+    expect(cfg.appsBridge).toMatchObject({
+      platformId: 'acme',
+      host: '0.0.0.0',
+      port: 9192,
+      caller: { issuer: 'https://platform.example', audience: 'ax-bridge', subject: 'platform-service' },
+      viewer: { audience: 'ax-bridge-viewer' },
+    });
+  });
+
+  it('a partial AX_APPS_BRIDGE_* set fails the boot config, naming the missing variable', () => {
+    const { AX_APPS_BRIDGE_CALLER_SUBJECT: _omit, ...partial } = bridgeEnv;
+    expect(() => loadK8sConfigFromEnv(minRequired(partial))).toThrow(/AX_APPS_BRIDGE_CALLER_SUBJECT/);
+    const { AX_APPS_BRIDGE_PLATFORM_ID: _p, ...noId } = bridgeEnv;
+    expect(() => loadK8sConfigFromEnv(minRequired(noId))).toThrow(/AX_APPS_BRIDGE_PLATFORM_ID/);
   });
 
   it('builds a config from the minimum required env', () => {

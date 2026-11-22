@@ -73,7 +73,23 @@ env (optional, 'memory' preset — set all three or none):
   Memory tab still work. Setting only some of them is a boot error.
 
   Switching an existing deployment to facts memory: see deploy/README.md
-  'Switching an existing deployment to facts memory'.`;
+  'Switching an existing deployment to facts memory'.
+
+env (optional, apps connector bridge — off unless AX_APPS_BRIDGE_PLATFORM_ID is set):
+  AX_APPS_BRIDGE_PLATFORM_ID            the apps platform's id; turns the bridge on
+  AX_APPS_BRIDGE_PORT                   bridge listener port on AX_HTTP_HOST (default 9092)
+  AX_APPS_BRIDGE_CALLER_ISSUER          the platform's own token: issuer
+  AX_APPS_BRIDGE_CALLER_JWKS_URL        ... its key set (https)
+  AX_APPS_BRIDGE_CALLER_AUDIENCE        ... audience
+  AX_APPS_BRIDGE_CALLER_SUBJECT         ... exact subject (the platform's identity)
+  AX_APPS_BRIDGE_VIEWER_ISSUER          the viewer assertion: issuer
+  AX_APPS_BRIDGE_VIEWER_JWKS_URL        ... its key set (https)
+  AX_APPS_BRIDGE_VIEWER_AUDIENCE        ... audience
+  AX_APPS_BRIDGE_VIEWER_MAX_AGE_SECONDS ... max age, 30-3600 (default 600)
+
+  With the platform id set, every value above except the port and the max
+  age is required; a partial set is a boot error. Never put the bridge port
+  on the public ingress. See packages/apps-bridge/SECURITY.md.`;
 
 /**
  * Env names that used to switch the agent workspace (the web interface) on and

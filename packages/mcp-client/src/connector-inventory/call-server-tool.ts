@@ -20,10 +20,13 @@
 //     unreadable reply. A caller must never read that as "nothing happened",
 //     or a person re-approves and the call lands twice.
 //
-// Everything the server sends is UNTRUSTED. The reply is read only for the
-// boolean `isError`, through a minimal local schema. We never use
-// `client.callTool()` or `CallToolResultSchema`: those validate content
-// blocks, and `callTool` can compile a server-supplied output schema. Errors
+// Everything the server sends is UNTRUSTED. `callServerTool` reads the reply
+// only for the boolean `isError`, through a minimal local schema.
+// `callServerToolWithContent` (for `connectors:call-tool-result`) also hands
+// back its `content` blocks, checked against a local schema and capped by the
+// body limit. We never use `client.callTool()` or `CallToolResultSchema`:
+// those validate content blocks, and `callTool` can compile a server-supplied
+// output schema. Errors
 // are classified on `code`, `name` and class only, because the SDK puts the
 // server's response body into the error MESSAGE. A message is never read,
 // matched, logged or returned. This file logs nothing; the caller logs codes.
@@ -40,7 +43,9 @@ import {
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { loggableCode } from './loggable-code.js';
 import { createGuardedFetch, type AllAddressesResolver, type FetchLike, type GuardedFetch } from './safe-fetch.js';
+import { ConnectorResultContentBlockSchema, type ConnectorResultContentBlock } from './types.js';
 
 /** Hard bounds on one approved call. */
 export const CALL_LIMITS = {
@@ -54,10 +59,15 @@ export const CALL_LIMITS = {
   maxResponseBytes: 2 * 1024 * 1024,
 } as const;
 
-export type ServerCallOutcome =
-  | { outcome: 'succeeded' }
-  | { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' | 'tool-error' }
-  | { outcome: 'unknown'; reason: 'timeout' | 'interrupted' };
+export type ServerCallFailed = { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' | 'tool-error' };
+export type ServerCallUnknown = { outcome: 'unknown'; reason: 'timeout' | 'interrupted' };
+export type ServerCallOutcome = { outcome: 'succeeded' } | ServerCallFailed | ServerCallUnknown;
+/** `callServerToolWithContent`'s answer: the reply's content on success and on a tool error. */
+export type ServerCallResultOutcome =
+  | { outcome: 'succeeded'; content: ConnectorResultContentBlock[] }
+  | { outcome: 'failed'; reason: 'tool-error'; content: ConnectorResultContentBlock[] }
+  | { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' }
+  | ServerCallUnknown;
 
 export interface CallServerToolOptions {
   url: string;
@@ -74,8 +84,36 @@ export interface CallServerToolOptions {
   limits?: Partial<{ [K in keyof typeof CALL_LIMITS]: number }>;
 }
 
-/** The one field of a `tools/call` result we read. The rest is never looked at. */
+/** The one field of a `tools/call` result every caller reads. The rest is passed to `onReply` unvalidated. */
 const CallResultView = z.object({ isError: z.boolean().optional() }).passthrough();
+
+/** A reply's `content`, as `callServerToolWithContent` accepts it. */
+const ContentView = z.array(ConnectorResultContentBlockSchema);
+
+/**
+ * Answers `sendOneCall` made up because its own `onReply` failed, with the
+ * failure's loggable code when it has one. Identity-keyed, so the mark never
+ * rides on the answer's shape: the hook's `returns` schema still sees a plain
+ * `unknown`/`interrupted`.
+ */
+const unforeseen = new WeakMap<object, { code?: string }>();
+
+/**
+ * The answer when `onReply` failed: the call went out, so `unknown`, and
+ * marked so the caller's log line can say it was unforeseen (the same
+ * `unexpected: true` the handler's catch-all logs).
+ */
+export function unforeseenInterruption(err: unknown): ServerCallUnknown {
+  const out: ServerCallUnknown = { outcome: 'unknown', reason: 'interrupted' };
+  const code = loggableCode(err);
+  unforeseen.set(out, code !== undefined ? { code } : {});
+  return out;
+}
+
+/** The mark `unforeseenInterruption` left on this answer, or `undefined` for a genuine one. */
+export function unforeseenMark(out: unknown): { code?: string } | undefined {
+  return out !== null && typeof out === 'object' ? unforeseen.get(out) : undefined;
+}
 
 function errorName(err: unknown): string {
   if (err === null || typeof err !== 'object') return '';
@@ -84,7 +122,7 @@ function errorName(err: unknown): string {
 }
 
 /** A failure during connect: `tools/call` was never sent, so it is definite. */
-function classifyConnectError(err: unknown): ServerCallOutcome {
+function classifyConnectError(err: unknown): ServerCallFailed {
   const code = err !== null && typeof err === 'object' ? (err as { code?: unknown }).code : undefined;
   if (code === 401 || code === 403 || errorName(err) === 'UnauthorizedError') {
     return { outcome: 'failed', reason: 'needs-auth' };
@@ -93,7 +131,7 @@ function classifyConnectError(err: unknown): ServerCallOutcome {
 }
 
 /** A failure after `tools/call` was sent: definite only when the answer says so. */
-function classifyCallError(err: unknown): ServerCallOutcome {
+function classifyCallError(err: unknown): ServerCallFailed | ServerCallUnknown {
   // An HTTP status, as the transport saw it. Only these mean the request
   // itself was turned away, and that is an ASSUMPTION (review r3 S2): a
   // conformant server sends a 4xx only when it cannot accept the request. A
@@ -139,8 +177,20 @@ function classifyCallError(err: unknown): ServerCallOutcome {
 /**
  * Connect to one http MCP server through the guarded fetch, send exactly one
  * `tools/call`, and close. Never throws: every failure is an outcome.
+ *
+ * `onReply` turns the server's answer into the caller's success shape. It
+ * sees the reply only as `CallResultView` let it through (`isError`, the rest
+ * unvalidated and untrusted). It runs before `close()`, in a try of its own
+ * and awaited, so a throw or a rejection from it is caught there. It runs
+ * after the call went out, so such a failure is `unknown`/`interrupted`,
+ * never `failed`: it never goes through `classifyCallError`, which would read
+ * an McpError-shaped throw as an answer from the server. The answer is
+ * marked (`unforeseenMark`) so the caller can log it as unforeseen.
  */
-export async function callServerTool(opts: CallServerToolOptions): Promise<ServerCallOutcome> {
+export async function sendOneCall<S>(
+  opts: CallServerToolOptions,
+  onReply: (reply: { isError?: boolean | undefined } & Record<string, unknown>) => S | Promise<S>,
+): Promise<S | ServerCallFailed | ServerCallUnknown> {
   const limits = { ...CALL_LIMITS, ...(opts.limits ?? {}) };
   const oversize = new AbortController();
   let budget: AbortSignal;
@@ -202,22 +252,76 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
     // `tools/call` has not reached the transport yet, so this is definite.
     // From `client.request` on, the call may be out.
     if (budget.aborted) return { outcome: 'failed', reason: 'unreachable' };
+    let reply: { isError?: boolean | undefined } & Record<string, unknown>;
     try {
-      const reply = await client.request(
+      reply = await client.request(
         { method: 'tools/call', params: { name: opts.tool, arguments: opts.input } },
         CallResultView,
         { signal: budget, timeout: limits.requestTimeoutMs },
       );
-      // `isError` is the service's answer once the call went out (review F3):
-      // not a refusal. The tool may have run and done part of the work.
-      return reply.isError === true ? { outcome: 'failed', reason: 'tool-error' } : { outcome: 'succeeded' };
     } catch (err) {
       // An oversize reply aborts the budget, which the SDK reports as a
       // request timeout, so the size check comes first.
       return oversize.signal.aborted ? { outcome: 'unknown', reason: 'interrupted' } : classifyCallError(err);
     }
+    try {
+      return await onReply(reply);
+    } catch (err) {
+      return unforeseenInterruption(err);
+    }
   } finally {
     await client.close().catch(() => {});
     await guarded.close();
   }
+}
+
+/** `sendOneCall`, answering the outcome only: nothing the server said comes back. */
+export function callServerTool(opts: CallServerToolOptions): Promise<ServerCallOutcome> {
+  // `isError` is the service's answer once the call went out (review F3):
+  // not a refusal. The tool may have run and done part of the work.
+  return sendOneCall<ServerCallOutcome>(opts, (reply) =>
+    reply.isError === true ? { outcome: 'failed', reason: 'tool-error' } : { outcome: 'succeeded' },
+  );
+}
+
+/**
+ * `sendOneCall`, answering the outcome and the reply's content blocks (for
+ * `connectors:call-tool-result`). The blocks are UNTRUSTED. They are
+ * checked against `ContentView` and this function hands back the reply's own
+ * array, not zod's copy. That identity ends at the hook: the HookBus returns
+ * the hook's `returns` schema's parsed copy (core hook-bus.ts,
+ * `returns.safeParse(result).data`), so the hook's caller gets the same
+ * values with key order possibly changed and any own `__proto__` key in a
+ * block dropped.
+ *   - Not `isError`: no `content` is success with no blocks; readable content
+ *     is success with it; anything else is `unknown`/`interrupted` (the call
+ *     went out and the answer could not be read).
+ *   - `isError`: `tool-error` with the content when it is readable, else
+ *     none. The service did say it failed, so an unreadable error body does
+ *     not turn into `unknown`.
+ *   - A `tool-error` from a JSON-RPC error object has no reply body: no
+ *     content. Its message is never read.
+ */
+export async function callServerToolWithContent(opts: CallServerToolOptions): Promise<ServerCallResultOutcome> {
+  const out = await sendOneCall<ServerCallResultOutcome>(opts, (reply) => {
+    const content = reply.content;
+    const readable = ContentView.safeParse(content).success;
+    if (reply.isError === true) {
+      return {
+        outcome: 'failed',
+        reason: 'tool-error',
+        content: readable ? (content as ConnectorResultContentBlock[]) : [],
+      };
+    }
+    if (content === undefined) return { outcome: 'succeeded', content: [] };
+    if (readable) return { outcome: 'succeeded', content: content as ConnectorResultContentBlock[] };
+    return { outcome: 'unknown', reason: 'interrupted' };
+  });
+  if (out.outcome === 'failed' && out.reason === 'tool-error' && !('content' in out)) {
+    return { outcome: 'failed', reason: 'tool-error', content: [] };
+  }
+  // Every other answer already has one of ServerCallResultOutcome's shapes:
+  // the shared classification's `tool-error` (the one without content) is
+  // handled above. Returned as is, so an unforeseen mark survives.
+  return out as ServerCallResultOutcome;
 }

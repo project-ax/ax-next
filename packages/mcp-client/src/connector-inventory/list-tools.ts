@@ -8,11 +8,17 @@
 //     claim; enforcement keys off verdicts, not hints.
 //   - names, titles and descriptions are length-capped and stripped of
 //     control and bidi-override characters here; renderers still fence them.
-//   - `inputSchema` / `outputSchema` are dropped. We deliberately call
-//     `client.request('tools/list')` instead of `client.listTools()`, because
-//     the latter compiles every tool's `outputSchema` with a JSON-Schema
-//     validator — compiling attacker-supplied schemas on the host buys
-//     nothing for an inventory.
+//   - `outputSchema` is dropped. `inputSchema` is kept as opaque JSON for
+//     callers that relay it (an external apps platform needs each tool's
+//     argument schema): only a plain object, at most 32 KiB serialized and
+//     within 1 MiB per server listing, else null. What we keep is a fresh
+//     parse of the exact JSON we measured (so a `__proto__` the SDK's parse
+//     turned into a prototype is gone), and it is never compiled, read or
+//     acted on here. We deliberately
+//     call `client.request('tools/list')` instead of `client.listTools()`,
+//     because the latter compiles every tool's `outputSchema` with a
+//     JSON-Schema validator — compiling attacker-supplied schemas on the host
+//     buys nothing for an inventory.
 // ---------------------------------------------------------------------------
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -36,6 +42,10 @@ export const INVENTORY_LIMITS = {
   maxNameLength: 128,
   maxTitleLength: 200,
   maxDescriptionLength: 2_000,
+  /** A tool's `inputSchema` is kept only up to this many UTF-8 bytes of JSON. */
+  maxInputSchemaBytes: 32_768,
+  /** ...and only while one server's kept schemas total at most this many. */
+  maxInputSchemaBytesPerServer: 1_048_576,
 } as const;
 
 /** One tool as the inventory reports it (before the toolKey is attached). */
@@ -47,6 +57,12 @@ export interface InventoryToolBase {
   readOnly: boolean | null;
   /** `destructiveHint || openWorldHint`; null when that can't be decided. */
   outward: boolean | null;
+  /**
+   * The server's own JSON Schema for the tool's arguments. UNTRUSTED and
+   * opaque: never compiled. Null when absent, not a plain object, or over
+   * the size caps.
+   */
+  inputSchema: Record<string, unknown> | null;
 }
 
 
@@ -84,6 +100,36 @@ export function mapOutward(annotations: unknown): boolean | null {
   return null;
 }
 
+/**
+ * A plain JSON object: not null, not an array, and with `Object.prototype` (or
+ * no prototype). The SDK's catchall parse turns a top-level `__proto__` key in
+ * a server's schema into the parsed object's prototype, so "is an object" is
+ * not enough. Shared with the cache read (store.ts).
+ */
+export function isPlainJsonObject(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * A fresh copy of `schema` made from its own JSON, with its UTF-8 size: what
+ * we keep is exactly the bytes we measured, always a plain object, and the
+ * same as what the cache round-trip (stringify, then parse) gives back. A
+ * value JSON can't encode reads as too big (null).
+ */
+function copySchema(schema: object): { copy: Record<string, unknown>; bytes: number } | null {
+  try {
+    const json = JSON.stringify(schema);
+    if (typeof json !== 'string') return null;
+    const copy: unknown = JSON.parse(json);
+    if (!isPlainJsonObject(copy)) return null;
+    return { copy, bytes: Buffer.byteLength(json, 'utf8') };
+  } catch {
+    return null;
+  }
+}
+
 export interface NormalizeResult {
   tools: InventoryToolBase[];
   /** Tools dropped for a malformed/oversize name, a duplicate, or the count cap. */
@@ -95,12 +141,20 @@ export function normalizeTools(raw: ReadonlyArray<unknown>): NormalizeResult {
   const out: InventoryToolBase[] = [];
   const seen = new Set<string>();
   let dropped = 0;
+  /** UTF-8 bytes of the schemas kept so far in this listing. */
+  let schemaTotal = 0;
   for (const entry of raw) {
     if (entry === null || typeof entry !== 'object') {
       dropped++;
       continue;
     }
-    const t = entry as { name?: unknown; title?: unknown; description?: unknown; annotations?: unknown };
+    const t = entry as {
+      name?: unknown;
+      title?: unknown;
+      description?: unknown;
+      annotations?: unknown;
+      inputSchema?: unknown;
+    };
     const name = typeof t.name === 'string' ? t.name : '';
     if (
       name.length === 0 ||
@@ -118,12 +172,28 @@ export function normalizeTools(raw: ReadonlyArray<unknown>): NormalizeResult {
         ? (t.annotations as { title?: unknown }).title
         : undefined;
     const title = cleanText(t.title ?? annTitle, INVENTORY_LIMITS.maxTitleLength);
+    let inputSchema: Record<string, unknown> | null = null;
+    // The SDK's object is only the input: a top-level `__proto__` from the
+    // wire is its prototype, not an own key. Only a plain object reaches the
+    // copy, and what we keep is the copy, re-read from the JSON we measured.
+    const sent: unknown = t.inputSchema;
+    const measured =
+      sent !== null && typeof sent === 'object' && !Array.isArray(sent) ? copySchema(sent) : null;
+    if (
+      measured !== null &&
+      measured.bytes <= INVENTORY_LIMITS.maxInputSchemaBytes &&
+      schemaTotal + measured.bytes <= INVENTORY_LIMITS.maxInputSchemaBytesPerServer
+    ) {
+      inputSchema = measured.copy;
+      schemaTotal += measured.bytes;
+    }
     out.push({
       name,
       title: title.length > 0 ? title : name,
       description: cleanText(t.description, INVENTORY_LIMITS.maxDescriptionLength),
       readOnly: mapReadOnly(t.annotations),
       outward: mapOutward(t.annotations),
+      inputSchema,
     });
   }
   return { tools: out, dropped };

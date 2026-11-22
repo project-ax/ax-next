@@ -252,10 +252,21 @@
               "minimum": 1,
               "maximum": 65535,
               "description": "The artifact content origin's container port (content-http). The chart always sets a real port; 0 (ephemeral) is for test fixtures only."
+            },
+            "appsBridge": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "The apps connector bridge's container port (apps-bridge), rendered only when appsBridge.enabled. Never on the Ingress."
             }
           }
         },
         "contentServicePort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "appsBridgeServicePort": {
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
@@ -305,6 +316,60 @@
             "pattern": "^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$"
           },
           "description": "The app origins allowed to show artifact pages in a frame. Required, one or more."
+        }
+      }
+    },
+    "appsBridge": {
+      "type": "object",
+      "description": "The optional apps connector bridge (@ax/apps-bridge). Off by default. When enabled, every string here except allowFrom is required (the render fails on a blank one), and the bridge port is never put on the Ingress.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "CAPABILITY GATE. Opens the bridge's listener: an outside apps platform may call connector tools through AX, as granted in AX."
+        },
+        "platformId": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "description": "The apps platform's id: lowercase letters, digits and inner hyphens, at most 63 characters."
+        },
+        "caller": {
+          "type": "object",
+          "description": "The platform's own workload identity: the OIDC ID token on every request is checked against these, and its subject must match exactly.",
+          "properties": {
+            "issuer": { "type": "string", "maxLength": 512 },
+            "jwksUrl": { "type": "string" },
+            "audience": { "type": "string", "maxLength": 512 },
+            "subject": { "type": "string", "maxLength": 512 }
+          }
+        },
+        "viewer": {
+          "type": "object",
+          "description": "The signed assertion naming the person using an app, from the platform's sign-in gateway.",
+          "properties": {
+            "issuer": { "type": "string", "maxLength": 512 },
+            "jwksUrl": { "type": "string" },
+            "audience": { "type": "string", "maxLength": 512 },
+            "maxAgeSeconds": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600,
+              "description": "How old a viewer assertion may be, in seconds."
+            }
+          }
+        },
+        "allowFrom": {
+          "type": "array",
+          "description": "NetworkPolicy peers admitted to the bridge port, rendered verbatim. Empty admits nobody.",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "ipBlock": { "type": "object" },
+              "namespaceSelector": { "type": "object" },
+              "podSelector": { "type": "object" }
+            }
+          }
         }
       }
     }

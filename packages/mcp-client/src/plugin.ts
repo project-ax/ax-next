@@ -22,6 +22,10 @@
 //      user and agent and sends one guarded `tools/call`
 //      (connector-inventory/call-tool.ts). Not an IPC action and not a
 //      `tool:execute:*`: the sandbox cannot reach it.
+//   4. Connector results for apps: `connectors:call-tool-result` runs the
+//      same checks as item 3 and returns the reply's content blocks (on
+//      success and on a tool error). Its intended caller is
+//      `@ax/apps-bridge` (connector-inventory/call-tool-result.ts).
 //
 // `credentials:list` / `credentials:delete` are optional calls: the sweep
 // purges through them when present (and init orders after the credentials
@@ -38,14 +42,22 @@ import {
 } from './connector-inventory/describe-tools.js';
 import { createAuthFailureRecheck } from './connector-inventory/auth-failure-recheck.js';
 import { createCallTool } from './connector-inventory/call-tool.js';
-import type { CallServerToolOptions, ServerCallOutcome } from './connector-inventory/call-server-tool.js';
+import { createCallToolResult } from './connector-inventory/call-tool-result.js';
+import type {
+  CallServerToolOptions,
+  ServerCallOutcome,
+  ServerCallResultOutcome,
+} from './connector-inventory/call-server-tool.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
 import {
   createInventoryStore,
   runMcpClientMigration,
   type McpClientDatabase,
 } from './connector-inventory/store.js';
-import { ConnectorCallToolOutputSchema } from './connector-inventory/types.js';
+import {
+  ConnectorCallToolOutputSchema,
+  ConnectorCallToolResultOutputSchema,
+} from './connector-inventory/types.js';
 import { sweepHostMcpServers } from './host-server-sweep.js';
 
 const PLUGIN_NAME = '@ax/mcp-client';
@@ -57,7 +69,8 @@ export interface CreateMcpClientPluginOptions {
   /**
    * If true, register `connectors:describe-tools` (connector tool inventory)
    * and own its cache table, and register `connectors:call-tool` (approved
-   * connector calls, TASK-1046). Default: false — this plugin also boots in
+   * connector calls, TASK-1046) and `connectors:call-tool-result` (the same
+   * call, answering the reply's content). Default: false — this plugin also boots in
    * the CLI preset, which has no database, no `@ax/connectors` and no agents;
    * the multi-tenant (k8s) preset sets it.
    */
@@ -72,6 +85,11 @@ export interface CreateMcpClientPluginOptions {
    * `connectors:call-tool`. Production leaves this undefined.
    */
   connectorCallServerTool?: (opts: CallServerToolOptions) => Promise<ServerCallOutcome>;
+  /**
+   * Test seam: replace the one-shot guarded `tools/call` used by
+   * `connectors:call-tool-result`. Production leaves this undefined.
+   */
+  connectorCallServerToolWithContent?: (opts: CallServerToolOptions) => Promise<ServerCallResultOutcome>;
 }
 
 /**
@@ -94,13 +112,14 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
     optionalCalls.push({
       hook: 'connectors:list-effective',
       degradation:
-        "A runner's report that a connector server refused it is dropped (logged): the connector's rail status updates only on its next rail or details check. And connectors:call-tool cannot match a call to the agent's connector, so it sends nothing and answers unavailable.",
+        "A runner's report that a connector server refused it is dropped (logged): the connector's rail status updates only on its next rail or details check. And connectors:call-tool and connectors:call-tool-result cannot match a call to the agent's connector, so they send nothing and answer unavailable.",
     });
     registers.push(
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
       'connectors:call-tool',
+      'connectors:call-tool-result',
     );
     calls.push('database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get');
   }
@@ -198,6 +217,23 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
             ...(opts.connectorCallServerTool !== undefined ? { callServer: opts.connectorCallServerTool } : {}),
           }),
           { returns: ConnectorCallToolOutputSchema },
+        );
+        // The same checks, answering the reply's content blocks (on success
+        // and on a tool error). The intended caller is @ax/apps-bridge, which
+        // checks tool policy and its own grants first and relays the content
+        // only to the apps platform (SECURITY.md). The bus's default timeout,
+        // as above. `returns` holds the answer to its four shapes: content
+        // only on success and on a tool error, closed codes everywhere else.
+        bus.registerService(
+          'connectors:call-tool-result',
+          PLUGIN_NAME,
+          createCallToolResult({
+            bus,
+            ...(opts.connectorCallServerToolWithContent !== undefined
+              ? { callServerWithContent: opts.connectorCallServerToolWithContent }
+              : {}),
+          }),
+          { returns: ConnectorCallToolResultOutputSchema },
         );
       }
 

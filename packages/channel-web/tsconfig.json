@@ -20,6 +20,7 @@
     { "path": "../agent-identity-templates" },
     { "path": "../http-server" },
     { "path": "../agents" },
+    { "path": "../apps-bridge-contract" },
     { "path": "../conversations" },
     { "path": "../ipc-protocol" },
     { "path": "../attachments" },

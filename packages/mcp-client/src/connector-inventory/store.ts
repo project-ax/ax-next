@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { sql, type Kysely } from 'kysely';
+import { isPlainJsonObject } from './list-tools.js';
 import type { InventoryStatus, InventoryTool } from './types.js';
 
 export async function runMcpClientMigration<DB>(db: Kysely<DB>): Promise<void> {
@@ -86,7 +87,14 @@ export interface InventoryStore {
 function parseTools(raw: string): InventoryTool[] | null {
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as InventoryTool[]) : null;
+    if (!Array.isArray(parsed)) return null;
+    // A row cached before tools carried `inputSchema` has no such key: it
+    // reads as null (no schema) until the row's TTL passes and it's relisted.
+    return parsed.map((tool: unknown) => {
+      if (tool === null || typeof tool !== 'object' || Array.isArray(tool)) return tool;
+      const schema = (tool as { inputSchema?: unknown }).inputSchema;
+      return isPlainJsonObject(schema) ? tool : { ...tool, inputSchema: null };
+    }) as InventoryTool[];
   } catch {
     return null;
   }
