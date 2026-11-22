@@ -15,7 +15,14 @@ import { z } from 'zod';
 // not even to fit under MEMORY_PRE_CAPTURE_SPEAKER_NAMES_MAX: past the cap it
 // refuses instead, because a dropped name is one memory could file facts
 // under. Memory reads the fire's final payload. In a turn that isn't private,
-// it stores no statement whose subject is made of those names. An answer with
+// it stores no statement whose subject is made of those names, except in a team
+// agent's member turn, where it files the subject under the person the turn
+// runs as. So a subscriber names only the people whose words the
+// conversation's user turns carry, and in a team agent's member turn that is
+// ONLY the person the turn runs as (every name their messages were labelled
+// with). There an extra name is the dangerous direction: memory would file a
+// fact about that person, or their words, under the person the turn runs as.
+// Everywhere else an extra name only makes memory drop more. An answer with
 // a known key that doesn't parse is one memory can't trust, so it learns
 // nothing from it.
 //

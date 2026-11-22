@@ -213,10 +213,13 @@ describe('memory facts export — real engine + real volume', () => {
 describe('sandbox:memory-mounts resolver', () => {
   async function makeVolumeHarness(options: Parameters<typeof makeMemoryHarness>[1] = {}) {
     const { h, hostRoot } = await makeExportHarness(options);
-    const resolveMounts = (owner: { agentId: string; userId: string; audience?: string }) =>
+    const resolveMounts = (
+      owner: { agentId: string; userId: string; audience?: string; source?: string },
+      ctx: AgentContext = h.ctx(),
+    ) =>
       h.bus.call<unknown, { mounts: Array<Record<string, unknown>> }>(
         'sandbox:memory-mounts',
-        h.ctx(),
+        ctx,
         { owner },
       );
     return { h, hostRoot, resolveMounts };
@@ -238,9 +241,9 @@ describe('sandbox:memory-mounts resolver', () => {
   });
 
   // TASK-1091. The export is every fact the agent has, scoped by owner but not
-  // by audience, so a session whose replies people without access to the
-  // agent can read gets no file view at all. An audience this build doesn't
-  // know fails closed, like `audienceOf`.
+  // by audience, so a personal agent's session whose replies people without
+  // access to the agent can read gets no file view at all. An audience this
+  // build doesn't know fails closed, like `audienceOf`.
   it.each([
     ['a shared', 'shared'],
     ['an unknown-audience', 'public'],
@@ -261,9 +264,9 @@ describe('sandbox:memory-mounts resolver', () => {
     try {
       const out = await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience });
       expect(out).toEqual({ mounts: [] });
-      // Withheld before the access check and the flush: nothing is granted,
-      // so nothing is read, checked or written.
-      expect(spy.mock.calls.map(([hook]) => hook)).toEqual(['sandbox:memory-mounts']);
+      // Withheld after the access check (whose memory decides it, TASK-1204),
+      // before the flush: nothing is granted, so nothing is read or written.
+      expect(spy.mock.calls.map(([hook]) => hook)).toEqual(['sandbox:memory-mounts', 'agents:resolve']);
     } finally {
       spy.mockRestore();
     }
@@ -283,6 +286,101 @@ describe('sandbox:memory-mounts resolver', () => {
     expect(mounts).toHaveLength(1);
     expect(mounts[0]).toMatchObject({ kind: 'nfs', role: 'memory', mountPath: '/memory', readOnly: true });
     expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([]);
+  });
+
+  // TASK-1204, design §4c: a team agent's memory is the team's, so a member's
+  // session keeps its read-only view in every audience, as its recall does.
+  it.each([
+    ["a member's shared", { audience: 'shared', source: 'user' }],
+    ['a shared', { audience: 'shared' }],
+    ['an unknown-audience', { audience: 'public' }],
+    ["a routine's shared", { audience: 'shared', source: 'routine' }],
+    ["a member's private-stamped", { audience: 'private', source: 'user' }],
+  ])('%s session of a team agent gets its mount', async (_label, session) => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility: 'team' } });
+    await h.remember({ about: 'user', relation: 'lives in', value: 'Portland' });
+
+    const { mounts } = await resolveMounts({ agentId: 'agent-1', userId: ALICE, ...session });
+
+    expect(mounts).toHaveLength(1);
+    expect(mounts[0]).toMatchObject({ role: 'memory', mountPath: '/memory', readOnly: true });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([]);
+    expect(await readdir(hostRoot)).not.toEqual([]);
+  });
+
+  // §4c shares a team agent's memory with the team, not with people outside
+  // AX. The export holds every row, so an outsider's session gets no view, as
+  // its recall reads shared rows only. Whatever its audience stamp (review
+  // F3): someone without access to the agent reads its replies, so a private
+  // stamp, or none, fails closed (no live producer sends one). A source this
+  // build doesn't know reads as an outsider's, like `isOutsiderTurn`. On a
+  // personal agent too.
+  it.each([
+    ['team', "an outsider's shared", { audience: 'shared', source: 'external' }],
+    ['team', "an outsider's unknown-audience", { audience: 'public', source: 'external' }],
+    ['team', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
+    ['team', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
+    ['team', "an outsider's unstamped", { source: 'external' }],
+    ['team', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
+    ['personal', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
+    ['personal', "an outsider's unstamped", { source: 'external' }],
+  ] as const)('a %s agent: %s session gets no mount and nothing is flushed', async (visibility, _label, session) => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility } });
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: 'launch_plan',
+        relation: 'codename',
+        value: 'Nightjar',
+        when: '2026-09-01T00:00:00.000Z',
+        ownerUserId: ALICE,
+        audience: 'private',
+      },
+    ]);
+    const spy = vi.spyOn(h.bus, 'call');
+    try {
+      expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, ...session })).toEqual({ mounts: [] });
+      expect(spy.mock.calls.map(([hook]) => hook)).toEqual(['sandbox:memory-mounts', 'agents:resolve']);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await readdir(hostRoot)).toEqual([]);
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([
+      { level: 'info', event: 'memory_mount_withheld', bindings: { agentId: 'agent-1', reason: 'shared-audience' } },
+    ]);
+  });
+
+  // The session's owner and the turn opening it agree (the orchestrator copies
+  // one from the other). When they don't, either naming an outsider withholds
+  // the view, as the k8s provider's read-only home does.
+  it("a team agent's shared session opened by an outsider's turn gets no mount", async () => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility: 'team' } });
+    await h.remember({ about: 'user', relation: 'lives in', value: 'Portland' });
+    const opening = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+
+    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' }, opening)).toEqual({
+      mounts: [],
+    });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(1);
+    // Even when the owner record says private (review F3): either naming an
+    // outsider withholds it, whatever the stamp.
+    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' }, opening)).toEqual({
+      mounts: [],
+    });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(2);
+    // A member's turn opening the same session gets the view.
+    expect((await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' })).mounts).toHaveLength(1);
+    expect(await readdir(hostRoot)).not.toEqual([]);
+  });
+
+  // The access check comes first now, so a caller the agent refuses hears
+  // so, instead of an empty answer that reads like a withheld view.
+  it('a shared session whose owner may not use the personal agent is refused, not quietly withheld', async () => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness();
+    await expect(resolveMounts({ agentId: 'agent-1', userId: BOB, audience: 'shared' })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toEqual([]);
+    expect(await readdir(hostRoot)).toEqual([]);
   });
 
   it('publishes the projection into the host volume during mount resolution', async () => {

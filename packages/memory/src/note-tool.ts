@@ -1,5 +1,6 @@
 import {
   audienceOf,
+  isOutsiderTurn,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -7,14 +8,19 @@ import {
   type ToolDescriptor,
 } from '@ax/core';
 
-import { resolveMemoryAccess } from './access.js';
-import { breaksSpeakerRule, recordFacts, SPEAKER_RULE_READS_AT_MOST } from './audience.js';
+import { resolveMemoryAccess, type MemoryAccess } from './access.js';
+import {
+  recordFacts,
+  SPEAKER_RULE_READS_AT_MOST,
+  speakerScope,
+  speakerSubject,
+  type SpeakerScope,
+} from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
 import { PLUGIN_NAME } from './plugin-name.js';
 import { deriveSlot } from './slots.js';
-import { rewriteSpeaker } from './subject.js';
 import { findActiveExtractedTwin, type PriorRow, type TwinCandidate } from './twins.js';
 
 export const MEMORY_NOTE_TOOL_HOOK = 'tool:execute:memory_note';
@@ -87,10 +93,34 @@ const KEYS_MESSAGE = 'unexpected field(s) — only about, relation, value, when 
 const WHEN_MESSAGE =
   'when must be a date like 2026-09-27 or a date-time with seconds and an explicit timezone ' +
   'like 2026-09-27T14:00:00Z or 2026-09-27T14:00:00-07:00, or be omitted to mean now.';
+/**
+ * The refusal of a note about a person in a turn that keeps the speaker rule
+ * (a personal agent's shared turn, any outsider's turn): the speaker could be
+ * anyone in the room, so no note about a person is saved at all.
+ */
 export const PERSON_IN_SHARED_MESSAGE =
   "In a shared conversation, don't save notes about a person: not as `user`, not under their name, and " +
   "not as a personal detail in the value. If it's about the work (a project, a decision, a process, or who owns " +
   'what), save it again with the work as `about`, for example `team_standup`.';
+/**
+ * The refusal of a note under a person key in a team agent's member turn
+ * (TASK-1204): a note about the person talking is saved under their own key,
+ * so this only answers a subject that names some other person's key, or one
+ * cased or padded so it can't be read as `user`. It says how to file the note
+ * instead.
+ */
+export const TEAM_PERSON_KEY_MESSAGE =
+  "Save it again with `user` as `about` if it's about the person you're talking with, " +
+  "or the name of the person or thing it's about. Don't write a `user:` id.";
+
+/**
+ * The words a note `speakerSubject` files nowhere is refused with, by the
+ * turn's speaker scope. A private turn files every subject, so it never gets
+ * here; were it to, it would get the stricter words.
+ */
+function unfiledMessage(scope: SpeakerScope): string {
+  return scope === 'team' ? TEAM_PERSON_KEY_MESSAGE : PERSON_IN_SHARED_MESSAGE;
+}
 // The same words whoever refused and why: that goes to the log, not the
 // model. True for every refusal (TASK-1094 PR B review F4): a switch turned
 // off, a conversation memory never learns from, a check that failed or timed
@@ -155,9 +185,15 @@ function normalizeWhen(when: unknown): string {
  */
 export const NOTE_TWIN_EVENT = 'memory_note_twin';
 
-/** The conversation's rows, active and closed — `plugin.ts`'s `readPriorRows`. */
+/**
+ * The conversation's rows, active and closed — `plugin.ts`'s `readPriorRows`.
+ * Handed the note's resolved `access`, because whose memory it is decides
+ * which rows the read may see (a team agent member's reads have no audience
+ * scope, TASK-1204).
+ */
 export type NotePriorRowsFn = (
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { abouts: string[]; ownerUserId: string; conversationId: string },
 ) => Promise<PriorRow[]>;
 
@@ -176,14 +212,14 @@ export type NotePriorRowsFn = (
 async function restatesExtractedRow(
   ctx: AgentContext,
   priorRows: NotePriorRowsFn,
-  ownerUserId: string,
+  access: MemoryAccess,
   note: TwinCandidate,
 ): Promise<boolean> {
   const { conversationId } = conversationField(ctx);
   if (conversationId === undefined) return false;
   let prior: PriorRow[];
   try {
-    prior = await priorRows(ctx, { abouts: [note.about], ownerUserId, conversationId });
+    prior = await priorRows(ctx, access, { abouts: [note.about], ownerUserId: access.userId, conversationId });
   } catch (err) {
     ctx.logger.warn(NOTE_FAILED_EVENT, {
       agentId: ctx.agentId,
@@ -224,33 +260,41 @@ export async function registerMemoryNote(
         }
         // Both engines refuse an `about` this long in every audience, so
         // nothing is lost by saying so here, once, for every turn. Without
-        // it a shared turn's long subject would break the speaker rule unread
-        // and answer `PERSON_IN_SHARED_MESSAGE`, which says the note is about
-        // a person.
+        // it a shared turn's long subject would be filed nowhere, unread, and
+        // answer a refusal that says the note is about a person.
         if ((input.about as string).length > SPEAKER_RULE_READS_AT_MOST) {
           throw new NoteInputError(ABOUT_TOO_LONG_MESSAGE);
         }
         const when = input.when === undefined ? undefined : normalizeWhen(input.when);
-        // TASK-1091: in a turn people without access to the agent can read,
-        // the person a note calls `user` could be anyone in the room. Refused
-        // on the subject AS WRITTEN, before the speaker rewrite and before
-        // any bus call, so nothing is read or written. `recordFacts` would
-        // refuse it anyway; refusing here says why, in words the model can
-        // pass on. The same function as the observer and `recordFacts`, so
-        // the three can't drift (TASK-1136). This is the rule's `user` half,
-        // with no names: it comes before the ask (TASK-1094's order), and the
-        // names half comes right after it.
-        if (breaksSpeakerRule(audienceOf(ctx), input.about as string, [])) {
-          throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
+        // TASK-1204: where a note about a person is filed depends on whose
+        // memory this is (`speakerScope`), so a turn that isn't the owner's
+        // own reads that first (one `agents:resolve`). The owner's own turn is
+        // `'private'` on any agent, so it keeps TASK-1094's order: the ask,
+        // then access.
+        let access =
+          audienceOf(ctx) !== 'private' || isOutsiderTurn(ctx) ? await resolveMemoryAccess(bus, ctx) : undefined;
+        const scope: SpeakerScope = access === undefined ? 'private' : speakerScope(ctx, access);
+        // A subject no name can file: in a turn that keeps the speaker rule
+        // (TASK-1091) the person a note calls `user` could be anyone in the
+        // room, and in a team agent's member turn (TASK-1204) `User` or
+        // another person's key names someone the speaker can't vouch for.
+        // Refused on the subject AS WRITTEN, before the ask (TASK-1094's
+        // order) and before any engine call, so nothing is read or written.
+        // `recordFacts` would refuse it anyway; refusing here says why, in
+        // words the model can pass on. The same `speakerSubject` as the
+        // observer and `recordFacts`, so the three can't drift (TASK-1136).
+        // This is the rule with no names; the names come with the ask.
+        if (access !== undefined && speakerSubject(scope, input.about as string, access.userId, []) === undefined) {
+          throw new NoteInputError(unfiledMessage(scope), 'forbidden');
         }
         // TASK-1094: ask `memory:pre-capture` first, as every extraction
         // pass does (`captureCheck`). A plugin that keeps a conversation
         // out of memory keeps the agent's own notes in it out too; otherwise
         // the agent could write down what memory was told not to learn.
         // After the input and person checks, so those refusals still say
-        // what's wrong; before access and the engine, so a refused note
-        // reads nothing and writes nothing. An answer memory can't read
-        // throws `invalid-return`, and the note is not saved.
+        // what's wrong; before the engine, so a refused note reads nothing
+        // and writes nothing. An answer memory can't read throws
+        // `invalid-return`, and the note is not saved.
         const check = await captureCheck(bus, ctx);
         if (check.refusal !== undefined) {
           ctx.logger.info(CAPTURE_REFUSED_EVENT, {
@@ -261,17 +305,20 @@ export async function registerMemoryNote(
           });
           throw new NoteInputError(NOT_SAVED_HERE_MESSAGE, 'forbidden');
         }
+        access ??= await resolveMemoryAccess(bus, ctx);
         // TASK-1146: the answer names the people speaking in the
-        // conversation, and a note filed under one of their names (`vinay`)
-        // is a note about a person, refused like `user`, with the same words.
-        // Still before access and the engine.
-        if (breaksSpeakerRule(audienceOf(ctx), input.about as string, check.speakerNames)) {
-          throw new NoteInputError(PERSON_IN_SHARED_MESSAGE, 'forbidden');
+        // conversation. A note filed under one of their names (`vinay`) is a
+        // note about a person: refused like `user`, with the same words, in a
+        // turn that keeps the speaker rule, and filed under the member's own
+        // key, like `user`, in a team agent's member turn (TASK-1204). A
+        // private turn files `user` under the owner's key, as always (design
+        // §3.2). Before the twin check, so it compares the key the note is
+        // filed under.
+        const about = speakerSubject(scope, input.about as string, access.userId, check.speakerNames);
+        if (about === undefined) {
+          throw new NoteInputError(unfiledMessage(scope), 'forbidden');
         }
-
-        const access = await resolveMemoryAccess(bus, ctx);
-        const about = rewriteSpeaker(input.about as string, access.userId);
-        if (await restatesExtractedRow(ctx, priorRows, access.userId, {
+        if (await restatesExtractedRow(ctx, priorRows, access, {
           about,
           relation: input.relation as string,
           value: input.value as string,
@@ -280,11 +327,15 @@ export async function registerMemoryNote(
         }
         const slot = deriveSlot(input.relation as string);
         // `recordFacts`, like every engine write: it stamps the turn's
-        // audience on the note (TASK-1091). Handed the names this note was
-        // answered with, so a note asks once (TASK-1146).
+        // audience on the note (TASK-1091; private for a team agent member's
+        // note about themself, TASK-1204), and sends it only because `about`
+        // is already where `speakerSubject` files it. Handed the names this
+        // note was answered with, so a note asks once (TASK-1146), and the
+        // access resolved above, so it knows whose memory this is (TASK-1204).
         const result = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
+          access,
           'memory:facts:record',
           {
             statements: [
@@ -326,10 +377,11 @@ export async function registerMemoryNote(
             : err instanceof PluginError && err.code === 'forbidden'
               ? 'forbidden'
               : 'memory-unavailable';
-        // A refusal this tool makes on purpose (a person in a shared turn, a
-        // conversation memory may not learn from) is a decision, not a
-        // failure: info, so a "remember off" channel isn't a stream of warns.
-        // Everything else, a resolver's own `forbidden` included, stays warn.
+        // A refusal this tool makes on purpose (a note about a person the turn
+        // files nowhere, a conversation memory may not learn from) is a
+        // decision, not a failure: info, so a "remember off" channel isn't a
+        // stream of warns. Everything else, a resolver's own `forbidden`
+        // included, stays warn.
         const deliberate = err instanceof NoteInputError && err.code === 'forbidden';
         try {
           ctx.logger[isMissingCredential(err) ? 'error' : deliberate ? 'info' : 'warn'](

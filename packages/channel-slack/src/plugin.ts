@@ -162,8 +162,9 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // channel is private now or no longer connected to its agent. Memory asks
 // before every extraction pass and every `memory_note`, so the veto stops
 // both. A member's turn also records the names its sender label shows, and
-// the veto answers a thread it lets through with them, so memory stores
-// nothing said there under the speaker's name (TASK-1146).
+// the veto answers a thread it lets through with them, so memory files what
+// the member says about themself there under their own AX key, never under
+// their name (TASK-1146, TASK-1204).
 //
 // TASK-1170: a team admin's ask for their agent's own bot has the shared bot
 // DM every AX admin it can find in the workspace (`auth:list-admins`, each

@@ -55,8 +55,9 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     conversation's key fixes it, so it never changes. `speaker_names`
  *     (TASK-1146) keeps the names a member's turns in the thread were
  *     labelled with, their display name and Slack id, so
- *     the veto can hand them to memory's speaker rule: memory stores nothing
- *     said in a channel under the name of the person who said it. Each name
+ *     the veto can hand them to memory's speaker rule: memory files what a
+ *     member says about themself in a channel under their own AX key
+ *     (TASK-1204), never under their name. Each name
  *     once, oldest first by when it was last seen, the 16 most recent
  *     (channel-store.ts). An outsiders' thread keeps none.
  *
@@ -296,7 +297,8 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   // speaker rule. A row from before this column has none until its member's
   // next turn adds theirs (not backfilled: this plugin learns a member's
   // names only from users.info as their turn starts); until then memory
-  // applies its `user` rule alone.
+  // knows the member only as `user`, and keeps a subject made of their name
+  // as written.
   await sql`
     ALTER TABLE channel_slack_v1_threads
       ADD COLUMN IF NOT EXISTS speaker_names TEXT[] NOT NULL DEFAULT '{}'

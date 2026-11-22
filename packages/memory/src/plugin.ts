@@ -2,9 +2,9 @@ import {
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS as CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
   audienceOf,
+  isOutsiderTurn,
   parseModelRef,
   type AgentContext,
-  type AgentContextAudience,
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
@@ -13,7 +13,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
-import { recallFacts, recordFacts } from './audience.js';
+import { recallFacts, recordFacts, speakerScope, type SpeakerScope } from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
@@ -187,7 +187,11 @@ export { CAPTURE_REFUSED_EVENT };
 /**
  * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
  * view because people without access to the agent can read its replies
- * (TASK-1091). Bindings: `agentId` and `reason: 'shared-audience'`.
+ * (TASK-1091): a personal agent's session that isn't private, or an
+ * outsider's on any agent, whatever its audience stamp (TASK-1204). A team
+ * agent member's session keeps its view in every audience, so this never
+ * fires for one. Bindings: `agentId` and `reason: 'shared-audience'` (an
+ * outsider's session is one, whatever it is stamped).
  */
 export const MEMORY_MOUNT_WITHHELD_EVENT = 'memory_mount_withheld';
 
@@ -332,7 +336,9 @@ interface EngineFactRecord {
   /**
    * Who could see the turn this row was learned in (TASK-1091): `'shared'`,
    * `'private'`, or absent on a row stored before audiences existed, which
-   * reads as private. `recallFacts` refuses a non-shared row in a shared read;
+   * reads as private. What a team agent's member said about themself is
+   * `'private'` whatever the turn: the team's, not the room's (TASK-1204,
+   * `recordFacts`). `recallFacts` refuses a non-shared row in a shared read;
    * `toMemoryStatement` refuses any other value and forwards only `'shared'`.
    */
   audience?: string;
@@ -389,8 +395,10 @@ export interface MemoryPluginConfig {
    * Writes each agent's facts as files to the memory volume (`/memory` in
    * runners) — the only file view of facts — and registers
    * `memory:export:flush` and `sandbox:memory-mounts`. Without it there is no
-   * file view; recall is unaffected. A shared session never gets the view:
-   * `sandbox:memory-mounts` answers it no mount (TASK-1091).
+   * file view; recall is unaffected. A session whose recall reads shared rows
+   * only never gets the view: `sandbox:memory-mounts` answers a personal
+   * agent's shared session no mount (TASK-1091), and an outsider's on a team
+   * agent (TASK-1204). A team agent member's session gets it in every audience.
    */
   exports?: MemoryExportConfig;
 }
@@ -673,28 +681,52 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             ) {
               throw invalid('owner must carry an agentId and userId', 'sandbox:memory-mounts');
             }
-            // TASK-1091. A session whose replies people without access to the
-            // agent can read gets no file view at all. The export holds every
-            // fact the agent has, scoped by owner but not by audience, so
-            // mounting it would hand the room every row recall withholds.
-            // The owner's audience is the session's own: host-stamped, and
-            // out of the runner's reach. `audienceOf` fails closed, so a value
-            // this build doesn't know withholds the view too. Decided before
-            // the access check and the flush: nothing is granted, so there is
-            // nothing to check and nothing to write.
-            if (audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private') {
+            const ownerCtx: AgentContext = {
+              ...ctx,
+              agentId: owner.agentId,
+              userId: owner.userId,
+            };
+            // Whose memory this is decides the view (TASK-1204), so it is
+            // read first. A caller the agent refuses is refused here, never
+            // answered with an empty list that reads like a withheld view.
+            const access = await resolveMemoryAccess(bus, ownerCtx);
+            // TASK-1091. The export holds every fact the agent has, scoped by
+            // owner but not by audience, so a session whose replies people
+            // without access to the agent can read gets no file view where
+            // its recall reads shared rows only: mounting it would hand the
+            // room every row recall withholds. That is, as in
+            // `recallAudienceScope`:
+            //
+            // - an outsider's session, on any agent, whatever its audience
+            //   stamp (TASK-1204, design §4c: a team agent's memory is shared
+            //   with the team, not with people outside AX). Someone without
+            //   access reads its replies, so a private stamp or none fails
+            //   closed (review F3), e.g. a stored session source this build
+            //   doesn't know, which ipc-core reads as external with no stamp.
+            // - a personal agent's session that isn't private.
+            //
+            // A member's session on a team agent keeps the view in every
+            // audience, as its recall reads everything.
+            //
+            // The owner's audience and source are the session's own:
+            // host-stamped, and out of the runner's reach. The turn opening
+            // the session names an outsider too (the orchestrator copies one
+            // from the other), and either is enough, as for the k8s
+            // provider's read-only home. `audienceOf` and `isOutsiderTurn`
+            // fail closed: an audience this build doesn't know withholds the
+            // view wherever a shared one does, and a source it doesn't know
+            // reads as an outsider's. Decided before the flush: nothing is
+            // granted, so there is nothing to write.
+            const outsider =
+              isOutsiderTurn(owner.source === undefined ? {} : { source: owner.source }) || isOutsiderTurn(ctx);
+            const shared = audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private';
+            if (outsider || (shared && access.visibility !== 'team')) {
               ctx.logger.info(MEMORY_MOUNT_WITHHELD_EVENT, {
                 agentId: owner.agentId,
                 reason: 'shared-audience',
               });
               return { mounts: [] };
             }
-            const ownerCtx: AgentContext = {
-              ...ctx,
-              agentId: owner.agentId,
-              userId: owner.userId,
-            };
-            await resolveMemoryAccess(bus, ownerCtx);
             await exporter.flush(ownerCtx);
             return { mounts: [memoryMountSpec(owner.agentId, volume)] };
           },
@@ -781,10 +813,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
             // `recallFacts`, like every engine read here: it adds the turn's
             // audience scope (TASK-1091), last, and refuses a row a shared
-            // turn may not see.
+            // turn may not see. On a team agent only an outsider's turn has
+            // that scope; a member's read has none, in any audience
+            // (TASK-1204).
             const raw = await recallFacts<EngineRecallOutput>(
               bus,
               ctx,
+              access,
               FACTS_RECALL_HOOK,
               {
                 limit: engineLimit,
@@ -905,7 +940,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             const group: EngineFactRecord[] = [];
             for (const about of abouts) {
               const slotRows = requireEngineResult(
-                await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+                await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
                   limit: 200,
                   ...memoryReadScope(access),
                   about,
@@ -969,7 +1004,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // and an old human correction (never closed) is exactly the row
               // that falls off it — which would crown a newer outranked row.
               const activeRows = requireEngineResult(
-                await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+                await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
                   limit: 200,
                   ...memoryReadScope(access),
                   about: rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId),
@@ -1014,7 +1049,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             }
           }
           const visibleIds = new Set(page.map((row) => row.id));
-          const ownSubject = rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
+          // The person talking, rendered `you`. In an outsider's turn
+          // (TASK-1204) that is never the caller: the turn runs as the
+          // requester who answers for the channel. So there no row is `you`,
+          // and the requester's key reads as any other member's. (No writer
+          // in this build stores a shared row under a person's key, so an
+          // outsider's turn meets one only from an engine import or a writer
+          // added later: defense in depth.)
+          // (`about: 'user'` and `profile: true` above still mean the caller's
+          // own key: only owner routes send them.)
+          const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
 
           // Per-answer conversation ordinals (design doc "Signal" section,
           // TASK-611): a copy of `page` sorted chronologically the same way
@@ -1056,7 +1100,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 // Another person's speaker subject is `user:<their id>`; a
                 // caller is never handed that id, only that it is someone else.
                 aboutText:
-                  row.about === ownSubject
+                  ownSubject !== undefined && row.about === ownSubject
                     ? 'you'
                     : row.about.startsWith(`${SPEAKER_SUBJECT}:`)
                       ? 'a teammate'
@@ -1131,12 +1175,15 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         const slot = deriveSlot(relation);
 
         // `recordFacts`, like every engine write here: it stamps the turn's
-        // audience on the statement (TASK-1091), and in a shared turn it
-        // refuses a statement about a person — the rewritten speaker below
-        // included — before anything is written.
+        // audience on the statement (TASK-1091). In a turn that isn't
+        // private it refuses, before anything is written, a statement the
+        // speaker rule doesn't file as written: in a turn that keeps the
+        // rule, the rewritten speaker below included. Handed the access
+        // already resolved, so it knows whose memory this is (TASK-1204).
         const raw = await recordFacts<EngineRecordOutput>(
           bus,
           ctx,
+          access,
           FACTS_RECORD_HOOK,
           {
             // No `batchKey`. Idempotency keys exist because `chat:end` can
@@ -1526,13 +1573,18 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // Nor does memory skip `'external'` (TASK-1091), a turn where someone
         // without access to the agent is present. It runs as a real user who
         // answers for it, in a real thread, so it is captured and attributed
-        // like any other. What governs its capture is `ctx.audience`, not
-        // `source`: a shared turn's statements are stamped shared, and it
+        // like any other. What governs its capture is `ctx.audience` and the
+        // speaker scope (`speakerScope`, TASK-1204), not `source` alone: a
+        // shared turn's statements are stamped shared, and an outsider's turn
         // stores nothing under a person subject: `user`, `user:<id>`, or a
         // speaker's name from `memory:pre-capture` (`breaksSpeakerRule`,
-        // TASK-1146).
-        // (From Slack none is captured: channel-slack's `memory:pre-capture`
-        // veto refuses every thread an outsider talks in, TASK-1094.)
+        // TASK-1146). There `ctx.userId` is the requester, never the person
+        // talking. A team agent's MEMBER turn runs as the member who wrote it,
+        // so it files what they say about themself under their own key,
+        // stamped private: the team's, and no outsider's turn recalls it.
+        // (From Slack no outsider's turn is captured: channel-slack's
+        // `memory:pre-capture` veto refuses every thread an outsider talks
+        // in, TASK-1094.)
         //
         // TASK-625: when this host extracts incrementally, `chat:end` is the
         // FINAL pass over the canonical transcript's remaining turns — queued
@@ -1654,7 +1706,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
       await registerMemoryRecall(bus);
       await registerMemoryUse(bus);
-      await registerMemoryNote(bus, onFactsChanged, (ctx, query) => readPriorRows(bus, ctx, query));
+      await registerMemoryNote(bus, onFactsChanged, (ctx, access, query) => readPriorRows(bus, ctx, access, query));
     },
 
     async shutdown() {
@@ -1694,11 +1746,16 @@ interface ObserveDeps {
   /** The retracted-twin check's read (TASK-654) — see {@link readRetractedRows}. */
   retractedRows: RetractedRowsFn;
   ownerUserId: string;
-  /** The turn's audience (TASK-1091): `audienceOf(ctx)`, like the owner. */
-  audience: AgentContextAudience;
+  /**
+   * Whose memory this is and who is talking (TASK-1204): `speakerScope(ctx,
+   * access)`, from `ctx` and the resolved access like the owner, never a
+   * payload. It decides where a fact about a person is filed, if anywhere.
+   */
+  speakerScope: SpeakerScope;
   /**
    * The speakers this pass's `memory:pre-capture` answer named (TASK-1146):
-   * in a shared turn, no fact is stored under them.
+   * in a turn that keeps the speaker rule, no fact is stored under them; in a
+   * team agent's member turn, one is filed under the member's own key.
    */
   speakerNames: readonly string[];
   userId: string | undefined;
@@ -1740,10 +1797,12 @@ async function observe(
     // `captureCheck`, so a refusal stops the agent's own notes too.
     //
     // The answer also names the people speaking in the conversation
-    // (TASK-1146), and the producer below drops a shared turn's facts filed
-    // under them. An answer memory can't read throws, so the catch below
-    // records nothing and an incremental pass keeps its cursor: the turns
-    // are tried again, never captured without the names.
+    // (TASK-1146). The producer below drops a fact filed under them in a
+    // turn that keeps the speaker rule, and files it under the member's own
+    // key in a team agent's member turn (`speakerSubject`, TASK-1204). An
+    // answer memory can't read throws, so the catch below records nothing
+    // and an incremental pass keeps its cursor: the turns are tried again,
+    // never captured without the names.
     const check = await captureCheck(bus, ctx);
     if (check.refusal !== undefined) {
       // `info`: a refusal is a decision, not a fault. Ids and the
@@ -1795,14 +1854,19 @@ async function observe(
         return out;
       },
       record: async (input: ObserverRecordInput) => {
-        await resolveMemoryAccess(bus, ctx);
-        // `recordFacts`: the batch is stamped with this turn's audience, and
-        // the person-subject backstop runs, from the same `ctx` and the same
-        // names as the `audience` and `speakerNames` below that already
-        // dropped those facts. Handed the names, it doesn't ask again.
+        // Re-resolved before each write, as always: a member revoked
+        // mid-pass writes nothing. The write door is handed this fresh
+        // answer, to know whose memory it writes (TASK-1204).
+        const fresh = await resolveMemoryAccess(bus, ctx);
+        // `recordFacts`: the batch is stamped with this turn's audience (on a
+        // team agent, a member's own key private), and the person-subject
+        // backstop runs, from the same `ctx` and the same names as the
+        // `audience` and `speakerNames` below that already dropped those
+        // facts. Handed the names, it doesn't ask again.
         const out = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
+          fresh,
           FACTS_RECORD_HOOK,
           input,
           check.speakerNames,
@@ -1810,15 +1874,18 @@ async function observe(
         cfg.onFactsChanged?.(ctx);
         return out;
       },
-      priorRows: (query) => readPriorRows(bus, ctx, query),
-      retractedValue: (query) => readRetractedValue(bus, ctx, query),
-      retractedRows: (query) => readRetractedRows(bus, ctx, query),
+      priorRows: (query) => readPriorRows(bus, ctx, access, query),
+      retractedValue: (query) => readRetractedValue(bus, ctx, access, query),
+      retractedRows: (query) => readRetractedRows(bus, ctx, access, query),
       ownerUserId,
-      // From `ctx`, never a payload, like the owner: what the producer's
-      // statements may say about a person (TASK-1091).
-      audience: audienceOf(ctx),
-      // From the answer above, never the extraction: who a shared turn's
-      // statements may not be filed under (TASK-1146).
+      // From `ctx` and the access resolved above, never a payload, like the
+      // owner: where the producer's statements about a person are filed, if
+      // anywhere (TASK-1091, TASK-1204). The write door re-resolves access
+      // and asks the same rule, so a member who stopped being one mid-pass
+      // writes nothing.
+      speakerScope: speakerScope(ctx, access),
+      // From the answer above, never the extraction: whose names a subject
+      // made of them is (TASK-1146).
       speakerNames: check.speakerNames,
       userId,
     });
@@ -1891,7 +1958,7 @@ function observeMessages(
   ctx: AgentContext,
   cfg: ObserveConfig,
   messages: UntrustedMessage[],
-  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId, audience, speakerNames }: ObserveDeps,
+  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId, speakerScope, speakerNames }: ObserveDeps,
 ): Promise<ObserverResult> {
   return runObserver({
     messages,
@@ -1901,7 +1968,7 @@ function observeMessages(
     retractedValue,
     retractedRows,
     ownerUserId,
-    audience,
+    speakerScope,
     speakerNames,
     // The batch identity keeps the real conversation; the rows are
     // attributed per `conversationOf` (a routine run is not a
@@ -1972,7 +2039,7 @@ async function runConversationPass(
   };
 
   const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
-    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, audience, speakerNames, userId } = deps;
+    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, speakerScope, speakerNames, userId } = deps;
     const record: ObserveDeps['record'] = async (input) => {
       const out = await deps.record(input);
       for (const row of out?.records ?? []) {
@@ -2028,7 +2095,7 @@ async function runConversationPass(
         retractedValue,
         retractedRows,
         ownerUserId,
-        audience,
+        speakerScope,
         speakerNames,
         userId,
       });
@@ -2063,7 +2130,7 @@ async function runConversationPass(
       retractedValue,
       retractedRows,
       ownerUserId,
-      audience,
+      speakerScope,
       speakerNames,
       // Batch identity: the real conversation. Stored attribution: per
       // `conversationOf`, so a routine turn's rows carry none (TASK-616).
@@ -2118,18 +2185,21 @@ const PRIOR_ROWS_PER_ABOUT = 200;
  * resolved by `observe()` before this runs. Throws on an unreadable answer;
  * the caller fails open (see `TwinCheck`).
  *
- * Audience-scoped too, like every engine read (`recallFacts`): a shared turn
- * checks its statements against shared rows only, as if no private row
- * existed. The same holds for the two reads below.
+ * Audience-scoped too, like every engine read (`recallFacts`, handed the
+ * resolved `access`): a shared turn checks its statements against shared rows
+ * only, as if no private row existed, and a team agent member's turn against
+ * every row, in any audience (TASK-1204). The same holds for the two reads
+ * below.
  */
 async function readPriorRows(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { abouts: string[]; ownerUserId: string; conversationId: string },
 ): Promise<PriorRow[]> {
   const rows: PriorRow[] = [];
   for (const about of query.abouts) {
-    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
       about,
       ownerUserId: query.ownerUserId,
       conversationId: query.conversationId,
@@ -2165,9 +2235,10 @@ async function readPriorRows(
 async function readRetractedValue(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { about: string; slot: string; value: string; ownerUserId: string },
 ): Promise<boolean> {
-  const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+  const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
     about: query.about,
     ownerUserId: query.ownerUserId,
     slots: [query.slot],
@@ -2193,11 +2264,12 @@ async function readRetractedValue(
 async function readRetractedRows(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { abouts: string[]; ownerUserId: string },
 ): Promise<PriorRow[]> {
   const rows: PriorRow[] = [];
   for (const about of query.abouts) {
-    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
       about,
       ownerUserId: query.ownerUserId,
       activeOnly: false,
@@ -2343,8 +2415,10 @@ function logObserverResult(
         // save that"), dropped (TASK-612, TASK-1136). Informational; not a
         // failure.
         selfReports: result.selfReports,
-        // Facts with a person subject (`user`, `user:<id>`, a speaker's name)
-        // a shared turn kept out (TASK-1091, TASK-1146). 0 in a private turn.
+        // Facts the speaker scope filed nowhere: a person subject (`user`,
+        // `user:<id>`, a speaker's name) in a turn that keeps the speaker
+        // rule, another person's key in a team agent's member turn
+        // (TASK-1091, TASK-1146, TASK-1204). 0 in a private turn.
         // Informational: the rule working, not a failure.
         speakerFacts: result.speakerFacts,
         // Positive readings of a negated statement, dropped (TASK-652).

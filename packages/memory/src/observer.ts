@@ -1,14 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import type { AgentContextAudience } from '@ax/core';
-
 import { attributeFacts, attributeSpeakers } from './attribution.js';
-import { breaksSpeakerRule } from './audience.js';
+import { speakerSubject, type SpeakerScope } from './audience.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
-import { rewriteSpeaker } from './subject.js';
 import { dropTwins, hasActiveTwin, hasRetractedTwin, type PriorRow } from './twins.js';
 import type { MemoryStatementKind } from './types.js';
 import {
@@ -94,11 +91,14 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
-   * Every fact had a person subject (`user`, `user:<id>`, or a speaker's
-   * name from `memory:pre-capture`), in a shared turn (TASK-1091, TASK-1146,
-   * `toStatements`): the speaker could be anyone in the room, so none is
-   * stored. Counted and named apart, like the self-reports, so a shared
-   * conversation that keeps nothing leaves a trace of why.
+   * Every fact had a subject the turn's speaker scope files nowhere
+   * (`toStatements`, `speakerSubject`): in a turn that keeps the speaker rule
+   * (a personal agent's shared turn, any outsider's turn), a person subject
+   * (`user`, `user:<id>`, or a speaker's name from `memory:pre-capture`),
+   * since the speaker could be anyone in the room (TASK-1091, TASK-1146); in a
+   * team agent's member turn, another person's key (TASK-1204). Counted and
+   * named apart, like the self-reports, so a shared conversation that keeps
+   * nothing leaves a trace of why.
    */
   | { kind: 'skipped'; reason: 'only-speaker-facts'; speakerFacts: number }
   /**
@@ -166,10 +166,13 @@ export type ObserverResult =
        */
       selfReports: number;
       /**
-       * Facts dropped because they had a person subject (`user`, `user:<id>`,
-       * or a speaker's name), in a shared turn (TASK-1091, TASK-1146,
-       * `toStatements`). Always 0 in a private turn. Not `unusable`: this is
-       * the rule working, not the extractor failing.
+       * Facts dropped because their subject is one the turn's speaker scope
+       * files nowhere (`toStatements`): a person subject (`user`, `user:<id>`,
+       * or a speaker's name) in a turn that keeps the speaker rule (TASK-1091,
+       * TASK-1146), another person's key in a team agent's member turn
+       * (TASK-1204), and a subject too long to read. Always 0 in a private
+       * turn. Not `unusable`: this is the rule working, not the extractor
+       * failing.
        */
       speakerFacts: number;
       /**
@@ -257,20 +260,26 @@ export interface RunObserverInput {
   /** Owner of every statement this batch writes. From `ctx`, never a payload. */
   ownerUserId: string;
   /**
-   * Who can read the turn's reply: `audienceOf(ctx)`, never a payload
-   * (TASK-1091). In a shared turn every fact with a person subject (`user`,
-   * `user:<id>`, or one of {@link speakerNames}) is dropped before the speaker
-   * rewrite (`toStatements`). Required, so a caller can't forget it and
-   * quietly get the private behaviour.
+   * Whose memory this is and who is talking: `speakerScope(ctx, access)`,
+   * from `ctx` and the resolved access, never a payload (TASK-1204). Every
+   * fact's subject goes through `speakerSubject` with it (`toStatements`): a
+   * private turn files the speaker's `user` under the owner's key, a team
+   * agent's member turn files the speaker (`user`, or one of
+   * {@link speakerNames}) under the member's own key, and a turn that keeps
+   * the speaker rule drops every person subject (TASK-1091, TASK-1146).
+   * Required, so a caller can't forget it and quietly get the private
+   * behaviour.
    */
-  audience: AgentContextAudience;
+  speakerScope: SpeakerScope;
   /**
    * The names of the people speaking in the conversation, as this pass's
    * `memory:pre-capture` answer gave them (TASK-1146, `captureCheck`), never
-   * a payload of the extraction. In a shared turn a fact whose subject is
-   * made of them is dropped like `user` (`breaksSpeakerRule`). `[]` when
-   * nobody named anyone. Required, like `audience`, so a caller can't forget
-   * them and quietly get the `user`-only rule.
+   * a payload of the extraction. In a turn that keeps the speaker rule, a
+   * fact whose subject is made of them is dropped like `user`; in a team
+   * agent's member turn, it is filed under the member's own key, like `user`
+   * (`speakerSubject`). `[]` when nobody named anyone. Required, like
+   * `speakerScope`, so a caller can't forget them and quietly get the
+   * `user`-only rule.
    */
   speakerNames: readonly string[];
   /**
@@ -412,7 +421,7 @@ async function extractAndRecord(
   const mapped = toStatements(polarity.facts, {
     ownerUserId: input.ownerUserId,
     conversationId: input.statementConversationId,
-    audience: input.audience,
+    speakerScope: input.speakerScope,
     speakerNames: input.speakerNames,
   });
   if (mapped.statements.length === 0) {
@@ -742,23 +751,35 @@ export function buildBatchKey(input: {
  * about. What this does is produce a CANONICAL `Z` form from whatever the
  * model wrote, and reject what cannot be read at all.
  *
- * ## A shared turn keeps no speaker facts (TASK-1091, TASK-1146)
+ * ## Every subject is filed by the speaker scope (TASK-1091, TASK-1146, TASK-1204)
  *
- * In a turn people without access to the agent can read, every fact with a
- * person subject (`breaksSpeakerRule`: `user`, `User`, ` user `,
- * `user:<anyone>`, or a subject made of `opts.speakerNames`, such as `vinay`
- * for a speaker a channel labels "vinay") is dropped and counted as
- * `speakerFacts`, FIRST, before the speaker rewrite could file it under the
- * owner's key. A deterministic filter on the extractor's output, not a prompt
- * change: the extraction prompt is fingerprint-pinned. `recordFacts` refuses
- * any that get past it.
+ * Each fact's subject goes through `speakerSubject` with `opts.speakerScope`,
+ * the one answer every memory write asks, FIRST, before every other check:
+ *
+ * - A private turn: the speaker rewrite (design §3.2). The extractor's `user`
+ *   becomes the owner's key, and nothing else changes.
+ * - A team agent's member turn (TASK-1204): the turn runs as the member who
+ *   wrote it, so a fact about them, `user` or a subject made of
+ *   `opts.speakerNames` (such as `vinay` for a speaker a channel labels
+ *   "vinay"), is filed under their own key `user:<ownerUserId>`, the one
+ *   their web chats read. Any other person's key is dropped.
+ * - A turn that keeps the speaker rule (a personal agent's shared turn, any
+ *   outsider's turn): the speaker could be anyone in the room, so every fact
+ *   with a person subject (`breaksSpeakerRule`: `user`, `User`, ` user `,
+ *   `user:<anyone>`, or a subject made of `opts.speakerNames`) is dropped.
+ *
+ * A dropped fact is counted as `speakerFacts`. A deterministic filter on the
+ * extractor's output, not a prompt change: the extraction prompt is
+ * fingerprint-pinned. `recordFacts` refuses any statement whose subject isn't
+ * what `speakerSubject` files it under, so a slip here is refused, not
+ * misfiled.
  */
 export function toStatements(
   facts: ReadonlyArray<ExtractedFact & SourceTurn>,
   opts: {
     ownerUserId: string;
     conversationId?: string | undefined;
-    audience: AgentContextAudience;
+    speakerScope: SpeakerScope;
     speakerNames: readonly string[];
   },
 ): { statements: ObserverStatement[]; unusable: number; selfReports: number; speakerFacts: number } {
@@ -767,9 +788,11 @@ export function toStatements(
   let selfReports = 0;
   let speakerFacts = 0;
   for (const fact of facts) {
-    // Anything but a private turn drops, which fails closed. Before every
-    // other check, so the count doesn't depend on them.
-    if (breaksSpeakerRule(opts.audience, fact.subject, opts.speakerNames)) {
+    // Where this fact is filed, or nowhere. A scope this build doesn't know
+    // files nothing, which fails closed. Before every other check, so the
+    // count doesn't depend on them.
+    const about = speakerSubject(opts.speakerScope, fact.subject, opts.ownerUserId, opts.speakerNames);
+    if (about === undefined) {
       speakerFacts += 1;
       continue;
     }
@@ -794,10 +817,10 @@ export function toStatements(
       // Design §3.2. The extractor canonicalizes whoever is speaking as the
       // literal subject `user`; the store is keyed by agent alone, so left
       // as-is every person talking to a team agent collapses into one
-      // subject. Same rewrite a read uses, so a read finds what this wrote.
-      // Only a private turn's `user` gets here: a shared turn's was dropped
-      // above.
-      about: rewriteSpeaker(fact.subject, opts.ownerUserId),
+      // subject. `speakerSubject` above filed the speaker under their own
+      // key, the same key a read's rewrite asks for, so a read finds what
+      // this wrote.
+      about,
       relation: fact.predicate,
       value: fact.object,
       when,
