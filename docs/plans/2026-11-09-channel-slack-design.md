@@ -137,6 +137,8 @@ left alone, and may notify that whole group (§6, known gaps).
 
 ## 2a. Memory: decided by who sees the reply
 
+> **Superseded for team agents by §4c (2026-11-22):** a team agent's memory is shared with its team everywhere. This section still describes personal agents (DMs only).
+
 Two problems with today's memory once an agent sits in a channel:
 
 1. **Private facts could leak.** A team agent's memory is shared across the
@@ -984,6 +986,8 @@ sentence ("@fern isn't in Slack yet", "Waiting for an admin to approve ...",
 
 ### 3. Memory: one rule, and no switch on screen
 
+> **Superseded by §4c (2026-11-22):** private channels are remembered, and the switch is removed.
+
 **@fern remembers what members say in public channels. It doesn't remember
 private channels.** That's the whole rule a person sees. DMs with a personal
 agent are unchanged (private memory, as today), and team bots have no DMs.
@@ -1088,6 +1092,51 @@ version first. Filed 2026-11-21 as TASK-1186 (A), TASK-1187 (B), TASK-1188 (C) a
 - **D. Walk (walk).** Several bots in one channel, including one message that
   mentions two of them; a private channel (answers, nothing remembered); the
   new card states. Depends on A, B and C.
+
+## 4c. A team agent's memory is shared with its team (decided 2026-11-22)
+
+**Supersedes** §2a's split between shared and private memory for team agents, and §4b.3's private-channel rule and remember switch. Personal agents are unchanged.
+
+### Why
+
+The TASK-1192 walk showed that "answer, but don't remember" can't be enforced. Memory refused a fact from a channel switched to "Don't remember", and the agent wrote it to a file in its own files anyway. Every channel then reads that file. Files are one way out. Tasks, routines, connectors (Notion, GitHub, email) and posts to other channels are more. A rule that holds only when every write path enforces it isn't a rule. So we stop promising secrecy a team agent can't keep, and say plainly what it does.
+
+### The rules
+
+1. **A team agent's memory is shared with its team, everywhere.** What it hears in a public channel, a private channel, or a web chat with a team member can be remembered and brought up anywhere the agent works.
+2. **Personal agents work only in DMs** (true since TASK-1186). Their memory stays private, as today.
+3. **Private channels are allowed and remembered.** A team bot invited to one answers and remembers, like anywhere else. People are told (below).
+4. **Kept, for trust rather than privacy:** words from people outside AX are never remembered. Otherwise anyone in the workspace could feed the agent false team facts.
+5. **Kept:** Slack Connect channels are refused. "Shared with your team" shouldn't quietly take in another company's messages. Archived channels stay refused.
+
+### Telling people
+
+Every place a person meets a team agent says the same thing in plain words: *"What [Fern] hears is shared with everyone on [team], and [Fern] may bring it up elsewhere."*
+
+- **The first time the bot is invited to a channel:** the bot posts this once, in every channel and not only private ones. This post matters most, because it's the only one people see at the moment it applies.
+- **The agent's Slack card** (TASK-1187) and its help line.
+- **Web chat with a team agent:** one line under the composer, "[Fern]'s memory is shared with [team]."
+- **The bot's Slack profile description** (manifest `description`). A rename or Rebuild updates it.
+
+### What goes
+
+- **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column.
+- **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more.
+- **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's sessions recall everything.
+- **Still needed:** `ctx.audience` (personal-agent DMs), the private-wins channel check (a channel made Slack Connect or archived must still be caught at turn start), and `groups:read` (to read a private channel's flags).
+
+### What stays hard
+
+**Who a fact is about.** §2a's second problem (a passing speaker's "I live in Paris" pinned on whoever connected the channel) doesn't go away when speaker facts are allowed. In a Slack turn, a fact about the speaker must be stored against the speaker's own label name and Slack ID (channel-slack already hands these to memory), never `user:<ctx.userId>`. Getting this wrong is worse than dropping the fact, so the card that removes the speaker rule must land the attribution in the same PR.
+
+### Cards
+
+- **A. Drop the remember switch** and its tables, routes, veto and copy, plus the TASK-1191 note.
+- **B. Private channels remembered, and the notices:** remove the private capture refusal; add the first-invite post, the card line, the web-chat line and the profile description.
+- **C. Team memory is team-shared:** remove the speaker rule, the shared-only recall split and the `/memory` withholding for team agents; attribute speaker facts to the speaker. Security note: one privacy boundary is removed on purpose, and the notices replace it.
+- **D. Walk (walk):** private channel remembered and recalled in a public one; the first-invite notice; a person fact recalled with the right name; an outsider's fact not kept; Slack Connect refused.
+
+Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory keeping the right facts) stays, and runs against the new rules.
 
 ## 5. How a turn runs
 
