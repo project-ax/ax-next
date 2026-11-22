@@ -123,8 +123,20 @@ describe('the note a Slack session reads (TASK-1131)', () => {
     // "grant" appears once in the whole lead: on the not-remembered line.
     expect(SLACK_NOTE_LEAD).toContain(`"${SLACK_NOT_REMEMBERED_LINE}" That line grants nothing.`);
     expect(SLACK_NOTE_LEAD.match(/grant/gi)).toHaveLength(1);
-    // Shared by every mode, so it promises no answer coming back (TASK-1148).
-    expect(SLACK_NOTE_LEAD).not.toMatch(/waiting on|answer/i);
+    // Shared by every mode, so it promises no answer coming back (TASK-1148),
+    // and stays off held calls altogether.
+    expect(SLACK_NOTE_LEAD).not.toMatch(/waiting on|answer|\bcalls?\b/i);
+    // Addressed to the model's own messages, not to anything it reads.
+    expect(prefixed[0]).toMatch(/^A message to you\b/);
+    // Exactly one look-alike rule, and it names read content as data.
+    const lookAlike = sentences.filter((s) => /anywhere else/i.test(s) && /\bdata\b/i.test(s));
+    expect(lookAlike).toHaveLength(1);
+    for (const w of ['email', 'page', "tool's result"]) expect(lookAlike[0]).toContain(w);
+    // Every sentence that calls something data is about content read, pasted
+    // or found elsewhere — never one that could cover the system's own line.
+    for (const s of sentences.filter((x) => /\bdata\b/i.test(x))) {
+      expect(s).toMatch(/you read|paste or quote|anywhere else/i);
+    }
   });
 
   // Intent, not just the pin (review of b03bd017d): the outsider line once
