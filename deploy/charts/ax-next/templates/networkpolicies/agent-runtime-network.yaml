@@ -3,6 +3,8 @@
 Allows the host pod to do its job:
   - INGRESS from runner pods (so they can connect to the host's IPC port)
     and from inside the host namespace (cluster traffic / ingress).
+  - INGRESS to the apps connector bridge port from appsBridge.allowFrom only
+    (when appsBridge.enabled; none at all while allowFrom is empty).
   - EGRESS to:
       - postgres (port 5432, in-cluster or external)
       - k8s API (443/6443, scoped via the host SA's Role to runner CRUD)
@@ -67,6 +69,20 @@ spec:
         # controller reaches it here. Runner pods never do (rule above).
         - port: {{ .Values.host.ports.content | default 9091 }}
           protocol: TCP
+    {{- if (include "ax-next.bool" .Values.appsBridge.enabled) }}
+    {{- with .Values.appsBridge.allowFrom }}
+    # The apps connector bridge: ONLY the operator's appsBridge.allowFrom peers,
+    # verbatim. Not the host namespace (rule above), not runner pods, not the
+    # LB health-check ranges (rule below). With allowFrom empty this rule is not
+    # rendered at all, so the bridge port is denied: an empty `from` here
+    # would admit every source instead.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: {{ $.Values.host.ports.appsBridge | default 9092 }}
+          protocol: TCP
+    {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicies.lbHealthCheckCidrs }}
     # Cloud load-balancer health-check probes reach the pod IP directly on the
     # public surface from provider-owned ranges (GCP GCLB: 35.191.0.0/16 +

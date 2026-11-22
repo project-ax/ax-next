@@ -132,6 +132,8 @@ const PLUGINS_TO_DROP = new Set<string>([
   // the memory canary and prod-bootstrap.test.ts, and its DM path end to end
   // in channel-slack-composition.test.ts.
   '@ax/channel-slack',
+  // @ax/apps-bridge: it needs Postgres, and it mounts settings routes this test pins in `mountedPaths`. Its canary reach is in the memory preset's canary.
+  '@ax/apps-bridge',
 ]);
 
 const AGENT_ID = 'usage-canary-agent';

@@ -1,13 +1,14 @@
 # Security — `@ax/mcp-client`
 
-This package does four things now. None of them hands the model a host-side MCP connection. Two of them do have the host itself talk to a connector's MCP server: to list its tools, and to make one call a person approved.
+This package does five things now. None of them hands the model a host-side MCP connection. Three of them do have the host itself talk to a connector's MCP server: to list its tools, to make one call a person approved, and to make one call for an external apps platform and hand back what the tool said.
 
 - **The tool catalog** (`createToolDispatcherPlugin`). Owns `tool:register` / `tool:list` and filters the catalog per agent at list time (`scope.ts`). Pure bookkeeping: no network, no processes, no secrets.
 - **The connector tool inventory** (`connectorToolInventory: true`, k8s preset only). The host lists a connector server's tools so the UI can show and permission them.
 - **Approved connector calls** (the same flag). When a person approves a connector call held during a task run, so no live agent will make it, the host makes that one call itself.
+- **Connector results for apps** (the same flag). The same call, with the same checks, but the answer carries the tool's reply content. Its intended caller is `@ax/apps-bridge`.
 - **A boot sweep** that deletes retired host MCP server config (next section).
 
-The inventory and approved calls are the only places this package opens network connections. Each gets its own section below.
+The inventory, approved calls and connector results are the only places this package opens network connections. Each gets its own section below.
 
 ## Host MCP servers retired
 
@@ -15,9 +16,9 @@ Host MCP servers (the `mcp-server:<id>` rows behind `/admin/mcp-servers` and `ax
 
 ## Security review
 
-- **Sandbox:** No processes spawned, no process environment read, no IPC actions added. The sweep touches only `storage:list-prefix` / `storage:delete` on the `mcp-server:` prefix plus the index key, and `credentials:list` / `credentials:delete` (optional; skipped when absent) on refs in the `mcp:<id>:` namespace. Network reach is limited to the connector inventory and approved connector calls, both described below.
-- **Injection:** Tool descriptors in the catalog come from other plugins and are stored as-is; the scope filter drops malformed `mcp.*` names rather than treating them as native tools. Connector server output is handled in the two connector sections below.
-- **Supply chain:** Runtime dependencies are `@modelcontextprotocol/sdk` (exact-pinned to `1.32.1`; no install scripts), `undici` and `ipaddr.js` (the inventory's guarded fetch), `kysely` and `zod`. The SDK ships its client and server halves together, so `pnpm install` pulls `express` and `hono` even though we only construct `Client`. We accept that rather than fork the SDK. The lockfile is committed; re-audit on every SDK bump. Other host plugins can call `connectors:call-tool` too; that residual is named at the end of its section.
+- **Sandbox:** No processes spawned, no process environment read, no IPC actions added. The sweep touches only `storage:list-prefix` / `storage:delete` on the `mcp-server:` prefix plus the index key, and `credentials:list` / `credentials:delete` (optional; skipped when absent) on refs in the `mcp:<id>:` namespace. Network reach is limited to the connector inventory, approved connector calls and connector results for apps, all described below.
+- **Injection:** Tool descriptors in the catalog come from other plugins and are stored as-is; the scope filter drops malformed `mcp.*` names rather than treating them as native tools. Connector server output is handled in the three connector sections below.
+- **Supply chain:** Runtime dependencies are `@modelcontextprotocol/sdk` (exact-pinned to `1.32.1`; no install scripts), `undici` and `ipaddr.js` (the inventory's guarded fetch), `kysely` and `zod`. The SDK ships its client and server halves together, so `pnpm install` pulls `express` and `hono` even though we only construct `Client`. We accept that rather than fork the SDK. The lockfile is committed; re-audit on every SDK bump. Other host plugins can call `connectors:call-tool` and `connectors:call-tool-result` too; that residual is named at the end of each section.
 
 ## Security contact
 
@@ -40,7 +41,11 @@ The k8s preset turns on `connectorToolInventory`, which makes the host itself li
   - Access is checked through `connectors:resolve` on every call, cache hits included.
 - **Injection:** Tool names, titles, descriptions, and the `readOnlyHint` / `destructiveHint` / `openWorldHint` annotations are untrusted descriptions the server writes about itself.
   - Names must be printable ASCII with no whitespace, at most 128 characters. Titles are capped at 200 and descriptions at 2,000. Control characters and bidi-override characters are stripped.
-  - `inputSchema` and `outputSchema` are dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.
+  - `outputSchema` is dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.
+  - `inputSchema` is kept, as opaque JSON, so `@ax/apps-bridge` can hand an external apps platform each tool's argument schema. It is as untrusted as the description: the server wrote it.
+    - Kept only when it is a plain object whose serialized UTF-8 size is at most 32,768 bytes, and only while that server's kept schemas total at most 1,048,576 bytes. Otherwise it is `null` and the tool is still listed. A schema JSON can't serialize counts as too big.
+    - What we keep is a fresh parse of the exact JSON we measured, never the SDK's parsed object: the SDK's parse turns a top-level `__proto__` key into that object's prototype, and the copy drops it. So the kept schema is always a plain object and reads back from the cache unchanged. Nothing on the host compiles it, validates input against it, or reads it to decide anything. It is never logged.
+    - A row cached before this field reads as `null` until its 15-minute TTL passes.
   - Hints only choose UI defaults and grouping. They are not a security claim, and nothing enforces policy from them. Renderers must still fence descriptions.
   - Errors are reduced to a short reason code. The server's response text is never echoed.
 
@@ -62,7 +67,7 @@ Sometimes an agent in a task run asks to use a connector tool, we hold the call 
 - **Credentials:** the refs in the connector's own `credentialPlan`, read through `credentials:get` as the user and agent. Those are the refs, and the scope walk, that a session's credential-proxy spends. They live in one transport's header map for one call. They are never logged, stored, or returned.
 - **Injection:** the arguments are the approved call's recorded input, sent unchanged. That's the promise: the person approved exactly those bytes. For this hook, the host's path, `@ax/decisions` keeps it by asking for the call only when the person was shown the whole request: a long one the approval card cut short parks for the agent instead.
   - Residual, older than this hook: a parked yes is still a standing yes. If the agent's own run later makes the identical call, the gate lets it through, with the same bytes the card cut short. The card has capped long requests since TASK-699, and this check closes only the host's path, not that one.
-  - The reply is read only for `isError`, through a minimal local schema. We never call `client.callTool()`, so the host never compiles a schema the server supplied. The reply's content is dropped unread.
+  - For `connectors:call-tool`, the reply is read only for `isError`, through a minimal local schema. We never call `client.callTool()`, so the host never compiles a schema the server supplied. The reply's content is dropped unread. (`connectors:call-tool-result`, below, is the one that hands it back.)
   - Failures are short codes (`not-connected`, `needs-auth`, `rejected`, …), never the server's text. The bus holds the hook's answer to those shapes.
   - `rejected` means the request was turned away before anything ran. After the call goes out we only say that for an HTTP 4xx from the transport (a 401 or 403 is `needs-auth`), and that rests on an assumption: a conformant server sends a 4xx only when it cannot accept the request, before any tool runs. A gateway or WAF that rewrites the response of a call that already ran into a 4xx would break it; that's a named residual, not something this code can see. Any JSON-RPC error the server sends back after that is `tool-error`, whatever its number (except the two below), and so is a tool's own `isError`: the service answered, and nothing in the answer proves the tool didn't run. Some don't even try: the TypeScript SDK's `McpServer` 1.12–1.20 runs the tool and then answers −32602, and a relay built on the SDK's low-level `Server` puts whatever its upstream threw on the wire, so it can answer −32600, −32700 or −32601 for a call that already went through. `tool-error` tells the person it may have done part of it, so check before approving again. The two codes the SDK raises itself when no answer came, −32001 (timed out) and −32000 (connection closed), are `unknown`, even when a server sends them: by code the two can't be told apart, and "we cannot tell whether it finished" is honest either way. (On SDK 1.32.1, −32000 can't actually arise mid-call from the SDK, so that case is defensive.)
   - One `connector_call_tool` line per call: the connector id and the code. A failure the handler didn't foresee adds `unexpected: true`, plus the error's code when it's a `PluginError` with a short lower-case slug code, so it can't pass for a genuine `unavailable`. A credential read failure also logs the shared header builder's `connector_inventory_credential_unavailable` line, with the connector id and an error code: the same short slug, or `error`. None of them ever carries an error's message, the input, a header, the URL, or the reply.
@@ -73,3 +78,17 @@ Sometimes an agent in a task run asks to use a connector tool, we hold the call 
   - The hook runs no tool-policy check. That's its caller's job: `@ax/decisions` re-checks the policy just before it calls.
 
   So a buggy or hostile host plugin could make a connector call nobody approved. Everything above still bounds it: the call can only go where a session of that agent could go, with that agent's own credentials, once, and nothing the server says comes back. We accept the residual because host plugins already run in the host with this much reach (any of them can call `credentials:get` as well). The guard here is which plugins we load, not this hook.
+
+## Connector results for apps (`connectors:call-tool-result`)
+
+An external apps platform sometimes needs what a connector tool actually said, not just whether it worked. `@ax/apps-bridge` serves that platform, and it asks this hook. The hook makes the same one call as `connectors:call-tool`, behind the same checks (the shared core in `connector-call.ts`), on the same flag. Everything in the section above holds here too, except for the following differences.
+
+- **Content comes back.** On success and on a tool error, the answer carries the reply's `content` blocks. They are untrusted: the server wrote them, and they can say anything.
+  - At most 2 MiB per reply. An oversize reply is `unknown`, never cut short.
+  - They're read through a local schema (an array of objects, each with a string `type` of 1–64 characters; every other key passes through unread). We still never use `CallToolResultSchema` or `callTool`, so nothing the server supplies gets compiled.
+  - A success whose content doesn't fit that schema is `unknown`: the call went out and we couldn't read the answer. A tool error whose content doesn't fit is still a tool error, with no content: the service did say it failed.
+  - The bus holds the answer to four shapes: content only on success and on a tool error, closed codes everywhere else.
+- **A JSON-RPC error's message is still never read.** A tool error that came back as a JSON-RPC error object has no content (`content: []`).
+- **Logging keeps the same shape.** One `connector_call_tool_result` line per call, codes only. The content is never logged. If the transport's own reading of the reply fails, the answer is `unknown` and the line says `unexpected: true`, so it can't pass for a genuine interruption.
+- **Intended caller:** `@ax/apps-bridge`. It checks tool policy first (only `allow` goes ahead) and its own grants, and it relays the content only to the apps platform, never to a model or a screen inside AX. That's why this hook may carry server text when `connectors:call-tool` may not: that hook's answers reach people and models inside AX. As with `connectors:call-tool`, this is a convention, not a check.
+- **Residual (supply chain: third-party host plugin code):** the same as `connectors:call-tool`'s. Any host plugin can call this hook, with no tool-policy check and no proof of a grant, and this one also hands back what the server said. It's still bounded the same way: only where a session of that agent could go, with that agent's own credentials, once. The guard is which plugins we load, not this hook.

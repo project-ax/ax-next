@@ -142,6 +142,33 @@ describe('serve command — argument parsing', () => {
     expect(code).toBe(0);
   });
 
+  it('--help lists every AX_APPS_BRIDGE_* variable the apps bridge reads, and says it is off without the platform id', async () => {
+    const out: string[] = [];
+    await runServeCommand({
+      argv: ['--help'],
+      env: {},
+      stdout: (line: string) => out.push(line),
+      stderr: () => undefined,
+    });
+    const help = out.join('\n');
+    // The names @ax/apps-bridge's config.ts reads (ENV_NAMES there).
+    for (const name of [
+      'AX_APPS_BRIDGE_PLATFORM_ID',
+      'AX_APPS_BRIDGE_PORT',
+      'AX_APPS_BRIDGE_CALLER_ISSUER',
+      'AX_APPS_BRIDGE_CALLER_JWKS_URL',
+      'AX_APPS_BRIDGE_CALLER_AUDIENCE',
+      'AX_APPS_BRIDGE_CALLER_SUBJECT',
+      'AX_APPS_BRIDGE_VIEWER_ISSUER',
+      'AX_APPS_BRIDGE_VIEWER_JWKS_URL',
+      'AX_APPS_BRIDGE_VIEWER_AUDIENCE',
+      'AX_APPS_BRIDGE_VIEWER_MAX_AGE_SECONDS',
+    ]) {
+      expect(help).toMatch(new RegExp(`^  ${name} `, 'm'));
+    }
+    expect(help).toContain('off unless AX_APPS_BRIDGE_PLATFORM_ID is set');
+  });
+
   it('--help names no AX_WORKSPACE_* variable: nothing reads them since TASK-995', async () => {
     const out: string[] = [];
     await runServeCommand({

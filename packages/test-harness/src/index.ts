@@ -24,6 +24,7 @@ export {
   type DockerPreflightOptions,
   type StartableTestContainer,
 } from './docker-preflight.js';
+export { startFakeOidcIssuer, type FakeOidcIssuer } from './fake-oidc-issuer.js';
 export {
   StubRunnerScriptSchema,
   type StubRunnerScript,

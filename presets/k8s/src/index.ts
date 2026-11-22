@@ -58,6 +58,11 @@ import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
 import { parseContentOrigin, type ParsedContentOrigin } from './content-origin.js';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createChannelSlackPlugin } from '@ax/channel-slack';
+import {
+  createAppsBridgePlugin,
+  parseAppsBridgeEnv,
+  type AppsBridgeDeployConfig,
+} from '@ax/apps-bridge';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
@@ -453,6 +458,14 @@ export interface K8sPresetConfig {
    * chart's validateHostReplicas already pins replicas to 1.
    */
   contentOrigin?: ParsedContentOrigin;
+  /**
+   * The apps connector bridge (@ax/apps-bridge): where its own listener binds
+   * and which outside platform it trusts. `loadK8sConfigFromEnv` sets it from
+   * AX_APPS_BRIDGE_* when AX_APPS_BRIDGE_PLATFORM_ID is set, and leaves it
+   * unset otherwise. Unset: the plugin still loads (it owns the settings
+   * routes and the link tables) but starts no listener.
+   */
+  appsBridge?: AppsBridgeDeployConfig;
   /**
    * @ax/auth-better config. Auth-better is config-light by design — providers
    * (google / github) live exclusively in the `auth_providers`
@@ -1540,6 +1553,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
 
+  // ----- 10c. apps-bridge --------------------------------------------------
+  // Lets an outside app call an agent's connectors through a link the agent's
+  // owner approves. Hard-calls the shared database, auth, agents, connectors,
+  // tool-policy (all loaded above). With `config.appsBridge` set it also binds
+  // its own listener; the approve links it hands out point at the public origin.
+  plugins.push(
+    createAppsBridgePlugin({
+      publicOrigin: presetPublicOrigin(config),
+      ...(config.appsBridge !== undefined ? { bridge: config.appsBridge } : {}),
+    }),
+  );
+
   // ----- 11. static-files (optional; kept last for readability) ---------
   // Serves channel-web's bundle from the same listener so cookies and
   // CSRF stay same-origin in production. The plugin registers a `/*`
@@ -1706,6 +1731,13 @@ export function blobConfigFromEnv(
 //                                    paths go through chat.runnerBinaries)
 //   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
 //   - AX_AUTH_SESSION_LIFETIME_SECONDS — auth session cookie lifetime
+//   - AX_APPS_BRIDGE_*             — the apps connector bridge. Off unless
+//                                    AX_APPS_BRIDGE_PLATFORM_ID is set; then
+//                                    CALLER_{ISSUER,JWKS_URL,AUDIENCE,SUBJECT}
+//                                    and VIEWER_{ISSUER,JWKS_URL,AUDIENCE} are
+//                                    required. PORT (9092) and
+//                                    VIEWER_MAX_AGE_SECONDS (600) are optional.
+//                                    Binds on AX_HTTP_HOST.
 //
 // `AX_CREDENTIALS_KEY` is read by @ax/credentials at init() time — it
 // doesn't appear in K8sPresetConfig.
@@ -1987,6 +2019,23 @@ export function loadK8sConfigFromEnv(
     bindHost: httpHost,
   });
 
+  // ---- apps connector bridge ---------------------------------------------
+  // Optional: off unless AX_APPS_BRIDGE_PLATFORM_ID is set. A partial set
+  // throws, naming the missing variable. Read literally for the env-shape scan.
+  const appsBridge = parseAppsBridgeEnv({
+    platformId: env.AX_APPS_BRIDGE_PLATFORM_ID,
+    port: env.AX_APPS_BRIDGE_PORT,
+    callerIssuer: env.AX_APPS_BRIDGE_CALLER_ISSUER,
+    callerJwksUrl: env.AX_APPS_BRIDGE_CALLER_JWKS_URL,
+    callerAudience: env.AX_APPS_BRIDGE_CALLER_AUDIENCE,
+    callerSubject: env.AX_APPS_BRIDGE_CALLER_SUBJECT,
+    viewerIssuer: env.AX_APPS_BRIDGE_VIEWER_ISSUER,
+    viewerJwksUrl: env.AX_APPS_BRIDGE_VIEWER_JWKS_URL,
+    viewerAudience: env.AX_APPS_BRIDGE_VIEWER_AUDIENCE,
+    viewerMaxAgeSeconds: env.AX_APPS_BRIDGE_VIEWER_MAX_AGE_SECONDS,
+    bindHost: httpHost,
+  });
+
   const config: K8sPresetConfig = {
     database: { connectionString: databaseUrl },
     eventbus: { connectionString: databaseUrl },
@@ -2006,6 +2055,7 @@ export function loadK8sConfigFromEnv(
     },
     contentOrigin,
   };
+  if (appsBridge !== undefined) config.appsBridge = appsBridge;
   // Only attach `auth` when something was set. Empty `auth: {}` is harmless,
   // but the loader's "optional unless populated" pattern keeps the rendered
   // shape minimal and matches the rest of the file (sandbox, chat, etc).

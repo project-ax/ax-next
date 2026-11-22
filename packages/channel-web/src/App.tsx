@@ -20,6 +20,10 @@
  * page, which comes back to the same `/a/<code>` afterwards. The URL is never
  * rewritten, and the page sends no referrer (the code is in its address).
  *
+ * An apps approve link (`/apps/approve/<platformId>/<appId>/<connectorId>`)
+ * is the other: signed in, `<AppsApprovePage />` alone; signed out, the
+ * sign-in page, which comes back to the same path afterwards.
+ *
  * Otherwise, signed in, there is one surface: the agent workspace. (The old chat
  * screen was deleted in TASK-360; `/chat` links land on `/` — see
  * `lib/retired-chat-path.ts`.)
@@ -75,6 +79,8 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { redirectRetiredChatPath } from './lib/retired-chat-path';
 import { applyShareReferrerPolicy, parseShareRoute } from './lib/share-route';
 import { SharedArtifactPage } from './components/SharedArtifactPage';
+import { parseAppsApproveRoute } from './lib/apps-approve-route';
+import { AppsApprovePage } from './components/AppsApprovePage';
 
 type AppMode =
   | { kind: 'loading' }
@@ -95,6 +101,8 @@ export const App = () => {
     applyShareReferrerPolicy(window.location.pathname);
     return parseShareRoute(window.location.pathname);
   });
+  // Read once too: the approve page never navigates within the SPA either.
+  const [approve] = useState(() => parseAppsApproveRoute(window.location.pathname));
   /*
     Post-boot sign-out. `lib/http.ts` sets this latch when a request that had a
     session comes back 401, and the only thing that happens as a result is the
@@ -273,6 +281,20 @@ export const App = () => {
         </ErrorBoundary>
         <ToastStack />
       </>
+    );
+  }
+  // An apps approve link: the consent card and nothing of the workspace.
+  // Signed out, it was the LoginPage above, which hands this same path to
+  // sign-in so Google brings them back here.
+  if (approve !== null) {
+    return (
+      <ErrorBoundary surface="apps-approve">
+        <AppsApprovePage
+          platformId={approve.platformId}
+          appId={approve.appId}
+          connectorId={approve.connectorId}
+        />
+      </ErrorBoundary>
     );
   }
   return <AppContent user={mode.user} slackReturn={slackReturn} slackBotReturn={slackBotReturn} slackAdminLink={slackAdminLink} />;

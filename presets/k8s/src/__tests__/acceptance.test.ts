@@ -305,6 +305,8 @@ const PLUGINS_TO_DROP = new Set<string>([
   // database in prod-bootstrap.test.ts. Its DM path runs end to end against
   // real agents, conversations and vault in channel-slack-composition.test.ts.
   '@ax/channel-slack',
+  // @ax/apps-bridge: it needs Postgres, and it mounts settings routes (`/admin/apps-bridge*`) this test pins. Its canary reach is in the memory preset's canary.
+  '@ax/apps-bridge',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-
