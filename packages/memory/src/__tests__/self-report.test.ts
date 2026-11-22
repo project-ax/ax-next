@@ -340,6 +340,15 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['Assistant', 'Published Artifact', 'the dashboard'],
     ['the_assistant', 'ran-tests', 'all passed'],
     ['AI assistant', 'Created Artifact', 'the dashboard'],
+    // TASK-1198: the act of replying. The walk's (TASK-1192) and the replay's own rows.
+    ['assistant', 'replied_with', 'hello <!channel>, testing'],
+    ['assistant', 'replied_with', 'In Slack #walk-two-bots, replied to vinay (UHTE83XE1) with exactly: alpha beta gamma.'],
+    ['assistant', 'replied_with_message', 'replied to vinay in #walk-two-bots with "alpha beta gamma"'],
+    ['assistant', 'replied_with_exact_text', 'Replied in Slack #walk-two-bots with exactly: hello <!channel>, testing'],
+    ['assistant', 'replied', 'pong'],
+    ['assistant', 'responded_with', 'OK, done'],
+    ['assistant', 'echoed', 'the three words back'],
+    ['Assistant', 'Replied With', 'hello'],
   ])('drops %s | %s | %s: narration of its own action', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBe('action-narration');
@@ -357,6 +366,12 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'has_no_access_to', 'real-time stock prices'],
     ['assistant', "doesn't_have_access", 'to the internet'],
     ['assistant', 'lacks_access', 'to the shared drive'],
+    // TASK-1198: the walk's (TASK-1192) row, and the replay's. Any `lacks_…` is a holder.
+    ['assistant', 'lacks_capability', 'Cannot send Slack messages or ping other users/bots (e.g. @moss) directly'],
+    ['assistant', 'lacks_slack_messaging_capability', 'Fern cannot send Slack messages, so it cannot ping moss'],
+    ['assistant', 'lacked_capabilities', 'for image input'],
+    ['assistant', 'lack_permission', 'to post in #general'],
+    ['assistant', 'lacks', 'calendar access'],
     ['the assistant', 'Stated Limitation', 'cannot open PDFs'],
     // `has_…`, `had_…` or `have_…` makes the assistant the holder: no object
     // check, so "for …" is still its own limit, not a topic.
@@ -424,6 +439,14 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'added', 'a vegetarian option: lentil curry'],
     ['assistant', 'compiled', 'a list of 10 trails'],
     ['assistant', 'drafted_email', 'Subject: Q3 update'],
+    // TASK-1198: a reply it wrote for someone is what it supplied (LongMemEval rows, abridged).
+    ['assistant', 'replied_to_sarah_gudeman', 'Told Sarah Gudeman (Practice Lead at BranchPattern) to book a call via https://bit.ly/Meet-With-ForTreesClub'],
+    ['assistant', 'replied_to_facebook_comment', 'Replied to a comment praising the baked goods, thanking the commenter'],
+    // A pin, not evidence (no version dropped these): present tense is a standing behaviour.
+    ['assistant', 'replies_with', 'a one-line summary first, then details'],
+    ['assistant', 'responds_in', 'Spanish when asked in Spanish'],
+    // `lack_of` is a topic's: the noun, not the agent lacking something.
+    ['assistant', 'lack_of_evidence', 'for the claim that coffee stunts growth'],
     // Everyday nouns: a routine, skills or a workflow it wrote for the person.
     ['assistant', 'created_workout_routine', 'Mon push, Tue pull, Wed legs'],
     ['assistant', 'updated_workout_routine', 'Mon push, Tue pull, Wed legs, Thu rest'],
@@ -528,6 +551,9 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'created_bar_chart', 'Q3 revenue by region'],
     ['assistant', 'created_artifact_successfully', 'the Q3 dashboard'],
     ['assistant', 'created_dashboard_and_report', 'for Q3'],
+    // TASK-1198: a reply in other words than bare or `with` (narration, kept).
+    ['assistant', 'replied_in_french', 'Bonjour'],
+    ['assistant', 'responded_to_request', 'for a summary of the call'],
   ])('keeps the accepted residual %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
@@ -538,6 +564,11 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['agent', 'published_artifact', 'x'], // `agent` is an everyday noun (TASK-1136)
     ['the_agent', 'published', 'the listing on Zillow'],
     ['vinay', 'stated_limitation', 'no weekend meetings'],
+    // TASK-1198: a reply verb or a lack is the agent's only when it's the subject.
+    ['user', 'replied_with', 'a counter-offer of $450k'],
+    ['landlord', 'responded', 'the lease renews in March'],
+    ['vinay', 'lacks_capability', 'admin rights on the billing account'],
+    ['billing_service', 'lacks_capability', 'refunds over $500'],
   ])('keeps %s | %s | %s: not the assistant', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBeNull();
