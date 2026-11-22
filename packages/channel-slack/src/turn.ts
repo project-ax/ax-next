@@ -10,7 +10,7 @@ import { outcomeBlocks } from './blocks.js';
 import { COPY } from './copy.js';
 import { recheckAfterMiss } from './decision-answer.js';
 import { findHeldDecision, type HeldDecision } from './decision-prompts.js';
-import { decodeSlackEntities } from './format.js';
+import { inboundText } from './format.js';
 import {
   CONTINUATION_START_GRACE_MS,
   CONTINUATION_WAKE_MAX_MS,
@@ -192,9 +192,12 @@ export interface TurnRequest {
   conversationId: string;
   /**
    * The sender's words as Slack sent them. The turn undoes Slack's `&amp;`,
-   * `&lt;` and `&gt;` (format.ts `decodeSlackEntities`) and nothing else.
+   * `&lt;` and `&gt;`, and writes each `<@U…>` as `@` and its name from
+   * `names`, or `@someone` (format.ts `inboundText`, TASK-1190).
    */
   text: string;
+  /** Names for the users `text` mentions, by Slack id: cleaned display text, never identity. */
+  names: ReadonlyMap<string, string>;
 }
 
 /** A woken agent's turn to follow into a prompt's thread, after an Allow. */
@@ -388,8 +391,9 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     reqId: makeReqId(),
     start: {
       kind: 'invoke',
-      // As its sender typed it: `if x &lt; 3` reaches the model as `if x < 3`.
-      message: { role: 'user', content: `${r.label}: ${decodeSlackEntities(r.text)}` },
+      // As its sender typed it: `if x &lt; 3` reaches the model as `if x < 3`,
+      // and `<@U…>` as `@moss`.
+      message: { role: 'user', content: `${r.label}: ${inboundText(r.text, r.names)}` },
       messageTs: r.messageTs,
     },
   });

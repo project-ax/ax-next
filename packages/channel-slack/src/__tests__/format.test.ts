@@ -8,6 +8,8 @@ import {
   cutIndex,
   decodeSlackEntities,
   dmSenderLabel,
+  inboundText,
+  mentionedUserIds,
   mrkdwnEscape,
   neutralizeSlackControls,
   senderLabelNames,
@@ -527,6 +529,36 @@ describe('senderLabelNames (TASK-1146)', () => {
         for (const label of labels) expect(label, shown).toContain(shown);
       }
     }
+  });
+});
+
+describe('inboundText (TASK-1190)', () => {
+  const names = new Map([
+    ['U07BOB', 'Bob Jones'],
+    ['U07OWN', 'moss (you)'],
+    ['U07EMPTY', ''],
+  ]);
+
+  it('writes each <@U…> and <@U…|label> as @ and its name, never the id or the label', () => {
+    expect(inboundText('<@U07OWN> ask <@U07BOB|bobby> and <@U07BOB>', names)).toBe('@moss (you) ask @Bob Jones and @Bob Jones');
+  });
+
+  it('an id with no name, or an empty one, reads as @someone', () => {
+    expect(inboundText('ask <@U07NOBODY> and <@U07EMPTY>', names)).toBe('ask @someone and @someone');
+  });
+
+  it("undoes Slack's three entities in the same pass, so a typed &lt;@U…&gt; stays text and a name is never decoded", () => {
+    expect(inboundText('x &lt; 3 &amp;&amp; &lt;@U07BOB&gt; &amp;lt;', names)).toBe('x < 3 && <@U07BOB> &lt;');
+    expect(inboundText('<@U07AMP>', new Map([['U07AMP', 'R&amp;D']]))).toBe('@R&amp;D');
+  });
+
+  it('leaves channel, broadcast and link references as Slack wrote them', () => {
+    const text = 'see <#C07SUP|support> <!here> <https://example.com|this> <mailto:a@b.c|a@b.c>';
+    expect(inboundText(text, names)).toBe(text);
+  });
+
+  it('mentionedUserIds: each id once, in order; typed and non-user references are not ids', () => {
+    expect(mentionedUserIds('<@U2> <@U1|x> <@U2> &lt;@U3&gt; <#C1> <!here>')).toEqual(['U2', 'U1']);
   });
 });
 
