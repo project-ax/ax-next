@@ -19,14 +19,15 @@
 //
 // Two fast-paths:
 //   * `disabled` names — defence in depth, and nothing more than that.
-//     `main.ts` passes those four names as `disallowedTools`, which the SDK
+//     `main.ts` loads only `ALLOWED_SDK_BUILTINS` (the SDK's `tools` option)
+//     and names every other known built-in in `disallowedTools`, which the SDK
 //     documents as removing them from the model's context so they "cannot be
 //     used" (sdk.d.ts:3209-3212). The model therefore never emits a call for
 //     one and this case does not run in a healthy session; it is the
 //     fail-closed floor for a regressed disallow list or changed SDK
 //     semantics. The deny message is the per-tool sentence from
-//     `DISABLED_BUILTIN_REASONS` so a refusal that DOES happen says which of
-//     the four fired rather than one undifferentiated string.
+//     `DISABLED_BUILTIN_REASONS` (or a shared one for any other built-in off
+//     the allowlist, TASK-1200) so a refusal that DOES happen says what fired.
 //   * Everything else allows. PreToolUse is the authoritative gate; if it
 //     denied, the SDK will never reach canUseTool.
 // ---------------------------------------------------------------------------

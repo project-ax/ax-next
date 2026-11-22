@@ -30,8 +30,17 @@
 //      (the runner's clarifying-questions system-prompt note steers this —
 //      see system-prompt.ts).
 //
-//      WHERE THE ENFORCEMENT ACTUALLY LIVES: `main.ts` passes these four
-//      names as `disallowedTools`, and the SDK's own typing for that option
+//      Since TASK-1200 these four are a subset: every SDK built-in outside
+//      `ALLOWED_SDK_BUILTINS` is kept from the agent (see that constant), and
+//      the classifier refuses any built-in name outside the allowlist. The
+//      four keep their own refusal sentences and their `@ax/tool-policy`
+//      rail rows; `Agent` (Task's wire name) reuses Task's, the scheduling
+//      built-ins share one sentence, and everything else shares another.
+//
+//      WHERE THE ENFORCEMENT ACTUALLY LIVES: `main.ts` passes
+//      `ALLOWED_SDK_BUILTINS` as the SDK's `tools` option (the base set of
+//      built-ins loaded at all) and every other known built-in as
+//      `disallowedTools`, and the SDK's own typing for that option
 //      says the tools "will be removed from the model's context and cannot
 //      be used" (@anthropic-ai/claude-agent-sdk 0.2.119, sdk.d.ts:1185-1189
 //      and :3209-3212). So in a healthy session the model never sees one,
@@ -48,8 +57,13 @@
 //      workflow (I-P0-1, docs/plans/2026-05-17-skill-install-phase-0-impl.md)
 //      flips Skill from "denied at every layer" to "the intended SDK-native
 //      skill-discovery path." Skill is now in `allowedTools` and the SDK
-//      reads skills ONLY from $CLAUDE_CONFIG_DIR/skills/ (the host's
-//      read-only projection): `settingSources` is `['user']`, so nothing
+//      reads USER skills only from $CLAUDE_CONFIG_DIR/skills/ (the host's
+//      read-only projection). The CLI also ships its own BUNDLED skills
+//      (`loop`, `update-config`, `simplify`, …) inside the binary; `loop`
+//      tells the model to schedule with CronCreate/ScheduleWakeup, which the
+//      `tools` allowlist keeps out (TASK-1200), so following it fails with
+//      the CLI's "no such tool" error. Hiding bundled skills is a follow-up.
+//      `settingSources` is `['user']`, so nothing
 //      the agent writes in its home (`.claude/skills/`, `.claude/settings.json`,
 //      `CLAUDE.md`) is loaded. Skill is NOT a nested-agent bypass; `Task`
 //      still is.
@@ -81,9 +95,9 @@
 //      lifted; a foreign `mcp__linear__x` is NOT (see below), so an agent
 //      cannot reach the canonical keyspace by naming a server cleverly.
 //
-// Anything else — including MCP tools from a DIFFERENT server (not ours) —
-// falls through as kind 'builtin' with the full name preserved. That's a
-// deliberate fallback: third-party MCP servers are out of scope for v1 but
+// A non-`mcp__` name off `ALLOWED_SDK_BUILTINS` is refused as 'disabled'
+// (TASK-1200). MCP tools from a DIFFERENT server (not ours) fall through as
+// kind 'builtin' with the full name preserved. That's a deliberate fallback: third-party MCP servers are out of scope for v1 but
 // the classifier shouldn't silently swallow them if one shows up. The
 // host-side subscribers will see the full `mcp__<other>__<tool>` name and
 // can decide how to handle it (most likely: reject).
@@ -102,6 +116,152 @@ export const DISABLED_BUILTINS = [
 ] as const;
 
 export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
+
+/**
+ * The SDK built-ins AX offers the agent — an ALLOWLIST, passed to the SDK as
+ * its `tools` option ("the base set of available built-in tools", sdk.d.ts).
+ * Anything not named here is never loaded into the session, so a new SDK
+ * release cannot hand the agent a new capability without someone adding it
+ * here on purpose (TASK-1200).
+ *
+ * Why the denylist alone was not enough: CLI 2.1.119 (SDK 0.2.119) ships
+ * ~30 default built-ins (the exact set varies with env flags), most of them DEFERRED — not in the model's first tool
+ * list, but loadable by name through `ToolSearch`. The walk for TASK-1192
+ * caught an agent doing exactly that: it loaded `CronCreate`, scheduled a
+ * sandbox-local job that skipped the `routine_create` hold and could never
+ * run (the sandbox is ephemeral; AX's scheduler never saw it), and told the
+ * person it was done.
+ *
+ * What each allowed name is for:
+ *   - `Bash` `Read` `Write` `Edit` `Glob` `Grep` — the sandbox file and shell
+ *     tools (`@ax/tool-policy`'s `sandbox.*` rows; the aisdk runner registers
+ *     the same six).
+ *   - `TodoWrite` — an in-turn checklist; it holds nothing past the turn.
+ *   - `Skill` — SDK-native skill discovery (I-P0-1, see the header).
+ *   - `ToolSearch` — keeps deferred tool schemas (AX's host tools, connector
+ *     tools) out of the first request and loads them by name when needed.
+ *     Without it the CLI loads every MCP tool up front instead, so this is a
+ *     context-size choice, not a reachability one. It only ever loads tools
+ *     already in the session, so it cannot widen this list (measured).
+ *
+ * Every other entry in `KNOWN_SDK_BUILTINS` is kept from the agent: it
+ * schedules (`CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`,
+ * `RemoteTrigger`), spawns or messages other agents (`Task`, `SendMessage`,
+ * `TeamCreate`, `TeamDelete`), reaches the network (`WebFetch`, `WebSearch`,
+ * `PushNotification`), or is simply not needed by any AX flow (`Monitor`,
+ * `TaskOutput`, `TaskStop` — Bash's own `run_in_background` stays, and its
+ * output file is readable with `Read`), needs an
+ * interactive UI we do not have (`AskUserQuestion`, `EnterPlanMode`,
+ * `ExitPlanMode`), moves the working tree (`EnterWorktree`, `ExitWorktree`),
+ * or duplicates `Edit` without the sandbox rows describing it (`NotebookEdit`).
+ */
+export const ALLOWED_SDK_BUILTINS = [
+  'Bash',
+  'Read',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+  'Skill',
+  'ToolSearch',
+] as const;
+
+/**
+ * Every built-in tool name the pinned SDK has been OBSERVED to offer (a union,
+ * not an exact count — env flags change the set): the `tools` list of the
+ * CLI's `system/init` message with no `tools` option, the names on the wire
+ * in its first model request (where `Task` goes out as `Agent`), `ToolSearch`
+ * (added at request time), and the two MCP resource tools the CLI adds when a
+ * server declares resources. CLI 2.1.119 / SDK 0.2.119.
+ *
+ * `tool-allowlist-real-sdk.e2e.test.ts` re-measures the init list and the
+ * first request on the installed binary and fails when either names a tool
+ * missing from here — so an
+ * SDK upgrade that adds a built-in stops the build until someone decides which
+ * side of `ALLOWED_SDK_BUILTINS` it belongs on.
+ */
+export const KNOWN_SDK_BUILTINS = [
+  'Agent',
+  'AskUserQuestion',
+  'Bash',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'Edit',
+  'EnterPlanMode',
+  'EnterWorktree',
+  'ExitPlanMode',
+  'ExitWorktree',
+  'Glob',
+  'Grep',
+  'ListMcpResourcesTool',
+  'Monitor',
+  'NotebookEdit',
+  'PushNotification',
+  'Read',
+  'ReadMcpResourceTool',
+  'RemoteTrigger',
+  'ScheduleWakeup',
+  'SendMessage',
+  'Skill',
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+  'TeamCreate',
+  'TeamDelete',
+  'TodoWrite',
+  'ToolSearch',
+  'WebFetch',
+  'WebSearch',
+  'Write',
+] as const;
+
+/**
+ * The SDK built-ins kept from the agent: every known built-in outside the
+ * allowlist. Passed as `disallowedTools` on top of the `tools` allowlist, so
+ * either one alone still keeps them out.
+ */
+export const DENIED_SDK_BUILTINS: readonly string[] = [
+  ...DISABLED_BUILTINS,
+  ...KNOWN_SDK_BUILTINS.filter(
+    (name) =>
+      !(ALLOWED_SDK_BUILTINS as readonly string[]).includes(name) &&
+      !(DISABLED_BUILTINS as readonly string[]).includes(name),
+  ),
+];
+
+const SCHEDULING_BUILTINS: readonly string[] = [
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+  'RemoteTrigger',
+];
+
+/**
+ * Refusal sentence for a built-in outside the allowlist that is not one of the
+ * four in `DISABLED_BUILTIN_REASONS`. Like those, it is only ever read if the
+ * `tools` allowlist and `disallowedTools` have both regressed.
+ */
+function notAllowedReason(name: string): string {
+  // `Agent` is the name `Task` goes out under on the wire; same refusal.
+  if (name === 'Agent') return `Agent (Task) ${DISABLED_BUILTIN_REASONS.Task.replace(/^Task /, '')}`;
+  if (SCHEDULING_BUILTINS.includes(name)) {
+    return (
+      `${name} is disabled: a schedule made with it lives only in this session ` +
+      'and never runs. To schedule recurring work, create a routine instead.'
+    );
+  }
+  return (
+    `${name} is not available here: it would act outside what this workspace ` +
+    'can see or approve. Use the tools you were given.'
+  );
+}
+
+function isAllowedSdkBuiltin(sdkName: string): boolean {
+  return (ALLOWED_SDK_BUILTINS as readonly string[]).includes(sdkName);
+}
 
 /**
  * One sentence per disabled built-in, naming the sanctioned alternative where
@@ -126,7 +286,8 @@ export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
  * held honest from outside instead —
  * `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads this array as
  * text and fails if the rail stops matching. Which matters most when a new SDK
- * arrives and `SECURITY.md` sends the upgrader here to add a name.
+ * arrives and adds a name here on purpose (SECURITY.md now sends upgraders to
+ * `KNOWN_SDK_BUILTINS` / `ALLOWED_SDK_BUILTINS` instead).
  */
 export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
   WebFetch:
@@ -156,8 +317,9 @@ export type SdkToolClass =
   | { kind: 'mcp-connector'; axName: string }
   // No `axName`: a disabled built-in is refused by name at the call site and
   // never reaches `tool:pre-call`, so there is no ax-native name to carry.
-  // `reason` is the per-cause sentence from `DISABLED_BUILTIN_REASONS`.
-  | { kind: 'disabled'; name: DisabledBuiltin; reason: string };
+  // `reason` is the per-cause sentence from `DISABLED_BUILTIN_REASONS`, or a
+  // generic one for any other built-in outside `ALLOWED_SDK_BUILTINS`.
+  | { kind: 'disabled'; name: string; reason: string };
 
 const MCP_HOST_PREFIX = `mcp__${MCP_HOST_SERVER_NAME}__`;
 const MCP_SANDBOX_PREFIX = `mcp__${MCP_SANDBOX_SERVER_NAME}__`;
@@ -256,9 +418,24 @@ export function classifySdkToolName(sdkName: string): SdkToolClass {
       axName: `mcp.${connector.toolNamespace}.${connector.tool}`,
     };
   }
-  // Fallback: pass the name through unchanged. Covers built-in SDK tools
-  // (Bash, Read, Edit, …) AND unknown-to-us MCP tools from other servers.
-  // Host-side subscribers see the verbatim name and decide.
+  // Every non-`mcp__` name at this boundary is a CLI built-in (our host,
+  // sandbox and connector tools all arrive `mcp__`-prefixed). The one
+  // exception is the CLI's `CLAUDE_AGENT_SDK_MCP_NO_PREFIX` switch, which
+  // sends in-process server tools bare; the runner never sets it (the
+  // subprocess env is a fixed allowlist in agent-runner-core's
+  // proxy-startup.ts), and if it were set every AX tool would be refused
+  // here — loudly, not silently. One outside the
+  // allowlist fails CLOSED — whether or not it is in `KNOWN_SDK_BUILTINS`, and
+  // whatever its spelling, so a built-in a new SDK added (or an alias like
+  // `Agent` for `Task`) is refused, not passed on (TASK-1200). Defence in
+  // depth behind the `tools` option.
+  if (!sdkName.startsWith(MCP_PREFIX) && !isAllowedSdkBuiltin(sdkName)) {
+    return { kind: 'disabled', name: sdkName, reason: notAllowedReason(sdkName) };
+  }
+  // Fallback: pass the name through unchanged. Covers the allowed SDK
+  // built-ins (Bash, Read, Edit, …) AND unknown-to-us MCP tools from other
+  // servers (`mcp__linear__x`). Host-side subscribers see the verbatim name
+  // and decide.
   return { kind: 'builtin', axName: sdkName };
 }
 
