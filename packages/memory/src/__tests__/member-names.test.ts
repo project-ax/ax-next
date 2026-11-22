@@ -407,6 +407,48 @@ describe('member names (TASK-1209)', () => {
       expect([...labels]).toEqual([['user:u-bob', TEAMMATE_TEXT]]);
     });
 
+    // Review: a member can rename themself to a teammate's name. Two
+    // different members who would read the same in one answer read "a
+    // teammate", both of them, so neither's facts pass for the other's. Same
+    // means the same whole name word by word (`nameWords`), as the reserved
+    // check compares: case, spacing and punctuation don't tell names apart.
+    it('two members whose names read the same both read "a teammate"; the others keep their names', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus } = authBus(
+        (userId) =>
+          ({
+            'u-bob': { id: 'u-bob', displayName: 'Bob Smith' },
+            'u-carol': { id: 'u-carol', displayName: '  bob   SMITH. ' },
+            'u-dave': { id: 'u-dave', displayName: 'Dave' },
+          })[userId] ?? null,
+      );
+      const labels = await memberLabels(
+        bus,
+        ctxOf(logs),
+        TEAM,
+        ['user:u-bob', 'user:u-carol', 'user:u-dave', 'user:u-bob'],
+        undefined,
+      );
+      expect(Object.fromEntries(labels)).toEqual({
+        'user:u-bob': TEAMMATE_TEXT,
+        'user:u-carol': TEAMMATE_TEXT,
+        'user:u-dave': 'Dave',
+      });
+      expect(logs).toEqual([]);
+    });
+
+    it("a member's name that only contains another's is still a name", async () => {
+      const { bus } = authBus(
+        (userId) =>
+          ({
+            'u-bob': { id: 'u-bob', displayName: 'Bob' },
+            'u-carol': { id: 'u-carol', displayName: 'Bob Smith' },
+          })[userId] ?? null,
+      );
+      const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob', 'user:u-carol'], undefined);
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob', 'user:u-carol': 'Bob Smith' });
+    });
+
     it('never throws on a subject that is not a string', async () => {
       const { bus, asked } = authBus(named);
       const labels = await memberLabels(bus, ctxOf([]), TEAM, [42 as unknown as string, 'user:u-bob'], undefined);

@@ -1614,6 +1614,21 @@ describe('system-prompt:augment:optional:memory — teammates by name (TASK-1209
     expect(body).not.toMatch(/you mentioned/i);
   });
 
+  // Review: a member renamed to a teammate's name can't pass for them. Both
+  // read "a teammate" in the block that shows them together.
+  it('two members whose names read the same both read "a teammate"', async () => {
+    const h = await makeHarness({
+      agent: { visibility: 'team', members: new Set([ALICE, BOB, CAROL]) },
+      authUser: authWith({ [BOB]: 'carol chen.' }),
+    });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said')]);
+    await engineRecord(h.bus, h.ctx({ userId: CAROL }), [said(CAROL, 'a thing Carol said')]);
+    const body = await augment(h, h.ctx());
+    expect(body).toContain('a teammate mentioned: a thing Bob said');
+    expect(body).toContain('a teammate mentioned: a thing Carol said');
+    expect(body).not.toMatch(/carol chen/i);
+  });
+
   it('looks up only the members the block shows', async () => {
     harness = await makeMemoryHarness(
       { block: { recentConversations: 1, recentPerConversation: 1, digestSubjects: 1 } },

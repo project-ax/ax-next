@@ -146,6 +146,12 @@ export function memberName(raw: unknown): string | undefined {
  * of the agent's team (see the file header): per distinct id, one
  * `teams:is-member`, then one `auth:get-user` if and only if it answered
  * `member: true`. Ids are asked in parallel. Never throws.
+ *
+ * A name is shown only when no other key in this answer reads the same,
+ * compared word by word as the reserved check does ({@link nameWords}), so
+ * `Bob Smith` and `bob  smith.` collide. Otherwise every key holding it reads
+ * {@link TEAMMATE_TEXT}: a member who renames themself to a teammate's name
+ * can't pass for them, and neither reads as the other.
  */
 export async function memberLabels(
   bus: HookBus,
@@ -180,6 +186,7 @@ export async function memberLabels(
     return labels;
   }
   const faults: Array<{ hook: string; err: unknown }> = [];
+  const named = new Map<string, string>();
   await Promise.all(
     [...ids].map(async ([about, userId]) => {
       let membership: unknown;
@@ -198,12 +205,22 @@ export async function memberLabels(
         const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
         if (!isRecord(user) || user.id !== userId) return;
         const name = memberName(user.displayName);
-        if (name !== undefined) labels.set(about, name);
+        if (name !== undefined) named.set(about, name);
       } catch (err) {
         faults.push({ hook: AUTH_GET_USER_HOOK, err });
       }
     }),
   );
+  // Two different members whose names read the same, word by word, would
+  // pass for each other: both read "a teammate" in this answer instead.
+  const holders = new Map<string, number>();
+  for (const name of named.values()) {
+    const key = nameWords(name).join(' ');
+    holders.set(key, (holders.get(key) ?? 0) + 1);
+  }
+  for (const [about, name] of named) {
+    if (holders.get(nameWords(name).join(' ')) === 1) labels.set(about, name);
+  }
   const first = faults[0];
   if (first !== undefined) {
     try {
