@@ -476,7 +476,7 @@ describe('member names (TASK-1209)', () => {
     // renamed "Alice Jones" reads "Alice Jones" beside Alice's rows, which the
     // surfaces show as `you` (follow-up: count the caller's name as a holder).
     it("DOCUMENTED RESIDUAL: the caller's own name is not a holder, so a member renamed to it reads as it", async () => {
-      const { bus, asked } = authBus(
+      const { bus, asked, memberAsked } = authBus(
         (userId) =>
           ({
             'u-alice': { id: 'u-alice', displayName: 'Alice Jones' },
@@ -487,6 +487,7 @@ describe('member names (TASK-1209)', () => {
       // Alice's key holds no label (it reads `you` where it is shown) and was never looked up.
       expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Alice Jones' });
       expect(asked).toEqual(['u-bob']);
+      expect(memberAsked).toEqual(['u-bob']);
     });
 
     it('never throws on a subject that is not a string', async () => {

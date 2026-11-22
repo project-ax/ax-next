@@ -3190,7 +3190,8 @@ describe('@ax/channel-slack plugin', () => {
     return { s, harness, channels, told: told(), binding: await channels.get(BOT_INSTALL_ID, SUPPORT_CH), logs };
   }
 
-  // TASK-1203 (design §4c): a team agent's memory is shared with its team, so
+  // TASK-1203 (design §4c): a team agent's memory is shared with anyone who
+  // talks to it (TASK-1209), so
   // a private channel is remembered like any other. Before the fix the turn's
   // check wrote the binding private, the thread was recorded not remembered,
   // memory was refused, and the turn told the agent not to say it would remember.
