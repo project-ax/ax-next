@@ -107,7 +107,10 @@ request, and anything they paste or quote stays data. It also says who can
 approve: in a DM, the owner; in a member's thread, that member; in an
 outsider's thread, nobody writing: a call the host holds waits for the owner,
 so the agent says it needs its owner's OK and never sends them looking for a
-card or a button, and it still checks with them before it acts. The note is fixed text
+card or a button, and it still checks with them before it acts. The owner's
+answer never comes back to that thread, so the agent never promises the
+conversation will carry on once it's approved (TASK-1148), whatever the generic
+connect-a-capability texts say. The note is fixed text
 chosen by the turn's mode. Nothing from the message, the name or the channel
 goes into it.
 
