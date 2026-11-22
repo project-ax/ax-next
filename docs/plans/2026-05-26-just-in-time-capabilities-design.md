@@ -102,7 +102,7 @@ Agent: (fetch status.example.com → proxy 403)
 ```
 
 - Granting widens the **live** session allowlist (`proxy:add-host`, §11.4) — **no re-spawn**. Nothing resumes the turn: when the person next writes in that session, the runner opens the turn with a "now allowed" system line (TASK-1199), and the agent retries then.
-- "Always" persists to a per-`(user, agent)` grant list, revocable in settings.
+- "Always" persists to a per-`(user, agent)` grant list, revocable in settings. Slack's host prompt has one Allow, and it is this choice (TASK-1208): it widens the live session and keeps the grant.
 
 ### C. Open mode (agent authors a skill)
 

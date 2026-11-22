@@ -74,7 +74,8 @@ import {
 export type PromptSubject =
   // A call held for a person's OK (@ax/decisions).
   | { readonly kind: 'decision'; readonly decisionId: string }
-  // A host the sandbox was refused, for the turn's live session only (permission-prompts.ts).
+  // A host the sandbox was refused: on Allow, let through for the turn's live session,
+  // then kept on the agent's allowed sites for the asker (permission-prompts.ts).
   | { readonly kind: 'host'; readonly host: string; readonly sessionId: string }
   // A catalog skill the agent asked to use, attached for the asker on Allow (permission-prompts.ts).
   | { readonly kind: 'skill'; readonly skillId: string };

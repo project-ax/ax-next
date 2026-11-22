@@ -1796,7 +1796,10 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
   const HOST = 'api.example.com';
   const HOST_SUBJECT: PromptSubject = { kind: 'host', host: HOST, sessionId: SESSION };
 
-  /** A world whose `proxy:add-host` records each call and lets the host through, as credential-proxy does for its owner. */
+  /**
+   * A world whose `proxy:add-host` records each call and lets the host through, as credential-proxy does for its
+   * owner, and whose `host-grants:grant` keeps it on the agent's allowed sites (TASK-1208).
+   */
   async function hostWorld() {
     const added: Array<{ ctx: AgentContext; input: unknown }> = [];
     const w = await world({
@@ -1805,6 +1808,7 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
           added.push({ ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
           return { added: true, agentId: 'agt_support' };
         });
+        bus.registerService('host-grants:grant', 'fake-host-grants', async () => ({ created: true }));
       },
       answersOn: (bus) => ({ host: createHostAnswer({ bus }) }),
     });

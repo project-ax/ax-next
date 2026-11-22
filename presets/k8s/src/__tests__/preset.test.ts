@@ -1361,9 +1361,14 @@ describe('@ax/preset-k8s wiring', () => {
         hook,
         degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
       })),
-      // A host the sandbox was refused gets Allow and Deny in the thread, for the live session only.
-      // Its producer is @ax/credential-proxy (the check below).
+      // A host the sandbox was refused gets Allow and Deny in the thread: Allow lets it through for the
+      // live session. Its producer is @ax/credential-proxy (the check below).
       { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
+      // A website allowed in Slack is kept on the agent's allowed sites for the asker (TASK-1208); its producer is @ax/host-grants.
+      {
+        hook: 'host-grants:grant',
+        degradation: 'a website allowed from Slack is let through for the live session only, not kept for the agent',
+      },
       // A catalog skill the agent asked to use gets Allow and Deny too: its conversation is read back
       // (@ax/conversations), then the skill is attached (@ax/chat-orchestrator), as the web app does.
       ...['agent:apply-capability-grant', 'conversations:get'].map((hook) => ({

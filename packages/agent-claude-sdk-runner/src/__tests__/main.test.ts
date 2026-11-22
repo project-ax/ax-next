@@ -454,6 +454,9 @@ afterEach(() => {
 describe('main()', () => {
   it('happy path: user message → assistant text → result → cancel → exit 0', async () => {
     setEnv(COMPLETE_ENV);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -473,6 +476,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('please summarize'), cancelEntry]);
@@ -500,12 +504,17 @@ describe('main()', () => {
 
     const { main } = await import('../main.js');
     const rc = await main();
+    const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    stderrSpy.mockRestore();
 
     expect(rc).toBe(0);
+    // The fake answers the drain, so nothing is logged as a failure.
+    expect(stderrText).not.toContain('drain-allowed-hosts');
 
     // Two JSON calls at boot: session.get-config + tool.list. One more when
     // the person's message is pulled: proxy.drain-allowed-hosts (TASK-1199;
-    // this fake doesn't answer it, so the runner logs and the turn runs).
+    // the fake answers `{ hosts: [] }`, so the drain is called once and adds
+    // nothing to the turn).
     // Nothing streams as a binary either way (TASK-995: no workspace to
     // materialize at boot or to bundle at the turn boundary).
     expect(fakeClient.call).toHaveBeenCalledTimes(3);
@@ -701,6 +710,58 @@ describe('main()', () => {
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
 
+  it('a host allowed since the last turn reaches the SDK in front of the person\'s words (TASK-1199, TASK-1208)', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: ['example.com'] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('please summarize'), cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const NOW_ALLOWED =
+      'System message (not from the user): network egress is now ALLOWED for: `example.com`. Requests to these hosts are no longer blocked, so you can retry one that was.';
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toBe(
+      `${NOW_ALLOWED}\n\nplease summarize`,
+    );
+  });
+
   // TASK-708: a message that reaches the CLI mid-turn can be folded into the
   // running turn — one `result` answers both, so the second message's reqId
   // never gets a turn-end of its own. The CLI says so only when asked
@@ -729,6 +790,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([
@@ -805,6 +867,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -851,6 +914,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -924,6 +988,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -984,6 +1049,7 @@ describe('main()', () => {
           tools: [{ name: 'skill_propose', executesIn: 'sandbox', inputSchema: {} }],
         };
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -1078,6 +1144,7 @@ describe('main()', () => {
       if (action === 'tool.list') return { tools: [] };
       if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('run date'), cancelEntry]);
@@ -1230,6 +1297,7 @@ describe('main()', () => {
           runnerSessionId: 'sdk-sess-prep',
         };
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([]);
@@ -1280,6 +1348,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -1365,6 +1434,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('do work'), cancelEntry]);
@@ -1502,6 +1572,7 @@ describe('main()', () => {
           ? { verdict: 'hold', decisionId: 'dec_abc123', note: MODEL_HOLD_NOTE }
           : { verdict: 'allow' };
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([
@@ -1690,6 +1761,7 @@ describe('main()', () => {
           ? { verdict: 'hold', decisionId: 'dec_842', note: MODEL_HOLD_NOTE }
           : { verdict: 'allow' };
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('look it up'), userEntry('again'), cancelEntry]);
@@ -1806,6 +1878,7 @@ describe('main()', () => {
       if (action === 'tool.list') return { tools: [] };
       if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('do work'), cancelEntry]);
@@ -1894,6 +1967,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('shoot it'), cancelEntry]);
@@ -2006,6 +2080,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('ping'), cancelEntry]);
@@ -2066,6 +2141,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([
@@ -2194,6 +2270,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('go', 'r42'), cancelEntry]);
@@ -2319,6 +2396,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     // Reject only event.stream-chunk; let other events resolve normally.
@@ -2376,6 +2454,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('continue', 'req-failed'), cancelEntry]);
@@ -2487,6 +2566,7 @@ describe('main()', () => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('trigger'), cancelEntry]);
@@ -2568,6 +2648,7 @@ describe('main()', () => {
       if (action === 'conversation.fetch-history') {
         throw new Error('runner must NOT call fetch-history (Phase E)');
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hello'), cancelEntry]);
@@ -2623,6 +2704,7 @@ describe('main()', () => {
         throw new Error('runner must NOT call fetch-history (Phase E)');
       }
       if (action === 'conversation.store-runner-session') return { ok: true };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -2675,6 +2757,7 @@ describe('main()', () => {
         throw new Error('runner must NOT call fetch-history (Phase E)');
       }
       if (action === 'conversation.store-runner-session') return { ok: true };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -2723,6 +2806,7 @@ describe('main()', () => {
       if (action === 'tool.list') return { tools: [] };
       if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([
@@ -2780,6 +2864,7 @@ describe('main()', () => {
       if (action === 'tool.list') return { tools: [] };
       if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
@@ -2859,6 +2944,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -2946,6 +3032,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           throw new Error('runner must NOT bind before a durable transcript (F2a)');
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -2998,6 +3085,7 @@ describe('main()', () => {
             'runner must NOT bind sessionId when conversationId is null',
           );
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hello'), cancelEntry]);
@@ -3053,6 +3141,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('first'), cancelEntry]);
@@ -3128,6 +3217,7 @@ describe('main()', () => {
           if (bindAttempts === 1) throw new Error('host returned 503');
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('one'), userEntry('two'), cancelEntry]);
@@ -3204,6 +3294,7 @@ describe('main()', () => {
             'runner_session_id already bound to a different value for conversation',
           );
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -3283,6 +3374,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
@@ -3356,6 +3448,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -3431,6 +3524,7 @@ describe('main()', () => {
         if (action === 'tool.list') return { tools: [] };
         if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') return { ok: true };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -3500,6 +3594,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
@@ -3567,6 +3662,7 @@ describe('main()', () => {
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
@@ -3625,6 +3721,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -3688,6 +3785,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -3742,6 +3840,7 @@ describe('main()', () => {
         if (action === 'tool.list') return { tools: extraTools };
         const answered = answer(action, payload);
         if (answered !== undefined) return answered;
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -3963,6 +4062,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4120,6 +4220,7 @@ describe('main()', () => {
           ],
         };
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([cancelEntry]);
@@ -4181,6 +4282,7 @@ describe('main()', () => {
           ],
         });
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
@@ -4355,6 +4457,7 @@ describe('main()', () => {
           ],
         });
       }
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
@@ -4448,6 +4551,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4521,6 +4625,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4720,6 +4825,7 @@ describe('main()', () => {
           if (action === 'tool.list') return { tools: [] };
           if (action === 'attachments.list') return { files: [] };
           if (action === 'conversation.store-runner-session') return { ok: true };
+          if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
           throw new Error(`unexpected call: ${action}`);
         });
         fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4840,6 +4946,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4929,6 +5036,7 @@ describe('main()', () => {
           };
         }
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
         throw new Error(`unexpected call: ${action}`);
       });
     }

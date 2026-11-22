@@ -226,7 +226,7 @@ describe('createPromptRegistry: add', () => {
 
     const held = { kind: 'decision', decisionId: 'dec_0001', extra: 1 } as PromptSubject;
     expect(prompts.add(MEL, held, SUMMARY).subject).toEqual({ kind: 'decision', decisionId: 'dec_0001' });
-    // A host the sandbox was refused, for the turn's live session only (permission-prompts.ts).
+    // A host the sandbox was refused: its host and the turn's live session (permission-prompts.ts).
     const host = { kind: 'host', host: 'api.example.com', sessionId: 'ses_0001', extra: 1 } as PromptSubject;
     const kept = prompts.add(MEL, host, 'Wants to connect to api.example.com').subject;
     expect(kept).toEqual({ kind: 'host', host: 'api.example.com', sessionId: 'ses_0001' });

@@ -56,7 +56,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // agent asked to use, fire `chat:permission-request` on the bus as the orchestrator and
 // the skill broker would; a DM or attended turn asks in the thread after its reply, an
 // outsider's turn asks nothing, and Allow reaches `proxy:add-host` and
-// `agent:apply-capability-grant` only for the person who asked.
+// `agent:apply-capability-grant` only for the person who asked. A website's Allow also
+// lands in the real @ax/host-grants store, filed under the person who clicked and the
+// channel's agent (TASK-1208).
 //
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor),
@@ -66,7 +68,8 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // (records the turn, then streams one line and ends it on the bus, the way
 // the orchestrator does), `branding:get`, and the two services a permission
 // prompt's Allow calls (`proxy:add-host`, `agent:apply-capability-grant`: they
-// need a sandbox, so they record the call and say yes).
+// need a sandbox, so they record the call and say yes). A website's Allow then keeps the
+// host through the REAL @ax/host-grants (it only needs the database).
 // ---------------------------------------------------------------------------
 
 const SLACK_PLUGIN = '@ax/channel-slack';
@@ -80,6 +83,7 @@ const KEEP = new Set<string>([
   '@ax/conversations',
   '@ax/decisions',
   '@ax/tool-policy',
+  '@ax/host-grants',
   SLACK_PLUGIN,
 ]);
 
@@ -216,8 +220,9 @@ function createStubsPlugin(): Plugin {
         'auth:list-admins',
         'agent:invoke',
         'branding:get',
-        // The two services a permission prompt's Allow calls. Their real producers (the egress
-        // proxy, the orchestrator) need a sandbox, so these record the call and say yes.
+        // Two of the services a permission prompt's Allow calls. Their real producers (the egress
+        // proxy, the orchestrator) need a sandbox, so these record the call and say yes. The
+        // keep step (`host-grants:grant`) is NOT stubbed: the real @ax/host-grants runs.
         'proxy:add-host',
         'agent:apply-capability-grant',
       ],
@@ -1529,7 +1534,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       await theBus!.fire('chat:turn-end', ctx, { reqId: ctx.reqId, reason: 'user-message-wait' });
     };
 
-  it("a blocked website: the prompt is answered only by the person whose turn it was, and Allow widens just that session; an outsider's turn gets none (TASK-1095)", async () => {
+  it("a blocked website: the prompt is answered only by the person whose turn it was, and Allow lets it through and keeps it for her on the agent; an outsider's turn gets none (TASK-1095, TASK-1208)", async () => {
     const { botId, agentId } = await supportBot();
     invokes.length = 0;
     addHostCalls.length = 0;
@@ -1548,7 +1553,19 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
       expect(promptAt(calls)).toBeGreaterThan(calls.map((c) => c.method).indexOf('chat.stopStream'));
       expect(JSON.stringify(prompt!.blocks)).toContain('Wants to connect to api.example.com');
+      expect(JSON.stringify(prompt!.blocks)).toContain('Once allowed, it stays allowed.');
       expect(promptsIn(calls)).toHaveLength(1);
+
+      // The real allowed-sites list of a person and this agent, read the way the orchestrator reads it.
+      const keptFor = async (userId: string): Promise<string[]> =>
+        (
+          await theBus!.call<unknown, { hosts: Array<{ host: string }> }>(
+            'host-grants:list',
+            makeAgentContext({ sessionId: 'test', agentId: '', userId }),
+            { ownerUserId: userId, agentId },
+          )
+        ).hosts.map((h) => h.host);
+      expect(await keptFor('usr_mel')).toEqual([]);
 
       // Ada, a team admin, is not who asked: told privately, and the proxy is never called.
       mark = slackCalls.length;
@@ -1556,15 +1573,19 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       calls = await slackCallsUntil(mark, 'chat.postEphemeral');
       expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toBe('Only the person who asked can answer this.');
       expect(addHostCalls).toEqual([]);
+      expect(await keptFor('usr_mel')).toEqual([]);
 
-      // Mel's Allow: the proxy hears exactly this session and host, as her.
+      // Mel's Allow: the proxy hears exactly this session and host, as her, and the host is kept for her.
       mark = slackCalls.length;
       expect((await click(botId, MEL, prompt!, 'allow')).status).toBe(200);
       calls = await slackCallsUntil(mark, 'chat.update');
-      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Allowed for now. Ask me again and I'll try it.");
+      expect(String(callOf(calls, 'chat.update').body['text'])).toBe("Allowed from now on. Ask me again and I'll try it.");
       expect(addHostCalls).toEqual([
         { userId: 'usr_mel', input: { sessionId: 'sess_compose_host', host: 'api.example.com' } },
       ]);
+      // C1: filed under Mel and the channel's agent; Ada, who did not click, has nothing.
+      expect(await keptFor('usr_mel')).toEqual(['api.example.com']);
+      expect(await keptFor('usr_ada')).toEqual([]);
 
       // A second click on the settled prompt does nothing more.
       mark = slackCalls.length;
@@ -1581,6 +1602,9 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
       expect(addHostCalls).toHaveLength(1);
+      // C2: the outsider's turn (run as Ada) kept nothing for Ada, and Mel's list is unchanged.
+      expect(await keptFor('usr_ada')).toEqual([]);
+      expect(await keptFor('usr_mel')).toEqual(['api.example.com']);
     } finally {
       invokeScript = null;
       await dropAgent(agentId);
