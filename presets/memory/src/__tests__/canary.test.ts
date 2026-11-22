@@ -19,7 +19,12 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createSandboxK8sPlugin, type K8sCoreApi } from '@ax/sandbox-k8s';
-import { startTestContainer, TEST_PROXY_AUTH_TOKEN } from '@ax/test-harness';
+import {
+  startFakeOidcIssuer,
+  startTestContainer,
+  TEST_PROXY_AUTH_TOKEN,
+  type FakeOidcIssuer,
+} from '@ax/test-harness';
 
 import { createMemoryPlugins, type MemoryPresetConfig } from '../index.js';
 
@@ -91,7 +96,8 @@ function authStub(): Plugin {
         }),
       );
       // @ax/channel-slack maps a Slack sender's verified email with this
-      // (TASK-1092's hook). No canary identity has one, so every lookup misses.
+      // (TASK-1092's hook), and @ax/apps-bridge a viewer assertion's email. No
+      // canary identity has one, so every lookup misses.
       bus.registerService('auth:find-user-by-email', name, async () => null);
       // ...and asks this about a channel mention's sender with no account
       // (TASK-1094). No domain is approved here, so nobody gets in that way.
@@ -232,6 +238,15 @@ let exportHostRoot = '';
 // a host path, so the Files-tab routes can be exercised over the real socket.
 let userFilesRoot = '';
 let pluginNames: string[] = [];
+// The apps bridge (@ax/apps-bridge): its own listener, and the two loopback
+// OIDC issuers it trusts, one for the platform (caller) and one for viewers.
+const APPS_PLATFORM_ID = 'canary-apps';
+const APPS_CALLER_AUDIENCE = 'ax-apps-bridge-canary';
+const APPS_CALLER_SUBJECT = 'canary-apps-platform';
+const APPS_VIEWER_AUDIENCE = 'ax-apps-bridge-canary-viewer';
+let callerIssuer: FakeOidcIssuer | null = null;
+let viewerIssuer: FakeOidcIssuer | null = null;
+let bridgePort = 0;
 const SPA_SHELL = '<!doctype html><html><body>AX-SPA-SHELL</body></html>';
 
 const savedEnv: Record<string, string | undefined> = {};
@@ -267,6 +282,8 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
   setEnv('AX_CREDENTIALS_KEY', '42'.repeat(32));
   setEnv('AX_BOOTSTRAP_TOKEN', 'stub-bootstrap-token');
   setEnv('AX_HTTP_ALLOW_NO_ORIGINS', '1');
+  callerIssuer = await startFakeOidcIssuer();
+  viewerIssuer = await startFakeOidcIssuer();
 
   const config: MemoryPresetConfig = {
     database: { connectionString },
@@ -312,6 +329,25 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
         }
       : {}),
     memoryEmbeddings: { fetchImpl: fakeFetch },
+    // On, so its own listener binds (port 0: any free one) and the settings
+    // routes answer as a configured bridge does.
+    appsBridge: {
+      platformId: APPS_PLATFORM_ID,
+      host: '127.0.0.1',
+      port: 0,
+      caller: {
+        issuer: callerIssuer.issuer,
+        jwksUrl: callerIssuer.jwksUrl,
+        audience: APPS_CALLER_AUDIENCE,
+        subject: APPS_CALLER_SUBJECT,
+      },
+      viewer: {
+        issuer: viewerIssuer.issuer,
+        jwksUrl: viewerIssuer.jwksUrl,
+        audience: APPS_VIEWER_AUDIENCE,
+        maxAgeSeconds: 600,
+      },
+    },
     onObserverDetached: (work) => {
       detached.push(work);
     },
@@ -345,6 +381,10 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
   const handle = await bootstrap({ bus, plugins: all, config: {} });
   shutdown = () => handle.shutdown();
   httpPort = httpPlugin?.boundPort?.() ?? 0;
+  const appsBridge = all.find((p) => p.manifest.name === '@ax/apps-bridge') as
+    | (Plugin & { bridgeBoundPort?: () => number | undefined })
+    | undefined;
+  bridgePort = appsBridge?.bridgeBoundPort?.() ?? 0;
 
   await seedOpenRouterKey();
 }
@@ -367,6 +407,11 @@ async function teardown(): Promise<void> {
   }
   if (container !== null) await container.stop();
   if (tmp !== '') await fsp.rm(tmp, { recursive: true, force: true });
+  await callerIssuer?.close();
+  await viewerIssuer?.close();
+  callerIssuer = null;
+  viewerIssuer = null;
+  bridgePort = 0;
   container = null;
   tmp = '';
 }
@@ -973,6 +1018,166 @@ describe('@ax/preset-memory canary', () => {
     expect(
       await bus.call('system-prompt:augment:optional:slack', makeAgentContext({ sessionId: 'canary', agentId: '', userId: ALICE }), {}),
     ).toEqual({});
+  });
+
+  // The apps connector bridge (@ax/apps-bridge). Its settings and approve
+  // routes ride the public listener (cookie session, CSRF kept); the platform
+  // talks to its OWN listener with an OIDC token. Each answer below is one only
+  // the mounted plugin gives: an unmounted settings path would get the SPA
+  // shell or the router's 405, and no other listener speaks the bridge's codes.
+  // The whole flow (link, grant, call, approve) is
+  // presets/k8s/src/__tests__/apps-bridge-composition.test.ts.
+  describe('apps bridge (invariant 3)', () => {
+    const SETTINGS = '/settings/apps';
+    const APPROVAL = `/settings/app-approval/${APPS_PLATFORM_ID}/app_canary_unlinked/linear`;
+
+    function bridgeUrl(p: string): string {
+      return `http://127.0.0.1:${bridgePort}/api/apps-bridge/v1${p}`;
+    }
+
+    /** A platform token with the caller's claims, signed by `signer` (the caller's own issuer by default). */
+    function platformToken(signer: FakeOidcIssuer = callerIssuer!): string {
+      const now = Math.floor(Date.now() / 1000);
+      return signer.mint({
+        iss: callerIssuer!.issuer,
+        aud: APPS_CALLER_AUDIENCE,
+        sub: APPS_CALLER_SUBJECT,
+        iat: now,
+        exp: now + 300,
+      });
+    }
+
+    async function bridge(
+      method: 'GET' | 'POST',
+      p: string,
+      token: string | null,
+      body?: unknown,
+    ): Promise<{ status: number; json: unknown }> {
+      const headers: Record<string, string> = {};
+      if (token !== null) headers['authorization'] = `Bearer ${token}`;
+      if (body !== undefined) headers['content-type'] = 'application/json';
+      const r = await fetch(bridgeUrl(p), {
+        method,
+        headers,
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      return { status: r.status, json: await r.json() };
+    }
+
+    it('settings routes are mounted: 401 signed out, 404 for an unknown agent, CSRF still enforced on POST', async () => {
+      expect(await apiJson('GET', `${SETTINGS}/${aliceAgentId}`, null)).toEqual({
+        status: 401,
+        json: { error: 'unauthenticated' },
+      });
+      // Unknown, and someone else's: the same 404, so nobody learns an agent exists.
+      expect(await apiJson('GET', `${SETTINGS}/agt_canary_nobody`, ALICE)).toEqual({
+        status: 404,
+        json: { error: 'agent-not-found' },
+      });
+      expect(await apiJson('GET', `${SETTINGS}/${aliceAgentId}`, BOB)).toEqual({
+        status: 404,
+        json: { error: 'agent-not-found' },
+      });
+      // The configured bridge reached the plugin: enabled, and Alice manages her own agent.
+      expect(await apiJson('GET', `${SETTINGS}/${aliceAgentId}`, ALICE)).toEqual({
+        status: 200,
+        json: { enabled: true, canManage: true, links: [], approvals: [] },
+      });
+
+      // A POST keeps http-server's CSRF check: no header, no entry...
+      const noCsrf = await fetch(url(`${SETTINGS}/${aliceAgentId}/link-code`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user': ALICE },
+        body: '{}',
+      });
+      expect(noCsrf.status).toBe(403);
+      // ...and with it, the route's own answer: a one-time code, good for 15 minutes.
+      const before = Date.now();
+      const minted = await apiJson('POST', `${SETTINGS}/${aliceAgentId}/link-code`, ALICE, {});
+      expect(minted.status).toBe(200);
+      expect(Object.keys(minted.json).sort()).toEqual(['code', 'expiresAt']);
+      expect(minted.json.code).toMatch(/^axl_[a-z2-7]{32}$/);
+      const expiresAt = Date.parse(String(minted.json.expiresAt));
+      expect(expiresAt - before).toBeGreaterThanOrEqual(15 * 60_000 - 1_000);
+      expect(expiresAt - before).toBeLessThanOrEqual(15 * 60_000 + 60_000);
+      // Not a manager of Bob's agent, Alice can't even see it.
+      expect(await apiJson('POST', `${SETTINGS}/${bobAgentId}/link-code`, ALICE, {})).toEqual({
+        status: 404,
+        json: { error: 'agent-not-found' },
+      });
+    });
+
+    it('approve route is mounted: 404 for an app that is not linked', async () => {
+      expect(await apiJson('GET', APPROVAL, null)).toEqual({ status: 401, json: { error: 'unauthenticated' } });
+      expect(await apiJson('GET', APPROVAL, ALICE)).toEqual({ status: 404, json: { error: 'not-found' } });
+
+      const body = JSON.stringify({ agentId: aliceAgentId, tools: ['list_issues'] });
+      const noCsrf = await fetch(url(APPROVAL), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user': ALICE },
+        body,
+      });
+      expect(noCsrf.status).toBe(403);
+      expect(await apiJson('POST', APPROVAL, ALICE, { agentId: aliceAgentId, tools: ['list_issues'] })).toEqual({
+        status: 404,
+        json: { error: 'not-found' },
+      });
+    });
+
+    it('the bridge listener answers 401 with no token and with a token from an unknown key', async () => {
+      // Its own listener, not the public one.
+      expect(bridgePort).toBeGreaterThan(0);
+      expect(bridgePort).not.toBe(httpPort);
+
+      expect(await bridge('GET', '/apps/app_canary_unlinked/grants', null)).toEqual({
+        status: 401,
+        json: { code: 'unauthenticated' },
+      });
+      // The caller's own claims, signed by a key the caller's JWKS doesn't hold.
+      const foreign = platformToken(viewerIssuer!);
+      expect(await bridge('GET', '/apps/app_canary_unlinked/grants', foreign)).toEqual({
+        status: 401,
+        json: { code: 'unauthenticated' },
+      });
+      expect(
+        await bridge('POST', '/call', foreign, {
+          appId: 'app_canary_unlinked',
+          connectorId: 'linear',
+          tool: 'list_issues',
+          mode: 'builder',
+          input: {},
+        }),
+      ).toEqual({ status: 401, json: { code: 'unauthenticated' } });
+    });
+
+    it('a valid platform token reaches the store: unknown app is 404 app_not_linked; a made-up code is 403 link_code_invalid', async () => {
+      const token = platformToken();
+      expect(await bridge('GET', '/apps/app_canary_unlinked/grants', token)).toEqual({
+        status: 404,
+        json: { code: 'app_not_linked' },
+      });
+      expect(
+        await bridge('POST', '/call', token, {
+          appId: 'app_canary_unlinked',
+          connectorId: 'linear',
+          tool: 'list_issues',
+          mode: 'builder',
+          input: {},
+        }),
+      ).toEqual({ status: 404, json: { code: 'app_not_linked' } });
+      expect(
+        await bridge('POST', '/links/claim', token, {
+          appId: 'app_canary_unlinked',
+          appName: 'Canary app',
+          code: `axl_${'a'.repeat(32)}`,
+        }),
+      ).toEqual({ status: 403, json: { code: 'link_code_invalid' } });
+      // Nothing was linked along the way.
+      expect(await apiJson('GET', `${SETTINGS}/${aliceAgentId}`, ALICE)).toEqual({
+        status: 200,
+        json: { enabled: true, canManage: true, links: [], approvals: [] },
+      });
+    });
   });
 
   it('Undo after Forget over the real routes brings an agent note back as the same agent row (TASK-630)', async () => {

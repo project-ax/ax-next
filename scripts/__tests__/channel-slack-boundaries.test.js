@@ -77,7 +77,7 @@ const RULES = {
     dirs: ['packages/auth-better/', 'packages/channel-slack/'],
     // Each file needs a one-line reason. Adding one is a reviewed decision.
     files: new Map([
-      ['presets/memory/src/__tests__/canary.test.ts', "the canary's auth stub registers the email hooks and `auth:list-admins` so channel-slack boots"],
+      ['presets/memory/src/__tests__/canary.test.ts', "the canary's auth stub registers the email hooks and `auth:list-admins` so channel-slack and apps-bridge boot"],
       ['presets/k8s/src/__tests__/channel-slack-composition.test.ts', 'stubs auth to map fake Slack senders to users, and `auth:list-admins`'],
       ['presets/k8s/src/__tests__/preset.test.ts', "pins channel-slack's manifest `calls`: the email hooks and `auth:list-admins`"],
       [
@@ -91,6 +91,10 @@ const RULES = {
       ],
       ['packages/apps-bridge/src/__tests__/plugin.test.ts', "stubs `auth:find-user-by-email` (unreached) so the plugin's manifest `calls` boot"],
       ['packages/apps-bridge/src/__tests__/cleanup.test.ts', "stubs `auth:find-user-by-email` (unreached) so the plugin's manifest `calls` boot"],
+      [
+        'presets/k8s/src/__tests__/apps-bridge-composition.test.ts',
+        "stubs `auth:find-user-by-email` to map the viewer assertion's email to one test user (apps-bridge viewer mode; no other email hook)",
+      ],
     ]),
   },
   'slack-prefix': {
