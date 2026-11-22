@@ -1,7 +1,6 @@
 /**
  * The one ⋯ menu on an agent's Slack card (TASK-1187): the card's own
- * (Rename, Change picture, Remove from Slack, Cancel request) and each
- * channel row's (remember it or not).
+ * (Rename, Change picture, Remove from Slack, Cancel request).
  *
  * Two things here are load-bearing:
  * - It is not modal. An item's dialog can re-read the status and unmount this

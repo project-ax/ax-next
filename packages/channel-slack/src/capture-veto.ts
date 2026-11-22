@@ -13,13 +13,13 @@ import type { ChannelStore } from './channel-store.js';
 import { logCode } from './log-code.js';
 
 // ---------------------------------------------------------------------------
-// TASK-1094 decisions row Q4: a connected channel's "Let the agent remember
-// this channel" switch, for what members say; what outsiders say is never
-// remembered at all (PR B review F1). Memory asks `memory:pre-capture
-// { conversationId }` before every extraction pass and every `memory_note`;
-// this answers it for the conversations of Slack channel threads. The shape
-// is @ax/routines' `taskCaptureVeto` (routines/src/capture.ts), copied
-// rather than imported: plugins don't import each other (invariant 2).
+// TASK-1094: memory learns from what members say in a connected channel,
+// and never from what outsiders say (PR B review F1), nor from a private
+// channel (TASK-1188). Memory asks `memory:pre-capture { conversationId }`
+// before every extraction pass and every `memory_note`; this answers it for
+// the conversations of Slack channel threads. The shape is @ax/routines'
+// `taskCaptureVeto` (routines/src/capture.ts), copied rather than imported:
+// plugins don't import each other (invariant 2).
 //
 // TASK-1146: the answer also tells memory who is speaking. Each member turn
 // records the names its sender label showed on the thread (channel-store.ts
@@ -46,13 +46,13 @@ export const CAPTURE_CHECK_DEADLINE_MS = MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_M
  * Why memory must stay out of a channel thread, most decisive first (the
  * order a pass asking about two refused threads reports them in):
  *   - `channel-external-turn`: outsiders' turns run in it. Memory never
- *     learns from them, whatever the switch says (decisions shard, PR B
- *     review F1): a team agent recalls shared memory in every turn, members'
- *     private chats included, so an outsider's words, once learned, would
- *     come back as facts with a member's authority. The switch is for what
- *     members say. Reversible: this one rule.
- *   - `channel-not-remembered`: the switch keeps it out, or the channel is
- *     private (TASK-1188): the same refusal, whatever the switch says.
+ *     learns from them (decisions shard, PR B review F1): a team agent
+ *     recalls shared memory in every turn, members' private chats included,
+ *     so an outsider's words, once learned, would come back as facts with a
+ *     member's authority. Reversible: this one rule.
+ *   - `channel-not-remembered`: the thread had a turn while its channel was
+ *     private, or the channel is private now (TASK-1188), or it is no longer
+ *     connected to the thread's agent.
  */
 const REFUSALS = ['channel-external-turn', 'channel-not-remembered'] as const;
 type Refusal = (typeof REFUSALS)[number];
@@ -75,25 +75,19 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
   const thread = await channels.getThread(conversationId);
   // Not a channel thread (a web chat, a DM): not this plugin's to refuse, nor its names to give.
   if (thread === null) return { refusal: null, speakerNames: NO_NAMES };
-  // Outsiders' turns run here: never, whatever the switch says now. Their
-  // thread records no names (channel-store.ts), so lifting this refusal
-  // means recording outsiders' names first, or memory would file what they
-  // say under them.
+  // Outsiders' turns run here: never. Their thread records no names
+  // (channel-store.ts), so lifting this refusal means recording outsiders'
+  // names first, or memory would file what they say under them.
   if (thread.external !== false) return { refusal: 'channel-external-turn', speakerNames: NO_NAMES };
-  // A turn ran while the switch was off, or while the channel was private
-  // (TASK-1188). Sticky, whatever the switch or the channel says now.
+  // A turn ran while the channel was private (TASK-1188). Sticky, whatever
+  // the channel says now.
   if (thread.notRemembered !== false) return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   const binding = await channels.get(thread.installId, thread.channelId);
   // Disconnected (or its install removed), connected to another agent since,
-  // switched off now, or private now (TASK-1188, design §4b.3: a private
-  // channel's words would surface wherever shared memory is recalled). Only
-  // a binding that plainly says public lets memory in.
-  if (
-    binding === null ||
-    binding.agentId !== thread.agentId ||
-    binding.remember !== true ||
-    binding.isPrivate !== false
-  ) {
+  // or private now (TASK-1188, design §4b.3: a private channel's words would
+  // surface wherever shared memory is recalled). Only a binding that plainly
+  // says public lets memory in.
+  if (binding === null || binding.agentId !== thread.agentId || binding.isPrivate !== false) {
     return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   }
   // As stored, with no default: a row that has no names list throws when
@@ -113,10 +107,9 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
  *
  * A conversation channel-slack never recorded gets no opinion. One it did is
  * refused when outsiders' turns run in it (`channel-external-turn`), and a
- * member's when any turn in it started while the channel's switch was off
- * or while the channel was private, or when the channel is no longer
- * connected to its agent, or when the switch is off now, or the channel is
- * private now (`channel-not-remembered`; TASK-1188, design §4b.3).
+ * member's when any turn in it started while the channel was private, or
+ * when the channel is no longer connected to its agent, or is private now
+ * (`channel-not-remembered`; TASK-1188, design §4b.3).
  *
  * A member's thread it lets through is answered with the names that
  * member's turns were labelled with (TASK-1146): the payload it was given,
@@ -136,7 +129,7 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
  *     and it asks about two threads at most.
  *
  * Fails closed: a lookup that throws, or takes longer than `deadlineMs`,
- * refuses too, as `capture-check-failed` (never a switch's reason). So does
+ * refuses too, as `capture-check-failed` (never a channel's reason). So does
  * a thread row that has no names list at all: it is never read as one with
  * no names. For an extraction pass a refusal costs nothing but time (the
  * cursor stays put, so a later pass reads those turns), which is why
@@ -153,7 +146,7 @@ export async function channelCaptureVeto(
   /**
    * The answer when the check itself fails: a refusal, saying only that. A
    * slow or not-ready store refuses every conversation's pass (a web chat's
-   * too), so it must not claim a switch decided it.
+   * too), so it must not claim a channel decided it.
    */
   const failed = reject({ reason: 'capture-check-failed' });
   let timer: ReturnType<typeof setTimeout> | undefined;

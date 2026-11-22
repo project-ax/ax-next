@@ -21,6 +21,9 @@ describe('slack card words matcher', () => {
       'configuration token',
       'Your App Configuration Tokens',
       'Ask an AX admin',
+      'Remember this channel',
+      "Don't remember this channel",
+      'Not remembered',
     ]) {
       expect(slackCardWordsFound(s), s).not.toEqual([]);
     }
@@ -30,7 +33,10 @@ describe('slack card words matcher', () => {
     for (const s of [
       'Waiting for an admin to approve Quill Bot',
       'anything it needs approved',
-      'Remember this channel',
+      "Private channels aren't remembered.",
+      'It remembers what team members say in public channels, never in private ones.',
+      'Words from people outside the team are not remembered.',
+      'Quill will remember this channel from now on.',
       'Take over',
       'Set up again',
       'relax',
@@ -38,6 +44,15 @@ describe('slack card words matcher', () => {
     ]) {
       expect(slackCardWordsFound(s), s).toEqual([]);
     }
+  });
+
+  it("finds the removed switch's labels when a card draws them as their own text node (TASK-1202)", () => {
+    document.body.innerHTML = '<ul><li><span>help</span><span>Not remembered</span></li></ul>';
+    expect(slackCardWordsFound(slackCardText())).toEqual(['Not remembered']);
+    document.body.innerHTML = '<div role="menu"><div role="menuitem">Remember this channel</div></div>';
+    expect(slackCardWordsFound(slackCardText())).toContain('Remember this channel');
+    document.body.innerHTML = '<p>Words from people outside the team are not remembered.</p>';
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
   });
 
   it('slackCardText reads aria-labels too', () => {
