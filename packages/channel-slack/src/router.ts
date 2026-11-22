@@ -403,7 +403,10 @@ async function routeDm(
       log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
       return;
     }
-    const names = await mentionNamesFor(d, botToken, teamId, screened.text, new Map([[screened.sender, admission.name]]), log);
+    // The shared app is the agent's voice here, so its own user is "(you)" too.
+    const known = new Map([[screened.sender, admission.name]]);
+    if (install.botUserId !== null && install.botUserId !== '') known.set(install.botUserId, ownMentionName(install));
+    const names = await mentionNamesFor(d, botToken, teamId, screened.text, known, log);
     await runTurn(d, {
       mode: 'dm',
       label: dmSenderLabel(admission.name, screened.sender),
@@ -452,8 +455,9 @@ function ownMentionName(install: InstallRow): string {
 
 /**
  * The names for the `<@U…>`s in `text` (mention-names.ts): `known` costs no
- * call. A lookup that failed is logged by count and code, never by id or
- * name, and its mention reads `@someone`.
+ * call. Lookups that failed, and ids left unasked (past the per-message
+ * limit, or while Slack rate-limits us), are logged by count and code, never
+ * by id or name, and their mentions read `@someone`.
  */
 async function mentionNamesFor(
   d: RouterDeps,
@@ -466,9 +470,10 @@ async function mentionNamesFor(
   const ids = mentionedUserIds(text);
   if (ids.length === 0) return new Map();
   const found = await d.mentionNames.lookup({ botToken, teamId, ids, known });
-  if (found.failed > 0) {
-    log('warn', 'slack_mention_names_failed', {
-      count: found.failed,
+  if (found.failed > 0 || found.skipped > 0) {
+    log(found.failed > 0 ? 'warn' : 'info', 'slack_mention_names_missed', {
+      failed: found.failed,
+      skipped: found.skipped,
       ...(found.code !== undefined ? { code: found.code } : {}),
     });
   }
@@ -778,8 +783,9 @@ async function routeMention(
       return;
     }
     // Who the message names, the bot itself included: its own user reads as
-    // its handle and "(you)", which no cleaned Slack name can spell (no
-    // parentheses), so an agent knows when it was the one named.
+    // its handle and "(you)", which no cleaned Slack name can spell
+    // (cleanSenderName drops brackets and parentheses of every script), so an
+    // agent knows when it was the one named.
     const known = new Map([[m.sender, admission.name]]);
     if (install.botUserId !== null && install.botUserId !== '') {
       known.set(install.botUserId, ownMentionName(install));

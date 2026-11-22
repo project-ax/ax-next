@@ -55,9 +55,9 @@ describe('createMentionNames (TASK-1190)', () => {
   });
 
   it('a failure is counted with its code and never kept; a found name is kept until ttlMs, per workspace', async () => {
-    const w = world({ U1: user('U1', 'Bob'), U2: new SlackApiError('users.info', 'ratelimited') });
+    const w = world({ U1: user('U1', 'Bob'), U2: new SlackApiError('users.info', 'internal_error') });
     const first = await w.lookup(['U1', 'U2']);
-    expect(first).toMatchObject({ failed: 1, code: 'ratelimited' });
+    expect(first).toMatchObject({ failed: 1, skipped: 0, code: 'internal_error' });
     expect(first.names.has('U2')).toBe(false);
     await w.lookup(['U1', 'U2']);
     expect(ids(w.asked)).toEqual(['U1', 'U2', 'U2']);
@@ -69,6 +69,27 @@ describe('createMentionNames (TASK-1190)', () => {
     w.tick(1);
     await w.lookup(['U1']);
     expect(ids(w.asked)).toEqual(['U1', 'U2', 'U2', 'U1', 'U1']);
+  });
+
+  it("a known name beats a kept one: Fern's turn keeps Moss's bot as \"moss\", Moss's own turn still reads (you)", async () => {
+    const w = world({ MOSS: user('MOSS', 'moss') });
+    await w.lookup(['MOSS']);
+    const r = await w.lookup(['MOSS'], new Map([['MOSS', 'moss (you)']]));
+    expect(r.names.get('MOSS')).toBe('moss (you)');
+    expect(ids(w.asked)).toEqual(['MOSS']);
+  });
+
+  it("after a rate limit nobody is asked until Slack's Retry-After has passed; those ids are skipped", async () => {
+    const w = world({ A: new SlackApiError('users.info', 'ratelimited', 2_000), B: user('B', 'Bob') });
+    expect(await w.lookup(['A'])).toMatchObject({ failed: 1, skipped: 0, code: 'ratelimited' });
+    w.tick(1_999);
+    const paused = await w.lookup(['B', 'C']);
+    expect(paused).toMatchObject({ failed: 0, skipped: 2 });
+    expect(paused.names.size).toBe(0);
+    expect(ids(w.asked)).toEqual(['A']);
+    w.tick(1);
+    expect((await w.lookup(['B'])).names.get('B')).toBe('Bob');
+    expect(ids(w.asked)).toEqual(['A', 'B']);
   });
 
   it('asks at most perMessage; kept names do not count against it', async () => {

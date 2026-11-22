@@ -239,7 +239,8 @@ export function mrkdwnEscape(text: string): string {
 }
 
 /**
- * A message's text as its sender typed it. Slack escapes exactly three
+ * Slack's three entities undone, and nothing else (`inboundText` is what a
+ * turn's text goes through: it also names mentioned people). Slack escapes exactly three
  * characters in message text, `&` `<` `>` as `&amp;` `&lt;` `&gt;`, so that
  * its own references (`<@U…>`, `<#C…>`, `<url|label>`) can't be confused
  * with typed text. This undoes those three, in one left-to-right pass, so a
@@ -299,15 +300,17 @@ export function inboundText(text: string, names: ReadonlyMap<string, string>): s
 /**
  * A Slack display name, made fit for the sender labels (`dmSenderLabel`,
  * `channelSenderLabel`): no
- * control, bidi or invisible characters, no brackets or parentheses (so a
- * name can't close the label early and start a second one), single spaces,
+ * control, bidi or invisible characters, no brackets or parentheses of any
+ * script (Unicode's opening and closing punctuation, so fullwidth `（` and
+ * `［` too: a name can't close the label early and start a second one, nor
+ * spell a mention's "(you)", TASK-1190), single spaces,
  * at most SENDER_NAME_MAX code units. Empty when nothing printable is left.
  * The name is the sender's own Slack profile text: untrusted, for the model
  * to read, never used for identity.
  */
 export function cleanSenderName(raw: string): string {
   const flat = replaceSurfaceRewriters(raw)
-    .replace(/[[\]()]/g, ' ')
+    .replace(/[\p{Ps}\p{Pe}]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return clampCodeUnits(flat, SENDER_NAME_MAX).trimEnd();

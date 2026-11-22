@@ -1,6 +1,7 @@
 import { mentionedUserName } from './admission.js';
+import { RETRY_AFTER_DEFAULT_MS } from './limits.js';
 import { logCode } from './log-code.js';
-import type { SlackApi } from './slack-api.js';
+import { SlackApiError, type SlackApi } from './slack-api.js';
 
 /**
  * Names for the people a message mentions (TASK-1190), so the agent reads
@@ -23,20 +24,25 @@ import type { SlackApi } from './slack-api.js';
  * A name found is kept per workspace and user for `ttlMs` from when it
  * arrived, bounded (`max`, the oldest forgotten first), in memory like the
  * channel check's answers: a busy channel naming the same people costs no
- * call per message. A failure is never kept, so the next message asks again.
+ * call per message. A failure is never kept, so the next message asks again, except a
+ * rate limit: then nobody is asked until Slack's Retry-After has passed
+ * (RETRY_AFTER_DEFAULT_MS when it gave none), so the users.info budget a
+ * sender's admission needs isn't spent on display names. Those ids are
+ * `skipped`, like ids past `perMessage`.
  */
 export interface MentionNames {
   /**
    * `ids`' names: `known` first, then kept ones, then users.info. Never
    * rejects. `failed` counts lookups that threw, and `code` is the first
-   * one's (Slack's own, or logCode's), for the caller to log.
+   * one's (Slack's own, or logCode's); `skipped` counts ids never asked
+   * (past `perMessage`, or during a rate limit). For the caller to log.
    */
   lookup(i: {
     botToken: string;
     teamId: string;
     ids: readonly string[];
     known: ReadonlyMap<string, string>;
-  }): Promise<{ names: Map<string, string>; failed: number; code?: string }>;
+  }): Promise<{ names: Map<string, string>; failed: number; skipped: number; code?: string }>;
 }
 
 export function createMentionNames(o: {
@@ -55,6 +61,8 @@ export function createMentionNames(o: {
   const { api, now, ttlMs, max, perMessage } = o;
   /** `${teamId}/${userId}` → the name, and when it stops being good. Insertion order is age. */
   const kept = new Map<string, { name: string; until: number }>();
+  /** Epoch ms before which nobody is asked: Slack rate-limited the last ask. */
+  let pausedUntil = 0;
 
   const keep = (key: string, name: string): void => {
     kept.delete(key);
@@ -80,6 +88,8 @@ export function createMentionNames(o: {
     async lookup({ botToken, teamId, ids, known }) {
       const names = new Map<string, string>();
       const ask: string[] = [];
+      let skipped = 0;
+      const paused = now() < pausedUntil;
       for (const id of ids) {
         if (names.has(id) || ask.includes(id)) continue;
         const given = known.get(id);
@@ -92,7 +102,8 @@ export function createMentionNames(o: {
           names.set(id, k);
           continue;
         }
-        if (ask.length < perMessage) ask.push(id);
+        if (!paused && ask.length < perMessage) ask.push(id);
+        else skipped += 1;
       }
       let failed = 0;
       let code: string | undefined;
@@ -106,10 +117,13 @@ export function createMentionNames(o: {
           } catch (err) {
             failed += 1;
             code ??= logCode(err);
+            if (err instanceof SlackApiError && err.code === 'ratelimited') {
+              pausedUntil = Math.max(pausedUntil, now() + (err.retryAfterMs ?? RETRY_AFTER_DEFAULT_MS));
+            }
           }
         }),
       );
-      return code === undefined ? { names, failed } : { names, failed, code };
+      return code === undefined ? { names, failed, skipped } : { names, failed, skipped, code };
     },
   };
 }

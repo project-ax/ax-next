@@ -92,6 +92,7 @@ const NONAME = 'U07NONAME01';
 const MOSS_BOT = 'U0CL18D1JMA'; // another team agent's own bot: the walk's Moss
 const FERN_BOT = 'U07FERNBOT1';
 const POSER = 'U07POSER001';
+const POSER2 = 'U07POSER002';
 
 const DM_ALICE = 'D07DMALICE1';
 const DM_BOB = 'D07DMBOBBY1';
@@ -3792,8 +3793,12 @@ describe('createEventRouter: the agent reads the people a message mentions by na
     await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}> ask <@U07NOBODY01> and <@${REVOKED}>` }));
     await w.idle();
     expect(w.invokes.map(contentOf)).toEqual([said('@supportbot (you) ask @someone and @someone')]);
-    expect(w.lines.filter((l) => l.msg === 'slack_mention_names_failed')).toEqual([
-      { level: 'warn', msg: 'slack_mention_names_failed', fields: { installId: OWN_BOT_ID, count: 2, code: 'user_not_found' } },
+    expect(w.lines.filter((l) => l.msg === 'slack_mention_names_missed')).toEqual([
+      {
+        level: 'warn',
+        msg: 'slack_mention_names_missed',
+        fields: { installId: OWN_BOT_ID, failed: 2, skipped: 0, code: 'user_not_found' },
+      },
     ]);
   });
 
@@ -3824,6 +3829,38 @@ describe('createEventRouter: the agent reads the people a message mentions by na
     await w.idle();
     expect(looked(w)).toHaveLength(1 + MENTION_LOOKUPS_PER_MESSAGE);
     expect(w.invokes.map(contentOf)).toEqual([said('@supportbot (you) @Bob Jones @Carol @Dave @Ada Admin @Ben @someone @someone')]);
+    expect(w.lines.filter((l) => l.msg === 'slack_mention_names_missed')).toEqual([
+      { level: 'info', msg: 'slack_mention_names_missed', fields: { installId: OWN_BOT_ID, failed: 0, skipped: 2 } },
+    ]);
+  });
+
+  it('a sender who mentions themselves is named from their admission, with no second lookup', async () => {
+    const w = botWorld();
+    await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}> remind <@${ALICE}> tomorrow` }));
+    await w.idle();
+    expect(w.invokes.map(contentOf)).toEqual([said('@supportbot (you) remind @Alice Smith tomorrow')]);
+    expect(looked(w)).toEqual([ALICE]);
+  });
+
+  it('a fullwidth "（you）" in a display name is cleaned away: only the bot itself reads as (you)', async () => {
+    SLACK_USERS[POSER2] = member(POSER2, 'poser2@canopyworks.com', 'supportbot \uFF08you\uFF09');
+    try {
+      const w = botWorld();
+      await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}> ask <@${POSER2}>` }));
+      await w.idle();
+      expect(w.invokes.map(contentOf)).toEqual([said('@supportbot (you) ask @supportbot you')]);
+    } finally {
+      delete SLACK_USERS[POSER2];
+    }
+  });
+
+  it("in a DM the shared app's own user reads as the agent itself, with no lookup", async () => {
+    const w = world();
+    await w.dispatch(INSTALL, dm({ text: `hey <@${BOT_USER_ID}>, ask <@${BOB}>` }));
+    await w.idle();
+    const [content] = w.invokes.map(contentOf);
+    expect(content).toMatch(/: hey @.+ \(you\), ask @Bob Jones$/);
+    expect(w.slack.calls.filter((c) => c.method === 'usersInfo').map((c) => c.args['user'])).toEqual([ALICE, BOB]);
   });
 
   it('a name found is kept: the next message naming the same person asks users.info only for its sender', async () => {

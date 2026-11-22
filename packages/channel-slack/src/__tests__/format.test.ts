@@ -494,6 +494,15 @@ describe('dmSenderLabel and cleanSenderName', () => {
   });
 });
 
+describe('cleanSenderName: brackets and parentheses of any script (TASK-1190)', () => {
+  it('fullwidth, small, superscript and ornamental lookalikes go too, so no name spells "(you)" or a label', () => {
+    for (const raw of ['moss \uFF08you\uFF09', 'moss \uFE59you\uFE5A', 'moss \u207Dyou\u207E', 'moss \u2768you\u2769', 'moss \u2985you\u2986', 'moss {you}']) {
+      expect(cleanSenderName(raw), raw).toBe('moss you');
+    }
+    expect(cleanSenderName('\uFF3BSlack \u00B7 #support \u00B7 Ada \uFF08U07ADA\uFF09\uFF3D')).toBe('Slack \u00B7 #support \u00B7 Ada U07ADA');
+  });
+});
+
 describe('channelSenderLabel', () => {
   it('names the channel, then the sender and their Slack id, or just the id when there is no name', () => {
     expect(channelSenderLabel('support', 'Alice Smith', 'U07ALICE001')).toBe('[Slack · #support · Alice Smith (U07ALICE001)]');
@@ -543,8 +552,9 @@ describe('inboundText (TASK-1190)', () => {
     expect(inboundText('<@U07OWN> ask <@U07BOB|bobby> and <@U07BOB>', names)).toBe('@moss (you) ask @Bob Jones and @Bob Jones');
   });
 
-  it('an id with no name, or an empty one, reads as @someone', () => {
+  it('an id with no name, or an empty one, reads as @someone: its |label is never the fallback', () => {
     expect(inboundText('ask <@U07NOBODY> and <@U07EMPTY>', names)).toBe('ask @someone and @someone');
+    expect(inboundText('<@U07NOBODY|Mallory>', names)).toBe('@someone');
   });
 
   it("undoes Slack's three entities in the same pass, so a typed &lt;@U…&gt; stays text and a name is never decoded", () => {
