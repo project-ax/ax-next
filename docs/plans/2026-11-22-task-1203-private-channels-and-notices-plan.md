@@ -39,15 +39,15 @@
 
 | Surface | Exact string | Fallback (team unreadable) |
 |---|---|---|
-| Channel notice (bot's top-level post, mrkdwn, first person) | `What I hear is shared with everyone on {team}, and I may bring it up elsewhere.` | `What I hear is shared with everyone on my team, and I may bring it up elsewhere.` |
+| Channel notice (bot's top-level post, mrkdwn, first person) | `Heads up: what I hear in this channel is shared with everyone on {team}, and I may bring it up elsewhere.` | `Heads up: what I hear in this channel is shared with everyone on my team, and I may bring it up elsewhere.` |
 | Bot profile description (manifest, plain text, ≤140, always this) | `What I hear is shared with everyone on my team, and I may bring it up elsewhere.` (80 chars) | (same) |
-| Slack card: manager's Not in Slack form, and the Live card | `What {who} hears is shared with everyone on {team}, and {who} may bring it up elsewhere.` (`who` = agent name on the form; the card's existing `who` on Live: `@handle` or bot name) | `…everyone on its team, and {who} may…` |
+| Slack card: manager's Not in Slack form, and the Live card | `What {name} hears is shared with everyone on {team}, and {name} may bring it up elsewhere.` (`name` = the agent's NAME on both the form and Live — never `@handle`, per the ux pass) | `…everyone on its team, and {name} may…` |
 | Slack card: channels lead (changed) | `{who} has answered in these channels.` | — |
 | Slack card: removed | `Private channels aren't remembered.`; and the lead's `It remembers what team members say in public channels, never in private ones.` | — |
-| Web chat, team agents only, under the composer | `{Agent}'s memory is shared with {team}.` | `{Agent}'s memory is shared with its team.` |
+| Web chat, team agents only, under the composer | `{Agent}'s memory is shared with everyone on {team}.` | `{Agent}'s memory is shared with everyone on its team.` |
 | Turn note (unchanged) | `This conversation isn't remembered: don't say you'll remember it.` (outsiders' threads, and threads marked before this card) | — |
 
-Open copy question for the ux-designer: the bot's own post and profile are in the first person; the decided §4c sentence names the agent. Revert to the named form if the ux pass prefers it (profile must stay ≤140: the named form can't fit two 35-character names and a 128-character team).
+**ux pass done (see decisions shard): the table above is FINAL; it overrides any string quoted in the tasks below.** Former open question: the bot's own post and profile are in the first person; the decided §4c sentence names the agent. Revert to the named form if the ux pass prefers it (profile must stay ≤140: the named form can't fit two 35-character names and a 128-character team).
 
 ## Review Focus
 
