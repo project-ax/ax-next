@@ -2,4 +2,4 @@
 '@ax/channel-slack': patch
 ---
 
-Slack: in an outsider's thread, the agent is no longer told that the conversation continues automatically once a held call is approved. Its owner answers outside the thread and nothing comes back there, so the agent now says it needs its owner's OK without promising to carry on.
+Slack: in an outsider's thread, the agent's note now says that its owner's answer to a held call never comes back to that thread and the conversation doesn't carry on by itself, and that this overrides the general "the conversation continues automatically once approved" wording it also reads. Nobody there can approve, so promising to pick things up later was a promise we couldn't keep.
