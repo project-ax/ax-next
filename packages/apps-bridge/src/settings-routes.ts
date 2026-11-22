@@ -11,7 +11,8 @@
  *   POST /settings/apps/:agentId/ungrant     { appId, connectorId } → {} (a manager)
  *   POST /settings/apps/:agentId/revoke      { appId, connectorId } → {} (the viewer, on their own approval)
  *   GET  /settings/app-approval/:platformId/:appId/:connectorId  → ApprovalPrompt  (anyone signed in)
- *   POST /settings/app-approval/:platformId/:appId/:connectorId  { agentId } → {}  (anyone signed in)
+ *   POST /settings/app-approval/:platformId/:appId/:connectorId  { agentId, tools } → {}  (anyone signed in;
+ *                                             approves only the shown `tools` still on the grant)
  *
  * Every agent route answers in this order (channel-slack agent-routes.ts's):
  * 401 signed out; the SAME 404 `agent-not-found` for an id no agent could
@@ -290,7 +291,8 @@ export function createSettingsRoutes(bus: BridgeBus, deps: SettingsRoutesDeps): 
     if (body === null) return refuse('invalid-body');
     const link = await store.getLink(a.platformId, body.appId);
     if (link === null || link.agentId !== a.agentId) return refuse('not-linked');
-    return (await store.deleteGrant(a.platformId, body.appId, body.connectorId)) ? ok({}) : refuse('not-found');
+    // Still only while it is linked here: a link that moved since keeps its grant.
+    return (await store.deleteGrant(a.platformId, body.appId, body.connectorId, a.agentId)) ? ok({}) : refuse('not-found');
   }
 
   /** The person's own approval that borrows this agent: nobody else's, and on no other agent. */
@@ -350,15 +352,26 @@ export function createSettingsRoutes(bus: BridgeBus, deps: SettingsRoutesDeps): 
     if (body === null) return refuse('invalid-body');
     const { agents } = await candidates(q);
     if (!agents.some((c) => c.agentId === body.agentId)) return refuse('agent-not-eligible');
-    // The consent covers the grant's tools as they are now; a tool added
-    // later needs it again (bridge-call.ts checks the snapshot).
+    // The consent covers only the tools the page showed that are still
+    // granted, in the grant's order. A tool granted while the page was open
+    // stays unapproved: a call to it answers viewer_approval_required, and
+    // the approve link asks again (bridge-call.ts checks this snapshot). A
+    // name the grant doesn't hold adds nothing.
+    const shown = new Set(body.tools);
+    const toolKeys = q.grant.toolKeys.filter((key) => {
+      const name = toolName(key);
+      return name !== null && shown.has(name);
+    });
+    // Nothing the page showed is granted any longer (a stale page): there is
+    // nothing to approve, so the same 404 as a grant that went.
+    if (toolKeys.length === 0) return refuse('not-found');
     const saved = await store.putApproval({
       viewerUserId: q.userId,
       platformId: q.platformId,
       appId: q.appId,
       connectorId: q.connectorId,
       agentId: body.agentId,
-      toolKeys: q.grant.toolKeys,
+      toolKeys,
     });
     return saved === 'saved' ? ok({}) : refuse('not-found');
   }
@@ -438,8 +451,8 @@ export function createSettingsRoutes(bus: BridgeBus, deps: SettingsRoutesDeps): 
   ];
 }
 
-/** Run every undo, newest first. One that throws doesn't stop the rest. */
-function unwind(undos: Array<() => void>): void {
+/** Run every undo, newest first, emptying the list. One that throws doesn't stop the rest. */
+export function unwind(undos: Array<() => void>): void {
   while (undos.length > 0) {
     const undo = undos.pop();
     try {

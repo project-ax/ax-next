@@ -111,24 +111,36 @@ describe('apps-bridge plugin lifecycle', () => {
   });
 
   it('init mounts the settings routes (bridge on or off, none bypassing CSRF) and shutdown takes each down once', async () => {
-    const plugin = await boot();
-    expect(mounted.map((r) => `${r.method} ${r.path}`).sort()).toEqual(
-      [
-        'GET /settings/apps/:agentId',
-        'POST /settings/apps/:agentId/link-code',
-        'POST /settings/apps/:agentId/unlink',
-        'POST /settings/apps/:agentId/grant',
-        'POST /settings/apps/:agentId/ungrant',
-        'POST /settings/apps/:agentId/revoke',
-        'GET /settings/app-approval/:platformId/:appId/:connectorId',
-        'POST /settings/app-approval/:platformId/:appId/:connectorId',
-      ].sort(),
-    );
-    for (const r of mounted) expect(r.bypassCsrf).toBeUndefined();
-    expect(mounted.every((r) => r.unregistered === 0)).toBe(true);
-    await plugin.shutdown?.();
-    await plugin.shutdown?.();
-    expect(mounted.map((r) => r.unregistered)).toEqual(mounted.map(() => 1));
+    const SETTINGS_ROUTES = [
+      'GET /settings/apps/:agentId',
+      'POST /settings/apps/:agentId/link-code',
+      'POST /settings/apps/:agentId/unlink',
+      'POST /settings/apps/:agentId/grant',
+      'POST /settings/apps/:agentId/ungrant',
+      'POST /settings/apps/:agentId/revoke',
+      'GET /settings/app-approval/:platformId/:appId/:connectorId',
+      'POST /settings/app-approval/:platformId/:appId/:connectorId',
+    ].sort();
+    issuer = await startFakeOidcIssuer();
+    const on: AppsBridgeDeployConfig = {
+      platformId: 'canopy',
+      host: '127.0.0.1',
+      port: 0,
+      caller: { issuer: issuer.issuer, jwksUrl: issuer.jwksUrl, audience: AUD, subject: SUB },
+      viewer: { issuer: issuer.issuer, jwksUrl: issuer.jwksUrl, audience: 'viewer-aud', maxAgeSeconds: 600 },
+    };
+    for (const bridge of [undefined, on]) {
+      mounted = [];
+      const plugin = await boot(bridge);
+      expect(mounted.map((r) => `${r.method} ${r.path}`).sort(), bridge === undefined ? 'off' : 'on').toEqual(SETTINGS_ROUTES);
+      for (const r of mounted) expect(r.bypassCsrf).toBeUndefined();
+      expect(mounted.every((r) => r.unregistered === 0)).toBe(true);
+      await plugin.shutdown?.();
+      await plugin.shutdown?.();
+      expect(mounted.map((r) => r.unregistered)).toEqual(mounted.map(() => 1));
+      await harness?.close();
+      harness = undefined;
+    }
   });
 
   it('refuses a bad config at construction', () => {

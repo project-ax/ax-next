@@ -7,7 +7,7 @@ import { assertAppsBridgeConfig, type AppsBridgeConfig } from './config.js';
 import { createBridgeLimiter, type BridgeLimiter } from './limits.js';
 import { startBridgeListener, type BridgeListener } from './listener.js';
 import { runAppsBridgeMigration, type AppsBridgeDatabase } from './migrations.js';
-import { registerSettingsRoutes } from './settings-routes.js';
+import { registerSettingsRoutes, unwind } from './settings-routes.js';
 import { createAppsBridgeStore } from './store.js';
 import { createCallerVerifier, createViewerVerifier, type CallerVerdict } from './verify-token.js';
 
@@ -138,14 +138,8 @@ export function createAppsBridgePlugin(config: AppsBridgeConfig): AppsBridgePlug
       stopped = true;
       unsubscribe?.();
       unsubscribe = undefined;
-      // Newest first; one that throws doesn't keep the rest up.
-      for (const undo of routeUndos.splice(0).reverse()) {
-        try {
-          undo();
-        } catch {
-          // http-server's to report.
-        }
-      }
+      // Newest first; one that throws doesn't keep the rest up. Empties the list, so a second shutdown is a no-op.
+      unwind(routeUndos);
       await listener?.close();
     },
 

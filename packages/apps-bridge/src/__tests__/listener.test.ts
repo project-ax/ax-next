@@ -81,7 +81,7 @@ async function start(o: Opts = {}) {
     port: 0,
     platformId: P,
     verifyCaller,
-    limiter: createBridgeLimiter({ limits: o.limits }),
+    limiter: createBridgeLimiter(o.limits !== undefined ? { limits: o.limits } : {}),
     claim,
     call,
     grants,

@@ -408,6 +408,16 @@ describe('apps-bridge store', () => {
     expect(await store.getApproval(BOB, P, APP, GITHUB)).toBeNull();
   });
 
+  it('deleteGrant with an agentId removes the grant only while its app is linked to that agent', async () => {
+    const { store } = await freshDb();
+    await link(store, 1);
+    await store.putGrant({ platformId: P, appId: APP, connectorId: GITHUB, mode: 'builder', toolKeys: [KEY_A] });
+    expect(await store.deleteGrant(P, APP, GITHUB, OTHER_AGENT)).toBe(false);
+    expect(await store.getGrant(P, APP, GITHUB)).not.toBeNull();
+    expect(await store.deleteGrant(P, APP, GITHUB, AGENT)).toBe(true);
+    expect(await store.getGrant(P, APP, GITHUB)).toBeNull();
+  });
+
   it('putApproval on a builder-mode grant is no-grant and writes nothing', async () => {
     const { db, store } = await freshDb();
     await link(store, 1);

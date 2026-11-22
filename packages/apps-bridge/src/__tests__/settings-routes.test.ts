@@ -345,7 +345,7 @@ describe('apps settings routes', () => {
       if (method !== 'POST') continue;
       expect(await h.post(route, goodBody[route]), route).toMatchObject({ status: 409, body: { error: 'bridge-off' } });
     }
-    expect(await h.approvalPost({ agentId: VIC_AGENT }, {}, VIC)).toMatchObject({ status: 409, body: { error: 'bridge-off' } });
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: [TOOL] }, {}, VIC)).toMatchObject({ status: 409, body: { error: 'bridge-off' } });
     // No platform is configured, so no approve link names it.
     expect(await h.approvalGet({}, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
     // Still: signed out is 401 and an unknown agent is 404 before the bridge's state is told.
@@ -568,6 +568,12 @@ describe('apps settings routes', () => {
     expect(await h.post('ungrant', { appId: APP })).toMatchObject({ status: 400, body: { error: 'invalid-body' } });
 
     expect(await h.post('ungrant', { appId: APP, connectorId: 'github' })).toMatchObject({ status: 404, body: { error: 'not-found' } });
+    // The link moved to another agent between the check and the delete: that agent's grant stays.
+    const del = vi.spyOn(h.store, 'deleteGrant');
+    expect(await h.post('ungrant', { appId: APP, connectorId: CONN })).toMatchObject({ status: 200 });
+    expect(del).toHaveBeenLastCalledWith(P, APP, CONN, AGENT);
+    await grant(h, 'builder');
+    del.mockClear();
     expect(await h.post('ungrant', { appId: APP, connectorId: CONN })).toMatchObject({ status: 200, body: {} });
     expect(await h.store.getGrant(P, APP, CONN)).toBeNull();
     expect(await h.post('ungrant', { appId: APP, connectorId: CONN })).toMatchObject({ status: 404, body: { error: 'not-found' } });
@@ -643,17 +649,28 @@ describe('apps settings routes', () => {
     await link(h);
     await grant(h, 'viewer', [KEY_CREATE, KEY]);
     const put = vi.spyOn(h.store, 'putApproval');
+    const shown = ['create_issue', TOOL];
     for (const agentId of [VIC_AGENT_2, 'agt_team_with_linear', 'agt_someone_else', AGENT, 'agt_nope']) {
-      expect(await h.approvalPost({ agentId }, {}, VIC), agentId).toMatchObject({ status: 400, body: { error: 'agent-not-eligible' } });
+      expect(await h.approvalPost({ agentId, tools: shown }, {}, VIC), agentId).toMatchObject({ status: 400, body: { error: 'agent-not-eligible' } });
     }
-    for (const bad of [{ agentId: VIC_AGENT, toolKeys: [KEY] }, {}, { agentId: '' }, 'nope']) {
+    for (const bad of [
+      { agentId: VIC_AGENT, tools: shown, toolKeys: [KEY] },
+      { agentId: VIC_AGENT }, // the tools the page showed are required
+      { agentId: VIC_AGENT, tools: ['not a name'] },
+      {},
+      { agentId: '', tools: shown },
+      'nope',
+    ]) {
       expect(await h.approvalPost(bad, {}, VIC), JSON.stringify(bad)).toMatchObject({ status: 400, body: { error: 'invalid-body' } });
     }
-    expect(await h.approvalPost({ agentId: VIC_AGENT }, {}, null)).toMatchObject({ status: 401 });
-    expect(await h.approvalPost({ agentId: VIC_AGENT }, { platformId: 'other-platform' }, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: shown }, {}, null)).toMatchObject({ status: 401 });
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: shown }, { platformId: 'other-platform' }, VIC)).toMatchObject({
+      status: 404,
+      body: { error: 'not-found' },
+    });
     expect(put).not.toHaveBeenCalled();
 
-    expect(await h.approvalPost({ agentId: VIC_AGENT }, {}, VIC)).toMatchObject({ status: 200, body: {} });
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: shown }, {}, VIC)).toMatchObject({ status: 200, body: {} });
     expect(put).toHaveBeenCalledWith({
       viewerUserId: VIC,
       platformId: P,
@@ -666,11 +683,38 @@ describe('apps settings routes', () => {
 
     // The grant went (or left viewer mode) between the check and the write.
     put.mockResolvedValueOnce('no-grant');
-    expect(await h.approvalPost({ agentId: VIC_AGENT }, {}, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: shown }, {}, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
 
     // A builder-mode grant takes no approvals.
     await grant(h, 'builder');
-    expect(await h.approvalPost({ agentId: VIC_AGENT }, {}, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: shown }, {}, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
+  });
+
+  it('approval POST: only the tools the page showed are approved; a tool added since needs approval again', async () => {
+    const h = await started();
+    await link(h);
+    await grant(h, 'viewer', [KEY]);
+    const prompt = ApprovalPromptSchema.parse((await h.approvalGet({}, VIC)).body);
+    expect(prompt.tools).toEqual([TOOL]);
+
+    // A manager widens the grant while the page is open.
+    await grant(h, 'viewer', [KEY, KEY_CREATE]);
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: prompt.tools }, {}, VIC)).toMatchObject({ status: 200, body: {} });
+    expect(await h.store.getApproval(VIC, P, APP, CONN)).toMatchObject({ toolKeys: [KEY] });
+
+    // A name the grant doesn't hold adds nothing; the grant's own order is kept.
+    expect(await h.approvalPost({ agentId: VIC_AGENT, tools: ['create_issue', 'delete_everything', TOOL] }, {}, VIC)).toMatchObject({
+      status: 200,
+    });
+    expect(await h.store.getApproval(VIC, P, APP, CONN)).toMatchObject({ toolKeys: [KEY, KEY_CREATE] });
+
+    // Nothing the page showed is still granted (a stale page): 404, and the approval is left as it was.
+    const put = vi.spyOn(h.store, 'putApproval');
+    for (const tools of [['delete_everything'], []]) {
+      expect(await h.approvalPost({ agentId: VIC_AGENT, tools }, {}, VIC)).toMatchObject({ status: 404, body: { error: 'not-found' } });
+    }
+    expect(put).not.toHaveBeenCalled();
+    expect(await h.store.getApproval(VIC, P, APP, CONN)).toMatchObject({ toolKeys: [KEY, KEY_CREATE] });
   });
 
   it('a hook fault answers 503 unavailable, logged code-only', async () => {

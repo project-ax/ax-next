@@ -181,7 +181,8 @@ export function createFakeStore(): FakeStore {
       return copyGrant(row);
     },
 
-    async deleteGrant(platformId, appId, connectorId) {
+    async deleteGrant(platformId, appId, connectorId, agentId) {
+      if (agentId !== undefined && links.get(linkKey(platformId, appId))?.agentId !== agentId) return false;
       return (
         dropGrantsWhere((g) => g.platformId === platformId && g.appId === appId && g.connectorId === connectorId) > 0
       );

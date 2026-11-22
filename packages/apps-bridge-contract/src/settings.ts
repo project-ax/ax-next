@@ -135,7 +135,11 @@ export const ApprovalPromptSchema = z
 export type ApprovalPrompt = z.infer<typeof ApprovalPromptSchema>;
 
 // POST approval -> {}
-export const ApproveBodySchema = z.object({ agentId: AgentIdSchema }).strict();
+// `tools` echoes ApprovalPrompt.tools, the names the page showed: only those
+// are approved, so a tool granted while the page was open needs asking again.
+export const ApproveBodySchema = z
+  .object({ agentId: AgentIdSchema, tools: z.array(ToolNameSchema).max(MAX_GRANT_TOOLS) })
+  .strict();
 export type ApproveBody = z.infer<typeof ApproveBodySchema>;
 
 // ---------------------------------------------------------------------------

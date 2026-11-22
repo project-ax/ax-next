@@ -100,8 +100,11 @@ export interface AppsBridgeStore {
   putGrant(
     g: Pick<AppGrant, 'platformId' | 'appId' | 'connectorId' | 'mode' | 'toolKeys'> & { agentId?: string },
   ): Promise<AppGrant | 'no-link'>;
-  /** Its approvals cascade. */
-  deleteGrant(platformId: string, appId: string, connectorId: string): Promise<boolean>;
+  /**
+   * Its approvals cascade. With `agentId`, only while the app is linked to
+   * that agent (one statement), so a link that moved can't lose its new grant.
+   */
+  deleteGrant(platformId: string, appId: string, connectorId: string, agentId?: string): Promise<boolean>;
   getApproval(viewerUserId: string, platformId: string, appId: string, connectorId: string): Promise<ViewerApproval | null>;
   /** Ordered by app id, then connector id. */
   listApprovalsForViewerAgent(viewerUserId: string, platformId: string, agentId: string): Promise<ViewerApproval[]>;
@@ -415,13 +418,24 @@ export function createAppsBridgeStore(db: Kysely<AppsBridgeDatabase>): AppsBridg
       });
     },
 
-    async deleteGrant(platformId, appId, connectorId) {
-      const r = await db
+    async deleteGrant(platformId, appId, connectorId, agentId) {
+      let q = db
         .deleteFrom('apps_bridge_v1_grants')
         .where('platform_id', '=', platformId)
         .where('app_id', '=', appId)
-        .where('connector_id', '=', connectorId)
-        .executeTakeFirst();
+        .where('connector_id', '=', connectorId);
+      if (agentId !== undefined) {
+        q = q.where(({ exists, selectFrom }) =>
+          exists(
+            selectFrom('apps_bridge_v1_links')
+              .select('app_id')
+              .where('apps_bridge_v1_links.platform_id', '=', platformId)
+              .where('apps_bridge_v1_links.app_id', '=', appId)
+              .where('apps_bridge_v1_links.agent_id', '=', agentId),
+          ),
+        );
+      }
+      const r = await q.executeTakeFirst();
       return rows(r.numDeletedRows) > 0;
     },
 

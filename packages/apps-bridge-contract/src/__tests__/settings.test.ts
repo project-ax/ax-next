@@ -105,14 +105,20 @@ describe('settings shapes', () => {
       [UnlinkAppBodySchema, { appId: APP }],
       [SaveGrantBodySchema, { appId: APP, connectorId: 'linear', mode: 'viewer', toolKeys: [KEY] }],
       [AppConnectorBodySchema, { appId: APP, connectorId: 'linear' }],
-      [ApproveBodySchema, { agentId: 'agent-1' }],
+      [ApproveBodySchema, { agentId: 'agent-1', tools: ['list_issues'] }],
     ] as const;
     for (const [schema, body] of bodies) {
       expect(schema.safeParse(body).success).toBe(true);
       expect(schema.safeParse({ ...body, extra: 1 }).success).toBe(false);
     }
-    expect(ApproveBodySchema.safeParse({ agentId: '' }).success).toBe(false);
-    expect(ApproveBodySchema.safeParse({ agentId: 'a'.repeat(257) }).success).toBe(false);
+    expect(ApproveBodySchema.safeParse({ agentId: '', tools: [] }).success).toBe(false);
+    expect(ApproveBodySchema.safeParse({ agentId: 'a'.repeat(257), tools: [] }).success).toBe(false);
+    // The tools the page showed: required, tool names, at most a grant's worth.
+    expect(ApproveBodySchema.safeParse({ agentId: 'agent-1' }).success).toBe(false);
+    expect(ApproveBodySchema.safeParse({ agentId: 'agent-1', tools: ['a b'] }).success).toBe(false);
+    const names = Array.from({ length: MAX_GRANT_TOOLS + 1 }, (_, i) => `t${i}`);
+    expect(ApproveBodySchema.safeParse({ agentId: 'agent-1', tools: names }).success).toBe(false);
+    expect(ApproveBodySchema.safeParse({ agentId: 'agent-1', tools: names.slice(0, MAX_GRANT_TOOLS) }).success).toBe(true);
     expect(UnlinkAppBodySchema.safeParse({ appId: 'a b' }).success).toBe(false);
   });
 
