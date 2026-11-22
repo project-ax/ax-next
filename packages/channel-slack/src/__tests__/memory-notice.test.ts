@@ -91,14 +91,17 @@ function world(
     channelName: 'support',
     createdAt: new Date('2026-11-19T11:00:00Z'),
   });
+  /** The stamp each release named. */
+  const released: string[] = [];
   const channels = {
-    async claimNotice(installId: string, channelId: string, agentId: string): Promise<boolean> {
+    async claimNotice(installId: string, channelId: string, agentId: string): Promise<string | null> {
       if (o.claimFails === true) throw storeDown();
       return mem.store.claimNotice(installId, channelId, agentId);
     },
-    async releaseNotice(installId: string, channelId: string, agentId: string): Promise<void> {
+    async releaseNotice(installId: string, channelId: string, agentId: string, claimed: string): Promise<void> {
+      released.push(claimed);
       if (o.releaseFails === true) throw storeDown();
-      await mem.store.releaseNotice(installId, channelId, agentId);
+      await mem.store.releaseNotice(installId, channelId, agentId, claimed);
     },
   };
 
@@ -127,7 +130,7 @@ function world(
     );
   /** Whether #support's notice is claimed, as the store holds it. */
   const claimed = (): boolean => mem.notices.has(`${INSTALL_ID}/${SUPPORT_CH}`);
-  return { agents, names, teams, mem, posts, lines, notice, claimed };
+  return { agents, names, teams, mem, posts, lines, notice, claimed, released };
 }
 
 describe('postMemoryNotice', () => {
@@ -153,7 +156,7 @@ describe('postMemoryNotice', () => {
   it('not claimed: no team lookup and no post', async () => {
     const w = world();
     // Told already: by an earlier turn, or another replica's.
-    w.mem.notices.add(`${INSTALL_ID}/${SUPPORT_CH}`);
+    w.mem.notices.set(`${INSTALL_ID}/${SUPPORT_CH}`, 'an-earlier-claim');
     await w.notice();
     // Another agent's binding of the channel, or no binding at all: nothing to claim.
     await w.notice({ agentId: 'agt_other' });
@@ -176,6 +179,8 @@ describe('postMemoryNotice', () => {
 
     expect(w.posts.map((p) => p.text)).toEqual([NAMED]);
     expect(w.claimed()).toBe(false);
+    // Given back by its own claim's stamp, so a newer binding's claim is never the one released.
+    expect(w.released).toEqual(['claim-1']);
     expect(w.lines).toEqual([{ level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'post', code } }]);
 
     // The next turn claims it again, and this time it goes out.
@@ -243,6 +248,27 @@ describe('postMemoryNotice', () => {
       expect(w.posts.map((p) => p.threadTs), code).toEqual([undefined]);
       expect(w.claimed(), code).toBe(false);
     }
+  });
+
+  it("a failed post releases only its own claim: a binding made again meanwhile keeps the new one's (review F7)", async () => {
+    let w: ReturnType<typeof world>;
+    // While turn 1's post is failing, the channel is disconnected and bound again, and the new binding's turn claims.
+    w = world({
+      postFails: (n) => {
+        if (n !== 1) return undefined;
+        const at = `${INSTALL_ID}/${SUPPORT_CH}`;
+        const row = w.mem.rows.get(at)!;
+        w.mem.rows.delete(at);
+        w.mem.notices.delete(at);
+        w.mem.rows.set(at, { ...row, createdAt: new Date('2026-11-19T12:00:00Z') });
+        w.mem.notices.set(at, 'the-new-binding-claim');
+        return new SlackApiError('chat.postMessage', 'http-503');
+      },
+    });
+    await w.notice();
+    expect(w.released).toEqual(['claim-1']);
+    // The new binding's claim stands: its own turn tells the channel, and nothing tells it twice.
+    expect(w.mem.notices.get(`${INSTALL_ID}/${SUPPORT_CH}`)).toBe('the-new-binding-claim');
   });
 
   it('a claim that throws logs stage claim and posts nothing', async () => {

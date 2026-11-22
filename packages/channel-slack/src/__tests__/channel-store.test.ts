@@ -87,6 +87,15 @@ async function rawRow(installId: string, channelId: string) {
   return r.rows[0];
 }
 
+/** Whether a binding's stored notice claim is exactly `stamp` (a claimNotice answer), compared by the database at full precision. */
+async function noticeStampIs(installId: string, channelId: string, stamp: string): Promise<boolean> {
+  const r = await sql<{ same: boolean | null }>`
+    SELECT notice_posted_at = ${stamp}::timestamptz AS same FROM channel_slack_v1_channels
+     WHERE install_id = ${installId} AND channel_id = ${channelId}
+  `.execute(db);
+  return r.rows[0]?.same === true;
+}
+
 /** Pin a binding's age, so "oldest first" never hangs on the clock's resolution. */
 async function setCreatedAt(installId: string, channelId: string, at: Date): Promise<void> {
   await sql`
@@ -497,10 +506,10 @@ describe('runMigrations', () => {
        WHERE table_name = 'channel_slack_v1_channels' AND column_name = 'notice_posted_at'
     `.execute(db);
     expect(column.rows).toEqual([{ data_type: 'timestamp with time zone', is_nullable: 'YES', column_default: null }]);
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
 
     await runMigrations(db);
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(false);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBeNull();
   });
 
   it("a thread row written without `external` is an outsider's: the column fails closed", async () => {
@@ -988,7 +997,8 @@ describe('a private channel is remembered like any other (TASK-1203)', () => {
   (router.ts), and a turn on any replica may be that first one, so the
   binding records it: claimed before the post, in one conditional UPDATE, so
   of any number of claims exactly one wins and only its replica posts. A post
-  Slack refuses releases the claim, and the next turn tries again. A reconnect
+  Slack refuses releases the claim (only that claim: by the stamp it
+  answered), and the next turn tries again. A reconnect
   keeps the claim; a binding removed and made again is a new binding, told
   again.
 */
@@ -999,13 +1009,13 @@ describe("a channel's memory notice: claimed once per binding (TASK-1203)", () =
     // Not told yet.
     expect(before?.['notice_posted_at']).toBeNull();
 
-    expect([
-      await channels.claimNotice(INSTALL, SUPPORT, AGENT),
-      await channels.claimNotice(INSTALL, SUPPORT, AGENT),
-    ]).toEqual([true, false]);
-    // The claim stamps the notice and changes nothing else in the binding.
+    const won = await channels.claimNotice(INSTALL, SUPPORT, AGENT);
+    expect(won).toEqual(expect.any(String));
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBeNull();
+    // The claim stamps the notice and changes nothing else in the binding; the stamp it answers is the stored one, exactly.
     const after = await rawRow(INSTALL, SUPPORT);
     expect(after?.['notice_posted_at']).toBeInstanceOf(Date);
+    expect(await noticeStampIs(INSTALL, SUPPORT, won!)).toBe(true);
     expect({ ...after, notice_posted_at: null }).toEqual(before);
   });
 
@@ -1020,7 +1030,7 @@ describe("a channel's memory notice: claimed once per binding (TASK-1203)", () =
       const won = await Promise.all(
         Array.from({ length: 8 }, (_, i) => replicas[i % 2]!.claimNotice(INSTALL, SUPPORT, AGENT)),
       );
-      expect(won.filter((w) => w)).toHaveLength(1);
+      expect(won.filter((w) => w !== null)).toHaveLength(1);
     } finally {
       await otherDb.destroy();
     }
@@ -1028,36 +1038,57 @@ describe("a channel's memory notice: claimed once per binding (TASK-1203)", () =
 
   it('a reconnect keeps the claim; a binding removed and bound again claims again', async () => {
     await connect();
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
     // The same agent's bot binding it again, with a new connector and a renamed channel: still told.
     expect(await connect({ connectedByUserId: BOB, channelName: 'help-desk' })).toBe('reconnected');
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(false);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBeNull();
     // Disconnected, then bound again: a new binding, so the channel is told again.
     expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
     expect(await connect()).toBe('connected');
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
   });
 
   it("release reopens the claim, and only for the binding's own install, channel and agent", async () => {
     await connect();
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    const stamp = await channels.claimNotice(INSTALL, SUPPORT, AGENT);
+    expect(stamp).toEqual(expect.any(String));
     // Another agent, install or channel releases nothing.
-    await channels.releaseNotice(INSTALL, SUPPORT, OTHER_AGENT);
-    await channels.releaseNotice(OTHER_INSTALL, SUPPORT, AGENT);
-    await channels.releaseNotice(INSTALL, SALES, AGENT);
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(false);
-    // The binding's own: the next turn claims it again.
-    await channels.releaseNotice(INSTALL, SUPPORT, AGENT);
+    await channels.releaseNotice(INSTALL, SUPPORT, OTHER_AGENT, stamp!);
+    await channels.releaseNotice(OTHER_INSTALL, SUPPORT, AGENT, stamp!);
+    await channels.releaseNotice(INSTALL, SALES, AGENT, stamp!);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBeNull();
+    // The binding's own, by the stamp its claim answered: the next turn claims it again.
+    await channels.releaseNotice(INSTALL, SUPPORT, AGENT, stamp!);
     expect((await rawRow(INSTALL, SUPPORT))?.['notice_posted_at']).toBeNull();
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
+  });
+
+  it("a release gives back only its own claim: a binding removed and made again keeps the new binding's claim (review F7)", async () => {
+    // Turn 1 claims, and its post is slow to fail...
+    await connect();
+    const old = await channels.claimNotice(INSTALL, SUPPORT, AGENT);
+    expect(old).toEqual(expect.any(String));
+    // ...meanwhile an admin disconnects, the bot binds the channel again, and the new binding's first turn claims.
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await connect()).toBe('connected');
+    const fresh = await channels.claimNotice(INSTALL, SUPPORT, AGENT);
+    expect(fresh).toEqual(expect.any(String));
+    expect(fresh).not.toBe(old);
+    // Turn 1's post fails, and it releases with its own (old) stamp: the new claim stays.
+    await channels.releaseNotice(INSTALL, SUPPORT, AGENT, old!);
+    expect(await noticeStampIs(INSTALL, SUPPORT, fresh!)).toBe(true);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBeNull();
+    // The new claim's own release still works, at whatever precision the database keeps.
+    await channels.releaseNotice(INSTALL, SUPPORT, AGENT, fresh!);
+    expect((await rawRow(INSTALL, SUPPORT))?.['notice_posted_at']).toBeNull();
   });
 
   it("another agent's binding, or no binding, claims nothing", async () => {
     await connect();
-    expect(await channels.claimNotice(INSTALL, SUPPORT, OTHER_AGENT)).toBe(false);
-    expect(await channels.claimNotice(OTHER_INSTALL, SUPPORT, AGENT)).toBe(false);
-    expect(await channels.claimNotice(INSTALL, SALES, AGENT)).toBe(false);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, OTHER_AGENT)).toBeNull();
+    expect(await channels.claimNotice(OTHER_INSTALL, SUPPORT, AGENT)).toBeNull();
+    expect(await channels.claimNotice(INSTALL, SALES, AGENT)).toBeNull();
     // None of them touched the binding: its own agent's first claim still wins.
-    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
   });
 });

@@ -22,9 +22,11 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
  * the place it was last seen, oldest first, the THREAD_SPEAKER_NAMES_MAX
  * most recent kept; an outsider's turn adds none, whatever it was handed.
  * `removeForAgent` takes the agent's threads too; nothing else does.
- * A binding's memory notice (TASK-1203): `claimNotice` is true only for an
- * existing binding of the named agent not claimed yet, and claims it;
- * `releaseNotice` gives back only the named agent's claim; a reconnect keeps
+ * A binding's memory notice (TASK-1203): `claimNotice` answers a stamp only
+ * for an existing binding of the named agent not claimed yet, and claims it
+ * (each stamp new: `claim-1`, `claim-2`, …), else null; `releaseNotice`
+ * gives back only the named agent's claim, and only when it names that
+ * claim's stamp (review F7); a reconnect keeps
  * a claim, and a binding removed (`remove`, `removeForAgent`) takes its
  * claim with it, so a binding made again claims again.
  *
@@ -35,8 +37,9 @@ export function memoryChannelStore() {
   const rows = new Map<string, ChannelBinding>();
   /** The thread map, by conversation id. */
   const threads = new Map<string, ChannelThread>();
-  /** The bindings whose memory notice is claimed (TASK-1203), by `${installId}/${channelId}`. */
-  const notices = new Set<string>();
+  /** The bindings whose memory notice is claimed (TASK-1203), by `${installId}/${channelId}`, to the claim's stamp. */
+  const notices = new Map<string, string>();
+  let claims = 0;
   const calls: Array<keyof ChannelStore> = [];
   let created = Date.parse('2026-11-13T09:00:00.000Z');
   const key = (installId: string, channelId: string): string => `${installId}/${channelId}`;
@@ -93,14 +96,16 @@ export function memoryChannelStore() {
     async claimNotice(installId, channelId, agentId) {
       calls.push('claimNotice');
       const at = key(installId, channelId);
-      if (rows.get(at)?.agentId !== agentId || notices.has(at)) return false;
-      notices.add(at);
-      return true;
+      if (rows.get(at)?.agentId !== agentId || notices.has(at)) return null;
+      claims += 1;
+      const stamp = `claim-${claims}`;
+      notices.set(at, stamp);
+      return stamp;
     },
-    async releaseNotice(installId, channelId, agentId) {
+    async releaseNotice(installId, channelId, agentId, claimed) {
       calls.push('releaseNotice');
       const at = key(installId, channelId);
-      if (rows.get(at)?.agentId === agentId) notices.delete(at);
+      if (rows.get(at)?.agentId === agentId && notices.get(at) === claimed) notices.delete(at);
     },
     async removeForAgent(agentId) {
       calls.push('removeForAgent');

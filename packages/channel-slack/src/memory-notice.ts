@@ -26,7 +26,9 @@ import { agentTeamName } from './team-name.js';
  * instead, which reaches the people talking to the bot, and the claim is
  * kept once that lands (it is given back only if the thread post fails
  * too). Retrying would put a claim, two lookups and a doomed post in front
- * of every reply there, and tell nobody. A crash between the claim and the post leaves that binding untold
+ * of every reply there, and tell nobody. A release gives back only the
+ * claim this turn made (by the stamp `claimNotice` answered), never a newer
+ * binding's after a remove and rebind. A crash between the claim and the post leaves that binding untold
  * (accepted: rare).
  *
  * The team is named as the person the turn runs as sees it (team-name.ts
@@ -71,7 +73,7 @@ export async function postMemoryNotice(
     }
   };
 
-  let claimed: boolean;
+  let claimed: string | null;
   try {
     claimed = await d.channels.claimNotice(i.installId, i.channelId, i.agentId);
   } catch (err) {
@@ -79,7 +81,8 @@ export async function postMemoryNotice(
     return;
   }
   // Told already (by an earlier turn, on any replica), or no longer this agent's channel.
-  if (!claimed) return;
+  if (claimed === null) return;
+  const stamp = claimed;
 
   const team = await agentTeamName(d.bus, ctx, { agentId: i.agentId, userId: i.userId }, (err) =>
     say('warn', 'slack_team_name_failed', { code: logCode(err) }),
@@ -87,7 +90,8 @@ export async function postMemoryNotice(
   const text = COPY.memoryNotice(team);
   const release = async (): Promise<void> => {
     try {
-      await d.channels.releaseNotice(i.installId, i.channelId, i.agentId);
+      // Only this turn's own claim: a binding removed and made again meanwhile keeps its new one.
+      await d.channels.releaseNotice(i.installId, i.channelId, i.agentId, stamp);
     } catch (released) {
       say('warn', 'slack_notice_failed', { stage: 'release', code: logCode(released) });
     }

@@ -112,18 +112,21 @@ export interface ChannelStore {
    * Claim the memory notice of THIS agent's binding of the channel (TASK-1203,
    * design §4c: the post telling the channel what the bot hears there is
    * shared with its team), in ONE conditional statement, so of any number of
-   * claims at once, on any replica, exactly one wins. True for that one: it
-   * posts the notice. False when the notice was claimed before, or the
-   * channel isn't this agent's (any more), or isn't bound at all; nothing
-   * changed. A binding removed and made again is new, and claims again.
+   * claims at once, on any replica, exactly one wins. That one gets the
+   * claim's stamp (opaque: hand it back to `releaseNotice` as is), and posts
+   * the notice. Null when the notice was claimed before, or the channel
+   * isn't this agent's (any more), or isn't bound at all; nothing changed. A
+   * binding removed and made again is new, and claims again.
    */
-  claimNotice(installId: string, channelId: string, agentId: string): Promise<boolean>;
+  claimNotice(installId: string, channelId: string, agentId: string): Promise<string | null>;
   /**
    * Give a claim back when Slack refused the notice, so the channel's next
-   * turn claims and posts it again. Only THIS agent's binding of the channel;
-   * anything else changes nothing.
+   * turn claims and posts it again. Only the claim `claimed` names (what
+   * `claimNotice` answered), of THIS agent's binding of the channel: a
+   * binding removed and made again while a post was failing has its own
+   * claim, and keeps it. Anything else changes nothing.
    */
-  releaseNotice(installId: string, channelId: string, agentId: string): Promise<void>;
+  releaseNotice(installId: string, channelId: string, agentId: string, claimed: string): Promise<void>;
   /**
    * Delete the agent's bindings and thread rows on every install, in one
    * transaction (both go, or neither does), and say how many of each went.
@@ -254,6 +257,9 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // Of two claims at once, the second waits on the first's row lock, then
       // Postgres checks its WHERE again against the row the first wrote
       // (READ COMMITTED): it finds the notice claimed and updates nothing.
+      // The stamp comes back as Postgres's own text (microseconds and the
+      // offset), so the release can name it exactly: a JS Date would drop
+      // the microseconds and never match.
       const r = await db
         .updateTable(CHANNELS)
         .set({ notice_posted_at: sql<Date>`now()` })
@@ -261,17 +267,20 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         .where('channel_id', '=', channelId)
         .where('agent_id', '=', agentId)
         .where('notice_posted_at', 'is', null)
+        .returning(sql<string>`notice_posted_at::text`.as('claimed'))
         .executeTakeFirst();
-      return r.numUpdatedRows > 0n;
+      return r?.claimed ?? null;
     },
 
-    async releaseNotice(installId, channelId, agentId) {
+    async releaseNotice(installId, channelId, agentId, claimed) {
+      // Only this claim: a binding removed and made again meanwhile has its own stamp.
       await db
         .updateTable(CHANNELS)
         .set({ notice_posted_at: null })
         .where('install_id', '=', installId)
         .where('channel_id', '=', channelId)
         .where('agent_id', '=', agentId)
+        .where(sql<boolean>`notice_posted_at = ${claimed}::timestamptz`)
         .execute();
     },
 

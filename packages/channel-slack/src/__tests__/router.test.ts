@@ -713,14 +713,14 @@ function world(o: {
       return channels.store.remove(installId, channelId, agentId);
     },
     // A channel's memory notice (TASK-1203): claimed before it posts, given back when Slack refuses it.
-    async claimNotice(installId: string, channelId: string, agentId: string): Promise<boolean> {
+    async claimNotice(installId: string, channelId: string, agentId: string): Promise<string | null> {
       if (o.claimNoticeFails === true) {
         throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
       }
       return channels.store.claimNotice(installId, channelId, agentId);
     },
-    async releaseNotice(installId: string, channelId: string, agentId: string): Promise<void> {
-      await channels.store.releaseNotice(installId, channelId, agentId);
+    async releaseNotice(installId: string, channelId: string, agentId: string, claimed: string): Promise<void> {
+      await channels.store.releaseNotice(installId, channelId, agentId, claimed);
     },
   };
   /**
