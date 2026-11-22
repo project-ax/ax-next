@@ -5,7 +5,7 @@ import { SlackApiError, type SlackApi } from './slack-api.js';
 
 /**
  * Names for the people a message mentions (TASK-1190), so the agent reads
- * `@moss` where Slack wrote `<@U0CL18D1JMA>` (format.ts `inboundText`).
+ * `@[moss]` where Slack wrote `<@U0CL18D1JMA>` (format.ts `inboundText`).
  *
  * Why: found in the TASK-1189 walk. "@Fern ask @moss …" reached both agents
  * as raw ids; Fern tried to message a user id it couldn't place, and Moss,
@@ -73,7 +73,9 @@ export function createMentionNames(o: {
   const pausedUntil = new Map<string, number>();
 
   const pause = (installId: string, retryAfterMs: number | undefined): void => {
-    const wait = Math.min(Math.max(retryAfterMs ?? RETRY_AFTER_DEFAULT_MS, 0), RETRY_AFTER_CAP_MS);
+    // A non-finite wait (NaN) would pause for good: `until <= now` is never true.
+    const asked = retryAfterMs !== undefined && Number.isFinite(retryAfterMs) ? retryAfterMs : RETRY_AFTER_DEFAULT_MS;
+    const wait = Math.min(Math.max(asked, 0), RETRY_AFTER_CAP_MS);
     const until = Math.max(pausedUntil.get(installId) ?? 0, now() + wait);
     pausedUntil.delete(installId);
     const t = now();

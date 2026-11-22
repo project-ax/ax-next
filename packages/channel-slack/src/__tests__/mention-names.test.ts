@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RETRY_AFTER_CAP_MS } from '../limits.js';
+import { RETRY_AFTER_CAP_MS, RETRY_AFTER_DEFAULT_MS } from '../limits.js';
 import { createMentionNames } from '../mention-names.js';
 import { SlackApiError } from '../slack-api.js';
 
@@ -108,6 +108,24 @@ describe('createMentionNames (TASK-1190)', () => {
     expect((await w.lookup(['C'], new Map(), TEAM, 'inst-c')).names.get('C')).toBe('Carol');
     expect(await w.lookup(['C'], new Map(), 'T07FRESH', 'inst-a')).toMatchObject({ paused: 1 });
     expect(ids(w.asked)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('at most max installs stay paused, the oldest forgotten first; a NaN Retry-After waits the default', async () => {
+    const limited = new SlackApiError('users.info', 'ratelimited', 30_000);
+    const w = world({ L: limited, B: user('B', 'Bob') }, { max: 2 });
+    await w.lookup(['L'], new Map(), TEAM, 'i1');
+    await w.lookup(['L'], new Map(), TEAM, 'i2');
+    await w.lookup(['L'], new Map(), TEAM, 'i3');
+    // i1 was forgotten when i3 paused; i2 and i3 are still paused.
+    expect(await w.lookup(['B'], new Map(), TEAM, 'i1')).toMatchObject({ paused: 0 });
+    expect(await w.lookup(['X'], new Map(), TEAM, 'i2')).toMatchObject({ paused: 1 });
+    expect(await w.lookup(['X'], new Map(), TEAM, 'i3')).toMatchObject({ paused: 1 });
+
+    const n = world({ L: new SlackApiError('users.info', 'ratelimited', Number.NaN), B: user('B', 'Bob') });
+    await n.lookup(['L']);
+    expect(await n.lookup(['B'])).toMatchObject({ paused: 1 });
+    n.tick(RETRY_AFTER_DEFAULT_MS);
+    expect((await n.lookup(['B'])).names.get('B')).toBe('Bob');
   });
 
   it('a huge Retry-After is capped at RETRY_AFTER_CAP_MS', async () => {

@@ -3954,6 +3954,37 @@ describe('createEventRouter: the agent reads the people a message mentions by na
       await w.idle();
       expect(w.invokes.map(contentOf)).toEqual([said('@[supportbot (you)] ask @someone'), said('@[supportbot (you)] ask @someone')]);
       expect(looked(w)).toEqual([ALICE, limited, ALICE]);
+      expect(w.lines.filter((l) => l.msg === 'slack_mention_names_missed')).toEqual([
+        {
+          level: 'warn',
+          msg: 'slack_mention_names_missed',
+          fields: { installId: OWN_BOT_ID, failed: 1, capped: 0, paused: 0, code: 'ratelimited' },
+        },
+        { level: 'info', msg: 'slack_mention_names_missed', fields: { installId: OWN_BOT_ID, failed: 0, capped: 0, paused: 1 } },
+      ]);
+    } finally {
+      delete SLACK_USERS[limited];
+    }
+  });
+
+  it("one bot's rate limit never pauses another install's names: each asks with its own token", async () => {
+    const limited = 'U07LIMITED2';
+    SLACK_USERS[limited] = new SlackApiError('users.info', 'ratelimited', 30_000);
+    try {
+      const w = botWorld();
+      await w.dispatch(OWN_BOT, botMention({ text: `<@${OWN_BOT_USER_ID}> ask <@${limited}>` }));
+      await w.idle();
+      // The same workspace's shared app, in a DM: not paused.
+      await w.dispatch(INSTALL, dm({ text: `ask <@${BOB}>` }));
+      await w.idle();
+      expect(contentOf(w.invokes[1]!)).toBe(`[Slack · DM · Alice Smith (${ALICE})]: ask @[Bob Jones]`);
+      const asked = w.slack.calls.filter((c) => c.method === 'usersInfo').map((c) => [c.token, c.args['user']]);
+      expect(asked).toEqual([
+        [OWN_BOT_TOKEN, ALICE],
+        [OWN_BOT_TOKEN, limited],
+        [BOT_TOKEN, ALICE],
+        [BOT_TOKEN, BOB],
+      ]);
     } finally {
       delete SLACK_USERS[limited];
     }

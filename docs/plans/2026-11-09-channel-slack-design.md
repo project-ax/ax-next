@@ -98,7 +98,8 @@ asks nobody until Retry-After has passed (never more than a minute); other
 installs keep asking (`mention-names.ts`). Slack's `|label` is never read, and a `<#C…>` or
 `<url|label>` reference stays as Slack wrote it. The label and the names are
 untrusted text the model reads. Nothing ever treats them as permission to do
-something, and the turn note (below) says a name after `@` is just a name.
+something, and the turn note (below) says the text inside `@[…]` is that
+person's own Slack name, not the sender's words.
 
 The agent is told what the label means once per session, in its system prompt
 (TASK-1131, `turn-note.ts`). The words after the label are that person's own

@@ -809,9 +809,9 @@ async function routeMention(
       log('warn', 'slack_thread_read_failed', { code: logCode(err) });
     }
     // Who the message names, the bot itself included: its own user reads as
-    // its handle and "(you)", which no cleaned Slack name can spell
-    // (cleanSenderName drops brackets and parentheses of every script), so an
-    // agent knows when it was the one named.
+    // `@[<handle> (you)]`, so an agent knows when it was the one named. A
+    // looked-up name is cleaned (cleanSenderName: no Unicode brackets or
+    // parentheses), so it can't leave its `@[…]` or spell "(you)" with them.
     const known = new Map([[m.sender, admission.name]]);
     if (install.botUserId !== null && install.botUserId !== '') {
       known.set(install.botUserId, ownMentionName(install));
