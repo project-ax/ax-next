@@ -43,7 +43,8 @@ export class SessionEgressBlockBuffer {
   ) {}
 
   /**
-   * Record an allowlist-blocked host for a session. No-op when either argument
+   * Record a host for a session (a blocked host, or one a person allowed —
+   * each use has its own instance). No-op when either argument
    * is empty (an unattributed block — no session token resolved — has no owner
    * to surface it to) or when the session is already at its host cap.
    */
@@ -60,7 +61,7 @@ export class SessionEgressBlockBuffer {
   }
 
   /**
-   * Return the session's accumulated blocked hosts (insertion order) AND clear
+   * Return the session's accumulated hosts (insertion order) AND clear
    * them. An unknown session yields `[]`.
    */
   drain(sessionId: string): string[] {
