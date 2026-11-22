@@ -194,7 +194,6 @@ function ownBinding(over: Partial<ChannelBinding> = {}): ChannelBinding {
     agentId: SUPPORT_AGENT.id,
     connectedByUserId: 'usr_ada',
     channelName: 'support',
-    remember: true,
     isPrivate: false,
     createdAt: new Date('2026-11-19T11:00:00Z'),
     ...over,
@@ -424,11 +423,7 @@ function world(o: {
   findOrCreateFails?: boolean;
   /** The install store fails when a queued turn re-reads its install. */
   installReadFails?: boolean;
-  /**
-   * The channel store fails a team agent's own bot's first bind (TASK-1182):
-   * it reads the switch and writes the binding in one transaction, so
-   * nothing is written.
-   */
+  /** The channel store fails a team agent's own bot's first bind (its `upsert`): nothing is written. */
   bindFails?: boolean;
   /** The channel store fails the n-th binding read (1-based) when this says so. */
   bindingReadFails?: (n: number) => boolean;
@@ -676,13 +671,12 @@ function world(o: {
       if (o.threadReadMissing === true) return null;
       return channels.store.getThread(conversationId);
     },
-    // A team agent's own bot binds a channel at its first mention there (TASK-1167), reading the
-    // switch and writing the binding under the lock a flip takes (TASK-1182).
-    async bindBot(...args: Parameters<ChannelStore['bindBot']>): ReturnType<ChannelStore['bindBot']> {
+    // A team agent's own bot binds a channel at its first mention there (TASK-1167), in one statement.
+    async upsert(...args: Parameters<ChannelStore['upsert']>): ReturnType<ChannelStore['upsert']> {
       if (o.bindFails === true) {
         throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
       }
-      return channels.store.bindBot(...args);
+      return channels.store.upsert(...args);
     },
     // A channel Slack no longer allows loses its binding, as a team admin's Disconnect takes it (TASK-1184).
     async remove(installId: string, channelId: string, agentId: string): Promise<boolean> {
@@ -902,7 +896,7 @@ function throwingLogger(): Logger {
   return logger;
 }
 const contentOf = (i: Invoke) => (i.input as { message: { content: string } }).message.content;
-/** What a turn says first when memory won't learn from its thread (TASK-1191): outsiders' threads, switched-off or private channels. */
+/** What a turn says first when memory won't learn from its thread (TASK-1191): outsiders' threads and private channels'. */
 const NOT_REMEMBERED = `${SLACK_NOT_REMEMBERED_LINE}\n`;
 /** A turn's words alone: its content without the not-remembered line or the label. */
 const wordsOf = (i: Invoke) => contentOf(i).replace(NOT_REMEMBERED, '').replace(/^\[[^\]]*\]: /, '');
@@ -2192,7 +2186,7 @@ describe('createEventRouter: a mention of the shared bot in a channel (TASK-1186
 
     expect(ephemerals(w.slack.calls)).toEqual([{ channel: GENERAL, user: ALICE, text: COPY.sharedBotInChannel }]);
     expect(w.channels.row(INSTALL_ID, GENERAL)).toBeUndefined();
-    expect(w.channels.calls).not.toContain('bindBot');
+    expect(w.channels.calls).not.toContain('upsert');
     expect(w.invokes).toEqual([]);
   });
 });
@@ -2625,7 +2619,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
     // The turn's own checks, when its time comes.
     ['install', { installReadFails: true }, ALICE, 'store-unavailable'],
     ['binding', { bindingReadFails: (n: number) => n === 2 }, BOB, 'store-unavailable'],
-    // The thread's record for the memory switch, made before the agent runs.
+    // The thread's record, made before the agent runs.
     ['thread', { threadWriteFails: true }, ALICE, 'store-unavailable'],
   ] as const)('a failing %s lookup tells the sender privately, logged by code only, and runs no turn', async (stage, o, user, code) => {
     const w = botWorld(o);
@@ -2641,14 +2635,14 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
   });
 });
 
-describe('createEventRouter: the memory switch, recorded before each channel turn', () => {
+describe('createEventRouter: the thread, recorded before each channel turn', () => {
   const memberKey = botKey;
   const externalKey = (threadTs: string) => `${botKey(threadTs)}:external`;
-  const switchOff = (w: ReturnType<typeof world>) => w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false);
 
-  it("switch off: the turn's conversation is recorded as not remembered before the agent runs", async () => {
+  // TASK-1202: no channel is switched off any more, so a member's thread in a
+  // public channel is recorded remembered.
+  it("a member's turn in a public channel: its conversation is recorded, attended and remembered, before the agent runs", async () => {
     const w = botWorld();
-    expect(await switchOff(w)).toBe(true);
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 
@@ -2662,17 +2656,15 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
         mode: 'attended',
         // The names her label shows (TASK-1146): her display name (Slack has none, so her full name), then her id.
         speakerNames: ['Alice Smith', ALICE],
-        notRemembered: true,
+        notRemembered: false,
         invokesBefore: 0,
       },
     ]);
-    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.external).toBe(false);
-    // The turn still runs: the switch is about memory, not about answering.
+    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)).toMatchObject({ external: false, notRemembered: false });
     expect(w.invokes.map((i) => i.ctx.conversationId)).toEqual([`conv:${memberKey(MENTION_TS)}`]);
-    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
   });
 
-  it("switch on: an outsider's turn records the external conversation it runs in as an outsider's, which memory never learns from", async () => {
+  it("an outsider's turn records the external conversation it runs in as an outsider's, which memory never learns from", async () => {
     const w = botWorld();
     await w.dispatch(OWN_BOT, botMention({ user: BOB }));
     await w.idle();
@@ -2709,35 +2701,14 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     expect(w.channels.threads.get(`conv:${externalKey(MENTION_TS)}`)?.external).toBe(true);
   });
 
-  it('the switch as it is when the turn starts, not when the mention arrived: off while it waited taints the thread', async () => {
-    const w = botWorld();
-    const first = deferred();
-    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
-    await w.dispatch(OWN_BOT, botMention({ text: 'first' }));
-    await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301', threadTs: MENTION_TS, text: 'second' }));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(w.invokes).toHaveLength(1);
-
-    expect(await switchOff(w)).toBe(true);
-    first.release();
-    await w.idle();
-
-    expect(w.threadWrites.map((t) => [t.conversationId, t.notRemembered, t.invokesBefore])).toEqual([
-      [`conv:${memberKey(MENTION_TS)}`, false, 0],
-      [`conv:${memberKey(MENTION_TS)}`, true, 1],
-    ]);
-    expect(w.invokes).toHaveLength(2);
-    // Sticky: the thread stays not remembered with the switch back on.
-    expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
-  });
-
-  it('the switch turned off between the binding read and the record: the turn runs, its thread recorded not remembered', async () => {
-    const w = botWorld({ beforeThreadWrite: (store) => store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false).then(() => {}) });
+  it("the channel made private between the binding read and the record (another turn's check): the turn runs, its thread recorded not remembered", async () => {
+    const w = botWorld({ beforeThreadWrite: (store) => store.setPrivate(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, true).then(() => {}) });
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 
-    expect(w.threadWrites.map((t) => [t.conversationId, t.notRemembered, t.invokesBefore])).toEqual([
-      [`conv:${memberKey(MENTION_TS)}`, true, 0],
+    // The turn's own check said public; the binding, read in the record's own statement, says private.
+    expect(w.threadWrites.map((t) => [t.conversationId, t.isPrivate, t.notRemembered, t.invokesBefore])).toEqual([
+      [`conv:${memberKey(MENTION_TS)}`, false, true, 0],
     ]);
     expect(w.invokes).toHaveLength(1);
     expect(w.channels.threads.get(`conv:${memberKey(MENTION_TS)}`)?.notRemembered).toBe(true);
@@ -2811,7 +2782,7 @@ describe('createEventRouter: the memory switch, recorded before each channel tur
     expect(w.threadWrites.map((t) => [t.mode, t.mode === 'attended' ? t.speakerNames : null])).toEqual([['attended', [NONAME]]]);
   });
 
-  it('a DM records no thread: the conversation is the sender\'s own, and the switch is a channel\'s', async () => {
+  it('a DM records no thread: the conversation is the sender\'s own, and no channel\'s', async () => {
     const w = world();
     await w.dispatch(INSTALL, dm());
     await w.idle();
@@ -2845,7 +2816,6 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       agentId: SUPPORT_AGENT.id,
       connectedByUserId: 'usr_ada',
       channelName: 'support',
-      remember: true,
       isPrivate: false,
       createdAt: expect.any(Date),
     });
@@ -2881,52 +2851,9 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.lines.filter((l) => l.msg === 'slack_bot_channel_bound')).toHaveLength(1);
   });
 
-  // TASK-1179/1180: the memory switch the team last set for the agent in a
-  // channel follows it to the agent's own bot, through the switch kept apart
-  // from any binding (channel-store.ts). Before the fix the first mention bound
-  // it with the switch back on, and the agent learned from a channel the team
-  // had chosen not to have remembered. TASK-1186: the switch kept is the only
-  // one read; a binding of the channel left on the shared app, on, is not.
-  it('a switch the team kept off for the agent and channel stays off when the bot binds it', async () => {
-    const w = world();
-    w.putInstall(OWN_BOT);
-    w.channels.rows.set(`${INSTALL_ID}/${SUPPORT}`, ownBinding({ installId: INSTALL_ID, remember: true }));
-    w.channels.switches.set(`${SUPPORT_AGENT.id}/${SUPPORT}`, false);
-    await w.dispatch(OWN_BOT, botMention());
-    await w.idle();
-
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: false, createdAt: expect.any(Date) }));
-    // The first turn there already runs with the switch off: its thread is never remembered.
-    expect(w.invokes).toHaveLength(1);
-    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, true]]);
-    // Not a flip: the bind keeps nothing.
-    expect(w.channels.kept(SUPPORT_AGENT.id, SUPPORT)).toBe(false);
-  });
-
-  it('a channel with no switch kept for the agent is bound with the switch on, as any new connection is', async () => {
-    const w = world();
-    w.putInstall(OWN_BOT);
-    await w.dispatch(OWN_BOT, botMention());
-    await w.idle();
-
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ remember: true, createdAt: expect.any(Date) }));
-    expect(w.threadWrites.map((t) => [t.installId, t.notRemembered])).toEqual([[OWN_BOT_ID, false]]);
-  });
-
-  it("another agent's kept switch is that agent's: the bot's binding starts on", async () => {
-    const w = world();
-    w.putInstall(OWN_BOT);
-    w.channels.switches.set(`${OPS_AGENT.id}/${SUPPORT}`, false);
-    await w.dispatch(OWN_BOT, botMention());
-    await w.idle();
-
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(true);
-  });
-
-  it("a bind that can't read the switch binds nothing and runs nothing: the switch is never guessed", async () => {
+  it("a bind the store can't write binds nothing and runs nothing", async () => {
     const w = world({ bindFails: true });
     w.putInstall(OWN_BOT);
-    w.channels.switches.set(`${SUPPORT_AGENT.id}/${SUPPORT}`, false);
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
 
@@ -3547,34 +3474,31 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
     ]);
   });
 
-  it("a team agent's own bot binds the channel again once it is public, with the switch the team set", async () => {
+  it("a team agent's own bot binds the channel again once it is public", async () => {
     let answer: SlackChannel | Error = slackChannel(SUPPORT, 'support');
     let t = WALK_START;
     const w = world({ channelInfo: () => answer, now: () => t });
     w.putInstall(OWN_BOT);
-    // The team turned #support's memory off for the agent: only the switch kept for the agent and channel says so.
-    w.channels.switches.set(`${SUPPORT_AGENT.id}/${SUPPORT}`, false);
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(false);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ createdAt: expect.any(Date) }));
 
-    // Made private: a minute later, the bot's binding goes. The switch kept for the agent and channel stays.
+    // Made private, to a bot that can't read it: a minute later, the bot's binding goes.
     answer = missingScope();
     t += CHANNEL_CHECK_TTL_MS;
     await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301' }));
     await w.idle();
     expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeUndefined();
-    expect(w.channels.kept(SUPPORT_AGENT.id, SUPPORT)).toBe(false);
 
-    // Public again: the next mention binds it again, off as the team set it, and its turn runs.
+    // Public again: the next mention binds it again, and its turn runs, remembered.
     answer = slackChannel(SUPPORT, 'support');
     await w.dispatch(OWN_BOT, botMention({ ts: '1763035302.000302' }));
     await w.idle();
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(false);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding({ createdAt: expect.any(Date) }));
     expect(w.invokes).toHaveLength(2);
     expect(w.threadWrites.map((r) => [r.installId, r.notRemembered])).toEqual([
-      [OWN_BOT_ID, true],
-      [OWN_BOT_ID, true],
+      [OWN_BOT_ID, false],
+      [OWN_BOT_ID, false],
     ]);
   });
 });
@@ -3587,7 +3511,7 @@ describe('createEventRouter: a bound channel Slack no longer allows (TASK-1184)'
   private channel answers there, as in any channel (audience `shared`), and
   memory never learns from it: its binding says private, and each thread a
   turn runs in there is recorded not remembered, so the capture veto refuses
-  both memory's observer pass and `memory_note`, whatever the switch says.
+  both memory's observer pass and `memory_note`.
   Before this card the turn-start check (TASK-1184) refused a private channel
   outright: none of these turns ran.
 */
@@ -3623,8 +3547,8 @@ describe('createEventRouter: a private channel is answered in and never remember
     // Nothing told, nothing removed.
     expect(ephemerals(w.slack.calls)).toEqual([]);
     expect(w.channels.calls).not.toContain('remove');
-    // The binding says private now, its switch untouched; the thread was recorded not remembered before the agent ran.
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toMatchObject({ isPrivate: true, remember: true });
+    // The binding says private now; the thread was recorded not remembered before the agent ran.
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toMatchObject({ isPrivate: true });
     expect(w.channels.calls.indexOf('setPrivate')).toBeLessThan(w.channels.calls.indexOf('recordThread'));
     expect(w.threadWrites).toEqual([expect.objectContaining({ conversationId, isPrivate: true, notRemembered: true, invokesBefore: 0 })]);
     // Both of memory's paths are refused.
@@ -3647,7 +3571,7 @@ describe('createEventRouter: a private channel is answered in and never remember
     await w.idle();
 
     const conversationId = `conv:${botKey(MENTION_TS)}`;
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toMatchObject({ agentId: SUPPORT_AGENT.id, isPrivate: true, remember: true });
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toMatchObject({ agentId: SUPPORT_AGENT.id, isPrivate: true });
     expect(w.invokes).toHaveLength(1);
     // Bound private, so nothing to change at the turn's start.
     expect(w.channels.calls).not.toContain('setPrivate');
@@ -3774,15 +3698,6 @@ describe('createEventRouter: a private channel is answered in and never remember
     ]);
   });
 
-  it("a private channel's switch, on, changes nothing: its threads are not remembered", async () => {
-    const w = botWorld({ channelInfo: () => PRIVATE_SUPPORT });
-    // Flipped on explicitly, as a team admin could in settings.
-    expect(await w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, true)).toBe(true);
-    await w.dispatch(OWN_BOT, botMention());
-    await w.idle();
-    const conversationId = `conv:${botKey(MENTION_TS)}`;
-    expect(await memoryAsks(w.channels.store, conversationId)).toEqual({ observer: NOT_REMEMBERED, note: NOT_REMEMBERED });
-  });
 });
 
 // ── The agent is told when memory won't learn from its thread (TASK-1191) ────
@@ -3799,20 +3714,12 @@ describe('createEventRouter: a private channel is answered in and never remember
 describe("createEventRouter: a thread memory won't learn from says so in the turn (TASK-1191)", () => {
   const LABELLED = `[Slack · #support · Alice Smith (${ALICE})]: @[supportbot (you)] what is open?`;
 
-  it("a member's turn in a public channel with the switch on: the label first, no line", async () => {
+  it("a member's turn in a public channel: the label first, no line", async () => {
     const w = botWorld();
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
     expect(w.threadWrites).toEqual([expect.objectContaining({ notRemembered: false })]);
     expect(w.invokes.map(contentOf)).toEqual([LABELLED]);
-  });
-
-  it('the switch off: the line, then the label', async () => {
-    const w = botWorld();
-    expect(await w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
-    await w.dispatch(OWN_BOT, botMention());
-    await w.idle();
-    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
   });
 
   it('a private channel: the line, then the label', async () => {
@@ -3822,18 +3729,22 @@ describe("createEventRouter: a thread memory won't learn from says so in the tur
     expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
   });
 
-  it('the switch turned off just before the thread is recorded: the line, as the record says', async () => {
-    const w = botWorld({ beforeThreadWrite: (store) => store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false).then(() => {}) });
+  it('the channel made private just before the thread is recorded: the line, as the record says', async () => {
+    const w = botWorld({ beforeThreadWrite: (store) => store.setPrivate(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, true).then(() => {}) });
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
     expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
   });
 
-  it("a thread remembered at its first turn and switched off before its second: only the second has the line", async () => {
-    const w = botWorld();
+  it("a thread remembered at its first turn, its channel made private before its second: only the second has the line", async () => {
+    let t = Date.parse('2026-11-21T12:00:00Z');
+    let answer: SlackChannel = slackChannel(SUPPORT, 'support');
+    const w = botWorld({ channelInfo: () => answer, now: () => t });
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
-    expect(await w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    // Made private; once the kept answer expires, the second turn's check hears it.
+    answer = slackChannel(SUPPORT, 'support', { isPrivate: true });
+    t += CHANNEL_CHECK_TTL_MS;
     // A reply in the first mention's thread: a ts of its own, keyed on the thread's.
     await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301', threadTs: MENTION_TS, text: `<@${OWN_BOT_USER_ID}> and now?` }));
     await w.idle();
@@ -3845,11 +3756,11 @@ describe("createEventRouter: a thread memory won't learn from says so in the tur
     ]);
   });
 
-  it("an outsider's turn: the line, whatever the switch says", async () => {
+  it("an outsider's turn in a public channel: the line", async () => {
     const w = botWorld();
     await w.dispatch(OWN_BOT, botMention({ user: BOB }));
     await w.idle();
-    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(true);
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.isPrivate).toBe(false);
     expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: @[supportbot (you)] what is open?`]);
   });
 

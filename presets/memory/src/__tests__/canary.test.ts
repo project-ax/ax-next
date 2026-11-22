@@ -892,17 +892,16 @@ describe('@ax/preset-memory canary', () => {
 
     // TASK-1167: a team agent's own bot routes are mounted too, its Disconnect
     // (TASK-1172) with them, renaming its live bot and changing its picture
-    // (TASK-1171), TASK-1169's ask for an AX admin's approval, the memory
-    // switch of a channel the bot answered in (TASK-1180), and its approver's
-    // Replace of their token and a team admin's Claim (TASK-1173). Each POST
-    // keeps http-server's CSRF check; with the header, an agent nobody can see
-    // is the route's own 404 (an unmounted POST would get the router's 405).
+    // (TASK-1171), TASK-1169's ask for an AX admin's approval, and its
+    // approver's Replace of their token and a team admin's Claim (TASK-1173).
+    // Each POST keeps http-server's CSRF check; with the header, an agent
+    // nobody can see is the route's own 404 (an unmounted POST would get the
+    // router's 405).
     for (const suffix of [
       '/bot',
       '/bot/install-url',
       '/bot/cancel',
       '/bot/disconnect',
-      '/bot/remember',
       '/bot/rename',
       '/bot/icon',
       '/bot/replace-token',
@@ -922,6 +921,14 @@ describe('@ax/preset-memory canary', () => {
         json: { error: 'not-found' },
       });
     }
+    // TASK-1202 (design §4c): a team agent's memory is shared with its team,
+    // so a bot channel's memory switch is gone, and its route with it. Past the
+    // CSRF check nothing serves it: the unserved POST's 405, where the mounted
+    // route answered its own 404 for an agent nobody can see.
+    expect(await apiJson('POST', '/settings/slack/no-such-agent/bot/remember', CANARY_ADMIN, {})).toEqual({
+      status: 405,
+      json: { error: 'method-not-allowed' },
+    });
     // TASK-1172: Admin › Slack's list of the team agents' own bots is mounted
     // and admin-only (no bot here, so an empty list; unmounted, the
     // static-files fallback would answer the GET with no JSON at all). Its
