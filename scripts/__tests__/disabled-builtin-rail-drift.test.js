@@ -63,9 +63,11 @@ function quotedStrings(chunk) {
 }
 
 /**
- * The claude-sdk runner's deny list: the `DISABLED_BUILTINS` array literal.
- * Enforced at `main.ts` via `disallowedTools` and refused again at both
- * refusal sites — this is the real enforcement, and the rail only describes it.
+ * The claude-sdk runner's four named denials: the `DISABLED_BUILTINS` array
+ * literal. Since TASK-1200 the runner's real enforcement is wider — an
+ * allowlist (`ALLOWED_SDK_BUILTINS`, the SDK `tools` option) keeps every other
+ * SDK built-in out too — so this guard checks the rail against these four
+ * only; it does not see the rest (see the KNOWN GAP note in rules.ts).
  */
 function claudeSdkDisabledBuiltins() {
   const src = readFileSync(CLAUDE_SDK_TOOL_NAMES, 'utf8');

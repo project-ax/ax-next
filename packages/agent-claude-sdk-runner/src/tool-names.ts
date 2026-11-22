@@ -118,8 +118,8 @@ export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
  * release cannot hand the agent a new capability without someone adding it
  * here on purpose (TASK-1200).
  *
- * Why the denylist alone was not enough: CLI 2.1.119 (SDK 0.2.119) ships 29
- * default built-ins, most of them DEFERRED — not in the model's first tool
+ * Why the denylist alone was not enough: CLI 2.1.119 (SDK 0.2.119) ships
+ * ~30 default built-ins (the exact set varies with env flags), most of them DEFERRED — not in the model's first tool
  * list, but loadable by name through `ToolSearch`. The walk for TASK-1192
  * caught an agent doing exactly that: it loaded `CronCreate`, scheduled a
  * sandbox-local job that skipped the `routine_create` hold and could never
@@ -132,17 +132,19 @@ export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
  *     the same six).
  *   - `TodoWrite` — an in-turn checklist; it holds nothing past the turn.
  *   - `Skill` — SDK-native skill discovery (I-P0-1, see the header).
- *   - `ToolSearch` — loads DEFERRED tool schemas. AX's own host tools
- *     (`routine_create`, …) and connector tools are deferred, so without it
- *     the model cannot reach them. It only ever loads tools that are already
- *     in the session, so it cannot widen this list.
+ *   - `ToolSearch` — keeps deferred tool schemas (AX's host tools, connector
+ *     tools) out of the first request and loads them by name when needed.
+ *     Without it the CLI loads every MCP tool up front instead, so this is a
+ *     context-size choice, not a reachability one. It only ever loads tools
+ *     already in the session, so it cannot widen this list (measured).
  *
  * Every other entry in `KNOWN_SDK_BUILTINS` is kept from the agent: it
  * schedules (`CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`,
  * `RemoteTrigger`), spawns or messages other agents (`Task`, `SendMessage`,
  * `TeamCreate`, `TeamDelete`), reaches the network (`WebFetch`, `WebSearch`,
- * `PushNotification`), watches or steers background processes that outlive
- * AX's view of the turn (`Monitor`, `TaskOutput`, `TaskStop`), needs an
+ * `PushNotification`), or is simply not needed by any AX flow (`Monitor`,
+ * `TaskOutput`, `TaskStop` — Bash's own `run_in_background` stays, and its
+ * output file is readable with `Read`), needs an
  * interactive UI we do not have (`AskUserQuestion`, `EnterPlanMode`,
  * `ExitPlanMode`), moves the working tree (`EnterWorktree`, `ExitWorktree`),
  * or duplicates `Edit` without the sandbox rows describing it (`NotebookEdit`).
@@ -160,17 +162,21 @@ export const ALLOWED_SDK_BUILTINS = [
 ] as const;
 
 /**
- * Every built-in tool name the pinned SDK is known to offer, measured from the
- * real binary: the `tools` list of the CLI's `system/init` message with no
- * `tools` option (CLI 2.1.119 / SDK 0.2.119), plus `ToolSearch`, which the CLI
- * adds at request time rather than listing at init.
+ * Every built-in tool name the pinned SDK has been OBSERVED to offer (a union,
+ * not an exact count — env flags change the set): the `tools` list of the
+ * CLI's `system/init` message with no `tools` option, the names on the wire
+ * in its first model request (where `Task` goes out as `Agent`), `ToolSearch`
+ * (added at request time), and the two MCP resource tools the CLI adds when a
+ * server declares resources. CLI 2.1.119 / SDK 0.2.119.
  *
- * `tool-allowlist-real-sdk.e2e.test.ts` re-measures the init list on the
- * installed binary and fails when it names a tool missing from here — so an
+ * `tool-allowlist-real-sdk.e2e.test.ts` re-measures the init list and the
+ * first request on the installed binary and fails when either names a tool
+ * missing from here — so an
  * SDK upgrade that adds a built-in stops the build until someone decides which
  * side of `ALLOWED_SDK_BUILTINS` it belongs on.
  */
 export const KNOWN_SDK_BUILTINS = [
+  'Agent',
   'AskUserQuestion',
   'Bash',
   'CronCreate',
@@ -183,10 +189,12 @@ export const KNOWN_SDK_BUILTINS = [
   'ExitWorktree',
   'Glob',
   'Grep',
+  'ListMcpResourcesTool',
   'Monitor',
   'NotebookEdit',
   'PushNotification',
   'Read',
+  'ReadMcpResourceTool',
   'RemoteTrigger',
   'ScheduleWakeup',
   'SendMessage',
@@ -222,11 +230,26 @@ export const DENIED_SDK_BUILTINS: readonly string[] = [
  * its own in `DISABLED_BUILTIN_REASONS`. Like those, it is only ever read if
  * the `tools` allowlist and `disallowedTools` have both regressed.
  */
+const SCHEDULING_BUILTINS: readonly string[] = [
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+  'RemoteTrigger',
+];
+
 function notAllowedReason(name: string): string {
+  // `Agent` is the name `Task` goes out under on the wire; same refusal.
+  if (name === 'Agent') return DISABLED_BUILTIN_REASONS.Task;
+  if (SCHEDULING_BUILTINS.includes(name)) {
+    return (
+      `${name} is disabled: a schedule made with it lives only in this session ` +
+      'and never runs. To schedule recurring work, create a routine instead.'
+    );
+  }
   return (
     `${name} is not available here: it would act outside what this workspace ` +
-    'can see or approve. Use the tools you were given — for a schedule, ' +
-    'routine_create.'
+    'can see or approve. Use the tools you were given.'
   );
 }
 

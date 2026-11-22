@@ -135,6 +135,22 @@ afterEach(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
+/**
+ * The test process's env minus anything that steers a Claude Code CLI. Run from
+ * inside a Claude Code session (as builders do), the parent's `CLAUDECODE` /
+ * `CLAUDE_CODE_*` flags reach the spawned CLI and change its built-in set
+ * (measured: an agent-teams flag drops Monitor/PushNotification/RemoteTrigger
+ * and lists ToolSearch at init), so DRIFT would measure the caller, not the SDK.
+ */
+function cleanEnv(): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k === 'CLAUDECODE' || k.startsWith('CLAUDE_') || k.startsWith('ANTHROPIC_')) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /** A stand-in for the runner's in-process host MCP server: one AX tool. */
 function hostTools() {
   return createSdkMcpServer({
@@ -171,7 +187,7 @@ async function runOneTurn(runner: boolean): Promise<SDKMessage[]> {
       settingSources: ['user'],
       cwd: tmp,
       env: {
-        ...process.env,
+        ...cleanEnv(),
         HOME: tmp,
         CLAUDE_CONFIG_DIR: cfg,
         ANTHROPIC_BASE_URL: baseUrl,
@@ -225,7 +241,12 @@ function searchedToolNames(): string[] {
 describe.skipIf(!HAVE_BINARY)('SDK built-in allowlist on the real claude-sdk binary (TASK-1200)', () => {
   it('DRIFT: every built-in the installed CLI loads by default is in KNOWN_SDK_BUILTINS', async () => {
     const seen = await runOneTurn(false);
-    const builtins = initBuiltins(seen);
+    // Both spellings: init names (`Task`) and the names on the wire in the
+    // first model request (`Agent`), which is what the model actually calls.
+    expect(offered.length).toBeGreaterThan(0);
+    const wire = (offered[0] ?? []).filter((n) => !n.startsWith('mcp__'));
+    expect(wire).toContain('Agent');
+    const builtins = [...new Set([...initBuiltins(seen), ...wire])];
     // Floor: a parse that finds nothing would pass the subset check vacuously.
     expect(builtins).toContain('Bash');
     expect(builtins).toContain('CronCreate');

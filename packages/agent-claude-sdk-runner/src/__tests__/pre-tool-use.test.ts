@@ -221,7 +221,7 @@ describe('createPreToolUseHook', () => {
     expect(calls).toEqual([]);
     const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
     expect(hso.permissionDecision).toBe('deny');
-    expect(hso.permissionDecisionReason).toContain('routine_create');
+    expect(hso.permissionDecisionReason).toContain('create a routine');
   });
 
   // TASK-238. `disallowedTools` keeps all four out of the model's context, so

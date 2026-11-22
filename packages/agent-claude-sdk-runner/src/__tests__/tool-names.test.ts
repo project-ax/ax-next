@@ -34,15 +34,30 @@ describe('classifySdkToolName', () => {
     },
   );
 
-  it('fails closed on a built-in name the pinned SDK did not ship (a future tool, or the Agent alias)', () => {
-    for (const name of ['Agent', 'SomeFutureTool']) {
-      expect(classifySdkToolName(name).kind).toBe('disabled');
-    }
+  it('fails closed on a built-in name the pinned SDK did not ship (a future tool)', () => {
+    expect(classifySdkToolName('SomeFutureTool')).toMatchObject({ kind: 'disabled', name: 'SomeFutureTool' });
   });
 
-  it('points a refused scheduler at routine_create', () => {
-    const klass = classifySdkToolName('CronCreate');
-    expect(klass.kind === 'disabled' && klass.reason).toContain('routine_create');
+  it('refuses Agent (the wire name for Task) with the Task sentence', () => {
+    expect(classifySdkToolName('Agent')).toEqual({
+      kind: 'disabled',
+      name: 'Agent',
+      reason: DISABLED_BUILTIN_REASONS.Task,
+    });
+  });
+
+  it.each(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger'])(
+    'points a refused scheduler (%s) at routines',
+    (name) => {
+      const klass = classifySdkToolName(name);
+      expect(klass.kind === 'disabled' && klass.reason).toContain('create a routine');
+    },
+  );
+
+  it('does not send a non-scheduling refusal toward routines', () => {
+    const klass = classifySdkToolName('NotebookEdit');
+    expect(klass.kind).toBe('disabled');
+    expect(klass.kind === 'disabled' && klass.reason).not.toContain('routine');
   });
 
   it.each(DISABLED_BUILTINS)('classifies %s as disabled, carrying its own reason', (name) => {
@@ -254,7 +269,8 @@ describe('the SDK built-in allowlist (TASK-1200)', () => {
     for (const name of [
       'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger',
       'Monitor', 'PushNotification', 'SendMessage', 'TeamCreate', 'TeamDelete',
-      'Task', 'WebFetch', 'WebSearch', 'AskUserQuestion', 'EnterWorktree', 'ExitWorktree',
+      'Task', 'Agent', 'WebFetch', 'WebSearch', 'AskUserQuestion', 'EnterWorktree', 'ExitWorktree',
+      'ListMcpResourcesTool', 'ReadMcpResourceTool',
     ]) {
       expect(denied.has(name), name).toBe(true);
       expect(allowed.has(name), name).toBe(false);
