@@ -137,7 +137,7 @@ left alone, and may notify that whole group (§6, known gaps).
 
 ## 2a. Memory: decided by who sees the reply
 
-> **Superseded for team agents by §4c (2026-11-22):** a team agent's memory is shared with its team everywhere. This section still describes personal agents (DMs only).
+> **Superseded for team agents by §4c (2026-11-22):** a team agent's memory is shared with its team everywhere, and since TASK-1209 with anyone who talks to it. This section still describes personal agents (DMs only).
 
 Two problems with today's memory once an agent sits in a channel:
 
@@ -1108,19 +1108,19 @@ The TASK-1192 walk showed that "answer, but don't remember" can't be enforced. M
 
 ### The rules
 
-1. **A team agent's memory is shared with its team, everywhere.** What it hears in a public channel, a private channel, or a web chat with a team member can be remembered and brought up anywhere the agent works.
+1. **A team agent's memory is shared with anyone who talks to it, everywhere.** What it hears in a public channel, a private channel, or a web chat with a team member can be remembered and brought up anywhere the agent works, for anyone who talks to it: its team, and anyone else in a channel it's in (TASK-1209).
 2. **Personal agents work only in DMs** (true since TASK-1186). Their memory stays private, as today.
 3. **Private channels are allowed and remembered.** A team bot invited to one answers and remembers, like anywhere else. People are told (below).
-4. **Kept, for trust rather than privacy:** words from people outside the agent's team are never remembered (AX users not on the team included: §2's outsiders). Otherwise anyone in the workspace could feed the agent false team facts.
+4. **Kept, for trust rather than privacy:** words from people outside the agent's team are never remembered (AX users not on the team included: §2's outsiders). Otherwise anyone in the workspace could feed the agent false team facts. Reading is open, since TASK-1209: an outsider's turn recalls what a member's does. Writing stays closed.
 5. **Kept:** Slack Connect channels are refused. "Shared with your team" shouldn't quietly take in another company's messages. Archived channels stay refused.
 
 ### Telling people
 
-Every place a person meets a team agent says the same thing in plain words: *"What [Fern] hears is shared with everyone on [team], and [Fern] may bring it up elsewhere."*
+Every place a person meets a team agent says the same thing in plain words: *"What [Fern] hears is shared with anyone who talks to [Fern], and [Fern] may bring it up elsewhere."* (TASK-1203 first shipped "everyone on [team]". TASK-1209 made that wrong, because anyone who can talk to the bot can now be told what it remembers, so the words changed with it.)
 
 - **The first time the bot is invited to a channel:** the bot posts this once, in every channel and not only private ones. This post matters most, because it's the only one people see at the moment it applies.
 - **The agent's Slack card** (TASK-1187) and its help line.
-- **Web chat with a team agent:** one line under the composer, "[Fern]'s memory is shared with [team]."
+- **Web chat with a team agent:** one line under the composer, "[Fern]'s memory is shared with anyone who talks to [Fern]."
 - **The bot's Slack profile description** (manifest `description`). A rename or Rebuild updates it.
 
 *As built (TASK-1203), wording after a ux pass:*
@@ -1134,7 +1134,7 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 
 - **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column. *Done (TASK-1202):* channel-slack's boot migration drops both. The `channel-not-remembered` refusal stays only for a private channel, or one no longer connected to its agent, until card B; threads an old switch marked stay refused: a refusal leaves memory's cursor where it was, so un-marking one would let the next pass read what was said while the switch was off. A bot's first bind is a plain `upsert` again, with no lock. The TASK-1191 turn note stays: card B drops only its private-channel case, and outsiders' threads keep it for good (rule 4).
 - **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more. *(Caveat from TASK-1202: card B stops setting `not_remembered` but keeps refusing rows already marked, since un-marking would let memory read them; and the note stays for outsiders' threads, which are never remembered.)* *Done (TASK-1203):* nothing writes `not_remembered`; a thread marked before stays refused and keeps the note; the settings line, the binding's `is_private` (dropped at boot), Slack's `is_private` flag and the channel check's private-wins half are gone. Nothing reads a channel's privacy any more.
-- **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's member sessions recall everything; an outsider's keep the filter and the withheld view (see "As built (TASK-1204)" under §4c).
+- **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's sessions all recall everything and keep the view, outsiders' included (TASK-1209; see "As built (TASK-1204)" and "As built (TASK-1209)" under §4c). Personal agents keep both.
 - **Still needed:** `ctx.audience` (personal-agent DMs), the turn-start channel check and its refusal rules (a channel made Slack Connect or archived must still be caught at turn start; its private-wins half guarded only the private refusal, and went with it in TASK-1203), and `groups:read` (to read a private channel's archived and Slack Connect flags).
 
 ### What stays hard
@@ -1144,14 +1144,25 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 **As built (TASK-1204).**
 
 - **Three scopes** (`speakerScope`): `private` (the owner's own turn), `team` (a team agent's member turn, in any audience) and `withheld` (everything else: a personal agent's shared turn, and any outsider's turn). An outsider's turn is `withheld` first, whatever its audience.
-- **A team agent's member turns recall everything.** Web chats and member channel turns read the team's whole memory, with no audience filter, and keep the `/memory` view. A member's channel question already shows recall to the room, and the §4c notices tell the room. That removes a privacy boundary on purpose.
+- **A team agent's member turns recall everything.** Web chats and member channel turns read the team's whole memory, with no audience filter, and keep the `/memory` view. A member's channel question already shows recall to the room, and the §4c notices tell the room. That removes a privacy boundary on purpose. *(Superseded by TASK-1209: every turn on a team agent recalls everything, outsiders' included.)*
 - **Members' facts are filed under them.** A member's turn files what they say about themselves under `user:<ctx.userId>`, and a subject made of their label names is filed there too. `memory_note` does the same.
-- **...and stay with the team (review F2).** Those rows are stamped `private`, even when said in a channel: §4c shares the memory with the team, not with people outside AX. Every member's turn reads them (a member's reads have no audience filter), and no outsider's turn does (its reads are shared-only). It's done at the write, in `recordFacts`, because §6.1 forbids filtering a read's answer. Everything else a member's channel turn stores (the work, a third party by name) stays `shared`, as before. Twin reads still find these rows, and slot chains ignore audience, so a channel `lives_in` still closes the web-chat one. Two visible effects: the owner's memory view shows no "Shared" badge on them, and a subject the names rule can't recognize (a thread with no names, a nickname, or a member's self-fact written under an agent word such as `agent` when their display name is "Agent") is filed as written and stays `shared`, like any third party's fact, so an outsider can recall it. A member's own question in a channel can still surface a teammate's fact to the room (the trade above).
-- **Outsiders keep the rule.** An outsider's turn on a team agent keeps shared-only recall (with the stamp backstop that throws if a non-shared row comes back) and gets no `/memory` mount. It stores no person fact (`user`, `user:<id>`, or a speaker's name). The shared team memory is the team's, not the public's, so the planner's "every session" was narrowed to members after the security review. Lifting it is the outsider step in `recallAudienceScope` and the outsider condition on the mount. Both hold on any agent whatever the turn's audience stamp (review F3): someone without access reads an outsider's reply, so a private stamp, or none, fails closed. channel-slack stamps an outsider's turn shared; the one live path to an unstamped outsider turn is a stored session source this build doesn't know, which `ipc-core` reads as external with no audience, and that now fails closed.
+- **...and stay with the team (review F2).** Those rows are stamped `private`, even when said in a channel: §4c shares the memory with the team, not with people outside AX. Every member's turn reads them (a member's reads have no audience filter), and no outsider's turn does (its reads are shared-only). It's done at the write, in `recordFacts`, because §6.1 forbids filtering a read's answer. Everything else a member's channel turn stores (the work, a third party by name) stays `shared`, as before. Twin reads still find these rows, and slot chains ignore audience, so a channel `lives_in` still closes the web-chat one. Two visible effects: the owner's memory view shows no "Shared" badge on them, and a subject the names rule can't recognize (a thread with no names, a nickname, or a member's self-fact written under an agent word such as `agent` when their display name is "Agent") is filed as written and stays `shared`, like any third party's fact, so an outsider can recall it. A member's own question in a channel can still surface a teammate's fact to the room (the trade above). *(Superseded by TASK-1209: the stamp is the turn's own audience again, with no exception, so the memory view's "Shared" badge is back on a member's self-facts.)*
+- **Outsiders keep the rule.** An outsider's turn on a team agent keeps shared-only recall (with the stamp backstop that throws if a non-shared row comes back) and gets no `/memory` mount. It stores no person fact (`user`, `user:<id>`, or a speaker's name). The shared team memory is the team's, not the public's, so the planner's "every session" was narrowed to members after the security review. Lifting it is the outsider step in `recallAudienceScope` and the outsider condition on the mount. Both hold on any agent whatever the turn's audience stamp (review F3): someone without access reads an outsider's reply, so a private stamp, or none, fails closed. channel-slack stamps an outsider's turn shared; the one live path to an unstamped outsider turn is a stored session source this build doesn't know, which `ipc-core` reads as external with no audience, and that now fails closed. *(Superseded by TASK-1209: the shared-only recall and the withheld `/memory` view are lifted for team agents. Personal agents keep them, and an unknown source on a team agent still gets both (it fails closed). An outsider's turn still stores no person fact.)*
 - **Outsiders are never "you".** Recall in an outsider's turn never shows the requester's own memory as the person talking.
 - **Personal agents are unchanged.** A shared turn there still recalls only shared statements and stores no speaker facts.
 - **Accepted residuals.** Nicknames, initials, titles and role words the label doesn't show can still slip past the names rule (see `namesASpeaker`). A member's display name is untrusted. On a team agent the most a hostile one can do is file the speaker's own words under the speaker (a namesake "Alex" said by "Alex Kim", or a display name made of work words like "Standup Team", lands under that member's key); it can never file anything under another person's key. On a personal agent it can only make memory drop facts in that conversation. Rows saved under a member's name before this shipped (`vinay | …`) stay as written.
-- **Follow-ups.** Render a member's display name for `user:<id>` subjects in a team agent's turns. Walk D checks a member's own recall and that nothing is filed under the requester.
+- **Follow-ups.** Render a member's display name for `user:<id>` subjects in a team agent's turns. Walk D checks a member's own recall and that nothing is filed under the requester. *(Superseded by TASK-1209: names are done. The export's headings and finding a teammate's facts by name in a query remain.)*
+
+**As built (TASK-1209).** Outsiders are treated like members when they read, and not at all when they write. Vinay's call: "treat outsiders the same as insiders", kept simple on purpose.
+
+- **Recall order** (`recallAudienceScope`). A personal agent is as before: an outsider's turn, and any shared stamp, reads shared rows only. On a team agent the visibility check comes first, and only a source this build knows reads unscoped: a member's turn (the web chat, an owner route), a member's own routine, and an outsider's turn. A source it doesn't know (a webhook or an embed added later, or one a newer build stored) reads shared rows only on a team agent too, whatever its stamp, and the stamp backstop still throws if a private row comes back. The `switch` has a `never` default, so a new source won't compile until someone decides who may read it. An outsider's turn on a team agent also does its twin and retraction reads unscoped. Those only ever skip a write, so the worst case is fewer writes.
+- **The `/memory` view** follows the same rule: `sandbox:memory-mounts` withholds it exactly where recall is shared-only (a personal agent's shared or outsider session, or an unknown source on a team agent). Every other session on a team agent keeps it. The read-only `/files` home for outsiders (TASK-1122) is a write boundary, not recall, and stays.
+- **The stamp means "where it was learned."** `recordFacts` stamps every statement with the turn's own audience, with no exception for what a member says about themself. It filters a read only on a personal agent, where "learned in a shared place" and "readable by the room" are the same thing. On a team agent it only drives the badge.
+- **Capture is unchanged.** An outsider's words are never remembered, an outsider's turn files no person fact, and Slack Connect channels are still refused. channel-slack's veto stands. Anyone can read. Only members teach it.
+- **Never "you" is kept.** `aboutText` reads `you` only for the caller's own key. An outsider's turn never shows the requester's memory as the person talking.
+- **Teammates read by name.** On a team agent, a `user:<id>` subject reads as that person's display name in the memory view, the `memory_recall` tool, recall receipts, and the injected block's Recent and Digest. Names are looked up through `auth:get-user` (display name only, never an email or an admin flag), and only for an id that `teams:is-member` first confirms is a current member of the agent's team. Anyone else (an account outside the team, someone who has left) reads "a teammate", with no lookup. So do a missing name, a failed lookup and a team agent's turn from a source this build doesn't know. A name is cleaned like any other account-holder text, and one that reads as the speaker or the agent (`you`, `user`, `I`, `agent`, as whole words) is refused so it can't pass for them. Personal agents make no lookup and are unchanged.
+- **Not done:** the `/memory` export still headlines a teammate as `## user:<id>`, and a `query` can't find a teammate's facts by name. Both are follow-ups. Residuals: a member's name is visible to an outsider's turn, and a name is frozen in a receipt once it's written.
+- **The privacy sentence.** This removes one more boundary on purpose. An outsider can now be told what members said in a private web chat, anywhere the agent answers them. The notices under "Telling people" are what replace the boundary, so they say "anyone who talks to [Fern]", and this deploys with them, never before.
 
 ### Cards
 
@@ -1375,13 +1386,14 @@ separate from `source` on purpose: `source` says who is present and decides
 approvals; `audience` says who sees the reply and decides memory.
 
 - It's absent everywhere it isn't set, and absent means `private`, as today.
-- Memory stamps each statement with the audience it was captured in, except
-  that what a team agent's member says about themself is stamped `private`, so
-  it stays with the team (§4c).
+- Memory stamps each statement with the audience it was captured in, with no
+  exceptions. On a team agent the stamp only drives the "Shared" badge (§4c,
+  TASK-1209).
 - On a personal agent, a `shared` turn recalls only `shared` statements and
-  captures no facts about the speaker. A team agent's member turn recalls
-  everything and files the speaker's facts under them; an outsider's turn, on
-  any agent and whatever its stamp, keeps the filter (§4c).
+  captures no facts about the speaker, and an outsider's turn keeps that filter
+  whatever its stamp. A team agent's turns all recall everything, outsiders'
+  included (§4c, TASK-1209); a member's turn files the speaker's facts under
+  them, and an outsider's files none.
 - Memory reads go through one wrapper that adds the filter last. It throws if a
   shared read returns a row not stamped shared, so an engine that ignores the
   filter fails loudly.

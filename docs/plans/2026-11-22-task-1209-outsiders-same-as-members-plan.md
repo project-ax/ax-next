@@ -36,7 +36,7 @@ No new hook, and no hook signature change.
   - Six plugins already declare it to name a user by id.
   - TASK-1204 row 23 ("a name source memory doesn't have") is superseded in the shard.
   - The only pin it moves is memory's own `surface.test.ts`. No preset test pins memory's `optionalCalls` exactly (`presets/memory/.../boot-graph.test.ts:87` uses `toContain`).
-- **TASK-1203's notice copy becomes wrong.** It says "shared with everyone on {team}" (`copy.ts` `memoryNotice`, channel-web `memorySharedWith`, on branch `auto-ship/TASK-1203-slack-private-remembered-notices`). After Task 1, anyone who talks to the bot can be told what it remembers. Task 6 fixes the design. The code copy is a follow-up, since channel-slack and channel-web are off-limits here.
+- **TASK-1203's notice copy becomes wrong.** It says "shared with everyone on {team}" (`copy.ts` `memoryNotice`, channel-web `memorySharedWith`, on branch `auto-ship/TASK-1203-slack-private-remembered-notices`). After Task 1, anyone who talks to the bot can be told what it remembers. Task 6 fixes the design, and a second commit in this PR updates the code copy in channel-slack and channel-web (the coordinator authorized exactly that copy).
 
 ## Boundary review (no new hook, no signature change)
 
