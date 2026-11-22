@@ -27,6 +27,24 @@ export const ALLOWED_JWS_ALGS = [
 
 export const CLOCK_TOLERANCE_SECONDS = 30;
 
+/** The viewer assertion's max age, in whole seconds: at least this... */
+export const MIN_VIEWER_MAX_AGE_SECONDS = 30;
+/** ...and at most this. */
+export const MAX_VIEWER_MAX_AGE_SECONDS = 3600;
+
+/**
+ * Throws unless `seconds` is a whole number in the allowed range. NaN or
+ * Infinity reaching jose's `maxTokenAge` would silently turn the age check
+ * off, so the verifier refuses them itself, whatever the config parse did.
+ */
+export function assertViewerMaxAge(seconds: number): void {
+  if (!Number.isInteger(seconds) || seconds < MIN_VIEWER_MAX_AGE_SECONDS || seconds > MAX_VIEWER_MAX_AGE_SECONDS) {
+    throw new Error(
+      `viewer maxAgeSeconds must be a whole number from ${MIN_VIEWER_MAX_AGE_SECONDS} to ${MAX_VIEWER_MAX_AGE_SECONDS}`,
+    );
+  }
+}
+
 export type VerifyFailure =
   | 'malformed'
   | 'bad-signature'
@@ -197,6 +215,7 @@ export function createViewerVerifier(
   cfg: ViewerVerifierConfig,
   opts?: { now?: () => number },
 ): (token: string) => Promise<ViewerVerdict> {
+  assertViewerMaxAge(cfg.maxAgeSeconds);
   const verify = createVerifier(
     remoteKeys(cfg.jwksUrl),
     {

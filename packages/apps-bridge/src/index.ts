@@ -1,5 +1,14 @@
-export { createAppsBridgePlugin, PLUGIN_NAME } from './plugin.js';
-export type { AppsBridgeConfig, AppsBridgeDeployConfig } from './config.js';
+export { createAppsBridgePlugin, PLUGIN_NAME, type AppsBridgePlugin } from './plugin.js';
+export {
+  assertAppsBridgeConfig,
+  DEFAULT_APPS_BRIDGE_PORT,
+  DEFAULT_VIEWER_MAX_AGE_SECONDS,
+  parseAppsBridgeEnv,
+  type AppsBridgeConfig,
+  type AppsBridgeDeployConfig,
+  type AppsBridgeEnv,
+} from './config.js';
+export { BRIDGE_LISTENER_LIMITS } from './listener.js';
 export { runAppsBridgeMigration, type AppsBridgeDatabase } from './migrations.js';
 export {
   createAppsBridgeStore,

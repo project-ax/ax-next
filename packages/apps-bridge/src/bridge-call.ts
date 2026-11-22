@@ -336,6 +336,17 @@ export async function answerCall(deps: BridgeDeps, body: unknown): Promise<Bridg
 // GET /apps/:appId/grants
 // ---------------------------------------------------------------------------
 
+/**
+ * The most bytes of serialized tool entries one grants answer carries
+ * schemas for. Without it the worst case is ~32 KiB of schema x 200 tools x
+ * every granted connector. Past it, each further tool keeps its name and
+ * description but its `inputSchema` is null, so the answer stays bounded and
+ * valid; the log line says `schemas-trimmed`.
+ */
+export const GRANTS_BODY_BUDGET_BYTES = 4 * 1024 * 1024;
+
+const utf8Bytes = (v: unknown): number => Buffer.byteLength(JSON.stringify(v), 'utf8');
+
 interface Described {
   description: string;
   inputSchema: Record<string, unknown> | null;
@@ -399,21 +410,42 @@ export async function answerGrants(deps: BridgeDeps, appId: string): Promise<Bri
     const names = grants.length === 0 ? new Map<string, string>() : await connectorNames(deps.bus, ctx, link.linkedByUserId);
     const inventories = await Promise.all(grants.map((g) => describeConnector(deps, ctx, link, g.connectorId)));
 
+    // Every entry is counted, with or without its schema, so the total
+    // stays under the budget plus the schema-less entries' own size.
+    let spent = 0;
+    let trimmed = false;
     const body: GrantsResponse = {
-      grants: grants.map((g, i) => ({
-        connectorId: g.connectorId,
-        displayName: names.get(g.connectorId) ?? g.connectorId,
-        mode: g.mode,
-        tools: g.toolKeys.flatMap((key) => {
-          const name = TOOL_KEY_RE.exec(key)?.[2];
-          if (name === undefined) return [];
-          const known = inventories[i]?.tools.get(key);
-          return [{ name, description: known?.description ?? '', inputSchema: known?.inputSchema ?? null }];
-        }),
-      })),
+      grants: grants.map((g, i) => {
+        const head = { connectorId: g.connectorId, displayName: names.get(g.connectorId) ?? g.connectorId, mode: g.mode };
+        spent += utf8Bytes(head);
+        return {
+          ...head,
+          tools: g.toolKeys.flatMap((key): GrantsResponse['grants'][number]['tools'] => {
+            const name = TOOL_KEY_RE.exec(key)?.[2];
+            if (name === undefined) return [];
+            const known = inventories[i]?.tools.get(key);
+            const bare = { name, description: known?.description ?? '', inputSchema: null as Record<string, unknown> | null };
+            const bareBytes = utf8Bytes(bare);
+            const schema = known?.inputSchema ?? null;
+            if (schema !== null) {
+              const full = { ...bare, inputSchema: schema };
+              const fullBytes = utf8Bytes(full);
+              // Once one schema didn't fit, no later one goes in either.
+              if (!trimmed && spent + fullBytes <= GRANTS_BODY_BUDGET_BYTES) {
+                spent += fullBytes;
+                return [full];
+              }
+              trimmed = true;
+            }
+            spent += bareBytes;
+            return [bare];
+          }),
+        };
+      }),
     };
     const degraded = inventories.some((inv) => inv.failed);
-    return { status: 200, body, log: { ...fields, outcome: 'succeeded', ...(degraded ? { reason: 'describe-tools-failed' } : {}) } };
+    const reason = degraded ? 'describe-tools-failed' : trimmed ? 'schemas-trimmed' : undefined;
+    return { status: 200, body, log: { ...fields, outcome: 'succeeded', ...(reason !== undefined ? { reason } : {}) } };
   } catch (err) {
     return unavailable(fields, err);
   }

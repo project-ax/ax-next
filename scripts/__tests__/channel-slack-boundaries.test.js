@@ -85,6 +85,12 @@ const RULES = {
         "maps a viewer assertion's verified email to an account (`auth:find-user-by-email` only; apps-connector-bridge design)",
       ],
       ['packages/apps-bridge/src/__tests__/bridge-call.test.ts', 'stubs `auth:find-user-by-email` for the viewer-mode call tests'],
+      [
+        'packages/apps-bridge/src/plugin.ts',
+        "declares `auth:find-user-by-email` in its manifest `calls`, for bridge-call.ts's viewer-mode lookup (no other email hook)",
+      ],
+      ['packages/apps-bridge/src/__tests__/plugin.test.ts', "stubs `auth:find-user-by-email` (unreached) so the plugin's manifest `calls` boot"],
+      ['packages/apps-bridge/src/__tests__/cleanup.test.ts', "stubs `auth:find-user-by-email` (unreached) so the plugin's manifest `calls` boot"],
     ]),
   },
   'slack-prefix': {

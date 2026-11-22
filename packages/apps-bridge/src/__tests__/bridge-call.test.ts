@@ -1,7 +1,7 @@
 import { CallResponseSchema, GrantsResponseSchema, REFUSAL_STATUS, RefusalSchema } from '@ax/apps-bridge-contract';
 import { PluginError, ownerlessIdFor, type AgentContext, type Logger } from '@ax/core';
 import { describe, expect, it, vi } from 'vitest';
-import { answerCall, answerClaim, answerGrants, type BridgeAnswer, type BridgeDeps } from '../bridge-call.js';
+import { GRANTS_BODY_BUDGET_BYTES, answerCall, answerClaim, answerGrants, type BridgeAnswer, type BridgeDeps } from '../bridge-call.js';
 import { LINK_CODE_TTL_MS, hashLinkCode, newLinkCode } from '../link-codes.js';
 import type { ViewerVerdict } from '../verify-token.js';
 import { createFakeStore, type FakeStore } from './support/fake-store.js';
@@ -983,6 +983,56 @@ describe('answerGrants', () => {
     // nothing else is logged.
     expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed' });
     expect(h.lines).toEqual([]);
+  });
+
+  it('grants: past the body budget, further tools keep their description but lose their schema', async () => {
+    // Worst case without a budget: ~32 KiB of schema x 200 tools x N
+    // connectors. Three connectors of 200 tools with 30 KiB schemas would be
+    // ~18 MiB; the answer stays under GRANTS_BODY_BUDGET_BYTES and valid.
+    const big = { type: 'object', description: 'x'.repeat(30 * 1024) };
+    const ns = ['c0000000001', 'c0000000002', 'c0000000003'];
+    const ids = ['alpha', 'beta', 'gamma'];
+    const keysFor = (n: string) => Array.from({ length: 200 }, (_, i) => `mcp.${n}.t${i}`);
+    const h = harness({
+      handlers: {
+        'connectors:describe-tools': (_ctx, input: { connectorId: string }) => ({
+          status: 'ok',
+          checkedAt: new Date(NOW).toISOString(),
+          tools: keysFor(ns[ids.indexOf(input.connectorId)] ?? 'c9999999999').map((toolKey, i) => ({
+            name: `t${i}`,
+            description: `does thing ${i}`,
+            inputSchema: big,
+            toolKey,
+          })),
+        }),
+      },
+    });
+    await link(h);
+    for (const [i, id] of ids.entries()) await grant(h, 'builder', keysFor(ns[i]!), id);
+
+    const a = await answerGrants(h.deps, APP);
+    expect(a.status).toBe(200);
+    expect(GrantsResponseSchema.safeParse(a.body).success).toBe(true);
+    // The budget bounds what carries a schema; the schema-less tail after it
+    // (names and capped descriptions, ~60 bytes each here) is all that's over.
+    const bytes = Buffer.byteLength(JSON.stringify(a.body), 'utf8');
+    expect(bytes).toBeLessThanOrEqual(GRANTS_BODY_BUDGET_BYTES + 64 * 1024);
+    const tools = (a.body as { grants: Array<{ tools: Array<{ description: string; inputSchema: unknown }> }> }).grants.flatMap(
+      (g) => g.tools,
+    );
+    expect(tools).toHaveLength(600);
+    // Every description survives; schemas are kept in order until the budget runs out, then all null.
+    expect(tools.every((t, i) => t.description === `does thing ${i % 200}`)).toBe(true);
+    const kept = tools.filter((t) => t.inputSchema !== null).length;
+    expect(kept).toBeGreaterThan(100);
+    expect(kept).toBeLessThan(600);
+    expect(tools.slice(0, kept).every((t) => t.inputSchema !== null)).toBe(true);
+    expect(tools.slice(kept).every((t) => t.inputSchema === null)).toBe(true);
+    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'schemas-trimmed' });
+  });
+
+  it('grants: the body budget is 4 MiB (the first grants test shows an answer under it is untouched)', () => {
+    expect(GRANTS_BODY_BUDGET_BYTES).toBe(4 * 1024 * 1024);
   });
 
   it('grants: an unreadable describe-tools answer degrades the same way', async () => {

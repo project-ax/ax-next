@@ -383,3 +383,16 @@ describe('no token content in verdicts', () => {
     expect(JSON.stringify(verdict)).not.toContain('leak-me');
   });
 });
+
+describe('viewer max age is bounded at construction', () => {
+  // NaN or Infinity would silently turn off jose's age check (Task 6 review).
+  it('a max age that is not a whole number of seconds from 30 to 3600 is refused', () => {
+    const cfg = { issuer: 'i', jwksUrl: 'https://x.test/jwks', audience: 'a' };
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 29, 3601, 0, -1, 600.5]) {
+      expect(() => createViewerVerifier({ ...cfg, maxAgeSeconds: bad }), String(bad)).toThrow(/maxAgeSeconds/);
+    }
+    for (const good of [30, 600, 3600]) {
+      expect(() => createViewerVerifier({ ...cfg, maxAgeSeconds: good })).not.toThrow();
+    }
+  });
+});
