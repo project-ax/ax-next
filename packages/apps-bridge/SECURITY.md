@@ -25,8 +25,9 @@ The package owns four things, and no other plugin stores them:
   - Rates (in memory, sliding 60 s window, at most 10,000 tracked keys): 600 requests a minute per platform on every route, 120 calls a minute per app, 32 calls in flight per platform. An in-flight slot is released however the request ends, client hang-ups included (at any point: while the caller is still being authenticated, while the body is arriving, or mid-call), so a flaky client can't use up the 32 slots.
   - The grants answer carries schemas for at most 4 MiB of tool entries. Past that, tools keep their names and descriptions but their `inputSchema` is `null`.
   - Calls inherit the connector call limits: 45 s budget, 2 MiB reply, one `tools/call`, never retried.
-- **Outbound.** The bridge itself fetches only the two JWKS URLs (`https:`, or `http:` on loopback, no credentials in the URL). Every connector call goes through `connectors:call-tool-result` in `@ax/mcp-client`, with its own URL rules.
+- **Outbound.** The bridge itself fetches only the two JWKS URLs (`https:`, or `http:` on loopback, no credentials in the URL). Under the chart, they must be on port 443: that's the host's only open egress port for web traffic, and a key set the host can't fetch turns every request into `503 unavailable` (`keys-unavailable`). Every connector call goes through `connectors:call-tool-result` in `@ax/mcp-client`, with its own URL rules.
 - **No processes, no files, no env reads** beyond the preset reading `AX_APPS_BRIDGE_*` at boot.
+- **The chart's guard rails.** With the bridge on, the render fails when `networkPolicies.enabled` is off (nothing would gate the port inside the cluster) and when an `allowFrom` peer has an empty `namespaceSelector` or `podSelector` (`{}` matches every namespace, or every pod in the host's).
 
 ## Authentication
 
@@ -50,10 +51,16 @@ A call goes through, in order (the first failure answers):
 1. **Link**: the `(platform, app)` is linked.
 2. **Grant**: the connector is granted to the app in the call's mode, and the tool is on the grant's list.
 3. **Who**: builder mode acts as the person who linked the app, through the linked agent, and that person must still be able to manage the agent's connectors. Viewer mode acts as the viewer, through one of the viewer's **own personal** agents, and only for tools the viewer approved for this app.
-4. **Policy**: `tool-policy:evaluate` for `(agent, tool)`. Only a plain `allow` proceeds. `hold` is `approval_required`; `deny` is `tool_not_allowed`. Connector tools are Ask first by default, so a tool works only once both the admin default and the agent allow it.
+4. **Policy**: `tool-policy:evaluate` for `(agent, tool)`, where the agent is the linked agent in builder mode and the viewer's chosen agent in viewer mode. Only a plain `allow` proceeds. `hold` is `approval_required`; `deny` is `tool_not_allowed`. Connector tools are Ask first by default, so a tool works only once both the admin default and the agent allow it. This check, on every call, is the control: the grant editor only offers Allow tools, but the server accepts any tool key in the connector's own namespace.
 5. **The hook's own checks**: `connectors:call-tool-result` re-checks that the agent is still the person's, the connector is in the agent's effective set, the URL rules hold, and takes the credential as `(person, agent)`.
 
 The grants route answers only for a linked app whose linker can still manage the agent.
+
+### A `/call` with no answer may still have run
+
+A call isn't cancelled when its connection goes away. On shutdown the bridge stops taking requests, waits up to 9 s for calls in flight, and then cuts every connection, while a call's own budget is 45 s. A proxy in front with a shorter timeout than the call (30 s is a common default) answers 502 or 504 while the call carries on. Either way, the call may land after the platform has stopped waiting.
+
+So the contract says: a `/call` with no HTTP answer, a dropped connection or a client timeout is `unknown`, exactly like `outcome: "unknown"`. The platform must never retry a write automatically. Anything in front of the bridge needs a request timeout of at least 60 s.
 
 ## Untrusted input
 
@@ -67,14 +74,25 @@ Credentials never leave AX. The platform gets tool content, descriptions and inp
 
 ## Logging
 
-One info line per request on the three routes: `apps_bridge_link_claim`, `apps_bridge_call` or `apps_bridge_grants`. It carries the platform id once the caller is authenticated, the app id, connector id, tool and mode once each passed its grammar, and a closed `outcome` and `reason`. It never carries input, content, descriptions, schemas, link codes, app names, tokens, the assertion, the email, headers, the path or URLs. 404s, 405s and requests Node can't parse are not logged, and nothing of a thrown error's message is.
+One info line per request on the three routes: `apps_bridge_link_claim`, `apps_bridge_call` or `apps_bridge_grants`. It carries the platform id once the caller is authenticated, the app id, connector id, tool and mode once each passed its grammar, and a closed `outcome` and `reason`. An answer from a path we didn't plan for (a throw, or a hook answer the contract can't carry) adds `unexpected: true` and, when there is one, a closed `code`: a thrown `PluginError`'s code if it is a short lower-case slug, or a fixed one such as `contract-mismatch`. These two fields are log-only; the wire answer doesn't change. It never carries input, content, descriptions, schemas, link codes, app names, tokens, the assertion, the email, headers, the path or URLs. 404s, 405s and requests Node can't parse are not logged, and nothing of a thrown error's message is.
 
 ## Residuals
 
-- **A leaked link code** is good for one claim within 15 minutes, for an app the platform names, and the link it makes grants nothing until someone with rights sets grants in AX.
-- **Assertion replay.** A viewer assertion can be replayed within its max age (600 s by default). v1 accepts that; a shorter max age narrows it.
-- **Other host plugins can call `connectors:call-tool-result`.** It is a named service hook, not an IPC action or a `tool:execute:*` tool, so no runner reaches it, but any host plugin could. That is the same trust we already give host plugins.
-- Rate limits live in memory. The host runs one replica, so they hold; more replicas would each have their own.
+We know about these, and we've accepted them for v1:
+
+1. **A leaked link code** is good for one claim within 15 minutes, for whatever app id the platform names. The link it makes grants nothing until someone with rights sets grants in AX, and it shows on the agent's Apps tab, where it can be unlinked.
+2. **Assertion replay.** A viewer assertion can be replayed within its max age (600 s by default, 30–3600 allowed). A shorter max age narrows it.
+3. **Other host plugins can call `connectors:call-tool-result`.** It is a named service hook, not an IPC action or a `tool:execute:*` tool, so no runner reaches it, but any host plugin could, just as any can call `connectors:call-tool`. That is the same trust we already give host plugins.
+4. **A viewer's own agent can have a different tool policy from the builder's.** Viewer-mode calls check the policy of the agent the viewer chose, so an approved app can still meet `approval_required` or `tool_not_allowed`.
+5. **The approve page doesn't show per-tool verdicts.** It lists the tools the app is asking for and says each one must also be set to Allow on the chosen agent under Connectors. Write tools usually start at Ask first, so a call can answer `approval_required` right after the viewer clicked Allow. Nothing is granted past the policy, but the page can't yet say which tools will work. Showing each tool's verdict for the chosen agent is a proposed follow-up.
+6. **The server accepts any tool key in the connector's namespace on a grant.** The Apps section only offers Allow tools, but a hand-made request can grant an Ask-first or denied one. Such a grant does nothing on its own: every call runs `tool-policy:evaluate` first.
+7. **A connector server rename orphans grant tool keys.** This fails closed (`not-connected`), and the fix is to grant again.
+8. **`viewer_invalid` (reason `no-account`) differs from `viewer_approval_required`**, so the platform can tell whether a gateway-signed viewer email has an AX account. Only the authenticated platform sees this, and only for emails its own gateway signed.
+9. **A viewer assertion with a multi-valued `aud` is accepted without an `azp` check** (OIDC Core §3.1.3.7 says it SHOULD be checked). Our `audience` must still be among the values, and the issuer and signature are verified.
+10. **The SPA sends no `frame-ancestors` / `X-Frame-Options` header.** The approve page carries an in-page frame guard: framed, it makes no request and shows no Allow. Allow also arms only 500 ms after the card is visible. A header on SPA HTML from `@ax/static-files` is a proposed follow-up.
+11. **Outside the chart, nothing restricts the bridge port inside the cluster.** The chart refuses `appsBridge.enabled` without `networkPolicies.enabled` and refuses an `allowFrom` selector that matches everything, but a hand-rolled deployment gets no such check. Every request is still authenticated.
+12. **A `/call` with no answer may still have run** (see above). Shutdown cuts connections after 9 s while a call can take 45 s, and a proxy can time out first. The platform must treat it as `unknown` and never retry a write on its own.
+13. **Rate limits and in-flight counts live in memory, per process.** The host runs one replica, so they hold; the chart already refuses a multi-replica host and lists the bridge among the reasons.
 
 ## Security contact
 

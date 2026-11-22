@@ -13,8 +13,12 @@
 // so the sandbox cannot reach it.
 //
 // The content is UNTRUSTED. The transport reads it through a local schema
-// (`callServerToolWithContent`), within the 2 MiB per-reply cap, and hands it
-// back unchanged. The log line is the core's, codes only, under
+// (`callServerToolWithContent`), within the 2 MiB per-reply cap, and hands
+// back the reply's own blocks. The caller does not get those exact objects:
+// the HookBus returns this hook's `returns` schema's parsed copy
+// (`returns.safeParse(result).data` in core's hook-bus.ts), so key order may
+// change and an own `__proto__` key in a block is dropped; the values are
+// otherwise the server's. The log line is the core's, codes only, under
 // `connector_call_tool_result`: never the content, the input, a header or the
 // url.
 // ---------------------------------------------------------------------------

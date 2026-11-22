@@ -1754,6 +1754,44 @@ describeIfHelm('ax-next chart: apps connector bridge (off unless enabled)', () =
     expect(r.stderr).toContain(field);
   });
 
+  it('apps bridge on with networkPolicies off fails the render: nothing would gate the bridge port', () => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, '--set', 'networkPolicies.enabled=false']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('appsBridge.enabled is true but networkPolicies.enabled is false');
+    // Non-vacuity: the same values with policies on render.
+    expect(helmTemplate([...APPS_BRIDGE_ON, '--set', 'networkPolicies.enabled=true']).length).toBeGreaterThan(0);
+    // And with the bridge off, policies off is still the operator's call here.
+    expect(() => helmTemplate([...APPS_BRIDGE_ON, '--set', 'appsBridge.enabled=false', '--set', 'networkPolicies.enabled=false'])).not.toThrow();
+  });
+
+  it.each([
+    ['an empty namespaceSelector', '[{"namespaceSelector":{}}]', 'allowFrom[0].namespaceSelector', 'every namespace'],
+    ['an empty podSelector', '[{"podSelector":{}}]', 'allowFrom[0].podSelector', "every pod in the host's namespace"],
+    [
+      'an empty podSelector beside a named namespace',
+      '[{"ipBlock":{"cidr":"192.0.2.0/24"}},{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"apps-platform"}},"podSelector":{}}]',
+      'allowFrom[1].podSelector',
+      "every pod in the host's namespace",
+    ],
+    ['a namespaceSelector with empty matchLabels', '[{"namespaceSelector":{"matchLabels":{}}}]', 'allowFrom[0].namespaceSelector', 'every namespace'],
+    ['a podSelector with empty matchExpressions', '[{"podSelector":{"matchExpressions":[]}}]', 'allowFrom[0].podSelector', "every pod in the host's namespace"],
+  ] as const)('apps bridge allowFrom with %s fails the render', (_label, json, path, scope) => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, '--set-json', `appsBridge.allowFrom=${json}`]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(`appsBridge.${path} is empty`);
+    expect(r.stderr).toContain(scope);
+  });
+
+  it('apps bridge allowFrom: a namespaceSelector alone, or with matchExpressions, renders', () => {
+    for (const json of [
+      '[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"apps-platform"}}}]',
+      '[{"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["apps-gateway"]}]}}]',
+    ]) {
+      const docs = helmTemplate([...APPS_BRIDGE_ON, '--set-json', `appsBridge.allowFrom=${json}`]);
+      expect(hostNpIngress(docs).filter((r) => admits(r, BRIDGE_PORT))).toHaveLength(1);
+    }
+  });
+
   it('the Ingress never targets the apps-bridge port', () => {
     const docs = helmTemplate([...APPS_BRIDGE_ON, ...ingressArgs]);
     // Non-vacuity: the port is on the Service the Ingress points at.

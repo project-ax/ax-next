@@ -1,8 +1,8 @@
 /**
  * The apps approve page, `/apps/approve/<platformId>/<appId>/<connectorId>`:
  * the link an external app shows one of its viewers. Signed in, it asks
- * "**{appName}** wants to use {connector} as you", shows the tools that
- * covers, and lets the viewer pick which of their own agents lends the
+ * "**{appName}** wants to use {connector} as you", shows the tools it's
+ * asking for, and lets the viewer pick which of their own agents lends the
  * connector's sign-in (picked for them when only one can). Allow says yes;
  * Not now goes back to the workspace. Nothing of the workspace is drawn here.
  *
@@ -39,7 +39,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
-import { Field, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
+import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -53,6 +53,14 @@ import {
 } from '@/lib/agent-apps';
 
 export const APPROVE_DONE = 'Done. You can close this tab and go back to the app.';
+export const TOOLS_ASKED = "It's asking to use:";
+/**
+ * Allow here is the viewer's yes, not the agent's: each call still checks the
+ * chosen agent's own tool policy, and connector tools (write tools above all)
+ * usually start at Ask first, which an app has nobody to ask. So the page
+ * says what else it takes, rather than promise the tools will work.
+ */
+export const TOOLS_NEED_ALLOW = 'Each tool also has to be set to Allow on the agent you pick, under Connectors.';
 const NOT_FOUND = "This link doesn't work any more";
 const NOTHING_SHARED = 'Nothing was shared.';
 const LOAD_FAILED = "We couldn't load this just now.";
@@ -205,7 +213,7 @@ function Approve({
           <>
             <div className="flex flex-col gap-2">
               <p id="apps-approve-tools" className="text-sm text-muted-foreground">
-                It will be able to use:
+                {TOOLS_ASKED}
               </p>
               <ul aria-labelledby="apps-approve-tools" className="flex list-disc flex-col gap-1 pl-5 text-sm">
                 {prompt.tools.map((name) => (
@@ -229,6 +237,7 @@ function Approve({
                   </Field>
                 ))}
               </RadioGroup>
+              <FieldDescription>{TOOLS_NEED_ALLOW}</FieldDescription>
             </FieldSet>
           </>
         )}

@@ -1,5 +1,5 @@
 import { request as httpRequest, type ClientRequest, type IncomingHttpHeaders } from 'node:http';
-import type { Logger } from '@ax/core';
+import { PluginError, type Logger } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeAnswer } from '../bridge-call.js';
 import { createBridgeLimiter, type BridgeLimits } from '../limits.js';
@@ -476,8 +476,26 @@ describe('bridge listener', () => {
     const boom = await start({ grants: async () => { throw new Error('SECRET internal'); } });
     const b = await fetchIt(boom.listener.port(), { path: grantsPath('app_1'), headers: AUTH });
     expectRefusal(b, 503, 'unavailable', '5');
-    expect(boom.routeLines()).toEqual([{ level: 'info', msg: 'apps_bridge_grants', bindings: { platformId: P, outcome: 'unavailable', reason: 'internal' } }]);
+    expect(boom.routeLines()).toEqual([
+      { level: 'info', msg: 'apps_bridge_grants', bindings: { platformId: P, outcome: 'unavailable', reason: 'internal', unexpected: true } },
+    ]);
     expect(JSON.stringify(boom.lines)).not.toContain('SECRET');
+
+    // A PluginError's code is kept on the line; its message never is.
+    const coded = await start({
+      grants: async () => {
+        throw new PluginError({ code: 'no-service', plugin: 'fake', message: 'SECRET message' });
+      },
+    });
+    expectRefusal(await fetchIt(coded.listener.port(), { path: grantsPath('app_1'), headers: AUTH }), 503, 'unavailable', '5');
+    expect(coded.routeLines()).toEqual([
+      {
+        level: 'info',
+        msg: 'apps_bridge_grants',
+        bindings: { platformId: P, outcome: 'unavailable', reason: 'internal', unexpected: true, code: 'no-service' },
+      },
+    ]);
+    expect(JSON.stringify(coded.lines)).not.toContain('SECRET');
   });
 
   it('one log line per request; the token never appears in it', async () => {

@@ -760,24 +760,53 @@ describe('answerCall', () => {
     expect(a.log.reason).toBe(result['reason']);
   });
 
-  it('a bus throw after dispatch is unknown/interrupted', async () => {
-    for (const thrown of [pluginError('timeout'), pluginError('invalid-return'), new Error('socket hang up')]) {
+  it('a bus throw after dispatch is unknown/interrupted; the log line keeps its cause as a code', async () => {
+    const cases: Array<[Error, { code?: string }]> = [
+      [pluginError('timeout'), { code: 'timeout' }],
+      [pluginError('invalid-return'), { code: 'invalid-return' }],
+      [pluginError('no-service'), { code: 'no-service' }],
+      // Not a PluginError: no code, and never its message.
+      [new Error('socket hang up SECRET-MESSAGE'), {}],
+    ];
+    for (const [thrown, code] of cases) {
       const h = harness({ handlers: { 'connectors:call-tool-result': () => { throw thrown; } } });
       await link(h);
       await grant(h, 'builder');
       const a = await answerCall(h.deps, builderBody());
+      // The wire answer is the same whatever the cause.
       expect(a).toEqual({
         status: 200,
         body: { outcome: 'unknown', reason: 'interrupted' },
-        log: { appId: APP, connectorId: CONN, tool: TOOL, mode: 'builder', outcome: 'unknown', reason: 'interrupted' },
+        log: { appId: APP, connectorId: CONN, tool: TOOL, mode: 'builder', outcome: 'unknown', reason: 'interrupted', unexpected: true, ...code },
       });
+      expect(JSON.stringify(a.log)).not.toContain('SECRET');
     }
-    // An answer the contract can't carry is treated the same: the call may have gone out.
+    // An answer the contract can't carry is treated the same on the wire (the
+    // call may have gone out); the log line names it a contract mismatch.
     const h = harness({ handlers: { 'connectors:call-tool-result': () => ({ outcome: 'succeeded', content: 'SECRET-CONTENT' }) } });
     await link(h);
     await grant(h, 'builder');
     const a = await answerCall(h.deps, builderBody());
     expect(a.body).toEqual({ outcome: 'unknown', reason: 'interrupted' });
+    expect(a.log).toEqual({
+      appId: APP,
+      connectorId: CONN,
+      tool: TOOL,
+      mode: 'builder',
+      outcome: 'unknown',
+      reason: 'interrupted',
+      unexpected: true,
+      code: 'contract-mismatch',
+    });
+  });
+
+  it('an interruption the connector itself reports is not marked unexpected', async () => {
+    const h = harness({ handlers: { 'connectors:call-tool-result': () => ({ outcome: 'unknown', reason: 'interrupted' }) } });
+    await link(h);
+    await grant(h, 'builder');
+    const a = await answerCall(h.deps, builderBody());
+    expect(a.body).toEqual({ outcome: 'unknown', reason: 'interrupted' });
+    expect(a.log).toEqual({ appId: APP, connectorId: CONN, tool: TOOL, mode: 'builder', outcome: 'unknown', reason: 'interrupted' });
   });
 
   it('input keys like __proto__ reach the hook byte-faithfully and pollute nothing', async () => {
@@ -846,7 +875,7 @@ describe('answerCall', () => {
     for (const secret of [SECRET_INPUT, 'SECRET-CONTENT', ASSERTION, 'SECRET-ASSERTION', VIEWER_EMAIL, APPROVE_URL, 'evil', 'SECRET-CONNECTOR', 'SECRET-TOOL', 'SECRET-MESSAGE', KEY]) {
       expect(text).not.toContain(secret);
     }
-    const allowed = ['appId', 'connectorId', 'tool', 'mode', 'outcome', 'reason'];
+    const allowed = ['appId', 'connectorId', 'tool', 'mode', 'outcome', 'reason', 'unexpected', 'code'];
     for (const a of answers) expect(Object.keys(a.log).every((k) => allowed.includes(k))).toBe(true);
     expect(answers.map((a) => a.log.outcome)).toEqual([
       'failed',
@@ -979,9 +1008,9 @@ describe('answerGrants', () => {
         },
       ],
     });
-    // One log line per request: the failure rides on it as a code, and
-    // nothing else is logged.
-    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed' });
+    // One log line per request: the failure rides on it as a code (the
+    // thrown PluginError's), and nothing else is logged.
+    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed', code: 'timeout' });
     expect(h.lines).toEqual([]);
   });
 
@@ -1039,7 +1068,7 @@ describe('answerGrants', () => {
     const h = await seeded({ 'connectors:describe-tools': () => ({ status: 'ok', tools: 'nope' }) });
     const a = await answerGrants(h.deps, APP);
     expect(a.status).toBe(200);
-    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed' });
+    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed', code: 'contract-mismatch' });
     const tools = (a.body as { grants: Array<{ tools: unknown[] }> }).grants.flatMap((g) => g.tools);
     expect(tools).toEqual([
       { name: 'search', description: '', inputSchema: null },

@@ -37,6 +37,7 @@
 import {
   APPS_SETTINGS_ROUTES,
   APP_ID_RE,
+  AGENT_ID_RE,
   AppConnectorBodySchema,
   ApproveBodySchema,
   CONNECTOR_ID_RE,
@@ -83,8 +84,6 @@ export interface SettingsRoutesDeps {
 
 const PLUGIN = '@ax/apps-bridge';
 const SESSION = 'apps-bridge-settings';
-/** An agent id as a path may carry it. Anything else is no agent at all. */
-const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
 
 interface Reply {
   status: number;

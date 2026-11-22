@@ -41,6 +41,7 @@ import { APPS_BRIDGE_V1_BASE_PATH, MAX_TOKEN_CHARS, REFUSAL_STATUS, type Refusal
 import type { Logger } from '@ax/core';
 import type { BridgeAnswer, BridgeLog } from './bridge-call.js';
 import type { BridgeLimiter } from './limits.js';
+import { loggableCode } from './log-code.js';
 import type { CallerVerdict } from './verify-token.js';
 
 export const BRIDGE_LISTENER_LIMITS = {
@@ -337,10 +338,13 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
     let outcome: { answer: BridgeAnswer; authenticated: boolean; bodyUnread: boolean };
     try {
       outcome = await decide(req, res, r);
-    } catch {
+    } catch (err) {
       // The answer functions answer every failure themselves; this is the
-      // last guard. Nothing of the error is kept.
-      outcome = { answer: refusal('unavailable', 'internal'), authenticated: true, bodyUnread: !req.complete };
+      // last guard. Only the error's loggable code is kept, never its message.
+      const answer = refusal('unavailable', 'internal');
+      const code = loggableCode(err);
+      answer.log = { ...answer.log, unexpected: true, ...(code !== undefined ? { code } : {}) };
+      outcome = { answer, authenticated: true, bodyUnread: !req.complete };
     }
     log(r.route, outcome.authenticated, outcome.answer.log);
     try {

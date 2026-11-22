@@ -9,8 +9,14 @@ import {
   ToolNameSchema,
 } from './wire.js';
 
-/** The same literal as @ax/mcp-client's CONNECTOR_TOOL_KEY_RE: `mcp.<namespace>.<tool>`. */
+/** The same pattern as @ax/mcp-client's CONNECTOR_TOOL_KEY_RE: `mcp.<namespace>.<tool>` (presets/k8s apps-bridge-contract-parity.test.ts compares the two). */
 export const TOOL_KEY_RE = /^mcp\.(c[0-9a-f]{10})\.([\x21-\x7e]{1,128})$/;
+/**
+ * An agent id as the settings routes accept it in a path or body. One copy,
+ * so the routes (@ax/apps-bridge) and the SPA's client (@ax/channel-web,
+ * which refuses to build a path for an id off it) can't drift apart.
+ */
+export const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
 /** At most this many tools per grant (tool names unique within a grant). */
 export const MAX_GRANT_TOOLS = 200;
 export const SETTINGS_BODY_MAX_BYTES = 16_384;

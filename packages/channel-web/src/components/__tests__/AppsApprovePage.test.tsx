@@ -9,7 +9,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApprovalPrompt } from '@ax/apps-bridge-contract';
-import { APP_NAMED_ITSELF, AppsApprovePage, ARM_DELAY_MS } from '../AppsApprovePage';
+import { APP_NAMED_ITSELF, AppsApprovePage, ARM_DELAY_MS, TOOLS_ASKED, TOOLS_NEED_ALLOW } from '../AppsApprovePage';
 
 const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
 const IDS = { platformId: 'canopy', appId: APP, connectorId: 'linear' } as const;
@@ -69,9 +69,17 @@ describe('AppsApprovePage', () => {
     expect(within(heading).getByText('Deal Board').closest('strong')).not.toBeNull();
     // The bold name is the app's own choosing, and the page says so.
     expect(screen.getByText(APP_NAMED_ITSELF).textContent).toBe('The app chose this name.');
-    expect(screen.getByText('It will be able to use:')).toBeTruthy();
-    const list = screen.getByRole('list', { name: 'It will be able to use:' });
+    // It lists what the app asks for, without promising the tools will work:
+    // each call still checks the chosen agent's own policy, and the page says so.
+    expect(TOOLS_ASKED).toBe("It's asking to use:");
+    expect(screen.getByText(TOOLS_ASKED)).toBeTruthy();
+    expect(screen.queryByText(/will be able to use/)).toBeNull();
+    const list = screen.getByRole('list', { name: TOOLS_ASKED });
     expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['list_issues', 'create_issue']);
+    expect(TOOLS_NEED_ALLOW).toBe('Each tool also has to be set to Allow on the agent you pick, under Connectors.');
+    const note = screen.getByText(TOOLS_NEED_ALLOW);
+    // It sits with the agent choice it's about.
+    expect(note.closest('fieldset')).toBe(screen.getByRole('radiogroup').closest('fieldset'));
     expect(fetchMock.mock.calls[0]?.[0]).toBe(URL_);
   });
 

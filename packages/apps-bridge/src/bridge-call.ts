@@ -51,6 +51,19 @@ export interface BridgeLog {
   outcome: string;
   /** A closed code: an outcome reason, a verify failure, `no-account`, `replay`, or an error's code. */
   reason?: string;
+  /**
+   * Log-only, never on the wire: set when the answer came from a path we
+   * didn't plan for (a throw, or an answer the contract can't carry) rather
+   * than from the connector or a check. The wire answer is unchanged; this
+   * keeps a real interruption apart from a bug.
+   */
+  unexpected?: true;
+  /**
+   * Log-only: what caused an unexpected answer, as a closed code. A thrown
+   * `PluginError`'s code when it is loggable (see log-code.ts), or a fixed
+   * code such as `contract-mismatch`. Never an error message.
+   */
+  code?: string;
 }
 
 export interface BridgeAnswer {
@@ -190,8 +203,17 @@ async function findViewer(deps: BridgeDeps, email: string): Promise<string | nul
   throw unreadable('auth:find-user-by-email');
 }
 
-function interrupted(fields: LogFields): BridgeAnswer {
-  return { status: 200, body: { outcome: 'unknown', reason: 'interrupted' }, log: { ...fields, outcome: 'unknown', reason: 'interrupted' } };
+/**
+ * The call may have gone out, so the app is told `unknown/interrupted`. The
+ * log line says it was unexpected, and why when there's a code for it: a bus
+ * timeout, a missing service and a contract miss all look alike on the wire.
+ */
+function interrupted(fields: LogFields, code: string | undefined): BridgeAnswer {
+  return {
+    status: 200,
+    body: { outcome: 'unknown', reason: 'interrupted' },
+    log: { ...fields, outcome: 'unknown', reason: 'interrupted', unexpected: true, ...(code !== undefined ? { code } : {}) },
+  };
 }
 
 /**
@@ -217,9 +239,10 @@ function interrupted(fields: LogFields): BridgeAnswer {
  *     connector goes on: the call hook answers it `not-connected`;
  *  8. tool-policy:evaluate: allow proceeds, hold → approval_required,
  *     deny → tool_not_allowed;
- *  9. connectors:call-tool-result as that person and agent; its answer is the
- *     200 body, verbatim. A throw (or an answer the contract can't carry) →
- *     200 unknown/interrupted, because the call may have gone out;
+ *  9. connectors:call-tool-result as that person and agent; its answer, as
+ *     the bus returns it, is the 200 body. A throw (or an answer the contract
+ *     can't carry) → 200 unknown/interrupted, because the call may have gone
+ *     out; the log line adds `unexpected: true` and the cause's code;
  * 10. a throw from the store or a read before step 9 → unavailable (Retry-After 5).
  */
 export async function answerCall(deps: BridgeDeps, body: unknown): Promise<BridgeAnswer> {
@@ -317,13 +340,16 @@ export async function answerCall(deps: BridgeDeps, body: unknown): Promise<Bridg
       ready.ctx,
       { userId: ready.userId, agentId: ready.agentId, toolKey: ready.toolKey, input },
     );
-  } catch {
-    return interrupted(fields);
+  } catch (err) {
+    return interrupted(fields, loggableCode(err));
   }
   // The hook's own `returns` schema already holds it to this shape; checked
-  // again because it becomes the contract body. The body is the hook's
-  // object itself, not a parsed copy.
-  if (!CallResponseSchema.safeParse(result).success) return interrupted(fields);
+  // again because it becomes the contract body. The body is the object the
+  // bus handed back, not a copy made here. That object is the bus's parsed
+  // copy of the handler's answer (`returns.safeParse(result).data`), so key
+  // order may differ from what the connector sent and an own `__proto__` key
+  // in a content block is gone; the values are otherwise the connector's.
+  if (!CallResponseSchema.safeParse(result).success) return interrupted(fields, 'contract-mismatch');
   const outcome = result as CallResponse;
   return {
     status: 200,
@@ -362,7 +388,7 @@ async function describeConnector(
   ctx: AgentContext,
   link: AppLink,
   connectorId: string,
-): Promise<{ tools: Map<string, Described>; failed: boolean }> {
+): Promise<{ tools: Map<string, Described>; failed: false } | { tools: Map<string, Described>; failed: true; code: string | undefined }> {
   const out = new Map<string, Described>();
   let answer: unknown;
   try {
@@ -371,11 +397,11 @@ async function describeConnector(
       agentId: link.agentId,
       connectorId,
     });
-  } catch {
-    return { tools: out, failed: true };
+  } catch (err) {
+    return { tools: out, failed: true, code: loggableCode(err) };
   }
   const tools = isRecord(answer) ? answer['tools'] : undefined;
-  if (!Array.isArray(tools)) return { tools: out, failed: true };
+  if (!Array.isArray(tools)) return { tools: out, failed: true, code: 'contract-mismatch' };
   for (const t of tools) {
     if (!isRecord(t) || typeof t['toolKey'] !== 'string' || out.has(t['toolKey'])) continue;
     out.set(t['toolKey'], {
@@ -393,7 +419,8 @@ async function describeConnector(
  * come from the linker's `connectors:list` (the id when it lacks one); each
  * tool's description and schema from the linked agent's inventory, matched on
  * the tool key ('' and null when the inventory lacks it or its read failed;
- * a failed read puts `reason: 'describe-tools-failed'` on the log line).
+ * a failed read puts `reason: 'describe-tools-failed'` on the log line, plus
+ * the first failure's `code` when it has one).
  * Any other throw → unavailable (Retry-After 5).
  */
 export async function answerGrants(deps: BridgeDeps, appId: string): Promise<BridgeAnswer> {
@@ -443,9 +470,15 @@ export async function answerGrants(deps: BridgeDeps, appId: string): Promise<Bri
         };
       }),
     };
-    const degraded = inventories.some((inv) => inv.failed);
-    const reason = degraded ? 'describe-tools-failed' : trimmed ? 'schemas-trimmed' : undefined;
-    return { status: 200, body, log: { ...fields, outcome: 'succeeded', ...(reason !== undefined ? { reason } : {}) } };
+    // The first failed read's code, when it has one, rides on the log line.
+    const failure = inventories.find((inv) => inv.failed);
+    const reason = failure !== undefined ? 'describe-tools-failed' : trimmed ? 'schemas-trimmed' : undefined;
+    const code = failure?.failed === true ? failure.code : undefined;
+    return {
+      status: 200,
+      body,
+      log: { ...fields, outcome: 'succeeded', ...(reason !== undefined ? { reason } : {}), ...(code !== undefined ? { code } : {}) },
+    };
   } catch (err) {
     return unavailable(fields, err);
   }

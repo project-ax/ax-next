@@ -191,9 +191,14 @@ describe('wire contract v1', () => {
   });
 
   it('the Refusal type admits every refusal code, and approveUrl only on viewer_approval_required', () => {
-    // Type-level: checked by tsc over this file, not by vitest's runner. The
-    // plain arm's `code` was once inferred as `never` (Object.keys widened the
-    // enum tuple), so Refusal admitted only viewer_approval_required.
+    // Type-level, and NOT checked by any build: vitest strips types, and this
+    // package's tsconfig excludes src/__tests__, so these two lines only
+    // document the intent (a `tsc --noEmit` over this file would check them).
+    // The guard that does run is @ax/apps-bridge's bridge-call.ts: its
+    // `refuse()` builds an uncast `{ code }` Refusal from a plain refusal code,
+    // which fails `pnpm build` if the plain arm's `code` narrows again. It was
+    // once inferred as `never` (Object.keys widened the enum tuple), so
+    // Refusal admitted only viewer_approval_required.
     expectTypeOf<Refusal['code']>().toEqualTypeOf<RefusalCode>();
     expectTypeOf<Extract<Refusal, { approveUrl: string }>['code']>().toEqualTypeOf<'viewer_approval_required'>();
     const plain: Refusal = { code: 'invalid_request' };

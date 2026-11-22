@@ -25,6 +25,7 @@
  * session cookie and the CSRF header at some other path on this origin.
  */
 import {
+  AGENT_ID_RE,
   AgentAppsReadSchema,
   APP_ID_RE,
   APPS_SETTINGS_ROUTES,
@@ -73,12 +74,6 @@ function isSettingsError(value: unknown): value is SettingsError {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SETTINGS_ERRORS, value);
 }
 
-/**
- * An agent id as the settings routes accept it (the same literal as
- * `AGENT_ID_RE` in @ax/apps-bridge's `settings-routes.ts`, which isn't
- * exported: the SPA depends on no host plugin).
- */
-const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
 
 /** No request is made for an agent id off its grammar: the server would answer `agent-not-found` too. */
 function agentPath(route: string, agentId: string): string {

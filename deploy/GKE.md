@@ -2242,6 +2242,16 @@ two parts:
    mesh). Every request is authenticated either way, but the tool results it
    sends back deserve better than crossing the wire in the clear.
 
+   **Anything in front of the bridge needs a timeout of at least 60 s.** A
+   tool call can take about 45 s. The internal Application Load Balancer's
+   backend service timeout defaults to 30 s, so set it (a `BackendConfig`'s
+   `timeoutSec`, or the backend service's `--timeout`) to 60 or more. With a
+   shorter one, a slow call gets a 502 or 504 from the proxy while the call
+   itself still runs and may still land. A mesh or any other proxy needs the
+   same. The platform has to treat a `/call` with no answer as `unknown`, and
+   never retry a write on its own. The plain internal LoadBalancer above is
+   a pass-through, so it has no request timeout to set.
+
 2. **`appsBridge.allowFrom`**: the NetworkPolicy peers admitted to that port,
    copied as-is into the host policy (`ipBlock`, `namespaceSelector`,
    `podSelector`). For the Service above, that's the same source range.
@@ -2285,6 +2295,13 @@ gcloud iam service-accounts describe PLATFORM_SA@PROJECT.iam.gserviceaccount.com
 Any OIDC issuer works; Google is just the example. The `viewer` values come
 from whatever sign-in gateway sits in front of the platform's apps (IAP above).
 Its token must carry `email`, which is how AX finds the person.
+
+**Both JWKS URLs have to be on port 443.** The host's NetworkPolicy lets it
+reach port 443 anywhere, but opens only a few other ports (Postgres, DNS, the
+Kubernetes API), none of them for web traffic. A JWKS URL on another port (`https://keys.example.net:8443/...`) can't be fetched, and then
+every bridge request answers `503 unavailable` (the log line says
+`keys-unavailable`). If an issuer serves its keys on another port, add an
+egress rule for it before turning the bridge on.
 
 A blank required value fails `helm template` with the `--set-string` to use.
 Use `--set-string`, not `--set`, for these: `--set` would turn a numeric subject

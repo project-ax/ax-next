@@ -10,9 +10,11 @@
  * A tool the grant already holds stays ticked even when it is no longer
  * Allow, so saving some other change (the mode, say) never quietly narrows
  * the grant: it can be unticked, but not ticked again until it is Allow. A
- * granted tool the connector no longer offers can't be kept (the server
- * refuses a key the connector doesn't list), and its row says saving removes
- * it.
+ * granted tool the connector no longer offers isn't kept: Save sends only
+ * keys the connector still lists, and its row says saving removes it. That
+ * is this editor's rule, not the server's: the server checks only that each
+ * key is in this connector's tool namespace (and no other connector's on the
+ * agent), not that the connector lists it, nor that it is Allow.
  *
  * Tool names and descriptions are the connector server's own words
  * (untrusted): rendered as text only.

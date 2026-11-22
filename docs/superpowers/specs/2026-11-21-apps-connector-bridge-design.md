@@ -133,6 +133,8 @@ Refused with `link_code_invalid` when the code is malformed, unknown, expired or
 
 Content is capped at the connector call's per-reply limit (2 MiB). A bigger reply is `unknown/interrupted`. A call takes at most about 45 s, so use a client timeout of at least 60 s. Never retry a write on `unknown`: it may have happened.
 
+**No answer counts as `unknown` too.** A `/call` that gets no HTTP answer (the connection drops, the client times out, or a proxy in between answers 502/504) may still have run, and may still land after the platform has given up. A call isn't cancelled when its connection goes away. On shutdown the bridge waits up to 9 s for calls in flight and then cuts the connections, while a call's own budget is 45 s. So the platform treats any `/call` without a 200 or a refusal body as `unknown`, and never retries a write automatically. Anything in front of the bridge (a load balancer, a mesh) needs a request timeout of at least 60 s; a proxy with a 30 s default would answer 502/504 for a call that still goes through.
+
 **Refusals, before anything is sent.** Body `{ "code": <code> }`, plus `approveUrl` for `viewer_approval_required` only. Key on `code`, not on the status.
 
 | code | status | meaning |
@@ -168,7 +170,7 @@ Upstream failures reuse `connectors:call-tool`'s closed reasons (`invalid-call`,
 ### AX UI (channel-web, shadcn)
 
 - **Agent settings → Apps.** Link an app with a one-time code (above); there is no free-typed app id. Choose connectors, tools and mode per connector; only tools the agent may use without asking can be ticked. Unlink. The person's own viewer approvals on this agent are listed here with Revoke.
-- **Approve page** (`approveUrl`): "*{appName}* wants to use Linear as you", with the tools it asks for. Pick which of your agents' sign-in to use (auto-picked when only one of your agents has the connector), then Allow. The app's name is labeled "The app chose this name.", Allow stays disabled for the first 500 ms after the card shows (so a double-click can't land on it), and inside a frame the page asks to be opened in its own tab instead.
+- **Approve page** (`approveUrl`): "*{appName}* wants to use Linear as you", with the tools it asks for ("It's asking to use:"). It doesn't promise they'll work: calls check the chosen agent's own tool policy, so the page says each tool also has to be set to Allow on that agent under Connectors. Pick which of your agents' sign-in to use (auto-picked when only one of your agents has the connector), then Allow. The app's name is labeled "The app chose this name.", Allow stays disabled for the first 500 ms after the card shows (so a double-click can't land on it), and inside a frame the page asks to be opened in its own tab instead.
 
 ### Logging and limits
 

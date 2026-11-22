@@ -287,8 +287,12 @@ export function callServerTool(opts: CallServerToolOptions): Promise<ServerCallO
 /**
  * `sendOneCall`, answering the outcome and the reply's content blocks (for
  * `connectors:call-tool-result`). The blocks are UNTRUSTED. They are
- * checked against `ContentView` and handed back as the reply's own array,
- * never zod's copy.
+ * checked against `ContentView` and this function hands back the reply's own
+ * array, not zod's copy. That identity ends at the hook: the HookBus returns
+ * the hook's `returns` schema's parsed copy (core hook-bus.ts,
+ * `returns.safeParse(result).data`), so the hook's caller gets the same
+ * values with key order possibly changed and any own `__proto__` key in a
+ * block dropped.
  *   - Not `isError`: no `content` is success with no blocks; readable content
  *     is success with it; anything else is `unknown`/`interrupted` (the call
  *     went out and the answer could not be read).

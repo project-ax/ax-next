@@ -785,7 +785,21 @@ contentOrigin:
 #              enforced while networkPolicies.enabled (the default).
 #
 # JWKS URLs must be https. The host checks all of these again at boot and
-# refuses to start on a bad one.
+# refuses to start on a bad one. They must also be on port 443: the host's
+# NetworkPolicy egress opens 443 to anywhere, and otherwise only Postgres, DNS
+# and the k8s API ports, so a JWKS URL on another port (say :8443) can't be
+# fetched and EVERY bridge request answers
+# 503 unavailable (log reason `keys-unavailable`). An issuer on another port
+# needs its own egress rule first.
+#
+# Turning the bridge on also requires networkPolicies.enabled (the render
+# fails otherwise: without policies nothing gates the port inside the
+# cluster), and refuses an allowFrom peer whose namespaceSelector or
+# podSelector is empty (`{}` matches every namespace, or every pod in ours).
+#
+# Anything in front of the port (an internal Application Load Balancer, a
+# mesh) needs a request timeout of at least 60 s: a call can take ~45 s, and a
+# proxy that gives up first answers 502/504 while the call still runs.
 #
 # Single host replica only: the bridge's rate limits and in-flight counts are
 # kept in memory. validateHostReplicas already pins `replicas` to 1.

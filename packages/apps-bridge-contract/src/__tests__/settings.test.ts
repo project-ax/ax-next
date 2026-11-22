@@ -3,7 +3,7 @@ import {
   AgentAppsReadSchema, AppConnectorBodySchema, AppGrantSchema, ApprovalPromptSchema, approvePagePath,
   APPROVE_PAGE_PREFIX, APPS_SETTINGS_ROUTES, ApproveBodySchema, LinkCodeBodySchema, LinkCodeResponseSchema,
   MAX_GRANT_TOOLS, parseApprovePagePath, SaveGrantBodySchema, SaveGrantResponseSchema, SETTINGS_BODY_MAX_BYTES,
-  SETTINGS_ERRORS, TOOL_KEY_RE, UnlinkAppBodySchema,
+  SETTINGS_ERRORS, TOOL_KEY_RE, UnlinkAppBodySchema, AGENT_ID_RE,
 } from '../settings.js';
 
 const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
@@ -18,6 +18,11 @@ describe('settings shapes', () => {
     for (const bad of ['mcp.c012345678.x', 'mcp.C0123456789.x', 'mcp.c0123456789.a b', 'mcp.c0123456789.', `mcp.c0123456789.${'x'.repeat(129)}`]) {
       expect(TOOL_KEY_RE.test(bad), bad).toBe(false);
     }
+  });
+
+  it('AGENT_ID_RE: the one agent-id grammar the settings routes and the SPA client share', () => {
+    for (const ok of ['agent_1', 'A-b_9', 'x'.repeat(256)]) expect(AGENT_ID_RE.test(ok), ok).toBe(true);
+    for (const bad of ['', '..', 'a/b', 'a%2Fb', 'a.b', 'a b', 'x'.repeat(257), 'a\n']) expect(AGENT_ID_RE.test(bad), bad).toBe(false);
   });
 
   it('pins the routes, limits and error table', () => {
