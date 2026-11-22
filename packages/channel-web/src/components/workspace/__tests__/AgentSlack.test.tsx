@@ -544,7 +544,7 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
     expect(within(list).queryByRole('button')).toBeNull();
     expect(within(list).queryByRole('menuitem')).toBeNull();
     expect(within(list).queryByText('Not remembered')).toBeNull();
-    expect(slackCardWordsFound(list.textContent ?? '')).toEqual([]);
+    expect(slackCardWordsFound(slackCardText(list))).toEqual([]);
   });
 
   // TASK-1188 (design §4b.3): the agent answers in a private channel and never remembers it, so its row says that

@@ -10,11 +10,13 @@ const PLUMBING =
 const PRODUCT = /\bAX\b/g;
 /**
  * The removed per-channel memory switch's own labels (TASK-1202): no row
- * offers "Remember this channel" or says "Not remembered" any more. Exact
- * labels only, so a later sentence that happens to say "not remembered" is
- * not caught as the switch.
+ * offers "Remember this channel" or "Don't remember this channel", or says
+ * "Not remembered", any more. Whole labels only: each must be a text node
+ * (or aria-label) of its own, so a later sentence that happens to say
+ * "not remembered" or "remember this channel" is not caught as the switch.
+ * `m`: slackCardText puts every text node on its own line.
  */
-const REMOVED_SWITCH = /(?:\bdon['’]t remember this channel\b|\bremember this channel\b|^\s*not remembered\s*$)/gim;
+const REMOVED_SWITCH = /^\s*(?:(?:don['’]t )?remember this channel|not remembered)\s*$/gim;
 
 /** Every forbidden word in `text`, as written there. Empty: clean. */
 export function slackCardWordsFound(text: string): string[] {
