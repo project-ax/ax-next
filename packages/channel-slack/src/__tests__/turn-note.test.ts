@@ -151,13 +151,18 @@ describe('the note a Slack session reads (TASK-1131)', () => {
     );
     // It names the texts that claim otherwise, so the model reads it as overriding them.
     expect(SLACK_NOTE_OUTSIDER).toMatch(/whatever a tool's description or what you're told about connecting capabilities says\./);
-    // Structural: every sentence that speaks of carrying on is a negation, so a rewording
-    // can't turn it back into a promise.
-    const carryOn = SLACK_NOTE_OUTSIDER.split(/(?<=\.)\s+/).filter((s) =>
-      /continu|carr(y|ies) on|resum|follow up|pick (it|this) up/i.test(s),
-    );
+    // Structural, per clause and over the whole note the model reads: every clause that
+    // speaks of carrying on is a negation, so the common rewordings can't turn it back
+    // into a promise (the exact pin above catches the rest).
+    const carryOn = slackTurnNote('external')
+      .split(/(?<=[.,;:])\s+|\s+—\s+/)
+      .filter((c) =>
+        /continu|carr(y|ies|ied|ying) on|resum|follow(s|ed|ing)?[- ]?up|pick(s|ed|ing)? (it |this |that |things )?(back )?up|get back to/i.test(
+          c,
+        ),
+      );
     expect(carryOn.length).toBeGreaterThan(0);
-    for (const s of carryOn) expect(s).toMatch(/\bnever\b|n't\b/);
+    for (const c of carryOn) expect(c).toMatch(/\bnever\b|n't\b|\bnot\b/);
     // The DM and member lines don't carry this sentence: it's the outsider's alone.
     for (const line of [SLACK_NOTE_DM, SLACK_NOTE_MEMBER, SLACK_NOTE_LEAD]) {
       expect(line).not.toContain('answer never comes back');
