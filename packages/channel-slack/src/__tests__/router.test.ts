@@ -38,6 +38,7 @@ import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
+import { SLACK_NOT_REMEMBERED_LINE } from '../turn-note.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -416,6 +417,10 @@ function world(o: {
   bindingReadFails?: (n: number) => boolean;
   /** The channel store fails to record a thread. */
   threadWriteFails?: boolean;
+  /** The channel store fails to read the thread back after recording it (TASK-1191). */
+  threadReadFails?: boolean;
+  /** The thread read back after recording it is not there (TASK-1191). */
+  threadReadMissing?: boolean;
   /**
    * Runs after the router read the binding and just before the thread is
    * recorded: what an admin could do in that gap, through the store or (a
@@ -646,6 +651,14 @@ function world(o: {
       if (outcome === 'recorded' && stored !== undefined) write.notRemembered = stored.notRemembered;
       return outcome;
     },
+    // Read back after the write, to tell the agent when memory won't learn from the thread (TASK-1191).
+    async getThread(conversationId: string): ReturnType<ChannelStore['getThread']> {
+      if (o.threadReadFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
+      }
+      if (o.threadReadMissing === true) return null;
+      return channels.store.getThread(conversationId);
+    },
     // A team agent's own bot binds a channel at its first mention there (TASK-1167), reading the
     // switch and writing the binding under the lock a flip takes (TASK-1182).
     async bindBot(...args: Parameters<ChannelStore['bindBot']>): ReturnType<ChannelStore['bindBot']> {
@@ -865,6 +878,10 @@ function throwingLogger(): Logger {
   return logger;
 }
 const contentOf = (i: Invoke) => (i.input as { message: { content: string } }).message.content;
+/** What a turn says first when memory won't learn from its thread (TASK-1191): outsiders' threads, switched-off or private channels. */
+const NOT_REMEMBERED = `${SLACK_NOT_REMEMBERED_LINE}\n`;
+/** A turn's words alone: its content without the not-remembered line or the label. */
+const wordsOf = (i: Invoke) => contentOf(i).replace(NOT_REMEMBERED, '').replace(/^\[[^\]]*\]: /, '');
 
 afterEach(() => {
   vi.useRealTimers();
@@ -2181,7 +2198,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
       ['usr_ada', 'agt_support', 'external', 'shared', `conv:${externalKey(MENTION_TS)}`],
     ]);
     // The label is still Bob's: who wrote is content, never identity.
-    expect(contentOf(w.invokes[0]!)).toBe(`[Slack · #support · Bob Jones (${BOB})]: can you help?`);
+    expect(contentOf(w.invokes[0]!)).toBe(`${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: can you help?`);
     expect(w.conversations.map((c) => [c.ctx.userId, c.input])).toEqual([
       ['usr_ada', { userId: 'usr_ada', agentId: 'agt_support', externalKey: externalKey(MENTION_TS), fallback: { origin: 'slack' } }],
     ]);
@@ -2212,7 +2229,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
     expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.audience, i.ctx.conversationId])).toEqual([
       ['usr_ada', 'external', 'shared', `conv:${externalKey(MENTION_TS)}`],
     ]);
-    expect(contentOf(w.invokes[0]!)).toBe(`[Slack · #support · Carol (${CAROL})]: is the office open?`);
+    expect(contentOf(w.invokes[0]!)).toBe(`${NOT_REMEMBERED}[Slack · #support · Carol (${CAROL})]: is the office open?`);
     // Nobody to ask about but the requester: at the mention, and again when the turn's time comes.
     expect(w.agents.inputs('agents:resolve')).toEqual([
       { agentId: 'agt_support', userId: 'usr_ada' },
@@ -2342,7 +2359,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
 
     first.release();
     await w.idle();
-    expect(w.invokes.map((i) => contentOf(i).replace(/^\[[^\]]*\]: /, ''))).toEqual([
+    expect(w.invokes.map((i) => wordsOf(i))).toEqual([
       'outsider 0',
       'member',
       'outsider 1',
@@ -2374,7 +2391,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
     first.release();
     await w.idle();
 
-    expect(w.invokes.map(contentOf)).toEqual([`[Slack · #support · Bob Jones (${BOB})]: first`]);
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: first`]);
     expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
       { level: 'info', msg: 'slack_turns_dropped', fields: { installId: OWN_BOT_ID, reason: 'disconnected', count: 1 } },
     ]);
@@ -2398,7 +2415,7 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
 
     // Carol's turn was planned as Ada's, in Ada's conversation: it never runs, as either of them.
     expect(w.invokes.map((i) => [i.ctx.userId, contentOf(i)])).toEqual([
-      ['usr_ada', `[Slack · #support · Bob Jones (${BOB})]: first`],
+      ['usr_ada', `${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: first`],
     ]);
     expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: CAROL, text: COPY.turnFailed, threadTs: root }]);
     expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
@@ -3069,7 +3086,7 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
       ['usr_ada', SUPPORT_AGENT.id, 'external', `conv:${botKey(MENTION_TS)}:external`],
     ]);
     // Who wrote is content, never identity.
-    expect(contentOf(w.invokes[0]!)).toBe(`[Slack · #support · Bob Jones (${BOB})]: can you help?`);
+    expect(contentOf(w.invokes[0]!)).toBe(`${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: can you help?`);
     expect(w.conversations.map((c) => [c.ctx.userId, c.input])).toEqual([
       [
         'usr_ada',
@@ -3186,7 +3203,7 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     await w.idle();
 
     // Carol's turn never runs as Ada, records nothing; Alice's runs as her.
-    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, contentOf(i).replace(/^\[[^\]]*\]: /, '')])).toEqual([
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, wordsOf(i)])).toEqual([
       ['usr_ada', 'external', 'outsider first'],
       ['usr_alice', 'user', 'member first'],
       ['usr_alice', 'user', 'member second'],
@@ -3221,7 +3238,7 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     first.release();
     await w.idle();
 
-    expect(w.invokes.map((i) => contentOf(i).replace(/^\[[^\]]*\]: /, ''))).toEqual(['first']);
+    expect(w.invokes.map((i) => wordsOf(i))).toEqual(['first']);
     expect(w.threadWrites).toHaveLength(1);
     expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: CAROL, text: COPY.turnFailed }]);
     expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([
@@ -3736,5 +3753,93 @@ describe('createEventRouter: a private channel is answered in and never remember
     await w.idle();
     const conversationId = `conv:${botKey(MENTION_TS)}`;
     expect(await memoryAsks(w.channels.store, conversationId)).toEqual({ observer: NOT_REMEMBERED, note: NOT_REMEMBERED });
+  });
+});
+
+// ── The agent is told when memory won't learn from its thread (TASK-1191) ────
+
+/*
+  Walk TASK-1189, check 4: in a private channel, "@Fern remember that my
+  favorite fruit is mango" got "I'll have it on hand next time too", in a
+  thread the capture veto refused. The turn's content now starts with one
+  fixed line, before the label, whenever the thread record the turn just
+  wrote says memory won't learn from it; a remembered thread's content is
+  the label and the words alone. A DM never has the line: the DM tests above
+  pin its content exactly.
+*/
+describe("createEventRouter: a thread memory won't learn from says so in the turn (TASK-1191)", () => {
+  const LABELLED = `[Slack · #support · Alice Smith (${ALICE})]: <@${OWN_BOT_USER_ID}> what is open?`;
+
+  it("a member's turn in a public channel with the switch on: the label first, no line", async () => {
+    const w = botWorld();
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.threadWrites).toEqual([expect.objectContaining({ notRemembered: false })]);
+    expect(w.invokes.map(contentOf)).toEqual([LABELLED]);
+  });
+
+  it('the switch off: the line, then the label', async () => {
+    const w = botWorld();
+    expect(await w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
+  });
+
+  it('a private channel: the line, then the label', async () => {
+    const w = botWorld({ channelInfo: () => slackChannel(SUPPORT, 'support', { isPrivate: true }) });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
+  });
+
+  it('the switch turned off just before the thread is recorded: the line, as the record says', async () => {
+    const w = botWorld({ beforeThreadWrite: (store) => store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false).then(() => {}) });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
+  });
+
+  it("a thread remembered at its first turn and switched off before its second: only the second has the line", async () => {
+    const w = botWorld();
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(await w.channels.store.setRemember(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, false)).toBe(true);
+    // A reply in the first mention's thread: a ts of its own, keyed on the thread's.
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035301.000301', threadTs: MENTION_TS, text: `<@${OWN_BOT_USER_ID}> and now?` }));
+    await w.idle();
+    // One conversation, its two turns.
+    expect(new Set(w.invokes.map((i) => i.ctx.conversationId)).size).toBe(1);
+    expect(w.invokes.map(contentOf)).toEqual([
+      LABELLED,
+      `${NOT_REMEMBERED}[Slack · #support · Alice Smith (${ALICE})]: <@${OWN_BOT_USER_ID}> and now?`,
+    ]);
+  });
+
+  it("an outsider's turn: the line, whatever the switch says", async () => {
+    const w = botWorld();
+    await w.dispatch(OWN_BOT, botMention({ user: BOB }));
+    await w.idle();
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)?.remember).toBe(true);
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}[Slack · #support · Bob Jones (${BOB})]: <@${OWN_BOT_USER_ID}> what is open?`]);
+  });
+
+  it('the thread read back finds no row: the line (nothing says memory will learn from it)', async () => {
+    const w = botWorld({ threadReadMissing: true });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.threadWrites).toEqual([expect.objectContaining({ notRemembered: false })]);
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
+  });
+
+  it("the thread can't be read back: the turn still runs, with the line, and the failure is logged by code", async () => {
+    const w = botWorld({ threadReadFails: true });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.invokes.map(contentOf)).toEqual([`${NOT_REMEMBERED}${LABELLED}`]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+    expect(w.lines.filter((l) => l.msg.endsWith('_failed'))).toEqual([
+      { level: 'warn', msg: 'slack_thread_read_failed', fields: { installId: OWN_BOT_ID, code: 'store-unavailable' } },
+    ]);
   });
 });

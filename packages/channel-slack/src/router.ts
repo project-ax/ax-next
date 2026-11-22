@@ -138,6 +138,10 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      outsider's records none. If the record can't be written the turn
  *      doesn't run, and the sender is told privately to try again. A DM
  *      records nothing: the switch is a channel's.
+ *  10. The thread is read back. One memory won't learn from (switch off,
+ *      private, or outsiders') gets a fixed line before its label, so the
+ *      agent doesn't promise to remember it (turn-note.ts
+ *      `SLACK_NOT_REMEMBERED_LINE`, TASK-1191).
  *   Lines before the turn are ephemeral, for the sender alone (in the
  *   mention's thread when it was in one); the reply goes in the thread.
  *
@@ -162,9 +166,11 @@ export interface RouterDeps extends TurnDeps {
    * (TASK-1167), with the switch the team last set for the agent there,
    * under the lock a flip takes (`bindBot`, TASK-1182). And a binding
    * removed when Slack says its channel can't be served any more (`remove`,
-   * TASK-1184). The shared app reads and writes none (TASK-1186).
+   * TASK-1184). The thread as recorded, read back so a turn's agent is told
+   * when memory won't learn from it (`getThread`, TASK-1191). The shared app
+   * reads and writes none (TASK-1186).
    */
-  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'bindBot' | 'remove' | 'setPrivate'>;
+  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'getThread' | 'bindBot' | 'remove' | 'setPrivate'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
   /**
@@ -408,6 +414,8 @@ async function routeDm(
       userId: mapped,
       agentId: chosen,
       conversationId,
+      // A DM is no channel's thread: memory learns from it (capture-veto.ts has no opinion).
+      remembered: true,
       text: screened.text,
     });
   });
@@ -733,6 +741,22 @@ async function routeMention(
       await droppedReconnected();
       return;
     }
+    // 10. Whether memory will learn from this thread, read back from the row
+    // just written, with the flags capture-veto.ts reads first: so the agent
+    // is told when it won't (TASK-1191), rather than promise to remember. A
+    // thread that can't be read is told it isn't remembered: the harmless
+    // side, and no reason to drop the turn. As the record says at this
+    // write: memory reads the switch again when it runs, so a switch turned
+    // off after this still keeps it out, untold. A woken turn after an Allow
+    // has no message of ours to carry the line (answers.ts).
+    let remembered = false;
+    try {
+      const thread = await d.channels.getThread(conversationId);
+      remembered = thread !== null && thread.notRemembered === false && thread.external === false;
+    } catch (err) {
+      // Its own name: every `slack_event_failed` means the event's work stopped, and this turn still runs.
+      log('warn', 'slack_thread_read_failed', { code: logCode(err) });
+    }
     await runTurn(d, {
       mode: external ? 'external' : 'attended',
       label: channelSenderLabel(now.channelName || m.channel, admission.name, m.sender),
@@ -745,6 +769,7 @@ async function routeMention(
       userId: runAs,
       agentId,
       conversationId,
+      remembered,
       text: m.text,
     });
   };
