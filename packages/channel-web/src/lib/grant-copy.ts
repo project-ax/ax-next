@@ -165,6 +165,17 @@ export const HOST_ALLOW_ALWAYS_LABEL = 'Always for this agent';
 export const HOST_ALLOWING_LABEL = 'Allowing…';
 
 /**
+ * Said (as a toast) as a host row leaves, the way a resumed skill grant is
+ * (`grantResumedTitle`). They carry no duration — the button already said it —
+ * and never the host: it is model-chosen text.
+ */
+export const HOST_ALLOWED_TITLE = 'Site allowed';
+export const HOST_ALLOWED_DETAIL = 'Ask your assistant again and it’ll try.';
+export const HOST_ENDED_TITLE = 'Nothing changed';
+export const HOST_ENDED_DETAIL =
+  'Your assistant had already finished working on that. If it needs the site again, it’ll ask.';
+
+/**
  * What "Not now" actually does (TASK-444). Rendered under the button, on every
  * kind of grant, because it is true of all of them.
  *

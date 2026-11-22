@@ -302,17 +302,30 @@ export async function removeDestinationCredential(args: DestinationCredentialTar
  * sessionId is echoed for routing, never trusted for authorization. Carries no
  * secret. Mirrors `setDestinationCredential`'s CSRF posture
  * (`x-requested-with: ax-admin`, `credentials: 'include'`).
+ *
+ * Resolves `true` when the live session took the host, `false` when the session
+ * had already ended, `null` when the 200 carried no readable `added`.
  */
 export async function grantHost(input: {
   sessionId: string;
   host: string;
   /** "Always for this agent" → durably persist a per-(user, agent) grant (TASK-44). */
   persist?: boolean;
-}): Promise<void> {
+}): Promise<boolean | null> {
   const res = await httpFetch('/api/chat/allow-host', {
     method: 'POST',
     headers: writeHeaders,
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new HttpError('/api/chat/allow-host', res.status);
+  // The route answers `{ added }`: true = the live session took it, false =
+  // that session had already ended. Anything else (or an unreadable body) is
+  // `null` — the caller says nothing rather than guess.
+  try {
+    const body: unknown = await res.json();
+    const added = (body as { added?: unknown } | null)?.added;
+    return typeof added === 'boolean' ? added : null;
+  } catch {
+    return null;
+  }
 }

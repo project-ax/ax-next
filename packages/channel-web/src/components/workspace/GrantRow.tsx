@@ -25,9 +25,10 @@
  *   - It says something back — the grant landed and the agent did not restart,
  *     or the POST failed — and that sentence takes focus, exactly as a
  *     decision's receipt does.
- *   - It simply GOES. "Not now" on a host grant, and every successful resolve,
- *     remove the row outright; there is nothing left inside it to focus, and
- *     the browser's answer to that is `<body>`. So focus goes up to the
+ *   - It simply GOES. "Not now" on a host grant, and every successful resolve
+ *     (a host Allow also says so, in a toast), remove the row outright; there
+ *     is nothing left inside it to focus, and the browser's answer to that is
+ *     `<body>`. So focus goes up to the
  *     surface's `data-consent-region` first, while this node is still in the
  *     document. `lib/consent-focus.ts` carries the argument.
  */
@@ -59,7 +60,11 @@ import {
   GRANT_REJECT_LABEL,
   HOST_ALLOW_ALWAYS_LABEL,
   HOST_ALLOW_ONCE_LABEL,
+  HOST_ALLOWED_DETAIL,
+  HOST_ALLOWED_TITLE,
   HOST_ALLOWING_LABEL,
+  HOST_ENDED_DETAIL,
+  HOST_ENDED_TITLE,
   HOST_WALL_EXPLANATION,
   KEY_SAFETY,
   PACKAGES_LINE,
@@ -74,6 +79,7 @@ import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-desti
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
+import { toastActions } from '@/lib/toast-store';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
@@ -348,7 +354,18 @@ export function GrantRow({
     setBusy(true);
     setError(null);
     try {
-      await grantHost({ sessionId: request.sessionId, host: request.host, persist });
+      const added = await grantHost({
+        sessionId: request.sessionId,
+        host: request.host,
+        persist,
+      });
+      // The row goes either way; the toast says which it was. An answer we
+      // could not read (`null`) says nothing rather than guess.
+      if (added === true) {
+        toastActions.show({ title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL });
+      } else if (added === false) {
+        toastActions.show({ title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL });
+      }
       resolveAndReturnFocus();
     } catch (err) {
       setError(userFacingMessage(err, 'grant-row'));

@@ -10,7 +10,7 @@
  * the workspace admins (Admin › Connectors › Awaiting approval), never to a
  * card here.
  */
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GrantRow } from '../GrantRow';
 import { grantKey } from '@/lib/workspace-grant-store';
@@ -27,10 +27,15 @@ import {
   GRANT_REASSURANCE,
   GRANT_REJECT_HINT,
   GRANT_REJECT_LABEL,
+  HOST_ALLOWED_DETAIL,
+  HOST_ALLOWED_TITLE,
+  HOST_ENDED_DETAIL,
+  HOST_ENDED_TITLE,
   KEY_SAFETY,
   SLOT_HINT,
 } from '@/lib/grant-copy';
 import { connectorAccessCopy } from '@/lib/connector-access-copy';
+import { toastActions } from '@/lib/toast-store';
 import type { PermissionRequest } from '@/server/types';
 import type { GrantResume } from '@/lib/workspace-resume';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -82,10 +87,24 @@ const hostReq: PermissionRequest = {
   sessionId: 'sess-9',
 };
 
+let show: MockInstance<typeof toastActions.show>;
+
+beforeEach(() => {
+  show = vi.spyOn(toastActions, 'show');
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   resetGrantDraftsForTest();
+  toastActions.reset();
 });
+
+/** A 200 whose body is the route's `{ added }`. */
+function hostFetch(added: unknown) {
+  return vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(new Response(JSON.stringify({ added }), { status: 200 }));
+}
 
 describe('a payload the guard lets through but the row must survive', () => {
   /*
@@ -337,6 +356,53 @@ describe('a host grant', () => {
     );
   });
 
+  test('"Just this once" on a live session: the row goes, and a toast says the site is allowed', async () => {
+    hostFetch(true);
+    const { onResolved } = row(hostReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /just this once/i }));
+
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith({ title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL });
+    expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
+  });
+
+  test('"Always for this agent" says the same', async () => {
+    const fetchMock = hostFetch(true);
+    const { onResolved } = row(hostReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /always for this agent/i }));
+
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"persist":true');
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith({ title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL });
+    expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
+  });
+
+  test('a session that had already ended: the row goes, and the toast says nothing changed', async () => {
+    hostFetch(false);
+    const { onResolved } = row(hostReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /just this once/i }));
+
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith({ title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL });
+    expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
+  });
+
+  test("an answer it can't read: the row goes with no toast", async () => {
+    okFetch();
+    const { onResolved } = row(hostReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /just this once/i }));
+
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
+    expect(show).not.toHaveBeenCalled();
+  });
+
   test('offers all three answers — once, always, and no', () => {
     row(hostReq);
 
@@ -495,6 +561,7 @@ describe('when the POST fails', () => {
     // Not cleared: a silent clear would read as "granted" for something that
     // was not.
     expect(onResolved).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
     // The row is still answerable — the button came back.
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /just this once/i })).toBeEnabled(),
