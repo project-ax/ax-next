@@ -204,7 +204,7 @@ describe('postMemoryNotice', () => {
     // Slack won't take a top-level post there at any turn, so this one is final: kept, and logged by stage.
     expect(w.claimed()).toBe(true);
     expect(w.lines).toEqual([
-      { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'post', code: 'restricted_action' } },
+      { level: 'info', msg: 'slack_notice_top_level_refused', fields: { code: 'restricted_action' } },
       { level: 'info', msg: 'slack_notice_posted', fields: { stage: 'thread' } },
     ]);
     // The team was looked up once, for both posts.
@@ -230,7 +230,7 @@ describe('postMemoryNotice', () => {
     expect(w.posts.map((p) => p.threadTs)).toEqual([undefined, THREAD_TS]);
     expect(w.claimed()).toBe(false);
     expect(w.lines).toEqual([
-      { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'post', code: 'restricted_action' } },
+      { level: 'info', msg: 'slack_notice_top_level_refused', fields: { code: 'restricted_action' } },
       { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'thread', code: 'ratelimited' } },
     ]);
 
@@ -238,11 +238,23 @@ describe('postMemoryNotice', () => {
     await w.notice();
     expect(w.posts.map((p) => p.threadTs)).toEqual([undefined, THREAD_TS, undefined]);
     expect(w.claimed()).toBe(true);
-    expect(w.lines.map((l) => l.msg)).toEqual(['slack_notice_failed', 'slack_notice_failed', 'slack_notice_posted']);
+    expect(w.lines.map((l) => l.msg)).toEqual(['slack_notice_top_level_refused', 'slack_notice_failed', 'slack_notice_posted']);
   });
 
-  it('only restricted_action falls back to the thread: any other refusal posts nothing there', async () => {
-    for (const code of ['not_in_channel', 'ratelimited', 'http-503', 'channel_not_found']) {
+  it.each(['restricted_action', 'restricted_action_thread_only_channel', 'restricted_action_read_only_channel'])(
+    'an admins-only refusal (%s) falls back to the thread, and a thread post that lands keeps the claim',
+    async (code) => {
+      const w = world({ postFails: (n) => (n === 1 ? new SlackApiError('chat.postMessage', code) : undefined) });
+      await w.notice();
+      expect(w.posts.map((p) => p.threadTs)).toEqual([undefined, THREAD_TS]);
+      expect(w.claimed()).toBe(true);
+      // Not a failure: the channel was told, in the thread.
+      expect(w.lines.filter((l) => l.msg === 'slack_notice_failed')).toEqual([]);
+    },
+  );
+
+  it('only an admins-only refusal falls back to the thread: any other refusal posts nothing there', async () => {
+    for (const code of ['not_in_channel', 'ratelimited', 'http-503', 'channel_not_found', 'restricted', 'not_restricted_action']) {
       const w = world({ postFails: (n) => (n === 1 ? new SlackApiError('chat.postMessage', code) : undefined) });
       await w.notice();
       expect(w.posts.map((p) => p.threadTs), code).toEqual([undefined]);

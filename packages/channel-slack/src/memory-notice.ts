@@ -21,12 +21,14 @@ import { agentTeamName } from './team-name.js';
  * down) gives the claim back, so the next turn tries again: telling a
  * channel twice, when Slack took a post we saw fail, is the better failure
  * for a privacy notice than never telling it. The one refusal no later turn
- * gets past is an announcement-only channel's (`restricted_action`: only
- * admins post top-level there): the notice goes in the mention's thread
- * instead, which reaches the people talking to the bot, and the claim is
- * kept once that lands (it is given back only if the thread post fails
- * too). Retrying would put a claim, two lookups and a doomed post in front
- * of every reply there, and tell nobody. A release gives back only the
+ * gets past is a channel where only admins post top-level (an
+ * announcement-only or thread-only channel: Slack answers `restricted_action`
+ * or a `restricted_action_…` variant; which one is unmeasured, so any of
+ * them): the notice goes in the mention's thread instead, which reaches the
+ * readers of that thread only, and the claim is kept once that lands (it is
+ * given back only if the thread post fails too). So later threads there are
+ * not told: accepted, since retrying would put a claim, two lookups and a
+ * doomed post in front of every reply there, and tell nobody. A release gives back only the
  * claim this turn made (by the stamp `claimNotice` answered), never a newer
  * binding's after a remove and rebind. A crash between the claim and the post leaves that binding untold
  * (accepted: rare).
@@ -37,6 +39,7 @@ import { agentTeamName } from './team-name.js';
  *
  * Nothing here stops the turn: it never throws. Log lines are code-only:
  * `slack_notice_posted` (with `stage: 'thread'` when it went in the thread),
+ * `slack_notice_top_level_refused { code }` (info: an admins-only channel),
  * `slack_notice_failed { stage, code }` (stage `claim`, `post`, `thread` or
  * `release`) and `slack_team_name_failed { code }`, never
  * a name, an id or a token, and never `slack_event_failed`, which means the
@@ -99,11 +102,13 @@ export async function postMemoryNotice(
   try {
     await d.api.postToChannel(i.botToken, { channel: i.channelId, text });
   } catch (err) {
-    say('warn', 'slack_notice_failed', { stage: 'post', code: logCode(err) });
-    if (!(err instanceof SlackApiError && err.code === 'restricted_action')) {
+    if (!isAdminsOnlyRefusal(err)) {
+      say('warn', 'slack_notice_failed', { stage: 'post', code: logCode(err) });
       await release();
       return;
     }
+    // Expected in such a channel, and the thread post below decides the outcome: not a failure line.
+    say('info', 'slack_notice_top_level_refused', { code: logCode(err) });
     // An announcement-only channel: no later turn's top-level post would land, so the thread is where it goes.
     try {
       await d.api.postToChannel(i.botToken, { channel: i.channelId, text, threadTs: i.threadTs });
@@ -116,4 +121,9 @@ export async function postMemoryNotice(
     return;
   }
   say('info', 'slack_notice_posted');
+}
+
+/** Slack refused a top-level post because only admins may post one there (`restricted_action`, or a `restricted_action_…` variant). */
+function isAdminsOnlyRefusal(err: unknown): boolean {
+  return err instanceof SlackApiError && (err.code === 'restricted_action' || err.code.startsWith('restricted_action_'));
 }

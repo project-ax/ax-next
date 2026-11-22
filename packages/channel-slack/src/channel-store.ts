@@ -193,6 +193,12 @@ function toBinding(r: SelectedRow): ChannelBinding {
   };
 }
 
+/**
+ * A notice claim's stamp: `notice_posted_at` as UTC text to the microsecond,
+ * the same whatever the session's DateStyle or TimeZone.
+ */
+const NOTICE_STAMP = sql<string>`to_char(notice_posted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')`;
+
 export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelStore {
   return {
     async get(installId, channelId) {
@@ -257,9 +263,10 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // Of two claims at once, the second waits on the first's row lock, then
       // Postgres checks its WHERE again against the row the first wrote
       // (READ COMMITTED): it finds the notice claimed and updates nothing.
-      // The stamp comes back as Postgres's own text (microseconds and the
-      // offset), so the release can name it exactly: a JS Date would drop
-      // the microseconds and never match.
+      // The stamp comes back as fixed UTC text with microseconds
+      // (NOTICE_STAMP), so the release can name it exactly: a JS Date would
+      // drop the microseconds and never match, and `::text` would depend on
+      // the session's DateStyle and TimeZone (review round 2).
       const r = await db
         .updateTable(CHANNELS)
         .set({ notice_posted_at: sql<Date>`now()` })
@@ -267,7 +274,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         .where('channel_id', '=', channelId)
         .where('agent_id', '=', agentId)
         .where('notice_posted_at', 'is', null)
-        .returning(sql<string>`notice_posted_at::text`.as('claimed'))
+        .returning(sql<string>`${NOTICE_STAMP}`.as('claimed'))
         .executeTakeFirst();
       return r?.claimed ?? null;
     },
@@ -280,7 +287,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         .where('install_id', '=', installId)
         .where('channel_id', '=', channelId)
         .where('agent_id', '=', agentId)
-        .where(sql<boolean>`notice_posted_at = ${claimed}::timestamptz`)
+        .where(sql<boolean>`${NOTICE_STAMP} = ${claimed}`)
         .execute();
     },
 

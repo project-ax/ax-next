@@ -3687,6 +3687,28 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     expect(w.invokes).toHaveLength(1);
   });
 
+  it("a mention made inside a thread: an announcement-only channel's notice goes in that thread, the one the reply goes to (review round 2)", async () => {
+    // In such a channel members can only post in threads, so this is the usual mention there.
+    const parent = '1763035100.000050';
+    const w = botWorld({
+      teams: TEAMS,
+      slackFail: (method, args) =>
+        method === 'postToChannel' && args['threadTs'] === undefined
+          ? new SlackApiError('chat.postMessage', 'restricted_action')
+          : undefined,
+    });
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Two tickets.' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention({ threadTs: parent }));
+    await w.idle();
+
+    const text = COPY.memoryNotice('Customer Support');
+    expect(notices(w)).toEqual([
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text }],
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text, threadTs: parent }],
+    ]);
+    expect(w.slack.calls.find((c) => c.method === 'startStream')!.args['threadTs']).toBe(parent);
+  });
+
   it("an announcement-only channel (restricted_action) gets the notice in the mention's thread, before the reply, and once", async () => {
     // Slack refuses the bot a top-level post there at every turn; a threaded one it takes.
     const w = botWorld({
@@ -3711,8 +3733,10 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     expect(w.slack.calls.indexOf(start)).toBeGreaterThan(w.slack.calls.findLastIndex((c) => c.method === 'postToChannel'));
     expect(replyIn(w.slack.calls, SUPPORT)).toBe('Two tickets.');
     expect(w.lines.filter((l) => l.msg === 'slack_notice_failed' || l.msg === 'slack_notice_posted')).toEqual([
-      { level: 'warn', msg: 'slack_notice_failed', fields: { installId: OWN_BOT_ID, stage: 'post', code: 'restricted_action' } },
       { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID, stage: 'thread' } },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_notice_top_level_refused')).toEqual([
+      { level: 'info', msg: 'slack_notice_top_level_refused', fields: { installId: OWN_BOT_ID, code: 'restricted_action' } },
     ]);
     expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([]);
 

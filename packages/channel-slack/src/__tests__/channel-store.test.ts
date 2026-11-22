@@ -1036,6 +1036,32 @@ describe("a channel's memory notice: claimed once per binding (TASK-1203)", () =
     }
   });
 
+  it("a claim's stamp releases on another replica whose session has another DateStyle and TimeZone (review round 2)", async () => {
+    await connect();
+    const odd = new Kysely<ChannelSlackDatabase>({
+      dialect: new PostgresDialect({
+        pool: new pg.Pool({
+          connectionString: container.getConnectionUri(),
+          max: 2,
+          options: '-c DateStyle=Postgres -c TimeZone=Asia/Kolkata',
+        }),
+      }),
+    });
+    try {
+      const other = createChannelStore(odd);
+      // Claimed under one session's settings, released under the other's, and the other way round.
+      const first = await channels.claimNotice(INSTALL, SUPPORT, AGENT);
+      expect(first).toEqual(expect.any(String));
+      await other.releaseNotice(INSTALL, SUPPORT, AGENT, first!);
+      const second = await other.claimNotice(INSTALL, SUPPORT, AGENT);
+      expect(second).toEqual(expect.any(String));
+      await channels.releaseNotice(INSTALL, SUPPORT, AGENT, second!);
+      expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
+    } finally {
+      await odd.destroy();
+    }
+  });
+
   it('a reconnect keeps the claim; a binding removed and bound again claims again', async () => {
     await connect();
     expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toEqual(expect.any(String));
