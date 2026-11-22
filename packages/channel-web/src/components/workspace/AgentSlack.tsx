@@ -2,8 +2,8 @@
  * An agent's Slack section in its settings (TASK-1094): one card for the
  * agent's own bot (`AgentSlackBot`, TASK-1168, TASK-1187), whose title says
  * which of three states it is in (not in Slack, waiting, live). Once it is
- * live, the card holds the channels the bot has answered in, each with its
- * memory setting in the row's ⋯ (`AgentSlackBotChannels`, TASK-1180). A team agent reaches channels only
+ * live, the card holds the channels the bot has answered in
+ * (`AgentSlackBotChannels`, TASK-1180). A team agent reaches channels only
  * through its own bot (TASK-1186), so nothing is connected here through the
  * shared Slack app. Everyone gets the card: someone who can't manage the agent
  * reads that it isn't in Slack yet, until it is.

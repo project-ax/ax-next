@@ -21,6 +21,9 @@ describe('slack card words matcher', () => {
       'configuration token',
       'Your App Configuration Tokens',
       'Ask an AX admin',
+      'Remember this channel',
+      "Don't remember this channel",
+      'Not remembered',
     ]) {
       expect(slackCardWordsFound(s), s).not.toEqual([]);
     }
@@ -30,7 +33,8 @@ describe('slack card words matcher', () => {
     for (const s of [
       'Waiting for an admin to approve Quill Bot',
       'anything it needs approved',
-      'Remember this channel',
+      "Private channels aren't remembered.",
+      'It remembers what team members say in public channels, never in private ones.',
       'Take over',
       'Set up again',
       'relax',

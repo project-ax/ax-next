@@ -864,7 +864,7 @@ paths exist, not who may do what.
   Only the shared install's rows in `channel_slack_v1_channels` go. A bot's
   bindings live in the same table under its own install id and stay. The
   kept switches (`channel_slack_v1_memory_switches`) stay, because the bot's
-  first bind reads them.
+  first bind reads them. (TASK-1202 later dropped them with the switch, §4c.)
 - **The shared manifest drops `channels:join` and `commands`**, the two scopes
   that only served connecting channels. Whether Slack needs a new Allow to
   *drop* a scope is unmeasured. Either way, prod's shared install sheds them
@@ -1010,6 +1010,8 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
 - **The per-channel switch stays built but moves out of the way.** It's still
   on by default, stored and locked as built (TASK-1180, TASK-1182), but it
   moves into each channel's ⋯ menu as "Don't remember this channel".
+  *Removed by TASK-1202 (§4c card A): the ⋯ item, its route, the kept
+  switches table and the bindings' `remember` column are gone.*
 - **Unchanged and not shown:** outsiders' words are never remembered, and
   facts about the speaker are never saved to shared memory (§2a).
 
@@ -1120,7 +1122,7 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 
 ### What goes
 
-- **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column.
+- **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column. *Done (TASK-1202):* channel-slack's boot migration drops both. The `channel-not-remembered` refusal stays only for a private channel, or one no longer connected to its agent, until card B; threads an old switch marked stay refused, since memory's cursor already skipped them. A bot's first bind is a plain `upsert` again, with no lock. The TASK-1191 turn note stays for private channels and outsiders' threads until card B.
 - **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more.
 - **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's sessions recall everything.
 - **Still needed:** `ctx.audience` (personal-agent DMs), the private-wins channel check (a channel made Slack Connect or archived must still be caught at turn start), and `groups:read` (to read a private channel's flags).
