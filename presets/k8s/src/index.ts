@@ -1134,10 +1134,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // twin of the LIVE proxy:add-host grant (TASK-37): the chat-orchestrator
   // loads these hosts into the egress allowlist at session open (hasService-
   // gated), and the channel-web allow-host route writes one when the user
-  // clicks "Always for this agent". Reuses the shared postgres pool via
-  // database:get-instance. host-grants:revoke's settings-UI caller lands in
-  // TASK-42 (half-wired window OPEN until then; reachable + tested via the
-  // package canary here).
+  // clicks "Always for this agent". Writers: channel-web's allow-host route
+  // ("Always for this agent") and its Settings "Add a site", plus channel-slack's
+  // host prompt Allow (TASK-1208). A grant is revoked from Settings › Allowed
+  // sites and from the agent's "Granted by you". Reuses the shared postgres
+  // pool via database:get-instance.
   plugins.push(createHostGrantsPlugin());
 
   // ----- 8a'''. tool policy ----------------------------------------------
