@@ -1075,7 +1075,15 @@ async function runRunnerInner(
   async function allowedHostsLine(): Promise<string | null> {
     try {
       const r = (await client.call('proxy.drain-allowed-hosts', {})) as ProxyDrainAllowedHostsResponse;
-      return buildEgressAllowedNote(r.hosts);
+      const line = buildEgressAllowedNote(r.hosts);
+      // The drain already cleared these hosts, so a drop here is permanent:
+      // say so, rather than lose the notice without a trace.
+      if (line === null && r.hosts.length > 0) {
+        process.stderr.write(
+          `runner: drain-allowed-hosts: ${r.hosts.length} allowed host(s) failed the host-shape filter; no line added\n`,
+        );
+      }
+      return line;
     } catch (err) {
       process.stderr.write(
         `runner: drain-allowed-hosts failed (continuing): ${err instanceof Error ? err.message : String(err)}\n`,

@@ -2397,9 +2397,18 @@ describe('runRunner — hosts allowed since the last turn (TASK-1199)', () => {
 
   it('hosts that fail the host-shape filter never reach the model', async () => {
     drainAnswers(['bad host']);
-    const { seen } = await run([said('hello', 1)]);
-    expect(fakeClient.call).toHaveBeenCalledWith('proxy.drain-allowed-hosts', {});
-    expect(seen).toEqual(['hello']);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { seen } = await run([said('hello', 1)]);
+      expect(fakeClient.call).toHaveBeenCalledWith('proxy.drain-allowed-hosts', {});
+      expect(seen).toEqual(['hello']);
+      // The drain already cleared them, so dropping them is said out loud.
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain(
+        'runner: drain-allowed-hosts: 1 allowed host(s) failed the host-shape filter; no line added\n',
+      );
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it('a decision-resolved turn does not drain: the line waits for the next person\'s message', async () => {
