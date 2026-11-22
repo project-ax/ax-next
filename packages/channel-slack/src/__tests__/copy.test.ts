@@ -44,6 +44,7 @@ const ARGS: Record<string, unknown[][]> = {
   ],
   skillNeedsWeb: [[TODAY], [HOSTILE]],
   skillFailed: [[TODAY], [HOSTILE]],
+  moreSkillsInToday: [[1, TODAY], [2, TODAY], [7, HOSTILE]],
   // A bot request's DMs (TASK-1170). The subject is plain_text: benign args only (its hostile case is in blocks.test.ts).
   botRequestSubject: [
     [{ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' }],
@@ -114,6 +115,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'skillDenied',
         'skillNeedsWeb',
         'skillFailed',
+        'moreSkillsInToday',
         'noAgent',
         'notMapped',
         'queueFull',
@@ -194,6 +196,8 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     ['skillDenied', COPY.skillDenied],
     ['skillNeedsWeb', COPY.skillNeedsWeb(link)],
     ['skillFailed', COPY.skillFailed(link)],
+    ['moreSkillsInToday', COPY.moreSkillsInToday(1, link)],
+    ['moreSkillsInToday', COPY.moreSkillsInToday(2, link)],
   ];
   /** The lines that point at Today. */
   const LINKED = [
@@ -205,6 +209,7 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     'decisionNotRun',
     'skillNeedsWeb',
     'skillFailed',
+    'moreSkillsInToday',
   ];
 
   it('are plain mrkdwn text: no < or >, no Markdown link, even around a hostile link', () => {

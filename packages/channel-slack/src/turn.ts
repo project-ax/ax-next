@@ -70,7 +70,9 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * The two `chat:permission-request` cards get a prompt too, in a DM or an
  * attended turn only (permission-prompts.ts): after the reply, and after a
  * held call's prompt, in the order the cards came, one per host and one per
- * skill, at most PERMISSION_PROMPTS_PER_TURN_MAX between them.
+ * skill, at most PERMISSION_PROMPTS_PER_TURN_MAX between them. Skills past
+ * the cap get one line after the prompts instead, saying how many more wait
+ * in Today (TASK-1155); hosts past it get nothing.
  *
  *   - A host the sandbox was refused while the turn ran (the egress wall's
  *     card) is shown only once it passes the egress proxy's own HOST_RE,
@@ -664,6 +666,18 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     kept than the cap: anything else is only counted.
   */
   const permissions: Array<{ key: string; ask: Ask }> = [];
+  /*
+    The skills asked about past the cap (TASK-1155): no prompt each, but one
+    line after the prompts saying how many more wait in Today, where every
+    skill card waits too. Without it the agent's reply says it asked and the
+    thread shows nothing. Telling the agent instead can't work from here: its
+    request_capability result was settled during the turn, and the prompts
+    are only posted once the reply has ended. A host past the cap gets no
+    line: nothing about a blocked host waits in Today, and the agent never
+    said it asked.
+  */
+  const moreSkills = new Set<string>();
+  const overCap = new Set<string>();
   const skipped = new Map<PermissionSkip, number>();
   const skip = (reason: PermissionSkip): void => {
     skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
@@ -706,6 +720,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     // One prompt per host, one per skill: a repeat is that prompt, never one over the cap.
     if (permissions.some((q) => q.key === card.key)) return;
     if (permissions.length >= PERMISSION_PROMPTS_PER_TURN_MAX) {
+      // A repeat of one already past the cap is that one, counted once.
+      if (overCap.has(card.key)) return;
+      overCap.add(card.key);
+      if (card.key.startsWith('skill:')) moreSkills.add(card.key);
       skip('cap');
       return;
     }
@@ -715,6 +733,18 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
   const askPermissions = async (): Promise<void> => {
     if (asking === null) return;
     for (const { ask } of permissions) await askInThread(d, asking.prompts, s.botToken, asking.context, ask, todayLink);
+    if (moreSkills.size > 0) {
+      const c = asking.context;
+      try {
+        await d.api.postMessage(s.botToken, {
+          channel: c.channel,
+          threadTs: c.threadTs,
+          markdownText: COPY.moreSkillsInToday(moreSkills.size, todayLink),
+        });
+      } catch (err) {
+        quietly(() => d.logger.warn('slack_reply_failed', { installId, stage: 'more-skills', code: logCode(err) }));
+      }
+    }
   };
 
   // Registered before agent:invoke: a fast turn's first chunk can beat the
