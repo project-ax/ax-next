@@ -141,10 +141,11 @@ const RECALL_SHAPES: MemoryRecallInput[] = [
 ];
 
 describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091)', () => {
-  // A personal agent's only. A team agent's shared turn recalls everything
-  // (TASK-1204): see the next test.
-  it.each(['personal'] as const)(
-    'a private statement is never recalled in a shared turn (%s agent)',
+  // `sharedCtx` is an outsider's turn: on any agent it recalls shared
+  // statements only. A team agent's MEMBER turn recalls everything (TASK-1204):
+  // see the next test.
+  it.each(['personal', 'team'] as const)(
+    "a private statement is never recalled in an outsider's shared turn (%s agent)",
     async (visibility) => {
       const h = await makeHarness({ agent: { visibility } });
       const mine = h.ctx({ conversationId: PRIVATE_CONV });
@@ -186,13 +187,14 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
     },
   );
 
-  // Design §4c (TASK-1204): a team agent's memory is the team's in every
-  // session, so its shared turn, an outsider's included, reads exactly what
-  // the owner's own turn reads.
-  it("a team agent's shared turn recalls everything (TASK-1204)", async () => {
+  // Design §4c (TASK-1204): a team agent's memory is the team's, so a
+  // member's shared turn reads exactly what the member's own private turn
+  // reads. (An outsider's turn on it doesn't: the test above.)
+  it("a team agent's member turn in a shared conversation recalls everything (TASK-1204)", async () => {
     const h = await makeHarness({ agent: { visibility: 'team' } });
     const mine = h.ctx({ conversationId: PRIVATE_CONV });
-    const shared = sharedCtx(h);
+    // A member in the channel: the turn runs as her, and the room reads the reply.
+    const shared = h.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
     await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, mine);
     await engineRecord(h.bus, shared, [
       {
@@ -379,9 +381,10 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
 
   // Review focus 3: both engines drop an unknown recall field without a word,
   // so an engine without audience support would answer a shared read with
-  // every row it has.
-  it('a shared read that gets a non-shared row back fails instead of returning it', async () => {
-    const h = await makeHarness();
+  // every row it has. `sharedCtx` is an outsider's turn, which keeps the
+  // backstop on a team agent too (TASK-1204).
+  it.each(['personal', 'team'] as const)('a shared read that gets a non-shared row back fails instead of returning it (%s agent)', async (visibility) => {
+    const h = await makeHarness({ agent: { visibility } });
     const { id } = await h.remember(
       { about: 'launch_plan', relation: 'codename', value: SECRET },
       h.ctx({ conversationId: PRIVATE_CONV }),
@@ -557,10 +560,10 @@ describe('recallFacts — the one door every engine read goes through', () => {
     expect(await recallFacts(bus, turn('shared'), PERSONAL_AGENT, FACTS_RECALL_HOOK, {})).toBe(answer);
   });
 
-  // TASK-1204, design §4c: a team agent's memory is the team's in every
-  // session, so none of its reads is scoped by audience, and a private or
-  // unstamped row in the answer is simply part of it.
-  it("a team agent's read carries no audience scope, and its answer is not checked for stamps (TASK-1204)", async () => {
+  // TASK-1204, design §4c: a team agent's memory is the team's, so a member's
+  // read is not scoped by audience in any session, and a private or unstamped
+  // row in the answer is simply part of it. (`turn` names no source: a member's.)
+  it("a team agent's member read carries no audience scope, and its answer is not checked for stamps (TASK-1204)", async () => {
     const answer = { statements: [{ ...ROW, audience: 'private' }, { ...ROW }], degraded: [] };
     const odd = makeAgentContext({ sessionId: 's', agentId: 'agent-1', userId: ALICE, audience: 'public' as never });
     for (const ctx of [turn('shared'), odd, turn(), turn('private')]) {
@@ -578,6 +581,50 @@ describe('recallFacts — the one door every engine read goes through', () => {
       await recallFacts(bus, turn('shared'), TEAM_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience });
       expect(asked).toStrictEqual([{ limit: 5 }]);
     }
+  });
+
+  // §4c shares a team agent's memory with the TEAM, not with people outside
+  // AX: an outsider's turn keeps shared-only recall, and its backstop, on a
+  // team agent too. A source this build doesn't know reads as an outsider's.
+  it.each([
+    ['shared', 'external'],
+    ['public', 'external'],
+    ['shared', 'satellite'],
+  ])("an outsider's read on a team agent keeps the shared scope and its backstop: audience %j, source %j", async (audience, source) => {
+    const outsider = makeAgentContext({
+      sessionId: 's',
+      agentId: 'agent-1',
+      userId: ALICE,
+      audience: audience as never,
+      source: source as never,
+    });
+    const { bus, asked } = engineAnswering({ statements: [{ ...ROW, audience: 'shared' }, { ...ROW, audience: 'private' }], degraded: [] });
+    const failure: unknown = await recallFacts(bus, outsider, TEAM_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience: 'private' }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'invalid-return', hookName: FACTS_RECALL_HOOK });
+    expect((failure as Error).message).not.toContain('Nightjar');
+    expect(asked).toStrictEqual([{ limit: 5, audience: 'shared' }]);
+  });
+
+  it.each([
+    // audience, source, visibility, scope
+    ['shared', 'user', 'team', {}],
+    ['shared', undefined, 'team', {}],
+    ['shared', 'routine', 'team', {}],
+    ['public', 'user', 'team', {}], // a member's turn in an audience this build doesn't know: still the team's
+    [undefined, 'user', 'team', {}],
+    ['shared', 'external', 'team', { audience: 'shared' }], // an outsider's turn: what the room could see
+    ['public', 'external', 'team', { audience: 'shared' }],
+    ['shared', 'satellite', 'team', { audience: 'shared' }], // an unknown source reads as an outsider's
+    ['private', 'external', 'team', {}], // a private turn reads everything, as on any agent
+    ['shared', 'user', 'personal', { audience: 'shared' }],
+    ['shared', 'external', 'personal', { audience: 'shared' }],
+    ['private', 'user', 'personal', {}],
+    ['shared', 'user', 'bogus', { audience: 'shared' }], // an unknown visibility keeps the scope
+  ])('the recall scope of audience %j, source %j on a %s agent is %j', (audience, source, visibility, scope) => {
+    expect(recallAudienceScope({ audience, source } as never, { visibility } as never)).toStrictEqual(scope);
   });
 
   // Only a team agent reads unscoped: a visibility this build doesn't know
@@ -1137,35 +1184,75 @@ describe('a team agent keeps what a member says about themself, under their own 
 });
 
 // ---------------------------------------------------------------------------
-// TASK-1204, the read side (design §4c): a team agent's memory is the team's
-// in every session, so no read in a team agent's turn is scoped by audience.
-// An outsider's turn runs as the requester, so the requester's own key is
-// never presented there as the person talking.
+// TASK-1204, the read side (design §4c): a team agent's memory is the team's,
+// so no read in a member's turn is scoped by audience, in any session. §4c
+// shares it with the TEAM, not with people outside AX, so an outsider's turn
+// keeps shared-only recall and its backstop. And an outsider's turn runs as
+// the requester, so the requester's own key is never presented there as the
+// person talking.
 // ---------------------------------------------------------------------------
 
-describe('a team agent recalls everything, and an outsider is never "you" (TASK-1204)', () => {
-  it("a team agent's channel turn recalls what a member said in a web chat", async () => {
+describe('a team agent recalls everything for its members, and an outsider is never "you" (TASK-1204)', () => {
+  /** Alice's and Bob's web chats (private turns, each run as its person), and one fact said where the room could see it. */
+  async function teamWithWebChats(): Promise<MemoryHarness> {
     const h = await makeHarness({ agent: { visibility: 'team' } });
-    // Alice's web chat and Bob's: private turns, each run as its person.
     await h.remember({ about: 'user', relation: 'lives in', value: 'Lisbon' }, h.ctx({ conversationId: 'conv-web' }));
     await h.remember(
       { about: 'launch_plan', relation: 'codename', value: SECRET },
       h.ctx({ userId: BOB, conversationId: 'conv-web-b' }),
     );
+    // Bob's note in his own channel conversation: shared, the room saw it.
+    const note = await h.bus.call<unknown, MemoryNoteResult>(
+      MEMORY_NOTE_TOOL_HOOK,
+      h.ctx({ userId: BOB, conversationId: 'conv-y', source: 'user', audience: 'shared' }),
+      { input: { about: 'launch_plan', relation: 'date', value: PUBLIC } },
+    );
+    expect(note).toEqual({ ok: true });
+    return h;
+  }
+
+  it("a team agent's channel turn recalls what a member said in a web chat", async () => {
+    const h = await teamWithWebChats();
     // Alice in the team agent's channel: the turn runs as her, and the room reads the reply.
     const channel = h.ctx({ conversationId: 'conv-x', source: 'user', audience: 'shared' });
 
     expect(values(await h.recall({ about: 'user' }, channel))).toEqual(['Lisbon']);
-    expect(values(await h.recall({}, channel)).sort()).toEqual(['Lisbon', SECRET].sort());
+    expect(values(await h.recall({}, channel)).sort()).toEqual(['Lisbon', PUBLIC, SECRET].sort());
     const block = await augment(h, channel);
     expect(block).toContain('### Profile');
     expect(block).toContain('Lisbon');
     expect(block).toContain('Nightjar');
     // She is the person talking, so her own fact reads as the speaker's.
     expect(await recallTool(h, channel, 'Lisbon')).toContain('user lives in: Lisbon');
+    expect(await recallTool(h, channel, 'launch')).toContain('Nightjar');
   });
 
-  it("no engine read in a team agent's turn carries an audience scope, a member's or an outsider's", async () => {
+  // §4c shares a team agent's memory with the team, not with people outside
+  // AX. An outsider's turn runs as the member who answers for the channel
+  // (Alice here), but nothing it recalls was said out of the room's sight.
+  it("an outsider's turn on the same agent recalls what the room could see, never a member's web chat", async () => {
+    const h = await teamWithWebChats();
+    const outsider = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+
+    expect(values(await h.recall({}, outsider))).toEqual([PUBLIC]);
+    expect(values(await h.recall({ query: 'launch' }, outsider))).toEqual([PUBLIC]);
+    // Not the requester's own web chat either.
+    expect(values(await h.recall({ about: 'user' }, outsider))).toEqual([]);
+    for (const input of RECALL_SHAPES) {
+      const got = values(await h.recall(input, outsider));
+      expect(got, JSON.stringify(input)).not.toContain(SECRET);
+      expect(got, JSON.stringify(input)).not.toContain('Lisbon');
+    }
+    const block = await augment(h, outsider);
+    expect(block).toContain(PUBLIC);
+    expect(block).not.toContain('Nightjar');
+    expect(block).not.toContain('Lisbon');
+    const tool = await recallTool(h, outsider, 'launch');
+    expect(tool).toContain(PUBLIC);
+    expect(tool).not.toContain('Nightjar');
+  });
+
+  it("no engine read in a team agent's member turn carries an audience scope; every read in an outsider's turn carries 'shared'", async () => {
     const h = await makeHarness({
       agent: { visibility: 'team' },
       llm: () =>
@@ -1213,7 +1300,10 @@ describe('a team agent recalls everything, and an outsider is never "you" (TASK-
       };
       for (const [route, reads] of Object.entries(routes)) {
         expect(reads.length, `${ctx.source} ${route}`).toBeGreaterThan(0);
-        for (const input of reads) expect(input, `${ctx.source} ${route}`).not.toHaveProperty('audience');
+        for (const input of reads) {
+          if (ctx === member) expect(input, `${ctx.source} ${route}`).not.toHaveProperty('audience');
+          else expect(input.audience, `${ctx.source} ${route}`).toBe('shared');
+        }
       }
       observed.push(routes.observer);
     }
@@ -1227,8 +1317,16 @@ describe('a team agent recalls everything, and an outsider is never "you" (TASK-
 
   it("in an outsider turn, the requester's own memory is never the person talking", async () => {
     const h = await makeHarness({ agent: { visibility: 'team' } });
-    // Bob's own web chat: he lives in Boston.
-    await h.remember({ about: 'user', relation: 'lives in', value: 'Boston' }, h.ctx({ userId: BOB, conversationId: 'conv-web-b' }));
+    // Bob, as a member, in his own channel conversation: "I live in Boston".
+    // A member's turn files that under his own key, stamped shared, so an
+    // outsider's turn in a channel he answers for recalls it too.
+    const note = await h.bus.call<unknown, MemoryNoteResult>(
+      MEMORY_NOTE_TOOL_HOOK,
+      h.ctx({ userId: BOB, conversationId: 'conv-b', source: 'user', audience: 'shared' }),
+      { input: { about: 'user', relation: 'lives in', value: 'Boston' } },
+    );
+    expect(note).toEqual({ ok: true });
+    expect(storedRows(h).map((r) => `${r.about}|${r.audience}`)).toEqual([`user:${BOB}|shared`]);
     // An outsider's turn in a channel runs as the requester (Bob), never as
     // the person talking.
     const outsider = h.ctx({ userId: BOB, conversationId: CHANNEL, source: 'external', audience: 'shared' });
@@ -1238,9 +1336,10 @@ describe('a team agent recalls everything, and an outsider is never "you" (TASK-
       block = await augment(h, outsider);
     });
     // No Profile: it is the caller's, and the caller isn't the one talking.
-    // Not even read.
+    // Not even read: the Profile's read is the one for the caller's active
+    // rows. (Recent may read that key's chain, as it does any subject's.)
     expect(block).not.toContain('### Profile');
-    expect(reads.filter((i) => i.about === `user:${BOB}`)).toEqual([]);
+    expect(reads.filter((i) => i.about === `user:${BOB}` && i.activeOnly === true)).toEqual([]);
     // Still recalled, as the team's memory, but never as "you".
     expect(block).toContain('Boston');
     expect(block).not.toContain('you lives in');

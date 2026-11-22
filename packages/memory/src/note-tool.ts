@@ -188,8 +188,8 @@ export const NOTE_TWIN_EVENT = 'memory_note_twin';
 /**
  * The conversation's rows, active and closed — `plugin.ts`'s `readPriorRows`.
  * Handed the note's resolved `access`, because whose memory it is decides
- * which rows the read may see (a team agent's reads have no audience scope,
- * TASK-1204).
+ * which rows the read may see (a team agent member's reads have no audience
+ * scope, TASK-1204).
  */
 export type NotePriorRowsFn = (
   ctx: AgentContext,

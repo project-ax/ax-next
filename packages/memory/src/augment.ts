@@ -183,9 +183,10 @@ interface EngineFactRecord {
   // Read by `selectProfileRows`/`needsSlotHistory` (TASK-648): an extracted
   // row from the person's own turn can bring back a value they retracted.
   sourceRole?: string;
-  // Checked by `recallFacts` on a personal agent's shared turn's reads
-  // (TASK-1091), never rendered: every row that reaches the block is one
-  // this turn may see. A team agent's turn may see every row (TASK-1204).
+  // Checked by `recallFacts` on a read with the shared scope (TASK-1091: a
+  // personal agent's shared turn, an outsider's turn on any agent), never
+  // rendered: every row that reaches the block is one this turn may see. A
+  // team agent member's turn may see every row (TASK-1204).
   audience?: string;
 }
 
@@ -597,16 +598,18 @@ export async function buildMemoryBlock(
   // (TASK-1204) the caller is the requester who answers for the channel, never
   // the person talking, so there is no self: no Profile (not even read),
   // nobody rendered `you`, and nothing left out of the Digest. A team agent's
-  // outsider turn reads every member's rows, the requester's included, so
-  // this is what keeps the requester's memory from being shown as the
-  // speaker's.
+  // outsider turn reads every member's shared rows, the requester's own
+  // included (a member's channel turn files what they say about themself
+  // under their key, stamped shared), so this is what keeps the requester's
+  // memory from being shown as the speaker's.
   const self = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, access.userId);
   const ownerScope = memoryReadScope(access);
 
   const recall = async (input: Record<string, unknown>): Promise<EngineRecallOutput> => {
-    // A personal agent's shared turn's block holds shared statements only
-    // (TASK-1091): `recallFacts` adds that scope last and refuses a row
-    // outside it. A team agent's block reads everything (TASK-1204).
+    // A shared turn's block holds shared statements only (TASK-1091):
+    // `recallFacts` adds that scope last and refuses a row outside it. On a
+    // team agent only an outsider's turn keeps it; a member's block reads
+    // everything (TASK-1204).
     const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, factsRecallHook, {
       ...ownerScope,
       activeOnly: true,

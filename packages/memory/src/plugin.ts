@@ -780,9 +780,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // before.
           const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
             // `recallFacts`, like every engine read here: it adds the turn's
-            // audience scope (TASK-1091), last, and refuses a row a personal
-            // agent's shared turn may not see. A team agent's read has no
-            // such scope, in any turn (TASK-1204).
+            // audience scope (TASK-1091), last, and refuses a row a shared
+            // turn may not see. On a team agent only an outsider's turn has
+            // that scope; a member's read has none, in any audience
+            // (TASK-1204).
             const raw = await recallFacts<EngineRecallOutput>(
               bus,
               ctx,
@@ -1019,8 +1020,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // The person talking, rendered `you`. In an outsider's turn
           // (TASK-1204) that is never the caller: the turn runs as the
           // requester who answers for the channel, and a team agent's
-          // outsider turn reads the requester's own rows too. So there no row
-          // is `you`, and the requester's key reads as any other member's.
+          // outsider turn reads the requester's own shared rows too. So there
+          // no row is `you`, and the requester's key reads as any other
+          // member's.
           // (`about: 'user'` and `profile: true` above still mean the caller's
           // own key: only owner routes send them.)
           const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
@@ -2149,9 +2151,10 @@ const PRIOR_ROWS_PER_ABOUT = 200;
  * the caller fails open (see `TwinCheck`).
  *
  * Audience-scoped too, like every engine read (`recallFacts`, handed the
- * resolved `access`): a personal agent's shared turn checks its statements
- * against shared rows only, as if no private row existed, and a team agent's
- * turn against every row (TASK-1204). The same holds for the two reads below.
+ * resolved `access`): a shared turn checks its statements against shared rows
+ * only, as if no private row existed, and a team agent member's turn against
+ * every row, in any audience (TASK-1204). The same holds for the two reads
+ * below.
  */
 async function readPriorRows(
   bus: HookBus,
