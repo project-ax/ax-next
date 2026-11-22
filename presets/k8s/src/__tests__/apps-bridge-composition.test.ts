@@ -56,6 +56,12 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // browser's request would reach it), `auth:require-user` (the test picks who
 // is signed in), `auth:get-user` (ADMIN is the one admin), and
 // `auth:find-user-by-email` (viewer@example.com is VIEWER; nobody else).
+//
+// Logs (I5): every line written to stdout or stderr, and every console call,
+// is captured for the whole run (the kernel logger writes JSON lines to
+// stdout). The last case and the afterAll check, after shutdown too, that no
+// platform token, viewer assertion, agent key, link code or app name appears
+// in any of them, and that the bridge's own request lines were captured.
 // ---------------------------------------------------------------------------
 
 const KEEP = new Set<string>([
@@ -83,6 +89,8 @@ const VIEWER_EMAIL = 'viewer@example.com';
 
 const APP_ID = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
 const APP_NAME = 'Issue board';
+/** The name a second app sends when it tries a spent code. */
+const RIVAL_APP_NAME = 'Rival dashboard';
 const CONNECTOR_ID = 'linear';
 const MCP_HOST = 'mcp.linear.test';
 const MCP_URL = `https://${MCP_HOST}/mcp`;
@@ -94,6 +102,61 @@ const LIST_ISSUES_SCHEMA = {
   properties: { team: { type: 'string' }, limit: { type: 'number' } },
   required: ['team'],
 };
+
+// ── Everything written to a log, and what must never be in it ───────────────
+
+const logged: string[] = [];
+/** Every token, assertion, key, code and app name the run handled. */
+const secrets = new Set<string>();
+
+function chunkText(chunk: unknown): string {
+  return typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8');
+}
+
+/** Record every write to stdout and stderr, and every console call; each still goes through. */
+function captureOutput(): void {
+  for (const stream of [process.stdout, process.stderr]) {
+    const write = stream.write.bind(stream) as (...args: unknown[]) => boolean;
+    vi.spyOn(stream, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+      logged.push(chunkText(chunk));
+      return write(chunk, ...rest);
+    }) as typeof stream.write);
+  }
+  for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+    const original = console[level].bind(console);
+    vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+      logged.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a) ?? String(a))).join(' '));
+      original(...args);
+    });
+  }
+}
+
+function kindOf(secret: string): string {
+  if (secret.startsWith('axl_')) return 'link code';
+  if (secret.split('.').length === 3) return 'token or assertion';
+  return secret === BUILDER_KEY || secret === VIEWER_KEY ? 'agent key' : 'app name';
+}
+
+/** Each captured line that holds a secret: its kind and the line's `msg`, never the secret or the line. */
+function leaks(): string[] {
+  const out: string[] = [];
+  logged.forEach((line, i) => {
+    for (const secret of secrets) {
+      if (!line.includes(secret)) continue;
+      const msg = /"msg":"([A-Za-z0-9_:.-]{1,80})"/.exec(line)?.[1] ?? '(no msg)';
+      out.push(`${kindOf(secret)} in captured line ${i} (msg ${msg})`);
+    }
+  });
+  return out;
+}
+
+function expectNoSecretsLogged(): void {
+  // The capture saw the bridge's own request lines: it isn't vacuous.
+  expect(logged.some((l) => l.includes('"msg":"apps_bridge_call"'))).toBe(true);
+  expect(logged.some((l) => l.includes('"msg":"apps_bridge_link_claim"'))).toBe(true);
+  expect(logged.some((l) => l.includes('"msg":"apps_bridge_grants"'))).toBe(true);
+  expect(leaks()).toEqual([]);
+}
 
 // ── The two network seams ───────────────────────────────────────────────────
 
@@ -259,12 +322,14 @@ let bridgePort = 0;
 
 function platformToken(): string {
   const now = Math.floor(Date.now() / 1000);
-  return callerIssuer.mint({ iss: callerIssuer.issuer, aud: CALLER_AUDIENCE, sub: CALLER_SUBJECT, iat: now, exp: now + 300 });
+  const token = callerIssuer.mint({ iss: callerIssuer.issuer, aud: CALLER_AUDIENCE, sub: CALLER_SUBJECT, iat: now, exp: now + 300 });
+  secrets.add(token);
+  return token;
 }
 
 function viewerAssertion(email = VIEWER_EMAIL): string {
   const now = Math.floor(Date.now() / 1000);
-  return viewerIssuer.mint({
+  const assertion = viewerIssuer.mint({
     iss: viewerIssuer.issuer,
     aud: VIEWER_AUDIENCE,
     sub: 'viewer-subject',
@@ -273,6 +338,8 @@ function viewerAssertion(email = VIEWER_EMAIL): string {
     iat: now,
     exp: now + 300,
   });
+  secrets.add(assertion);
+  return assertion;
 }
 
 async function platform(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
@@ -395,6 +462,7 @@ describe('apps bridge composition: link, grant and call through the real preset'
     expect(minted.status).toBe(200);
     const code = (minted.body as { code: string }).code;
     expect(code).toMatch(/^axl_[a-z2-7]{32}$/);
+    secrets.add(code);
     return code;
   }
 
@@ -411,6 +479,8 @@ describe('apps bridge composition: link, grant and call through the real preset'
   const approvalParams = { platformId: PLATFORM_ID, appId: APP_ID, connectorId: CONNECTOR_ID };
 
   beforeAll(async () => {
+    captureOutput();
+    for (const s of [BUILDER_KEY, VIEWER_KEY, APP_NAME, RIVAL_APP_NAME]) secrets.add(s);
     savedCredentialsKey = process.env.AX_CREDENTIALS_KEY;
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
     // Nothing reaches the network by accident: only loopback (the bridge's
@@ -489,6 +559,12 @@ describe('apps bridge composition: link, grant and call through the real preset'
   afterAll(async () => {
     if (shutdown !== null) await shutdown();
     vi.unstubAllGlobals();
+    // Shutdown's lines too. A throw here fails the run.
+    try {
+      expectNoSecretsLogged();
+    } finally {
+      vi.restoreAllMocks();
+    }
     await callerIssuer?.close();
     await viewerIssuer?.close();
     if (savedCredentialsKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
@@ -506,7 +582,7 @@ describe('apps bridge composition: link, grant and call through the real preset'
     expect(await claim(code)).toEqual({ status: 200, body: { appId: APP_ID } });
     // The code is spent: no other app can take it.
     expect(
-      await platform('POST', '/links/claim', { appId: 'app_someone_else', appName: 'Other', code }),
+      await platform('POST', '/links/claim', { appId: 'app_someone_else', appName: RIVAL_APP_NAME, code }),
     ).toEqual({ status: 403, body: { code: 'link_code_invalid' } });
 
     const read = await settings(BUILDER, 'GET', R.read, { agentId: builderAgent });
@@ -702,5 +778,15 @@ describe('apps bridge composition: link, grant and call through the real preset'
       },
     });
     expect(sent).toHaveLength(before);
+  });
+
+  it('no token, assertion, key, link code or app name reached any log line', () => {
+    // Every kind was handled along the way (the sets aren't empty by accident).
+    const all = [...secrets];
+    expect(all.filter((x) => x.startsWith('axl_')).length).toBeGreaterThanOrEqual(2);
+    // Platform tokens and viewer assertions (identical claims in one second
+    // sign to the same string, so the set holds a few, not one per request).
+    expect(all.filter((x) => x.split('.').length === 3).length).toBeGreaterThanOrEqual(2);
+    expectNoSecretsLogged();
   });
 });
