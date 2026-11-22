@@ -867,6 +867,161 @@ describe("@ax/memory — every write carries its turn's audience; a shared turn 
   });
 });
 
+// ---------------------------------------------------------------------------
+// TASK-1204: a team agent's member turn runs as the member who wrote it (one
+// conversation per person per thread), so what they say about themself is
+// theirs: kept, and filed under their own key, the one their web chats read.
+// ---------------------------------------------------------------------------
+
+describe('a team agent keeps what a member says about themself, under their own key (TASK-1204)', () => {
+  /** A member talking in a team agent's channel: the turn runs as them, and the room reads the reply. */
+  function member(h: MemoryHarness, userId: string, conversationId: string): AgentContext {
+    return h.ctx({ userId, conversationId, source: 'user', audience: 'shared' });
+  }
+  /** An outsider's turn in a channel: it runs as the requester (Bob here), never as the person talking. */
+  function outsider(h: MemoryHarness): AgentContext {
+    return h.ctx({ userId: BOB, conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+  }
+  /** Every stored row as `about|value|audience`, sorted. */
+  function rows(h: MemoryHarness): string[] {
+    return storedRows(h)
+      .map((r) => `${r.about}|${r.value}|${r.audience}`)
+      .sort();
+  }
+  function lastRun(h: MemoryHarness): Record<string, unknown> | undefined {
+    return eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings;
+  }
+
+  const ALICE_LABEL = ['Alice Smith', 'U123'];
+  /** What Alice says about herself, as the extractor writes it, and one fact about the work. */
+  const ALICE_FACTS = [
+    { subject: 'alice_smith', predicate: 'favorite_color', object: 'teal' },
+    { subject: 'user', predicate: 'lives_in', object: 'Lisbon' },
+    { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+  ];
+  const ALICE_TURN = [
+    {
+      role: 'user',
+      content: '[Slack · #general · Alice Smith (U123)]: my favorite color is teal. I live in Lisbon. Dana owns billing.',
+    },
+    { role: 'assistant', content: 'Noted.' },
+  ];
+
+  it('a member\'s "my favorite color is teal" is kept under their own key: not the requester\'s, not their name', async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
+    const asked = answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
+
+    // Both facts about Alice under her own key, however the extractor named
+    // her; the work as written; every row stamped shared. Nothing under her
+    // label name, and nothing under anyone else's key.
+    expect(rows(h)).toEqual(
+      [`user:${ALICE}|teal|shared`, `user:${ALICE}|Lisbon|shared`, 'billing_service|Dana|shared'].sort(),
+    );
+    expect(storedRows(h).map((r) => r.about)).not.toContain('alice_smith');
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 3, speakerFacts: 0 });
+    // One ask for the pass: its write is handed the names, and doesn't ask again.
+    expect(asked).toEqual([{ conversationId: 'conv-x' }]);
+
+    // Alice's later web chat (a private turn, run as her) finds both...
+    const web = values(await h.recall({ about: 'user' }, h.ctx({ conversationId: 'conv-web' })));
+    expect(web.sort()).toEqual(['Lisbon', 'teal']);
+    // ...and Bob's own key holds neither.
+    expect(values(await h.recall({ about: 'user' }, h.ctx({ userId: BOB, conversationId: 'conv-web-b' })))).toEqual(
+      [],
+    );
+  });
+
+  it("two members in one Slack thread: each one's facts land under their own key, and a claim about the other under neither", async () => {
+    // One Slack thread, two conversations: each member's turns run as them.
+    const BOB_LABEL = 'Bob Jones (U456)';
+    const h = await makeHarness({
+      agent: { visibility: 'team' },
+      llm: (input) =>
+        String(input.messages[0]?.content ?? '').includes(BOB_LABEL)
+          ? extractionReply([
+              { subject: 'bob_jones', predicate: 'lives_in', object: 'Berlin' },
+              { subject: 'alice', predicate: 'favorite_color', object: 'teal' },
+            ])
+          : extractionReply([{ subject: 'alice_smith', predicate: 'favorite_color', object: 'teal' }]),
+    });
+    answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    answerSpeakerNames(h.bus, ['Bob Jones', 'U456'], 'conv-y');
+
+    await observeTurn(h, member(h, ALICE, 'conv-x'), [
+      { role: 'user', content: '[Slack · #general · Alice Smith (U123)]: my favorite color is teal.' },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+    await observeTurn(h, member(h, BOB, 'conv-y'), [
+      { role: 'user', content: `[Slack · #general · ${BOB_LABEL}]: I live in Berlin, and Alice's favorite color is teal.` },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+
+    // Bob's claim about Alice is a third party's fact: as written, under
+    // neither member's key.
+    expect(rows(h)).toEqual(
+      [`user:${ALICE}|teal|shared`, `user:${BOB}|Berlin|shared`, 'alice|teal|shared'].sort(),
+    );
+    expect(h.llmCalls).toHaveLength(2);
+  });
+
+  /** An outsider's words: about themself, under the requester's own key, and about the work. */
+  const OUTSIDER_FACTS = [
+    { subject: 'user', predicate: 'lives_in', object: 'Paris' },
+    { subject: `user:${BOB}`, predicate: 'works_at', object: 'Initech' },
+    { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+  ];
+  const OUTSIDER_TURN = [
+    { role: 'user', content: 'I live in Paris and I work at Initech. Dana owns the billing service.' },
+    { role: 'assistant', content: 'Thanks.' },
+  ];
+
+  // channel-slack's veto refuses every thread an outsider talks in (TASK-1094).
+  it("an outsider's words are still never remembered: with the veto, nothing is extracted or stored", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
+    h.bus.subscribe(MEMORY_PRE_CAPTURE_HOOK, 'test-veto', async () => reject({ reason: 'channel-external-turn' }));
+    await observeTurn(h, outsider(h), OUTSIDER_TURN);
+
+    expect(storedRows(h)).toEqual([]);
+    expect(h.llmCalls).toHaveLength(0);
+  });
+
+  // The backstop: a veto subscriber that throws, or misses memory's bound, is
+  // skipped by the bus. In an outsider's turn `ctx.userId` is the requester,
+  // so memory's own speaker rule keeps every person fact out, the requester's
+  // key above all. Work facts in an outsider's thread still ride on
+  // channel-slack's veto, as today.
+  it("an outsider's words are still never remembered: with no veto at all, nothing lands under a person", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
+    await observeTurn(h, outsider(h), OUTSIDER_TURN);
+
+    expect(storedRows(h).filter((r) => r.about.startsWith('user:'))).toEqual([]);
+    expect(rows(h)).toEqual(['billing_service|Dana|shared']);
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
+  it("a personal agent's member turn is unchanged: no speaker fact, the work fact stamped shared", async () => {
+    const h = await makeHarness({ llm: () => extractionReply(ALICE_FACTS) });
+    answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
+
+    expect(rows(h)).toEqual(['billing_service|Dana|shared']);
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
+  // A thread recorded before TASK-1146 has no names: a name subject can't be
+  // recognized as the speaker, so it is kept as written, never under a key.
+  it("with no names answered, a member's name subject is kept as written, never under a key", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
+    await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
+
+    expect(rows(h)).toEqual(
+      ['alice_smith|teal|shared', `user:${ALICE}|Lisbon|shared`, 'billing_service|Dana|shared'].sort(),
+    );
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 3, speakerFacts: 0 });
+  });
+});
+
 describe('isPersonSubject — what a shared turn stores nothing about', () => {
   it.each(PERSON_SUBJECTS)('%j is a person', (about) => {
     expect(isPersonSubject(about)).toBe(true);
@@ -1068,7 +1223,7 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
       const observer =
         toStatements([{ subject: about, predicate: 'r', object: 'v', validStart: JAN }], {
           ownerUserId: ALICE,
-          audience: audienceOf(ctx),
+          speakerScope: speakerScope(ctx, PERSONAL),
           speakerNames: NAMES,
         }).speakerFacts === 1;
       const result = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {

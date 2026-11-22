@@ -103,10 +103,11 @@ function perLineExtractor(input: LlmCallInput): { text: string; stopReason: 'end
 async function setup(
   config: MemoryPluginConfig = {},
   llm: MemoryHarnessOptions['llm'] = perLineExtractor,
+  agent?: MemoryHarnessOptions['agent'],
 ): Promise<Env> {
   const h = await makeMemoryHarness(
     { incremental: { idleMs: IDLE_MS, everyUserTurns: 4 }, ...config },
-    { llm },
+    { llm, ...(agent !== undefined ? { agent } : {}) },
   );
   harness = h;
   const transcripts = new Map<string, FakeTurn[]>();
@@ -673,6 +674,48 @@ describe("a shared conversation's passes (TASK-1091)", () => {
       trigger: 'idle',
       recorded: 1,
       speakerFacts: 1,
+    });
+    expect(asked).toEqual([{ conversationId: CONV }]);
+  });
+
+  // The same pass on a team agent: the member's turn runs as them, so the
+  // standup they stated is filed under their own key, not dropped.
+  it("an incremental pass in a team agent's channel conversation files the speaker under their own key (TASK-1204)", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const facts = [
+      { subject: 'vinay', predicate: 'stated_standup_time', object: 'Team standup moved to 10:15 on Tuesdays' },
+      { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+    ].map((f) => ({ network: 'world', validStart: '2026-09-01T00:00:00Z', invalidatesPrevious: false, ...f }));
+    const env = await setup(
+      {},
+      () => ({ text: JSON.stringify({ facts }), stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } }),
+      { visibility: 'team' },
+    );
+    const asked = answerSpeakerNames(env.h.bus, ['Vinay Pulim', 'UHTE83XE1']);
+    const member = env.h.ctx({ conversationId: CONV, source: 'user', audience: 'shared' });
+
+    await env.exchange(
+      '[Slack · #team · Vinay Pulim (UHTE83XE1)]: Our team standup moved to 10:15 on Tuesdays. Dana owns the billing service.',
+      'Noted: standup at 10:15 on Tuesdays, and Dana owns billing.',
+      'req-1',
+      member,
+    );
+    await idle(env);
+
+    const db = new Database(env.h.databasePath, { readonly: true });
+    try {
+      expect(db.prepare('SELECT about, value, audience FROM memory_facts_v1 ORDER BY rowid').all()).toEqual([
+        { about: `user:${ALICE}`, value: 'Team standup moved to 10:15 on Tuesdays', audience: 'shared' },
+        { about: 'billing_service', value: 'Dana', audience: 'shared' },
+      ]);
+    } finally {
+      db.close();
+    }
+    expect(eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
+      outcome: 'recorded',
+      trigger: 'idle',
+      recorded: 2,
+      speakerFacts: 0,
     });
     expect(asked).toEqual([{ conversationId: CONV }]);
   });

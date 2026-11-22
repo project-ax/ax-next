@@ -4,7 +4,6 @@ import {
   audienceOf,
   parseModelRef,
   type AgentContext,
-  type AgentContextAudience,
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
@@ -13,7 +12,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
-import { recallFacts, recordFacts } from './audience.js';
+import { recallFacts, recordFacts, speakerScope, type SpeakerScope } from './audience.js';
 import { CAPTURE_REFUSED_EVENT, captureCheck } from './capture.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
@@ -1529,13 +1528,17 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // Nor does memory skip `'external'` (TASK-1091), a turn where someone
         // without access to the agent is present. It runs as a real user who
         // answers for it, in a real thread, so it is captured and attributed
-        // like any other. What governs its capture is `ctx.audience`, not
-        // `source`: a shared turn's statements are stamped shared, and it
+        // like any other. What governs its capture is `ctx.audience` and the
+        // speaker scope (`speakerScope`, TASK-1204), not `source` alone: a
+        // shared turn's statements are stamped shared, and an outsider's turn
         // stores nothing under a person subject: `user`, `user:<id>`, or a
         // speaker's name from `memory:pre-capture` (`breaksSpeakerRule`,
-        // TASK-1146).
-        // (From Slack none is captured: channel-slack's `memory:pre-capture`
-        // veto refuses every thread an outsider talks in, TASK-1094.)
+        // TASK-1146). There `ctx.userId` is the requester, never the person
+        // talking. A team agent's MEMBER turn runs as the member who wrote it,
+        // so it files what they say about themself under their own key.
+        // (From Slack no outsider's turn is captured: channel-slack's
+        // `memory:pre-capture` veto refuses every thread an outsider talks
+        // in, TASK-1094.)
         //
         // TASK-625: when this host extracts incrementally, `chat:end` is the
         // FINAL pass over the canonical transcript's remaining turns — queued
@@ -1697,11 +1700,16 @@ interface ObserveDeps {
   /** The retracted-twin check's read (TASK-654) — see {@link readRetractedRows}. */
   retractedRows: RetractedRowsFn;
   ownerUserId: string;
-  /** The turn's audience (TASK-1091): `audienceOf(ctx)`, like the owner. */
-  audience: AgentContextAudience;
+  /**
+   * Whose memory this is and who is talking (TASK-1204): `speakerScope(ctx,
+   * access)`, from `ctx` and the resolved access like the owner, never a
+   * payload. It decides where a fact about a person is filed, if anywhere.
+   */
+  speakerScope: SpeakerScope;
   /**
    * The speakers this pass's `memory:pre-capture` answer named (TASK-1146):
-   * in a shared turn, no fact is stored under them.
+   * in a turn that keeps the speaker rule, no fact is stored under them; in a
+   * team agent's member turn, one is filed under the member's own key.
    */
   speakerNames: readonly string[];
   userId: string | undefined;
@@ -1743,10 +1751,12 @@ async function observe(
     // `captureCheck`, so a refusal stops the agent's own notes too.
     //
     // The answer also names the people speaking in the conversation
-    // (TASK-1146), and the producer below drops a shared turn's facts filed
-    // under them. An answer memory can't read throws, so the catch below
-    // records nothing and an incremental pass keeps its cursor: the turns
-    // are tried again, never captured without the names.
+    // (TASK-1146). The producer below drops a fact filed under them in a
+    // turn that keeps the speaker rule, and files it under the member's own
+    // key in a team agent's member turn (`speakerSubject`, TASK-1204). An
+    // answer memory can't read throws, so the catch below records nothing
+    // and an incremental pass keeps its cursor: the turns are tried again,
+    // never captured without the names.
     const check = await captureCheck(bus, ctx);
     if (check.refusal !== undefined) {
       // `info`: a refusal is a decision, not a fault. Ids and the
@@ -1821,11 +1831,14 @@ async function observe(
       retractedValue: (query) => readRetractedValue(bus, ctx, query),
       retractedRows: (query) => readRetractedRows(bus, ctx, query),
       ownerUserId,
-      // From `ctx`, never a payload, like the owner: what the producer's
-      // statements may say about a person (TASK-1091).
-      audience: audienceOf(ctx),
-      // From the answer above, never the extraction: who a shared turn's
-      // statements may not be filed under (TASK-1146).
+      // From `ctx` and the access resolved above, never a payload, like the
+      // owner: where the producer's statements about a person are filed, if
+      // anywhere (TASK-1091, TASK-1204). The write door re-resolves access
+      // and asks the same rule, so a member who stopped being one mid-pass
+      // writes nothing.
+      speakerScope: speakerScope(ctx, access),
+      // From the answer above, never the extraction: whose names a subject
+      // made of them is (TASK-1146).
       speakerNames: check.speakerNames,
       userId,
     });
@@ -1898,7 +1911,7 @@ function observeMessages(
   ctx: AgentContext,
   cfg: ObserveConfig,
   messages: UntrustedMessage[],
-  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId, audience, speakerNames }: ObserveDeps,
+  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId, speakerScope, speakerNames }: ObserveDeps,
 ): Promise<ObserverResult> {
   return runObserver({
     messages,
@@ -1908,7 +1921,7 @@ function observeMessages(
     retractedValue,
     retractedRows,
     ownerUserId,
-    audience,
+    speakerScope,
     speakerNames,
     // The batch identity keeps the real conversation; the rows are
     // attributed per `conversationOf` (a routine run is not a
@@ -1979,7 +1992,7 @@ async function runConversationPass(
   };
 
   const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
-    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, audience, speakerNames, userId } = deps;
+    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, speakerScope, speakerNames, userId } = deps;
     const record: ObserveDeps['record'] = async (input) => {
       const out = await deps.record(input);
       for (const row of out?.records ?? []) {
@@ -2035,7 +2048,7 @@ async function runConversationPass(
         retractedValue,
         retractedRows,
         ownerUserId,
-        audience,
+        speakerScope,
         speakerNames,
         userId,
       });
@@ -2070,7 +2083,7 @@ async function runConversationPass(
       retractedValue,
       retractedRows,
       ownerUserId,
-      audience,
+      speakerScope,
       speakerNames,
       // Batch identity: the real conversation. Stored attribution: per
       // `conversationOf`, so a routine turn's rows carry none (TASK-616).
@@ -2350,8 +2363,10 @@ function logObserverResult(
         // save that"), dropped (TASK-612, TASK-1136). Informational; not a
         // failure.
         selfReports: result.selfReports,
-        // Facts with a person subject (`user`, `user:<id>`, a speaker's name)
-        // a shared turn kept out (TASK-1091, TASK-1146). 0 in a private turn.
+        // Facts the speaker scope filed nowhere: a person subject (`user`,
+        // `user:<id>`, a speaker's name) in a turn that keeps the speaker
+        // rule, another person's key in a team agent's member turn
+        // (TASK-1091, TASK-1146, TASK-1204). 0 in a private turn.
         // Informational: the rule working, not a failure.
         speakerFacts: result.speakerFacts,
         // Positive readings of a negated statement, dropped (TASK-652).
