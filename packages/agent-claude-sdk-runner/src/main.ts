@@ -607,8 +607,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             [MCP_SANDBOX_SERVER_NAME]: sandboxMcpServer,
           },
           // Phase 3: the read-only `user` projection ($CLAUDE_CONFIG_DIR/skills/,
-          // chmod 0555, written by @ax/installed-skills) is the SOLE skill-
-          // discovery path. 'project' is NOT a source: it would load
+          // chmod 0555, written by @ax/installed-skills) is the SOLE USER
+          // skill-discovery path (the CLI's bundled skills ship in the binary;
+          // see tool-names.ts). 'project' is NOT a source: it would load
           // `<cwd>/.claude/**` (settings hooks, skills), `<cwd>/CLAUDE.md` and
           // `<cwd>/.mcp.json` from the agent's home, which the agent writes
           // freely — `.claude/skills/evil/SKILL.md` would be discovered directly,

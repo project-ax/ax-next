@@ -57,8 +57,13 @@
 //      workflow (I-P0-1, docs/plans/2026-05-17-skill-install-phase-0-impl.md)
 //      flips Skill from "denied at every layer" to "the intended SDK-native
 //      skill-discovery path." Skill is now in `allowedTools` and the SDK
-//      reads skills ONLY from $CLAUDE_CONFIG_DIR/skills/ (the host's
-//      read-only projection): `settingSources` is `['user']`, so nothing
+//      reads USER skills only from $CLAUDE_CONFIG_DIR/skills/ (the host's
+//      read-only projection). The CLI also ships its own BUNDLED skills
+//      (`loop`, `update-config`, `simplify`, …) inside the binary; `loop`
+//      tells the model to schedule with CronCreate/ScheduleWakeup, which the
+//      `tools` allowlist keeps out (TASK-1200), so following it fails with
+//      the CLI's "no such tool" error. Hiding bundled skills is a follow-up.
+//      `settingSources` is `['user']`, so nothing
 //      the agent writes in its home (`.claude/skills/`, `.claude/settings.json`,
 //      `CLAUDE.md`) is loaded. Skill is NOT a nested-agent bypass; `Task`
 //      still is.
@@ -90,9 +95,9 @@
 //      lifted; a foreign `mcp__linear__x` is NOT (see below), so an agent
 //      cannot reach the canonical keyspace by naming a server cleverly.
 //
-// Anything else — including MCP tools from a DIFFERENT server (not ours) —
-// falls through as kind 'builtin' with the full name preserved. That's a
-// deliberate fallback: third-party MCP servers are out of scope for v1 but
+// A non-`mcp__` name off `ALLOWED_SDK_BUILTINS` is refused as 'disabled'
+// (TASK-1200). MCP tools from a DIFFERENT server (not ours) fall through as
+// kind 'builtin' with the full name preserved. That's a deliberate fallback: third-party MCP servers are out of scope for v1 but
 // the classifier shouldn't silently swallow them if one shows up. The
 // host-side subscribers will see the full `mcp__<other>__<tool>` name and
 // can decide how to handle it (most likely: reject).
@@ -414,7 +419,12 @@ export function classifySdkToolName(sdkName: string): SdkToolClass {
     };
   }
   // Every non-`mcp__` name at this boundary is a CLI built-in (our host,
-  // sandbox and connector tools all arrive `mcp__`-prefixed). One outside the
+  // sandbox and connector tools all arrive `mcp__`-prefixed). The one
+  // exception is the CLI's `CLAUDE_AGENT_SDK_MCP_NO_PREFIX` switch, which
+  // sends in-process server tools bare; the runner never sets it (the
+  // subprocess env is a fixed allowlist in agent-runner-core's
+  // proxy-startup.ts), and if it were set every AX tool would be refused
+  // here — loudly, not silently. One outside the
   // allowlist fails CLOSED — whether or not it is in `KNOWN_SDK_BUILTINS`, and
   // whatever its spelling, so a built-in a new SDK added (or an alias like
   // `Agent` for `Task`) is refused, not passed on (TASK-1200). Defence in

@@ -38,7 +38,7 @@ describe('classifySdkToolName', () => {
     expect(classifySdkToolName('SomeFutureTool')).toMatchObject({ kind: 'disabled', name: 'SomeFutureTool' });
   });
 
-  it('refuses Agent (the wire name for Task) with the Task sentence', () => {
+  it('refuses Agent (the wire name for Task) with an "Agent (Task)" sentence', () => {
     const klass = classifySdkToolName('Agent');
     expect(klass).toMatchObject({ kind: 'disabled', name: 'Agent' });
     expect(klass.kind === 'disabled' && klass.reason).toMatch(/^Agent \(Task\) is disabled: it would start a helper agent/);

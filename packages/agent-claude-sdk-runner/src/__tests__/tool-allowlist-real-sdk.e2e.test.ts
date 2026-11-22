@@ -274,7 +274,7 @@ describe.skipIf(!HAVE_BINARY)('SDK built-in allowlist on the real claude-sdk bin
     expect(initBuiltins(seen).filter((n) => !allowed.has(n))).toEqual([]);
   }, 60_000);
 
-  it('FIX: ToolSearch finds routine_create but not CronCreate, and no denied built-in is ever offered', async () => {
+  it('FIX: ToolSearch finds routine_create but not CronCreate, and only allowlisted built-ins are ever offered', async () => {
     searchFor = SEARCH_QUERY;
     await runOneTurn(true);
     const found = searchedToolNames();
