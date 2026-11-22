@@ -265,9 +265,10 @@ export const SPEAKER_RULE_READS_AT_MOST = 1024;
  * rule: a personal agent's shared turn, and any outsider's turn (`'withheld'`
  * in {@link speakerScope}). A team agent's member turn files the speaker's
  * facts under them instead ({@link speakerSubject}, TASK-1204). The observer
- * drops a fact on it (`toStatements`) and {@link recordFacts} refuses a batch
- * on it, both through {@link speakerSubject}, and `memory_note` refuses a note
- * on it, so the three can't drift apart (TASK-1136).
+ * drops a fact on it (`toStatements`), `memory_note` refuses a note on it, and
+ * {@link recordFacts} refuses a batch on it, all three through
+ * {@link speakerSubject}'s `'withheld'` answer, so they can't drift apart
+ * (TASK-1136).
  *
  * `!== 'private'`, not `=== 'shared'`, so an audience this build doesn't know
  * fails closed.

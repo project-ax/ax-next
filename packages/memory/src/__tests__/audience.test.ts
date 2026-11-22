@@ -26,7 +26,12 @@ import {
   speakerSubject,
 } from '../audience.js';
 import { OBSERVER_RUN_EVENT } from '../failure.js';
-import { MEMORY_NOTE_TOOL_HOOK, PERSON_IN_SHARED_MESSAGE, type MemoryNoteResult } from '../note-tool.js';
+import {
+  MEMORY_NOTE_TOOL_HOOK,
+  PERSON_IN_SHARED_MESSAGE,
+  TEAM_PERSON_KEY_MESSAGE,
+  type MemoryNoteResult,
+} from '../note-tool.js';
 import { toStatements } from '../observer.js';
 import { FACTS_RECALL_HOOK, FACTS_RECORD_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
@@ -1000,6 +1005,31 @@ describe('a team agent keeps what a member says about themself, under their own 
     expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
   });
 
+  // Neither combination has a live producer (channel-slack stamps an
+  // outsider's turn shared), so both must fail closed: an outsider's turn is
+  // `withheld` whatever its audience, and a source this build doesn't know
+  // reads as an outsider's (`isOutsiderTurn`).
+  it.each([
+    ['an outsider turn stamped private', 'external', 'private'],
+    ['a turn from a source this build does not know', 'satellite', 'shared'],
+  ] as const)("%s keeps the speaker rule on the observer and the note: nothing under the runner's key", async (_label, source, audience) => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
+    const ctx = h.ctx({ userId: BOB, conversationId: 'conv-ext', source: source as AgentContextSource, audience });
+
+    await observeTurn(h, ctx, OUTSIDER_TURN);
+    const note = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
+      input: { about: 'user', relation: 'lives_in', value: 'Paris' },
+    });
+
+    expect(note).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: `NOT SAVED: nothing was written to memory — do not tell the person it was saved. ${PERSON_IN_SHARED_MESSAGE}`,
+    });
+    expect(rows(h)).toEqual([`billing_service|Dana|${audience}`]);
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
   it("a personal agent's member turn is unchanged: no speaker fact, the work fact stamped shared", async () => {
     const h = await makeHarness({ llm: () => extractionReply(ALICE_FACTS) });
     answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
@@ -1250,6 +1280,81 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
     expect(SUBJECTS.filter((about) => breaksSpeakerRule(audienceOf(ctx), about, NAMES))).toHaveLength(
       audienceOf(ctx) === 'shared' ? PERSON_SUBJECTS.length + NAMES_A_SPEAKER.length + 1 : 0,
     );
+  });
+
+  // TASK-1204: in a team agent's member turn the three paths don't only
+  // refuse alike, they FILE alike. The observer and the note land each
+  // subject exactly where `speakerSubject` says, and the write door sends a
+  // subject only once it is already filed there, so a writer that forgot to
+  // file one is refused, never misfiled.
+  it("drift guard, team agent member turn: the observer, memory_note and recordFacts file exactly what speakerSubject says (TASK-1204)", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    answerSpeakerNames(h.bus, NAMES);
+    const ctx = h.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
+    const TEAM: MemoryAccess = { userId: ALICE, visibility: 'team' };
+    expect(speakerScope(ctx, TEAM)).toBe('team');
+    const engine = new HookBus();
+    engine.registerService(FACTS_RECORD_HOOK, 'stub-engine', async () => ({ records: [{ id: 'row-1' }] }));
+    answerSpeakerNames(engine, NAMES);
+    const record = (about: string): Promise<string> =>
+      recordFacts(engine, ctx, TEAM, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
+        () => 'sent',
+        (err: unknown) => (err instanceof PluginError && err.code === 'forbidden' ? 'refused' : `threw ${String(err)}`),
+      );
+    const disagreements: string[] = [];
+    for (const about of SUBJECTS) {
+      const expected = speakerSubject('team', about, ALICE, NAMES);
+      const where = (out: string | undefined): string => (out === undefined ? 'nowhere' : JSON.stringify(out));
+      const observer = toStatements([{ subject: about, predicate: 'r', object: 'v', validStart: JAN }], {
+        ownerUserId: ALICE,
+        speakerScope: speakerScope(ctx, TEAM),
+        speakerNames: NAMES,
+      }).statements[0]?.about;
+      if (observer !== expected) disagreements.push(`${JSON.stringify(about)}: observer ${where(observer)}`);
+
+      // The note tool refuses an empty subject, and one over 1024 code units,
+      // as bad input in EVERY audience, before the rule (pinned in
+      // note-tool.test.ts), so those aren't compared here.
+      if (about !== TOO_LONG_TO_READ && about.trim() !== '') {
+        const before = storedRows(h).length;
+        const result = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
+          input: { about, relation: 'r', value: 'v' },
+        });
+        const after = storedRows(h);
+        // Refused FOR THIS RULE: any other refusal doesn't count.
+        const note = result.ok
+          ? after.length === before + 1
+            ? after.at(-1)!.about
+            : 'saved, but no new row'
+          : result.error === 'forbidden' && result.message.endsWith(TEAM_PERSON_KEY_MESSAGE)
+            ? undefined
+            : `refused ${result.error}`;
+        if (note !== expected) disagreements.push(`${JSON.stringify(about)}: note ${where(note)}`);
+      }
+
+      // The write door, handed the subject as written: sent only if that is
+      // already where it is filed.
+      const raw = await record(about);
+      if (raw !== (expected === about ? 'sent' : 'refused')) {
+        disagreements.push(`${JSON.stringify(about)}: recordFacts as written ${raw}`);
+      }
+      // ...and handed it filed: always sent.
+      if (expected !== undefined) {
+        const filed = await record(expected);
+        if (filed !== 'sent') disagreements.push(`${JSON.stringify(about)}: recordFacts filed ${filed}`);
+      }
+    }
+    expect(disagreements).toEqual([]);
+    // Not vacuous: `user` and every subject made of the speaker's names are
+    // filed under the runner's own key (and the note saved each one there),
+    // every other person subject and the one too long to read are filed
+    // nowhere, and the rest stay as written.
+    const OWN = `user:${ALICE}`;
+    const filedUnder = SUBJECTS.map((about) => speakerSubject('team', about, ALICE, NAMES));
+    const personSubjectsButUser = PERSON_SUBJECTS.filter((about) => about !== 'user');
+    expect(filedUnder.filter((out) => out === OWN)).toHaveLength(1 + NAMES_A_SPEAKER.length);
+    expect(filedUnder.filter((out) => out === undefined)).toHaveLength(personSubjectsButUser.length + 1);
+    expect(storedRows(h).filter((r) => r.about === OWN)).toHaveLength(1 + NAMES_A_SPEAKER.length);
   });
 });
 
