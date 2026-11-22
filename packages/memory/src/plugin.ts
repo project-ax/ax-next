@@ -337,10 +337,9 @@ interface EngineFactRecord {
   /**
    * Who could see the turn this row was learned in (TASK-1091): `'shared'`,
    * `'private'`, or absent on a row stored before audiences existed, which
-   * reads as private. What a team agent's member said about themself is
-   * `'private'` whatever the turn: the team's, not the room's (TASK-1204,
-   * `recordFacts`). `recallFacts` refuses a non-shared row in a shared read;
-   * `toMemoryStatement` refuses any other value and forwards only `'shared'`.
+   * reads as private. No exception (TASK-1209, `recordFacts`). `recallFacts`
+   * refuses a non-shared row in a shared read; `toMemoryStatement` refuses
+   * any other value and forwards only `'shared'`.
    */
   audience?: string;
 }
@@ -1584,7 +1583,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // TASK-1146). There `ctx.userId` is the requester, never the person
         // talking. A team agent's MEMBER turn runs as the member who wrote it,
         // so it files what they say about themself under their own key,
-        // stamped private: the team's, and no outsider's turn recalls it.
+        // stamped with the turn like the rest (TASK-1209).
         // (From Slack no outsider's turn is captured: channel-slack's
         // `memory:pre-capture` veto refuses every thread an outsider talks
         // in, TASK-1094.)

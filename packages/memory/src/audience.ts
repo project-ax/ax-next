@@ -26,14 +26,14 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * still never shows the requester's own memory as the person talking
  * (`augment.ts`, `memory:recall`'s `aboutText`).
  *
- * And of a memory WRITE: every statement is stamped with
- * the audience of the turn it was learned in, and a turn that isn't private
- * files a person subject only where {@link speakerSubject} says (TASK-1204):
- * a team agent's member turn files the speaker's facts under the speaker's
- * own key, stamped private, since they're the team's and not the room's
- * ({@link recordFacts}), and any other shared turn stores nothing under
- * `user`, `user:<id>`, or a subject made of the speakers' names that
- * `memory:pre-capture` answered with (TASK-1146; {@link breaksSpeakerRule}).
+ * And of a memory WRITE: every statement is stamped with the audience of the
+ * turn it was learned in, with no exception (TASK-1209, {@link recordFacts}),
+ * and a turn that isn't private files a person subject only where
+ * {@link speakerSubject} says (TASK-1204): a team agent's member turn files
+ * the speaker's facts under the speaker's own key, and any other shared turn
+ * stores nothing under `user`, `user:<id>`, or a subject made of the
+ * speakers' names that `memory:pre-capture` answered with (TASK-1146;
+ * {@link breaksSpeakerRule}).
  *
  * `ctx.audience` is stamped by the host and never read off a payload (see
  * `FORBIDDEN_PAYLOAD_FIELDS` in `plugin.ts`), so this scope comes from `ctx`
@@ -495,32 +495,21 @@ export function speakerSubject(
  * The stamp comes from `ctx` (`audienceOf`, so an audience this build does
  * not know stamps `'shared'`, the least recall) and OVERWRITES anything a
  * statement carried, so no caller-built statement picks its own audience.
- * Every row is stamped, private ones included: a row stored from now on
- * says who could see the turn it was learned in, or (the exception below)
- * that it is a member's fact about themself.
+ * Every row is stamped, private ones included, with the audience of the turn
+ * it was learned in, and with no exception (TASK-1209). So what a team
+ * agent's member says about themself in a channel is stamped shared like the
+ * rest of that turn, and the owner's memory view shows its "Shared" badge,
+ * which follows the stamp.
  *
- * With one exception, which only ever narrows (TASK-1204 review): in a team
- * agent's member turn (`'team'`), a statement filed under the member's own
- * key (`user:<access.userId>`) is stamped `'private'`. That is what the
- * member said about themself, and design §4c shares a team agent's memory
- * with the team, not with people outside AX. A private row reaches every
- * member's turn, whose reads have no audience scope, and no outsider's turn,
- * whose reads are shared-only ({@link recallAudienceScope}), backstop and
- * all. Stamped here, at the write, because §6.1 forbids filtering a read's
- * answer afterwards. Everything else in that turn (the work, a third party
- * by name, the agent) keeps the turn's stamp, and nothing else ever gets
- * this one: a private turn stamps private anyway, and every other shared
- * turn files no person key at all. The subject decides it only after the
- * backstop below has checked it is already where {@link speakerSubject}
- * files it, so the only way to the private stamp is to be about the runner.
- *
- * Only a read's audience scope reads the stamp. Twin matching never
- * compares stamps (a twin read in a shared-scoped turn carries the scope
- * like any read), and slot
- * chains are audience-blind, so a member's channel fact closes their
- * web-chat one in the same slot as before. One visible effect: the owner's
- * memory view shows no "Shared" badge on such a row, though it was said
- * where the room could see it, because the badge follows the stamp.
+ * The stamp gates a read only where that read has the shared scope
+ * ({@link recallAudienceScope}): on a personal agent, where "learned where
+ * the room could see it" and "the room may read it" are one thing, and for a
+ * source this build doesn't know on any agent. A member's or an outsider's
+ * read on a team agent has no scope, and an agent's visibility never
+ * changes, so on a team agent the stamp is the badge and nothing more. Twin
+ * matching never compares stamps (a twin read in a shared-scoped turn
+ * carries the scope like any read), and slot chains are audience-blind, so a
+ * member's channel fact closes their web-chat one in the same slot.
  *
  * `statements` is typed `object`, not a record of fields: the observer's
  * statements are an interface, which TypeScript won't widen to an index
@@ -584,21 +573,13 @@ export async function recordFacts<TOut>(
     const names = speakerNames ?? (await askSpeakerNames(bus, ctx, hookName));
     refuseUnfiled(scope, input.statements, access.userId, names, hookName);
   }
-  // The one subject a team agent's member turn stamps private: the member's
-  // own key. Every statement that reaches here is already filed where
-  // `speakerSubject` says, so this is exactly what they said about themself.
-  const ownKey = scope === 'team' ? rewriteSpeaker(SPEAKER_SUBJECT, access.userId) : undefined;
   return bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {
     ...input,
     // `Array.from`, not `map`: `map` keeps a hole, and the engines' own `map`
     // would then skip it unseen. Here it becomes a statement with no subject,
-    // which the engine refuses, and the whole batch with it. (`?.` for the
-    // same hole: it names nobody, so it gets the turn's stamp.)
-    statements: Array.from(input.statements, (statement) => ({
-      ...statement,
-      audience:
-        ownKey !== undefined && (statement as { about?: unknown } | undefined)?.about === ownKey ? 'private' : audience,
-    })),
+    // stamped like the rest, which the engine refuses, and the whole batch
+    // with it.
+    statements: Array.from(input.statements, (statement) => ({ ...statement, audience })),
   });
 }
 

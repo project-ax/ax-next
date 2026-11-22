@@ -1337,11 +1337,11 @@ describe('a team agent keeps what a member says about themself, under their own 
     await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
 
     // Both facts about Alice under her own key, however the extractor named
-    // her, stamped private: they're the team's, not the room's (review F2).
-    // The work as written, stamped shared. Nothing under her label name, and
-    // nothing under anyone else's key.
+    // her, and the work as written, all stamped shared: the room heard them
+    // (TASK-1209: the stamp is where a row was learned). Nothing under her
+    // label name, and nothing under anyone else's key.
     expect(rows(h)).toEqual(
-      [`user:${ALICE}|teal|private`, `user:${ALICE}|Lisbon|private`, 'billing_service|Dana|shared'].sort(),
+      [`user:${ALICE}|teal|shared`, `user:${ALICE}|Lisbon|shared`, 'billing_service|Dana|shared'].sort(),
     );
     expect(storedRows(h).map((r) => r.about)).not.toContain('alice_smith');
     expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 3, speakerFacts: 0 });
@@ -1383,10 +1383,10 @@ describe('a team agent keeps what a member says about themself, under their own 
     ]);
 
     // Bob's claim about Alice is a third party's fact: as written, under
-    // neither member's key, and shared like any fact said in the room. What
-    // each says about themself is the team's (review F2).
+    // neither member's key. What each says about themself is under their own
+    // key. Every one of them is stamped shared, as said in the room.
     expect(rows(h)).toEqual(
-      [`user:${ALICE}|teal|private`, `user:${BOB}|Berlin|private`, 'alice|teal|shared'].sort(),
+      [`user:${ALICE}|teal|shared`, `user:${BOB}|Berlin|shared`, 'alice|teal|shared'].sort(),
     );
     expect(h.llmCalls).toHaveLength(2);
     // An outsider's turn recalls all three, as a member's does (TASK-1209).
@@ -1406,7 +1406,7 @@ describe('a team agent keeps what a member says about themself, under their own 
     const channel = member(h, ALICE, 'conv-x');
     await observeTurn(h, channel, ALICE_TURN);
     expect(rows(h)).toEqual(
-      [`user:${ALICE}|teal|private`, `user:${ALICE}|Lisbon|private`, 'billing_service|Dana|shared'].sort(),
+      [`user:${ALICE}|teal|shared`, `user:${ALICE}|Lisbon|shared`, 'billing_service|Dana|shared'].sort(),
     );
 
     // Her own channel turn and her web chat read it as hers...
@@ -1446,6 +1446,31 @@ describe('a team agent keeps what a member says about themself, under their own 
     expect(await recallTool(h, away, 'teal')).toContain('teal');
     expect(await recallTool(h, away, 'Lisbon')).toContain('Lisbon');
     expect(await recallTool(h, away, 'billing')).toContain('Dana');
+  });
+
+  // TASK-1209, item 3: the stamp is where a row was learned, with no
+  // exception, so the memory view's "Shared" badge is back on what a member
+  // said about themself where the room could hear it.
+  it("the memory view shows a member's channel fact about themself as Shared", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    const channel = member(h, ALICE, 'conv-x');
+    expect(
+      await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, channel, {
+        input: { about: 'user', relation: 'lives_in', value: 'Lisbon' },
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, h.ctx(), {
+        input: { about: 'user', relation: 'favorite_color', value: 'teal' },
+      }),
+    ).toEqual({ ok: true });
+
+    const { statements } = await h.recall({}, h.ctx());
+    const lisbon = statements.find((s) => s.value === 'Lisbon');
+    const teal = statements.find((s) => s.value === 'teal');
+    expect(lisbon).toMatchObject({ about: `user:${ALICE}`, audience: 'shared' });
+    expect(teal).toMatchObject({ about: `user:${ALICE}` });
+    expect(teal).not.toHaveProperty('audience');
   });
 
   /** An outsider's words: about themself, under the requester's own key, and about the work. */
@@ -1554,24 +1579,23 @@ describe('a team agent keeps what a member says about themself, under their own 
     expect(rows(h)).toEqual(
       [
         'ai_assistant|teal|shared',
-        `user:${ALICE}|Lisbon|private`,
+        `user:${ALICE}|Lisbon|shared`,
         'agent|the seller to accept 450k|shared',
-        `user:${BOB}|Porto|private`,
+        `user:${BOB}|Porto|shared`,
         'AI Assistant|friendly|shared',
       ].sort(),
     );
   });
 
   // A thread recorded before TASK-1146 has no names: a name subject can't be
-  // recognized as the speaker, so it is kept as written, never under a key.
-  // Kept as written, it is any third party's fact, stamped shared (an
-  // accepted residual of review F2: only the member's own key is private).
+  // recognized as the speaker, so it is kept as written, never under a key:
+  // a third party's fact, like any. Every row is stamped with the turn.
   it("with no names answered, a member's name subject is kept as written, never under a key", async () => {
     const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
     await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
 
     expect(rows(h)).toEqual(
-      ['alice_smith|teal|shared', `user:${ALICE}|Lisbon|private`, 'billing_service|Dana|shared'].sort(),
+      ['alice_smith|teal|shared', `user:${ALICE}|Lisbon|shared`, 'billing_service|Dana|shared'].sort(),
     );
     expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 3, speakerFacts: 0 });
   });
@@ -1719,7 +1743,7 @@ describe('a team agent recalls everything for anyone who talks to it, and an out
       input: { about: 'user', relation: 'lives in', value: 'Boston' },
     });
     expect(note).toEqual({ ok: true });
-    expect(storedRows(h).map((r) => `${r.about}|${r.audience}`)).toEqual([`user:${BOB}|private`]);
+    expect(storedRows(h).map((r) => `${r.about}|${r.audience}`)).toEqual([`user:${BOB}|shared`]);
     const outsider = h.ctx({ userId: BOB, conversationId: CHANNEL, source: 'external', audience: 'shared' });
 
     expect(values(await h.recall({}, outsider))).toEqual(['Boston']);
@@ -2334,11 +2358,10 @@ describe('recordFacts — the one door every engine write goes through', () => {
   /** The refusal text of a team agent's member turn (TASK-1204). */
   const TEAM_REFUSAL = "isn't filed under its speaker";
 
-  // Review F2: §4c shares a team agent's memory with the team, not with
-  // people outside AX. A statement filed under the member's own key is about
-  // them, so it is stamped private: every member's turn reads it (no audience
-  // scope), no outsider's turn does. Everything else keeps the turn's stamp.
-  it("a team agent's member turn writes statements filed under the speaker: the speaker's own stamped private, the rest shared", async () => {
+  // TASK-1209: the stamp is the audience of the turn a row was learned in,
+  // with no exception. A statement filed under the member's own key is
+  // stamped like the rest.
+  it("a team agent's member turn writes statements filed under the speaker, each stamped with the turn", async () => {
     const { bus, written } = engineRecording();
     await recordFacts(
       bus,
@@ -2351,7 +2374,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     expect(written).toEqual([
       {
         statements: [
-          { about: `user:${ALICE}`, audience: 'private' },
+          { about: `user:${ALICE}`, audience: 'shared' },
           { about: 'team_standup', audience: 'shared' },
           { about: 'ada', audience: 'shared' },
         ],
@@ -2366,7 +2389,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     ['shared', 'routine'],
     ['public', 'user'], // an audience this build doesn't know reads as shared
   ] as const)(
-    "in a team member turn (audience %j, source %j) only the runner's own key is stamped private, over whatever a statement carried",
+    "in a team member turn (audience %j, source %j) every statement gets the turn's stamp, the runner's own key included, over whatever it carried",
     async (audience, source) => {
       const { bus, written } = engineRecording();
       const statements = [
@@ -2383,7 +2406,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
         {
           batchKey: 'batch-1',
           statements: [
-            { about: `user:${ALICE}`, value: '1', audience: 'private' },
+            { about: `user:${ALICE}`, value: '1', audience: 'shared' },
             { about: 'billing_service', value: '2', audience: 'shared' },
             { about: 'assistant', value: '3', audience: 'shared' },
             { about: 'bob', value: '4', audience: 'shared' },
@@ -2400,13 +2423,13 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const statements: object[] = [{ about: `user:${ALICE}` }];
     statements.length = 2;
     await recordFacts(bus, turn('shared', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, { statements }, NAMES);
-    expect(written).toEqual([{ statements: [{ about: `user:${ALICE}`, audience: 'private' }, { audience: 'shared' }] }]);
+    expect(written).toEqual([{ statements: [{ about: `user:${ALICE}`, audience: 'shared' }, { audience: 'shared' }] }]);
   });
 
-  // Only a team member turn has a key of its own that the room didn't earn:
-  // a private turn stamps everything private as always, and the other shared
-  // turns (personal agents', outsiders') never send a person key at all.
-  it("the runner's key stamp is the team member turn's alone: a private turn on a team agent stamps private, a work fact in an outsider's turn shared", async () => {
+  // The stamp is the turn's in every scope (TASK-1209): a private turn on a
+  // team agent stamps everything private, its own key included; an outsider's
+  // turn on it stamps a work fact shared; a personal agent's shared turn too.
+  it('every statement carries the turn\'s stamp in every scope', async () => {
     const { bus, written } = engineRecording();
     await recordFacts(bus, turn('private', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, {
       statements: [{ about: `user:${ALICE}` }, { about: 'billing_service' }],

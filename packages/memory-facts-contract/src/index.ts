@@ -146,9 +146,7 @@ export interface FactStatementInput {
    * WHO could see the turn this statement was learned in (TASK-1091):
    * `private` (the agent's owner, or someone with access to the agent) or
    * `shared` (a reply anyone in the room could read). Decided and stamped by
-   * the product layer — `@ax/memory` copies it off the turn's context, except
-   * that what a team agent's member says about themself is stamped `private`
-   * in any turn, as the team's to recall and not the room's (TASK-1204) — and
+   * the product layer — `@ax/memory` copies it off the turn's context — and
    * echoed back exactly as supplied. Absent on a row stored without one,
    * which includes every row written before this field existed.
    *

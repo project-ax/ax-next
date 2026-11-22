@@ -189,14 +189,14 @@ async function replayWalk(): Promise<MemoryHarness> {
 }
 
 describe('walk TASK-1192 replayed: a team fact said in a channel is kept, the agent\'s own replies are not (TASK-1198)', () => {
-  it('keeps the standup, filed under the member who said it and kept with the team', async () => {
+  it('keeps the standup, filed under the member who said it, stamped with the channel turn', async () => {
     const h = await replayWalk();
     expect(storedRows(h).filter((r) => r.value.includes('9:30'))).toEqual([
       {
         about: `user:${VINAY}`,
         relation: 'team_standup_time',
         value: 'Team standup is at 9:30 every weekday',
-        audience: 'private',
+        audience: 'shared',
       },
     ]);
   });
