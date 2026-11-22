@@ -31,6 +31,9 @@ const TENANT_TABLE_PREFIXES = [
   // Per-owner storage ledger (TASK-690): only packages/disk-quota/src/store.ts
   // queries this.
   'disk_quota_v1_',
+  // Apps bridge link codes, links, grants and viewer approvals (APPSBRIDGE):
+  // only packages/apps-bridge/src/store.ts queries these.
+  'apps_bridge_v1_',
 ];
 
 function isTenantTable(name) {

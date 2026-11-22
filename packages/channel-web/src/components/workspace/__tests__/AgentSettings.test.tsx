@@ -36,6 +36,11 @@ vi.mock('@/lib/agent-slack', async (original) => ({
   fetchAgentSlack: vi.fn(async () => ({ state: 'personal-agent', botName: 'canopy', answersDms: false })),
 }));
 
+vi.mock('@/lib/agent-apps', async (original) => ({
+  ...(await original<typeof import('@/lib/agent-apps')>()),
+  fetchAgentApps: vi.fn(async () => ({ enabled: false })),
+}));
+
 const quill: WorkspaceAgent = {
   id: 'a-quill',
   name: 'Quill',
@@ -96,6 +101,7 @@ describe('AgentSettings — desktop', () => {
       'Model',
       'Connectors',
       'Slack',
+      'Apps',
       'Memory',
       'Skills',
       'Housekeeping',
@@ -111,6 +117,18 @@ describe('AgentSettings — desktop', () => {
     render(<Harness initial="slack" />);
     expect(screen.queryByText(/The Slack channels Quill answers in/)).toBeNull();
     expect(screen.getByText('How Quill works in Slack.')).toBeTruthy();
+  });
+
+  it('settings sections include apps right after slack', () => {
+    expect(AGENT_SETTINGS_SECTIONS).toHaveLength(8);
+    expect(AGENT_SETTINGS_SECTIONS.indexOf('apps')).toBe(AGENT_SETTINGS_SECTIONS.indexOf('slack') + 1);
+  });
+
+  it('hosts the Apps section, saying what it is for', async () => {
+    render(<Harness initial="apps" />);
+    expect(headingOutline()[1]).toBe('h2: Apps');
+    expect(screen.getByText('Apps built on your apps platform that use Quill and its connectors.')).toBeTruthy();
+    expect(await screen.findByText("The apps platform isn't set up here")).toBeTruthy();
   });
 
   it('names the section in the breadcrumb', () => {

@@ -1,0 +1,26 @@
+# Chart-test fixture (apps connector bridge): the bridge switched on with every
+# required value set. Values are deliberately distinct so a test can tell each
+# env var's source apart. The subject is quoted: a workload identity's numeric
+# id would otherwise load as a YAML number.
+appsBridge:
+  enabled: true
+  platformId: canopy-apps
+  caller:
+    issuer: https://accounts.google.com
+    jwksUrl: https://www.googleapis.com/oauth2/v3/certs
+    audience: https://ax-bridge.example.net
+    subject: "112233445566778899001"
+  viewer:
+    issuer: https://cloud.google.com/iap
+    jwksUrl: https://www.gstatic.com/iap/verify/public_key-jwk
+    audience: /projects/123/global/backendServices/456
+    maxAgeSeconds: 300
+  allowFrom:
+    - ipBlock:
+        cidr: 192.0.2.0/24
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: apps-platform
+      podSelector:
+        matchLabels:
+          app: apps-gateway
