@@ -279,3 +279,73 @@ describe('App boot — a share link (/a/<code>)', () => {
     expect(fetchedUrls().some((u) => u.includes('/api/shared/'))).toBe(false);
   });
 });
+
+describe('App boot — an apps approve link (/apps/approve/<p>/<a>/<c>)', () => {
+  const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
+  const PATH = `/apps/approve/canopy/${APP}/linear`;
+  const ALICE = { user: { id: 'u2', email: 'alice@local', displayName: 'Alice', isAdmin: false } };
+  const PROMPT = {
+    platformId: 'canopy',
+    appId: APP,
+    appName: 'Deal Board',
+    connectorId: 'linear',
+    connectorName: 'Linear',
+    tools: ['list_issues'],
+    agents: [{ agentId: 'agt_1', displayName: 'Scout' }],
+    approvedAgentId: null,
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('an approve link signed out shows the login page; signed in shows the approve page and no workspace', async () => {
+    setPathname(PATH);
+    installRouteFetch({
+      bootstrapStatus: jsonOk({ status: 'completed' }),
+      adminMe: jsonStatus(401),
+      fallback: jsonOk({ url: 'https://accounts.google.com/o/oauth2/auth' }),
+    });
+    const signedOut = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Sign in with Google/i }));
+    await waitFor(() => expect(fetchedUrls()).toContain('/auth/sign-in/social'));
+    const call = lastFetch?.mock.calls.find((c) => String(c[0]) === '/auth/sign-in/social');
+    const body = JSON.parse((call?.[1] as RequestInit).body as string) as { callbackURL: string };
+    expect(body.callbackURL).toBe(PATH);
+    expect(fetchedUrls().some((u) => u.includes('/settings/app-approval/'))).toBe(false);
+    signedOut.unmount();
+
+    setPathname(PATH);
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    const pushState = vi.spyOn(window.history, 'pushState');
+    installRouteFetch({
+      bootstrapStatus: jsonOk({ status: 'completed' }),
+      adminMe: jsonOk(ALICE),
+      fallback: jsonOk(PROMPT),
+    });
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Deal Board wants to use Linear as you' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
+    expect(screen.queryByText(/Sign in with Google/i)).toBeNull();
+    expect(window.location.replace as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(replaceState).not.toHaveBeenCalled();
+    expect(pushState).not.toHaveBeenCalled();
+    expect(fetchedUrls()).toContain(`/settings/app-approval/canopy/${APP}/linear`);
+    // Only the boot reads and the approve page's own: no agent list, no workspace board.
+    for (const u of fetchedUrls()) {
+      expect(['/admin/bootstrap-status', '/admin/me', `/settings/app-approval/canopy/${APP}/linear`], u).toContain(u);
+    }
+  });
+
+  it('a malformed approve path is not the approve page', async () => {
+    setPathname('/apps/approve/canopy/../linear');
+    installRouteFetch({
+      bootstrapStatus: jsonOk({ status: 'completed' }),
+      adminMe: jsonOk(ALICE),
+      fallback: jsonOk({ agents: [] }),
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Alice/ })).toBeTruthy());
+    expect(fetchedUrls().some((u) => u.includes('/settings/app-approval/'))).toBe(false);
+  });
+});

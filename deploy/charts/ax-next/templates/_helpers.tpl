@@ -403,6 +403,10 @@ it also needs, at minimum (each is in-process today and says so at its site):
     turn-registry.ts): two replicas could each run a turn in one Slack
     thread at once, and a turn's chat events must reach the replica that
     started it.
+  - @ax/apps-bridge's rate limits and in-flight call counts (limits.ts,
+    when appsBridge.enabled): each replica would keep its own sliding
+    windows and in-flight caps, so an apps platform spread across N replicas
+    would get N times the per-platform and per-app budgets.
 
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica blob backend, s3) lands. Better to fail the `helm
@@ -466,6 +470,67 @@ Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- if not $appFramed -}}
 {{- fail (printf "contentOrigin.frameAncestors (%s) does not include the app's own origin, so the app could not show artifact pages. Add it: --set contentOrigin.frameAncestors={https://%s}" (join "," $co.frameAncestors) $appHost) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+ax-next.validateAppsBridge — the apps connector bridge (@ax/apps-bridge), when
+switched on, needs every one of its identity values.
+
+The host reads AX_APPS_BRIDGE_PLATFORM_ID as the bridge's on switch and then
+refuses to boot while any caller or viewer value is blank, so a half-filled
+appsBridge block would crash-loop the pod. We fail the render instead and
+name the --set to use. Blank means empty or only whitespace, as the host
+trims each value. --set-string, because a numeric subject (a workload
+identity's unique id) would otherwise arrive as a number.
+
+Read through `dig`: a value removed with --set key=null reads as blank, not as
+a nil-pointer error. The schema already refused a platform id outside its
+grammar, a max age outside 30-3600 and a malformed allowFrom peer; the host
+checks the rest (https JWKS URLs, lengths) again at boot.
+
+Two network footguns fail the render too, because the bridge port's only
+gate inside the cluster is the NetworkPolicy rule built from allowFrom:
+  - networkPolicies.enabled off: no policy renders, so anything in the
+    cluster can reach the bridge port.
+  - an allowFrom peer with an empty namespaceSelector or podSelector (`{}`,
+    or one whose matchLabels and matchExpressions are both empty): that
+    selector matches every namespace, or every pod in the host's namespace.
+    Name the namespace (namespaceSelector alone admits all its pods) and the
+    pods instead.
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateAppsBridge" -}}
+{{- if (include "ax-next.bool" .Values.appsBridge.enabled) -}}
+{{- $ab := .Values.appsBridge -}}
+{{- $keys := list "platformId" "caller.issuer" "caller.jwksUrl" "caller.audience" "caller.subject" "viewer.issuer" "viewer.jwksUrl" "viewer.audience" -}}
+{{- range $key := $keys -}}
+{{- $path := splitList "." $key -}}
+{{- $value := "" -}}
+{{- if eq (len $path) 1 -}}
+{{- $value = dig (index $path 0) "" $ab -}}
+{{- else -}}
+{{- $value = dig (index $path 0) (index $path 1) "" $ab -}}
+{{- end -}}
+{{- if not (trim (toString $value)) -}}
+{{- fail (printf "appsBridge.enabled is true but appsBridge.%s is empty. The apps connector bridge needs platformId, caller.issuer, caller.jwksUrl, caller.audience, caller.subject, viewer.issuer, viewer.jwksUrl and viewer.audience: --set-string appsBridge.%s=<value> (see 'Apps connector bridge (optional)' in deploy/GKE.md), or turn it off with --set appsBridge.enabled=false." $key $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (include "ax-next.bool" .Values.networkPolicies.enabled) -}}
+{{- fail "appsBridge.enabled is true but networkPolicies.enabled is false. The bridge port's only gate inside the cluster is the NetworkPolicy rule built from appsBridge.allowFrom; with no policies anything in the cluster can reach it. Turn networkPolicies.enabled back on, or turn the bridge off with --set appsBridge.enabled=false." -}}
+{{- end -}}
+{{- range $i, $peer := ($ab.allowFrom | default list) -}}
+{{- range $sel := list "namespaceSelector" "podSelector" -}}
+{{- if and (kindIs "map" $peer) (hasKey $peer $sel) -}}
+{{- $s := index $peer $sel | default dict -}}
+{{- if not (kindIs "map" $s) -}}{{- $s = dict -}}{{- end -}}
+{{- if and (empty (get $s "matchLabels")) (empty (get $s "matchExpressions")) -}}
+{{- fail (printf "appsBridge.allowFrom[%d].%s is empty, which matches %s. Name the namespace with matchLabels (a namespaceSelector on its own admits every pod in it) and the pods, so only the apps platform reaches the bridge port." $i $sel (ternary "every namespace in the cluster" "every pod in the host's namespace" (eq $sel "namespaceSelector"))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

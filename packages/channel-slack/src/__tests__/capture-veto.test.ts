@@ -15,15 +15,16 @@ import type { ChannelBinding, ChannelThread } from '../channel-store.js';
 import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
 
 /*
-  The "Let the agent remember this channel" switch (TASK-1094), as memory
-  sees it: `memory:pre-capture { conversationId }` before every extraction
-  pass and every `memory_note`. channel-slack refuses a conversation of one of
-  its channel threads when an outsider's (external) turn ran in it, whatever
-  the switch says; and a member's when the thread ever had a turn while the
-  switch was off (sticky), when the channel is no longer connected to the
-  thread's agent, or when the switch is off now. A conversation it never
-  recorded (a web chat, a DM) gets no opinion. It fails closed: a lookup that
-  throws, or that misses half of memory's own bound, refuses.
+  The capture veto (TASK-1094), as memory sees it: `memory:pre-capture
+  { conversationId }` before every extraction pass and every `memory_note`.
+  channel-slack refuses a conversation of one of its channel threads when an
+  outsider's (external) turn ran in it; and a member's when the thread ever
+  had a turn while its channel was private (sticky, TASK-1188), when the
+  channel is no longer connected to the thread's agent, or when it is
+  private now. There is no per-channel memory switch (TASK-1202). A
+  conversation it never recorded (a web chat, a DM) gets no opinion. It
+  fails closed: a lookup that throws, or that misses half of memory's own
+  bound, refuses.
 
   A member's thread it lets memory learn from is answered with the names
   their turns were labelled with (TASK-1146), so memory files nothing said
@@ -36,11 +37,11 @@ const AGENT = 'agt_support';
 const THREAD = 'conv-support-thread';
 
 const REFUSED = { rejected: true, reason: 'channel-not-remembered' };
-/** An outsider's thread: never remembered, whatever the switch says. */
+/** An outsider's thread: never remembered. */
 const OUTSIDER_THREAD = { rejected: true, reason: 'channel-external-turn' };
 /**
  * The check itself failed (a lookup threw or ran out of time): refused, and
- * saying so, never that the switch is off. Memory logs the reason.
+ * saying so, never that the channel refused it. Memory logs the reason.
  */
 const CHECK_FAILED = { rejected: true, reason: 'capture-check-failed' };
 
@@ -61,7 +62,6 @@ const binding = (o: Partial<ChannelBinding> = {}): ChannelBinding => ({
   agentId: AGENT,
   connectedByUserId: 'usr_ada',
   channelName: 'support',
-  remember: true,
   isPrivate: false,
   createdAt: new Date('2026-11-13T09:00:00Z'),
   ...o,
@@ -126,7 +126,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('channelCaptureVeto: what the switch refuses', () => {
+describe('channelCaptureVeto: what it refuses', () => {
   it('a conversation it never recorded (a web chat, a DM) gets no opinion, and no binding is read', async () => {
     const channels = channelsWith();
     expect(await channelCaptureVeto(channels, pass({ conversationId: 'conv-web' }), { conversationId: 'conv-web' })).toBeUndefined();
@@ -134,22 +134,27 @@ describe('channelCaptureVeto: what the switch refuses', () => {
     expect(channels.get).not.toHaveBeenCalled();
   });
 
-  it('a thread whose channel is connected, with the switch on, that never had a turn while off: no opinion', async () => {
+  it("a member's thread whose channel is connected and public, with no turn in it while private: no opinion", async () => {
     const channels = channelsWith({ threads: { [THREAD]: thread() } });
     expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toBeUndefined();
     expect(channels.get).toHaveBeenCalledWith(INSTALL, SUPPORT);
   });
 
+  it('reads no memory switch (TASK-1202): a binding that still carries `remember: false`, as one from before the switch went would, lets memory in', async () => {
+    const stray = { ...binding(), remember: false } as ChannelBinding;
+    const channels = channelsWith({ threads: { [THREAD]: thread() }, binding: stray });
+    expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toBeUndefined();
+  });
+
   it.each([
-    ['a thread that had a turn while the switch was off, though it is on now', { threads: { [THREAD]: thread({ notRemembered: true }) } }],
-    ['the switch is off now', { threads: { [THREAD]: thread() }, binding: binding({ remember: false }) }],
+    ['a thread that had a turn while its channel was private, though it is public now', { threads: { [THREAD]: thread({ notRemembered: true }) } }],
     ['the channel is no longer connected (disconnected, or its install removed)', { threads: { [THREAD]: thread() }, binding: null }],
     ['the channel is connected to another agent now', { threads: { [THREAD]: thread() }, binding: binding({ agentId: 'agt_sales' }) }],
     // TASK-1188 (design §4b.3): a private channel is answered in and never
-    // remembered, whatever its switch says. Its turns mark their threads,
-    // and its binding refuses every thread of it while it stays private:
-    // one with no turn since the channel was made private too.
-    ['the channel is private now, its switch on, the thread from before', { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: true }) }],
+    // remembered. Its turns mark their threads, and its binding refuses
+    // every thread of it while it stays private: one with no turn since the
+    // channel was made private too.
+    ['the channel is private now, the thread from before', { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: true }) }],
     [
       'a private flag that is anything but false (fails closed)',
       { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: undefined as unknown as boolean }) },
@@ -173,7 +178,7 @@ describe('channelCaptureVeto: what the switch refuses', () => {
   });
 
   it('a tainted thread is refused before its binding is read: nothing it could answer changes that', async () => {
-    const channels = channelsWith({ threads: { [THREAD]: thread({ notRemembered: true }) }, binding: binding({ remember: true }) });
+    const channels = channelsWith({ threads: { [THREAD]: thread({ notRemembered: true }) }, binding: binding() });
     expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toEqual(REFUSED);
     expect(channels.get).not.toHaveBeenCalled();
   });
@@ -184,19 +189,19 @@ describe("channelCaptureVeto: an outsider's thread is never remembered", () => {
     An outsider's turn runs `audience: 'shared'`, and a team agent recalls
     shared memory in every turn, a member's private chat included. Learned,
     an outsider's words would come back as facts with a member's authority,
-    so the switch governs members' (attended) threads only.
+    so memory learns only from members' (attended) threads.
   */
   it.each([
-    ['the switch on, the channel connected, never a turn while off', thread({ external: true })],
-    ['and a turn while the switch was off too', thread({ external: true, notRemembered: true })],
+    ['the channel connected and public, never a turn in private', thread({ external: true })],
+    ['and a turn in private too', thread({ external: true, notRemembered: true })],
     ['a flag that is anything but false (fails closed)', thread({ external: undefined as unknown as boolean })],
   ] as const)('refuses it: %s, before any binding is read', async (_name, outsider) => {
-    const channels = channelsWith({ threads: { [THREAD]: outsider }, binding: binding({ remember: true }) });
+    const channels = channelsWith({ threads: { [THREAD]: outsider }, binding: binding() });
     expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toEqual(OUTSIDER_THREAD);
     expect(channels.get).not.toHaveBeenCalled();
   });
 
-  it("a member's thread of the same Slack thread is remembered while the switch is on", async () => {
+  it("a member's thread of the same Slack thread is remembered", async () => {
     // One Slack thread, two conversations: the member's own, and the connector's for outsiders.
     const member = 'conv-support-thread-member';
     const channels = channelsWith({ threads: { [THREAD]: thread({ external: true }), [member]: thread() } });
@@ -327,9 +332,9 @@ describe('channelCaptureVeto: fails closed, and says the check failed', () => {
     );
   });
 
-  it("a web chat's pass while the store is down is refused as a failed check, never as a switch that is off", async () => {
+  it("a web chat's pass while the store is down is refused as a failed check, never as a channel's refusal", async () => {
     // A slow or not-ready store refuses EVERY conversation's pass, a web chat's
-    // included: the reason must not claim a Slack switch decided it.
+    // included: the reason must not claim a Slack channel decided it.
     const { logger } = recordingLogger();
     const down = channelsWith({ threadLookup: Object.assign(new Error('not ready'), { code: 'ECONNREFUSED' }) });
     const asked = await channelCaptureVeto(down, pass({ conversationId: 'conv-web', source: 'user', logger }), {
@@ -371,8 +376,8 @@ describe('channelCaptureVeto: the speakers memory must not file facts under (TAS
   it('a refused thread answers the refusal and no names, whatever names it holds', async () => {
     const named = thread({ speakerNames: MEL });
     const refused: Array<[string, Parameters<typeof channelsWith>[0], unknown]> = [
-      ['a turn ran while the switch was off', { threads: { [THREAD]: thread({ notRemembered: true, speakerNames: MEL }) } }, REFUSED],
-      ['the switch is off now', { threads: { [THREAD]: named }, binding: binding({ remember: false }) }, REFUSED],
+      ['a turn ran while the channel was private', { threads: { [THREAD]: thread({ notRemembered: true, speakerNames: MEL }) } }, REFUSED],
+      ['the channel is private now', { threads: { [THREAD]: named }, binding: binding({ isPrivate: true }) }, REFUSED],
       ['the channel is no longer connected', { threads: { [THREAD]: named }, binding: null }, REFUSED],
       ['the channel is connected to another agent now', { threads: { [THREAD]: named }, binding: binding({ agentId: 'agt_sales' }) }, REFUSED],
       ["outsiders' turns run in it", { threads: { [THREAD]: thread({ external: true, speakerNames: MEL }) } }, OUTSIDER_THREAD],
@@ -469,16 +474,16 @@ describe('subscribeCaptureVeto', () => {
     const bus = new HookBus();
     const off = subscribeCaptureVeto(
       bus,
-      channelsWith({ threads: { 'conv-off': thread({ notRemembered: true }), 'conv-on': thread() } }),
+      channelsWith({ threads: { 'conv-kept-out': thread({ notRemembered: true }), 'conv-remembered': thread() } }),
     );
 
     // memory logs `source` as the subscriber that refused, and `reason` as its word for why.
-    expect(await fire(bus, 'conv-off')).toEqual({ ...REFUSED, source: CAPTURE_VETO_KEY });
-    expect(await fire(bus, 'conv-on')).toEqual({ rejected: false, payload: { conversationId: 'conv-on' } });
+    expect(await fire(bus, 'conv-kept-out')).toEqual({ ...REFUSED, source: CAPTURE_VETO_KEY });
+    expect(await fire(bus, 'conv-remembered')).toEqual({ rejected: false, payload: { conversationId: 'conv-remembered' } });
     expect(await fire(bus, 'conv-web')).toEqual({ rejected: false, payload: { conversationId: 'conv-web' } });
 
     off();
-    expect(await fire(bus, 'conv-off')).toEqual({ rejected: false, payload: { conversationId: 'conv-off' } });
+    expect(await fire(bus, 'conv-kept-out')).toEqual({ rejected: false, payload: { conversationId: 'conv-kept-out' } });
     expect(bus.unsubscribe(MEMORY_PRE_CAPTURE_HOOK, CAPTURE_VETO_KEY)).toBe(0);
   });
 
@@ -486,9 +491,9 @@ describe('subscribeCaptureVeto', () => {
     const bus = new HookBus();
     // The earlier run's store is gone: every lookup fails, so it would refuse everything.
     subscribeCaptureVeto(bus, channelsWith({ threadLookup: new Error('database closed') }));
-    subscribeCaptureVeto(bus, channelsWith({ threads: { 'conv-on': thread() } }));
+    subscribeCaptureVeto(bus, channelsWith({ threads: { 'conv-remembered': thread() } }));
 
-    expect(await fire(bus, 'conv-on')).toEqual({ rejected: false, payload: { conversationId: 'conv-on' } });
+    expect(await fire(bus, 'conv-remembered')).toEqual({ rejected: false, payload: { conversationId: 'conv-remembered' } });
     expect(bus.unsubscribe(MEMORY_PRE_CAPTURE_HOOK, CAPTURE_VETO_KEY)).toBe(1);
   });
 
@@ -499,11 +504,11 @@ describe('subscribeCaptureVeto', () => {
       ...payload,
       speakerNames: [...(payload.speakerNames ?? []), 'Ana'],
     }));
-    subscribeCaptureVeto(bus, channelsWith({ threads: { 'conv-on': thread({ speakerNames: ['Mel', 'U07MEL00001'] }) } }));
+    subscribeCaptureVeto(bus, channelsWith({ threads: { 'conv-remembered': thread({ speakerNames: ['Mel', 'U07MEL00001'] }) } }));
 
-    expect(await fire(bus, 'conv-on')).toEqual({
+    expect(await fire(bus, 'conv-remembered')).toEqual({
       rejected: false,
-      payload: { conversationId: 'conv-on', speakerNames: ['Ana', 'Mel', 'U07MEL00001'] },
+      payload: { conversationId: 'conv-remembered', speakerNames: ['Ana', 'Mel', 'U07MEL00001'] },
     });
     // A conversation it never recorded: the earlier subscriber's answer goes on untouched.
     expect(await fire(bus, 'conv-web')).toEqual({ rejected: false, payload: { conversationId: 'conv-web', speakerNames: ['Ana'] } });

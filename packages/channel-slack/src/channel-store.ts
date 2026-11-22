@@ -1,4 +1,4 @@
-import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import { cleanChannelName } from './label.js';
 import { THREAD_SPEAKER_NAMES_MAX } from './limits.js';
 import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migrations.js';
@@ -11,47 +11,21 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * requester, copied into the binding at its first mention; a Claim moves
  * it), so every write here is scoped to the agent the caller named, the one
  * it checked rights on: a second agent never takes a channel over (`upsert`
- * answers `taken`), and `remove`/`setRemember` with another agent's id
- * change nothing. Who may bind or flip a channel is the caller's to decide
+ * answers `taken`), and `remove`/`setPrivate` with another agent's id
+ * change nothing. Who may bind a channel is the caller's to decide
  * (channels.ts), never this file's.
  *
  * Removing an install removes its bindings in the same statement (store.ts);
  * `removeForAgent` is the agents:deleted cleanup (agents-deleted.ts).
  *
- * It also keeps the memory switch's thread map (TASK-1094): which
- * conversations are channel threads, of which channel and agent, whether
- * outsiders' turns run in it, and whether one ever had a turn while the
- * switch was off; and, for a member's thread, the names their turns were
+ * It also keeps the thread map (TASK-1094): which conversations are channel
+ * threads, of which channel and agent, whether outsiders' turns run in it,
+ * and whether one ever had a turn while the channel was private
+ * (TASK-1188); and, for a member's thread, the names their turns were
  * labelled with (TASK-1146). The capture veto (capture-veto.ts) reads it;
  * the router writes it when a channel turn starts. Only `removeForAgent`
  * deletes a thread row: an install's removal and a disconnect keep them, so
- * what was said while the switch was off stays out of memory after Slack is
- * gone.
- *
- * And the memory switch the team last set for an agent in a channel, kept
- * apart from the bindings (TASK-1180), so a Disconnect never loses it. A flip
- * (`setRemember`) writes every binding of that agent in that channel, on any
- * install, and the kept switch, in ONE statement, so a flip leaves the kept
- * switch agreeing with every binding it reached. `bindBot`, a team agent's
- * own bot's first bind there, reads it, and no binding: the kept switch is
- * the team's last word (TASK-1186). An install's removal, a disconnect and
- * the boot's delete of the shared install's bindings (migrations.ts) keep
- * it; only `removeForAgent` deletes it. Any future writer that flips a
- * binding's `remember` must keep that one-statement rule. `upsert`'s insert
- * is the one exception, on purpose: a new binding's starting switch is not
- * a flip, so it keeps nothing (its writer gives it: `bindBot` the kept
- * switch). The two can also differ after a flip by code from before the
- * table (an older replica, or a rollback), which writes the binding alone;
- * the next boot moves the kept switch toward off (migrations.ts).
- *
- * A flip and a team agent's own bot's first bind never interleave
- * (TASK-1182): each takes the switch lock on the agent and channel
- * (`lockSwitch`) as its transaction's first statement and reads only after
- * it, so whichever comes second sees what the other wrote. Any future
- * writer that flips a binding's `remember` takes it too. `upsert` called on
- * its own takes no lock, on purpose: a new binding's starting switch is
- * not a flip, and a reconnect never writes `remember`. A bot's binding is
- * written only through `bindBot`, which reads the switch under the lock.
+ * what was said in private stays out of memory after Slack is gone.
  */
 export interface ChannelBinding {
   installId: string;
@@ -65,15 +39,9 @@ export interface ChannelBinding {
   /** Slack's name for the channel when it was connected, cleaned (label.ts). */
   channelName: string;
   /**
-   * The channel's memory switch. On for a new binding unless its writer says
-   * otherwise (a team agent's own bot starts from the switch kept for the
-   * agent and channel, TASK-1180/1186); a reconnect keeps it.
-   */
-  remember: boolean;
-  /**
    * Slack last described the channel as private (TASK-1188, design §4b.3):
-   * the bot answers there, and memory never learns from it, whatever
-   * `remember` says (capture-veto.ts). Set at the bind and by `setPrivate`.
+   * the bot answers there, and memory never learns from it
+   * (capture-veto.ts). Set at the bind and by `setPrivate`.
    */
   isPrivate: boolean;
   createdAt: Date;
@@ -88,14 +56,15 @@ export interface ChannelThread {
   channelId: string;
   agentId: string;
   /**
-   * True once any turn started while the channel's memory switch was off, or
-   * while the channel was private (TASK-1188). Never cleared: a thread said
-   * in private stays out of memory if the channel goes public.
+   * True once any turn started while the channel was private (TASK-1188),
+   * an Allow's continuation included (`markNotRemembered`). Never cleared,
+   * whatever set it: a thread said in private stays out of memory if the
+   * channel goes public.
    */
   notRemembered: boolean;
   /**
    * The conversation outsiders' (external) turns run in: memory never learns
-   * from it, whatever the switch says. Fixed by the conversation's key.
+   * from it. Fixed by the conversation's key.
    */
   external: boolean;
   /**
@@ -126,44 +95,26 @@ export interface ChannelStore {
   listForAgent(installId: string, agentId: string): Promise<ChannelBinding[]>;
   /**
    * Connect a channel, in ONE statement, so of any number of concurrent
-   * connects exactly one can bind a free channel. `connected`: a new binding,
-   * its memory switch `remember` (on when not given). `reconnected`: the
-   * channel was already this agent's; the connector and name are replaced,
-   * and the stored remember and createdAt kept (`remember` is ignored).
-   * `taken`: it is another agent's, and nothing changed. The name is stored
-   * cleaned. `isPrivate` (off when not given) is written by a new binding
-   * only, like `remember`: a turn's check moves it (`setPrivate`).
+   * connects exactly one can bind a free channel. `connected`: a new binding.
+   * `reconnected`: the channel was already this agent's; the connector and
+   * name are replaced, and the stored privacy and createdAt kept. `taken`: it
+   * is another agent's, and nothing changed. The name is stored cleaned.
+   * `isPrivate` (off when not given) is written by a new binding only: a
+   * turn's check moves it (`setPrivate`). A team agent's own bot binds a
+   * channel with this at its first mention there (router.ts
+   * `bindBotChannel`).
    */
   upsert(
     b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName'> & {
-      remember?: boolean;
       isPrivate?: boolean;
     },
   ): Promise<'connected' | 'reconnected' | 'taken'>;
-  /**
-   * Disconnect a channel from THIS agent. False when it isn't this agent's (or isn't bound at all).
-   * The switch kept for the agent and channel (keptRemember) stays.
-   */
+  /** Disconnect a channel from THIS agent. False when it isn't this agent's (or isn't bound at all). */
   remove(installId: string, channelId: string, agentId: string): Promise<boolean>;
-  /**
-   * Flip the agent's memory switch for a channel. `installId`'s binding of
-   * the channel must be THIS agent's, else false and nothing is written.
-   * Then, in ONE statement, every binding of the agent in that channel, on
-   * any install, takes it, and so does the switch kept apart from the
-   * bindings (keptRemember). Another agent's rows and other channels are never
-   * touched. True when the named binding took it. A Disconnect can delete
-   * the named binding while the flip waits on it: then false, though the
-   * agent's other bindings of the channel and the kept switch took it,
-   * together. It takes the switch lock first (TASK-1182), so it waits for a
-   * bot's first bind of the channel that is in progress, then reaches the
-   * binding that bind wrote.
-   */
-  setRemember(installId: string, channelId: string, agentId: string, remember: boolean): Promise<boolean>;
   /**
    * Record whether Slack now describes the channel as private (TASK-1188),
    * on `installId`'s binding of it, only when that binding is THIS agent's.
-   * False when it isn't (or the channel isn't bound). Not the switch: no
-   * lock, and nothing kept apart from the binding.
+   * False when it isn't (or the channel isn't bound).
    */
   setPrivate(installId: string, channelId: string, agentId: string, isPrivate: boolean): Promise<boolean>;
   /**
@@ -172,45 +123,21 @@ export interface ChannelStore {
    */
   markNotRemembered(conversationId: string): Promise<void>;
   /**
-   * The switch last set for this agent in this channel (TASK-1180): kept
-   * when the bindings go (a Disconnect, a removed install, a removed bot),
-   * deleted only with the agent. Null when none was ever set or backfilled.
-   */
-  keptRemember(agentId: string, channelId: string): Promise<boolean | null>;
-  /**
-   * A team agent's own bot's first bind of a channel (TASK-1167): `b` is
-   * written as `upsert` writes it, with the memory switch the team last set
-   * for the agent there: the switch kept for the agent and channel
-   * (keptRemember), else on. No binding is read (TASK-1186): the shared
-   * app's are deleted at every boot, after their switches are kept
-   * (migrations.ts). Another agent's switch there is about that agent's
-   * memory and is never read either.
-   * Read and written in one transaction holding the lock `setRemember`
-   * takes on this agent and channel, so a flip and this bind never
-   * interleave: a flip that came first is what it reads, and one that comes
-   * second reaches the binding it wrote (TASK-1182). It keeps nothing: a new
-   * binding's starting switch is not a flip. It answers the switch it read,
-   * which a new binding is written with; a reconnect keeps the stored one
-   * (as `upsert` does), so the caller reads the binding back. A failed read
-   * throws before anything is written: the switch is never guessed.
-   */
-  bindBot(
-    b: Pick<ChannelBinding, 'installId' | 'channelId' | 'agentId' | 'connectedByUserId' | 'channelName' | 'isPrivate'>,
-  ): Promise<boolean>;
-  /**
-   * Delete the agent's bindings, thread rows and kept switches on every
-   * install, in one transaction (all go, or none does), and say how many
-   * bindings and threads went.
+   * Delete the agent's bindings and thread rows on every install, in one
+   * transaction (both go, or neither does), and say how many of each went.
    */
   removeForAgent(agentId: string): Promise<{ channels: number; threads: number }>;
   /**
    * Record that a turn is starting in this conversation, in ONE statement
-   * that reads the channel's memory switch as it writes: a switch turned off
-   * after the caller read the binding still taints the thread. A
-   * conversation's install, channel and agent are written the first time and
-   * never change (its key names them); `notRemembered` is sticky: once true,
-   * a turn with the switch on leaves it true. `external` is the turn's mode
-   * (anything but `attended` counts as external) and sticky the same way.
+   * that reads the binding as it writes. A conversation's install, channel
+   * and agent are written the first time and never change (its key names
+   * them). A private channel marks the thread not remembered (TASK-1188):
+   * `isPrivate`, what the turn's own check said, or the binding's
+   * `isPrivate` as it is at the write, so a channel made private after the
+   * caller read the binding still marks it. `notRemembered` is sticky: once
+   * true, a later turn in a public channel leaves it true. `external` is the
+   * turn's mode (anything but `attended` counts as external) and sticky the
+   * same way.
    * `no-binding`: the channel isn't this agent's (any more), nothing was
    * written, and the turn must not run. `reconnected`: an outsider's turn,
    * but the channel is connected by someone other than `runAs` now; nothing
@@ -220,9 +147,6 @@ export interface ChannelStore {
    * (TASK-1146): the union, each once, ordered by when last seen, keeping
    * the THREAD_SPEAKER_NAMES_MAX most recent. An outsider's turn adds none,
    * whatever it is handed. Names arrive only with an attended turn.
-   * A private channel taints the thread like a switch that is off
-   * (TASK-1188): `isPrivate`, what the turn's own check said, or the
-   * binding's `isPrivate` as it is at the write.
    */
   recordThread(
     t: Omit<ChannelThread, 'notRemembered' | 'external' | 'speakerNames'> & {
@@ -236,33 +160,6 @@ export interface ChannelStore {
 
 const CHANNELS = 'channel_slack_v1_channels';
 const THREADS = 'channel_slack_v1_threads';
-const SWITCHES = 'channel_slack_v1_memory_switches';
-
-/**
- * The switch lock on an agent and channel (TASK-1182), taken by a flip
- * (`setRemember`) and by a team agent's own bot's first bind (`bindBot`) as
- * the first statement of their transactions, so the two never interleave.
- * An advisory lock, not a row's: the switch kept for the agent and channel
- * may have no row yet (a channel connected since the last boot and never
- * flipped), and the bot's new binding has none until the bind writes it,
- * while a lock on a key holds for rows that don't exist. A statement of its
- * own, before anything is read: a statement's snapshot is taken as it
- * starts, so one that waited for the lock inside itself would still decide
- * with what it saw before the wait. That is READ COMMITTED: under
- * REPEATABLE READ or SERIALIZABLE the transaction's one snapshot is taken by
- * its first statement, this one, before the wait, so both transactions that
- * take it set READ COMMITTED themselves rather than trust the server's
- * default. Transaction-scoped, never session-scoped: commit or rollback
- * releases it, so a pooled connection never keeps it. The seed is this
- * package's: routines use 1842713x, tool-policy 1842714x, decisions
- * 1842715x, channel-slack 18427161. The key is JSON, so no two (agent,
- * channel) pairs spell the same text; two whose hashes collide only wait
- * for each other. Outside a transaction it would be released as soon as
- * it was taken, so it takes only a transaction.
- */
-async function lockSwitch(trx: Transaction<ChannelSlackDatabase>, agentId: string, channelId: string): Promise<void> {
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([agentId, channelId])}, 18427161))`.execute(trx);
-}
 
 const COLUMNS = [
   'install_id',
@@ -270,7 +167,6 @@ const COLUMNS = [
   'agent_id',
   'connected_by_user_id',
   'channel_name',
-  'remember',
   'is_private',
   'created_at',
 ] as const;
@@ -299,7 +195,6 @@ function toBinding(r: SelectedRow): ChannelBinding {
     agentId: r.agent_id,
     connectedByUserId: r.connected_by_user_id,
     channelName: r.channel_name,
-    remember: r.remember,
     isPrivate: r.is_private,
     createdAt: r.created_at,
   };
@@ -335,15 +230,14 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // nothing. A concurrent insert of the same channel waits on the primary
       // key, then takes that same conflict path: one statement, no
       // read-then-write window. `xmax = 0` holds only for a freshly inserted
-      // row, so it tells a new binding from a reconnect. `remember` and
-      // `is_private` are written by the insert only: the conflict's SET
-      // leaves them alone.
+      // row, so it tells a new binding from a reconnect. `is_private` is
+      // written by the insert only: the conflict's SET leaves it alone.
       const r = await sql<{ inserted: boolean }>`
         INSERT INTO channel_slack_v1_channels
-          (install_id, channel_id, agent_id, connected_by_user_id, channel_name, remember, is_private)
+          (install_id, channel_id, agent_id, connected_by_user_id, channel_name, is_private)
         VALUES
           (${b.installId}, ${b.channelId}, ${b.agentId}, ${b.connectedByUserId}, ${cleanChannelName(b.channelName)},
-           ${b.remember ?? true}, ${b.isPrivate ?? false})
+           ${b.isPrivate ?? false})
         ON CONFLICT (install_id, channel_id) DO UPDATE
            SET connected_by_user_id = EXCLUDED.connected_by_user_id,
                channel_name = EXCLUDED.channel_name,
@@ -366,48 +260,6 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       return r.numDeletedRows > 0n;
     },
 
-    async setRemember(installId, channelId, agentId, remember) {
-      // One statement, so the kept switch ends up agreeing with every binding
-      // the flip reached. Every row it flips is this agent's, in this channel,
-      // and only when the binding the caller named is this agent's (the
-      // EXISTS, read as the statement starts): a route that checked rights on
-      // one agent can't touch another's. The kept switch is written whenever
-      // any binding was flipped, so it goes with them even when a Disconnect
-      // deletes the named binding while the flip waits on its row: that row
-      // is skipped, and the agent's other bindings still flip. The answer is
-      // whether the named binding took it: false then, so the caller's page
-      // re-reads and finds it gone. A bare parameter in a SELECT list has no
-      // type, so each is cast.
-      const flip = sql<{ changed: number }>`
-        WITH flipped AS (
-          UPDATE channel_slack_v1_channels
-             SET remember = ${remember}, updated_at = now()
-           WHERE channel_id = ${channelId}
-             AND agent_id = ${agentId}
-             AND EXISTS (
-               SELECT 1 FROM channel_slack_v1_channels n
-                WHERE n.install_id = ${installId} AND n.channel_id = ${channelId} AND n.agent_id = ${agentId}
-             )
-          RETURNING install_id
-        ), kept AS (
-          INSERT INTO channel_slack_v1_memory_switches (agent_id, channel_id, remember)
-          SELECT CAST(${agentId} AS text), CAST(${channelId} AS text), CAST(${remember} AS boolean)
-           WHERE EXISTS (SELECT 1 FROM flipped)
-          ON CONFLICT (agent_id, channel_id) DO UPDATE SET remember = EXCLUDED.remember, updated_at = now()
-        )
-        SELECT (SELECT count(*) FROM flipped WHERE install_id = ${installId})::int AS changed
-      `;
-      // The switch lock first, in a statement of its own (lockSwitch): a bot's
-      // first bind of the channel in progress commits before `flip` runs and
-      // takes its snapshot, so the binding it wrote is one this flip reaches
-      // (TASK-1182).
-      return db.transaction().setIsolationLevel('read committed').execute(async (trx) => {
-        await lockSwitch(trx, agentId, channelId);
-        const r = await flip.execute(trx);
-        return (r.rows[0]?.changed ?? 0) > 0;
-      });
-    },
-
     async setPrivate(installId, channelId, agentId, isPrivate) {
       const r = await db
         .updateTable(CHANNELS)
@@ -423,60 +275,31 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       await db.updateTable(THREADS).set({ not_remembered: true }).where('conversation_id', '=', conversationId).execute();
     },
 
-    async keptRemember(agentId, channelId) {
-      const row = await db
-        .selectFrom(SWITCHES)
-        .select('remember')
-        .where('agent_id', '=', agentId)
-        .where('channel_id', '=', channelId)
-        .executeTakeFirst();
-      return row?.remember ?? null;
-    },
-
-    async bindBot(b) {
-      return db.transaction().setIsolationLevel('read committed').execute(async (trx) => {
-        // The switch lock first, in a statement of its own (lockSwitch): a
-        // flip of the channel in progress commits before anything below reads.
-        await lockSwitch(trx, b.agentId, b.channelId);
-        // This store on the transaction, so the read and the write below
-        // hold the lock, on the transaction's one connection. Only its
-        // keptRemember and upsert: setRemember, bindBot and removeForAgent
-        // each open a transaction, which a transaction can't.
-        const locked = createChannelStore(trx);
-        // The switch the team last set for this agent here, else on. Never a
-        // binding's, and never another agent's: that is about their memory.
-        const remember = (await locked.keptRemember(b.agentId, b.channelId)) ?? true;
-        await locked.upsert({ ...b, remember });
-        return remember;
-      });
-    },
-
     async removeForAgent(agentId) {
       return db.transaction().execute(async (trx) => {
         const channels = await trx.deleteFrom(CHANNELS).where('agent_id', '=', agentId).executeTakeFirst();
         const threads = await trx.deleteFrom(THREADS).where('agent_id', '=', agentId).executeTakeFirst();
-        await trx.deleteFrom(SWITCHES).where('agent_id', '=', agentId).execute();
         return { channels: Number(channels.numDeletedRows), threads: Number(threads.numDeletedRows) };
       });
     },
 
     async recordThread(t) {
-      // One statement: the switch is read from the binding as the row is
-      // written, so an admin turning it off after the router's read can't
-      // leave a thread recorded clean; and two turns starting at once in one
-      // thread can't lose a taint between a read and a write. The conflict
-      // only ever ORs the flags in, so nothing can turn a thread back to
-      // remembered, or an outsiders' thread into a member's. No binding of
-      // this agent's: `binding` is empty, and nothing is inserted or updated.
-      // An outsider's turn also needs the binding still connected by the
-      // person it runs as (a reconnect after the router's read): otherwise
-      // `binding` has its row but nothing is written, and that difference is
-      // the answer. Anything but `attended` is an outsider's turn, and one
-      // without a `runAs` matches no connector.
+      // One statement: the binding is read as the row is written, so a
+      // channel made private after the router's read can't leave a thread
+      // recorded clean; and two turns starting at once in one thread can't
+      // lose a mark between a read and a write. The conflict only ever ORs
+      // the flags in, so nothing can turn a thread back to remembered, or an
+      // outsiders' thread into a member's. No binding of this agent's:
+      // `binding` is empty, and nothing is inserted or updated. An outsider's
+      // turn also needs the binding still connected by the person it runs as
+      // (a reconnect after the router's read): otherwise `binding` has its
+      // row but nothing is written, and that difference is the answer.
+      // Anything but `attended` is an outsider's turn, and one without a
+      // `runAs` matches no connector.
       //
-      // A private channel (TASK-1188) taints the thread as a switch that is
-      // off does: what this turn's own check said, or the binding as it is
-      // at this write (a newer check may have set it meanwhile).
+      // A private channel (TASK-1188) marks the thread not remembered: what
+      // this turn's own check said, or the binding as it is at this write (a
+      // newer check may have set it meanwhile).
       //
       // A member's turn adds the names its label showed (TASK-1146), in the
       // same statement: the conflict keeps the union, each name once at the
@@ -493,7 +316,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       const names = t.mode === 'attended' ? mostRecentNames(t.speakerNames) : [];
       const r = await sql<{ bound: number; recorded: number }>`
         WITH binding AS (
-          SELECT c.install_id, c.channel_id, c.agent_id, c.remember, c.is_private, c.connected_by_user_id
+          SELECT c.install_id, c.channel_id, c.agent_id, c.is_private, c.connected_by_user_id
             FROM channel_slack_v1_channels c
            WHERE c.install_id = ${t.installId}
              AND c.channel_id = ${t.channelId}
@@ -502,7 +325,7 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
           INSERT INTO channel_slack_v1_threads
             (conversation_id, install_id, channel_id, agent_id, not_remembered, external, speaker_names)
           SELECT ${t.conversationId}, b.install_id, b.channel_id, b.agent_id,
-                 (NOT b.remember) OR b.is_private OR CAST(${privateTurn} AS boolean), CAST(${external} AS boolean),
+                 b.is_private OR CAST(${privateTurn} AS boolean), CAST(${external} AS boolean),
                  ${names}::text[]
             FROM binding b
            WHERE ${connector}

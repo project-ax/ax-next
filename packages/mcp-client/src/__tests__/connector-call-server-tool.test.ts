@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { callServerTool, type ServerCallOutcome } from '../connector-inventory/call-server-tool.js';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import {
+  callServerToolWithContent,
+  sendOneCall,
+  unforeseenMark,
+} from '../connector-inventory/call-server-tool.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1046 — one approved `tools/call` against a fake streamable-HTTP MCP
@@ -523,4 +529,141 @@ describe('callServerTool deadlines', () => {
     expect(out).toStrictEqual({ outcome: 'failed', reason: 'unreachable' });
     expect(server.toolCalls()).toHaveLength(0);
   }, 10_000);
+});
+
+// `connectors:call-tool-result`'s transport: the same one-shot call, and the
+// reply's content blocks on success and on a tool error, read through a local
+// schema (never `CallToolResultSchema`).
+describe('callServerToolWithContent', () => {
+  function callWithContent(
+    server: ReturnType<typeof fakeMcpServer>,
+    extra: Partial<Parameters<typeof callServerToolWithContent>[0]> = {},
+  ) {
+    return callServerToolWithContent({
+      url: URL_OK,
+      headers: {},
+      tool: 'save_comment',
+      input: { body: 'hi' },
+      baseFetch: server.baseFetch,
+      ...extra,
+    });
+  }
+  const replying = (result: Record<string, unknown>) =>
+    fakeMcpServer({ toolsCall: (msg) => json(msg.id, { result }) });
+
+  it('returns the reply content blocks as the server sent them', async () => {
+    const server = replying({
+      content: [
+        { type: 'text', text: 'ENG-1 open' },
+        { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+      ],
+      structuredContent: { x: 1 },
+    });
+    expect(await callWithContent(server)).toEqual({
+      outcome: 'succeeded',
+      content: [
+        { type: 'text', text: 'ENG-1 open' },
+        { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+      ],
+    });
+    expect(server.toolCalls()).toHaveLength(1);
+  });
+
+  it('a reply with no content is success with no blocks', async () => {
+    expect(await callWithContent(replying({}))).toStrictEqual({ outcome: 'succeeded', content: [] });
+  });
+
+  it.each<[string, unknown]>([
+    ['a string', 'oops'],
+    ['a block with no type', [{ text: 'x' }]],
+    ['a block whose type is 65 characters', [{ type: 't'.repeat(65) }]],
+    ['null', null],
+  ])('content that is not an array of typed blocks is unknown (%s)', async (_label, content) => {
+    const server = replying({ content });
+    expect(await callWithContent(server)).toStrictEqual({ outcome: 'unknown', reason: 'interrupted' });
+    expect(server.toolCalls()).toHaveLength(1);
+  });
+
+  it("isError returns the tool's own content as a tool-error", async () => {
+    const server = replying({ isError: true, content: [{ type: 'text', text: 'Issue not found' }] });
+    expect(await callWithContent(server)).toStrictEqual({
+      outcome: 'failed',
+      reason: 'tool-error',
+      content: [{ type: 'text', text: 'Issue not found' }],
+    });
+  });
+
+  it('an isError reply with unreadable content is still a tool-error, with no content', async () => {
+    for (const content of ['oops', undefined]) {
+      const server = replying({ isError: true, ...(content !== undefined ? { content } : {}) });
+      expect(await callWithContent(server)).toStrictEqual({ outcome: 'failed', reason: 'tool-error', content: [] });
+    }
+  });
+
+  it('a JSON-RPC error after the send is a tool-error with no content', async () => {
+    const server = fakeMcpServer({
+      toolsCall: (msg) => json(msg.id, { error: { code: -32602, message: HOSTILE } }),
+    });
+    const out = await callWithContent(server);
+    expect(out).toStrictEqual({ outcome: 'failed', reason: 'tool-error', content: [] });
+    expect(JSON.stringify(out)).not.toContain('IGNORE');
+  });
+
+  it('an oversize reply is unknown, never truncated content', async () => {
+    const server = replying({ content: [{ type: 'text', text: 'y'.repeat(5_000) }] });
+    expect(await callWithContent(server, { limits: { maxResponseBytes: 1024 } })).toStrictEqual({
+      outcome: 'unknown',
+      reason: 'interrupted',
+    });
+  });
+
+  it('sends one tools/call and never retries', async () => {
+    const server = fakeMcpServer({ toolsCall: () => new Response('boom', { status: 500 }) });
+    expect(await callWithContent(server)).toStrictEqual({ outcome: 'unknown', reason: 'interrupted' });
+    expect(server.toolCalls()).toHaveLength(1);
+  });
+
+  it('a tools/call 4xx is still a definite failure with no content', async () => {
+    const server = fakeMcpServer({ toolsCall: () => new Response('nope', { status: 400 }) });
+    expect(await callWithContent(server)).toStrictEqual({ outcome: 'failed', reason: 'rejected' });
+  });
+});
+
+// Task 1 review: `onReply` runs after the call went out, and the first one
+// that can throw maps untrusted content. A throw from it (or a rejection)
+// must read `unknown`/`interrupted`, never go through `classifyCallError`
+// (which reads an McpError-shaped throw as `failed`), and must be marked
+// unforeseen so the caller's log can say so.
+describe('sendOneCall: a failing onReply', () => {
+  it.each<[string, () => unknown]>([
+    [
+      'throws an McpError',
+      () => {
+        throw new McpError(-32602, HOSTILE);
+      },
+    ],
+    [
+      'throws a plain error',
+      () => {
+        throw new Error(HOSTILE);
+      },
+    ],
+    ['rejects', () => Promise.reject(new McpError(-32602, HOSTILE))],
+  ])('one that %s is unknown/interrupted, marked unforeseen', async (_label, onReply) => {
+    const server = fakeMcpServer();
+    const out = await sendOneCall({ url: URL_OK, headers: {}, tool: 't', input: {}, baseFetch: server.baseFetch }, onReply);
+    expect(out).toStrictEqual({ outcome: 'unknown', reason: 'interrupted' });
+    expect(unforeseenMark(out)).toEqual({});
+    expect(server.toolCalls()).toHaveLength(1);
+  });
+
+  it('a genuine interruption is not marked unforeseen', async () => {
+    const server = fakeMcpServer({ toolsCall: () => new Response('boom', { status: 500 }) });
+    const out = await sendOneCall(
+      { url: URL_OK, headers: {}, tool: 't', input: {}, baseFetch: server.baseFetch },
+      () => ({ outcome: 'succeeded' as const }),
+    );
+    expect(out).toStrictEqual({ outcome: 'unknown', reason: 'interrupted' });
+    expect(unforeseenMark(out)).toBeUndefined();
+  });
 });

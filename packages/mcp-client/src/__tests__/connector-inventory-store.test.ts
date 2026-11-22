@@ -9,7 +9,8 @@ import {
   runMcpClientMigration,
   type McpClientDatabase,
 } from '../connector-inventory/store.js';
-import type { ListOutcome } from '../connector-inventory/list-tools.js';
+import { ListToolsResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { normalizeTools, type ListOutcome } from '../connector-inventory/list-tools.js';
 import { CHECK_COOLDOWN_MS } from '../connector-inventory/describe-tools.js';
 import type { DescribeToolsOutput } from '../connector-inventory/types.js';
 
@@ -90,6 +91,7 @@ describe('inventory store (postgres)', () => {
       description: 'd',
       readOnly: true,
       outward: null,
+      inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
       toolKey: 'mcp.c0123456789.a',
     };
     const at = new Date('2026-10-02T12:00:00Z');
@@ -105,6 +107,36 @@ describe('inventory store (postgres)', () => {
     await sql`UPDATE mcp_client_v1_tool_inventory SET tools = '[]', status = 'bogus'`.execute(db);
     expect(await store.get(key)).toBeNull();
   });
+
+  it('a cached tool written without inputSchema reads as null', async () => {
+    const h = await boot(async () => ({ kind: 'ok', dropped: 0, tools: [] }));
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    const key = { userId: 'u', agentId: 'a', connectorId: 'c' };
+    // A row cached before tools carried a schema: no `inputSchema` key at all.
+    const legacy = { name: 'a', title: 'A', description: '', readOnly: null, outward: null, toolKey: 'mcp.c0123456789.a' };
+    const at = new Date('2026-10-02T12:00:00Z');
+    await store.put(key, { status: 'ok', tools: [legacy as never], fingerprint: 'f', checkedAt: at });
+    const row = await store.get(key);
+    expect(row!.tools).toEqual([{ ...legacy, inputSchema: null }]);
+    expect(await store.okInventories('u', ['c'])).toEqual([{ connectorId: 'c', tools: [{ ...legacy, inputSchema: null }] }]);
+  });
+
+  it('SECURITY: a schema with a top-level __proto__ reads back from the cache exactly as the fresh answer held it', async () => {
+    const h = await boot(async () => ({ kind: 'ok', dropped: 0, tools: [] }));
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    const key = { userId: 'u', agentId: 'a', connectorId: 'c' };
+    // The SDK's own parse of raw wire JSON, then the inventory mapping.
+    const wire = JSON.parse('{"tools":[{"name":"get","inputSchema":{"type":"object","__proto__":{"polluted":1}}}]}');
+    const [base] = normalizeTools(ListToolsResultSchema.parse(wire).tools).tools;
+    const fresh = { ...base!, toolKey: 'mcp.c0123456789.get' };
+    expect(Object.getPrototypeOf(fresh.inputSchema)).toBe(Object.prototype);
+    await store.put(key, { status: 'ok', tools: [fresh], fingerprint: 'f', checkedAt: new Date() });
+    const cached = (await store.get(key))!.tools[0]!;
+    expect(cached).toStrictEqual(fresh);
+    expect('polluted' in cached.inputSchema!).toBe(false);
+  });
 });
 
 describe('plugin wiring', () => {
@@ -115,7 +147,9 @@ describe('plugin wiring', () => {
       return {
         kind: 'ok',
         dropped: 0,
-        tools: [{ name: 'search', title: 'Search', description: '', readOnly: true, outward: false }],
+        tools: [
+          { name: 'search', title: 'Search', description: '', readOnly: true, outward: false, inputSchema: { type: 'object' } },
+        ],
       };
     });
     expect(h.bus.hasService('connectors:describe-tools')).toBe(true);
@@ -354,6 +388,7 @@ describe('plugin wiring', () => {
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
       'connectors:call-tool',
+      'connectors:call-tool-result',
     ]);
     expect(on.manifest.subscribes).toEqual(['agents:deleted', 'connectors:auth-failure-reported']);
     expect(p.manifest.optionalCalls?.map((c) => c.hook)).not.toContain('connectors:list-effective');

@@ -7,6 +7,7 @@
 {{- include "ax-next.validateAllowedModels" . -}}
 {{- include "ax-next.validateSharedPool" . -}}
 {{- include "ax-next.validateContentOrigin" . -}}
+{{- include "ax-next.validateAppsBridge" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -105,6 +106,14 @@ spec:
             - name: content-http
               containerPort: {{ .Values.host.ports.content | default 9091 }}
               protocol: TCP
+            {{- if (include "ax-next.bool" .Values.appsBridge.enabled) }}
+            # The apps connector bridge (AX_APPS_BRIDGE_*): an outside apps
+            # platform's connector calls. NEVER on the Ingress; the host
+            # NetworkPolicy admits only appsBridge.allowFrom peers here.
+            - name: apps-bridge
+              containerPort: {{ .Values.host.ports.appsBridge | default 9092 }}
+              protocol: TCP
+            {{- end }}
             {{- if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
             # @ax/credential-proxy TCP listener (TASK-149, production gVisor).
             # The credential-proxy-service.yaml ClusterIP Service targets this
@@ -145,6 +154,33 @@ spec:
               value: {{ .Values.host.ports.content | default 9091 | quote }}
             - name: AX_CONTENT_FRAME_ANCESTORS
               value: {{ join "," .Values.contentOrigin.frameAncestors | quote }}
+            {{- if (include "ax-next.bool" .Values.appsBridge.enabled) }}
+            # The apps connector bridge (@ax/apps-bridge), on its own listener:
+            # same bind interface as the public listener (AX_HTTP_HOST), its
+            # own port. The platform id is the host's on switch; with it set,
+            # the host refuses to boot on a blank or malformed value below.
+            # validateAppsBridge has already failed the render on a blank one.
+            - name: AX_APPS_BRIDGE_PLATFORM_ID
+              value: {{ .Values.appsBridge.platformId | quote }}
+            - name: AX_APPS_BRIDGE_PORT
+              value: {{ .Values.host.ports.appsBridge | default 9092 | quote }}
+            - name: AX_APPS_BRIDGE_CALLER_ISSUER
+              value: {{ .Values.appsBridge.caller.issuer | quote }}
+            - name: AX_APPS_BRIDGE_CALLER_JWKS_URL
+              value: {{ .Values.appsBridge.caller.jwksUrl | quote }}
+            - name: AX_APPS_BRIDGE_CALLER_AUDIENCE
+              value: {{ .Values.appsBridge.caller.audience | quote }}
+            - name: AX_APPS_BRIDGE_CALLER_SUBJECT
+              value: {{ .Values.appsBridge.caller.subject | quote }}
+            - name: AX_APPS_BRIDGE_VIEWER_ISSUER
+              value: {{ .Values.appsBridge.viewer.issuer | quote }}
+            - name: AX_APPS_BRIDGE_VIEWER_JWKS_URL
+              value: {{ .Values.appsBridge.viewer.jwksUrl | quote }}
+            - name: AX_APPS_BRIDGE_VIEWER_AUDIENCE
+              value: {{ .Values.appsBridge.viewer.audience | quote }}
+            - name: AX_APPS_BRIDGE_VIEWER_MAX_AGE_SECONDS
+              value: {{ .Values.appsBridge.viewer.maxAgeSeconds | default 600 | quote }}
+            {{- end }}
             {{- if .Values.http.allowedOrigins }}
             - name: AX_HTTP_ALLOWED_ORIGINS
               value: {{ join "," .Values.http.allowedOrigins | quote }}

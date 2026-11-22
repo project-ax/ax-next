@@ -969,7 +969,7 @@ describe('the click gate: each step refuses on its own (each case valid on every
   it('step 8: #support was made private since the turn: the answer runs, and memory stays out of the thread for good', async () => {
     const w = await world({ channelNow: { kind: 'allowed', isPrivate: true } });
     const prompt = w.open(MEL_SUPPORT);
-    // The held turn's thread, recorded while #support was public and its switch on.
+    // The held turn's thread, recorded while #support was public.
     await w.channels.store.recordThread({
       conversationId: MEL_SUPPORT.conversationId,
       installId: INSTALL_ID,

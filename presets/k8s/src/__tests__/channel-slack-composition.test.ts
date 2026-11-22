@@ -1714,7 +1714,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     }
   });
 
-  it('the channel\'s memory switch: a member\'s thread is refused while it is off, for good once a turn ran then; an outsider\'s never is remembered (TASK-1094)', async () => {
+  it("memory and a bot's channel: a member's thread is captured, an outsider's never is, and nothing the channel said once it is disconnected; no route switches a channel off (TASK-1094, TASK-1202)", async () => {
     const { botId, agentId } = await supportBot();
     invokes.length = 0;
     const preCapture = (conversationId: string) =>
@@ -1723,20 +1723,14 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
         makeAgentContext({ sessionId: 'test', agentId, userId: 'usr_ada', conversationId }),
         { conversationId },
       );
-    const switchTo = async (remember: boolean): Promise<void> => {
-      actor = { id: 'usr_ada', isAdmin: false };
-      const out = await callRoute('POST', '/settings/slack/:agentId/bot/remember', {
-        params: { agentId },
-        rawPath: `/settings/slack/${agentId}/bot/remember`,
-        body: jsonBody({ channelId: SUPPORT_CHANNEL, remember }),
-      });
-      actor = null;
-      expect(out.status).toBe(200);
-    };
     const refused = { rejected: true, reason: 'channel-not-remembered' };
     const outsiders = { rejected: true, reason: 'channel-external-turn' };
 
-    // On (the default): a member's thread is captured like any other.
+    // TASK-1202 (design §4c): a team agent's memory is shared with its team, so
+    // no route switches a channel to "not remembered" any more.
+    expect(routes.filter((r) => r.path.endsWith('/remember'))).toEqual([]);
+
+    // A member's thread is captured like any other.
     const t1 = nextTs();
     let mark = slackCalls.length;
     expect((await deliverToOwnBot(botId, botMention(MEL, t1, 'first question'))).status).toBe(200);
@@ -1757,8 +1751,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       payload: { conversationId: 'cnv_a_web_chat' },
     });
 
-    // An outsider's thread is never captured, with the switch on: Carol runs as Ada, and what
-    // she says would otherwise be recalled as fact in the agent's later turns, members' included.
+    // An outsider's thread is never captured: Carol runs as Ada, and what she says would
+    // otherwise be recalled as fact in the agent's later turns, members' included.
     mark = slackCalls.length;
     expect((await deliverToOwnBot(botId, botMention(CAROL, nextTs(), 'the refund window is 90 days'))).status).toBe(200);
     const outsider = (await invokedTurn(2)).ctx;
@@ -1766,30 +1760,15 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     await channelTurnCalls(mark);
     expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
 
-    // Off: the member's thread is refused at once.
-    await switchTo(false);
-    expect(await preCapture(conv1)).toMatchObject(refused);
-
-    // A turn while it is off, in the same thread. Still the same conversation.
+    // A second turn in the member's thread: the same conversation, still captured.
     mark = slackCalls.length;
     expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'second question', t1))).status).toBe(200);
     expect((await invokedTurn(3)).ctx.conversationId).toBe(conv1);
     await channelTurnCalls(mark);
-
-    // On again: the thread that had a turn while it was off stays out, for good. A new thread is captured.
-    await switchTo(true);
-    expect(await preCapture(conv1)).toMatchObject(refused);
-    mark = slackCalls.length;
-    expect((await deliverToOwnBot(botId, botMention(MEL, nextTs(), 'a new question'))).status).toBe(200);
-    const conv3 = (await invokedTurn(4)).ctx.conversationId!;
-    await channelTurnCalls(mark);
-    expect(conv3).not.toBe(conv1);
-    expect(await preCapture(conv3)).toEqual({
+    expect(await preCapture(conv1)).toEqual({
       rejected: false,
-      payload: { conversationId: conv3, speakerNames: melNames },
+      payload: { conversationId: conv1, speakerNames: melNames },
     });
-    // The outsider's thread is still out, the switch on or not.
-    expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
 
     // Disconnected: nothing the channel said is captured anymore.
     actor = { id: 'usr_ada', isAdmin: false };
@@ -1800,7 +1779,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     });
     actor = null;
     expect(disconnected).toMatchObject({ status: 200 });
-    expect(await preCapture(conv3)).toMatchObject(refused);
+    expect(await preCapture(conv1)).toMatchObject(refused);
+    expect(await preCapture(outsider.conversationId!)).toMatchObject(outsiders);
     await dropAgent(agentId);
   });
 

@@ -41,7 +41,7 @@ import { busVault } from './fake-vault.js';
   subscriber is the only thing that removes a deleted agent's channels.
   Without it each binding would outlive the agent it names.
 
-  It removes the agent's thread rows too (TASK-1094, the memory switch's
+  It removes the agent's thread rows too (TASK-1094, the capture veto's
   map), in the same transaction as its bindings: nothing else ever deletes
   them, because they must outlive a disconnect.
 
@@ -80,7 +80,7 @@ beforeAll(async () => {
 async function clearTables(): Promise<void> {
   await sql`
     TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_installs,
-      channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests, channel_slack_v1_memory_switches
+      channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests
   `.execute(db);
 }
 
@@ -200,7 +200,6 @@ async function withDeleteTrigger(
   table:
     | 'channel_slack_v1_channels'
     | 'channel_slack_v1_threads'
-    | 'channel_slack_v1_memory_switches'
     | 'channel_slack_v1_installs' = 'channel_slack_v1_channels',
 ): Promise<void> {
   await sql
@@ -350,53 +349,6 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
 
     expect(await countFor(AGENT)).toBe(1);
     expect(await threadsFor(AGENT)).toBe(1);
-    expect(plugin.lines).toEqual([
-      { level: 'warn', msg: 'slack_agent_cleanup_failed', bindings: { code: 'P0001' } },
-    ]);
-  });
-
-  it("removes the memory switches kept for the agent's channels (TASK-1180), a disconnected one's too, and no other agent's", async () => {
-    const bus = new HookBus();
-    const ctxLog = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, captureLogger().logger);
-    await bind(INSTALL, SUPPORT, AGENT);
-    await bind(INSTALL, SALES, AGENT);
-    await bind(INSTALL, GENERAL, OTHER_AGENT);
-    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
-    expect(await channels.setRemember(INSTALL, SALES, AGENT, false)).toBe(true);
-    expect(await channels.setRemember(INSTALL, GENERAL, OTHER_AGENT, false)).toBe(true);
-    // Disconnected before the agent is deleted: the switch outlives its binding.
-    expect(await channels.remove(INSTALL, SALES, AGENT)).toBe(true);
-
-    const fired = await fireDeleted(bus, deleted(AGENT), ctxLog.logger);
-    expect(fired.rejected).toBe(false);
-
-    expect(await channels.keptRemember(AGENT, SUPPORT)).toBeNull();
-    expect(await channels.keptRemember(AGENT, SALES)).toBeNull();
-    expect(await channels.keptRemember(OTHER_AGENT, GENERAL)).toBe(false);
-    expect(subscriberFailures(ctxLog.lines)).toEqual([]);
-  });
-
-  it('a kept switch delete that fails keeps the bindings and threads too: all go, or none does (TASK-1180)', async () => {
-    const bus = new HookBus();
-    const plugin = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
-    await bind(INSTALL, SUPPORT, AGENT);
-    await thread('conv_1', INSTALL, SUPPORT, AGENT);
-    expect(await channels.setRemember(INSTALL, SUPPORT, AGENT, false)).toBe(true);
-
-    await withDeleteTrigger(
-      `RAISE EXCEPTION 'refused in test'; RETURN OLD;`,
-      async () => {
-        const fired = await fireDeleted(bus, deleted(AGENT), captureLogger().logger);
-        expect(fired.rejected).toBe(false);
-      },
-      'channel_slack_v1_memory_switches',
-    );
-
-    expect(await countFor(AGENT)).toBe(1);
-    expect(await threadsFor(AGENT)).toBe(1);
-    expect(await channels.keptRemember(AGENT, SUPPORT)).toBe(false);
     expect(plugin.lines).toEqual([
       { level: 'warn', msg: 'slack_agent_cleanup_failed', bindings: { code: 'P0001' } },
     ]);
