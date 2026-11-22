@@ -14,7 +14,8 @@ import type { ChannelSlackChannelsTable, ChannelSlackDatabase } from './migratio
  * answers `taken`), and `remove` with another agent's id changes nothing.
  * Who may bind a channel is the caller's to decide (channels.ts), never this
  * file's. A binding says nothing about the channel's privacy: a private
- * channel is remembered like any other (TASK-1203, design §4c).
+ * channel is remembered like any other (TASK-1203, design §4c). It does
+ * keep whether its channel has been told that, once (`claimNotice`).
  *
  * Removing an install removes its bindings in the same statement (store.ts);
  * `removeForAgent` is the agents:deleted cleanup (agents-deleted.ts).
@@ -95,9 +96,10 @@ export interface ChannelStore {
    * Connect a channel, in ONE statement, so of any number of concurrent
    * connects exactly one can bind a free channel. `connected`: a new binding.
    * `reconnected`: the channel was already this agent's; the connector and
-   * name are replaced, and createdAt kept. `taken`: it is another agent's,
-   * and nothing changed. The name is stored cleaned. A team agent's own bot
-   * binds a channel with this at its first mention there (router.ts
+   * name are replaced, and createdAt kept, and so is a memory notice claim
+   * (`claimNotice`): the channel was told already. `taken`: it is another
+   * agent's, and nothing changed. The name is stored cleaned. A team agent's
+   * own bot binds a channel with this at its first mention there (router.ts
    * `bindBotChannel`).
    */
   upsert(
@@ -105,6 +107,22 @@ export interface ChannelStore {
   ): Promise<'connected' | 'reconnected' | 'taken'>;
   /** Disconnect a channel from THIS agent. False when it isn't this agent's (or isn't bound at all). */
   remove(installId: string, channelId: string, agentId: string): Promise<boolean>;
+  /**
+   * Claim the memory notice of THIS agent's binding of the channel (TASK-1203,
+   * design §4c: the post telling the channel what the bot hears there is
+   * shared with its team), in ONE conditional statement, so of any number of
+   * claims at once, on any replica, exactly one wins. True for that one: it
+   * posts the notice. False when the notice was claimed before, or the
+   * channel isn't this agent's (any more), or isn't bound at all; nothing
+   * changed. A binding removed and made again is new, and claims again.
+   */
+  claimNotice(installId: string, channelId: string, agentId: string): Promise<boolean>;
+  /**
+   * Give a claim back when Slack refused the notice, so the channel's next
+   * turn claims and posts it again. Only THIS agent's binding of the channel;
+   * anything else changes nothing.
+   */
+  releaseNotice(installId: string, channelId: string, agentId: string): Promise<void>;
   /**
    * Delete the agent's bindings and thread rows on every install, in one
    * transaction (both go, or neither does), and say how many of each went.
@@ -201,7 +219,9 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
       // nothing. A concurrent insert of the same channel waits on the primary
       // key, then takes that same conflict path: one statement, no
       // read-then-write window. `xmax = 0` holds only for a freshly inserted
-      // row, so it tells a new binding from a reconnect.
+      // row, so it tells a new binding from a reconnect. The conflict's SET
+      // names neither `created_at` nor `notice_posted_at`: a reconnect keeps
+      // both, so a channel told already isn't told again.
       const r = await sql<{ inserted: boolean }>`
         INSERT INTO channel_slack_v1_channels
           (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
@@ -227,6 +247,31 @@ export function createChannelStore(db: Kysely<ChannelSlackDatabase>): ChannelSto
         .where('agent_id', '=', agentId)
         .executeTakeFirst();
       return r.numDeletedRows > 0n;
+    },
+
+    async claimNotice(installId, channelId, agentId) {
+      // Of two claims at once, the second waits on the first's row lock, then
+      // Postgres checks its WHERE again against the row the first wrote
+      // (READ COMMITTED): it finds the notice claimed and updates nothing.
+      const r = await db
+        .updateTable(CHANNELS)
+        .set({ notice_posted_at: sql<Date>`now()` })
+        .where('install_id', '=', installId)
+        .where('channel_id', '=', channelId)
+        .where('agent_id', '=', agentId)
+        .where('notice_posted_at', 'is', null)
+        .executeTakeFirst();
+      return r.numUpdatedRows > 0n;
+    },
+
+    async releaseNotice(installId, channelId, agentId) {
+      await db
+        .updateTable(CHANNELS)
+        .set({ notice_posted_at: null })
+        .where('install_id', '=', installId)
+        .where('channel_id', '=', channelId)
+        .where('agent_id', '=', agentId)
+        .execute();
     },
 
     async removeForAgent(agentId) {

@@ -22,6 +22,11 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
  * the place it was last seen, oldest first, the THREAD_SPEAKER_NAMES_MAX
  * most recent kept; an outsider's turn adds none, whatever it was handed.
  * `removeForAgent` takes the agent's threads too; nothing else does.
+ * A binding's memory notice (TASK-1203): `claimNotice` is true only for an
+ * existing binding of the named agent not claimed yet, and claims it;
+ * `releaseNotice` gives back only the named agent's claim; a reconnect keeps
+ * a claim, and a binding removed (`remove`, `removeForAgent`) takes its
+ * claim with it, so a binding made again claims again.
  *
  * Each new binding is one second younger than the one before, so "oldest
  * first" never hangs on a clock. `calls` records every method, in order.
@@ -30,6 +35,8 @@ export function memoryChannelStore() {
   const rows = new Map<string, ChannelBinding>();
   /** The thread map, by conversation id. */
   const threads = new Map<string, ChannelThread>();
+  /** The bindings whose memory notice is claimed (TASK-1203), by `${installId}/${channelId}`. */
+  const notices = new Set<string>();
   const calls: Array<keyof ChannelStore> = [];
   let created = Date.parse('2026-11-13T09:00:00.000Z');
   const key = (installId: string, channelId: string): string => `${installId}/${channelId}`;
@@ -63,6 +70,8 @@ export function memoryChannelStore() {
         return 'reconnected';
       }
       created += 1000;
+      // A new binding: never told, whatever a test left behind.
+      notices.delete(at);
       rows.set(at, {
         installId: b.installId,
         channelId: b.channelId,
@@ -78,7 +87,20 @@ export function memoryChannelStore() {
       const at = key(installId, channelId);
       if (rows.get(at)?.agentId !== agentId) return false;
       rows.delete(at);
+      notices.delete(at);
       return true;
+    },
+    async claimNotice(installId, channelId, agentId) {
+      calls.push('claimNotice');
+      const at = key(installId, channelId);
+      if (rows.get(at)?.agentId !== agentId || notices.has(at)) return false;
+      notices.add(at);
+      return true;
+    },
+    async releaseNotice(installId, channelId, agentId) {
+      calls.push('releaseNotice');
+      const at = key(installId, channelId);
+      if (rows.get(at)?.agentId === agentId) notices.delete(at);
     },
     async removeForAgent(agentId) {
       calls.push('removeForAgent');
@@ -86,6 +108,7 @@ export function memoryChannelStore() {
       for (const [at, row] of rows) {
         if (row.agentId !== agentId) continue;
         rows.delete(at);
+        notices.delete(at);
         removed += 1;
       }
       let threadsRemoved = 0;
@@ -136,7 +159,7 @@ export function memoryChannelStore() {
     return found === undefined ? undefined : copy(found);
   };
 
-  return { store, rows, threads, calls, row };
+  return { store, rows, threads, notices, calls, row };
 }
 
 /** The real store's rule for a thread's names: each once at the place it was last seen, the most recent kept. */

@@ -348,9 +348,10 @@ describe('runMigrations', () => {
       `.execute(db);
       expect(columns.rows.map((c) => c.column_name), `run ${run}`).not.toContain('remember');
       expect(columns.rows.map((c) => c.column_name), `run ${run}`).not.toContain('is_private');
-      // Every column of every binding: only `remember` and `is_private` went, and nothing else moved.
+      // Every column of every binding: only `remember` and `is_private` went, nothing else moved, and the
+      // memory notice's column came in open (TASK-1203: never told, so told at the channel's next turn).
       const bindingsAfter = await sql`SELECT * FROM channel_slack_v1_channels ORDER BY install_id, channel_id`.execute(db);
-      expect(bindingsAfter.rows, `run ${run}`).toEqual(bindingsBefore);
+      expect(bindingsAfter.rows, `run ${run}`).toEqual(bindingsBefore.map((b) => ({ ...b, notice_posted_at: null })));
       expect(await allThreads(), `run ${run}`).toEqual(threadsBefore);
     }
 
@@ -437,9 +438,10 @@ describe('runMigrations', () => {
         SELECT column_name FROM information_schema.columns WHERE table_name = 'channel_slack_v1_channels'
       `.execute(db);
       expect(columns.rows.map((c) => c.column_name), `run ${run}`).not.toContain('is_private');
-      // Only `is_private` went: every other column of every binding is as it was.
+      // Only `is_private` went: every other column of every binding is as it was, and the memory notice's
+      // column came in open (never told, so told at the channel's next turn).
       const bindingsAfter = await sql`SELECT * FROM channel_slack_v1_channels ORDER BY install_id, channel_id`.execute(db);
-      expect(bindingsAfter.rows, `run ${run}`).toEqual(bindingsBefore);
+      expect(bindingsAfter.rows, `run ${run}`).toEqual(bindingsBefore.map((b) => ({ ...b, notice_posted_at: null })));
       // Every thread row as it was: the mark included.
       expect(await allThreads(), `run ${run}`).toEqual(threadsBefore);
     }
@@ -462,6 +464,43 @@ describe('runMigrations', () => {
     expect(await vetoFor(CONV)).toEqual(REFUSED);
     expect(await vetoFor(OTHER_CONV)).toEqual(OUTSIDER_THREAD);
     expect(await vetoFor('conv_sales_thread')).toEqual(remembered('conv_sales_thread'));
+  });
+
+  // TASK-1203 (design §4c): a channel bound before the memory notice existed
+  // was never told, so its binding's notice arrives open and the channel
+  // hears it at its next turn; a later boot never reopens one already claimed.
+  it('a binding from before TASK-1203 has its notice open after the migration, and a second run keeps a claim', async () => {
+    // The bindings as TASK-1202 left them: no notice column, `is_private` still on.
+    await sql`DROP TABLE channel_slack_v1_channels`.execute(db);
+    await sql`
+      CREATE TABLE channel_slack_v1_channels (
+        install_id           TEXT NOT NULL,
+        channel_id           TEXT NOT NULL,
+        agent_id             TEXT NOT NULL,
+        connected_by_user_id TEXT NOT NULL,
+        channel_name         TEXT NOT NULL,
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+        is_private           BOOLEAN NOT NULL DEFAULT false,
+        PRIMARY KEY (install_id, channel_id)
+      )
+    `.execute(db);
+    await sql`
+      INSERT INTO channel_slack_v1_channels (install_id, channel_id, agent_id, connected_by_user_id, channel_name)
+      VALUES (${INSTALL}, ${SUPPORT}, ${AGENT}, ${ADA}, 'support')
+    `.execute(db);
+
+    await runMigrations(db);
+    // Nullable, no default: a binding made now is untold too, until its channel's first turn claims it.
+    const column = await sql<{ data_type: string; is_nullable: string; column_default: string | null }>`
+      SELECT data_type, is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'channel_slack_v1_channels' AND column_name = 'notice_posted_at'
+    `.execute(db);
+    expect(column.rows).toEqual([{ data_type: 'timestamp with time zone', is_nullable: 'YES', column_default: null }]);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+
+    await runMigrations(db);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(false);
   });
 
   it("a thread row written without `external` is an outsider's: the column fails closed", async () => {
@@ -938,5 +977,87 @@ describe('a private channel is remembered like any other (TASK-1203)', () => {
     // A new thread in the same channel is remembered.
     expect(await record(OTHER_CONV)).toBe('recorded');
     expect(await vetoFor(OTHER_CONV)).toEqual(remembered(OTHER_CONV));
+  });
+});
+
+// ── A channel's memory notice, claimed once per binding (TASK-1203) ─────────
+
+/*
+  TASK-1203 (design §4c): a team bot tells each channel, once, that what it
+  hears is shared with its team. The notice goes with a channel's first turn
+  (router.ts), and a turn on any replica may be that first one, so the
+  binding records it: claimed before the post, in one conditional UPDATE, so
+  of any number of claims exactly one wins and only its replica posts. A post
+  Slack refuses releases the claim, and the next turn tries again. A reconnect
+  keeps the claim; a binding removed and made again is a new binding, told
+  again.
+*/
+describe("a channel's memory notice: claimed once per binding (TASK-1203)", () => {
+  it("claims a binding's notice once: the first claim wins, later ones don't (TASK-1203)", async () => {
+    await connect();
+    const before = await rawRow(INSTALL, SUPPORT);
+    // Not told yet.
+    expect(before?.['notice_posted_at']).toBeNull();
+
+    expect([
+      await channels.claimNotice(INSTALL, SUPPORT, AGENT),
+      await channels.claimNotice(INSTALL, SUPPORT, AGENT),
+    ]).toEqual([true, false]);
+    // The claim stamps the notice and changes nothing else in the binding.
+    const after = await rawRow(INSTALL, SUPPORT);
+    expect(after?.['notice_posted_at']).toBeInstanceOf(Date);
+    expect({ ...after, notice_posted_at: null }).toEqual(before);
+  });
+
+  it('two replicas claiming one binding at once: exactly one wins', async () => {
+    await connect();
+    // A second replica: its own pool and store, against the same database.
+    const otherDb = new Kysely<ChannelSlackDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: container.getConnectionUri(), max: 4 }) }),
+    });
+    try {
+      const replicas = [channels, createChannelStore(otherDb)];
+      const won = await Promise.all(
+        Array.from({ length: 8 }, (_, i) => replicas[i % 2]!.claimNotice(INSTALL, SUPPORT, AGENT)),
+      );
+      expect(won.filter((w) => w)).toHaveLength(1);
+    } finally {
+      await otherDb.destroy();
+    }
+  });
+
+  it('a reconnect keeps the claim; a binding removed and bound again claims again', async () => {
+    await connect();
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    // The same agent's bot binding it again, with a new connector and a renamed channel: still told.
+    expect(await connect({ connectedByUserId: BOB, channelName: 'help-desk' })).toBe('reconnected');
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(false);
+    // Disconnected, then bound again: a new binding, so the channel is told again.
+    expect(await channels.remove(INSTALL, SUPPORT, AGENT)).toBe(true);
+    expect(await connect()).toBe('connected');
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+  });
+
+  it("release reopens the claim, and only for the binding's own install, channel and agent", async () => {
+    await connect();
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+    // Another agent, install or channel releases nothing.
+    await channels.releaseNotice(INSTALL, SUPPORT, OTHER_AGENT);
+    await channels.releaseNotice(OTHER_INSTALL, SUPPORT, AGENT);
+    await channels.releaseNotice(INSTALL, SALES, AGENT);
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(false);
+    // The binding's own: the next turn claims it again.
+    await channels.releaseNotice(INSTALL, SUPPORT, AGENT);
+    expect((await rawRow(INSTALL, SUPPORT))?.['notice_posted_at']).toBeNull();
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
+  });
+
+  it("another agent's binding, or no binding, claims nothing", async () => {
+    await connect();
+    expect(await channels.claimNotice(INSTALL, SUPPORT, OTHER_AGENT)).toBe(false);
+    expect(await channels.claimNotice(OTHER_INSTALL, SUPPORT, AGENT)).toBe(false);
+    expect(await channels.claimNotice(INSTALL, SALES, AGENT)).toBe(false);
+    // None of them touched the binding: its own agent's first claim still wins.
+    expect(await channels.claimNotice(INSTALL, SUPPORT, AGENT)).toBe(true);
   });
 });

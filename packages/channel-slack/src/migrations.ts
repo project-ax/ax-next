@@ -40,6 +40,15 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     agent's own bot keeps bindings across a boot: the shared app's channel
  *     path is retired (design §4b.1), and every boot deletes the shared
  *     install's rows (below, TASK-1186).
+ *     `notice_posted_at` (TASK-1203, design §4c) is when a turn claimed the
+ *     channel's memory notice, the top-level post that tells the channel
+ *     what the bot hears there is shared with its team, just before it
+ *     posted it. One conditional write claims it (channel-store.ts
+ *     `claimNotice`), so a channel is told once per binding, whichever
+ *     replica's turn comes first; a post Slack refuses clears it again, so
+ *     the next turn tries. NULL: not told yet, a binding from before this
+ *     column included. A reconnect keeps it; a binding removed and made
+ *     again starts NULL, and is told again.
  *
  *   channel_slack_v1_threads — the capture veto's map (TASK-1094): every
  *     conversation a channel turn ran in, with the install, channel and agent
@@ -178,6 +187,8 @@ export interface ChannelSlackChannelsTable {
   channel_name: string;
   created_at: ColumnType<Date, Date | undefined, never>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
+  // TASK-1203. Written only by claimNotice and releaseNotice (channel-store.ts).
+  notice_posted_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface ChannelSlackThreadsTable {
@@ -261,6 +272,15 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE INDEX IF NOT EXISTS channel_slack_v1_channels_agent
       ON channel_slack_v1_channels (agent_id)
+  `.execute(db);
+  // The channel's memory notice (TASK-1203, design §4c). NULL means the
+  // channel hasn't been told yet, so a binding from before this column is
+  // told at its next turn. No default: a new binding is untold too, until
+  // its channel's first turn claims it (channel-store.ts `claimNotice`). A
+  // rollback needs nothing: older code never names the column.
+  await sql`
+    ALTER TABLE channel_slack_v1_channels
+      ADD COLUMN IF NOT EXISTS notice_posted_at TIMESTAMPTZ NULL
   `.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS channel_slack_v1_threads (
