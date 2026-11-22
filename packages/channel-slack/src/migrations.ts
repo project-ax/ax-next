@@ -408,11 +408,14 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   // binding keeps the rest of its row, so a public channel that was
   // switched off is remembered from its next thread on. Thread rows are left
   // alone: one a turn marked while its channel was switched off stays
-  // refused, since memory's cursor already skipped its turns. The host runs
-  // one replica, replaced rather than rolled, so no older one is left
-  // writing the column. Code from before this can't boot on the database
-  // afterwards (its own migrations read `remember`) until the column is
-  // added back.
+  // refused. Un-marking it would let memory's next pass read the turns said
+  // while it was switched off, because a refusal leaves memory's cursor
+  // where it was. The host runs one replica, replaced rather than rolled, so
+  // no older one is left writing the column. A rollback needs the column
+  // back first (ALTER TABLE channel_slack_v1_channels ADD COLUMN IF NOT
+  // EXISTS remember BOOLEAN NOT NULL DEFAULT true): without it, code from
+  // TASK-1180 on fails its boot migration and the host won't start, and
+  // older code boots but fails every Slack channel turn.
   await sql`
     ALTER TABLE channel_slack_v1_channels
       DROP COLUMN IF EXISTS remember

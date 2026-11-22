@@ -538,7 +538,7 @@ under "These channels still need @ada: run /invite @ada in each one." A channel
 leaves the list once @ada has answered there: AX hears only mentions, and the
 first one binds the channel to the bot. The old shared connection stays,
 unused, and Disconnect still removes it. A channel that leaves this list moves
-to the bot's own list, which has its own memory switch (TASK-1180). AX hears
+to the bot's own list, which had its own memory switch (TASK-1180; removed by TASK-1202). AX hears
 only mentions, so a channel the bot was later removed from stays on that list.
 
 **Lifecycle (decided 2026-11-18).**
@@ -610,6 +610,8 @@ the requester.
   channel check (public, live, not Slack Connect), and checked again when each
   turn starts, as on the shared app (section 3, TASK-1184). It's bound only to
   the bot's own agent.
+- *(Superseded by §4c: TASK-1202 removed the switch, its kept table and its
+  lock. The next three bullets are history.)*
 - That binding starts with the switch the team last set for the agent in that
   channel: the shared app's binding of it while there is one (TASK-1179; retired by
   TASK-1186, which deletes those bindings), else
@@ -1122,7 +1124,7 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 
 ### What goes
 
-- **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column. *Done (TASK-1202):* channel-slack's boot migration drops both. The `channel-not-remembered` refusal stays only for a private channel, or one no longer connected to its agent, until card B; threads an old switch marked stay refused, since memory's cursor already skipped them. A bot's first bind is a plain `upsert` again, with no lock. The TASK-1191 turn note stays for private channels and outsiders' threads until card B.
+- **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column. *Done (TASK-1202):* channel-slack's boot migration drops both. The `channel-not-remembered` refusal stays only for a private channel, or one no longer connected to its agent, until card B; threads an old switch marked stay refused: a refusal leaves memory's cursor where it was, so un-marking one would let the next pass read what was said while the switch was off. A bot's first bind is a plain `upsert` again, with no lock. The TASK-1191 turn note stays: card B drops only its private-channel case, and outsiders' threads keep it for good (rule 4).
 - **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more.
 - **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's sessions recall everything.
 - **Still needed:** `ctx.audience` (personal-agent DMs), the private-wins channel check (a channel made Slack Connect or archived must still be caught at turn start), and `groups:read` (to read a private channel's flags).
@@ -1133,7 +1135,7 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 
 ### Cards
 
-- **A. Drop the remember switch** and its tables, routes, veto and copy, plus the TASK-1191 note.
+- **A. Drop the remember switch** and its tables, routes, veto and copy, plus the TASK-1191 note. *(As built, TASK-1202: the note stays, since private channels and outsiders' threads still aren't remembered. Card B drops its private case; the outsider case stays.)*
 - **B. Private channels remembered, and the notices:** remove the private capture refusal; add the first-invite post, the card line, the web-chat line and the profile description.
 - **C. Team memory is team-shared:** remove the speaker rule, the shared-only recall split and the `/memory` withholding for team agents; attribute speaker facts to the speaker. Security note: one privacy boundary is removed on purpose, and the notices replace it.
 - **D. Walk (walk):** private channel remembered and recalled in a public one; the first-invite notice; a person fact recalled with the right name; an outsider's fact not kept; Slack Connect refused.
@@ -1594,7 +1596,7 @@ connectors. The protections are:
 
 **Known gaps, accepted (TASK-1094):**
 
-- **The switch is read when a turn starts.** A thread stays out of memory
+- *(Gone with the switch, TASK-1202.)* **The switch is read when a turn starts.** A thread stays out of memory
   only once a turn STARTS while the switch is off. Turned off during a turn
   and back on before that turn's memory pass, that turn can be captured.
   Left off, every pass is refused while it stays off.

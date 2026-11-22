@@ -4,16 +4,21 @@
  * white-labeled through Branding). Admin › Slack keeps the plumbing words. The
  * install-it-myself path (the self path's token steps and the Reconnect dialog)
  * is the one place "configuration token" may show, so callers never scan it.
- * It also lists the per-channel memory switch's words (TASK-1202 removed the
- * switch: no row says "Not remembered" or offers "Remember this channel").
  */
 const PLUMBING =
-  /\b(?:approvers?|requesters?|claim(?:s|ed|ing)?|rebuild(?:s|ing)?|rebuilt|shared app|own (?:slack )?bot|configuration tokens?|(?:don['’]t )?remember this channel|not remembered)\b/gi;
+  /\b(?:approvers?|requesters?|claim(?:s|ed|ing)?|rebuild(?:s|ing)?|rebuilt|shared app|own (?:slack )?bot|configuration tokens?)\b/gi;
 const PRODUCT = /\bAX\b/g;
+/**
+ * The removed per-channel memory switch's own labels (TASK-1202): no row
+ * offers "Remember this channel" or says "Not remembered" any more. Exact
+ * labels only, so a later sentence that happens to say "not remembered" is
+ * not caught as the switch.
+ */
+const REMOVED_SWITCH = /(?:\bdon['’]t remember this channel\b|\bremember this channel\b|^\s*not remembered\s*$)/gim;
 
 /** Every forbidden word in `text`, as written there. Empty: clean. */
 export function slackCardWordsFound(text: string): string[] {
-  return [...(text.match(PLUMBING) ?? []), ...(text.match(PRODUCT) ?? [])];
+  return [...(text.match(PLUMBING) ?? []), ...(text.match(PRODUCT) ?? []), ...(text.match(REMOVED_SWITCH) ?? [])];
 }
 
 /** What a person can read now: the body's text (menus and dialogs portal into it) and every aria-label. */
