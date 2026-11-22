@@ -2,6 +2,7 @@ import {
   MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS as CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
   audienceOf,
+  isOutsiderTurn,
   parseModelRef,
   type AgentContext,
   type HookBus,
@@ -779,11 +780,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // before.
           const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
             // `recallFacts`, like every engine read here: it adds the turn's
-            // audience scope (TASK-1091), last, and refuses a row a shared
-            // turn may not see.
+            // audience scope (TASK-1091), last, and refuses a row a personal
+            // agent's shared turn may not see. A team agent's read has no
+            // such scope, in any turn (TASK-1204).
             const raw = await recallFacts<EngineRecallOutput>(
               bus,
               ctx,
+              access,
               FACTS_RECALL_HOOK,
               {
                 limit: engineLimit,
@@ -904,7 +907,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             const group: EngineFactRecord[] = [];
             for (const about of abouts) {
               const slotRows = requireEngineResult(
-                await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+                await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
                   limit: 200,
                   ...memoryReadScope(access),
                   about,
@@ -968,7 +971,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // and an old human correction (never closed) is exactly the row
               // that falls off it — which would crown a newer outranked row.
               const activeRows = requireEngineResult(
-                await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+                await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
                   limit: 200,
                   ...memoryReadScope(access),
                   about: rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId),
@@ -1013,7 +1016,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             }
           }
           const visibleIds = new Set(page.map((row) => row.id));
-          const ownSubject = rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
+          // The person talking, rendered `you`. In an outsider's turn
+          // (TASK-1204) that is never the caller: the turn runs as the
+          // requester who answers for the channel, and a team agent's
+          // outsider turn reads the requester's own rows too. So there no row
+          // is `you`, and the requester's key reads as any other member's.
+          // (`about: 'user'` and `profile: true` above still mean the caller's
+          // own key: only owner routes send them.)
+          const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
 
           // Per-answer conversation ordinals (design doc "Signal" section,
           // TASK-611): a copy of `page` sorted chronologically the same way
@@ -1055,7 +1065,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 // Another person's speaker subject is `user:<their id>`; a
                 // caller is never handed that id, only that it is someone else.
                 aboutText:
-                  row.about === ownSubject
+                  ownSubject !== undefined && row.about === ownSubject
                     ? 'you'
                     : row.about.startsWith(`${SPEAKER_SUBJECT}:`)
                       ? 'a teammate'
@@ -1660,7 +1670,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
       await registerMemoryRecall(bus);
       await registerMemoryUse(bus);
-      await registerMemoryNote(bus, onFactsChanged, (ctx, query) => readPriorRows(bus, ctx, query));
+      await registerMemoryNote(bus, onFactsChanged, (ctx, access, query) => readPriorRows(bus, ctx, access, query));
     },
 
     async shutdown() {
@@ -1827,9 +1837,9 @@ async function observe(
         cfg.onFactsChanged?.(ctx);
         return out;
       },
-      priorRows: (query) => readPriorRows(bus, ctx, query),
-      retractedValue: (query) => readRetractedValue(bus, ctx, query),
-      retractedRows: (query) => readRetractedRows(bus, ctx, query),
+      priorRows: (query) => readPriorRows(bus, ctx, access, query),
+      retractedValue: (query) => readRetractedValue(bus, ctx, access, query),
+      retractedRows: (query) => readRetractedRows(bus, ctx, access, query),
       ownerUserId,
       // From `ctx` and the access resolved above, never a payload, like the
       // owner: where the producer's statements about a person are filed, if
@@ -2138,18 +2148,20 @@ const PRIOR_ROWS_PER_ABOUT = 200;
  * resolved by `observe()` before this runs. Throws on an unreadable answer;
  * the caller fails open (see `TwinCheck`).
  *
- * Audience-scoped too, like every engine read (`recallFacts`): a shared turn
- * checks its statements against shared rows only, as if no private row
- * existed. The same holds for the two reads below.
+ * Audience-scoped too, like every engine read (`recallFacts`, handed the
+ * resolved `access`): a personal agent's shared turn checks its statements
+ * against shared rows only, as if no private row existed, and a team agent's
+ * turn against every row (TASK-1204). The same holds for the two reads below.
  */
 async function readPriorRows(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { abouts: string[]; ownerUserId: string; conversationId: string },
 ): Promise<PriorRow[]> {
   const rows: PriorRow[] = [];
   for (const about of query.abouts) {
-    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
       about,
       ownerUserId: query.ownerUserId,
       conversationId: query.conversationId,
@@ -2185,9 +2197,10 @@ async function readPriorRows(
 async function readRetractedValue(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { about: string; slot: string; value: string; ownerUserId: string },
 ): Promise<boolean> {
-  const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+  const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
     about: query.about,
     ownerUserId: query.ownerUserId,
     slots: [query.slot],
@@ -2213,11 +2226,12 @@ async function readRetractedValue(
 async function readRetractedRows(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { abouts: string[]; ownerUserId: string },
 ): Promise<PriorRow[]> {
   const rows: PriorRow[] = [];
   for (const about of query.abouts) {
-    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, FACTS_RECALL_HOOK, {
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, FACTS_RECALL_HOOK, {
       about,
       ownerUserId: query.ownerUserId,
       activeOnly: false,

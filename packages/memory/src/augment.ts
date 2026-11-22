@@ -10,6 +10,9 @@
  * | **Recent** | the last 3 conversations, 3 statements each, dated |
  * | **Digest** | distinct non-speaker subjects, ranked, top ~20 |
  *
+ * An outsider's turn has no Profile (TASK-1204): it runs as the requester who
+ * answers for the channel, who is never the person talking.
+ *
  * Soft cap ~800 tokens; over it, parts drop **digest → recent → profile**. The
  * degraded notice and the section heading never drop.
  *
@@ -50,6 +53,7 @@
  */
 
 import {
+  isOutsiderTurn,
   isOwnerlessId,
   PluginError,
   SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
@@ -179,8 +183,9 @@ interface EngineFactRecord {
   // Read by `selectProfileRows`/`needsSlotHistory` (TASK-648): an extracted
   // row from the person's own turn can bring back a value they retracted.
   sourceRole?: string;
-  // Checked by `recallFacts` on a shared turn's reads (TASK-1091), never
-  // rendered: every row that reaches the block is one this turn may see.
+  // Checked by `recallFacts` on a personal agent's shared turn's reads
+  // (TASK-1091), never rendered: every row that reaches the block is one
+  // this turn may see. A team agent's turn may see every row (TASK-1204).
   audience?: string;
 }
 
@@ -305,11 +310,13 @@ function provenanceTag(raw: unknown): string {
  * prompt would spend tokens on an opaque id and leak an internal identifier
  * into text the model may repeat back. It renders as `you`. Everything else is
  * an extractor-canonical subject and renders escaped, as written.
+ *
+ * `self` is the caller's own key, or `undefined` in an outsider's turn
+ * (TASK-1204): there the caller is the requester, never the person talking,
+ * so no subject is `you`.
  */
-function renderSubject(about: string, ownerUserId: string): string {
-  return about === rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId)
-    ? 'you'
-    : escapeStatementText(about);
+function renderSubject(about: string, self: string | undefined): string {
+  return self !== undefined && about === self ? 'you' : escapeStatementText(about);
 }
 
 /**
@@ -362,7 +369,7 @@ function renderProfile(
  */
 function renderRecent(
   rows: EngineFactRecord[],
-  ownerUserId: string,
+  self: string | undefined,
   conversations: number,
   perConversation: number,
 ): string {
@@ -389,7 +396,7 @@ function renderRecent(
         const value = escapeStatementText(row.value);
         if (value === '') return null;
         const day = formatDay(row.when) ?? 'undated';
-        const subject = renderSubject(row.about, ownerUserId);
+        const subject = renderSubject(row.about, self);
         const relation = escapeStatementText(row.relation);
         return `- ${day} — ${subject} ${relation}: ${value} ${provenanceTag(row.provenance)}`;
       })
@@ -430,17 +437,19 @@ function renderRecent(
  * subjects that are not the person talking. The design says in as many words
  * that this is weak for user-centric memory and that the profile, the recent
  * section and the tool carry that load; the post-hoc entity pass that would
- * fix it is gated on a measurement and is deliberately not built here.
+ * fix it is gated on a measurement and is deliberately not built here. With
+ * no `speakerSubject` (an outsider's turn, TASK-1204: the caller isn't the
+ * person talking, and there is no profile), nothing is excluded.
  */
 export function rankDigestSubjects(
   rows: EngineFactRecord[],
-  speakerSubject: string,
+  speakerSubject: string | undefined,
   limit: number,
 ): Array<{ about: string; count: number; latest: string }> {
   const acc = new Map<string, { score: number; count: number; latest: string }>();
   rows.forEach((row, position) => {
     if (typeof row.about !== 'string' || row.about === '') return;
-    if (row.about === speakerSubject) return;
+    if (speakerSubject !== undefined && row.about === speakerSubject) return;
     const weight = 1 / (DIGEST_RRF_K + position + 1);
     const held = acc.get(row.about);
     if (held === undefined) {
@@ -464,7 +473,7 @@ export function rankDigestSubjects(
 /** `I hold memory about: cedar_creek (4, Aug 2026), acme (2, Sep 2026)`. */
 function renderDigest(
   rows: EngineFactRecord[],
-  speakerSubject: string,
+  speakerSubject: string | undefined,
   limit: number,
 ): string {
   const ranked = rankDigestSubjects(rows, speakerSubject, limit);
@@ -583,14 +592,22 @@ export async function buildMemoryBlock(
 ): Promise<string> {
   const cfg = { ...DEFAULTS, ...config };
   const access = await resolveMemoryAccess(bus, ctx);
-  const ownerUserId = access.userId;
-  const speakerSubject = rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
+  // The caller's own key: the person talking. Their Profile, `you` in Recent,
+  // and the one subject the Digest leaves out. In an outsider's turn
+  // (TASK-1204) the caller is the requester who answers for the channel, never
+  // the person talking, so there is no self: no Profile (not even read),
+  // nobody rendered `you`, and nothing left out of the Digest. A team agent's
+  // outsider turn reads every member's rows, the requester's included, so
+  // this is what keeps the requester's memory from being shown as the
+  // speaker's.
+  const self = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, access.userId);
   const ownerScope = memoryReadScope(access);
 
   const recall = async (input: Record<string, unknown>): Promise<EngineRecallOutput> => {
-    // A shared turn's block holds shared statements only (TASK-1091):
-    // `recallFacts` adds that scope last and refuses a row outside it.
-    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, factsRecallHook, {
+    // A personal agent's shared turn's block holds shared statements only
+    // (TASK-1091): `recallFacts` adds that scope last and refuses a row
+    // outside it. A team agent's block reads everything (TASK-1204).
+    const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, factsRecallHook, {
       ...ownerScope,
       activeOnly: true,
       ...input,
@@ -616,12 +633,15 @@ export async function buildMemoryBlock(
   // Three store queries (plus the slot-chain reads below: the profile's unless every profile slot
   // is settled by a human edit, and Recent's for a subject whose chain the profile did not read). No
   // embedding, no rerank, no model call — none of them passes a `query`, so not one of them reaches a retrieval channel.
+  // Two in an outsider's turn, which has no profile.
   const [profileOut, recentOut, digestOut] = await Promise.all([
     // `profileScanRows`, NOT `profileRows` — the per-slot pick below has to
     // see every active row of a slot to apply provenance immunity, and a
     // fetch limit equal to the render limit would cut the person's own older
     // correction out of the page first. See `DEFAULTS.profileScanRows`.
-    recall({ about: speakerSubject, limit: cfg.profileScanRows, slots: [...SLOTS] }),
+    self === undefined
+      ? { statements: [], degraded: [] }
+      : recall({ about: self, limit: cfg.profileScanRows, slots: [...SLOTS] }),
     recall({ limit: cfg.recentScanRows }),
     recall({ limit: cfg.digestScanRows }),
   ]);
@@ -637,14 +657,15 @@ export async function buildMemoryBlock(
   // slots, and a retraction that fell off a 32-row page would let the value
   // it retracted straight back into the prompt. A chain longer than even this
   // loses its oldest closed rows — never hides a human row.
-  const profileChainOut = needsSlotHistory(profileOut.statements)
-    ? await recall({
-        about: speakerSubject,
-        limit: PROFILE_CHAIN_ROWS,
-        slots: [...SLOTS],
-        activeOnly: false,
-      })
-    : { statements: [], degraded: [] };
+  const profileChainOut =
+    self !== undefined && needsSlotHistory(profileOut.statements)
+      ? await recall({
+          about: self,
+          limit: PROFILE_CHAIN_ROWS,
+          slots: [...SLOTS],
+          activeOnly: false,
+        })
+      : { statements: [], degraded: [] };
 
   // Recent reads the store directly too, so it needs the same chains to hide
   // what `memory:recall`'s active read hides — a re-mention of a value the
@@ -664,7 +685,7 @@ export async function buildMemoryBlock(
         )
         .map((row) => row.about),
     ),
-  ].filter((about) => !(about === speakerSubject && profileChainOut.statements.length > 0));
+  ].filter((about) => !(about === self && profileChainOut.statements.length > 0));
   const recentChainOuts = await Promise.all(
     recentChainSubjects.map((about) =>
       recall({ about, limit: PROFILE_CHAIN_ROWS, slots: [...SLOTS], activeOnly: false }),
@@ -687,11 +708,11 @@ export async function buildMemoryBlock(
   const profile = renderProfile(profileOut.statements, profileChainOut.statements, cfg.profileRows);
   const recent = renderRecent(
     recentRows,
-    ownerUserId,
+    self,
     cfg.recentConversations,
     cfg.recentPerConversation,
   );
-  const digest = renderDigest(digestOut.statements, speakerSubject, cfg.digestSubjects);
+  const digest = renderDigest(digestOut.statements, self, cfg.digestSubjects);
 
   const hasStoreContent = profile !== '' || recent !== '' || digest !== '';
   const storeHeader = hasStoreContent ? `${STORE_HEADING}\n\n${STORE_SECTION_PREAMBLE}` : '';

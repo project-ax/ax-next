@@ -8,7 +8,7 @@ import {
   type ToolDescriptor,
 } from '@ax/core';
 
-import { resolveMemoryAccess } from './access.js';
+import { resolveMemoryAccess, type MemoryAccess } from './access.js';
 import {
   recordFacts,
   SPEAKER_RULE_READS_AT_MOST,
@@ -185,9 +185,15 @@ function normalizeWhen(when: unknown): string {
  */
 export const NOTE_TWIN_EVENT = 'memory_note_twin';
 
-/** The conversation's rows, active and closed — `plugin.ts`'s `readPriorRows`. */
+/**
+ * The conversation's rows, active and closed — `plugin.ts`'s `readPriorRows`.
+ * Handed the note's resolved `access`, because whose memory it is decides
+ * which rows the read may see (a team agent's reads have no audience scope,
+ * TASK-1204).
+ */
 export type NotePriorRowsFn = (
   ctx: AgentContext,
+  access: MemoryAccess,
   query: { abouts: string[]; ownerUserId: string; conversationId: string },
 ) => Promise<PriorRow[]>;
 
@@ -206,14 +212,14 @@ export type NotePriorRowsFn = (
 async function restatesExtractedRow(
   ctx: AgentContext,
   priorRows: NotePriorRowsFn,
-  ownerUserId: string,
+  access: MemoryAccess,
   note: TwinCandidate,
 ): Promise<boolean> {
   const { conversationId } = conversationField(ctx);
   if (conversationId === undefined) return false;
   let prior: PriorRow[];
   try {
-    prior = await priorRows(ctx, { abouts: [note.about], ownerUserId, conversationId });
+    prior = await priorRows(ctx, access, { abouts: [note.about], ownerUserId: access.userId, conversationId });
   } catch (err) {
     ctx.logger.warn(NOTE_FAILED_EVENT, {
       agentId: ctx.agentId,
@@ -312,7 +318,7 @@ export async function registerMemoryNote(
         if (about === undefined) {
           throw new NoteInputError(unfiledMessage(scope), 'forbidden');
         }
-        if (await restatesExtractedRow(ctx, priorRows, access.userId, {
+        if (await restatesExtractedRow(ctx, priorRows, access, {
           about,
           relation: input.relation as string,
           value: input.value as string,
