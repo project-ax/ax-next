@@ -36,7 +36,9 @@ import { PLUGIN_NAME } from './plugin-name.js';
  * owner, and keeping their words out of the owner's memory is `audience`'s
  * job, not ownership's: a shared turn's rows are stamped shared and
  * none has a person subject, `user`, `user:<id>` or a speaker's name
- * (`audience.ts`). (From Slack none is captured:
+ * (`audience.ts`). A team agent's MEMBER turn is different (TASK-1204): it
+ * runs as the member, so it files a member's facts under them, while an
+ * outsider's turn on it still keeps none. (From Slack none is captured:
  * channel-slack's `memory:pre-capture` veto refuses every thread an outsider
  * talks in, TASK-1094.)
  *

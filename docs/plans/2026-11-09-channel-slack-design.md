@@ -1122,12 +1122,23 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 
 - **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column.
 - **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more.
-- **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's sessions recall everything.
+- **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's member sessions recall everything; an outsider's keep the filter and the withheld view (see "As built (TASK-1204)" under §4c).
 - **Still needed:** `ctx.audience` (personal-agent DMs), the private-wins channel check (a channel made Slack Connect or archived must still be caught at turn start), and `groups:read` (to read a private channel's flags).
 
 ### What stays hard
 
-**Who a fact is about.** §2a's second problem (a passing speaker's "I live in Paris" pinned on whoever connected the channel) doesn't go away when speaker facts are allowed. In a Slack turn, a fact about the speaker must be stored against the speaker's own label name and Slack ID (channel-slack already hands these to memory), never `user:<ctx.userId>`. Getting this wrong is worse than dropping the fact, so the card that removes the speaker rule must land the attribution in the same PR.
+**Who a fact is about.** §2a's second problem (a passing speaker's "I live in Paris" pinned on whoever connected the channel) doesn't go away when speaker facts are allowed. A member's turn runs as the member (`ctx.userId` is them), so their facts go under their own key, `user:<ctx.userId>`, the same one their web chats write and read. A subject the extractor writes with a label name (`vinay | …`) goes there too. An outsider's turn runs as whoever answers for the channel, not as the person talking, so it files no person fact at all. Getting this wrong is worse than dropping the fact, so the card that removes the speaker rule had to land the attribution in the same PR.
+
+**As built (TASK-1204).**
+
+- **Three scopes** (`speakerScope`): `private` (the owner's own turn), `team` (a team agent's member turn, in any audience) and `withheld` (everything else: a personal agent's shared turn, and any outsider's turn). An outsider's turn is `withheld` first, whatever its audience.
+- **A team agent's member turns recall everything.** Web chats and member channel turns read the team's whole memory, with no audience filter, and keep the `/memory` view. A member's channel question already shows recall to the room, and the §4c notices tell the room. That removes a privacy boundary on purpose.
+- **Members' facts are filed under them.** A member's turn files what they say about themselves under `user:<ctx.userId>`, and a subject made of their label names is filed there too. `memory_note` does the same.
+- **Outsiders keep the rule.** An outsider's turn on a team agent keeps shared-only recall (with the stamp backstop that throws if a non-shared row comes back) and gets no `/memory` mount. It stores no person fact (`user`, `user:<id>`, or a speaker's name). The shared team memory is the team's, not the public's, so the planner's "every session" was narrowed to members after the security review. Lifting it is the `!isOutsiderTurn` condition in `recallAudienceScope` and the outsider condition on the mount.
+- **Outsiders are never "you".** Recall in an outsider's turn never shows the requester's own memory as the person talking.
+- **Personal agents are unchanged.** A shared turn there still recalls only shared statements and stores no speaker facts.
+- **Accepted residuals.** Nicknames, initials, titles and role words the label doesn't show can still slip past the names rule (see `namesASpeaker`). A member's display name is untrusted, so the most a hostile one can do is make memory drop facts in that conversation.
+- **Follow-ups.** The stale comments in `packages/channel-slack` wait for TASK-1202 to merge. Render a member's display name for `user:<id>` subjects in a team agent's turns. Walk D checks a member's own recall and that nothing is filed under the requester.
 
 ### Cards
 
@@ -1352,8 +1363,10 @@ approvals; `audience` says who sees the reply and decides memory.
 
 - It's absent everywhere it isn't set, and absent means `private`, as today.
 - Memory stamps each statement with the audience it was captured in.
-- A `shared` turn recalls only `shared` statements and captures no facts about
-  the speaker.
+- On a personal agent, a `shared` turn recalls only `shared` statements and
+  captures no facts about the speaker. A team agent's member turn recalls
+  everything and files the speaker's facts under them; an outsider's turn on
+  it keeps the filter (§4c).
 - Memory reads go through one wrapper that adds the filter last. It throws if a
   shared read returns a row not stamped shared, so an engine that ignores the
   filter fails loudly.
@@ -1387,7 +1400,10 @@ work subject.
   memory only compares words with them.
 - **Subscriber risk:** a subscriber that drops or rewrites names an earlier one
   added would let facts under them through, hence append-only. A Slack member
-  ID is just another name to memory.
+  ID is just another name to memory. Since TASK-1204, in a team agent's member
+  turn the names are filed under the runner (`user:<ctx.userId>`), so a
+  subscriber names only people whose words the conversation's user turns carry:
+  a co-speaker named there would get their words filed under the runner.
 - **Wire surface:** none. A host-only fire, never an IPC action.
 
 **Finding a user by verified email** is a new service hook on the auth plugin,

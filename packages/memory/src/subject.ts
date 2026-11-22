@@ -40,7 +40,10 @@ export const SPEAKER_SUBJECT = 'user';
  * too much costs one fact while missing one pins a passer-by's words on a
  * person. The observer and `memory_note` apply it before this rewrite, and
  * `recordFacts` refuses whatever gets past them, so a shared turn stores
- * nothing under a speaker subject.
+ * nothing under a speaker subject. Not on a team agent's member turn
+ * (TASK-1204): the rule is by scope (`speakerScope`), and there a member's
+ * `user` and name subjects are filed under their own key. An outsider's turn
+ * keeps the rule on any agent.
  *
  * Note this is NOT an access-control boundary. A caller can still write any
  * `about` it likes, including `user:someone-else`. What limits where that

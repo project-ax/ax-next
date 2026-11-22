@@ -48,7 +48,9 @@ export type CaptureCheck =
  *   reads the fire's final payload. In a turn that isn't private, no write
  *   path stores a statement whose subject is made of them
  *   (`breaksSpeakerRule` in audience.ts): the observer, `memory_note` and
- *   `recordFacts` all take them from here.
+ *   `recordFacts` all take them from here. The names drop a
+ *   shared fact, or file it under the runner on a team agent's member turn
+ *   (TASK-1204).
  * - Each subscriber gets MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS. One that
  *   throws, or misses the bound, is skipped by the bus and is no refusal
  *   (fails open; a subscriber that must fail closed refuses inside the
