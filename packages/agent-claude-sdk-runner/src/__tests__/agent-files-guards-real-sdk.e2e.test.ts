@@ -18,7 +18,8 @@ import { createInterruptProcesses } from '../interrupt-processes.js';
 import { createJsonlTranscriptSource, locateJsonl } from '../jsonl-transcript-source.js';
 import { buildTelemetryEnv } from '../telemetry-env.js';
 import {
-  DISABLED_BUILTINS,
+  ALLOWED_SDK_BUILTINS,
+  DENIED_SDK_BUILTINS,
   MCP_HOST_SERVER_NAME,
   MCP_SANDBOX_SERVER_NAME,
 } from '../tool-names.js';
@@ -270,7 +271,8 @@ function productionOptions(pod: Pod): Options {
     additionalDirectories: [pod.scratch],
     model: 'claude-sonnet-4-5',
     allowedTools: ['Skill'],
-    disallowedTools: [...DISABLED_BUILTINS],
+    tools: [...ALLOWED_SDK_BUILTINS],
+    disallowedTools: [...DENIED_SDK_BUILTINS],
     canUseTool: async (_name, input) => ({ behavior: 'allow', updatedInput: input }),
     mcpServers: {
       [MCP_HOST_SERVER_NAME]: createSdkMcpServer({ name: MCP_HOST_SERVER_NAME, version: '0', tools: [] }),

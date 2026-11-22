@@ -72,6 +72,12 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // away: `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads both
   // runners' sources as text and fails if this list stops equalling that
   // intersection. Add or remove a row here only in step with that test.
+  //
+  // KNOWN GAP (TASK-1200): since then the claude-sdk runner keeps every SDK
+  // built-in outside its `ALLOWED_SDK_BUILTINS` from the agent (CronCreate,
+  // ScheduleWakeup, SendMessage, …), not just these four. The guard still
+  // reads only `DISABLED_BUILTINS`, so this rail describes four of ~20 names
+  // both runners keep out; widening it (hand-written rows) is a follow-up.
   {
     id: 'builtins.web-fetch',
     match: { tool: 'WebFetch' },
