@@ -187,7 +187,10 @@ export { CAPTURE_REFUSED_EVENT };
 /**
  * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
  * view because people without access to the agent can read its replies
- * (TASK-1091). Bindings: `agentId` and `reason: 'shared-audience'`.
+ * (TASK-1091): a personal agent's session that isn't private, or an
+ * outsider's on a team agent (TASK-1204). A team agent member's session keeps
+ * its view in every audience, so this never fires for one. Bindings:
+ * `agentId` and `reason: 'shared-audience'`.
  */
 export const MEMORY_MOUNT_WITHHELD_EVENT = 'memory_mount_withheld';
 
@@ -389,8 +392,10 @@ export interface MemoryPluginConfig {
    * Writes each agent's facts as files to the memory volume (`/memory` in
    * runners) — the only file view of facts — and registers
    * `memory:export:flush` and `sandbox:memory-mounts`. Without it there is no
-   * file view; recall is unaffected. A shared session never gets the view:
-   * `sandbox:memory-mounts` answers it no mount (TASK-1091).
+   * file view; recall is unaffected. A session whose recall reads shared rows
+   * only never gets the view: `sandbox:memory-mounts` answers a personal
+   * agent's shared session no mount (TASK-1091), and an outsider's on a team
+   * agent (TASK-1204). A team agent member's session gets it in every audience.
    */
   exports?: MemoryExportConfig;
 }
@@ -673,28 +678,45 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             ) {
               throw invalid('owner must carry an agentId and userId', 'sandbox:memory-mounts');
             }
-            // TASK-1091. A session whose replies people without access to the
-            // agent can read gets no file view at all. The export holds every
-            // fact the agent has, scoped by owner but not by audience, so
-            // mounting it would hand the room every row recall withholds.
-            // The owner's audience is the session's own: host-stamped, and
-            // out of the runner's reach. `audienceOf` fails closed, so a value
-            // this build doesn't know withholds the view too. Decided before
-            // the access check and the flush: nothing is granted, so there is
-            // nothing to check and nothing to write.
-            if (audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private') {
+            const ownerCtx: AgentContext = {
+              ...ctx,
+              agentId: owner.agentId,
+              userId: owner.userId,
+            };
+            // Whose memory this is decides the view (TASK-1204), so it is
+            // read first. A caller the agent refuses is refused here, never
+            // answered with an empty list that reads like a withheld view.
+            const access = await resolveMemoryAccess(bus, ownerCtx);
+            // TASK-1091. The export holds every fact the agent has, scoped by
+            // owner but not by audience, so a session whose replies people
+            // without access to the agent can read gets no file view where
+            // its recall reads shared rows only: mounting it would hand the
+            // room every row recall withholds. That is a personal agent's
+            // session, and (TASK-1204, design §4c) an outsider's session on a
+            // team agent: §4c shares a team agent's memory with the team, not
+            // with people outside AX. A member's session on a team agent
+            // keeps the view in every audience, as its recall reads
+            // everything (`recallAudienceScope`).
+            //
+            // The owner's audience and source are the session's own:
+            // host-stamped, and out of the runner's reach. The turn opening
+            // the session names an outsider too (the orchestrator copies one
+            // from the other), and either is enough, as for the k8s
+            // provider's read-only home. `audienceOf` and `isOutsiderTurn`
+            // fail closed: an audience this build doesn't know withholds the
+            // view wherever a shared one does, and a source it doesn't know
+            // reads as an outsider's. Decided before the flush: nothing is
+            // granted, so there is nothing to write.
+            const shared = audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private';
+            const outsider =
+              isOutsiderTurn(owner.source === undefined ? {} : { source: owner.source }) || isOutsiderTurn(ctx);
+            if (shared && (access.visibility !== 'team' || outsider)) {
               ctx.logger.info(MEMORY_MOUNT_WITHHELD_EVENT, {
                 agentId: owner.agentId,
                 reason: 'shared-audience',
               });
               return { mounts: [] };
             }
-            const ownerCtx: AgentContext = {
-              ...ctx,
-              agentId: owner.agentId,
-              userId: owner.userId,
-            };
-            await resolveMemoryAccess(bus, ownerCtx);
             await exporter.flush(ownerCtx);
             return { mounts: [memoryMountSpec(owner.agentId, volume)] };
           },
