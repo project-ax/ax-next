@@ -80,7 +80,16 @@ export const BOT_OAUTH_CALLBACK_PATH = '/slack/bots/oauth/callback';
 
 const SLACK_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
 const APP_DESCRIPTION = 'Talk to your AX agent.';
-const DEDICATED_BOT_DESCRIPTION = 'Talk to your team agent.';
+/**
+ * A team bot's Slack profile description (TASK-1203, design §4c): the same
+ * sentence the bot posts the first time it answers in a channel, in its own
+ * voice. It names no team because Slack caps a description at 140 characters
+ * and a team's name alone can run to 128. Every manifest send carries it (a
+ * create, so Set up again; a rename; a token Replace), so a bot made before
+ * this text gets it at its next one.
+ */
+export const DEDICATED_BOT_DESCRIPTION =
+  'What I hear is shared with everyone on my team, and I may bring it up elsewhere.';
 
 export interface SlackUrls {
   /** Where Slack delivers events for this install. */
