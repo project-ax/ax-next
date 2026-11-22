@@ -354,6 +354,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      jose:
+        specifier: 6.2.8
+        version: 6.2.8
       kysely:
         specifier: 0.28.17
         version: 0.28.17

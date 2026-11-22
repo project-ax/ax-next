@@ -20,6 +20,7 @@
   "dependencies": {
     "@ax/apps-bridge-contract": "workspace:*",
     "@ax/core": "workspace:*",
+    "jose": "6.2.8",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
   },
