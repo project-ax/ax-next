@@ -295,8 +295,7 @@ describe('sandbox:memory-mounts resolver', () => {
     ['a shared', { audience: 'shared' }],
     ['an unknown-audience', { audience: 'public' }],
     ["a routine's shared", { audience: 'shared', source: 'routine' }],
-    // A private stamp is a private session on any agent (no live producer).
-    ["an outsider's private-stamped", { audience: 'private', source: 'external' }],
+    ["a member's private-stamped", { audience: 'private', source: 'user' }],
   ])('%s session of a team agent gets its mount', async (_label, session) => {
     const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility: 'team' } });
     await h.remember({ about: 'user', relation: 'lives in', value: 'Portland' });
@@ -310,15 +309,23 @@ describe('sandbox:memory-mounts resolver', () => {
   });
 
   // §4c shares a team agent's memory with the team, not with people outside
-  // AX. The export holds every row, so an outsider's session that isn't
-  // private gets no view, as its recall reads shared rows only. A source this
-  // build doesn't know reads as an outsider's, like `isOutsiderTurn`.
+  // AX. The export holds every row, so an outsider's session gets no view, as
+  // its recall reads shared rows only. Whatever its audience stamp (review
+  // F3): someone without access to the agent reads its replies, so a private
+  // stamp, or none, fails closed (no live producer sends one). A source this
+  // build doesn't know reads as an outsider's, like `isOutsiderTurn`. On a
+  // personal agent too.
   it.each([
-    ["an outsider's shared", { audience: 'shared', source: 'external' }],
-    ["an outsider's unknown-audience", { audience: 'public', source: 'external' }],
-    ['an unknown-source shared', { audience: 'shared', source: 'satellite' }],
-  ])('%s session of a team agent gets no mount and nothing is flushed', async (_label, session) => {
-    const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility: 'team' } });
+    ['team', "an outsider's shared", { audience: 'shared', source: 'external' }],
+    ['team', "an outsider's unknown-audience", { audience: 'public', source: 'external' }],
+    ['team', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
+    ['team', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
+    ['team', "an outsider's unstamped", { source: 'external' }],
+    ['team', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
+    ['personal', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
+    ['personal', "an outsider's unstamped", { source: 'external' }],
+  ] as const)('a %s agent: %s session gets no mount and nothing is flushed', async (visibility, _label, session) => {
+    const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility } });
     await engineRecord(h.bus, h.ctx(), [
       {
         about: 'launch_plan',
@@ -354,6 +361,12 @@ describe('sandbox:memory-mounts resolver', () => {
       mounts: [],
     });
     expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(1);
+    // Even when the owner record says private (review F3): either naming an
+    // outsider withholds it, whatever the stamp.
+    expect(await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'private' }, opening)).toEqual({
+      mounts: [],
+    });
+    expect(eventsNamed(h.logs, 'memory_mount_withheld')).toHaveLength(2);
     // A member's turn opening the same session gets the view.
     expect((await resolveMounts({ agentId: 'agent-1', userId: ALICE, audience: 'shared' })).mounts).toHaveLength(1);
     expect(await readdir(hostRoot)).not.toEqual([]);

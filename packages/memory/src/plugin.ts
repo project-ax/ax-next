@@ -188,9 +188,10 @@ export { CAPTURE_REFUSED_EVENT };
  * Logged at `info` when `sandbox:memory-mounts` gives a session no `/memory`
  * view because people without access to the agent can read its replies
  * (TASK-1091): a personal agent's session that isn't private, or an
- * outsider's on a team agent (TASK-1204). A team agent member's session keeps
- * its view in every audience, so this never fires for one. Bindings:
- * `agentId` and `reason: 'shared-audience'`.
+ * outsider's on any agent, whatever its audience stamp (TASK-1204). A team
+ * agent member's session keeps its view in every audience, so this never
+ * fires for one. Bindings: `agentId` and `reason: 'shared-audience'` (an
+ * outsider's session is one, whatever it is stamped).
  */
 export const MEMORY_MOUNT_WITHHELD_EVENT = 'memory_mount_withheld';
 
@@ -693,12 +694,18 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // owner but not by audience, so a session whose replies people
             // without access to the agent can read gets no file view where
             // its recall reads shared rows only: mounting it would hand the
-            // room every row recall withholds. That is a personal agent's
-            // session, and (TASK-1204, design §4c) an outsider's session on a
-            // team agent: §4c shares a team agent's memory with the team, not
-            // with people outside AX. A member's session on a team agent
-            // keeps the view in every audience, as its recall reads
-            // everything (`recallAudienceScope`).
+            // room every row recall withholds. That is, as in
+            // `recallAudienceScope`:
+            //
+            // - an outsider's session, on any agent, whatever its audience
+            //   stamp (TASK-1204, design §4c: a team agent's memory is shared
+            //   with the team, not with people outside AX). Someone without
+            //   access reads its replies, so a private stamp or none fails
+            //   closed (review F3); no live producer sends one.
+            // - a personal agent's session that isn't private.
+            //
+            // A member's session on a team agent keeps the view in every
+            // audience, as its recall reads everything.
             //
             // The owner's audience and source are the session's own:
             // host-stamped, and out of the runner's reach. The turn opening
@@ -709,10 +716,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // view wherever a shared one does, and a source it doesn't know
             // reads as an outsider's. Decided before the flush: nothing is
             // granted, so there is nothing to write.
-            const shared = audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private';
             const outsider =
               isOutsiderTurn(owner.source === undefined ? {} : { source: owner.source }) || isOutsiderTurn(ctx);
-            if (shared && (access.visibility !== 'team' || outsider)) {
+            const shared = audienceOf(owner.audience === undefined ? {} : { audience: owner.audience }) !== 'private';
+            if (outsider || (shared && access.visibility !== 'team')) {
               ctx.logger.info(MEMORY_MOUNT_WITHHELD_EVENT, {
                 agentId: owner.agentId,
                 reason: 'shared-audience',

@@ -47,29 +47,37 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  */
 
 /**
- * The engine recall scope for a turn: `{ audience: 'shared' }` for a shared
- * turn, and for an audience this build does not know (`audienceOf` reads that
- * as shared, the least recall). Nothing at all for a private turn, whose reads
- * are exactly what they were before audiences existed.
+ * The engine recall scope for a turn, decided in this order:
  *
- * Nothing at all for a team agent's MEMBER turn, in any audience (TASK-1204,
- * design §4c): its memory is the team's, so a member's shared turn reads what
- * their private one reads. That removes a privacy boundary on purpose: a
- * member's channel question already shows recall to everyone in the channel,
- * and §4c's notices tell the room.
- *
- * Not for an outsider's turn (`isOutsiderTurn`, which fails closed for a
- * source this build doesn't know): §4c shares a team agent's memory with the
- * team, not with people outside AX, so there the rule above holds on a team
- * agent too, backstop and all. (The orchestrator's security review reversed
- * the planner's "every session" here; lifting it is this one condition.) A
- * visibility this build doesn't know isn't `'team'`, so it keeps the scope.
+ * 1. An outsider's turn (`isOutsiderTurn`, which fails closed for a source
+ *    this build doesn't know): `{ audience: 'shared' }` on every agent,
+ *    whatever the turn's audience stamp. Someone without access to the agent
+ *    reads its reply, so it recalls only what was learned where they could
+ *    see it, backstop and all: §4c shares a team agent's memory with the
+ *    team, not with people outside AX. A private stamp or none fails closed
+ *    here (TASK-1204 review), though no live producer sends one: channel-slack
+ *    stamps an outsider's turn shared. (The orchestrator's security review
+ *    reversed the planner's "every session" on a team agent; lifting it is
+ *    this step, for team agents.)
+ * 2. A team agent's MEMBER turn, in any audience (TASK-1204, design §4c):
+ *    nothing at all. Its memory is the team's, so a member's shared turn
+ *    reads what their private one reads. That removes a privacy boundary on
+ *    purpose: a member's channel question already shows recall to everyone
+ *    in the channel, and §4c's notices tell the room. An audience this build
+ *    doesn't know reads everything here too, as a member reads everything
+ *    anyway.
+ * 3. Anything else: `{ audience: 'shared' }` for a shared turn, and for an
+ *    audience this build does not know (`audienceOf` reads that as shared,
+ *    the least recall). Nothing at all for a private turn, whose reads are
+ *    exactly what they were before audiences existed. A visibility this build
+ *    doesn't know isn't `'team'`, so it lands here and keeps the scope.
  */
 export function recallAudienceScope(
   ctx: Pick<AgentContext, 'audience' | 'source'>,
   access: Pick<MemoryAccess, 'visibility'>,
 ): { audience?: 'shared' } {
-  if (access.visibility === 'team' && !isOutsiderTurn(ctx)) return {};
+  if (isOutsiderTurn(ctx)) return { audience: 'shared' };
+  if (access.visibility === 'team') return {};
   return audienceOf(ctx) === 'shared' ? { audience: 'shared' } : {};
 }
 

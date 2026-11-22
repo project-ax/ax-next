@@ -187,9 +187,54 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
     },
   );
 
+  // Review F3: an outsider's turn is read by someone without access to the
+  // agent whatever its stamp, so a private stamp, or none, reads what the
+  // room could see too. No live producer sends either (channel-slack stamps
+  // an outsider's turn shared): this fails closed, like `isOutsiderTurn`.
+  it.each([
+    ['personal', 'private'],
+    ['personal', undefined],
+    ['team', 'private'],
+    ['team', undefined],
+  ] as const)(
+    "nor in an outsider's turn stamped otherwise (%s agent, audience %j): it reads shared statements only",
+    async (visibility, audience) => {
+      const h = await makeHarness({ agent: { visibility } });
+      const mine = h.ctx({ conversationId: PRIVATE_CONV });
+      await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, mine);
+      await engineRecord(h.bus, mine, [
+        {
+          about: 'launch_plan',
+          relation: 'date',
+          value: PUBLIC,
+          when: JAN,
+          ownerUserId: ALICE,
+          conversationId: CHANNEL,
+          audience: 'shared',
+        },
+      ]);
+      const outsider = h.ctx({ conversationId: CHANNEL, source: 'external', ...(audience !== undefined ? { audience } : {}) });
+
+      const reads = await engineReadsDuring(h, async () => {
+        expect(values(await h.recall({}, outsider))).toEqual([PUBLIC]);
+        for (const input of RECALL_SHAPES) {
+          expect(values(await h.recall(input, outsider)), JSON.stringify(input)).not.toContain(SECRET);
+        }
+        const block = await augment(h, outsider);
+        expect(block).toContain(PUBLIC);
+        expect(block).not.toContain('Nightjar');
+        const tool = await recallTool(h, outsider, 'launch');
+        expect(tool).toContain(PUBLIC);
+        expect(tool).not.toContain('Nightjar');
+      });
+      expect(reads.length).toBeGreaterThan(0);
+      for (const input of reads) expect(input.audience).toBe('shared');
+    },
+  );
+
   // Design §4c (TASK-1204): a team agent's memory is the team's, so a
   // member's shared turn reads exactly what the member's own private turn
-  // reads. (An outsider's turn on it doesn't: the test above.)
+  // reads. (An outsider's turn on it doesn't: the tests above.)
   it("a team agent's member turn in a shared conversation recalls everything (TASK-1204)", async () => {
     const h = await makeHarness({ agent: { visibility: 'team' } });
     const mine = h.ctx({ conversationId: PRIVATE_CONV });
@@ -586,26 +631,34 @@ describe('recallFacts — the one door every engine read goes through', () => {
   // §4c shares a team agent's memory with the TEAM, not with people outside
   // AX: an outsider's turn keeps shared-only recall, and its backstop, on a
   // team agent too. A source this build doesn't know reads as an outsider's.
+  // And whatever its audience stamp (review F3): an outsider's turn is read
+  // by someone without access to the agent, so a private stamp, or none,
+  // fails closed. No live producer sends one.
   it.each([
     ['shared', 'external'],
     ['public', 'external'],
     ['shared', 'satellite'],
-  ])("an outsider's read on a team agent keeps the shared scope and its backstop: audience %j, source %j", async (audience, source) => {
+    ['private', 'external'],
+    [undefined, 'external'],
+    ['private', 'satellite'],
+  ])("an outsider's read keeps the shared scope and its backstop on any agent: audience %j, source %j", async (audience, source) => {
     const outsider = makeAgentContext({
       sessionId: 's',
       agentId: 'agent-1',
       userId: ALICE,
-      audience: audience as never,
+      ...(audience !== undefined ? { audience: audience as never } : {}),
       source: source as never,
     });
-    const { bus, asked } = engineAnswering({ statements: [{ ...ROW, audience: 'shared' }, { ...ROW, audience: 'private' }], degraded: [] });
-    const failure: unknown = await recallFacts(bus, outsider, TEAM_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience: 'private' }).then(
-      () => undefined,
-      (err: unknown) => err,
-    );
-    expect(failure).toMatchObject({ code: 'invalid-return', hookName: FACTS_RECALL_HOOK });
-    expect((failure as Error).message).not.toContain('Nightjar');
-    expect(asked).toStrictEqual([{ limit: 5, audience: 'shared' }]);
+    for (const agent of [TEAM_AGENT, PERSONAL_AGENT]) {
+      const { bus, asked } = engineAnswering({ statements: [{ ...ROW, audience: 'shared' }, { ...ROW, audience: 'private' }], degraded: [] });
+      const failure: unknown = await recallFacts(bus, outsider, agent, FACTS_RECALL_HOOK, { limit: 5, audience: 'private' }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure, agent.visibility).toMatchObject({ code: 'invalid-return', hookName: FACTS_RECALL_HOOK });
+      expect((failure as Error).message).not.toContain('Nightjar');
+      expect(asked, agent.visibility).toStrictEqual([{ limit: 5, audience: 'shared' }]);
+    }
   });
 
   it.each([
@@ -618,10 +671,16 @@ describe('recallFacts — the one door every engine read goes through', () => {
     ['shared', 'external', 'team', { audience: 'shared' }], // an outsider's turn: what the room could see
     ['public', 'external', 'team', { audience: 'shared' }],
     ['shared', 'satellite', 'team', { audience: 'shared' }], // an unknown source reads as an outsider's
-    ['private', 'external', 'team', {}], // a private turn reads everything, as on any agent
+    // An outsider's turn, whatever its stamp (review F3: fail closed, no live producer).
+    ['private', 'external', 'team', { audience: 'shared' }],
+    [undefined, 'external', 'team', { audience: 'shared' }],
+    ['private', 'satellite', 'team', { audience: 'shared' }],
+    ['private', 'external', 'personal', { audience: 'shared' }],
+    [undefined, 'external', 'personal', { audience: 'shared' }],
     ['shared', 'user', 'personal', { audience: 'shared' }],
     ['shared', 'external', 'personal', { audience: 'shared' }],
     ['private', 'user', 'personal', {}],
+    [undefined, undefined, 'personal', {}], // an owner route: no stamp, no source
     ['shared', 'user', 'bogus', { audience: 'shared' }], // an unknown visibility keeps the scope
   ])('the recall scope of audience %j, source %j on a %s agent is %j', (audience, source, visibility, scope) => {
     expect(recallAudienceScope({ audience, source } as never, { visibility } as never)).toStrictEqual(scope);
