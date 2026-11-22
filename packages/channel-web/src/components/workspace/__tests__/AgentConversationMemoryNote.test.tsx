@@ -1,6 +1,6 @@
 /**
  * TASK-1203 — a team agent's chat says, under the composer, that its memory is
- * shared with the team. The line belongs to the composer: it is tied to the
+ * shared with anyone who talks to it. The line belongs to the composer: it is tied to the
  * field with `aria-describedby`, and it goes where the composer goes (a
  * read-only Slack thread has neither).
  */

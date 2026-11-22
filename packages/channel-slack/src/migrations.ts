@@ -43,9 +43,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     `notice_posted_at` (TASK-1203, design §4c) is when a turn claimed the
  *     channel's memory notice, the top-level post that tells the channel
  *     what the bot hears there is shared with anyone who talks to it,
- *     just before it
- *     posted it. One conditional write claims it (channel-store.ts
- *     `claimNotice`), so a channel is told once per binding, whichever
+ *     just before it posted it. One conditional write claims it
+ *     (channel-store.ts `claimNotice`), so a channel is told once per binding, whichever
  *     replica's turn comes first; a post Slack refuses clears it again, so
  *     the next turn tries. NULL: not told yet, a binding from before this
  *     column included. A reconnect keeps it; a binding removed and made

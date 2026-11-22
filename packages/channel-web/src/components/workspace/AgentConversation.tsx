@@ -245,7 +245,7 @@ interface Props {
   /**
    * TASK-1203 — a line under the composer, tied to the field with
    * `aria-describedby`. AgentView sets it for a team agent ("its memory is
-   * shared with the team"). Never drawn when `readOnly`: there is no composer.
+   * shared with anyone who talks to it"). Never drawn when `readOnly`: there is no composer.
    */
   composerNote?: string;
   /**
