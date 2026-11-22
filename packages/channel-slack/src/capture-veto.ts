@@ -14,10 +14,11 @@ import { logCode } from './log-code.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1094: memory learns from what members say in a connected channel,
-// and never from what outsiders say (PR B review F1), nor from a private
-// channel (TASK-1188). Memory asks `memory:pre-capture { conversationId }`
-// before every extraction pass and every `memory_note`; this answers it for
-// the conversations of Slack channel threads. The shape is @ax/routines'
+// public or private (a private one is remembered like any other since
+// TASK-1203, design §4c), and never from what outsiders say (PR B review
+// F1). Memory asks `memory:pre-capture { conversationId }` before every
+// extraction pass and every `memory_note`; this answers it for the
+// conversations of Slack channel threads. The shape is @ax/routines'
 // `taskCaptureVeto` (routines/src/capture.ts), copied rather than imported:
 // plugins don't import each other (invariant 2).
 //
@@ -57,9 +58,10 @@ export const CAPTURE_CHECK_DEADLINE_MS = MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_M
  *     recalls shared memory in every turn, members' private chats included,
  *     so an outsider's words, once learned, would come back as facts with a
  *     member's authority. Reversible: this one rule.
- *   - `channel-not-remembered`: the thread had a turn while its channel was
- *     private, or the channel is private now (TASK-1188), or it is no longer
- *     connected to the thread's agent.
+ *   - `channel-not-remembered`: the thread was marked before TASK-1203 (a
+ *     turn while its channel was private, TASK-1188, or switched off,
+ *     TASK-1202), or the channel is no longer connected to the thread's
+ *     agent.
  */
 const REFUSALS = ['channel-external-turn', 'channel-not-remembered'] as const;
 type Refusal = (typeof REFUSALS)[number];
@@ -86,15 +88,17 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
   // (channel-store.ts), so lifting this refusal means recording outsiders'
   // names first, or memory would file what they say under them.
   if (thread.external !== false) return { refusal: 'channel-external-turn', speakerNames: NO_NAMES };
-  // A turn ran while the channel was private (TASK-1188). Sticky, whatever
-  // the channel says now.
+  // Marked before TASK-1203: a turn ran while the channel was private
+  // (TASK-1188), or switched off (TASK-1202). Sticky, whatever the channel
+  // says now: memory's cursor already skipped those turns, so letting the
+  // thread in would have its next pass read what was said under "this isn't
+  // remembered".
   if (thread.notRemembered !== false) return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   const binding = await channels.get(thread.installId, thread.channelId);
-  // Disconnected (or its install removed), connected to another agent since,
-  // or private now (TASK-1188, design §4b.3: a private channel's words would
-  // surface wherever shared memory is recalled). Only a binding that plainly
-  // says public lets memory in.
-  if (binding === null || binding.agentId !== thread.agentId || binding.isPrivate !== false) {
+  // Disconnected (or its install removed), or connected to another agent
+  // since. Public or private, a channel connected to the thread's agent lets
+  // memory in (TASK-1203, design §4c).
+  if (binding === null || binding.agentId !== thread.agentId) {
     return { refusal: 'channel-not-remembered', speakerNames: NO_NAMES };
   }
   // As stored, with no default: a row that has no names list throws when
@@ -114,9 +118,9 @@ async function lookup(channels: Pick<ChannelStore, 'getThread' | 'get'>, convers
  *
  * A conversation channel-slack never recorded gets no opinion. One it did is
  * refused when outsiders' turns run in it (`channel-external-turn`), and a
- * member's when any turn in it started while the channel was private, or
- * when the channel is no longer connected to its agent, or is private now
- * (`channel-not-remembered`; TASK-1188, design §4b.3).
+ * member's when it was marked before TASK-1203, or when the channel is no
+ * longer connected to its agent (`channel-not-remembered`). A private
+ * channel is remembered like any other (TASK-1203, design §4c).
  *
  * A member's thread it lets through is answered with the names that
  * member's turns were labelled with (TASK-1146): the payload it was given,

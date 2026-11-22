@@ -138,6 +138,11 @@ export interface BotCancelled {
 export interface AgentSlackBotProps {
   agentId: string;
   agentName: string;
+  /**
+   * The agent's team, by name, for the memory line (TASK-1203). Absent when
+   * the host couldn't say: the line says "its team".
+   */
+  agentTeamName?: string;
   bot: Bot;
   /** Whether the viewer is a team admin of the agent's team (they may ask for, continue and cancel a bot). */
   canManage: boolean;
@@ -254,6 +259,7 @@ export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
 export function AgentSlackBot({
   agentId,
   agentName,
+  agentTeamName,
   bot,
   canManage,
   sharedConnected = false,
@@ -277,6 +283,7 @@ export function AgentSlackBot({
         <RequestForm
           agentId={agentId}
           agentName={agentName}
+          agentTeamName={agentTeamName}
           configTokenStored={bot.configTokenStored}
           initialBotName={rebuilding?.botName}
           notice={
@@ -301,6 +308,8 @@ export function AgentSlackBot({
       return (
         <Live
           agentId={agentId}
+          agentName={agentName}
+          agentTeamName={agentTeamName}
           bot={bot}
           canManage={canManage}
           sharedConnected={sharedConnected}
@@ -316,6 +325,7 @@ export function AgentSlackBot({
 function RequestForm({
   agentId,
   agentName,
+  agentTeamName,
   configTokenStored,
   initialBotName,
   notice,
@@ -324,6 +334,7 @@ function RequestForm({
 }: {
   agentId: string;
   agentName: string;
+  agentTeamName: string | undefined;
   configTokenStored: boolean;
   /** The name to start with: the one Set up again took away, else the agent's. */
   initialBotName?: string | undefined;
@@ -463,6 +474,7 @@ function RequestForm({
         >
           {way === 'admin' ? AGENT_SLACK_CARD_COPY.selfPathLink : AGENT_SLACK_CARD_COPY.adminPathLink}
         </Button>
+        <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.memoryShared(agentName, agentTeamName)}</p>
         <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.outsidersUseYourAccess}</p>
         <p className="text-[12.5px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.helpLine(agentName)}</p>
       </SlackCard>
@@ -658,6 +670,8 @@ function problems({
 
 function Live({
   agentId,
+  agentName,
+  agentTeamName,
   bot,
   canManage,
   sharedConnected,
@@ -667,6 +681,8 @@ function Live({
   onChanged,
 }: {
   agentId: string;
+  agentName: string;
+  agentTeamName: string | undefined;
   bot: LiveBot;
   canManage: boolean;
   sharedConnected: boolean;
@@ -753,6 +769,7 @@ function Live({
       {channels.length > 0 && (
         <AgentSlackBotChannels invite={bot} channels={channels} />
       )}
+      <p className="text-[12.5px] text-muted-foreground">{C.memoryShared(agentName, agentTeamName)}</p>
       <p className="text-[12.5px] text-muted-foreground">{C.helpLine(who)}</p>
       {canManage && (
         <>

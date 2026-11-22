@@ -43,7 +43,7 @@ import {
 import { configTokenRef, secretRef } from '../secrets.js';
 import { sha256Hex } from '../slack-apps.js';
 import { createInstallStore } from '../store.js';
-import { slackTurnNote } from '../turn-note.js';
+import { SLACK_NOT_REMEMBERED_LINE, slackTurnNote } from '../turn-note.js';
 import { TURN_EVENT_HOOKS } from '../turn-registry.js';
 import { pngBase64, pngHeader } from './fake-png.js';
 import { fakeBotToken, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
@@ -804,8 +804,13 @@ describe('@ax/channel-slack plugin', () => {
           hook: 'agent:interrupt',
           degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
-        // A bot request's team (bot-requests.ts): without @ax/teams none is named.
-        { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
+        // A bot request's team (bot-requests.ts), and a team agent's in its bot's memory notice and Slack card
+        // (TASK-1203): without @ax/teams none is named.
+        {
+          hook: 'teams:list-for-user',
+          degradation:
+            "Admin › Slack's list of bot requests names no team, and a team bot's memory notice and Slack card say \"my team\" or \"its team\" instead of the team's name",
+        },
         // The approval buttons (TASK-1095): optional, never hard.
         ...[
           'decisions:recent-for-conversation',
@@ -3119,20 +3124,34 @@ describe('@ax/channel-slack plugin', () => {
     // Nothing of Alice's is kept: memory never learns from her thread, so it needs no names.
     expect((await channels.getThread(outsiderThread))?.speakerNames).toEqual([]);
     expect(await askMemory(harness.bus, outsiderThread)).toEqual(OUTSIDER_THREAD);
+
+    // TASK-1203: #support's first turn told everyone there, once, in a top-level post with the bot's own
+    // token, that what it hears is shared with its team ("my team": no @ax/teams here). Claimed on
+    // Postgres, so Alice's turn after it posted nothing.
+    expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toEqual([
+      {
+        method: 'chat.postMessage',
+        auth: `Bearer ${SUPPORT_BOT_TOKEN}`,
+        body: { channel: SUPPORT_CH, text: COPY.memoryNotice(null), unfurl_links: false, unfurl_media: false },
+      },
+    ]);
   });
 
   /*
     TASK-1184, through the wiring: every channel turn asks Slack about its
-    channel first, with the check plugin.ts builds. Without it, a channel made
-    private after it was bound kept getting answers.
+    channel first, with the check plugin.ts builds. Without it, a channel
+    Slack can no longer show the bot, or one shared with another company,
+    kept getting answers.
 
-    A team agent's own bot reads public channels only (no groups:read), so
-    Slack answers a private channel with missing_scope, never with a channel
-    object flagged private: the TASK-1174 walk measured missing_scope at a
-    bot's first bind. Slack names the scopes the call needed and the ones the
-    token holds (`provided`); which `needed` it sends is unmeasured, so
-    `provided` is what tells a channel the token can't read from a token that
-    can't read channels at all. (A channel turn is a bot's since TASK-1186.)
+    A team agent's own bot holds groups:read since TASK-1188, so Slack
+    answers a private channel it was invited to with the channel itself,
+    flagged private, and since TASK-1203 that channel is remembered like any
+    other (below). A bot Allowed before groups:read still gets missing_scope
+    for one: the TASK-1174 walk measured it at a bot's first bind. Slack
+    names the scopes the call needed and the ones the token holds
+    (`provided`); which `needed` it sends is unmeasured, so `provided` is
+    what tells a channel the token can't read from a token that can't read
+    channels at all. (A channel turn is a bot's since TASK-1186.)
   */
   /**
    * #support bound to the agent's own bot (seedSupportBot), then Ada mentions
@@ -3147,7 +3166,7 @@ describe('@ax/channel-slack plugin', () => {
       if (String(input) !== 'https://slack.com/api/conversations.info') return answered;
       return new Response(JSON.stringify(info), { status: 200, headers: { 'content-type': 'application/json' } });
     };
-    const { s, call } = await boot({ fetchImpl });
+    const { s, call, harness } = await boot({ fetchImpl });
     await seedSupportBot(s);
     const channels = createChannelStore(probe);
     const logs = captureLogs();
@@ -3169,8 +3188,53 @@ describe('@ax/channel-slack plugin', () => {
     expect(slack.calls.filter((c) => c.method === 'conversations.info')).toEqual([
       { method: 'conversations.info', auth: `Bearer ${SUPPORT_BOT_TOKEN}`, body: { channel: SUPPORT_CH } },
     ]);
-    return { s, told: told(), binding: await channels.get(BOT_INSTALL_ID, SUPPORT_CH), logs };
+    return { s, harness, channels, told: told(), binding: await channels.get(BOT_INSTALL_ID, SUPPORT_CH), logs };
   }
+
+  // TASK-1203 (design §4c): a team agent's memory is shared with its team, so
+  // a private channel is remembered like any other. Before the fix the turn's
+  // check wrote the binding private, the thread was recorded not remembered,
+  // memory was refused, and the turn told the agent not to say it would remember.
+  it("memory through the wiring: a member's thread in a private channel is remembered too, with who speaks in it, and her turn carries no not-remembered line (TASK-1203, design §4c)", async () => {
+    // conversations.info answers #support as private: is_private true, otherwise the public fixture.
+    const { s, harness, channels, told, binding } = await mentionWhileSlackSays({
+      ok: true,
+      channel: {
+        id: SUPPORT_CH,
+        name: 'support',
+        is_channel: true,
+        is_private: true,
+        is_archived: false,
+        is_ext_shared: false,
+        is_pending_ext_shared: false,
+        is_member: true,
+      },
+    });
+    // Ada (a member) mentions the bot; her turn runs, attended, as her, nothing said to her privately.
+    await vi.waitFor(() => expect(s.invokesReturned).toBe(1));
+    const thread = `conv:slack:${BOT_INSTALL_ID}:${SUPPORT_CH}:1763035300.000300`;
+    expect(s.invokes![0]!.ctx).toMatchObject({ conversationId: thread, userId: ADMIN.id, source: 'user' });
+    expect(told).toEqual([]);
+    expect(binding).toMatchObject({ agentId: TEAM_AGENT.id, channelName: 'support' });
+    // Recorded remembered, with her label's names (TASK-1146): users.info's name for her, then her Slack id.
+    expect(await channels.getThread(thread)).toEqual({
+      installId: BOT_INSTALL_ID,
+      channelId: SUPPORT_CH,
+      agentId: TEAM_AGENT.id,
+      notRemembered: false,
+      external: false,
+      speakerNames: ['Ada', ADA_SLACK],
+    });
+    // Memory learns from it, and hears who speaks in it: the let-through answer, as a public channel's.
+    expect(await askMemory(harness.bus, thread)).toEqual({
+      rejected: false,
+      payload: { conversationId: thread, speakerNames: ['Ada', ADA_SLACK] },
+    });
+    // The agent isn't told the thread is kept out of memory.
+    const content = (s.invokes![0]!.input as { message: { content: string } }).message.content;
+    expect(content).toContain('are you still here?');
+    expect(content).not.toContain(SLACK_NOT_REMEMBERED_LINE);
+  });
 
   it("a mention of the agent's own bot in #support that Slack now hides behind a missing scope its token holds channels:read beside runs no turn: the binding goes from Postgres and its sender is told once (TASK-1184)", async () => {
     const { s, told, binding } = await mentionWhileSlackSays({
@@ -3408,16 +3472,14 @@ describe('@ax/channel-slack plugin', () => {
       payload: { conversationId: t1, speakerNames: ['Ada', ADA_SLACK] },
     });
 
-    // 2. The agent's settings list the channel the bot answered in: its id, its name, whether it is private.
+    // 2. The agent's settings list the channel the bot answered in: its id and its name (no privacy: TASK-1203).
     const read = await call(
       'GET',
       '/settings/slack/:agentId',
       request('GET', `/settings/slack/${TEAM_AGENT.id}`, { as: ADMIN.id, params: { agentId: TEAM_AGENT.id } }),
     );
     expect(read).toMatchObject({ status: 200, body: { state: 'ready', bot: { state: 'live' } } });
-    expect((read.body as { botChannels: unknown }).botChannels).toEqual([
-      { channelId: SUPPORT_CH, name: 'support', isPrivate: false },
-    ]);
+    expect((read.body as { botChannels: unknown }).botChannels).toEqual([{ channelId: SUPPORT_CH, name: 'support' }]);
 
     // 3. No route flips a memory switch: …/bot/remember is mounted no more.
     expect(() => route('POST', '/settings/slack/:agentId/bot/remember')).toThrow('no route');

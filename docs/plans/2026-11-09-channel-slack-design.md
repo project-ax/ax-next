@@ -391,8 +391,9 @@ retired three of them, marked below.)
   nobody has to invite it (TASK-1094). *Retired by §4b.1 (TASK-1186).*
 - `commands`: the `/ax` slash command (TASK-1094). *Retired by §4b.1
   (TASK-1186).*
-- `groups:read` (team bot only, TASK-1188): read a private channel's flags,
-  so the bot answers there and never remembers it (§4b.3). The shared app
+- `groups:read` (team bot only, TASK-1188): read a private channel's flags
+  (archived, Slack Connect), so the bot can answer there (§4b.3). Since §4c
+  (TASK-1203) a private channel is remembered like any other. The shared app
   doesn't ask for it.
 
 Events stay `app_mention` and `message.im`; the App Home messages tab is on
@@ -439,12 +440,12 @@ Rules, the same on both sides:
   Slack Connect channels (including a pending one) are refused. The bot joins
   the channel itself, after those checks pass. *Since §4b (TASK-1186,
   TASK-1188):* only a team agent's own bot is in channels, and it answers in a
-  private channel it was invited to, never remembering it. Archived and Slack
-  Connect stay refused.
+  private channel it was invited to (remembered like any other since §4c,
+  TASK-1203). Archived and Slack Connect stay refused.
   Slack is asked again when each turn starts, and its answer is trusted for a
   minute (TASK-1184). A turn that finds its connected channel has since become
-  archived or Slack Connect never runs (private, since TASK-1188: it runs,
-  and memory is refused), and the channel is
+  archived or Slack Connect never runs (private, since TASK-1188: it runs;
+  since TASK-1203 it is remembered too), and the channel is
   disconnected, as a team admin's Disconnect would do it. The person whose turn
   found it is told once, privately. If Slack can't answer, no turn runs either.
   A channel shared with another company seldom gets that far: Slack flags its
@@ -1118,7 +1119,7 @@ The TASK-1192 walk showed that "answer, but don't remember" can't be enforced. M
 1. **A team agent's memory is shared with its team, everywhere.** What it hears in a public channel, a private channel, or a web chat with a team member can be remembered and brought up anywhere the agent works.
 2. **Personal agents work only in DMs** (true since TASK-1186). Their memory stays private, as today.
 3. **Private channels are allowed and remembered.** A team bot invited to one answers and remembers, like anywhere else. People are told (below).
-4. **Kept, for trust rather than privacy:** words from people outside AX are never remembered. Otherwise anyone in the workspace could feed the agent false team facts.
+4. **Kept, for trust rather than privacy:** words from people outside the agent's team are never remembered (AX users not on the team included: §2's outsiders). Otherwise anyone in the workspace could feed the agent false team facts.
 5. **Kept:** Slack Connect channels are refused. "Shared with your team" shouldn't quietly take in another company's messages. Archived channels stay refused.
 
 ### Telling people
@@ -1130,12 +1131,19 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 - **Web chat with a team agent:** one line under the composer, "[Fern]'s memory is shared with [team]."
 - **The bot's Slack profile description** (manifest `description`). A rename or Rebuild updates it.
 
+*As built (TASK-1203), wording after a ux pass:*
+
+- **The channel post** goes with the bot's first turn in a channel, since a bot gets no invite event (it hears `app_mention` only), and it is posted before the bot's reply to that turn. So the message that opens the channel's first new thread, the one addressed to the bot, is remembered, and the notice lands just before the bot answers it: the moment an invite-time post would have landed, had there been an invite event (review F1, accepted; walk D checks it). It is top-level in the channel, not in the thread, and once per binding: `channel_slack_v1_channels.notice_posted_at` is claimed by one conditional `UPDATE` before the post, so two replicas can't both post, and given back if Slack refuses the post, so the next turn tries again. The release names its own claim's stamp, so a channel removed and bound again while a post was failing keeps the new binding's claim. The one refusal no retry gets past is a channel where only admins post top-level (`restricted_action` or `restricted_action_thread_only_channel`; which one Slack sends for an announcement-only channel is unmeasured, and walk D records it from `slack_notice_top_level_refused`; a read-only channel refuses thread replies too, so its `restricted_action_read_only_channel` is an ordinary refusal): the notice goes in the mention's thread instead, where the bot is about to reply, and the claim is kept once that lands (given back only if the thread post fails too). Only that thread's readers are told; later threads there aren't (accepted over retrying in front of every reply and telling nobody). A binding made before the column existed is told at its next turn; a channel removed and bound again is told again. The turn runs whatever happens to the post. The bot speaks in the first person under its own name: "Heads up: what I hear in this channel is shared with everyone on {team}, and I may bring it up elsewhere." ("my team" when the team's name can't be read).
+- **The profile** says "What I hear is shared with everyone on my team, and I may bring it up elsewhere." It names no team: Slack caps a description at 140 characters, and a team's name alone can run to 128. Every manifest send (Set up again, a rename, a token Replace) carries it.
+- **The Slack card** says "What {name} hears is shared with everyone on {team}, and {name} may bring it up elsewhere." on the setup form and beside the live card's help line, by the agent's name, never its @handle ("its team" without a name). The channel list's lead is "{who} has answered in these channels.", with no private-channel note.
+- **The web chat** line is "{Agent}'s memory is shared with everyone on {team}." ("everyone on" so "shared with Support" doesn't read as "the support staff can read it"). Team agents only, and not under a read-only Slack conversation.
+
 ### What goes
 
 - **The "Don't remember this channel" switch:** the ⋯ item, its routes, the `channel_slack_v1_memory_switches` table and `channel_slack_v1_channels.remember`, the `channel-not-remembered` capture veto, and TASK-1180's carry-over on a bot's first bind. A migration drops the table and column. *Done (TASK-1202):* channel-slack's boot migration drops both. The `channel-not-remembered` refusal stays only for a private channel, or one no longer connected to its agent, until card B; threads an old switch marked stay refused: a refusal leaves memory's cursor where it was, so un-marking one would let the next pass read what was said while the switch was off. A bot's first bind is a plain `upsert` again, with no lock. The TASK-1191 turn note stays: card B drops only its private-channel case, and outsiders' threads keep it for good (rule 4).
-- **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more. *(Caveat from TASK-1202: card B stops setting `not_remembered` but keeps refusing rows already marked, since un-marking would let memory read them; and the note stays for outsiders' threads, which are never remembered.)*
+- **The private-channel capture refusal** (TASK-1188): `not_remembered` on threads, "Private channels aren't remembered" in settings, and the TASK-1191 turn note "This conversation isn't remembered". With the switch gone, nothing sets it any more. *(Caveat from TASK-1202: card B stops setting `not_remembered` but keeps refusing rows already marked, since un-marking would let memory read them; and the note stays for outsiders' threads, which are never remembered.)* *Done (TASK-1203):* nothing writes `not_remembered`; a thread marked before stays refused and keeps the note; the settings line, the binding's `is_private` (dropped at boot), Slack's `is_private` flag and the channel check's private-wins half are gone. Nothing reads a channel's privacy any more.
 - **For team agents only:** the speaker rule (TASK-1146, `breaksSpeakerRule`), the shared-only recall filter, and the withheld `/memory` view in shared sessions. A team agent's member sessions recall everything; an outsider's keep the filter and the withheld view (see "As built (TASK-1204)" under §4c).
-- **Still needed:** `ctx.audience` (personal-agent DMs), the private-wins channel check (a channel made Slack Connect or archived must still be caught at turn start), and `groups:read` (to read a private channel's flags).
+- **Still needed:** `ctx.audience` (personal-agent DMs), the turn-start channel check and its refusal rules (a channel made Slack Connect or archived must still be caught at turn start; its private-wins half guarded only the private refusal, and went with it in TASK-1203), and `groups:read` (to read a private channel's archived and Slack Connect flags).
 
 ### What stays hard
 
@@ -1156,9 +1164,9 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 ### Cards
 
 - **A. Drop the remember switch** and its tables, routes, veto and copy, plus the TASK-1191 note. *(As built, TASK-1202: the note stays, since private channels and outsiders' threads still aren't remembered. Card B drops its private case; the outsider case stays.)*
-- **B. Private channels remembered, and the notices:** remove the private capture refusal; add the first-invite post, the card line, the web-chat line and the profile description.
+- **B. Private channels remembered, and the notices:** remove the private capture refusal; add the first-invite post, the card line, the web-chat line and the profile description. *(Done, TASK-1203: private channels are remembered from their next thread; see "As built (TASK-1203)" under Telling people.)*
 - **C. Team memory is team-shared:** remove the speaker rule, the shared-only recall split and the `/memory` withholding for team agents; attribute speaker facts to the speaker. Security note: one privacy boundary is removed on purpose, and the notices replace it.
-- **D. Walk (walk):** private channel remembered and recalled in a public one; the first-invite notice; a person fact recalled with the right name; an outsider's fact not kept; Slack Connect refused.
+- **D. Walk (walk):** private channel remembered and recalled in a public one; the first-invite notice; a person fact recalled with the right name; an outsider's fact not kept; Slack Connect refused; an announcement-only channel where members can reply in threads, recording which `restricted_action…` code Slack returns and that the notice lands in the thread (TASK-1203).
 
 Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory keeping the right facts) stays, and runs against the new rules.
 

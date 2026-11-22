@@ -70,8 +70,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // @ax/channel-slack — connect a Slack workspace from AX admin settings, let
 // every AX user DM the shared bot to talk to their own personal agent
 // (TASK-1093), and let a team agent answer @mentions in the channels its own
-// Slack bot was invited to (TASK-1094, TASK-1167), never remembering a
-// private one (TASK-1188). Design:
+// Slack bot was invited to (TASK-1094, TASK-1167), public or private
+// (TASK-1188), remembering what members say in either (TASK-1203). Design:
 // docs/plans/2026-11-09-channel-slack-design.md.
 //
 // It registers one service, `system-prompt:augment:optional:slack`
@@ -306,8 +306,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           hook: 'agent:interrupt',
           degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
-        // A bot request's team, in Admin › Slack's list (bot-requests.ts).
-        { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
+        // A team's name: a bot request's, in Admin › Slack's list (bot-requests.ts), and a
+        // team agent's, in its bot's memory notice (memory-notice.ts, TASK-1203).
+        {
+          hook: 'teams:list-for-user',
+          degradation:
+            "Admin › Slack's list of bot requests names no team, and a team bot's memory notice and Slack card say \"my team\" or \"its team\" instead of the team's name",
+        },
         // The approval buttons (TASK-1095). Each is looked at with
         // `bus.hasService` before it is called; without them a call held in
         // a Slack turn links to Today, as before.

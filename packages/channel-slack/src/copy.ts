@@ -37,6 +37,10 @@ import type { SkillReach } from './turn-registry.js';
  * never mrkdwn, a notification or a log. `botRequestAsked` is its
  * notification and names nobody. The owner notices go out as mrkdwn through
  * `shown`.
+ *
+ * `memoryNotice` is the one line a team agent's own bot posts in a channel
+ * for everyone there (TASK-1203; memory-notice.ts): top-level, as mrkdwn
+ * text, with the team's name through `shown`.
  */
 
 /**
@@ -227,9 +231,9 @@ export const COPY = {
     "I don't answer in channels. To talk to your own agent, send me a direct message. " +
     'To bring a team agent into this channel, invite its own bot with /invite.',
   /*
-    A bound channel Slack no longer allows (TASK-1184): made private,
-    archived or shared with another company since a team agent's own bot
-    first answered there, or a private channel a bot Allowed before
+    A bound channel Slack no longer allows (TASK-1184): archived or shared
+    with another company since a team agent's own bot first answered
+    there, or a private channel a bot Allowed before
     `groups:read` (TASK-1188) can't read: Rebuild fixes that one. Checked when each turn starts. The turn that finds
     it disconnects the channel and says this once, to its sender. Archived
     and deleted channels take no line at all, so it names the two cases
@@ -250,6 +254,22 @@ export const COPY = {
     fixes either, a team admin must look.
   */
   botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
+
+  // ── A channel's memory notice (TASK-1203; memory-notice.ts; mrkdwn, top-level, for everyone there) ──
+  /*
+    Posted once per binding, top-level in the channel (no thread), on the
+    first turn in a newly bound channel, or in one bound before this notice
+    existed (design §4c): a team agent's memory is shared with its team, so
+    what it hears in a channel can come up anywhere it works. In the first
+    person, like every line of the bot's own. `team` is the agent's team's
+    display name, from outside (an admin typed it), so it goes through
+    `shown`: it can't ping, link or broadcast. With no name to show (no
+    teams service, or a name nobody can read) it says "my team".
+  */
+  memoryNotice: (team: string | null) => {
+    const named = team === null ? '' : shown(team).trim();
+    return `Heads up: what I hear in this channel is shared with everyone on ${named === '' ? 'my team' : named}, and I may bring it up elsewhere.`;
+  },
 
   // ── A bot request's DMs (TASK-1170; blocks.ts, bot-request-dms.ts) ──
   // The admin DM's notification and fallback: it names nobody.

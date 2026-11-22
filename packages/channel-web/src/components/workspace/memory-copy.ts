@@ -191,6 +191,10 @@ export type MemoryVisibility = 'personal' | 'team' | undefined;
 
 export const MEMORY_TEAM_NOTICE =
   'Memories saved with this shared agent are visible to its team. Team members can fix or forget them.';
+/** TASK-1203 — said under a team agent's composer. */
+export function memorySharedWith(agentName: string, teamName: string | undefined): string {
+  return `${agentName}'s memory is shared with everyone on ${teamName ?? 'its team'}.`;
+}
 export const MEMORY_PERSONAL_NOTICE =
   'Memories saved with this personal agent are private to you.';
 

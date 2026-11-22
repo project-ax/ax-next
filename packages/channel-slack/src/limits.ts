@@ -150,10 +150,9 @@ export const SLACK_TOKEN_MAX = 512;
 export const CHANNEL_NAME_MAX = 80;
 /**
  * How long Slack's word that a connected channel is still live and not Slack
- * Connect, and whether it is private, is trusted before a turn there asks
- * again (channel-check.ts, TASK-1184, TASK-1188). A channel archived or
- * shared meanwhile still gets the turns that start within this long, and one
- * made private is still remembered for them.
+ * Connect is trusted before a turn there asks again (channel-check.ts,
+ * TASK-1184). A channel archived or shared meanwhile still gets the turns
+ * that start within this long.
  */
 export const CHANNEL_CHECK_TTL_MS = 60_000;
 /** At most this many channels' answers are kept, the oldest forgotten first. */

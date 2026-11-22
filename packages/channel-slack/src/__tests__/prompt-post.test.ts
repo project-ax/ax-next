@@ -70,6 +70,7 @@ function fakeSlack(answers: Answer[] = [{ ts: PROMPT_TS }]) {
     usersInfo: notHere,
     usersLookupByEmail: notHere,
     postDirect: notHere,
+    postToChannel: notHere,
     postMessage: notHere,
     async postBlocks(token, a) {
       calls.push({ token, args: JSON.parse(JSON.stringify(a)) as Record<string, unknown> });

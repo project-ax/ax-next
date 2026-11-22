@@ -552,7 +552,9 @@ describe('the routes', () => {
     expect(w.routes.filter((r) => r.path.endsWith('/remember'))).toEqual([]);
   });
 
-  it("a bot channel's row carries no memory switch: its id, its name and whether it is private, nothing else (TASK-1202)", async () => {
+  // TASK-1203 (design §4c): nor whether it is private. A private channel is
+  // remembered like any other, so the settings have nothing to say about it.
+  it("a bot channel's row carries no memory switch and no privacy: its id and its name, nothing else (TASK-1202, TASK-1203)", async () => {
     const w = world();
     w.state.bot = OWN_BOT;
     w.bots.answers.status = LIVE;
@@ -563,7 +565,7 @@ describe('the routes', () => {
       expect(rows, as.id).toHaveLength(1);
       for (const row of rows) {
         expect('remember' in row, as.id).toBe(false);
-        expect(Object.keys(row).sort(), as.id).toEqual(['channelId', 'isPrivate', 'name']);
+        expect(Object.keys(row).sort(), as.id).toEqual(['channelId', 'name']);
       }
     }
   });
@@ -806,6 +808,76 @@ describe('the section', () => {
     }
   });
 
+  it("a team agent's status names its team for the viewer when the teams service knows it, and leaves it out otherwise (TASK-1203)", async () => {
+    const w = world();
+    // No teams service at all: no name, and the answer is what it always was.
+    // Exact: no name field of any spelling (a stray `teamName` would fail this).
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({ status: 200, body: { state: 'ready', botName: 'canopy-works', workspaceName: 'Canopy Works', canManage: true, bot: NO_BOT } });
+
+    const asked: string[] = [];
+    w.bus.registerService('teams:list-for-user', '@ax/teams', async (_ctx, raw) => {
+      const userId = (raw as { userId: string }).userId;
+      asked.push(userId);
+      return {
+        teams: w.people
+          .teamsOf(userId)
+          .map((id) => ({ id, displayName: id === SUPPORT_TEAM ? 'Customer Care' : 'Sales', createdBy: ADA.id, createdAt: new Date(0) })),
+      };
+    });
+    // Exactly the ready answer it always was, plus the name.
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({
+      status: 200,
+      body: {
+        state: 'ready',
+        botName: 'canopy-works',
+        workspaceName: 'Canopy Works',
+        canManage: true,
+        bot: NO_BOT,
+        agentTeamName: 'Customer Care',
+      },
+    });
+    // A plain member sees it too, and the person asked is the viewer.
+    expect(await w.status(SUPPORT.id, MEL)).toEqual({
+      status: 200,
+      body: {
+        state: 'ready',
+        botName: 'canopy-works',
+        workspaceName: 'Canopy Works',
+        canManage: false,
+        bot: NO_BOT,
+        agentTeamName: 'Customer Care',
+      },
+    });
+    expect(asked).toEqual([ADA.id, MEL.id]);
+
+    // Not connected to Slack: the card still shows, so the answer still names the team.
+    w.state.install = null;
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: true, bot: NO_BOT, agentTeamName: 'Customer Care' },
+    });
+
+    // A personal agent has no team, and the answer says none.
+    w.state.install = { ...INSTALL };
+    expect(await w.status(PATS.id, PAT)).toEqual({
+      status: 200,
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true },
+    });
+  });
+
+  it("a team name the teams service can't give is left out, and the status still answers (TASK-1203)", async () => {
+    const w = world();
+    w.bus.registerService('teams:list-for-user', '@ax/teams', async () => {
+      throw new Error('boom: Customer Care');
+    });
+    const out = await w.status(SUPPORT.id, ADA);
+    expect(out).toEqual({ status: 200, body: { state: 'ready', botName: 'canopy-works', workspaceName: 'Canopy Works', canManage: true, bot: NO_BOT } });
+    // The fault is logged by code only: never the error's words.
+    const warned = w.lines.filter((l) => l.level === 'warn');
+    expect(warned).toHaveLength(1);
+    expect(JSON.stringify(warned)).not.toContain('Customer Care');
+  });
+
   it('no-workspace says whether the person reading manages the agent: a team admin true, a member false, a personal agent false', async () => {
     const noWorkspace = (canManage: boolean) => ({ status: 200, body: { state: 'no-workspace', canManage, bot: NO_BOT } });
     // Even under an agents rule that WOULD let a workspace admin through.
@@ -892,7 +964,7 @@ describe('the section', () => {
           workspaceName: 'Canopy Works',
           canManage,
           bot: LIVE,
-          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk', isPrivate: false }],
+          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk' }],
         },
       });
     }
@@ -1659,11 +1731,9 @@ describe("the live bot's channels in the section", () => {
     // The bot answered in #support-desk first, then in #alpha-room.
     await answerOnBot(w, SUPPORT_CH);
     await answerOnBot(w, BOT_ONLY_CH, 'alpha-room');
-    // #alpha-room is private now (TASK-1188): never remembered, and the row says so.
-    expect(await w.memory.store.setPrivate(OWN_BOT.installId, BOT_ONLY_CH, SUPPORT.id, true)).toBe(true);
     const botChannels = [
-      { channelId: SUPPORT_CH, name: 'support-desk', isPrivate: false },
-      { channelId: BOT_ONLY_CH, name: 'alpha-room', isPrivate: true },
+      { channelId: SUPPORT_CH, name: 'support-desk' },
+      { channelId: BOT_ONLY_CH, name: 'alpha-room' },
     ];
 
     for (const [as, canManage] of [

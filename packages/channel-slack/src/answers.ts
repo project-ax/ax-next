@@ -55,8 +55,8 @@ import type { InstallRow } from './store.js';
  *      archived or shared with another company since. Refused, the prompt
  *      closes (the channel's next turn removes the binding); Slack not
  *      answering is "try again". A channel private now (TASK-1188) is
- *      answered in, never remembered: the binding says private, and the
- *      thread is marked not remembered for good, before the answer runs.
+ *      answered in, and remembered like any other (TASK-1203, design §4c):
+ *      nothing here reads its privacy.
  *   9. Something here answers the prompt's kind of subject (`answers`), else
  *      the prompt closes. The answer runs as the prompt's user, agent and
  *      conversation, never as anything the click says.
@@ -133,7 +133,7 @@ export interface AnswerDeps {
   api: SlackApi;
   secrets: Pick<SecretStore, 'get'>;
   prompts: PromptRegistry;
-  channels: Pick<ChannelStore, 'get' | 'setPrivate' | 'markNotRemembered'>;
+  channels: Pick<ChannelStore, 'get'>;
   /** The turn-start channel check (channel-check.ts), asked again before an attended prompt's answer runs. */
   channelCheck: Pick<ChannelCheck, 'check'>;
   /** The web app's origin, for the Today link. */
@@ -429,9 +429,7 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
         // 8b. The channel as Slack describes it now (TASK-1184's check, TASK-1188).
         let channelNow: ChannelCheckResult;
         try {
-          // A binding that says private takes no kept public answer: as at a turn's start (router.ts 8c).
-          const knownPrivate = binding.isPrivate;
-          channelNow = await bounded(() => d.channelCheck.check(installId, token, prompt.channel, { knownPrivate }));
+          channelNow = await bounded(() => d.channelCheck.check(installId, token, prompt.channel));
         } catch (err) {
           await failed('channel-check', err);
           return;
@@ -453,24 +451,9 @@ export function createClickHandler(d: AnswerDeps): ClickHandler {
           await failed('channel-check', Object.assign(new Error(`channel check: ${channelNow.code}`), { code: channelNow.code }));
           return;
         }
-        // Private now: memory stays out of this thread for good, and of the
-        // channel while it stays private, before the answer runs on.
-        let stillBound = true;
-        try {
-          if (binding.isPrivate !== channelNow.isPrivate) {
-            const isPrivate = channelNow.isPrivate;
-            stillBound = await bounded(() => d.channels.setPrivate(installId, prompt.channel, prompt.agentId, isPrivate));
-          }
-          if (channelNow.isPrivate) await bounded(() => d.channels.markNotRemembered(prompt.conversationId));
-        } catch (err) {
-          await failed('channel-private', err);
-          return;
-        }
-        // The binding went between its read and the write: disconnected, as above.
-        if (!stillBound) {
-          await close('disconnected');
-          return;
-        }
+        // Allowed, public or private: the answer runs on. Nothing here marks
+        // the thread (TASK-1203): memory reads it as its record says
+        // (capture-veto.ts).
       }
 
       // 9. The answer, as the prompt's user, agent and conversation.

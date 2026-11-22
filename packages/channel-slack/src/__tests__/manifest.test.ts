@@ -3,6 +3,7 @@ import {
   BOT_EVENTS,
   BOT_OAUTH_CALLBACK_PATH,
   BOT_SCOPES,
+  DEDICATED_BOT_DESCRIPTION,
   DEDICATED_BOT_EVENTS,
   DEDICATED_BOT_SCOPES,
   botUrls,
@@ -203,7 +204,10 @@ describe('buildInstallUrl', () => {
 describe('the dedicated bot manifest', () => {
   it('the bot manifest is the smallest a channel-only bot needs', () => {
     expect(buildBotManifest('Ada Bot', botUrls(ORIGIN, INSTALL_ID))).toStrictEqual({
-      display_information: { name: 'Ada Bot', description: 'Talk to your team agent.' },
+      display_information: {
+        name: 'Ada Bot',
+        description: 'What I hear is shared with everyone on my team, and I may bring it up elsewhere.',
+      },
       features: {
         app_home: {
           home_tab_enabled: false,
@@ -250,6 +254,17 @@ describe('the dedicated bot manifest', () => {
     expect(Object.isFrozen(DEDICATED_BOT_EVENTS)).toBe(true);
   });
 
+  it("a team bot's profile says what it hears is shared with its team, within Slack's 140 characters (TASK-1203)", () => {
+    const description = (
+      buildBotManifest('Ada Bot', botUrls(ORIGIN, INSTALL_ID)).display_information as { description: string }
+    ).description;
+    expect(description).toBe(DEDICATED_BOT_DESCRIPTION);
+    expect(description).toBe(
+      'What I hear is shared with everyone on my team, and I may bring it up elsewhere.',
+    );
+    expect(description.length).toBeLessThanOrEqual(140);
+  });
+
   it("a dedicated bot can't read DMs, group DMs or any history, join channels or take commands", () => {
     expect(DEDICATED_BOT_SCOPES).toHaveLength(7);
     for (const banned of [
@@ -266,7 +281,7 @@ describe('the dedicated bot manifest', () => {
     ]) {
       expect(DEDICATED_BOT_SCOPES).not.toContain(banned);
     }
-    // Private channels: only their flags, so it can answer there and never remember them (design §4b.3, TASK-1188).
+    // Private channels: only their flags (archived, Slack Connect), so it can answer there (design §4b.3, TASK-1188); remembered like any other since §4c (TASK-1203).
     const privateScopes = DEDICATED_BOT_SCOPES.filter((s) => /^(groups|mpim|im):/.test(s));
     expect(privateScopes).toStrictEqual(['groups:read']);
   });
