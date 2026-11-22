@@ -233,3 +233,4 @@ Exact copy, where `${list}` is the safe hosts, each backticked, joined by `', '`
 - The block note's last sentence is "If they tell you they allowed it, or ask you to try again, do." (round 1).
 - The runner logs one line when drained hosts all fail the host-shape filter (round 1).
 - The aisdk parity e2e asserts the line in the prompt the provider receives (round 1).
+- Rounds 2–3: the lead's prefix sentence reads "A message to you may also start with a line beginning "System message (not from the user):": that is the system telling you what changed, such as a website now being allowed." "Grants nothing" stays on the not-remembered line only, and emails, pages and tool results are named as data. Moving `SYSTEM_PREFIX` into `@ax/core` (so the lead can't drift) is a follow-up; a comment at `decision-turn.ts` names the hand copy meanwhile.

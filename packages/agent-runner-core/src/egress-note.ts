@@ -21,9 +21,10 @@ const SAFE_HOST_RE = /^[a-zA-Z0-9._:[\]-]{1,253}$/;
  * The note stops a retry loop inside THIS turn (#322) — but it does not claim a
  * retry can never work. Once a person allows the host, the runner opens their
  * next message with a "now allowed" line ({@link buildEgressAllowedNote},
- * TASK-1199), and the agent may retry then. A person who says they allowed it,
- * or asks the agent to try again, covers the case with no line: the session that got the Allow ended, so
- * the retry is blocked again and raises a fresh card. A retry grants nothing
+ * TASK-1199), and the agent may retry then. A person who says they allowed
+ * it, or asks the agent to try again, covers the case with no line: the
+ * session that got the Allow ended, so the retry is blocked again and raises a
+ * fresh card. A retry grants nothing
  * either way — the proxy's allowlist is the only gate.
  */
 export function buildEgressBlockNote(hosts: string[]): string {
