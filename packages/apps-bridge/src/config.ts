@@ -116,9 +116,10 @@ export function parseAppsBridgeEnv(e: AppsBridgeEnv): AppsBridgeDeployConfig | u
   return bridge;
 }
 
+/** 1-65535: a deployment names its port. 0 (any free port) is for tests, through the config object only. */
 function parsePort(raw: string): number {
   const n = /^\d{1,5}$/.test(raw) ? Number(raw) : Number.NaN;
-  if (!(n >= 0 && n <= MAX_PORT)) throw new Error(`AX_APPS_BRIDGE_PORT must be a whole number from 0 to ${MAX_PORT}`);
+  if (!(n >= 1 && n <= MAX_PORT)) throw new Error(`AX_APPS_BRIDGE_PORT must be a whole number from 1 to ${MAX_PORT}`);
   return n;
 }
 

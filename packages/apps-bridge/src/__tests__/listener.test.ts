@@ -528,6 +528,130 @@ describe('bridge listener', () => {
     expect(t.call).toHaveBeenCalledWith({});
   });
 
+  it('a client that hangs up while it is still being authenticated frees its slot and logs one line (fix round 1)', async () => {
+    // The request's 'close' fires while verifyCaller is pending, before the
+    // body read starts listening: the read must still settle.
+    for (const route of [CALL, CLAIM]) {
+      for (const fullBody of [false, true]) {
+        const gate = deferred<void>();
+        const entered = deferred<void>();
+        let first = true;
+        const t = await start({
+          limits: { maxInFlightPerPlatform: 1 },
+          verifyCaller: async () => {
+            if (first) {
+              first = false;
+              entered.resolve();
+              await gate.promise;
+            }
+            return { ok: true };
+          },
+        });
+        const port = t.listener.port();
+        const body = '{"appId":"app_A"}';
+        const a = send(port, {
+          method: 'POST',
+          path: route,
+          headers: { ...AUTH, ...JSON_CT, 'content-length': String(fullBody ? body.length : 100) },
+          body: fullBody ? body : '{"appId"',
+          noEnd: !fullBody,
+        });
+        a.reply.catch(() => {});
+        await entered.promise;
+        a.req.destroy();
+        await new Promise((r) => setTimeout(r, 50));
+        gate.resolve();
+        const label = `${route} fullBody=${fullBody}`;
+        await vi.waitFor(() => expect(t.routeLines(), label).toHaveLength(1));
+        expect(t.routeLines()[0]?.bindings, label).toEqual({ platformId: P, outcome: 'invalid_request', reason: 'aborted' });
+        expect(t.call, label).not.toHaveBeenCalled();
+        expect(t.claim, label).not.toHaveBeenCalled();
+        // The slot came back: the next call runs.
+        expect((await post(port, CALL, { appId: 'app_B' })).status, label).toBe(200);
+        // And close() has nothing left to wait for.
+        const started = Date.now();
+        await t.listener.close();
+        expect(Date.now() - started, label).toBeLessThan(1_000);
+      }
+    }
+  });
+
+  it('an Expect other than 100-continue gets a fixed 417 with the base headers, before any routing, and is not logged', async () => {
+    const t = await start();
+    const r = await fetchIt(t.listener.port(), { method: 'POST', path: CALL, headers: { ...AUTH, ...JSON_CT, expect: 'something-else', 'content-length': '2' }, body: '{}' });
+    expect(r.status).toBe(417);
+    expect(r.text).toBe('');
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
+    expect(r.headers['connection']).toBe('close');
+    expect(t.verifyCaller).not.toHaveBeenCalled();
+    expect(t.call).not.toHaveBeenCalled();
+    expect(t.lines).toEqual([]);
+  });
+
+  it('Expect: 100-continue among other expectations is still honoured after authentication', async () => {
+    const t = await start();
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1',
+        port: t.listener.port(),
+        method: 'POST',
+        path: CALL,
+        agent: false,
+        headers: { ...AUTH, ...JSON_CT, 'content-length': '2', expect: '100-Continue, foo' },
+      });
+      req.on('continue', () => req.end('{}'));
+      req.on('response', (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', reject);
+      req.flushHeaders();
+    });
+    expect(status).toBe(200);
+    expect(t.call).toHaveBeenCalledWith({});
+  });
+
+  it('a request on a connection opened before stopAccepting() is 503 unavailable (shutting-down)', async () => {
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    const t = await start({
+      call: async () => {
+        entered.resolve();
+        await gate.promise;
+        return ok({ outcome: 'succeeded', content: [] }, { outcome: 'succeeded' });
+      },
+    });
+    const { connect } = await import('node:net');
+    const sock = connect(t.listener.port(), '127.0.0.1');
+    await new Promise((r) => sock.once('connect', r));
+    let out = '';
+    sock.on('data', (d: Buffer) => (out += d.toString('utf8')));
+    // A call holds the kept-alive connection busy, so the stop doesn't close
+    // it as idle; a second request then arrives on it, pipelined, after the stop.
+    const callBody = '{"appId":"app_1"}';
+    sock.write(
+      `POST ${CALL} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer ${TOKEN}\r\ncontent-type: application/json\r\ncontent-length: ${callBody.length}\r\n\r\n${callBody}`,
+    );
+    await entered.promise;
+    await t.listener.stopAccepting();
+    sock.write(`GET ${grantsPath('app_1')} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer ${TOKEN}\r\n\r\n`);
+    await vi.waitFor(() => expect(t.routeLines()).toHaveLength(1));
+    expect(t.routeLines()[0]).toEqual({ level: 'info', msg: 'apps_bridge_grants', bindings: { outcome: 'unavailable', reason: 'shutting-down' } });
+    expect(t.verifyCaller).toHaveBeenCalledTimes(1);
+    expect(t.grants).not.toHaveBeenCalled();
+    gate.resolve();
+    // Both answers arrive, in order, and the connection is then closed.
+    await new Promise<void>((r) => sock.once('close', () => r()));
+    const responses = out.split('HTTP/1.1 ').slice(1);
+    expect(responses).toHaveLength(2);
+    expect(responses[0]?.startsWith('200 ')).toBe(true);
+    expect(responses[1]?.startsWith('503 ')).toBe(true);
+    expect(responses[1]).toContain('retry-after: 5');
+    expect(responses[1]).toContain('connection: close');
+    expect(responses[1]).toContain('{"code":"unavailable"}');
+  });
+
   it('close() lets an in-flight call answer, then closes; stopAccepting() refuses new connections', async () => {
     const gate = deferred<void>();
     const entered = deferred<void>();

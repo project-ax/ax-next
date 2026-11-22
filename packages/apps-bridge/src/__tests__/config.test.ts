@@ -87,12 +87,13 @@ describe('parseAppsBridgeEnv', () => {
   it('defaults: port 9092, max age 600; bad port or max age is refused', () => {
     expect(DEFAULT_APPS_BRIDGE_PORT).toBe(9092);
     expect(DEFAULT_VIEWER_MAX_AGE_SECONDS).toBe(600);
-    expect(parseAppsBridgeEnv({ ...FULL, port: '0' })?.port).toBe(0);
+    expect(parseAppsBridgeEnv({ ...FULL, port: '1' })?.port).toBe(1);
     expect(parseAppsBridgeEnv({ ...FULL, port: '65535' })?.port).toBe(65535);
     expect(parseAppsBridgeEnv({ ...FULL, port: ' 9300 ' })?.port).toBe(9300);
     expect(parseAppsBridgeEnv({ ...FULL, viewerMaxAgeSeconds: '30' })?.viewer.maxAgeSeconds).toBe(30);
     expect(parseAppsBridgeEnv({ ...FULL, viewerMaxAgeSeconds: '3600' })?.viewer.maxAgeSeconds).toBe(3600);
-    for (const port of ['65536', '-1', '1.5', '9092x', '0x10', '123456', '1e3', 'NaN']) {
+    // 0 (any free port) is for tests, through the config object; never from env.
+    for (const port of ['0', '00000', '65536', '-1', '1.5', '9092x', '0x10', '123456', '1e3', 'NaN']) {
       expect(() => parseAppsBridgeEnv({ ...FULL, port }), port).toThrow(/AX_APPS_BRIDGE_PORT/);
     }
     for (const age of ['29', '3601', '1.5', '600s', 'Infinity', 'NaN', '-600', '0']) {

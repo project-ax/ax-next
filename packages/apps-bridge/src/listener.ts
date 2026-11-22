@@ -124,6 +124,12 @@ const CLIENT_ERROR_RESPONSE = [
   CLIENT_ERROR_BODY,
 ].join('\r\n');
 
+/** Node's own test for `Expect: 100-continue` (its `continueExpression`), so a request it routes to checkContinue is continued. */
+const CONTINUE_RE = /(?:^|\W)100-continue(?:$|\W)/i;
+
+/** What a request with any other `Expect` gets, before routing or authentication. Not logged. */
+const EXPECTATION_FAILED_RESPONSE_HEADERS = { ...BASE_HEADERS, 'content-length': '0', connection: 'close' } as const;
+
 /** `Bearer <token>`: the scheme in any case, one or more spaces, one token with no whitespace. */
 const BEARER_RE = /^Bearer +(\S+)$/i;
 
@@ -149,12 +155,20 @@ function isJson(contentType: string | undefined): boolean {
 
 type BodyRead = { ok: true; bytes: Buffer } | { ok: false; reason: 'too-large' | 'aborted' };
 
+/** The client is gone: the request or its socket is destroyed or aborted. */
+function clientGone(req: IncomingMessage): boolean {
+  return req.destroyed || req.readableAborted || req.socket.destroyed;
+}
+
 /**
  * Reads the body, counting bytes, and stops the moment it passes `cap`
  * (nothing past the cap is kept). Settles once: on the end, at the cap, or
- * when the client goes away.
+ * when the client goes away, including before this was called (the request's
+ * 'close' may have fired while the caller was still being authenticated, and
+ * would never fire again).
  */
 function readBody(req: IncomingMessage, cap: number): Promise<BodyRead> {
+  if (clientGone(req)) return Promise.resolve({ ok: false, reason: 'aborted' });
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -213,7 +227,8 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
     res.end();
   }
 
-  function sendAnswer(req: IncomingMessage, res: ServerResponse, a: BridgeAnswer, bodyUnread: boolean): void {
+  /** `endConnection`: close the connection after this answer whatever else holds. */
+  function sendAnswer(req: IncomingMessage, res: ServerResponse, a: BridgeAnswer, bodyUnread: boolean, endConnection = false): void {
     if (res.headersSent || res.destroyed || res.writableEnded) return;
     const text = JSON.stringify(a.body);
     res.writeHead(a.status, {
@@ -223,7 +238,7 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
       ...(a.retryAfterSeconds !== undefined ? { 'retry-after': String(a.retryAfterSeconds) } : {}),
       // A refusal made without reading a body that may still be on its way
       // ends the connection rather than drain what the client sends.
-      ...(bodyUnread && !req.complete ? { connection: 'close' } : {}),
+      ...((bodyUnread && !req.complete) || endConnection ? { connection: 'close' } : {}),
     });
     res.end(text);
   }
@@ -239,8 +254,6 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
   /** Steps 2-5 for one routed request. Resolves with the answer and whether the body went unread. */
   async function decide(req: IncomingMessage, res: ServerResponse, r: Routed): Promise<{ answer: BridgeAnswer; authenticated: boolean; bodyUnread: boolean }> {
     const unread = (answer: BridgeAnswer, authenticated: boolean) => ({ answer, authenticated, bodyUnread: true });
-
-    if (!accepting) return unread(refusal('unavailable', 'shutting-down'), false);
 
     // 2. The caller, from the headers alone.
     const header = req.headers.authorization;
@@ -281,7 +294,7 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
       if (declared !== undefined && Number(declared) > cap) return unread(refusal('invalid_request', 'too-large'), true);
 
       // Only now is the client told to send its body, if it asked first.
-      if (/^100-continue$/i.test(req.headers.expect ?? '')) res.writeContinue();
+      if (CONTINUE_RE.test(req.headers.expect ?? '')) res.writeContinue();
       const read = await readBody(req, cap);
       if (!read.ok) return unread(refusal('invalid_request', read.reason), true);
       const parsed = parseJson(read.bytes);
@@ -305,6 +318,19 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
     }
     if (method !== r.allow) {
       sendEmpty(res, 405, r.allow);
+      return;
+    }
+
+    // Stopped: a request still arriving on a connection opened before the
+    // stop is turned away unauthenticated, and its connection ended.
+    if (!accepting) {
+      const answer = refusal('unavailable', 'shutting-down');
+      log(r.route, false, answer.log);
+      try {
+        sendAnswer(req, res, answer, true, true);
+      } catch {
+        /* the client is gone */
+      }
       return;
     }
 
@@ -346,6 +372,13 @@ export async function startBridgeListener(o: BridgeListenerOptions): Promise<Bri
   // Node answers `Expect: 100-continue` itself unless told otherwise; the
   // handler sends it only after the caller is authenticated.
   srv.on('checkContinue', onRequest);
+  // Node's default answer to any other expectation is a bare 417 without our headers.
+  srv.on('checkExpectation', (req: IncomingMessage, res: ServerResponse) => {
+    req.on('error', () => {});
+    res.on('error', () => {});
+    res.writeHead(417, EXPECTATION_FAILED_RESPONSE_HEADERS);
+    res.end();
+  });
   srv.on('clientError', (err: NodeJS.ErrnoException, socket: Socket) => {
     // Nothing is logged: the error can quote the bytes the client sent.
     if (err.code === 'ECONNRESET' || !socket.writable) {
