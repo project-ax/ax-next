@@ -1,5 +1,12 @@
 # TASK-1204: A team agent's memory is team-shared; speaker facts kept and filed under the speaker — Implementation Plan
 
+> **Revised after review (2026-11-22).** The security review narrowed this plan, and the body below is superseded where it disagrees:
+>
+> - **Outsider turns keep shared-only recall** (with its backstop) and **get no `/memory` mount**, on any agent and whatever their audience stamp. Every "every session" line below now holds for members' turns only: for example the Goal, the Approach, Task 5's `recallAudienceScope` rule, Task 6's `'an outsider'` row in "a team agent's %s session gets its mount", and Task 7's "recall is unscoped in every team session, outsider turns included" and its security note.
+> - **What a member says about themself is stamped `private`, not `shared`**, so it stays with the team: every member's turn recalls it, and no outsider's turn does.
+>
+> The decisions shard has the reasons (rows 39–41 and the review rows after them).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** For team agents only, a member's channel turn keeps facts about people and files a fact about the member under the member's own key (`user:<ctx.userId>`, the key their web chats use); a team agent recalls everything in every session and keeps its `/memory` view. Outsiders' words stay unremembered, and personal agents don't change.
