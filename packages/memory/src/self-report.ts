@@ -126,8 +126,9 @@
  * limit:
  *
  * - The predicate makes it the holder: `has_limitation`, `had_limitations`,
- *   `lacks_capability` (TASK-1198), and the no-access family (`has_no_access_to`, `lacks_access`). These need
- *   no object check: "the assistant has a limitation" is about the assistant.
+ *   any `lacks_…` (`lacks_capability`, TASK-1198), and the no-access
+ *   family (`has_no_access_to`, `lacks_access`). These need no object
+ *   check: "the assistant has a limitation" is about the assistant.
  * - Anything else needs the assistant marked, whether a reporting verb leads
  *   it (`stated_`, `listed_`, `described_`, …) or nothing does
  *   (`limitations`, `known_limitations`): `its` or `own` in the predicate
@@ -447,13 +448,12 @@ const CREATED_BY = /(?:^|_)(?:created|made|built|designed)_by(?:_|$)/;
  * What it says it can or can't do: `stated_limitation`, `has_limitation`,
  * `described_capabilities`, `stated_its_limitations`. Ends at the
  * limitation word, so `explained_limitations_of_the_study` is a topic.
- * Group 1 is a holder (`has_`, `had_`, `have_`, and `lacks_`, `lack_`,
- * `lacked_`: TASK-1198's `lacks_capability`): the assistant has the limit.
+ * Group 1 is a holder (`has_`, `had_`, `have_`): the assistant has the limit.
  * Anything else can be anyone's limits, with a reporting verb
  * (`listed_limitations`) or none (`limitations`, `known_limitations`).
  */
 const LIMITATION_PREDICATE =
-  /^(?:(?:stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(has|had|have|lacks?|lacked)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
+  /^(?:(?:stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(has|had|have)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
 /**
  * What it says it can't reach: `has_no_access_to`, `doesnt_have_access`,
  * `lacks_access`. Like `has_limitation`, it makes the assistant the holder,
@@ -461,6 +461,16 @@ const LIMITATION_PREDICATE =
  */
 const NO_ACCESS_PREDICATE =
   /^(?:has_no|have_no|had_no|lacks?|lacked|does_not_have|doesnt_have|did_not_have|didnt_have)_(?:(?:direct|real_?time|live|internet|web|external)_)?access(?:_|$)/;
+/**
+ * What it says it lacks, whatever the noun (TASK-1198): `lacks_capability`,
+ * `lacks_slack_messaging_capability`, `lacked_permission`. With the assistant
+ * as the subject, "lacks" is always its own limit, so like
+ * {@link NO_ACCESS_PREDICATE} it needs no object check. Measured: walk
+ * TASK-1192 stored `lacks_capability`, and five replays of the same turn
+ * all wrote `lacks_slack_messaging_capability`, which
+ * {@link LIMITATION_PREDICATE}'s modifier list never reaches.
+ */
+const LACKS_PREDICATE = /^(?:lacks?|lacked)(?:_|$)/;
 /**
  * An object that starts with the assistant's own limit, for a limitation
  * predicate that isn't a holder: "cannot browse the internet", "unable to
@@ -559,7 +569,7 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
   ) {
     return 'capability';
   }
-  if (NO_ACCESS_PREDICATE.test(normalized)) return 'capability';
+  if (NO_ACCESS_PREDICATE.test(normalized) || LACKS_PREDICATE.test(normalized)) return 'capability';
   const setUp = words[0] === 'set' && words[1] === 'up';
   const verb = setUp ? 'setup' : (words[0] ?? '');
   if (ACTION_VERBS.has(verb)) return 'action-narration';

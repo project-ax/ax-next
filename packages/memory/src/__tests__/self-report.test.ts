@@ -366,10 +366,12 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'has_no_access_to', 'real-time stock prices'],
     ['assistant', "doesn't_have_access", 'to the internet'],
     ['assistant', 'lacks_access', 'to the shared drive'],
-    // TASK-1198: the walk's (TASK-1192) row. `lacks_` is a holder like `has_`.
+    // TASK-1198: the walk's (TASK-1192) row, and the replay's. Any `lacks_…` is a holder.
     ['assistant', 'lacks_capability', 'Cannot send Slack messages or ping other users/bots (e.g. @moss) directly'],
+    ['assistant', 'lacks_slack_messaging_capability', 'Fern cannot send Slack messages, so it cannot ping moss'],
     ['assistant', 'lacked_capabilities', 'for image input'],
-    ['assistant', 'lacks_capabilities', 'to post in Slack'],
+    ['assistant', 'lack_permission', 'to post in #general'],
+    ['assistant', 'lacks', 'calendar access'],
     ['the assistant', 'Stated Limitation', 'cannot open PDFs'],
     // `has_…`, `had_…` or `have_…` makes the assistant the holder: no object
     // check, so "for …" is still its own limit, not a topic.
