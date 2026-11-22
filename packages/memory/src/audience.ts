@@ -26,8 +26,9 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * the audience of the turn it was learned in, and a turn that isn't private
  * files a person subject only where {@link speakerSubject} says (TASK-1204):
  * a team agent's member turn files the speaker's facts under the speaker's
- * own key, and any other shared turn stores nothing under `user`,
- * `user:<id>`, or a subject made of the speakers' names that
+ * own key, stamped private, since they're the team's and not the room's
+ * ({@link recordFacts}), and any other shared turn stores nothing under
+ * `user`, `user:<id>`, or a subject made of the speakers' names that
  * `memory:pre-capture` answered with (TASK-1146; {@link breaksSpeakerRule}).
  *
  * `ctx.audience` is stamped by the host and never read off a payload (see
@@ -444,11 +445,32 @@ export function speakerSubject(
  * {@link recallFacts} is for reads: the human write behind `memory:remember`
  * and `memory:correct`, the observer's batch, and `memory_note`.
  *
- * The stamp comes from `ctx` alone (`audienceOf`, so an audience this build
- * does not know stamps `'shared'`, the least recall) and OVERWRITES anything
- * a statement carried, so no caller-built statement picks its own audience.
+ * The stamp comes from `ctx` (`audienceOf`, so an audience this build does
+ * not know stamps `'shared'`, the least recall) and OVERWRITES anything a
+ * statement carried, so no caller-built statement picks its own audience.
  * Every row is stamped, private ones included: a row stored from now on
  * always says who could see the turn it was learned in.
+ *
+ * With one exception, which only ever narrows (TASK-1204 review): in a team
+ * agent's member turn (`'team'`), a statement filed under the member's own
+ * key (`user:<access.userId>`) is stamped `'private'`. That is what the
+ * member said about themself, and design §4c shares a team agent's memory
+ * with the team, not with people outside AX. A private row reaches every
+ * member's turn, whose reads have no audience scope, and no outsider's turn,
+ * whose reads are shared-only ({@link recallAudienceScope}), backstop and
+ * all. Stamped here, at the write, because §6.1 forbids filtering a read's
+ * answer afterwards. Everything else in that turn (the work, a third party
+ * by name, the agent) keeps the turn's stamp, and nothing else ever gets
+ * this one: a private turn stamps private anyway, and every other shared
+ * turn files no person key at all. The subject decides it only after the
+ * backstop below has checked it is already where {@link speakerSubject}
+ * files it, so the only way to the private stamp is to be about the runner.
+ *
+ * Only a read's audience scope reads the stamp. Twin reads don't, and slot
+ * chains are audience-blind, so a member's channel fact closes their
+ * web-chat one in the same slot as before. One visible effect: the owner's
+ * memory view shows no "Shared" badge on such a row, though it was said
+ * where the room could see it, because the badge follows the stamp.
  *
  * `statements` is typed `object`, not a record of fields: the observer's
  * statements are an interface, which TypeScript won't widen to an index
@@ -512,12 +534,21 @@ export async function recordFacts<TOut>(
     const names = speakerNames ?? (await askSpeakerNames(bus, ctx, hookName));
     refuseUnfiled(scope, input.statements, access.userId, names, hookName);
   }
+  // The one subject a team agent's member turn stamps private: the member's
+  // own key. Every statement that reaches here is already filed where
+  // `speakerSubject` says, so this is exactly what they said about themself.
+  const ownKey = scope === 'team' ? rewriteSpeaker(SPEAKER_SUBJECT, access.userId) : undefined;
   return bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {
     ...input,
     // `Array.from`, not `map`: `map` keeps a hole, and the engines' own `map`
     // would then skip it unseen. Here it becomes a statement with no subject,
-    // which the engine refuses, and the whole batch with it.
-    statements: Array.from(input.statements, (statement) => ({ ...statement, audience })),
+    // which the engine refuses, and the whole batch with it. (`?.` for the
+    // same hole: it names nobody, so it gets the turn's stamp.)
+    statements: Array.from(input.statements, (statement) => ({
+      ...statement,
+      audience:
+        ownKey !== undefined && (statement as { about?: unknown } | undefined)?.about === ownKey ? 'private' : audience,
+    })),
   });
 }
 

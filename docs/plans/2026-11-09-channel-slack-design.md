@@ -1138,6 +1138,7 @@ Every place a person meets a team agent says the same thing in plain words: *"Wh
 - **Three scopes** (`speakerScope`): `private` (the owner's own turn), `team` (a team agent's member turn, in any audience) and `withheld` (everything else: a personal agent's shared turn, and any outsider's turn). An outsider's turn is `withheld` first, whatever its audience.
 - **A team agent's member turns recall everything.** Web chats and member channel turns read the team's whole memory, with no audience filter, and keep the `/memory` view. A member's channel question already shows recall to the room, and the §4c notices tell the room. That removes a privacy boundary on purpose.
 - **Members' facts are filed under them.** A member's turn files what they say about themselves under `user:<ctx.userId>`, and a subject made of their label names is filed there too. `memory_note` does the same.
+- **...and stay with the team (review F2).** Those rows are stamped `private`, even when said in a channel: §4c shares the memory with the team, not with people outside AX. Every member's turn reads them (a member's reads have no audience filter), and no outsider's turn does (its reads are shared-only). It's done at the write, in `recordFacts`, because §6.1 forbids filtering a read's answer. Everything else a member's channel turn stores (the work, a third party by name) stays `shared`, as before. Twin reads still find these rows, and slot chains ignore audience, so a channel `lives_in` still closes the web-chat one. Two visible effects: the owner's memory view shows no "Shared" badge on them, and a subject the names rule can't recognize (a thread with no names, or a nickname) is filed as written and stays `shared`, like any third party's fact. A member's own question in a channel can still surface a teammate's fact to the room (the trade above).
 - **Outsiders keep the rule.** An outsider's turn on a team agent keeps shared-only recall (with the stamp backstop that throws if a non-shared row comes back) and gets no `/memory` mount. It stores no person fact (`user`, `user:<id>`, or a speaker's name). The shared team memory is the team's, not the public's, so the planner's "every session" was narrowed to members after the security review. Lifting it is the `!isOutsiderTurn` condition in `recallAudienceScope` and the outsider condition on the mount.
 - **Outsiders are never "you".** Recall in an outsider's turn never shows the requester's own memory as the person talking.
 - **Personal agents are unchanged.** A shared turn there still recalls only shared statements and stores no speaker facts.
@@ -1366,7 +1367,9 @@ separate from `source` on purpose: `source` says who is present and decides
 approvals; `audience` says who sees the reply and decides memory.
 
 - It's absent everywhere it isn't set, and absent means `private`, as today.
-- Memory stamps each statement with the audience it was captured in.
+- Memory stamps each statement with the audience it was captured in, except
+  that what a team agent's member says about themself is stamped `private`, so
+  it stays with the team (§4c).
 - On a personal agent, a `shared` turn recalls only `shared` statements and
   captures no facts about the speaker. A team agent's member turn recalls
   everything and files the speaker's facts under them; an outsider's turn on

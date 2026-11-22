@@ -597,11 +597,12 @@ export async function buildMemoryBlock(
   // and the one subject the Digest leaves out. In an outsider's turn
   // (TASK-1204) the caller is the requester who answers for the channel, never
   // the person talking, so there is no self: no Profile (not even read),
-  // nobody rendered `you`, and nothing left out of the Digest. A team agent's
-  // outsider turn reads every member's shared rows, the requester's own
-  // included (a member's channel turn files what they say about themself
-  // under their key, stamped shared), so this is what keeps the requester's
-  // memory from being shown as the speaker's.
+  // nobody rendered `you`, and nothing left out of the Digest. An outsider's
+  // turn reads shared rows only, and no writer in this build stores one under
+  // a person's key (what a team agent's member says about themself is
+  // stamped private, `recordFacts`), so this is defense in depth: a shared
+  // row under the requester's key (an engine import, a writer added later)
+  // is still never shown as the speaker's.
   const self = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, access.userId);
   const ownerScope = memoryReadScope(access);
 

@@ -679,7 +679,8 @@ describe("a shared conversation's passes (TASK-1091)", () => {
   });
 
   // The same pass on a team agent: the member's turn runs as them, so the
-  // standup they stated is filed under their own key, not dropped.
+  // standup they stated is filed under their own key, not dropped, and
+  // stamped private: the team's, not the room's (review F2).
   it("an incremental pass in a team agent's channel conversation files the speaker under their own key (TASK-1204)", async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const facts = [
@@ -705,7 +706,7 @@ describe("a shared conversation's passes (TASK-1091)", () => {
     const db = new Database(env.h.databasePath, { readonly: true });
     try {
       expect(db.prepare('SELECT about, value, audience FROM memory_facts_v1 ORDER BY rowid').all()).toEqual([
-        { about: `user:${ALICE}`, value: 'Team standup moved to 10:15 on Tuesdays', audience: 'shared' },
+        { about: `user:${ALICE}`, value: 'Team standup moved to 10:15 on Tuesdays', audience: 'private' },
         { about: 'billing_service', value: 'Dana', audience: 'shared' },
       ]);
     } finally {

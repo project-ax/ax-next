@@ -335,7 +335,9 @@ interface EngineFactRecord {
   /**
    * Who could see the turn this row was learned in (TASK-1091): `'shared'`,
    * `'private'`, or absent on a row stored before audiences existed, which
-   * reads as private. `recallFacts` refuses a non-shared row in a shared read;
+   * reads as private. What a team agent's member said about themself is
+   * `'private'` whatever the turn: the team's, not the room's (TASK-1204,
+   * `recordFacts`). `recallFacts` refuses a non-shared row in a shared read;
    * `toMemoryStatement` refuses any other value and forwards only `'shared'`.
    */
   audience?: string;
@@ -1041,10 +1043,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           const visibleIds = new Set(page.map((row) => row.id));
           // The person talking, rendered `you`. In an outsider's turn
           // (TASK-1204) that is never the caller: the turn runs as the
-          // requester who answers for the channel, and a team agent's
-          // outsider turn reads the requester's own shared rows too. So there
-          // no row is `you`, and the requester's key reads as any other
-          // member's.
+          // requester who answers for the channel. So there no row is `you`,
+          // and the requester's key reads as any other member's. (No writer
+          // in this build stores a shared row under a person's key, so an
+          // outsider's turn meets one only from an engine import or a writer
+          // added later: defense in depth.)
           // (`about: 'user'` and `profile: true` above still mean the caller's
           // own key: only owner routes send them.)
           const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
@@ -1569,7 +1572,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // speaker's name from `memory:pre-capture` (`breaksSpeakerRule`,
         // TASK-1146). There `ctx.userId` is the requester, never the person
         // talking. A team agent's MEMBER turn runs as the member who wrote it,
-        // so it files what they say about themself under their own key.
+        // so it files what they say about themself under their own key,
+        // stamped private: the team's, and no outsider's turn recalls it.
         // (From Slack no outsider's turn is captured: channel-slack's
         // `memory:pre-capture` veto refuses every thread an outsider talks
         // in, TASK-1094.)
@@ -1846,10 +1850,11 @@ async function observe(
         // mid-pass writes nothing. The write door is handed this fresh
         // answer, to know whose memory it writes (TASK-1204).
         const fresh = await resolveMemoryAccess(bus, ctx);
-        // `recordFacts`: the batch is stamped with this turn's audience, and
-        // the person-subject backstop runs, from the same `ctx` and the same
-        // names as the `audience` and `speakerNames` below that already
-        // dropped those facts. Handed the names, it doesn't ask again.
+        // `recordFacts`: the batch is stamped with this turn's audience (on a
+        // team agent, a member's own key private), and the person-subject
+        // backstop runs, from the same `ctx` and the same names as the
+        // `audience` and `speakerNames` below that already dropped those
+        // facts. Handed the names, it doesn't ask again.
         const out = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
