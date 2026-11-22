@@ -5,8 +5,6 @@
  * answers by shape, not by import (the SPA depends on no host plugin).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus
- *   POST /settings/slack/:agentId/bot/remember  { channelId, remember } → {}
- *        (TASK-1180: the switch for a channel the agent's own bot has answered in; the status lists them as `botChannels`)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }
  *   POST /settings/slack/:agentId/bot/cancel  { installId } → { appDeleted }
@@ -33,14 +31,13 @@ import { SLACK_ERROR_COPY } from './slack-admin';
 import { BOT_NAME_COPY, BOT_NAME_FALLBACK, BOT_TOKEN_COPY, SLACK_TOKEN_COPY } from './slack-token-copy';
 
 /**
- * A channel the agent's own bot has answered in, with its memory switch
- * (TASK-1180). `isPrivate`: Slack last described it as private, where the
- * agent answers and never remembers, whatever the switch says (TASK-1188).
+ * A channel the agent's own bot has answered in (TASK-1180; the status lists
+ * them as `botChannels`). `isPrivate`: Slack last described it as private,
+ * where the agent answers and never remembers (TASK-1188).
  */
 export interface BotChannelRow {
   channelId: string;
   name: string;
-  remember: boolean;
   isPrivate?: boolean;
 }
 
@@ -228,11 +225,11 @@ function parseBotChannels(value: unknown): BotChannelRow[] | undefined | null {
   const rows: BotChannelRow[] = [];
   for (const c of value) {
     if (!isRecord(c)) return null;
-    const { channelId, name, remember, isPrivate } = c;
-    if (typeof channelId !== 'string' || typeof name !== 'string' || typeof remember !== 'boolean') return null;
+    const { channelId, name, isPrivate } = c;
+    if (typeof channelId !== 'string' || typeof name !== 'string') return null;
     // Absent: an older host, which binds public channels only. Anything but a boolean is a bad answer.
     if (isPrivate !== undefined && typeof isPrivate !== 'boolean') return null;
-    rows.push({ channelId, name, remember, ...(isPrivate !== undefined ? { isPrivate } : {}) });
+    rows.push({ channelId, name, ...(isPrivate !== undefined ? { isPrivate } : {}) });
   }
   return rows;
 }
@@ -328,18 +325,6 @@ async function post(agentId: string, suffix: string, body: unknown): Promise<{ s
     json = undefined;
   }
   return { status: res.status, body: json };
-}
-
-/**
- * Turn "remember this channel" on or off for one of the agent's own bot's
- * channels (TASK-1180). Resolves once the server holds it.
- */
-export async function setSlackBotChannelRemember(
-  agentId: string,
-  channelId: string,
-  remember: boolean,
-): Promise<void> {
-  await post(agentId, '/bot/remember', { channelId, remember });
 }
 
 /**
@@ -444,7 +429,6 @@ export async function setAgentSlackBotPicture(agentId: string, iconPng: string):
 
 export const AGENT_SLACK_COPY = Object.freeze({
   generic: 'Something went wrong. Try again in a minute.',
-  rememberFailed: "We couldn't change that, so nothing is different. Try again.",
   privateChannelNotRemembered: "Private channels aren't remembered.",
 });
 
@@ -477,9 +461,6 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
   inviteNoHandle: 'In any Slack channel, type /invite and pick it.',
   channelsLead: (t: InviteTarget): string =>
     `${botWho(t)} has answered in these channels. It remembers what team members say in public channels, never in private ones.`,
-  notRemembered: 'Not remembered',
-  dontRemember: "Don't remember this channel",
-  rememberAgain: 'Remember this channel',
   /** The Not in Slack card's consent line: what adding the bot means for the manager who does it. */
   outsidersUseYourAccess: 'When someone outside the team mentions it, it answers them with your access.',
   helpLine: (who: string): string =>
@@ -499,15 +480,6 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
 /** A Rename or Change picture refused because the bot's Slack token no longer works. */
 export function agentSlackBotTokenDead(err: unknown): boolean {
   return err instanceof AgentSlackError && err.code === 'slack-config-token';
-}
-
-/**
- * A remember the server refused because what we drew is gone or
- * no longer ours to change (403, 404, 409): read it again. Only a 5xx or a
- * dropped connection is worth "try again".
- */
-export function agentSlackWriteStale(err: unknown): boolean {
-  return err instanceof AgentSlackError && (err.status === 403 || err.status === 404 || err.status === 409);
 }
 
 export const AGENT_SLACK_BOT_COPY = Object.freeze({

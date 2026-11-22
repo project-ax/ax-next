@@ -9,7 +9,7 @@ import {
   createUnstoredInventory,
   type BusLike,
 } from '../connector-inventory/describe-tools.js';
-import type { ListOutcome, ListServerToolsOptions } from '../connector-inventory/list-tools.js';
+import { normalizeTools, type ListOutcome, type ListServerToolsOptions } from '../connector-inventory/list-tools.js';
 import type { InventoryKey, InventoryRow, InventoryStore } from '../connector-inventory/store.js';
 
 // ---------------------------------------------------------------------------
@@ -160,6 +160,33 @@ describe('connectors:describe-tools', () => {
     const cred = t.calls.find((c) => c.hook === 'credentials:get')!;
     expect(cred.input).toEqual({ ref: 'account:linear', userId: 'u1' });
     expect(cred.ctx.userId).toBe('u1');
+  });
+
+  it('describe-tools answers each tool\'s inputSchema', async () => {
+    const schema = { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] };
+    // The real mapping from raw tools/list entries, so this covers what a
+    // server's listing actually turns into, not a hand-built inventory tool.
+    const t = setup({
+      list: async () => ({
+        kind: 'ok',
+        ...normalizeTools([
+          { name: 'get', inputSchema: schema },
+          { name: 'odd', inputSchema: ['not', 'an', 'object'] },
+        ]),
+      }),
+    });
+    const out = await t.run({ userId: 'u1', connectorId: 'linear' });
+    expect(out.status).toBe('ok');
+    expect(out.tools.map((x) => [x.toolKey, x.inputSchema])).toEqual([
+      [`mcp.${NS}.get`, schema],
+      [`mcp.${NS}.odd`, null],
+    ]);
+    // The same schema from the cache, and on the discovery event.
+    const again = await t.run({ userId: 'u1', connectorId: 'linear' });
+    expect(t.list).toHaveBeenCalledTimes(1);
+    expect(again.tools[0]!.inputSchema).toEqual(schema);
+    const discovered = t.fired.find((f) => f.hook === 'connectors:tools-discovered');
+    expect((discovered?.payload as { tools: Array<{ inputSchema: unknown }> }).tools[0]!.inputSchema).toEqual(schema);
   });
 
   it('sends an api-key slot as its raw header, bound to its own server only', async () => {

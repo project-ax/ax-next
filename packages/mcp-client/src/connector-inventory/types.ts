@@ -7,6 +7,25 @@
 // tool names, untrusted text, three-valued hints and the canonical toolKey.
 // An alternate impl (a runtime-reported inventory from the sandbox, reporting
 // what the agent's MCP client actually saw) fills the same shape.
+//
+// Boundary review (each tool gains `inputSchema`, for @ax/apps-bridge):
+//   - Alternate impl: the sandbox-reported inventory above relays the schema
+//     its MCP client saw. A REST/OpenAPI connector backend hands over its
+//     operation's request-body schema. Both are JSON Schema for a tool's
+//     arguments, the same opaque object.
+//   - Payload field names that might leak: `inputSchema`. It is MCP's name,
+//     but it means "the JSON Schema for this tool's input", which any tool
+//     backend has; nothing in it names a transport, url, table or server.
+//     Its VALUE is the server's own untrusted JSON: no shape beyond "a plain
+//     object" is promised, and nobody here compiles it.
+//   - Subscriber risk: `connectors:tools-discovered` carries the same tools
+//     and has no subscriber today. Its fingerprint now covers the schema, so
+//     the first refresh of each connector after deploy fires it once, and a
+//     server that only changes a schema fires it too. A subscriber must
+//     treat `inputSchema` as possibly null (absent, not a plain object, over
+//     the caps, or a row cached before this field) and never as a
+//     validated schema.
+//   - Wire surface: none. Neither hook is an IPC action.
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod';
@@ -24,6 +43,16 @@ export interface InventoryTool {
   readOnly: boolean | null;
   /** `destructiveHint || openWorldHint`; null when undecidable. A hint. */
   outward: boolean | null;
+  /**
+   * The server's own JSON Schema for the tool's arguments. UNTRUSTED: the
+   * server wrote it, and nothing compiles or checks it beyond "a plain
+   * object". Null when the server sent none, it isn't a plain object, it is
+   * over 32,768 bytes serialized, or it falls past 1,048,576 bytes for that
+   * server's listing. A row cached before this field reads as null until its
+   * TTL passes. Relay it as data; never render it unfenced or compile it on
+   * the host.
+   */
+  inputSchema: Record<string, unknown> | null;
   /** Canonical permission key: `mcp.<toolNamespace>.<name>`. */
   toolKey: string;
 }
@@ -229,5 +258,58 @@ const FAILED_REASONS = [
 export const ConnectorCallToolOutputSchema: z.ZodType<ConnectorCallToolOutput> = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('succeeded') }).strict(),
   z.object({ outcome: z.literal('failed'), reason: z.enum(FAILED_REASONS) }).strict(),
+  z.object({ outcome: z.literal('unknown'), reason: z.enum(['timeout', 'interrupted']) }).strict(),
+]);
+
+// ---------------------------------------------------------------------------
+// `connectors:call-tool-result` (service). The same checks as
+// `connectors:call-tool` (the shared core, connector-call.ts), and the reply's
+// content blocks on success and on a tool error. Its intended caller is
+// @ax/apps-bridge, which serves an external apps platform; nothing in the
+// hook enforces that (see SECURITY.md).
+//
+// Boundary review:
+//   - Alternate impl: a non-MCP connector runtime (a REST/OpenAPI adapter)
+//     answering the same toolKey with `{ outcome, content }`.
+//   - Payload field names that might leak: none. `content` is opaque typed
+//     blocks; `toolKey` is the canonical permission key (see above).
+//   - Server text: `connectors:call-tool` carries none because its answers
+//     reach people and models inside AX. This hook's content goes only to the
+//     apps platform, never to a model or a screen inside AX, so that rule
+//     doesn't apply here. The content is still untrusted and capped (2 MiB
+//     per reply), and nothing else in the answer carries server text: a
+//     JSON-RPC error's message is still never read.
+//   - Subscriber risk: none. It is a service hook with one implementer, and
+//     nothing fires.
+//   - Wire surface: none. Not an IPC action, not a `tool:execute:<name>`.
+// ---------------------------------------------------------------------------
+
+/** One block of a tool reply: opaque apart from its `type`. Untrusted. */
+export type ConnectorResultContentBlock = { type: string } & Record<string, unknown>;
+
+export type ConnectorCallToolResultOutput =
+  | { outcome: 'succeeded'; content: ConnectorResultContentBlock[] }
+  | { outcome: 'failed'; reason: 'tool-error'; content: ConnectorResultContentBlock[] }
+  | { outcome: 'failed'; reason: Exclude<ConnectorCallFailedReason, 'tool-error'> }
+  | { outcome: 'unknown'; reason: ConnectorCallUnknownReason };
+
+/**
+ * A block is read for its `type` only; every other key passes through
+ * unread. Mirrored by `ContentBlockSchema` in @ax/apps-bridge-contract's
+ * wire.ts (a parallel copy: change both).
+ */
+export const ConnectorResultContentBlockSchema = z.object({ type: z.string().min(1).max(64) }).passthrough();
+
+/** The bus holds the hook to these shapes: content only on success and on a tool error. */
+export const ConnectorCallToolResultOutputSchema: z.ZodType<ConnectorCallToolResultOutput> = z.union([
+  z.object({ outcome: z.literal('succeeded'), content: z.array(ConnectorResultContentBlockSchema) }).strict(),
+  z
+    .object({
+      outcome: z.literal('failed'),
+      reason: z.literal('tool-error'),
+      content: z.array(ConnectorResultContentBlockSchema),
+    })
+    .strict(),
+  z.object({ outcome: z.literal('failed'), reason: z.enum(FAILED_REASONS).exclude(['tool-error']) }).strict(),
   z.object({ outcome: z.literal('unknown'), reason: z.enum(['timeout', 'interrupted']) }).strict(),
 ]);

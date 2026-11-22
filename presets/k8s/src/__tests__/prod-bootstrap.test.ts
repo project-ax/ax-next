@@ -256,6 +256,10 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // TASK-1100 -- the connector directory. Loaded unconditionally; disabled in
     // this lane's env, so it boots with no database call and no network.
     '@ax/connector-directory',
+    // The apps connector bridge. Unconditional: with no AX_APPS_BRIDGE_* it only
+    // mounts its settings routes and creates its four tables (the boot test
+    // below checks them), and it binds no listener.
+    '@ax/apps-bridge',
     // TASK-1093 -- the Slack channel. Unconditional: with nothing connected it
     // only mounts its routes and creates its table (the boot test below checks
     // the table), and it never reaches Slack until an admin connects.
@@ -363,6 +367,18 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
             "SELECT to_regclass('public.channel_slack_v1_installs')::text AS t",
           );
           expect(slack.rows[0]?.t).toBe('channel_slack_v1_installs');
+          // @ax/apps-bridge's init created its four tables in the full graph.
+          for (const table of [
+            'apps_bridge_v1_link_codes',
+            'apps_bridge_v1_links',
+            'apps_bridge_v1_grants',
+            'apps_bridge_v1_viewer_approvals',
+          ]) {
+            const found = await probe.query<{ t: string | null }>(
+              `SELECT to_regclass('public.${table}')::text AS t`,
+            );
+            expect(found.rows[0]?.t).toBe(table);
+          }
         } finally {
           await probe.end();
         }

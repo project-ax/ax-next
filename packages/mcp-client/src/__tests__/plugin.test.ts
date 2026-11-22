@@ -149,6 +149,8 @@ describe('@ax/mcp-client plugin', () => {
         // TASK-1046 — one approved connector call. A named service, never a
         // `tool:execute:*`: the sandbox can reach every one of those.
         'connectors:call-tool',
+        // The same checks, and the reply's content (intended caller: @ax/apps-bridge).
+        'connectors:call-tool-result',
       ],
       calls: [
         'storage:list-prefix',

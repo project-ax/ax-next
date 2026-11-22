@@ -37,3 +37,12 @@ spec:
       port: {{ .Values.host.contentServicePort | default 9091 }}
       targetPort: content-http
       protocol: TCP
+    {{- if (include "ax-next.bool" .Values.appsBridge.enabled) }}
+    # The apps connector bridge. Cluster-internal like the rest of this
+    # Service, and never an Ingress backend: the operator exposes it with an
+    # internal LoadBalancer Service of their own (deploy/GKE.md).
+    - name: apps-bridge
+      port: {{ .Values.host.appsBridgeServicePort | default 9092 }}
+      targetPort: apps-bridge
+      protocol: TCP
+    {{- end }}

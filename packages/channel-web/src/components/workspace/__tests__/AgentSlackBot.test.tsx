@@ -802,8 +802,8 @@ const MINE: Bot = { ...LIVE, viewerIsApprover: true };
 const TOKEN = fakeConfigRefreshToken('CARDREPLACESECRET');
 const HANDLE_LINE = 'In any Slack channel, type /invite @quill_bot';
 const CHANNELS = [
-  { channelId: 'C1', name: 'help', remember: true },
-  { channelId: 'C2', name: 'random', remember: false },
+  { channelId: 'C1', name: 'help' },
+  { channelId: 'C2', name: 'random' },
 ];
 
 describe('live', () => {

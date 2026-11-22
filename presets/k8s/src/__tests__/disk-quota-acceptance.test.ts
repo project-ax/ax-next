@@ -135,6 +135,8 @@ const PLUGINS_TO_DROP = new Set<string>([
   // the memory canary and prod-bootstrap.test.ts, and its DM path end to end
   // in channel-slack-composition.test.ts.
   '@ax/channel-slack',
+  // @ax/apps-bridge: it needs Postgres, and it mounts settings routes this test pins in `mountedRoutes`. Its canary reach is in the memory preset's canary.
+  '@ax/apps-bridge',
   // Re-added below with an injected clock (manifest asserted identical).
   DISK_QUOTA_PLUGIN,
 ]);

@@ -25,6 +25,7 @@
  */
 import { useState, type ComponentType, type ReactNode, type SVGProps } from 'react';
 import {
+  AppWindow,
   ArrowLeft,
   Brain,
   ChevronRight,
@@ -63,6 +64,7 @@ import {
 } from '@/lib/workspace-route';
 import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
+import { AgentApps } from './AgentApps';
 import { AgentSlack } from './AgentSlack';
 import { ConnectorsTab } from './ConnectorsTab';
 
@@ -104,6 +106,12 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
     // Personal agents have no channels, so this can't promise any.
     description: (name) => `How ${name} works in Slack.`,
     summary: (name) => `How ${name} works in Slack`,
+  },
+  apps: {
+    label: 'Apps',
+    Icon: AppWindow,
+    description: (name) => `Apps built on your apps platform that use ${name} and its connectors.`,
+    summary: (name) => `Apps that use ${name}`,
   },
   memory: {
     label: 'Memory',
@@ -306,6 +314,8 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
       return <ConnectorsSection agent={agent} busy={busy} />;
     case 'slack':
       return <AgentSlack key={agent.id} agentId={agent.id} agentName={agent.name} />;
+    case 'apps':
+      return <AgentApps key={agent.id} agentId={agent.id} agentName={agent.name} />;
     case 'memory':
       return memory !== null && memory !== undefined ? (
         <>{memory}</>

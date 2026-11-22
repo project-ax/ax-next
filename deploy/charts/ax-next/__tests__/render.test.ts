@@ -1536,6 +1536,280 @@ describeIfHelm('ax-next chart: connector directory (TASK-1100)', () => {
   });
 });
 
+// The apps connector bridge switched on, every required value set (see the fixture).
+const APPS_BRIDGE_ON: readonly string[] = ['-f', resolve(here, 'fixtures/apps-bridge-values.yaml')];
+
+describeIfHelm('ax-next chart: apps connector bridge (off unless enabled)', () => {
+  // @ax/apps-bridge runs its own listener so it can be kept off the public
+  // Ingress: an outside apps platform reaches it only through whatever the
+  // operator exposes, and the host NetworkPolicy admits only the operator's
+  // appsBridge.allowFrom peers to its port. Off by default, nothing of it renders.
+  const HOST_SVC = 'ax-test-ax-next-host';
+  const HOST_NP = 'ax-test-ax-next-host-network';
+  const BRIDGE_PORT = 9092;
+  const ingressArgs = [
+    '--set', 'ingress.enabled=true',
+    '--set', 'ingress.host=ax.example.com',
+    '--set', 'ingress.tls=true',
+  ];
+  const FIXTURE_ALLOW_FROM = [
+    { ipBlock: { cidr: '192.0.2.0/24' } },
+    {
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'apps-platform' } },
+      podSelector: { matchLabels: { app: 'apps-gateway' } },
+    },
+  ];
+
+  type NpRule = {
+    from?: Array<Record<string, unknown>>;
+    ports?: Array<{ port?: number; protocol?: string }>;
+  };
+
+  const bridgeEnv = (docs: K8sDoc[]) =>
+    findHostEnv(docs).filter((e) => e.name.startsWith('AX_APPS_BRIDGE_'));
+
+  function hostContainer(docs: K8sDoc[]) {
+    const dep = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.labels?.['app.kubernetes.io/component'] === 'host',
+    );
+    return dep?.spec?.template.spec.containers[0] as { ports: unknown[]; env: EnvVar[] };
+  }
+
+  function hostService(docs: K8sDoc[]): K8sDoc | undefined {
+    return docs.find((d) => d.kind === 'Service' && d.metadata?.name === HOST_SVC);
+  }
+
+  function hostNpIngress(docs: K8sDoc[]): NpRule[] {
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    if (!np) throw new Error('host NetworkPolicy not found in render');
+    return (np.spec?.ingress ?? []) as NpRule[];
+  }
+
+  const admits = (rule: NpRule, port: number) => (rule.ports ?? []).some((p) => p.port === port);
+
+  /** Every number anywhere in a value, for "this port never appears" checks. */
+  function numbersIn(value: unknown, out: number[] = []): number[] {
+    if (typeof value === 'number') out.push(value);
+    else if (Array.isArray(value)) for (const v of value) numbersIn(v, out);
+    else if (value !== null && typeof value === 'object') for (const v of Object.values(value)) numbersIn(v, out);
+    return out;
+  }
+
+  /** The resources a bridge port could leak into: workloads, Services, policies, the Ingress. */
+  const networkFacing = (docs: K8sDoc[]) =>
+    docs.filter((d) => ['Deployment', 'Service', 'NetworkPolicy', 'Ingress'].includes(d.kind ?? ''));
+
+  it('apps bridge off by default: no AX_APPS_BRIDGE_* env, no apps-bridge port anywhere', () => {
+    const renders: Array<readonly [string, readonly string[]]> = [
+      ...SHIPPED_RENDERS,
+      ['the Ingress on', ingressArgs],
+      // Every value filled in, but the switch off: still nothing.
+      ['all values set, enabled=false', [...APPS_BRIDGE_ON, '--set', 'appsBridge.enabled=false']],
+    ];
+    for (const [label, args] of renders) {
+      const docs = helmTemplate(args);
+      expect(bridgeEnv(docs), label).toEqual([]);
+      const resources = networkFacing(docs);
+      expect(resources.length, label).toBeGreaterThan(3);
+      expect(allStrings(resources).filter((s) => /apps.?bridge/i.test(s)), label).toEqual([]);
+      expect(numbersIn(resources), label).not.toContain(BRIDGE_PORT);
+    }
+  });
+
+  it('apps bridge on: stamps all ten vars verbatim, the container port, the Service port and the NetworkPolicy rule with allowFrom', () => {
+    const docs = helmTemplate(APPS_BRIDGE_ON);
+    expect(bridgeEnv(docs)).toEqual([
+      { name: 'AX_APPS_BRIDGE_PLATFORM_ID', value: 'canopy-apps' },
+      { name: 'AX_APPS_BRIDGE_PORT', value: '9092' },
+      { name: 'AX_APPS_BRIDGE_CALLER_ISSUER', value: 'https://accounts.google.com' },
+      { name: 'AX_APPS_BRIDGE_CALLER_JWKS_URL', value: 'https://www.googleapis.com/oauth2/v3/certs' },
+      { name: 'AX_APPS_BRIDGE_CALLER_AUDIENCE', value: 'https://ax-bridge.example.net' },
+      { name: 'AX_APPS_BRIDGE_CALLER_SUBJECT', value: '112233445566778899001' },
+      { name: 'AX_APPS_BRIDGE_VIEWER_ISSUER', value: 'https://cloud.google.com/iap' },
+      { name: 'AX_APPS_BRIDGE_VIEWER_JWKS_URL', value: 'https://www.gstatic.com/iap/verify/public_key-jwk' },
+      { name: 'AX_APPS_BRIDGE_VIEWER_AUDIENCE', value: '/projects/123/global/backendServices/456' },
+      { name: 'AX_APPS_BRIDGE_VIEWER_MAX_AGE_SECONDS', value: '300' },
+    ]);
+    expect(hostContainer(docs).ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', containerPort: BRIDGE_PORT, protocol: 'TCP' },
+    ]));
+    const svc = hostService(docs);
+    expect(svc?.spec?.ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', port: BRIDGE_PORT, targetPort: 'apps-bridge', protocol: 'TCP' },
+    ]));
+    // The host Service stays cluster-internal: exposure is the operator's own Service.
+    expect(svc?.spec?.type).toBe('ClusterIP');
+
+    // Exactly one rule admits the bridge port, and its peers are allowFrom, verbatim.
+    expect(hostNpIngress(docs).filter((r) => admits(r, BRIDGE_PORT))).toEqual([
+      { from: FIXTURE_ALLOW_FROM, ports: [{ port: BRIDGE_PORT, protocol: 'TCP' }] },
+    ]);
+  });
+
+  it('apps bridge on: the host namespace, runner pods and the LB health-check ranges are not admitted to the bridge port', () => {
+    const docs = helmTemplate([
+      ...APPS_BRIDGE_ON,
+      '--set-json', 'networkPolicies.lbHealthCheckCidrs=["35.191.0.0/16","130.211.0.0/22"]',
+    ]);
+    const ingress = hostNpIngress(docs);
+    const nsRule = ingress.find((r) => (r.from ?? []).some((f) => f.namespaceSelector && !f.podSelector));
+    const runnerRule = ingress.find((r) =>
+      (r.from ?? []).some((f) => (f.podSelector as { matchLabels?: Record<string, string> } | undefined)?.matchLabels?.['ax.io/plane'] === 'execution'),
+    );
+    const lbRule = ingress.find((r) => (r.from ?? []).some((f) => (f.ipBlock as { cidr?: string } | undefined)?.cidr === '35.191.0.0/16'));
+    // Non-vacuity: each rule is there, admitting its own ports.
+    expect(nsRule && admits(nsRule, 9090)).toBe(true);
+    expect(runnerRule && admits(runnerRule, 8080)).toBe(true);
+    expect(lbRule && admits(lbRule, 9090)).toBe(true);
+    for (const rule of [nsRule, runnerRule, lbRule]) expect(admits(rule!, BRIDGE_PORT)).toBe(false);
+  });
+
+  it('apps bridge on with allowFrom empty: no rule admits the bridge port, and no rule admits everyone', () => {
+    const docs = helmTemplate([...APPS_BRIDGE_ON, '--set-json', 'appsBridge.allowFrom=[]']);
+    // The listener is still there; only the network says no.
+    expect(hostContainer(docs).ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', containerPort: BRIDGE_PORT, protocol: 'TCP' },
+    ]));
+    const ingress = hostNpIngress(docs);
+    expect(ingress.length).toBeGreaterThan(0);
+    expect(ingress.filter((r) => admits(r, BRIDGE_PORT))).toEqual([]);
+    // An ingress rule with no `from` (or no `ports`) admits every source (or
+    // every port): the "allow all" shape must never appear.
+    for (const r of ingress) {
+      expect(r.from?.length, JSON.stringify(r)).toBeGreaterThan(0);
+      expect(r.ports?.length, JSON.stringify(r)).toBeGreaterThan(0);
+      for (const p of r.ports ?? []) expect(p.port, JSON.stringify(p)).toBeDefined();
+    }
+  });
+
+  it('custom ports reach every site; missing ones (helm upgrade --reuse-values) fall back to 9092 and a 600 s max age', () => {
+    const custom = helmTemplate([
+      ...APPS_BRIDGE_ON,
+      '--set', 'host.ports.appsBridge=9192',
+      '--set', 'host.appsBridgeServicePort=443',
+    ]);
+    expect(bridgeEnv(custom).find((e) => e.name === 'AX_APPS_BRIDGE_PORT')?.value).toBe('9192');
+    expect(hostContainer(custom).ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', containerPort: 9192, protocol: 'TCP' },
+    ]));
+    expect(hostService(custom)?.spec?.ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', port: 443, targetPort: 'apps-bridge', protocol: 'TCP' },
+    ]));
+    expect(hostNpIngress(custom).filter((r) => admits(r, 9192))).toHaveLength(1);
+
+    // --reuse-values renders with the OLD release's values, which have none of
+    // these. An empty containerPort breaks the pod, and a NetworkPolicy port
+    // entry with no port admits EVERY TCP port.
+    const missing = helmTemplate([
+      ...APPS_BRIDGE_ON,
+      '--set', 'host.ports.appsBridge=null',
+      '--set', 'host.appsBridgeServicePort=null',
+      '--set', 'appsBridge.viewer.maxAgeSeconds=null',
+    ]);
+    const env = bridgeEnv(missing);
+    expect(env.find((e) => e.name === 'AX_APPS_BRIDGE_PORT')?.value).toBe('9092');
+    expect(env.find((e) => e.name === 'AX_APPS_BRIDGE_VIEWER_MAX_AGE_SECONDS')?.value).toBe('600');
+    expect(hostContainer(missing).ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', containerPort: BRIDGE_PORT, protocol: 'TCP' },
+    ]));
+    expect(hostService(missing)?.spec?.ports).toEqual(expect.arrayContaining([
+      { name: 'apps-bridge', port: BRIDGE_PORT, targetPort: 'apps-bridge', protocol: 'TCP' },
+    ]));
+    expect(hostNpIngress(missing).filter((r) => admits(r, BRIDGE_PORT))).toHaveLength(1);
+  });
+
+  it.each([
+    'platformId',
+    'caller.issuer',
+    'caller.jwksUrl',
+    'caller.audience',
+    'caller.subject',
+    'viewer.issuer',
+    'viewer.jwksUrl',
+    'viewer.audience',
+  ])('apps bridge on with a blank %s fails the render and names the --set key', (key) => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, '--set', `appsBridge.${key}=`]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(`--set-string appsBridge.${key}=`);
+  });
+
+  it('a value of only spaces counts as blank, as the host reads it', () => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, '--set-string', 'appsBridge.caller.subject=   ']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('--set-string appsBridge.caller.subject=');
+  });
+
+  it.each([
+    ['a platform id outside its grammar', ['--set', 'appsBridge.platformId=Canopy_Apps'], 'platformId'],
+    ['a max age under 30 s', ['--set', 'appsBridge.viewer.maxAgeSeconds=10'], 'maxAgeSeconds'],
+    ['a max age over an hour', ['--set', 'appsBridge.viewer.maxAgeSeconds=3601'], 'maxAgeSeconds'],
+    ['port 0', ['--set', 'host.ports.appsBridge=0'], 'appsBridge'],
+    ['an empty allowFrom peer (it would match nothing, or everything)', ['--set-json', 'appsBridge.allowFrom=[{}]'], 'allowFrom'],
+    ['a misspelled allowFrom peer', ['--set-json', 'appsBridge.allowFrom=[{"ipblock":{"cidr":"10.0.0.0/8"}}]'], 'allowFrom'],
+    ['an allowFrom that is not a list', ['--set', 'appsBridge.allowFrom=10.0.0.0/8'], 'allowFrom'],
+    ['a numeric subject (use --set-string)', ['--set', 'appsBridge.caller.subject=1234'], 'subject'],
+  ] as const)('the schema refuses %s', (_label, args, field) => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, ...args]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(field);
+  });
+
+  it('apps bridge on with networkPolicies off fails the render: nothing would gate the bridge port', () => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, '--set', 'networkPolicies.enabled=false']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('appsBridge.enabled is true but networkPolicies.enabled is false');
+    // Non-vacuity: the same values with policies on render.
+    expect(helmTemplate([...APPS_BRIDGE_ON, '--set', 'networkPolicies.enabled=true']).length).toBeGreaterThan(0);
+    // And with the bridge off, policies off is still the operator's call here.
+    expect(() => helmTemplate([...APPS_BRIDGE_ON, '--set', 'appsBridge.enabled=false', '--set', 'networkPolicies.enabled=false'])).not.toThrow();
+  });
+
+  it.each([
+    ['an empty namespaceSelector', '[{"namespaceSelector":{}}]', 'allowFrom[0].namespaceSelector', 'every namespace'],
+    ['an empty podSelector', '[{"podSelector":{}}]', 'allowFrom[0].podSelector', "every pod in the host's namespace"],
+    [
+      'an empty podSelector beside a named namespace',
+      '[{"ipBlock":{"cidr":"192.0.2.0/24"}},{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"apps-platform"}},"podSelector":{}}]',
+      'allowFrom[1].podSelector',
+      "every pod in the host's namespace",
+    ],
+    ['a namespaceSelector with empty matchLabels', '[{"namespaceSelector":{"matchLabels":{}}}]', 'allowFrom[0].namespaceSelector', 'every namespace'],
+    ['a podSelector with empty matchExpressions', '[{"podSelector":{"matchExpressions":[]}}]', 'allowFrom[0].podSelector', "every pod in the host's namespace"],
+  ] as const)('apps bridge allowFrom with %s fails the render', (_label, json, path, scope) => {
+    const r = helmTemplateExpectFailure([...APPS_BRIDGE_ON, '--set-json', `appsBridge.allowFrom=${json}`]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(`appsBridge.${path} is empty`);
+    expect(r.stderr).toContain(scope);
+  });
+
+  it('apps bridge allowFrom: a namespaceSelector alone, or with matchExpressions, renders', () => {
+    for (const json of [
+      '[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"apps-platform"}}}]',
+      '[{"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["apps-gateway"]}]}}]',
+    ]) {
+      const docs = helmTemplate([...APPS_BRIDGE_ON, '--set-json', `appsBridge.allowFrom=${json}`]);
+      expect(hostNpIngress(docs).filter((r) => admits(r, BRIDGE_PORT))).toHaveLength(1);
+    }
+  });
+
+  it('the Ingress never targets the apps-bridge port', () => {
+    const docs = helmTemplate([...APPS_BRIDGE_ON, ...ingressArgs]);
+    // Non-vacuity: the port is on the Service the Ingress points at.
+    expect((hostService(docs)?.spec?.ports ?? []).map((p: { name?: string }) => p.name)).toContain('apps-bridge');
+    const ingresses = docs.filter((d) => d.kind === 'Ingress');
+    expect(ingresses).toHaveLength(1);
+    const backends = (ingresses[0]!.spec?.rules as Array<{ http: { paths: Array<{ backend: { service: { port: { name?: string; number?: number } } } }> } }>)
+      .flatMap((r) => r.http.paths.map((p) => p.backend.service.port));
+    expect(backends.length).toBeGreaterThan(0);
+    for (const port of backends) {
+      expect(port.name).not.toBe('apps-bridge');
+      expect(port.number).not.toBe(BRIDGE_PORT);
+    }
+    expect(allStrings(ingresses).filter((s) => /apps.?bridge/i.test(s))).toEqual([]);
+    expect(numbersIn(ingresses)).not.toContain(BRIDGE_PORT);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TASK-504 — a QUOTED boolean must never turn a gate ON.
 //
@@ -1616,8 +1890,8 @@ const QUOTED_BOOL_CONTEXT: readonly string[] = [
 ];
 
 /**
- * Per-gate additions to the context above, for gates whose only observable
- * effect is on ANOTHER gate. `sandbox.devServices.enabled` renders no manifest
+ * Per-gate additions to the context above, for gates that need more than it
+ * to render anything worth comparing. `sandbox.devServices.enabled` renders no manifest
  * of its own — its teeth are the 1.29+ SidecarContainers guard — so it is only
  * measurable with the skip flag off. The shared context has to leave that flag
  * ON (or every other row in the matrix would fail the guard and compare one
@@ -1625,6 +1899,9 @@ const QUOTED_BOOL_CONTEXT: readonly string[] = [
  */
 const PER_GATE_CONTEXT: Readonly<Record<string, readonly string[]>> = {
   'sandbox.devServices.enabled': ['--set', 'sandbox.devServices.skipKubeVersionCheck=false'],
+  // Switched on with a required value blank, the bridge fails the render, so
+  // "true" would compare one error against another. The fixture fills them in.
+  'appsBridge.enabled': APPS_BRIDGE_ON,
 };
 
 describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', () => {

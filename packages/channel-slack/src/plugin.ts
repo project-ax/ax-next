@@ -105,14 +105,13 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        settings: its own bot and the channels the bot answers in; any
 //        member reads (agent-routes.ts)
 //   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,/rename,/icon,
-//        /remember,/replace-token,/claim} — the agent's own Slack bot
-//        (TASK-1167, bots.ts): a team admin of its team asks for it, picks it
-//        back up in Slack, cancels it, or disconnects it (TASK-1172), and once
-//        it's live renames it or changes its picture (TASK-1171,
-//        bot-changes.ts) with its approver's token, flips the memory switch of
-//        a channel it has answered in (TASK-1180), replaces their own token if
-//        they are its approver, or claims it once its requester is no longer
-//        a team admin (TASK-1173); CSRF-checked
+//        /replace-token,/claim} — the agent's own Slack bot (TASK-1167,
+//        bots.ts): a team admin of its team asks for it, picks it back up in
+//        Slack, cancels it, or disconnects it (TASK-1172), and once it's live
+//        renames it or changes its picture (TASK-1171, bot-changes.ts) with
+//        its approver's token, replaces their own token if they are its
+//        approver, or claims it once its requester is no longer a team admin
+//        (TASK-1173); CSRF-checked
 //   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
 //        to approve it, without a token, and takes that ask back (TASK-1169,
 //        bot-requests.ts); CSRF-checked
@@ -153,20 +152,18 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // in a channel runs no turn, and an admitted sender is told privately to DM
 // it, or to invite the team agent's own bot.
 //
-// Each bot channel has a "remember" switch, for what members say:
-// what outsiders say is never remembered. Before a channel turn's agent
-// runs, its conversation is recorded in `channel_slack_v1_threads` with the
-// switch as it is then and whether it is outsiders' (router.ts), and a
-// `memory:pre-capture` subscriber (capture-veto.ts) refuses memory every
-// outsiders' thread, any thread that had a turn while the switch was off,
-// for good, and any thread whose channel is switched off or no longer
-// connected to its agent. Memory asks before every extraction pass and every
-// `memory_note`, so the veto stops both. A member's turn also records the
-// names its sender label shows, and the veto answers a thread it lets
-// through with them, so memory stores nothing said there under the
-// speaker's name (TASK-1146). The agent's switch for a channel is kept
-// after a Disconnect, so a bot that binds the channel again starts where the
-// team left it (TASK-1180).
+// What members say in a bot's channels is remembered, except in a private
+// one (TASK-1188); what outsiders say never is. Before a channel turn's
+// agent runs, its conversation is recorded in `channel_slack_v1_threads`,
+// with whether the channel is private then and whether the thread is
+// outsiders' (router.ts), and a `memory:pre-capture` subscriber
+// (capture-veto.ts) refuses memory every outsiders' thread, any thread that
+// had a turn while its channel was private, for good, and any thread whose
+// channel is private now or no longer connected to its agent. Memory asks
+// before every extraction pass and every `memory_note`, so the veto stops
+// both. A member's turn also records the names its sender label shows, and
+// the veto answers a thread it lets through with them, so memory stores
+// nothing said there under the speaker's name (TASK-1146).
 //
 // TASK-1170: a team admin's ask for their agent's own bot has the shared bot
 // DM every AX admin it can find in the workspace (`auth:list-admins`, each
@@ -341,7 +338,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
       });
       const logger = initCtx.logger;
 
-      // TASK-1094: the memory switch's veto (capture-veto.ts), subscribed
+      // TASK-1094: the capture veto (capture-veto.ts), subscribed
       // FIRST, before the database is ready, as @ax/routines does with its
       // own: ipc-http listens from its own init, so a runner reporting into a
       // freshly restarted host can end a turn, and start a memory pass, while
