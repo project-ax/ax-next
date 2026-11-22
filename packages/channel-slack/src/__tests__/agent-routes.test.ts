@@ -808,6 +808,57 @@ describe('the section', () => {
     }
   });
 
+  it("a team agent's status names its team for the viewer when the teams service knows it, and leaves it out otherwise (TASK-1203)", async () => {
+    const w = world();
+    // No teams service at all: no name, and the answer is what it always was.
+    const bare = await w.status(SUPPORT.id, ADA);
+    expect(bare.body).not.toHaveProperty('teamName');
+
+    const asked: string[] = [];
+    w.bus.registerService('teams:list-for-user', '@ax/teams', async (_ctx, raw) => {
+      const userId = (raw as { userId: string }).userId;
+      asked.push(userId);
+      return {
+        teams: w.people
+          .teamsOf(userId)
+          .map((id) => ({ id, displayName: id === SUPPORT_TEAM ? 'Customer Care' : 'Sales', createdBy: ADA.id, createdAt: new Date(0) })),
+      };
+    });
+    const named = await w.status(SUPPORT.id, ADA);
+    expect(named.status).toBe(200);
+    expect(named.body).toMatchObject({ state: 'ready', teamName: 'Customer Care' });
+    // A plain member sees it too, and the person asked is the viewer.
+    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ body: { teamName: 'Customer Care' } });
+    expect(asked).toEqual([ADA.id, MEL.id]);
+
+    // Not connected to Slack: the card still shows, so the answer still names the team.
+    w.state.install = null;
+    expect(await w.status(SUPPORT.id, ADA)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: true, bot: NO_BOT, teamName: 'Customer Care' },
+    });
+
+    // A personal agent has no team, and the answer says none.
+    w.state.install = { ...INSTALL };
+    const personal = await w.status(PATS.id, PAT);
+    expect(personal.body).not.toHaveProperty('teamName');
+  });
+
+  it("a team name the teams service can't give is left out, and the status still answers (TASK-1203)", async () => {
+    const w = world();
+    w.bus.registerService('teams:list-for-user', '@ax/teams', async () => {
+      throw new Error('boom: Customer Care');
+    });
+    const out = await w.status(SUPPORT.id, ADA);
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({ state: 'ready', canManage: true });
+    expect(out.body).not.toHaveProperty('teamName');
+    // The fault is logged by code only: never the error's words.
+    const warned = w.lines.filter((l) => l.level === 'warn');
+    expect(warned).toHaveLength(1);
+    expect(JSON.stringify(warned)).not.toContain('Customer Care');
+  });
+
   it('no-workspace says whether the person reading manages the agent: a team admin true, a member false, a personal agent false', async () => {
     const noWorkspace = (canManage: boolean) => ({ status: 200, body: { state: 'no-workspace', canManage, bot: NO_BOT } });
     // Even under an agents rule that WOULD let a workspace admin through.

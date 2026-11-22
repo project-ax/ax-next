@@ -58,8 +58,9 @@ const LIVE_BOT: AgentSlackBot = {
   installId: BOT_ID,
 };
 
-function ready(canManage = true, bot: AgentSlackBot = NO_BOT): AgentSlackRead {
-  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, bot };
+/** `teamName`: the team the status names (the words scan runs with it set); `null` leaves it out. */
+function ready(canManage = true, bot: AgentSlackBot = NO_BOT, teamName: string | null = 'Support'): AgentSlackRead {
+  return { state: 'ready', botName: 'canopy', workspaceName: 'Acme', canManage, bot, ...(teamName !== null ? { teamName } : {}) };
 }
 
 function renderIt(status: AgentSlackRead) {
@@ -185,7 +186,7 @@ describe("the agent's own bot, in the ready section", () => {
     const heading = await liveTitle('@quill');
     const card = heading.closest('[data-slot="card"]') as HTMLElement;
     expect(
-      within(card).getByText('@quill has answered in these channels. It remembers what team members say in public channels, never in private ones.'),
+      within(card).getByText('@quill has answered in these channels.'),
     ).toBeInTheDocument();
     const list = within(card).getByRole('list', { name: 'Channels @quill has answered in' });
     expect(within(list).getByText('help')).toBeInTheDocument();
@@ -504,6 +505,36 @@ describe('a bot set up again (TASK-1173)', () => {
   });
 });
 
+describe("what the agent hears is shared with its team (TASK-1203)", () => {
+  const SHARED = 'What Quill hears is shared with everyone on Support, and Quill may bring it up elsewhere.';
+  const SHARED_NO_TEAM = 'What Quill hears is shared with everyone on its team, and Quill may bring it up elsewhere.';
+
+  it("a manager's form says it by the agent's name, with the team the status named", async () => {
+    renderIt(ready(true, NO_BOT));
+    await screen.findByRole('button', { name: 'Add to Slack' });
+    expect(screen.getByText(SHARED)).toBeInTheDocument();
+  });
+
+  it("the live card says it by the agent's name, not the bot's @handle", async () => {
+    renderIt(ready(true, LIVE_BOT));
+    await liveTitle('@quill');
+    expect(screen.getByText(SHARED)).toBeInTheDocument();
+    expect(screen.queryByText(/What @quill hears/)).toBeNull();
+  });
+
+  it('with Slack not connected, a live bot still says it', async () => {
+    renderIt({ state: 'no-workspace', canManage: true, bot: LIVE_BOT, teamName: 'Support' });
+    await liveTitle('@quill');
+    expect(screen.getByText(SHARED)).toBeInTheDocument();
+  });
+
+  it("a status without a team name says 'its team'", async () => {
+    renderIt(ready(true, LIVE_BOT, null));
+    await liveTitle('@quill');
+    expect(screen.getByText(SHARED_NO_TEAM)).toBeInTheDocument();
+  });
+});
+
 describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
   const BOT_SUPPORT: BotChannelRow = { channelId: 'C0BOTSUP01', name: 'help' };
   const BOT_OPS: BotChannelRow = { channelId: 'C0BOTOPS01', name: 'ops-desk' };
@@ -512,7 +543,7 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
   const withBotChannels = (read: AgentSlackRead, botChannels: BotChannelRow[]) =>
     ({ ...read, botChannels }) as AgentSlackRead;
   const botList = () => screen.findByRole('list', { name: 'Channels @quill has answered in' });
-  const LEAD = '@quill has answered in these channels. It remembers what team members say in public channels, never in private ones.';
+  const LEAD = '@quill has answered in these channels.';
 
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -547,30 +578,18 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
     expect(slackCardWordsFound(slackCardText(list))).toEqual([]);
   });
 
-  // TASK-1188 (design §4b.3): the agent answers in a private channel and never remembers it, so its row says that
-  // instead of offering a memory setting that would change nothing: no "Not remembered", no ⋯.
+  // TASK-1203: a private channel is remembered like any other, so its row says nothing about privacy. A host one
+  // deploy behind still sends `isPrivate`: the SPA ignores it.
   it.each([
     ['a manager', true],
     ['a member', false],
-  ] as const)("%s sees a private channel's row say it isn't remembered, with no ⋯", async (_who, canManage) => {
-    const privateRoom: BotChannelRow = { channelId: 'C0BOTPRV01', name: 'leads', isPrivate: true };
+  ] as const)("%s sees a private-flagged row drawn like the rest: no note, no ⋯", async (_who, canManage) => {
+    const privateRoom = { channelId: 'C0BOTPRV01', name: 'leads', isPrivate: true } as BotChannelRow;
     renderIt(withBotChannels(ready(canManage, LIVE_BOT), [privateRoom, BOT_SUPPORT]));
     const list = await botList();
-    const rows = within(list).getAllByRole('listitem');
-    expect(within(rows[0]!).getByText("Private channels aren't remembered.")).toBeInTheDocument();
-    expect(within(rows[0]!).queryByText('Not remembered')).toBeNull();
-    expect(within(rows[0]!).queryByRole('button')).toBeNull();
-    // The public row beside it says nothing about memory, and has no ⋯ either.
-    expect(within(rows[1]!).queryByText("Private channels aren't remembered.")).toBeNull();
-    expect(within(rows[1]!).queryByRole('button')).toBeNull();
-  });
-
-  it("a private channel a host still sends with its setting off says only that it isn't remembered", async () => {
-    const privateOff = { channelId: 'C0BOTPRV02', name: 'leads', remember: false, isPrivate: true } as BotChannelRow;
-    renderIt(withBotChannels(ready(true, LIVE_BOT), [privateOff]));
-    const list = await botList();
-    expect(within(list).getByText("Private channels aren't remembered.")).toBeInTheDocument();
-    expect(within(list).queryByText('Not remembered')).toBeNull();
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByText("Private channels aren't remembered.")).toBeNull();
+    expect(screen.queryByText(/never in private ones/)).toBeNull();
     expect(within(list).queryByRole('button')).toBeNull();
   });
 
@@ -598,9 +617,7 @@ describe("the agent's own bot's channels (TASK-1180, TASK-1187)", () => {
 
   it('with no handle, the line names the bot', async () => {
     renderIt(withBotChannels(ready(true, { ...LIVE_BOT, handle: null }), [BOT_SUPPORT]));
-    expect(
-      await screen.findByText('Quill has answered in these channels. It remembers what team members say in public channels, never in private ones.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('Quill has answered in these channels.')).toBeInTheDocument();
   });
 });
 
