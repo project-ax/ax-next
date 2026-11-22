@@ -84,6 +84,28 @@ describe('DISPATCHER_DEPENDENCIES', () => {
     ).toEqual([]);
   });
 
+  it('no ipc-core handler calls proxy:add-host; the only proxy: hooks are the two read-and-clear drains (TASK-37, TASK-1199)', () => {
+    // proxy:add-host WIDENS a session's egress allowlist, so it is reachable
+    // only from a person's own click (channel-web's allow-host route, a Slack
+    // host prompt). A runner that could call it would allow itself any host.
+    // TASK-1199 put a second proxy drain next to the first; neither widens
+    // anything. Same reasoning and caveat as the auth: test above: the
+    // dependency-sync scan makes these lists cover every handler call, and
+    // tool:execute:<name> host tools are out of this test's reach.
+    const hooks = [
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+      ...DISPATCHER_DEPENDENCIES.optionalCalls.map((oc) => oc.hook),
+      ...DISPATCHER_DEPENDENCIES.dynamicCallPatterns,
+    ];
+    expect(hooks.filter((h) => h.startsWith('proxy:')).sort()).toEqual([
+      'proxy:drain-session-allowed-hosts',
+      'proxy:drain-session-egress-blocks',
+    ]);
+    expect(
+      DISPATCHER_DEPENDENCIES.dynamicCallPatterns.filter((p) => 'proxy:add-host'.startsWith(p)),
+    ).toEqual([]);
+  });
+
   it('does NOT list any dynamic-pattern hook in requiredCalls or optionalCalls', () => {
     // tool:execute:<name> can't be enumerated at manifest time; it must live
     // in dynamicCallPatterns only, never in the named-hook lists (verifyCalls

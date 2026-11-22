@@ -88,6 +88,11 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // Single in-memory map read host-side. 5 s is generous; this rides the hot
   // tool-loop path, so fail-fast (and skip the note) beats stalling a turn.
   'proxy.drain-egress-blocks': 5_000,
+  // TASK-1199: `proxy.drain-allowed-hosts` — the runner drains at the start of
+  // each person's turn; fail fast and skip the line. Same shape as the egress
+  // drain above (empty request, a small string array back, one in-memory map
+  // read host-side).
+  'proxy.drain-allowed-hosts': 5_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */
