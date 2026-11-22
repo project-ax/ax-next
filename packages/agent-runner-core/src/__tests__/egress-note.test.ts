@@ -54,7 +54,7 @@ describe('buildEgressAllowedNote', () => {
 describe('buildEgressBlockNote', () => {
   it('N6: is the exact note: blocked, not transient until allowed, what to do, and what an Allow looks like', () => {
     expect(buildEgressBlockNote(['api.example.com'])).toBe(
-      '⚠️ Network egress was BLOCKED by policy for: `api.example.com`. This is NOT a transient error: until the host is allowed, retrying, a different install method, or another mirror will NOT help. The sandbox can only reach hosts on its allowlist. What to do: stop retrying and tell the user which host(s) to allow — they can approve the "Allow access" card if one is shown, or add the host(s) to the relevant connector\'s or skill\'s `allowedHosts`. If the user allows a host, a system line at the start of their next message will say so, and you can retry then. If they ask you to try again, do.',
+      '⚠️ Network egress was BLOCKED by policy for: `api.example.com`. This is NOT a transient error: until the host is allowed, retrying, a different install method, or another mirror will NOT help. The sandbox can only reach hosts on its allowlist. What to do: stop retrying and tell the user which host(s) to allow — they can approve the "Allow access" card if one is shown, or add the host(s) to the relevant connector\'s or skill\'s `allowedHosts`. If the user allows a host, a system line at the start of their next message will say so, and you can retry then. If they tell you they allowed it, or ask you to try again, do.',
     );
   });
 
@@ -68,7 +68,7 @@ describe('buildEgressBlockNote', () => {
     // Not vacuous: today's note does have such a sentence.
     expect(hopeless.length).toBeGreaterThan(0);
     for (const sentence of hopeless) expect(sentence).toContain('until the host is allowed');
-    expect(note).toContain('If they ask you to try again, do.');
+    expect(note).toContain('If they tell you they allowed it, or ask you to try again, do.');
   });
 
   it('N8: a GitHub block still ends with the release-assets heads-up', () => {

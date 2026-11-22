@@ -38,7 +38,7 @@ export function buildEgressBlockNote(hosts: string[]): string {
   lines.push(
     `This is NOT a transient error: until the host is allowed, retrying, a different install method, or another mirror will NOT help. The sandbox can only reach hosts on its allowlist.`,
     `What to do: stop retrying and tell the user which host(s) to allow — they can approve the "Allow access" card if one is shown, or add the host(s) to the relevant connector's or skill's \`allowedHosts\`.`,
-    `If the user allows a host, a system line at the start of their next message will say so, and you can retry then. If they ask you to try again, do.`,
+    `If the user allows a host, a system line at the start of their next message will say so, and you can retry then. If they tell you they allowed it, or ask you to try again, do.`,
   );
   // The dominant case: a prebuilt-binary CLI (an npm wrapper) downloading from a
   // GitHub release. The agent usually sees github.com blocked first, before the
