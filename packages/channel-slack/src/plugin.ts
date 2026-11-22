@@ -41,12 +41,16 @@ import {
   INTERACTIONS_MAX_BODY_BYTES,
   MAX_EXTERNAL_TURNS_PER_CHANNEL,
   MAX_TURNS_PER_CONVERSATION,
+  MENTION_LOOKUPS_PER_MESSAGE,
+  MENTION_NAME_CACHE_MAX,
+  MENTION_NAME_TTL_MS,
   PROMPT_MAX,
   PROMPT_TTL_MS,
   SIGNING_SECRET_CACHE_MAX,
   SIGNING_SECRET_CACHE_TTL_MS,
 } from './limits.js';
 import { logCode } from './log-code.js';
+import { createMentionNames } from './mention-names.js';
 import { runMigrations, type ChannelSlackDatabase } from './migrations.js';
 import { createMutex } from './mutex.js';
 import { createHostAnswer, createSkillAnswer } from './permission-prompts.js';
@@ -398,6 +402,14 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // turn starts, and again before an Allow carries a held turn on
         // (answers.ts, TASK-1188). One instance, so both share its kept answers.
         const channelCheck = createChannelCheck({ api, now, ttlMs: CHANNEL_CHECK_TTL_MS, max: CHANNEL_CHECK_MAX });
+        // Names for the people a message mentions (TASK-1190), kept across turns.
+        const mentionNames = createMentionNames({
+          api,
+          now,
+          ttlMs: MENTION_NAME_TTL_MS,
+          max: MENTION_NAME_CACHE_MAX,
+          perMessage: MENTION_LOOKUPS_PER_MESSAGE,
+        });
 
         // What a turn, and the follow-up to an Allow, run on: one set, so both
         // post prompts into, and stream replies to, the same registries.
@@ -507,6 +519,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 channels: channelStore,
                 externalQueue,
                 channelCheck,
+                mentionNames,
               }),
               logger,
               now,

@@ -93,6 +93,17 @@ function displayNameOf(user: Record<string, unknown>): string {
 }
 
 /**
+ * Pure. The name a users.info answer gives `userId`, cleaned as a sender's is
+ * (`cleanSenderName`), or '' when the answer isn't an object about that id
+ * or holds nothing printable. For naming someone a message mentions
+ * (mention-names.ts, TASK-1190): display text only, and nothing is admitted.
+ */
+export function mentionedUserName(user: unknown, userId: string): string {
+  if (!isRecord(user) || user['id'] !== userId) return '';
+  return displayNameOf(user);
+}
+
+/**
  * Pure. Admit a users.info `user` object for the install's workspace, or say
  * why not. The first rule that fires wins:
  *   1. not an object → lookup-failed

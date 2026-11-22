@@ -11,8 +11,9 @@ import { PROMPT_SUBJECT_MAX, SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.
  * to ping people or a whole channel and keeps every message under Slack's
  * caps.
  *
- * And for text coming IN: `decodeSlackEntities`, so the agent reads a
- * message as its sender typed it, and the sender labels in front of it.
+ * And for text coming IN: `inboundText`, so the agent reads a message as
+ * its sender typed it, with the people it mentions named (TASK-1190), and
+ * the sender labels in front of it.
  */
 
 const ZERO_WIDTH_SPACE = '\u200B';
@@ -238,7 +239,8 @@ export function mrkdwnEscape(text: string): string {
 }
 
 /**
- * A message's text as its sender typed it. Slack escapes exactly three
+ * Slack's three entities undone, and nothing else (`inboundText` is what a
+ * turn's text goes through: it also names mentioned people). Slack escapes exactly three
  * characters in message text, `&` `<` `>` as `&amp;` `&lt;` `&gt;`, so that
  * its own references (`<@U…>`, `<#C…>`, `<url|label>`) can't be confused
  * with typed text. This undoes those three, in one left-to-right pass, so a
@@ -250,17 +252,70 @@ export function decodeSlackEntities(text: string): string {
 }
 
 /**
+ * A user reference in message text, as Slack writes it: `<@U…>`, or
+ * `<@U…|label>`. A typed `<` reaches us as `&lt;`, so this is always Slack's
+ * own. The id is matched only in SLACK_ID_RE's alphabet; anything else stays
+ * as it is.
+ */
+const USER_REFERENCE = /<@([A-Za-z0-9._-]{1,64})(?:\|[^>]*)?>/g;
+/** A user reference, or one of the three entities Slack escapes (`decodeSlackEntities`). */
+const INBOUND_TOKEN = new RegExp(`${USER_REFERENCE.source}|&(amp|lt|gt);`, 'g');
+
+/** What a mention reads as when nobody could be named for it (TASK-1190). */
+export const UNNAMED_MENTION = 'someone';
+
+/** The ids a message's user references name, each once, in order. */
+export function mentionedUserIds(text: string): string[] {
+  const ids: string[] = [];
+  for (const m of text.matchAll(USER_REFERENCE)) {
+    const id = m[1];
+    if (id !== undefined && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * A message's text as the agent reads it (TASK-1190): Slack's entities
+ * undone as `decodeSlackEntities` does, and each user reference, `<@U…>` or
+ * `<@U…|label>`, written as `@[` the name `names` holds for its id `]`, or
+ * `@someone` when it holds none. The brackets mark where another person's
+ * Slack name ends and the sender's words go on: the names are
+ * `cleanSenderName`'d, which leaves no bracket in them, so a name can't close
+ * its own early and pass its tail off as the sender's request. Never the raw id: an agent can't tell who
+ * one is (the TASK-1189 walk: a bot read its own id as somebody else's).
+ * One left-to-right pass, so a typed `&lt;@U1&gt;` stays the text it was and a
+ * name is never decoded again. The names are display text the caller
+ * cleaned; Slack's `|label` is never read.
+ */
+export function inboundText(text: string, names: ReadonlyMap<string, string>): string {
+  return text.replace(
+    INBOUND_TOKEN,
+    (whole, id: string | undefined, entity: string | undefined) => {
+      if (id !== undefined) {
+        const name = names.get(id);
+        return name !== undefined && name !== '' ? `@[${name}]` : `@${UNNAMED_MENTION}`;
+      }
+      return (entity !== undefined ? SLACK_ENTITIES[entity] : undefined) ?? whole;
+    },
+  );
+}
+
+/**
  * A Slack display name, made fit for the sender labels (`dmSenderLabel`,
  * `channelSenderLabel`): no
- * control, bidi or invisible characters, no brackets or parentheses (so a
- * name can't close the label early and start a second one), single spaces,
+ * control, bidi or invisible characters, no brackets or parentheses of any
+ * script (Unicode's opening and closing punctuation, so fullwidth `（` and
+ * `［` too: a name can't close the label, or a mention's `@[…]`, early and
+ * start a second one; nor spell a mention's "(you)" with them, TASK-1190;
+ * a few symbol lookalikes such as `⎛ ⎞` are not punctuation and remain),
+ * single spaces,
  * at most SENDER_NAME_MAX code units. Empty when nothing printable is left.
  * The name is the sender's own Slack profile text: untrusted, for the model
  * to read, never used for identity.
  */
 export function cleanSenderName(raw: string): string {
   const flat = replaceSurfaceRewriters(raw)
-    .replace(/[[\]()]/g, ' ')
+    .replace(/[\p{Ps}\p{Pe}]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return clampCodeUnits(flat, SENDER_NAME_MAX).trimEnd();

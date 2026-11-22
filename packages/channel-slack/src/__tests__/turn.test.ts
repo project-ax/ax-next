@@ -374,6 +374,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     conversationId: 'conv_support_thread',
     // As Slack sends `is x < 3?`.
     text: 'is x &lt; 3?',
+    names: new Map(),
   });
 
   /** The invoked turn's own events, sent by the test: under the first invoke's reqId. */

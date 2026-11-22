@@ -16,9 +16,10 @@ import type { ChannelBinding, ChannelStore } from './channel-store.js';
 import { agentAccess, connectable, teamAdminAccess, type AgentAccess } from './channels.js';
 import { COPY } from './copy.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
-import { channelSenderLabel, dmSenderLabel, senderLabelNames } from './format.js';
+import { channelSenderLabel, cleanSenderName, dmSenderLabel, mentionedUserIds, senderLabelNames } from './format.js';
 import { cleanChannelName } from './label.js';
 import { logCode } from './log-code.js';
+import type { MentionNames } from './mention-names.js';
 import type { SecretStore } from './secrets.js';
 import type { SlackChannel } from './slack-api.js';
 import type { InstallRow, InstallStore } from './store.js';
@@ -180,6 +181,12 @@ export interface RouterDeps extends TurnDeps {
    * (channel-check.ts, TASK-1184).
    */
   channelCheck: ChannelCheck;
+  /**
+   * Names for the people a message mentions, so the agent reads `@moss`, not
+   * `<@U…>` (mention-names.ts, TASK-1190): asked when each turn starts, with
+   * the install's bot token, a few calls a message, kept for minutes.
+   */
+  mentionNames: MentionNames;
 }
 
 type Log = (level: 'info' | 'warn' | 'error', msg: string, fields?: Record<string, string | number>) => void;
@@ -402,6 +409,10 @@ async function routeDm(
       log('info', 'slack_turns_dropped', { reason: 'disconnected', count: 1 });
       return;
     }
+    // The shared app is the agent's voice here, so its own user is "(you)" too.
+    const known = new Map([[screened.sender, admission.name]]);
+    if (install.botUserId !== null && install.botUserId !== '') known.set(install.botUserId, ownMentionName(install));
+    const names = await mentionNamesFor(d, installId, botToken, teamId, screened.text, known, log);
     await runTurn(d, {
       mode: 'dm',
       label: dmSenderLabel(admission.name, screened.sender),
@@ -417,6 +428,7 @@ async function routeDm(
       // A DM is no channel's thread: memory learns from it (capture-veto.ts has no opinion).
       remembered: true,
       text: screened.text,
+      names,
     });
   });
   if (queued === 'full') {
@@ -437,6 +449,45 @@ function withoutOwnMention(text: string, botUserId: string | null): string {
   if (botUserId === null || botUserId === '') return text;
   const id = botUserId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return text.replace(new RegExp(`<@${id}(?:\\|[^>]*)?>`, 'g'), '');
+}
+
+/**
+ * What the bot's own user reads as in its agent's text (TASK-1190): the
+ * @handle people type, else its name, cleaned like any Slack name, then
+ * "(you)". Just "you" when neither has anything printable.
+ */
+function ownMentionName(install: InstallRow): string {
+  const name = cleanSenderName(install.botHandle ?? install.botName);
+  return name === '' ? 'you' : `${name} (you)`;
+}
+
+/**
+ * The names for the `<@U…>`s in `text` (mention-names.ts): `known` costs no
+ * call. Lookups that failed, and ids left unasked (past the per-message
+ * limit, or while Slack rate-limits us), are logged by count and code, never
+ * by id or name, and their mentions read `@someone`.
+ */
+async function mentionNamesFor(
+  d: RouterDeps,
+  installId: string,
+  botToken: string,
+  teamId: string,
+  text: string,
+  known: ReadonlyMap<string, string>,
+  log: Log,
+): Promise<ReadonlyMap<string, string>> {
+  const ids = mentionedUserIds(text);
+  if (ids.length === 0) return new Map();
+  const found = await d.mentionNames.lookup({ installId, botToken, teamId, ids, known });
+  if (found.failed > 0 || found.capped > 0 || found.paused > 0) {
+    log(found.failed > 0 ? 'warn' : 'info', 'slack_mention_names_missed', {
+      failed: found.failed,
+      capped: found.capped,
+      paused: found.paused,
+      ...(found.code !== undefined ? { code: found.code } : {}),
+    });
+  }
+  return found.names;
 }
 
 /** How the steps before a mention's turn speak to its sender. */
@@ -757,6 +808,15 @@ async function routeMention(
       // Its own name: every `slack_event_failed` means the event's work stopped, and this turn still runs.
       log('warn', 'slack_thread_read_failed', { code: logCode(err) });
     }
+    // Who the message names, the bot itself included: its own user reads as
+    // `@[<handle> (you)]`, so an agent knows when it was the one named. A
+    // looked-up name is cleaned (cleanSenderName: no Unicode brackets or
+    // parentheses), so it can't leave its `@[…]` or spell "(you)" with them.
+    const known = new Map([[m.sender, admission.name]]);
+    if (install.botUserId !== null && install.botUserId !== '') {
+      known.set(install.botUserId, ownMentionName(install));
+    }
+    const names = await mentionNamesFor(d, installId, botToken, teamId, m.text, known, log);
     await runTurn(d, {
       mode: external ? 'external' : 'attended',
       label: channelSenderLabel(now.channelName || m.channel, admission.name, m.sender),
@@ -771,6 +831,7 @@ async function routeMention(
       conversationId,
       remembered,
       text: m.text,
+      names,
     });
   };
 
@@ -811,7 +872,7 @@ async function admitMention(
   }
   // Slack's app_mention text always holds the bot's own `<@U…>`, so a bare
   // `@bot` is that token alone: words only once it is gone. The content sent
-  // on is still the text as typed, the token included.
+  // on keeps it, read as the bot's own name and "(you)" (TASK-1190).
   if (withoutOwnMention(m.text, install.botUserId).trim().length === 0) {
     log('info', 'slack_event_ignored', { reason: 'empty' });
     return null;
