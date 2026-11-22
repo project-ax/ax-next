@@ -101,7 +101,7 @@ Agent: (fetch status.example.com → proxy 403)
        └───────────────────────────────────────────┘
 ```
 
-- Granting widens the **live** session allowlist (`proxy:add-host`, §11.4) — **no re-spawn**; the agent retries.
+- Granting widens the **live** session allowlist (`proxy:add-host`, §11.4) — **no re-spawn**. Nothing resumes the turn: when the person next writes in that session, the runner opens the turn with a "now allowed" system line (TASK-1199), and the agent retries then.
 - "Always" persists to a per-`(user, agent)` grant list, revocable in settings.
 
 ### C. Open mode (agent authors a skill)
@@ -132,7 +132,7 @@ Re-editing later = author a *new draft* and **re-submit** (re-runs review). The 
 
 | Acquisition | Re-spawn? | Mechanism |
 |---|---|---|
-| **Host grant** (wall) | **No** | widen live allowlist (`proxy:add-host`) + model retries |
+| **Host grant** (wall) | **No** | widen live allowlist (`proxy:add-host`); the agent is told at its next turn in that session (TASK-1199) and retries |
 | **Skill install / author** | **Yes** | the SDK reads skills/MCP/env only at init, so a fresh skill needs a re-init |
 
 For the skill case, **seamless feel on Opt-2 plumbing**:

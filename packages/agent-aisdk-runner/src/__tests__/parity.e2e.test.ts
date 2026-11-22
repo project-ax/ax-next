@@ -58,6 +58,8 @@ let toolCatalog: unknown[];
 let preCallVerdicts: Record<string, { verdict: 'allow' | 'reject'; reason?: string }>;
 /** Hosts `proxy.drain-egress-blocks` reports. */
 let egressBlockedHosts: string[];
+/** Hosts `proxy.drain-allowed-hosts` reports (TASK-1199). */
+let allowedHosts: string[];
 /** What `attachments.list` reports, and the bytes `blob.get` serves for each. */
 let uploadedFiles: AttachmentsListResponse['files'];
 let blobBytes: Map<string, Buffer>;
@@ -269,6 +271,7 @@ beforeEach(async () => {
   toolCatalog = [];
   preCallVerdicts = {};
   egressBlockedHosts = [];
+  allowedHosts = [];
   uploadedFiles = [];
   blobBytes = new Map();
   sentPrompts = [];
@@ -330,6 +333,8 @@ beforeEach(async () => {
           return { output: 'host tool output' };
         case 'proxy.drain-egress-blocks':
           return { hosts: egressBlockedHosts };
+        case 'proxy.drain-allowed-hosts':
+          return { hosts: allowedHosts };
         case 'conversation.store-runner-session':
           return {};
         default:
@@ -712,6 +717,25 @@ describe('aisdk runner — parity', () => {
 
     const toolResult = shippedEntries().find((e) => e.role === 'tool');
     expect(JSON.stringify(toolResult)).toContain('registry.npmjs.org');
+  });
+
+  it('opens the turn with the now-allowed line when a host was allowed since the last turn (TASK-1199)', async () => {
+    allowedHosts = ['example.com'];
+    scriptedModel.mockReturnValue(modelReplaying([textStep('trying again')]));
+    inboxEntries = [userMessage('try again')];
+
+    await expect(main()).resolves.toBe(0);
+
+    // The prompt the provider actually received: its last user message starts
+    // with the line, then the person's words.
+    const users = (sentPrompts[0] as Array<{ role: string; content: unknown }>).filter(
+      (m) => m.role === 'user',
+    );
+    const text = JSON.stringify(users[users.length - 1]!.content);
+    expect(text).toContain(
+      'System message (not from the user): network egress is now ALLOWED for: `example.com`.',
+    );
+    expect(text.indexOf('ALLOWED')).toBeLessThan(text.indexOf('try again'));
   });
 
   it('dispatches a catalog host tool over tool.execute-host', async () => {

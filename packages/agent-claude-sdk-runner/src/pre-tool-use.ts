@@ -73,8 +73,9 @@ export function createPreToolUseHook(
 
     const klass = classifySdkToolName(input.tool_name);
     if (klass.kind === 'disabled') {
-      // Defence in depth, not the enforcement path. `main.ts` passes these
-      // four names as `disallowedTools`, which the SDK documents as removing
+      // Defence in depth, not the enforcement path. `main.ts` loads only the
+      // allowlisted built-ins (the SDK `tools` option, TASK-1200) and names
+      // every other known one in `disallowedTools`, which the SDK documents as removing
       // them from the model's context entirely (sdk.d.ts:1185-1189) — so the
       // model cannot emit a call for one and this branch does not run in a
       // healthy session. It is here for the session where that list has

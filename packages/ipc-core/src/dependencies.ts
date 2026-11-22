@@ -157,6 +157,16 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'POST /proxy.drain-egress-blocks returns { hosts: [] } without calling the hook — no egress proxy means no allowlist blocks to surface; the agent simply gets no egress-block note.',
     },
     {
+      // TASK-1199 "now allowed" line. Reached on /proxy.drain-allowed-hosts, but
+      // only when @ax/credential-proxy is loaded (the k8s preset). The
+      // single-session CLI has no egress proxy, so the handler short-circuits
+      // to `{ hosts: [] }` via hasService rather than calling this hook —
+      // making it required would fail the CLI's bootstrap verifyCalls.
+      hook: 'proxy:drain-session-allowed-hosts',
+      degradation:
+        'POST /proxy.drain-allowed-hosts returns { hosts: [] } without calling the hook — no egress proxy means no live host grants; the agent simply gets no "now allowed" line.',
+    },
+    {
       // TASK-67 (out-of-git Part B / B2): the runner-side resume-transcript
       // callers. Reached on the /session.append-transcript /
       // .replace-transcript / .get-transcript routes, but only in a

@@ -5,10 +5,12 @@
 // Why this exists (TASK-245). `packages/tool-policy/src/rules.ts` hand-copies four
 // names, and `rules.test.ts` "guarded" them by comparing them against its own
 // literal — a closed loop that reads no runner and therefore notices nothing.
-// `packages/agent-claude-sdk-runner/SECURITY.md:33` tells whoever upgrades the
+// `packages/agent-claude-sdk-runner/SECURITY.md` used to tell whoever upgrades the
 // Claude Agent SDK to extend `DISABLED_BUILTINS` when a new built-in escapes the
 // sandbox's intent. Before this guard, doing exactly that left the rail silently
-// short a row and every test in the repo green.
+// short a row and every test in the repo green. (Since TASK-1200 SECURITY.md
+// sends upgraders to the runner's allowlist instead — see the KNOWN GAP note in
+// rules.ts for what this guard therefore no longer sees.)
 //
 // Why the rail is an INTERSECTION and not a copy of one runner's list: see
 // `rules.ts` (the sandbox-floor comment). The rail is runner-agnostic — it
@@ -63,9 +65,11 @@ function quotedStrings(chunk) {
 }
 
 /**
- * The claude-sdk runner's deny list: the `DISABLED_BUILTINS` array literal.
- * Enforced at `main.ts` via `disallowedTools` and refused again at both
- * refusal sites — this is the real enforcement, and the rail only describes it.
+ * The claude-sdk runner's four named denials: the `DISABLED_BUILTINS` array
+ * literal. Since TASK-1200 the runner's real enforcement is wider — an
+ * allowlist (`ALLOWED_SDK_BUILTINS`, the SDK `tools` option) keeps every other
+ * SDK built-in out too — so this guard checks the rail against these four
+ * only; it does not see the rest (see the KNOWN GAP note in rules.ts).
  */
 function claudeSdkDisabledBuiltins() {
   const src = readFileSync(CLAUDE_SDK_TOOL_NAMES, 'utf8');

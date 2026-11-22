@@ -343,6 +343,29 @@ interface DrainEgressBlocksOutput {
   hosts: string[];
 }
 
+/**
+ * `proxy:drain-session-allowed-hosts` — return AND clear the hosts a person
+ * put on the CALLER'S live session allowlist (`proxy:add-host`) since the last
+ * drain (TASK-1199). The runner drains this at the start of each person's turn
+ * and opens the turn with a "now allowed" line, so the agent learns it can
+ * retry a request that was blocked.
+ *
+ * SECURITY: the same posture as `proxy:drain-session-egress-blocks`. The
+ * session is taken from `ctx.sessionId`, NOT from a request field. Over the IPC
+ * wire ctx.sessionId is bearer-token-bound, so an agent can only drain its OWN
+ * session. A drained host is one a person allowed for this session, which the
+ * agent could learn anyway by retrying. Draining never widens egress: only
+ * `proxy:add-host` does, and it stays host-internal. The request body is
+ * therefore EMPTY by design.
+ */
+type DrainAllowedHostsInput = Record<string, never>;
+
+interface DrainAllowedHostsOutput {
+  /** Hostnames newly allowed on this session since the last drain (insertion
+   *  order, each once, capped). */
+  hosts: string[];
+}
+
 /** envName → original credential ref (so rotate can re-resolve). */
 type SessionCredentialRefs = Record<string, { ref: string; kind: string }>;
 
@@ -537,6 +560,13 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
   // private state the listener never reads.
   const egressBlocks = new SessionEgressBlockBuffer();
 
+  // TASK-1199: per-session record of hosts `proxy:add-host` newly put on a live
+  // allowlist (a person's own Allow click). proxy:drain-session-allowed-hosts
+  // drains it at the start of the person's next turn; close-session forgets
+  // the session. A second instance of the same class: the same per-session,
+  // capped, surface-once host set, with a different writer.
+  const allowedSinceDrain = new SessionEgressBlockBuffer();
+
   const caDir = config.caDir ?? join(homedir(), '.ax', 'proxy-ca');
 
   return {
@@ -549,6 +579,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         'proxy:close-session',
         'proxy:add-host',
         'proxy:drain-session-egress-blocks',
+        'proxy:drain-session-allowed-hosts',
       ],
       calls: ['credentials:get'],
       optionalCalls: [
@@ -891,6 +922,11 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           sessions.delete(sessionId);
           sessionCredentialRefs.delete(sessionId);
           egressBlocks.forget(sessionId);
+          // TASK-1199: the session's allow record dies with it, like its
+          // blocks. A session opened later starts from its own allowlist, which
+          // may not have the host, so a "now allowed" line from this record
+          // could be false.
+          allowedSinceDrain.forget(sessionId);
           // TASK-715: end the session's meter, so a tunnel that outlives the
           // session stops being admitted.
           sessionMeterClosers.get(sessionId)?.();
@@ -921,6 +957,13 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
       //     the session→owner fact (one source of truth, I4), so a forged
       //     sessionId can never widen another user's session. Capability
       //     minimized: a single host to a single session, never blanket egress.
+      //
+      //     TASK-1199: a host that was NOT already on the live allowlist is
+      //     also recorded for the runner's next turn. The runner drains the
+      //     record (proxy:drain-session-allowed-hosts, 4f) when the person
+      //     next writes in this session, and tells the agent the host is now
+      //     allowed. A host that was already there records nothing, so a
+      //     double click, web plus Slack, or a stale card tells the agent once.
       bus.registerService<AddHostInput, AddHostOutput>(
         'proxy:add-host',
         PLUGIN_NAME,
@@ -955,7 +998,10 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
               message: 'caller is not the session owner',
             });
           }
-          sess.allowlist.add(host);
+          if (!sess.allowlist.has(host)) {
+            sess.allowlist.add(host);
+            allowedSinceDrain.record(sessionId, host);
+          }
           // Return the session's agentId (the authoritative grant key for
           // TASK-44) only when present — omit the key rather than emit an
           // explicit `undefined` (exactOptionalPropertyTypes).
@@ -983,6 +1029,29 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           // note. An empty/absent ctx.sessionId drains nothing (returns []).
           const sessionId = ctx.sessionId ?? '';
           return { hosts: egressBlocks.drain(sessionId) };
+        },
+      );
+
+      // 4f. proxy:drain-session-allowed-hosts — return + clear the hosts a
+      //     person newly allowed on the CALLER'S live session (TASK-1199). The
+      //     runner drains this at the start of each person's turn and opens
+      //     the turn with a "now allowed" line.
+      //
+      //     Unlike proxy:add-host (which IS host-internal-only because it WIDENS
+      //     egress), this is safe to expose to the untrusted runner over IPC: it
+      //     mutates nothing but its own per-session buffer and returns hostnames
+      //     a person already allowed for this session, which the agent could
+      //     learn by retrying — zero egress change, zero info gain, no other
+      //     session reachable (the session is ctx.sessionId, bearer-bound by the
+      //     IPC server; the wire request body is empty).
+      bus.registerService<DrainAllowedHostsInput, DrainAllowedHostsOutput>(
+        'proxy:drain-session-allowed-hosts',
+        PLUGIN_NAME,
+        async (ctx: AgentContext) => {
+          // sessionId from ctx (NOT a request field) — see the type's security
+          // note. An empty/absent ctx.sessionId drains nothing (returns []).
+          const sessionId = ctx.sessionId ?? '';
+          return { hosts: allowedSinceDrain.drain(sessionId) };
         },
       );
     },

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ALLOWED_SDK_BUILTINS,
   CONNECTOR_TOOL_NAMESPACE_RE,
+  DENIED_SDK_BUILTINS,
   DISABLED_BUILTINS,
+  KNOWN_SDK_BUILTINS,
   DISABLED_BUILTIN_REASONS,
   MCP_HOST_SERVER_NAME,
   MCP_SANDBOX_SERVER_NAME,
@@ -15,12 +18,50 @@ describe('classifySdkToolName', () => {
     expect(classifySdkToolName('Bash')).toEqual({ kind: 'builtin', axName: 'Bash' });
   });
 
-  it('classifies an unknown built-in name as builtin (pass-through)', () => {
-    // Unknown-to-us names pass through — it may be a new SDK tool that our
-    // host-side subscribers need to see by its real name. We don't hardcode
-    // the full built-in list here.
-    expect(classifySdkToolName('Edit')).toEqual({ kind: 'builtin', axName: 'Edit' });
-    expect(classifySdkToolName('Read')).toEqual({ kind: 'builtin', axName: 'Read' });
+  it.each(ALLOWED_SDK_BUILTINS)('classifies the allowed built-in %s as builtin (pass-through)', (name) => {
+    expect(classifySdkToolName(name)).toEqual({ kind: 'builtin', axName: name });
+  });
+
+  // TASK-1200: CronCreate scheduled a sandbox-local job that skipped the
+  // routine_create hold. Every built-in outside the allowlist fails closed.
+  it.each(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger', 'SendMessage', 'Monitor', 'PushNotification', 'EnterWorktree'])(
+    'classifies %s as disabled (outside the allowlist)',
+    (name) => {
+      const klass = classifySdkToolName(name);
+      expect(klass.kind).toBe('disabled');
+      expect(klass).toMatchObject({ name });
+      if (klass.kind === 'disabled') expect(klass.reason).toContain(name);
+    },
+  );
+
+  it('fails closed on a built-in name the pinned SDK did not ship (a future tool)', () => {
+    expect(classifySdkToolName('SomeFutureTool')).toMatchObject({ kind: 'disabled', name: 'SomeFutureTool' });
+  });
+
+  it('refuses Agent (the wire name for Task) with an "Agent (Task)" sentence', () => {
+    const klass = classifySdkToolName('Agent');
+    expect(klass).toMatchObject({ kind: 'disabled', name: 'Agent' });
+    expect(klass.kind === 'disabled' && klass.reason).toMatch(/^Agent \(Task\) is disabled: it would start a helper agent/);
+  });
+
+  it('fails closed on a future built-in whatever its spelling (digits, underscores)', () => {
+    for (const name of ['Web_Fetch2', 'cron_create', 'X1']) {
+      expect(classifySdkToolName(name), name).toMatchObject({ kind: 'disabled', name });
+    }
+  });
+
+  it.each(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger'])(
+    'points a refused scheduler (%s) at routines',
+    (name) => {
+      const klass = classifySdkToolName(name);
+      expect(klass.kind === 'disabled' && klass.reason).toContain('create a routine');
+    },
+  );
+
+  it('does not send a non-scheduling refusal toward routines', () => {
+    const klass = classifySdkToolName('NotebookEdit');
+    expect(klass.kind).toBe('disabled');
+    expect(klass.kind === 'disabled' && klass.reason).not.toContain('routine');
   });
 
   it.each(DISABLED_BUILTINS)('classifies %s as disabled, carrying its own reason', (name) => {
@@ -173,10 +214,10 @@ describe('classifySdkToolName', () => {
       expect(classifySdkToolName(name)).toEqual({ kind: 'builtin', axName: name });
     });
 
-    it('does not lift a namespace-looking name without the mcp__ lead', () => {
-      expect(classifySdkToolName('xmcp__c0123456789__x')).toEqual({
-        kind: 'builtin',
-        axName: 'xmcp__c0123456789__x',
+    it('does not lift a namespace-looking name without the mcp__ lead (refused: not an allowed built-in)', () => {
+      expect(classifySdkToolName('xmcp__c0123456789__x')).toMatchObject({
+        kind: 'disabled',
+        name: 'xmcp__c0123456789__x',
       });
     });
 
@@ -209,11 +250,45 @@ describe('classifySdkToolName', () => {
     });
   });
 
-  it('treats empty string as builtin pass-through (no crash)', () => {
-    // Empty is degenerate — propagate rather than invent classification logic
-    // the host shouldn't encode. Host-side subscribers will reject nameless
-    // tool calls on their own terms.
-    expect(classifySdkToolName('')).toEqual({ kind: 'builtin', axName: '' });
+  it('refuses an empty name (fails closed, no crash)', () => {
+    // Empty is degenerate. Since TASK-1200 any non-`mcp__` name off the
+    // allowlist is refused, and '' is no exception.
+    expect(classifySdkToolName('')).toMatchObject({ kind: 'disabled', name: '' });
+  });
+});
+
+describe('the SDK built-in allowlist (TASK-1200)', () => {
+  const allowed = new Set<string>(ALLOWED_SDK_BUILTINS);
+  const denied = new Set<string>(DENIED_SDK_BUILTINS);
+
+  it('denies every known built-in that is not allowlisted, and nothing that is', () => {
+    for (const name of KNOWN_SDK_BUILTINS) {
+      expect(allowed.has(name) || denied.has(name), `${name} is neither allowed nor denied`).toBe(true);
+      expect(allowed.has(name) && denied.has(name), `${name} is both allowed and denied`).toBe(false);
+    }
+  });
+
+  it('keeps the schedulers, agent spawners and messengers out', () => {
+    for (const name of [
+      'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger',
+      'Monitor', 'PushNotification', 'SendMessage', 'TeamCreate', 'TeamDelete',
+      'Task', 'Agent', 'WebFetch', 'WebSearch', 'AskUserQuestion', 'EnterWorktree', 'ExitWorktree',
+      'ListMcpResourcesTool', 'ReadMcpResourceTool',
+    ]) {
+      expect(denied.has(name), name).toBe(true);
+      expect(allowed.has(name), name).toBe(false);
+    }
+  });
+
+  it('allowlists only known built-ins, and keeps ToolSearch and Skill', () => {
+    const known = new Set<string>(KNOWN_SDK_BUILTINS);
+    for (const name of ALLOWED_SDK_BUILTINS) expect(known.has(name), name).toBe(true);
+    expect(allowed.has('ToolSearch')).toBe(true);
+    expect(allowed.has('Skill')).toBe(true);
+  });
+
+  it('still lists the four built-ins with their own reasons (rail rows) as denied', () => {
+    for (const name of DISABLED_BUILTINS) expect(denied.has(name), name).toBe(true);
   });
 });
 

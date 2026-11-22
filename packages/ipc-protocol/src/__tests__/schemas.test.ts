@@ -13,6 +13,8 @@ import {
   ToolDescriptorSchema,
   ToolCallSchema,
   AgentMessageSchema,
+  ProxyDrainAllowedHostsRequestSchema,
+  ProxyDrainAllowedHostsResponseSchema,
 } from '../actions.js';
 import {
   EventStreamChunkSchema,
@@ -957,6 +959,26 @@ describe('conversation.store-runner-session', () => {
   });
 });
 
+describe('proxy.drain-allowed-hosts (TASK-1199)', () => {
+  it('request accepts only the empty body', () => {
+    expect(ProxyDrainAllowedHostsRequestSchema.safeParse({}).success).toBe(true);
+  });
+
+  it('request rejects a sessionId (the session comes from the bearer token, never the body)', () => {
+    expect(ProxyDrainAllowedHostsRequestSchema.safeParse({ sessionId: 's1' }).success).toBe(false);
+  });
+
+  it('response accepts { hosts }', () => {
+    expect(
+      ProxyDrainAllowedHostsResponseSchema.parse({ hosts: ['a.example.com'] }),
+    ).toEqual({ hosts: ['a.example.com'] });
+  });
+
+  it('response rejects a body with no hosts', () => {
+    expect(ProxyDrainAllowedHostsResponseSchema.safeParse({}).success).toBe(false);
+  });
+});
+
 describe('errors', () => {
   it('enum covers exactly the six codes', () => {
     const expected = [
@@ -1001,7 +1023,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the sixteen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history; TASK-995 removes the five workspace.* actions and conversation.drain-save-refusals)', () => {
+  it('IPC_TIMEOUTS_MS has the seventeen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history; TASK-995 removes the five workspace.* actions and conversation.drain-save-refusals; TASK-1199 adds proxy.drain-allowed-hosts)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -1026,6 +1048,9 @@ describe('timeouts', () => {
       // Cross-runner history reconstruction: a runner handed another runner's
       // transcript rebuilds the thread from the runner-neutral display log.
       'session.get-display-history',
+      // TASK-1199: the runner drains the hosts a person allowed on its
+      // session since the last turn, at the start of each person's turn.
+      'proxy.drain-allowed-hosts',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });
