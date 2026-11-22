@@ -38,7 +38,8 @@ import { SlackApiError, type SlackApi } from './slack-api.js';
  * `postLinkOnly` instead: its subject and a line sending the person to the
  * web app (blocks.ts `linkOnlyBlocks`), nothing to click, and nothing opened.
  *
- * Never rejects.
+ * `postPrompt` and `postLinkOnly` never reject. `postLine` (a plain line
+ * after the prompts) throws what its last try threw, for its caller to log.
  */
 
 export interface PromptPostDeps {
@@ -119,6 +120,20 @@ export async function postLinkOnly(
     logFailed(d.logger, c.installId, err);
     return false;
   }
+}
+
+/**
+ * Post a plain markdown line in the turn's thread, sent again after Slack's
+ * Retry-After when it says `ratelimited`, as a prompt is: it comes right
+ * after them, in the same burst. Throws what the last try threw; the caller
+ * logs it.
+ */
+export async function postLine(
+  d: Pick<PromptPostDeps, 'api' | 'botToken' | 'clock'>,
+  c: Pick<PromptContext, 'channel' | 'threadTs'>,
+  markdownText: string,
+): Promise<void> {
+  await retryRateLimited(d.clock, () => d.api.postMessage(d.botToken, { channel: c.channel, threadTs: c.threadTs, markdownText }));
 }
 
 /** A post that didn't land: `slack_reply_failed`, stage `prompt`, by code. */

@@ -198,6 +198,17 @@ export const COPY = {
   skillNeedsWeb: (todayLink: string) =>
     `This one needs a key or a closer look first. Finish it in the web app: ${shown(todayLink)}`,
   skillFailed: (todayLink: string) => `I couldn't connect it from here. Finish it in the web app: ${shown(todayLink)}`,
+  /*
+    After a turn's prompts, when it asked to use more skills than one reply
+    posts prompts for (PERMISSION_PROMPTS_PER_TURN_MAX; TASK-1155): how many
+    weren't shown, and that they wait in Today. Posted as markdown_text, so
+    Today is a Markdown link, as in `heldForSender`. Names no skill: it's a
+    count and the host-built link, so no outside text reaches it.
+  */
+  moreSkillsInToday: (count: number, todayLink: string) =>
+    count === 1
+      ? `I also asked to use one more skill that I couldn't show here. It's waiting for you in [Today](${todayLink}).`
+      : `I also asked to use ${count} more skills that I couldn't show here. They're waiting for you in [Today](${todayLink}).`,
 
   // ── A channel mention's private lines (mrkdwn, shown only to its sender) ──
   /*
