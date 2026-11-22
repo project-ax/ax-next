@@ -858,6 +858,12 @@ export interface AgentMemoryRead {
   factsAvailable?: boolean;
   factsVisibility?: 'personal' | 'team';
   /**
+   * TASK-1203 — the team that shares a team agent's memory, as the reader's
+   * own team list names it. Absent for personal agents and whenever it can't
+   * be read.
+   */
+  teamName?: string;
+  /**
    * Present only when the memory engine reports that it has stopped learning
    * new facts for this user (their last extraction had no model key to run
    * on). Absent means "not known to be paused", not "definitely fine".

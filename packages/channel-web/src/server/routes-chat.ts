@@ -213,7 +213,7 @@ interface AgentsListForUserInput {
 /** Minimal local re-declaration of @ax/teams' `teams:list-for-user` output
  *  (Invariant #2 — no cross-plugin import). We read only each team's id. */
 interface TeamsListForUserOutput {
-  teams: Array<{ id: string }>;
+  teams: Array<{ id: string; displayName: string }>;
 }
 interface AgentsListForUserAgent {
   id: string;
@@ -386,11 +386,11 @@ export interface ChatRouteDeps {
  * exact same read — one source of truth (invariant #4) beats two copies that
  * quietly disagree about whether team agents count.
  */
-export async function listTeamIdsForUser(
+export async function listTeamsForUser(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,
-): Promise<string[]> {
+): Promise<Array<{ id: string; displayName: string }>> {
   if (!bus.hasService('teams:list-for-user')) return [];
   try {
     const out = await bus.call<{ userId: string }, TeamsListForUserOutput>(
@@ -398,7 +398,7 @@ export async function listTeamIdsForUser(
       ctx,
       { userId },
     );
-    return out.teams.map((t) => t.id);
+    return out.teams.map((t) => ({ id: t.id, displayName: t.displayName }));
   } catch (err) {
     ctx.logger.warn('chat_list_team_ids_failed', {
       userId,
@@ -406,6 +406,14 @@ export async function listTeamIdsForUser(
     });
     return [];
   }
+}
+
+export async function listTeamIdsForUser(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+): Promise<string[]> {
+  return (await listTeamsForUser(bus, ctx, userId)).map((t) => t.id);
 }
 
 export function createChatRouteHandlers(deps: ChatRouteDeps) {

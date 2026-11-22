@@ -351,7 +351,7 @@ import {
   type DeclinableGrantKind,
 } from './grant-declines.js';
 import type { PermissionRequest } from './types.js';
-import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
+import { listTeamIdsForUser, listTeamsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 // TASK-1014 — a download streams the whole file, a range at a time, through
 // this plugin's own module (shared with TASK-1012's chat file chips, whose
 // "is it still there?" check, TASK-1017, is its length-0 sibling).
@@ -406,9 +406,14 @@ interface ResolvedAgent {
   /** TASK-739 — connectors removed from THIS agent (legacy-owned). */
   connectorExclusions?: string[];
   visibility?: 'personal' | 'team';
+  /** The owning user's or team's id. Read only to name a team agent's team; never sent out. */
+  ownerId?: string;
   /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
   runner?: string;
 }
+/** @ax/teams' `DISPLAY_NAME_MAX`, mirrored (invariant 2: no cross-plugin import). */
+const TEAM_NAME_MAX_CHARS = 128;
+
 interface AgentsResolveOutput {
   agent: ResolvedAgent;
 }
@@ -5740,6 +5745,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     }
 
+    // TASK-1203 — a team agent's chat says whose team shares its memory. The
+    // name comes from the READER's own team list (so a stranger never learns a
+    // team's name), is fenced like any admin-typed label, and a failed lookup
+    // costs the line its name, never the read.
+    let teamName: string | undefined;
+    if (
+      factsAvailable &&
+      agent.visibility === 'team' &&
+      typeof agent.ownerId === 'string' &&
+      agent.ownerId.length > 0
+    ) {
+      const teams = await listTeamsForUser(bus, initCtx, userId);
+      const mine = teams.find((t) => t.id === agent.ownerId);
+      teamName = fenceLine(mine?.displayName, TEAM_NAME_MAX_CHARS) ?? undefined;
+    }
+
     return {
       rules,
       ...(factsAvailable
@@ -5748,6 +5769,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             ...(agent.visibility === 'personal' || agent.visibility === 'team'
               ? { factsVisibility: agent.visibility }
               : {}),
+            ...(teamName !== undefined ? { teamName } : {}),
             ...(factsExtractionPaused ? { factsExtraction: 'paused' as const } : {}),
           }
         : {}),

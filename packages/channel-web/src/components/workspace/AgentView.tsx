@@ -92,7 +92,7 @@ import { AgentRail, AgentRailContent, isRailPanel, RAIL_PANEL_IDS, RAIL_PANELS, 
 import { AgentActivity } from './AgentActivity';
 import { ChatPanelToggles } from './ChatPanelToggles';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
-import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
+import { learnedAnnouncement, learnedToggleLabel, memorySharedWith } from './memory-copy';
 import { chatsFromDetail, type SidebarChatCommand, type SidebarChatList } from '@/lib/sidebar-chats';
 import { AgentTile } from './bits';
 import type {
@@ -2246,6 +2246,9 @@ export function AgentView({
                 decisions={decisions}
                 readOnly={inSlack}
                 {...(inSlack ? { readOnlyNote: CONVERSATION_IN_SLACK, onNewChat: startNewChat } : {})}
+                {...(detail.memory?.factsVisibility === 'team'
+                  ? { composerNote: memorySharedWith(agent.name, detail.memory.teamName) }
+                  : {})}
                 busy={streaming || sending}
                 {...(streaming ? { onStop: () => void stop() } : {})}
                 stopping={stopping}

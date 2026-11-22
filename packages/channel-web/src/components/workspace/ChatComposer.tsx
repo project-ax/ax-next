@@ -25,7 +25,7 @@ export function ChatComposer({
   spacious = false,
 }: {
   label: string;
-  input: Pick<ComponentProps<'input'>, 'value' | 'onChange' | 'placeholder' | 'disabled'>;
+  input: Pick<ComponentProps<'input'>, 'value' | 'onChange' | 'placeholder' | 'disabled' | 'aria-describedby'>;
   inputRef?: Ref<HTMLInputElement>;
   agentSelector?: ReactNode;
   onAttach: (files: FileList) => void;
