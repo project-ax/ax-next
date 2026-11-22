@@ -2226,12 +2226,19 @@ two parts:
        app.kubernetes.io/name: ax-next-host       # <release>-host; check the chart's host Service
      ports:
        - name: apps-bridge
-         port: 443
+         port: 80
          targetPort: apps-bridge
    ```
 
-   The bridge speaks plain HTTP. If the platform's path to it leaves a network
-   we trust, put TLS in front (an internal Application Load Balancer, or a
+   Heads up: we haven't run this example on a cluster. If the NetworkPolicy's
+   `ipBlock` doesn't match the platform's calls, check which source address
+   the host pod actually sees (a packet capture on the pod shows it), and
+   widen `allowFrom` to match. Don't widen it to "everything" to make the
+   problem go away.
+
+   The bridge speaks plain HTTP, so the example serves it on port 80, not
+   443 (a plain-HTTP port 443 would only confuse the next person). If the
+   platform's path to it leaves a network we trust, put TLS in front (an internal Application Load Balancer, or a
    mesh). Every request is authenticated either way, but the tool results it
    sends back deserve better than crossing the wire in the clear.
 

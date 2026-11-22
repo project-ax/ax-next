@@ -1,7 +1,7 @@
 # Apps connector bridge — design and contract
 
 **Date:** 2026-11-21
-**Status:** Approved in conversation 2026-11-21 (owner); contract v1 below. Revised 2026-11-21 after the platform side's contract review and AX planning: linking by a one-time code, opaque app ids, tool details in grants, content on tool errors, and the planning corrections (own listener, two more refusal codes, per-approval tool lists, a path-only approve link, link rights asked as a non-admin). Implementation plan: `docs/superpowers/plans/2026-11-21-apps-connector-bridge.md`.
+**Status:** Approved in conversation 2026-11-21 (owner); contract v1 below. Revised 2026-11-21 after the platform side's contract review and AX planning: linking by a one-time code, opaque app ids, tool details in grants, content on tool errors, and the planning corrections (own listener, two more refusal codes, per-approval tool lists, an approve link with no query string, link rights asked as a non-admin). Implementation plan: `docs/superpowers/plans/2026-11-21-apps-connector-bridge.md`.
 
 ## Why
 
@@ -46,9 +46,9 @@ Fully registered in the presets that serve HTTP (`presets/k8s`, which the produc
 - **Link codes**: one-time codes a person mints in AX to link an app to an agent (below). Only a hash is stored.
 - **App links**: `(platformId, appId) → (userId, agentId, appName)`, made when the platform claims a link code. `userId` is the person who minted the code.
 - **Grants**: per app link, a connector id, the allowed tools and a mode (`builder` | `viewer`). Set in AX by someone with rights over the agent.
-- **Viewer approvals**: `(viewer userId, platformId, appId, connector id) → (viewer's agentId, the tools approved)`, created by the viewer in AX, revocable. A tool the grant gains later needs a fresh approval.
+- **Viewer approvals**: `(viewer userId, platformId, appId, connector id) → (viewer's agentId, the tools approved)`, created by the viewer in AX, revocable. The approval records only the tools the viewer was shown (the approve body is `{agentId, tools}`), so a tool the grant gains later needs a fresh approval. Changing a grant's mode clears its approvals, and a deleted connector sign-in removes its grants and approvals even if the connector id lives on.
 
-**Who has rights over an agent** (minting link codes, setting grants, unlinking): `agents:can-manage-connectors`, always asked with `isAdmin: false`. That is a personal agent's owner, or an admin of a team agent's team. Lending an agent's sign-in is the agent owners' call, so workspace-admin status alone doesn't count (the same rule as TASK-813 and channel-slack).
+**Who has rights over an agent** (minting link codes, setting grants, unlinking; for a builder-mode call or the grants answer, the person who linked the app must still have them, or the answer is `agent_unavailable`): `agents:can-manage-connectors`, always asked with `isAdmin: false`. That is a personal agent's owner, or an admin of a team agent's team. Lending an agent's sign-in is the agent owners' call, so workspace-admin status alone doesn't count (the same rule as TASK-813 and channel-slack).
 
 **Viewer's access borrows a personal agent only**: one of the viewer's own (`ownerType: 'user'`, owned by the viewer). A team agent's sign-in is the team's account, so a call through it wouldn't be "as the viewer".
 
@@ -84,25 +84,26 @@ The connector inventory (`connectors:describe-tools`) also starts keeping each t
 
 ### Contract v1 (wire)
 
-The shapes live in one zod module, `packages/apps-bridge-contract/src/wire.ts` (it imports only `zod`). The platform vendors a copy from a pinned ax-next commit, and both sides assert its exported `CONTRACT_VERSION = 1` in a test.
+The shapes live in one zod module, `packages/apps-bridge-contract/src/wire.ts` (it imports only `zod`). The platform vendors a copy from a pinned ax-next commit, and both sides assert its exported `CONTRACT_VERSION = 1` in a test. The package's test pins the file's sha256 (as built, `7b94153a…` at commit `6d5912dda`; the version stays 1 until a change breaks the platform). It uses a `const` type parameter, so vendoring it needs TypeScript 5.0 or newer.
 
-**Where it is served.** Base path `/api/apps-bridge/v1`, on the bridge's **own listener** (default port 9092). The chart never puts that port on the Ingress; it gets a container port, a Service port and a NetworkPolicy rule that admits the operator's `appsBridge.allowFrom` peers. Exposing it to the platform's network is the operator's job. (`@ax/http-server` runs one listener and the Ingress routes all of its paths, so a route there couldn't be kept off the public ingress.)
+**Where it is served.** Base path `/api/apps-bridge/v1`, on the bridge's **own listener** (default port 9092). The chart never puts that port on the Ingress; it gets a container port, a Service port and a NetworkPolicy rule that admits only the operator's `appsBridge.allowFrom` peers (an empty list denies the port to everyone, the host's own namespace included). Exposing it to the platform's network is the operator's job. (`@ax/http-server` runs one listener and the Ingress routes all of its paths, so a route there couldn't be kept off the public ingress.)
 
-**Operator config.** `AX_APPS_BRIDGE_PLATFORM_ID`, `AX_APPS_BRIDGE_PORT` (default 9092), `AX_APPS_BRIDGE_CALLER_{ISSUER,JWKS_URL,AUDIENCE,SUBJECT}`, and `AX_APPS_BRIDGE_VIEWER_{ISSUER,JWKS_URL,AUDIENCE,MAX_AGE_SECONDS}` (default 600). With no platform id the bridge is off: no listener, and the Apps tab says the apps platform isn't set up.
+**Operator config.** `AX_APPS_BRIDGE_PLATFORM_ID`, `AX_APPS_BRIDGE_PORT` (default 9092; from the environment, 1 to 65535), `AX_APPS_BRIDGE_CALLER_{ISSUER,JWKS_URL,AUDIENCE,SUBJECT}`, and `AX_APPS_BRIDGE_VIEWER_{ISSUER,JWKS_URL,AUDIENCE,MAX_AGE_SECONDS}` (default 600). With no platform id the bridge is off: no listener, and the Apps tab says the apps platform isn't set up.
 
 **Caller authentication (every request).** `Authorization: Bearer <OIDC ID token>`. Verified against operator config: `issuer`, `jwksUrl`, `audience`, and an exact allowed `subject` (the platform's workload identity). Maps to one `platformId`. No other auth accepted. Operator-neutral: any OIDC workload-identity issuer works.
 - Asymmetric signatures only (`RS*`, `PS*`, `ES*`, `EdDSA`; never `HS*` or `none`).
 - `exp` required; 30 s clock tolerance.
 - The JWKS URL must be https (or loopback http, for tests).
 - The token is checked before the request body is read.
+- The listener answers an unknown path with an empty 404 and a wrong method with an empty 405, both with `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`, and doesn't log them. An `Expect` other than `100-continue` gets a fixed 417.
 
-**Viewer assertion (viewer mode only).** Field `viewerAssertion`: a JWT the platform received from its sign-in gateway for the current request, forwarded verbatim. Verified against a second operator config (`issuer`, `jwksUrl`, `audience`, max age), with `exp`, `iat` and `email` required. An `email_verified` claim, when present, must be true. Its email claim maps to an AX user via `auth:find-user-by-email`. Replay is bounded by the assertion's max age; v1 accepts that.
+**Viewer assertion (viewer mode only).** Field `viewerAssertion`: a JWT the platform received from its sign-in gateway for the current request, forwarded verbatim. Verified against a second operator config (`issuer`, `jwksUrl`, `audience`, max age of 30 to 3600 seconds, checked twice), with `exp`, `iat` and `email` required. An `email_verified` claim, when present, must be true. Its email claim maps to an AX user via `auth:find-user-by-email`. Replay is bounded by the assertion's max age; v1 accepts that.
 
 **Ids.**
 - `appId`: the platform's own opaque id (e.g. `app_01JDZ8M5Q4X7RT3VKF0N2C9H6B`), 1–64 characters of `[A-Za-z0-9_-]`. People see the app's `appName` instead.
 - `connectorId`: AX's connector id, `^[a-z0-9][a-z0-9_-]{0,127}$`.
 - `tool`: the tool's name, 1–128 printable ASCII characters, no spaces.
-- `appName`: display-only. Sent once, on claim, at most 200 characters. AX normalizes it (Unicode NFC; control and invisible-format characters removed, including bidi controls; whitespace runs collapsed; trimmed; at most 80 characters) with the contract's `normalizeAppName`. A name that normalizes to nothing is refused.
+- `appName`: display-only. Sent once, on claim, at most 200 characters. AX normalizes it with the contract's `normalizeAppName`, in this order: Unicode NFC; whitespace runs become one space (so `"a\nb"` becomes `"a b"`); control, invisible-format and lone-surrogate characters (Unicode Cc, Cf, Cs, bidi controls included) removed; space runs collapsed; NFC once more (a removed character may have kept a letter from its combining mark); trimmed; at most 80 code points. A name that normalizes to nothing is refused.
 
 **`POST /links/claim`**
 
@@ -128,6 +129,8 @@ Refused with `link_code_invalid` when the code is malformed, unknown, expired or
 { "outcome": "unknown", "reason": "timeout" | "interrupted" }
 ```
 
+`input` must be a plain JSON object. It reaches the connector as the app sent it, own `__proto__` and `constructor` keys included, and touches no prototype.
+
 Content is capped at the connector call's per-reply limit (2 MiB). A bigger reply is `unknown/interrupted`. A call takes at most about 45 s, so use a client timeout of at least 60 s. Never retry a write on `unknown`: it may have happened.
 
 **Refusals, before anything is sent.** Body `{ "code": <code> }`, plus `approveUrl` for `viewer_approval_required` only. Key on `code`, not on the status.
@@ -140,15 +143,15 @@ Content is capped at the connector call's per-reply limit (2 MiB). A bigger repl
 | `already_linked` | 409 | this app id is already linked; remove that link in AX first |
 | `app_not_linked` | 404 | no link for `(platformId, appId)` |
 | `not_granted` | 403 | connector not granted to this app in this mode |
-| `tool_not_allowed` | 403 | tool not on the grant's list, or the agent's policy denies it |
+| `tool_not_allowed` | 403 | tool not on the grant's list (or its key doesn't belong to the grant's connector), or the agent's policy denies it |
 | `approval_required` | 403 | AX policy needs approval for this tool |
 | `viewer_invalid` | 403 | viewer assertion missing/invalid/expired, or email isn't an AX user |
 | `viewer_approval_required` | 403 | viewer hasn't approved this tool for this app; body includes `approveUrl` (an AX page) |
-| `agent_unavailable` | 403 | linked/approved agent gone or no longer the user's |
+| `agent_unavailable` | 403 | linked/approved agent gone, no longer the user's, or (builder mode, and the grants answer) the person who linked it no longer manages it |
 | `rate_limited` | 429 | per-app or per-platform limit, or too many calls in flight; `Retry-After` |
 | `unavailable` | 503 | AX couldn't run its own checks right now (keys or storage); `Retry-After` |
 
-`approveUrl` is path-only, `https://<AX>/apps/approve/<platformId>/<appId>/<connectorId>`, so it survives sign-in (a query string wouldn't).
+`approveUrl` is an absolute http(s) URL with no query string or fragment, `https://<AX>/apps/approve/<platformId>/<appId>/<connectorId>` (built from the origin of AX's public URL), so it survives sign-in (a query string wouldn't).
 
 Upstream failures reuse `connectors:call-tool`'s closed reasons (`invalid-call`, `not-connected`, `needs-auth`, `unavailable`, `unreachable`, `rejected`, `tool-error`). No upstream text is returned except `content` on success or a tool error.
 
@@ -160,12 +163,12 @@ Upstream failures reuse `connectors:call-tool`'s closed reasons (`invalid-call`,
                 "tools": [ { "name": "list_issues", "description": "…", "inputSchema": { … } | null } ] } ] }
 ```
 
-`description` and `inputSchema` come from the connector inventory, as the linked agent's sign-in last saw them. They are the connector server's own words (untrusted). `inputSchema` is `null` when the inventory doesn't have one.
+`description` and `inputSchema` come from the connector inventory, as the linked agent's sign-in last saw them. They are the connector server's own words (untrusted). `inputSchema` is `null` when the inventory doesn't have one. The answer is bounded by a 4 MiB schema budget: once the schemas so far reach it, later tools' `inputSchema` is `null`.
 
 ### AX UI (channel-web, shadcn)
 
 - **Agent settings → Apps.** Link an app with a one-time code (above); there is no free-typed app id. Choose connectors, tools and mode per connector; only tools the agent may use without asking can be ticked. Unlink. The person's own viewer approvals on this agent are listed here with Revoke.
-- **Approve page** (`approveUrl`): "*{appName}* wants to use Linear as you", with the tools it asks for. Pick which of your agents' sign-in to use (auto-picked when only one of your agents has the connector), then Allow.
+- **Approve page** (`approveUrl`): "*{appName}* wants to use Linear as you", with the tools it asks for. Pick which of your agents' sign-in to use (auto-picked when only one of your agents has the connector), then Allow. The app's name is labeled "The app chose this name.", Allow stays disabled for the first 500 ms after the card shows (so a double-click can't land on it), and inside a frame the page asks to be opened in its own tab instead.
 
 ### Logging and limits
 
