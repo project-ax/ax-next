@@ -126,7 +126,7 @@
  * limit:
  *
  * - The predicate makes it the holder: `has_limitation`, `had_limitations`,
- *   and the no-access family (`has_no_access_to`, `lacks_access`). These need
+ *   `lacks_capability` (TASK-1198), and the no-access family (`has_no_access_to`, `lacks_access`). These need
  *   no object check: "the assistant has a limitation" is about the assistant.
  * - Anything else needs the assistant marked, whether a reporting verb leads
  *   it (`stated_`, `listed_`, `described_`, …) or nothing does
@@ -137,6 +137,16 @@
  *   offline" is a product's), and neither does a plain "can" ("can export to
  *   PDF and Excel"). An object that starts with a topic, "of" or "for"
  *   included, stays.
+ *
+ * ## Its replies (TASK-1198)
+ *
+ * Walk TASK-1192 found Slack test turns ("reply with exactly: hello
+ * <!channel>, testing") stored as `assistant | replied_with | hello
+ * <!channel>, testing`, and shown back in the agent's instructions. A reply
+ * verb (`replied`, `responded`, `echoed`) names the act of answering, and
+ * its object is the answer word for word: the transcript already holds it.
+ * So they join {@link ACTION_VERBS}. An answer worth recalling is filed by
+ * the pinned prompt under what it was (`recommended`, `listed`, `stated`).
  *
  * What the agent SUPPLIED stays: recommendations, lists, values, forecasts,
  * explanations, the plans and drafts it wrote. It is the pinned prompt's
@@ -397,7 +407,11 @@ const MEMORY_OP_PREDICATE =
 const ACTION_VERBS = new Set(['published', 'unpublished', 'republished', 'deployed', 'redeployed', 'ran', 'reran',
   'executed', 'committed', 'pushed', 'installed', 'uninstalled', 'reinstalled', 'fixed', 'patched', 'refactored',
   'uploaded', 'downloaded', 'deleted', 'restarted', 'configured', 'reconfigured', 'migrated', 'saved', 'sent',
-  'posted', 'opened', 'attached', 'exported', 'imported', 'cloned', 'forked', 'moved', 'invoked', 'triggered']);
+  'posted', 'opened', 'attached', 'exported', 'imported', 'cloned', 'forked', 'moved', 'invoked', 'triggered',
+  // TASK-1198: the act of replying. `replied_with | hello <!channel>, testing` is the reply itself, and
+  // the transcript is its source of truth. What it said worth keeping, the extractor files under what it
+  // was (`recommended`, `listed`, `stated`), not under the act of saying it.
+  'replied', 'responded', 'echoed']);
 // Narration only when the head of the verb's object is an artifact noun: "created a meal plan", "wrote
 // a haiku", "built a 12-week training plan" and "tested the hypothesis" are content. `setup` stands for
 // the two words `set_up`.
@@ -433,12 +447,13 @@ const CREATED_BY = /(?:^|_)(?:created|made|built|designed)_by(?:_|$)/;
  * What it says it can or can't do: `stated_limitation`, `has_limitation`,
  * `described_capabilities`, `stated_its_limitations`. Ends at the
  * limitation word, so `explained_limitations_of_the_study` is a topic.
- * Group 1 is a holder (`has_`, `had_`, `have_`): the assistant has the limit.
+ * Group 1 is a holder (`has_`, `had_`, `have_`, and `lacks_`, `lack_`,
+ * `lacked_`: TASK-1198's `lacks_capability`): the assistant has the limit.
  * Anything else can be anyone's limits, with a reporting verb
  * (`listed_limitations`) or none (`limitations`, `known_limitations`).
  */
 const LIMITATION_PREDICATE =
-  /^(?:(?:stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(has|had|have)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
+  /^(?:(?:stated|noted|acknowledged|explained|described|mentioned|clarified|disclosed|admitted|flagged|reported|listed|outlined|summarized)_|(has|had|have|lacks?|lacked)_)?(?:(?:its|own|a|the|some|several|current|known|technical)_){0,2}(?:limitations?|capabilit(?:y|ies)|inabilit(?:y|ies))$/;
 /**
  * What it says it can't reach: `has_no_access_to`, `doesnt_have_access`,
  * `lacks_access`. Like `has_limitation`, it makes the assistant the holder,

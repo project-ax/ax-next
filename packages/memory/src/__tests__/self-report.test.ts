@@ -340,6 +340,15 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['Assistant', 'Published Artifact', 'the dashboard'],
     ['the_assistant', 'ran-tests', 'all passed'],
     ['AI assistant', 'Created Artifact', 'the dashboard'],
+    // TASK-1198: the act of replying. The walk's (TASK-1192) and the replay's own rows.
+    ['assistant', 'replied_with', 'hello <!channel>, testing'],
+    ['assistant', 'replied_with', 'In Slack #walk-two-bots, replied to vinay (UHTE83XE1) with exactly: alpha beta gamma.'],
+    ['assistant', 'replied_with_message', 'replied to vinay in #walk-two-bots with "alpha beta gamma"'],
+    ['assistant', 'replied_with_exact_text', 'Replied in Slack #walk-two-bots with exactly: hello <!channel>, testing'],
+    ['assistant', 'replied', 'pong'],
+    ['assistant', 'responded_with', 'OK, done'],
+    ['assistant', 'echoed', 'the three words back'],
+    ['Assistant', 'Replied With', 'hello'],
   ])('drops %s | %s | %s: narration of its own action', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(classifyAgentFact(fact)).toBe('action-narration');
@@ -357,6 +366,10 @@ describe("the assistant's narration of its own actions, and what it says it can'
     ['assistant', 'has_no_access_to', 'real-time stock prices'],
     ['assistant', "doesn't_have_access", 'to the internet'],
     ['assistant', 'lacks_access', 'to the shared drive'],
+    // TASK-1198: the walk's (TASK-1192) row. `lacks_` is a holder like `has_`.
+    ['assistant', 'lacks_capability', 'Cannot send Slack messages or ping other users/bots (e.g. @moss) directly'],
+    ['assistant', 'lacked_capabilities', 'for image input'],
+    ['assistant', 'lacks_capabilities', 'to post in Slack'],
     ['the assistant', 'Stated Limitation', 'cannot open PDFs'],
     // `has_…`, `had_…` or `have_…` makes the assistant the holder: no object
     // check, so "for …" is still its own limit, not a topic.
@@ -616,6 +629,19 @@ describe("the assistant's narration of its own actions, and what it says it can'
 // for `speakerSubject` too. A team agent's member turn files a subject made of
 // the speaker's names under the speaker, and a member whose display name is
 // "AI Assistant" or "Agent Smith" must not pull the agent's facts with it.
+describe('a reply verb or a lack is the agent\'s only when the agent is the subject (TASK-1198)', () => {
+  it.each([
+    ['user', 'replied_with', 'a counter-offer of $450k'],
+    ['landlord', 'responded', 'the lease renews in March'],
+    ['vinay', 'lacks_capability', 'admin rights on the billing account'],
+    ['billing_service', 'lacks_capability', 'refunds over $500'],
+  ])('keeps %s | %s | %s', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBeNull();
+    expect(isAgentContextSelfReport(fact)).toBe(false);
+  });
+});
+
 describe('isAgentSubject: the subjects classifyAgentFact reads as the agent itself', () => {
   it.each([
     'assistant',
