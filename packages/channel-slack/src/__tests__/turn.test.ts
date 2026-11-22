@@ -78,7 +78,10 @@ interface SlackCall {
 /** The ts Slack gives a prompt's message. */
 const PROMPT_TS = '1763040000.000900';
 
-function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean; postMessageFails?: boolean } = {}) {
+function fakeSlack(
+  o: { postBlocksFails?: boolean; updateMessageFails?: boolean; postMessageFails?: boolean; postMessageRateLimitedOnce?: boolean } = {},
+) {
+  let rateLimited = false;
   const calls: SlackCall[] = [];
   let nextTs = 1;
   const notHere = async (): Promise<never> => {
@@ -112,6 +115,10 @@ function fakeSlack(o: { postBlocksFails?: boolean; updateMessageFails?: boolean;
     async postMessage(token, a) {
       record('postMessage', a, token);
       if (o.postMessageFails === true) throw new SlackApiError('chat.postMessage', 'channel_not_found');
+      if (o.postMessageRateLimitedOnce === true && !rateLimited) {
+        rateLimited = true;
+        throw new SlackApiError('chat.postMessage', 'ratelimited', 1);
+      }
     },
     async startStream(_token, a) {
       record('startStream', a);
@@ -203,6 +210,8 @@ interface HarnessOptions {
   postBlocksFails?: boolean;
   /** Slack refuses a plain message's post. */
   postMessageFails?: boolean;
+  /** Slack says `ratelimited` (Retry-After 1ms) to the first plain message, then takes them. */
+  postMessageRateLimitedOnce?: boolean;
   /** credential-proxy's `proxy:add-host` is not on the bus (a kernel booted without it). */
   noProxy?: boolean;
   /** chat-orchestrator's `agent:apply-capability-grant` is not on the bus. */
@@ -345,6 +354,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   const slack = fakeSlack({
     ...(o.postBlocksFails === true ? { postBlocksFails: true } : {}),
     ...(o.postMessageFails === true ? { postMessageFails: true } : {}),
+    ...(o.postMessageRateLimitedOnce === true ? { postMessageRateLimitedOnce: true } : {}),
   });
   slackCalls = () => slack.calls;
 
@@ -1217,6 +1227,30 @@ describe('runTurn: a catalog skill the agent asked to use gets a prompt after th
     expect(h.calls().filter((c) => c.method === 'postBlocks' || c.method === 'postMessage')).toEqual([]);
   });
 
+  it('Slack rate-limits the line counting the skills past the cap: sent again after its Retry-After, as a prompt is', async () => {
+    const cards = ['gmail-sender', 'drive-reader', 'calendar', 'notion'].map((id) => skillCard(id));
+    const h = harness({ chunks: [SAID], cards }, { postMessageRateLimitedOnce: true });
+    await h.run('dm');
+    const more = h.calls().filter((c) => c.method === 'postMessage');
+    expect(more.map((c) => c.args['markdownText'])).toEqual([COPY.moreSkillsInToday(1, TODAY), COPY.moreSkillsInToday(1, TODAY)]);
+    expect(h.logged('slack_reply_failed')).toEqual([]);
+  });
+
+  it('skills past the cap that need a key are counted in the line too (they wait in Today all the same)', async () => {
+    const cards = [
+      skillCard('gmail-sender'),
+      skillCard('drive-reader'),
+      skillCard('calendar'),
+      skillCard('notion', { slots: [KEYLESS_SLOT] }),
+      skillCard('jira', { slots: [KEYLESS_SLOT] }),
+    ];
+    const h = harness({ chunks: [SAID], cards });
+    await h.run('attended');
+    expect(h.calls().filter((c) => c.method === 'postMessage').map((c) => c.args['markdownText'])).toEqual([
+      COPY.moreSkillsInToday(2, TODAY),
+    ]);
+  });
+
   it("Slack refuses the line counting the skills past the cap: logged by code, the turn still ends", async () => {
     const cards = ['gmail-sender', 'drive-reader', 'calendar', 'notion'].map((id) => skillCard(id));
     const h = harness({ chunks: [SAID], cards }, { postMessageFails: true });
@@ -1958,6 +1992,19 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
       expect(h.lines).toEqual([missed('said-nothing')]);
     },
   );
+
+  it('a continuation that asks about more skills than PERMISSION_PROMPTS_PER_TURN_MAX: prompts for the first ones, then the line counting the rest (TASK-1155)', async () => {
+    const h = follower();
+    const done = h.follow(inTenSeconds());
+    for (const id of ['gmail-sender', 'drive-reader', 'calendar', 'notion']) await h.card(skillCard(id));
+    await h.end();
+    await done;
+
+    const methods = h.all().map((c) => c.method);
+    expect(methods.filter((m) => m === 'postBlocks')).toHaveLength(PERMISSION_PROMPTS_PER_TURN_MAX);
+    expect(methods.at(-1)).toBe('postMessage');
+    expect(h.all().at(-1)!.args['markdownText']).toBe(COPY.moreSkillsInToday(1, TODAY));
+  });
 
   it('a continuation that never began: a skill card heard in its conversation is still asked about once it is given up, and nothing else is said', async () => {
     vi.useFakeTimers();

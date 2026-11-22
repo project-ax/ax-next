@@ -121,6 +121,20 @@ export async function postLinkOnly(
   }
 }
 
+/**
+ * Post a plain markdown line in the turn's thread, sent again after Slack's
+ * Retry-After when it says `ratelimited`, as a prompt is: it comes right
+ * after them, in the same burst. Throws what the last try threw; the caller
+ * logs it.
+ */
+export async function postLine(
+  d: Pick<PromptPostDeps, 'api' | 'botToken' | 'clock'>,
+  c: Pick<PromptContext, 'channel' | 'threadTs'>,
+  markdownText: string,
+): Promise<void> {
+  await retryRateLimited(d.clock, () => d.api.postMessage(d.botToken, { channel: c.channel, threadTs: c.threadTs, markdownText }));
+}
+
 /** A post that didn't land: `slack_reply_failed`, stage `prompt`, by code. */
 function logFailed(logger: Logger, installId: string, err: unknown): void {
   try {
