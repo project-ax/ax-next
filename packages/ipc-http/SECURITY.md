@@ -25,7 +25,7 @@ Two layers, in order:
 
 ### Path traversal — none
 
-Request paths route through a fixed in-code map in `@ax/ipc-core/src/dispatcher.ts` (`DISPATCHER_PATHS`): the `tool.*`, `session.*`, `blob.*`, `artifact.publish`, `attachments.list`, `skill.propose`, `proxy.drain-egress-blocks` and `conversation.store-runner-session` actions, plus five event endpoints. Anything else hits the unknown-path branch and returns 404 with `unknown path: <pathname>`, after auth and without reading the body. That includes the git workspace actions removed in TASK-995, which a runner from an older release may still call. There is no filesystem lookup keyed off the URL.
+Request paths route through a fixed in-code map in `@ax/ipc-core/src/dispatcher.ts` (`DISPATCHER_PATHS`): the `tool.*`, `session.*`, `blob.*`, `artifact.publish`, `attachments.list`, `skill.propose`, `proxy.drain-egress-blocks`, `proxy.drain-allowed-hosts` and `conversation.store-runner-session` actions, plus five event endpoints. Anything else hits the unknown-path branch and returns 404 with `unknown path: <pathname>`, after auth and without reading the body. That includes the git workspace actions removed in TASK-995, which a runner from an older release may still call. There is no filesystem lookup keyed off the URL.
 
 ### Process spawn — none
 

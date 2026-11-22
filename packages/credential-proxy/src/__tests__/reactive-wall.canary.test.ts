@@ -192,4 +192,84 @@ describe('TASK-37 reactive-wall canary', () => {
     );
     expect(allowlistBlocks).toHaveLength(1); // only the first request was blocked
   });
+
+  // TASK-1199: the person allowed the host, but nothing told the agent, and the
+  // block note had said retrying would never help. The runner now drains
+  // `proxy:drain-session-allowed-hosts` at the start of the person's next turn
+  // and opens it with a "now allowed" line. This is the host half of that
+  // loop, through the real listener; the runner half (the line on the turn)
+  // is in agent-runner-core's run-runner tests.
+  it("TASK-1199: an allowed host is drained once for the session's next turn, and the retry passes", async () => {
+    upstream = httpCreate((_req, res) => res.end('OK'));
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const captured: HttpEgressEvent[] = [];
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 }, caDir }),
+        eventCapturePlugin(captured),
+      ],
+      config: {},
+    });
+
+    // Same session shape as the test above: 127.0.0.1 is NOT on the allowlist
+    // (allowedIPs only opens the private-IP gate for the loopback upstream).
+    const open = await bus.call<unknown, OpenResult>('proxy:open-session', ctx('u1'), {
+      sessionId: 's1',
+      userId: 'u1',
+      agentId: 'a1',
+      allowlist: ['allowed.example.com'],
+      allowedIPs: ['127.0.0.1'],
+      credentials: {},
+    });
+    const proxyPort = parseInt(open.proxyEndpoint.split(':').pop()!, 10);
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${proxyPort}`,
+      proxyTunnel: false,
+      token: 'Basic ' + Buffer.from('ax:' + open.proxyAuthToken).toString('base64'),
+    });
+
+    // The runner's own context: over IPC, ctx.sessionId is bearer-bound.
+    const s1ctx = makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1' });
+    const drainAllowed = (): Promise<{ hosts: string[] }> =>
+      bus.call<Record<string, never>, { hosts: string[] }>(
+        'proxy:drain-session-allowed-hosts',
+        s1ctx,
+        {},
+      );
+
+    // 1) Blocked.
+    const r1 = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
+    expect(r1.status).toBe(403);
+    await new Promise<void>((res) => setImmediate(res));
+
+    // 2) The owner allows the host on the live session.
+    const grant = await bus.call<
+      { sessionId: string; host: string },
+      { added: boolean; agentId?: string }
+    >('proxy:add-host', ctx('u1'), { sessionId: 's1', host: '127.0.0.1' });
+    expect(grant).toEqual({ added: true, agentId: 'a1' });
+
+    // 3) The session's next turn learns it, once.
+    expect(await drainAllowed()).toEqual({ hosts: ['127.0.0.1'] });
+    expect(await drainAllowed()).toEqual({ hosts: [] });
+
+    // 4) The retry the agent is now told it can make passes.
+    const r2 = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
+    expect(r2.status).toBe(200);
+
+    // The two buffers are independent: draining the allows did not consume
+    // the block that the PostToolUse egress note reads.
+    expect(
+      await bus.call<Record<string, never>, { hosts: string[] }>(
+        'proxy:drain-session-egress-blocks',
+        s1ctx,
+        {},
+      ),
+    ).toEqual({ hosts: ['127.0.0.1'] });
+  });
 });

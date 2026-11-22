@@ -503,12 +503,15 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    // Two JSON calls at boot: session.get-config + tool.list. Nothing streams
-    // as a binary either way (TASK-995: no workspace to materialize at boot or
-    // to bundle at the turn boundary).
-    expect(fakeClient.call).toHaveBeenCalledTimes(2);
+    // Two JSON calls at boot: session.get-config + tool.list. One more when
+    // the person's message is pulled: proxy.drain-allowed-hosts (TASK-1199;
+    // this fake doesn't answer it, so the runner logs and the turn runs).
+    // Nothing streams as a binary either way (TASK-995: no workspace to
+    // materialize at boot or to bundle at the turn boundary).
+    expect(fakeClient.call).toHaveBeenCalledTimes(3);
     expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
+    expect(fakeClient.call).toHaveBeenCalledWith('proxy.drain-allowed-hosts', {});
     expect(fakeClient.callBinary).not.toHaveBeenCalled();
     expect(fakeClient.callBinaryUpload).not.toHaveBeenCalled();
 
@@ -568,6 +571,7 @@ describe('main()', () => {
         model: string;
         allowedTools: string[];
         disallowedTools: string[];
+        tools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
         systemPrompt: string;
@@ -589,6 +593,14 @@ describe('main()', () => {
     };
     expect(queryArg.options.disallowedTools).toEqual(
       expect.arrayContaining(['WebFetch', 'WebSearch', 'Task', 'AskUserQuestion']),
+    );
+    // TASK-1200: the SDK's `tools` option is the allowlist of built-ins, and
+    // the schedulers are denied on top of it.
+    expect(queryArg.options.tools).toEqual([
+      'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'Skill', 'ToolSearch',
+    ]);
+    expect(queryArg.options.disallowedTools).toEqual(
+      expect.arrayContaining(['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger']),
     );
     // I-P0-1: positive guard that Skill is NOT denied. If a future refactor
     // re-adds Skill to DISABLED_BUILTINS or otherwise reintroduces a deny,

@@ -62,8 +62,14 @@ import { replaceSurfaceRewriters } from '@ax/core/surface-text';
  */
 const NOTE_MAX_CODE_POINTS = 2000;
 
-/** The fixed label. Prepended, never interpolated — the note cannot forge it. */
-const SYSTEM_PREFIX = 'System message (not from the user):';
+/**
+ * The fixed label. Prepended, never interpolated — the note cannot forge it.
+ *
+ * Quoted by hand in channel-slack's `SLACK_NOTE_LEAD` (turn-note.ts), which
+ * tells the model a message starting with it is the system's: change both
+ * together, or the Slack lead calls the real line data.
+ */
+export const SYSTEM_PREFIX = 'System message (not from the user):';
 
 export function sanitizeDecisionNote(note: string): string {
   const flat = replaceSurfaceRewriters(note).replace(/\s+/g, ' ').trim();

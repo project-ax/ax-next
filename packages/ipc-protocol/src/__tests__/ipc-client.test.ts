@@ -418,6 +418,54 @@ describe('createIpcClient', () => {
       expect(clock).toBeLessThan(10_000);
     });
 
+    it('proxy.drain-allowed-hosts gets the SHORT connection budget (it runs at every turn start)', async () => {
+      // TASK-1199: the runner drains this before handing each person's message
+      // to the model. A surface-once drain gains nothing from riding out a
+      // 2-min restart, and the turn must not stall waiting for it.
+      let attempts = 0;
+      let clock = 0;
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        maxElapsedMs: 120_000, // default long — the per-action short budget must still bind
+        now: () => clock,
+        retryBackoff: (a) => {
+          attempts = a + 1;
+          clock += Math.min(100 * 2 ** a, 30_000);
+          return 0;
+        },
+        __requestOnce: async () => {
+          throw new HostUnavailableError('connect failed: ECONNREFUSED');
+        },
+      });
+      await expect(client.call('proxy.drain-allowed-hosts', {})).rejects.toBeInstanceOf(
+        HostUnavailableError,
+      );
+      expect(attempts).toBeLessThanOrEqual(5);
+      expect(clock).toBeLessThan(10_000);
+    });
+
+    it('proxy.drain-allowed-hosts parses its { hosts } response (TASK-1199)', async () => {
+      // Without a RESPONSE_SCHEMAS entry every real call would throw INTERNAL,
+      // and the runner's best-effort catch would hide it: the agent would just
+      // never be told. The runner's own tests use a fake client, so this pins
+      // the real client's half of the wire.
+      const seen: Array<{ method: string; pathWithQuery: string }> = [];
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        maxRetries: 0,
+        __requestOnce: async ({ method, pathWithQuery }) => {
+          seen.push({ method, pathWithQuery });
+          return { status: 200, body: Buffer.from(JSON.stringify({ hosts: ['example.com'] })) };
+        },
+      });
+      await expect(client.call('proxy.drain-allowed-hosts', {})).resolves.toEqual({
+        hosts: ['example.com'],
+      });
+      expect(seen).toEqual([{ method: 'POST', pathWithQuery: '/proxy.drain-allowed-hosts' }]);
+    });
+
     it('session.get-config DOES get the long budget (a read → safe to ride out a restart)', async () => {
       let attempts = 0;
       let clock = 0;
