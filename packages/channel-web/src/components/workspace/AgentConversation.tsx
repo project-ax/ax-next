@@ -17,6 +17,7 @@ import {
   lazy,
   useEffect,
   Suspense,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -242,6 +243,12 @@ interface Props {
    */
   readOnlyNote?: string;
   /**
+   * TASK-1203 — a line under the composer, tied to the field with
+   * `aria-describedby`. AgentView sets it for a team agent ("its memory is
+   * shared with the team"). Never drawn when `readOnly`: there is no composer.
+   */
+  composerNote?: string;
+  /**
    * TASK-1093 — a "New chat" button inside the read-only note, so the reader
    * who landed on a thread they can't write to has the way out right where
    * they went to type. The same action as the sidebar's New chat. Only drawn
@@ -391,6 +398,7 @@ export function AgentConversation({
   decisions,
   readOnly,
   readOnlyNote,
+  composerNote,
   onNewChat,
   busy = false,
   onStop,
@@ -411,6 +419,7 @@ export function AgentConversation({
   conversationKey = 'one-conversation',
   fileRecheckKey = thread.length,
 }: Props) {
+  const composerNoteId = useId();
   /*
     TASK-393 — seeded from, and mirrored into, `workspace-draft-store.ts`, so
     an unsent draft survives this component's own remount rather than being
@@ -979,6 +988,7 @@ export function AgentConversation({
               placeholder: `Message ${agent.name}`,
               // Attachment holds must leave the field available to fix the message.
               disabled: busy || held,
+              ...(composerNote !== undefined ? { 'aria-describedby': composerNoteId } : {}),
             }}
             onAttach={add}
             attachDisabled={busy || held}
@@ -991,6 +1001,11 @@ export function AgentConversation({
             } : undefined}
             stopping={stopping}
           />
+          {composerNote !== undefined && (
+            <p id={composerNoteId} className="mt-2 text-[12.5px] text-muted-foreground">
+              {composerNote}
+            </p>
+          )}
           {/*
             No suggestion chips. They were authored prose in the prototype and
             the wire never carried them — a chip that puts words in the user's

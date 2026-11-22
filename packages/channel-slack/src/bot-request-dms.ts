@@ -1,7 +1,7 @@
 import { makeAgentContext, type AgentContext, type HookBus, type Logger } from '@ax/core';
 import { admitSender, findSenderUser, isTemporaryLookupFailure, isTemporarySlackCode } from './admission.js';
 import { botRequestBlocks, botRequestOutcomeBlocks } from './blocks.js';
-import { agentSeenBy } from './bot-requests.js';
+import { agentSeenBy } from './team-name.js';
 import { COPY } from './copy.js';
 import type { Lifetime } from './lifetime.js';
 import {

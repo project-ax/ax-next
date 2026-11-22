@@ -5,24 +5,30 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
 /**
  * An in-memory ChannelStore with the real one's rules (channel-store.ts,
  * pinned against Postgres in channel-store.test.ts): one agent per (install,
- * channel); `upsert` answers `connected` (private as given, off by default),
- * `reconnected` (the connector and name replaced, privacy and createdAt
- * kept) or `taken` (nothing changes); `remove` and `setPrivate` act only on
- * the named agent's binding; a name is stored cleaned; `listForAgent` is
- * oldest first.
+ * channel); `upsert` answers `connected`, `reconnected` (the connector and
+ * name replaced, createdAt kept) or `taken` (nothing changes); `remove` acts
+ * only on the named agent's binding; a name is stored cleaned;
+ * `listForAgent` is oldest first.
  * A thread is keyed by its conversation alone and written once: a later
- * `recordThread` changes only `notRemembered`, `external` and
- * `speakerNames`, and neither flag ever goes back to false. `recordThread`
- * takes `notRemembered` from the named agent's binding as it is at the write
- * (the channel private) or the turn's own `isPrivate`, and `external` from
- * the turn's mode (anything but `attended` is external), and answers
- * `no-binding` (writing nothing) when there is no binding, and
- * `reconnected` (writing nothing) for an outsider's turn whose `runAs` no
- * longer connects the channel. A member's turn adds its `speakerNames` to
- * the thread's (TASK-1146): the union, each name once at the place it was
- * last seen, oldest first, the THREAD_SPEAKER_NAMES_MAX most recent kept; an
- * outsider's turn adds none, whatever it was handed.
+ * `recordThread` changes only `external` and `speakerNames`. A new thread is
+ * recorded remembered (TASK-1203), and one marked before keeps its mark
+ * (a test marks one by setting `notRemembered` on `threads` directly, as the
+ * database holds one from before). `external` comes from the turn's mode
+ * (anything but `attended` is external) and never goes back to false.
+ * `recordThread` answers `no-binding` (writing nothing) when there is no
+ * binding, and `reconnected` (writing nothing) for an outsider's turn whose
+ * `runAs` no longer connects the channel. A member's turn adds its
+ * `speakerNames` to the thread's (TASK-1146): the union, each name once at
+ * the place it was last seen, oldest first, the THREAD_SPEAKER_NAMES_MAX
+ * most recent kept; an outsider's turn adds none, whatever it was handed.
  * `removeForAgent` takes the agent's threads too; nothing else does.
+ * A binding's memory notice (TASK-1203): `claimNotice` answers a stamp only
+ * for an existing binding of the named agent not claimed yet, and claims it
+ * (each stamp new: `claim-1`, `claim-2`, …), else null; `releaseNotice`
+ * gives back only the named agent's claim, and only when it names that
+ * claim's stamp (review F7); a reconnect keeps
+ * a claim, and a binding removed (`remove`, `removeForAgent`) takes its
+ * claim with it, so a binding made again claims again.
  *
  * Each new binding is one second younger than the one before, so "oldest
  * first" never hangs on a clock. `calls` records every method, in order.
@@ -31,6 +37,9 @@ export function memoryChannelStore() {
   const rows = new Map<string, ChannelBinding>();
   /** The thread map, by conversation id. */
   const threads = new Map<string, ChannelThread>();
+  /** The bindings whose memory notice is claimed (TASK-1203), by `${installId}/${channelId}`, to the claim's stamp. */
+  const notices = new Map<string, string>();
+  let claims = 0;
   const calls: Array<keyof ChannelStore> = [];
   let created = Date.parse('2026-11-13T09:00:00.000Z');
   const key = (installId: string, channelId: string): string => `${installId}/${channelId}`;
@@ -64,13 +73,14 @@ export function memoryChannelStore() {
         return 'reconnected';
       }
       created += 1000;
+      // A new binding: never told, whatever a test left behind.
+      notices.delete(at);
       rows.set(at, {
         installId: b.installId,
         channelId: b.channelId,
         agentId: b.agentId,
         connectedByUserId: b.connectedByUserId,
         channelName,
-        isPrivate: b.isPrivate ?? false,
         createdAt: new Date(created),
       });
       return 'connected';
@@ -80,19 +90,22 @@ export function memoryChannelStore() {
       const at = key(installId, channelId);
       if (rows.get(at)?.agentId !== agentId) return false;
       rows.delete(at);
+      notices.delete(at);
       return true;
     },
-    async setPrivate(installId, channelId, agentId, isPrivate) {
-      calls.push('setPrivate');
-      const row = rows.get(key(installId, channelId));
-      if (row === undefined || row.agentId !== agentId) return false;
-      row.isPrivate = isPrivate;
-      return true;
+    async claimNotice(installId, channelId, agentId) {
+      calls.push('claimNotice');
+      const at = key(installId, channelId);
+      if (rows.get(at)?.agentId !== agentId || notices.has(at)) return null;
+      claims += 1;
+      const stamp = `claim-${claims}`;
+      notices.set(at, stamp);
+      return stamp;
     },
-    async markNotRemembered(conversationId) {
-      calls.push('markNotRemembered');
-      const known = threads.get(conversationId);
-      if (known !== undefined) known.notRemembered = true;
+    async releaseNotice(installId, channelId, agentId, claimed) {
+      calls.push('releaseNotice');
+      const at = key(installId, channelId);
+      if (rows.get(at)?.agentId === agentId && notices.get(at) === claimed) notices.delete(at);
     },
     async removeForAgent(agentId) {
       calls.push('removeForAgent');
@@ -100,6 +113,7 @@ export function memoryChannelStore() {
       for (const [at, row] of rows) {
         if (row.agentId !== agentId) continue;
         rows.delete(at);
+        notices.delete(at);
         removed += 1;
       }
       let threadsRemoved = 0;
@@ -116,7 +130,6 @@ export function memoryChannelStore() {
       if (binding === undefined || binding.agentId !== t.agentId) return 'no-binding';
       const external = t.mode !== 'attended';
       if (external && binding.connectedByUserId !== (t.mode === 'external' ? t.runAs : undefined)) return 'reconnected';
-      const notRemembered = binding.isPrivate || t.isPrivate !== false;
       const turnNames = t.mode === 'attended' ? t.speakerNames : [];
       const known = threads.get(t.conversationId);
       threads.set(
@@ -126,13 +139,12 @@ export function memoryChannelStore() {
               installId: t.installId,
               channelId: t.channelId,
               agentId: t.agentId,
-              notRemembered,
+              notRemembered: false,
               external,
               speakerNames: mostRecentNames(turnNames),
             }
           : {
               ...known,
-              notRemembered: known.notRemembered || notRemembered,
               external: known.external || external,
               speakerNames: mostRecentNames([...known.speakerNames, ...turnNames]),
             },
@@ -152,7 +164,7 @@ export function memoryChannelStore() {
     return found === undefined ? undefined : copy(found);
   };
 
-  return { store, rows, threads, calls, row };
+  return { store, rows, threads, notices, calls, row };
 }
 
 /** The real store's rule for a thread's names: each once at the place it was last seen, the most recent kept. */

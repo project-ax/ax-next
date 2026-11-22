@@ -29,6 +29,7 @@ import { goToSlack } from '@/lib/slack-admin';
 import { drawPickedSlackAvatar, renderSlackAvatar } from '@/lib/slack-avatar';
 import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 import { fakeConfigRefreshToken } from '@/test-utils/fake-slack-tokens';
+import { slackCardText, slackCardWordsFound } from '@/test-utils/slack-card-words';
 
 vi.mock('@/lib/agent-slack', async (original) => ({
   ...(await original<typeof import('@/lib/agent-slack')>()),
@@ -91,10 +92,24 @@ const ACCESS_LINE = 'When someone outside the team mentions it, it answers them 
 const HELP_LINE =
   'When Quill needs an OK for something, it asks the person who mentioned it. For people outside the team, it asks the team admin who set Quill up.';
 
-function renderIt(bot: Bot, canManage = true, onChanged = vi.fn()) {
-  render(<AgentSlackBot agentId="a1" agentName="Quill" bot={bot} canManage={canManage} {...QUIET} onChanged={onChanged} />);
+function renderIt(bot: Bot, canManage = true, onChanged = vi.fn(), agentTeamName?: string) {
+  render(
+    <AgentSlackBot
+      agentId="a1"
+      agentName="Quill"
+      bot={bot}
+      canManage={canManage}
+      {...(agentTeamName !== undefined ? { agentTeamName } : {})}
+      {...QUIET}
+      onChanged={onChanged}
+    />,
+  );
   return onChanged;
 }
+
+/** What the card says about the agent's memory (TASK-1203): by the agent's NAME, never the bot's @handle. */
+const SHARED_LINE = 'What Quill hears is shared with everyone on Support, and Quill may bring it up elsewhere.';
+const SHARED_LINE_NO_TEAM = 'What Quill hears is shared with everyone on its team, and Quill may bring it up elsewhere.';
 
 const refusal = (status: number, code: string, reason: string | null = null) => new AgentSlackError(status, code, reason);
 
@@ -178,6 +193,42 @@ describe('none', () => {
     expect(screen.queryByRole('list')).toBeNull();
     expect(screen.queryByRole('link', { name: "Slack's app settings" })).toBeNull();
     expect(screen.queryByRole('radio')).toBeNull();
+  });
+
+  it("the manager's form says it before the bot exists, by the agent's name, first among its notes (TASK-1203)", () => {
+    renderIt(NONE_NO_TOKEN, true, vi.fn(), 'Support');
+    const memory = screen.getByText(SHARED_LINE);
+    expectInOrder(
+      screen.getByRole('button', { name: 'I can install Slack apps myself' }),
+      memory,
+      screen.getByText(ACCESS_LINE),
+      screen.getByText(HELP_LINE),
+    );
+    expect(memory).toHaveClass('text-sm', 'text-muted-foreground');
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
+  });
+
+  it("the form says 'its team' without a team name (TASK-1203)", () => {
+    renderIt(NONE_NO_TOKEN);
+    expect(screen.getByText(SHARED_LINE_NO_TEAM)).toBeInTheDocument();
+    expect(screen.queryByText(SHARED_LINE)).toBeNull();
+  });
+
+  it('the channels lead carries no memory clause and no private-channel note (TASK-1203)', () => {
+    render(
+      <AgentSlackBot
+        agentId="a1"
+        agentName="Quill"
+        bot={LIVE}
+        canManage
+        channels={[{ channelId: 'C1', name: 'help' }]}
+        {...QUIET}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('@quill_bot has answered in these channels.')).toBeInTheDocument();
+    expect(screen.queryByText("Private channels aren't remembered.")).toBeNull();
+    expect(screen.queryByText(/never in private ones/)).toBeNull();
   });
 
   it('"I can install Slack apps myself" shows the steps and the required token field, and "Ask an admin instead" goes back', () => {
@@ -839,6 +890,22 @@ describe('live', () => {
     expect(screen.getByText(LIVE_HELP_LINE)).toBeInTheDocument();
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.queryByText(/Set up by|You set it up/)).toBeNull();
+  });
+
+  it('the Live card says what Quill hears is shared with the team, by the agent\'s name, beside the help line (TASK-1203)', () => {
+    renderIt(LIVE, true, vi.fn(), 'Support');
+    const memory = screen.getByText(SHARED_LINE);
+    const help = screen.getByText(LIVE_HELP_LINE);
+    expectInOrder(memory, help);
+    expect(memory).toHaveClass('text-[12.5px]', 'text-muted-foreground');
+    // Never the bot's @handle.
+    expect(screen.queryByText(/What @quill_bot hears/)).toBeNull();
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
+  });
+
+  it("the Live card says it to a member too, and says 'its team' without a team name (TASK-1203)", () => {
+    renderIt(MEMBER_LIVE, false);
+    expect(screen.getByText(SHARED_LINE_NO_TEAM)).toBeInTheDocument();
   });
 
   it('with no handle the title and the line name the bot', () => {

@@ -95,12 +95,11 @@ const GENERAL = {
   previous_names: ['specifics', 'abstractions'],
 };
 
-/** GENERAL, narrowed: exactly these fields, nothing else Slack sent. */
+/** GENERAL, narrowed: exactly these fields, nothing else Slack sent (its `is_private` included: TASK-1203). */
 const GENERAL_OUT: SlackChannel = {
   id: 'C012AB3CD',
   name: 'general',
   isChannel: true,
-  isPrivate: false,
   isArchived: false,
   isExtShared: false,
   isPendingExtShared: false,
@@ -158,6 +157,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
       () => api.postBlocks(BOT, { channel: 'D1', threadTs: '1.2', text: 'hi', blocks: [] }),
     ],
     ['chat.postMessage', () => api.postDirect(BOT, { user: 'U07ADA00001', text: 'hi' })],
+    ['chat.postMessage', () => api.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'hi' })],
     ['chat.update', () => api.updateMessage(BOT, { channel: 'D1', ts: '1.3', text: 'hi', blocks: [] })],
     ['chat.postEphemeral', () => api.postEphemeral(BOT, { channel: 'C1', user: 'U1', text: 'hi' })],
     [
@@ -474,6 +474,46 @@ describe('requests', () => {
       const err = await failure(api.postDirect(BOT, { user: 'U07ADA00001', text: 'x' }));
       expect(err.code).toBe('bad-response');
     }
+  });
+
+  it('postToChannel posts top-level mrkdwn text in the channel, unfurls off, no thread_ts', async () => {
+    const slack = fakeSlack(() => okJson({ channel: 'C07SUPPORT1', ts: '1700000000.000400' }));
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    await expect(api.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'Heads up: *see* https://example.com' })).resolves.toBeUndefined();
+
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(slack.sent[0]!.headers.get('content-type')).toMatch(/^application\/json/);
+    expect(slack.sent[0]!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(slack.sent[0]!.body).not.toContain(BOT);
+    // `text`, so Slack reads it as mrkdwn (what copy.ts escapes for); no thread, no blocks, no preview fetched.
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'C07SUPPORT1',
+      text: 'Heads up: *see* https://example.com',
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+
+    // A refusal (an announcement-only channel) rejects with Slack's own code, and nothing else.
+    const refused = createSlackApi({ fetchImpl: fakeSlack(() => slackError('restricted_action')).fetchImpl });
+    const err = await failure(refused.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'x' }));
+    expect(err.code).toBe('restricted_action');
+    expect(err.message).toBe('slack chat.postMessage: restricted_action');
+  });
+
+  it("postToChannel with a threadTs posts the same text in that thread (an announcement-only channel's notice), unfurls off", async () => {
+    const slack = fakeSlack(() => okJson({ channel: 'C07SUPPORT1', ts: '1700000000.000401' }));
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    await expect(
+      api.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'Heads up', threadTs: '1700000000.000100' }),
+    ).resolves.toBeUndefined();
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'C07SUPPORT1',
+      thread_ts: '1700000000.000100',
+      text: 'Heads up',
+      unfurl_links: false,
+      unfurl_media: false,
+    });
   });
 
   it('updateMessage sends exactly channel, ts, text, blocks to chat.update', async () => {
@@ -846,7 +886,7 @@ describe('conversations', () => {
     expect(err.provided).toBe('channels:read');
   });
 
-  it('a refusing flag (private, archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
+  it('a refusing flag (archived, Slack Connect) is set unless absent, null or false: one we cannot read fails closed', async () => {
     const flags = [
       ['is_archived', 'isArchived'],
       ['is_ext_shared', 'isExtShared'],
@@ -875,23 +915,15 @@ describe('conversations', () => {
     }
   });
 
-  // TASK-1188: public is what lets memory learn from a channel, so only Slack's plain `false` is public.
-  it('isPrivate is false only when Slack says literally false: absent, null or anything else is private', async () => {
-    const cases: Array<[unknown, boolean]> = [
-      [false, false],
-      [undefined, true],
-      [null, true],
-      [true, true],
-      ['false', true],
-      [0, true],
-      ['', true],
-      [{}, true],
-    ];
-    for (const [value, isPrivate] of cases) {
+  // TASK-1203 (design §4c): a private channel is answered in and remembered like any other, so nothing
+  // reads Slack's `is_private`: one fewer untrusted flag narrowed (invariant 5).
+  it("conversations.info's is_private is not read: a private channel narrows to the same SlackChannel as a public one (TASK-1203)", async () => {
+    // `undefined` is dropped by JSON.stringify: the field is absent.
+    for (const value of [true, false, undefined, null, 'false']) {
       const channel = { ...GENERAL, is_private: value };
       const api = createSlackApi({ fetchImpl: fakeSlack(() => okJson({ channel })).fetchImpl });
       const out = await api.conversationsInfo(BOT, 'C012AB3CD');
-      expect(out.isPrivate, `is_private: ${JSON.stringify(value)}`).toBe(isPrivate);
+      expect(out, `is_private: ${JSON.stringify(value)}`).toStrictEqual(GENERAL_OUT);
     }
   });
 
