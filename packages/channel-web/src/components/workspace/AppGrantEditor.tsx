@@ -1,11 +1,18 @@
 /**
  * Give a linked app one connector's tools, or change what it has.
  *
- * Only tools set to Allow can be ticked. A connector's tools start at Ask
- * first, and an app has nobody to ask, so a call to one would always be held:
- * offering it here would be a grant that can never work. The rest say why and
- * where to change it. The server still checks the agent's policy on every
- * call, so a tool tightened after it was granted stops working at once.
+ * Only tools set to Allow can be newly ticked. A connector's tools start at
+ * Ask first, and an app has nobody to ask, so a call to one would always be
+ * held: offering it here would be a grant that can never work. The rest say
+ * why and where to change it. The server still checks the agent's policy on
+ * every call, so a tool tightened after it was granted stops working at once.
+ *
+ * A tool the grant already holds stays ticked even when it is no longer
+ * Allow, so saving some other change (the mode, say) never quietly narrows
+ * the grant: it can be unticked, but not ticked again until it is Allow. A
+ * granted tool the connector no longer offers can't be kept (the server
+ * refuses a key the connector doesn't list), and its row says saving removes
+ * it.
  *
  * Tool names and descriptions are the connector server's own words
  * (untrusted): rendered as text only.
@@ -37,6 +44,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { useHeldThroughClose } from './use-held-through-close';
 import { agentAppsErrorCopy, agentAppsStale, saveGrant } from '@/lib/agent-apps';
 import { useAgentConnectors } from '@/lib/agent-connectors';
 import { useConnectorTools } from '@/lib/agent-connector-tools';
@@ -50,8 +58,10 @@ export const APP_MODE_COPY: Record<AppMode, { choice: string; badge: string }> =
 
 const WHY_NOT: Record<Exclude<AgentConnectorTool['verdict'], 'allow'>, string> = {
   hold: "Asks first, so apps can't use it. Set it to Allow under Connectors.",
-  deny: "Set to Deny, so apps can't use it.",
+  deny: "Set to Deny under Connectors, so apps can't use it.",
 };
+
+const STILL_GIVEN = "Still given to this app, but it won't work until it's set to Allow under Connectors.";
 
 /** The tool's name as an app calls it: the last part of its key. */
 function toolNameOf(toolKey: string): string {
@@ -79,14 +89,16 @@ export function AppGrantEditor({
   /** The page showed something that has changed since: read it again. */
   onStale: () => void;
 }) {
+  // Drawn through the close animation; the body unmounts once the dialog has closed.
+  const { held, release } = useHeldThroughClose(target);
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
-        {target !== null && (
+      <DialogContent className="max-h-[85vh] overflow-y-auto" onCloseAutoFocus={release}>
+        {held !== null && (
           <EditorBody
-            key={`${target.link.appId}:${target.grant?.connectorId ?? ''}`}
+            key={`${held.link.appId}:${held.grant?.connectorId ?? ''}`}
             agentId={agentId}
-            target={target}
+            target={held}
             onClose={onClose}
             onSaved={onSaved}
             onStale={onStale}
@@ -114,16 +126,18 @@ function EditorBody({
   const connectors = useAgentConnectors(agentId);
   const [connectorId, setConnectorId] = useState<string | null>(grant?.connectorId ?? null);
   const [mode, setMode] = useState<AppMode>(grant?.mode ?? 'builder');
-  // Starts from what the grant holds; only Allow tools can stay ticked (see ToolPicker).
+  // Starts from what the grant holds (see the header for which of those can stay).
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set(grant?.tools.map((t) => t.toolKey) ?? []));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [allowed, setAllowed] = useState<ReadonlySet<string>>(new Set());
+  // Allow tools, plus tools the grant holds that the connector still offers: what Save may send.
+  const [savable, setSavable] = useState<ReadonlySet<string>>(new Set());
 
   // A connector this app already has is changed with its Edit, not added twice.
   const taken = new Set(link.grants.map((g) => g.connectorId));
   const options = (connectors.connectors ?? []).filter((c) => grant !== null || !taken.has(c.id));
-  const chosen = [...picked].filter((k) => allowed.has(k));
+  const chosen = [...picked].filter((k) => savable.has(k));
+  const connectorsFailed = connectors.status === 'failed' || connectors.status === 'unavailable';
 
   async function save() {
     if (connectorId === null || chosen.length === 0) return;
@@ -178,6 +192,14 @@ function EditorBody({
           {connectors.status === 'ok' && options.length === 0 && grant === null && (
             <FieldDescription>Every connector on this agent is already given to this app.</FieldDescription>
           )}
+          {connectorsFailed && grant === null && (
+            <FieldDescription className="flex flex-wrap items-center gap-2" role="alert">
+              We couldn&apos;t load this agent&apos;s connectors.
+              <Button variant="outline" size="sm" onClick={() => void connectors.refresh()}>
+                Try again
+              </Button>
+            </FieldDescription>
+          )}
         </Field>
         <FieldSet>
           <FieldLegend variant="label">Whose sign-in it uses</FieldLegend>
@@ -203,7 +225,7 @@ function EditorBody({
             granted={grant?.tools ?? []}
             picked={picked}
             disabled={saving}
-            onAllowed={setAllowed}
+            onSavable={setSavable}
             onToggle={(key, on) =>
               setPicked((prev) => {
                 const next = new Set(prev);
@@ -239,7 +261,7 @@ function ToolPicker({
   granted,
   picked,
   disabled,
-  onAllowed,
+  onSavable,
   onToggle,
 }: {
   agentId: string;
@@ -247,18 +269,20 @@ function ToolPicker({
   granted: AppGrant['tools'];
   picked: ReadonlySet<string>;
   disabled: boolean;
-  /** The keys that can be granted now, so Save sends only those. */
-  onAllowed: (keys: ReadonlySet<string>) => void;
+  /** The keys Save may send: Allow tools, and granted tools still offered. */
+  onSavable: (keys: ReadonlySet<string>) => void;
   onToggle: (toolKey: string, on: boolean) => void;
 }) {
-  const { data, status } = useConnectorTools(agentId, connectorId);
+  const { data, status, reload } = useConnectorTools(agentId, connectorId);
   const tools = data?.tools ?? [];
-  const allowKeys = tools.filter((t) => t.verdict === 'allow').map((t) => t.toolKey);
-  const allowSig = allowKeys.join('\n');
+  const grantedKeys = new Set(granted.map((t) => t.toolKey));
+  const savableKeys = tools.filter((t) => t.verdict === 'allow' || grantedKeys.has(t.toolKey)).map((t) => t.toolKey);
+  // Tool names are printable ASCII without spaces, so a newline can't occur in a key.
+  const savableSig = savableKeys.join('\n');
   useEffect(() => {
     // Tell the editor which keys can be saved, once per change in the list.
-    onAllowed(new Set(allowSig === '' ? [] : allowSig.split('\n')));
-  }, [allowSig, onAllowed]);
+    onSavable(new Set(savableSig === '' ? [] : savableSig.split('\n')));
+  }, [savableSig, onSavable]);
 
   const offered = new Set(tools.map((t) => t.toolKey));
   const gone = granted.filter((t) => !offered.has(t.toolKey));
@@ -273,7 +297,12 @@ function ToolPicker({
           <Skeleton className="h-8 w-full" aria-hidden="true" />
         </div>
       ) : status !== 'ok' ? (
-        <FieldDescription>We couldn&apos;t list this connector&apos;s tools just now. Close this and try again.</FieldDescription>
+        <FieldDescription className="flex flex-wrap items-center gap-2" role="alert">
+          We couldn&apos;t list this connector&apos;s tools just now.
+          <Button variant="outline" size="sm" onClick={() => reload()}>
+            Try again
+          </Button>
+        </FieldDescription>
       ) : tools.length === 0 && gone.length === 0 ? (
         <FieldDescription>This connector doesn&apos;t offer any tools right now.</FieldDescription>
       ) : (
@@ -282,13 +311,16 @@ function ToolPicker({
             const name = toolNameOf(t.toolKey);
             const id = `app-grant-tool-${t.toolKey}`;
             const can = t.verdict === 'allow';
+            const on = picked.has(t.toolKey);
+            // A ticked tool that isn't Allow is one the grant already holds: it can be unticked, never re-ticked.
+            const locked = disabled || (!can && !on);
             return (
               <li key={t.toolKey}>
-                <Field orientation="horizontal" data-disabled={!can || disabled || undefined}>
+                <Field orientation="horizontal" data-disabled={locked || undefined}>
                   <Checkbox
                     id={id}
-                    checked={can && picked.has(t.toolKey)}
-                    disabled={!can || disabled}
+                    checked={on}
+                    disabled={locked}
                     onCheckedChange={(on) => onToggle(t.toolKey, on === true)}
                   />
                   <FieldContent className="min-w-0">
@@ -298,7 +330,9 @@ function ToolPicker({
                     {t.description !== '' && (
                       <FieldDescription className="line-clamp-2">{t.description}</FieldDescription>
                     )}
-                    {t.verdict !== 'allow' && <FieldDescription>{WHY_NOT[t.verdict]}</FieldDescription>}
+                    {t.verdict !== 'allow' && (
+                      <FieldDescription>{on ? STILL_GIVEN : WHY_NOT[t.verdict]}</FieldDescription>
+                    )}
                   </FieldContent>
                 </Field>
               </li>
@@ -307,7 +341,7 @@ function ToolPicker({
           {gone.map((t) => (
             <li key={t.toolKey} className="flex flex-wrap items-baseline gap-x-2 pl-6">
               <span className="break-all font-mono text-sm text-muted-foreground">{t.name}</span>
-              <span className="text-sm text-muted-foreground">No longer offered</span>
+              <span className="text-sm text-muted-foreground">No longer offered. Saving removes it.</span>
             </li>
           ))}
         </ul>

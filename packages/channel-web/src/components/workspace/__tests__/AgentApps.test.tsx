@@ -5,12 +5,13 @@
  * sees and what the section asks the server to do.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAppsRead, AppGrant, AppLink } from '@ax/apps-bridge-contract';
 import type { AgentConnectorTool } from '@/lib/workspace-types';
 import { AgentApps } from '../AgentApps';
+import { useHeldThroughClose } from '../use-held-through-close';
 
 const api = vi.hoisted(() => ({
   fetchAgentApps: vi.fn(),
@@ -29,33 +30,44 @@ vi.mock('@/lib/agent-apps', async (original) => ({
 const hooks = vi.hoisted(() => ({
   tools: [] as AgentConnectorTool[],
   manageable: true,
+  connectorsStatus: 'ok' as 'ok' | 'failed',
+  toolsStatus: 'ok' as 'ok' | 'failed',
+  refresh: null as unknown as ReturnType<typeof vi.fn>,
+  reload: null as unknown as ReturnType<typeof vi.fn>,
 }));
 
 vi.mock('@/lib/agent-connectors', () => ({
   useAgentConnectors: () => ({
-    connectors: [
-      { id: 'linear', name: 'Linear' },
-      { id: 'github', name: 'GitHub' },
-    ],
-    status: 'ok',
+    connectors:
+      hooks.connectorsStatus === 'ok'
+        ? [
+            { id: 'linear', name: 'Linear' },
+            { id: 'github', name: 'GitHub' },
+          ]
+        : null,
+    status: hooks.connectorsStatus,
     manageable: hooks.manageable,
+    refresh: hooks.refresh,
   }),
 }));
 
 vi.mock('@/lib/agent-connector-tools', async (original) => ({
   ...(await original<typeof import('@/lib/agent-connector-tools')>()),
   useConnectorTools: (_agentId: string, connectorId: string) => ({
-    data: {
-      connector: { id: connectorId, name: connectorId, access: 'personal' },
-      status: 'ok',
-      checkedAt: null,
-      possiblyIncomplete: false,
-      tools: hooks.tools,
-    },
-    status: 'ok',
+    data:
+      hooks.toolsStatus === 'ok'
+        ? {
+            connector: { id: connectorId, name: connectorId, access: 'personal' },
+            status: 'ok',
+            checkedAt: null,
+            possiblyIncomplete: false,
+            tools: hooks.tools,
+          }
+        : null,
+    status: hooks.toolsStatus,
     pending: new Set(),
     setVerdict: vi.fn(),
-    reload: vi.fn(),
+    reload: hooks.reload,
   }),
 }));
 
@@ -99,6 +111,10 @@ beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
   hooks.tools = [tool('search_issues', 'allow'), tool('create_issue', 'hold'), tool('delete_issue', 'deny')];
   hooks.manageable = true;
+  hooks.connectorsStatus = 'ok';
+  hooks.toolsStatus = 'ok';
+  hooks.refresh = vi.fn(async () => null);
+  hooks.reload = vi.fn();
 });
 
 afterEach(() => {
@@ -108,14 +124,14 @@ afterEach(() => {
 describe('AgentApps', () => {
   it('bridge off: an honest empty state and no controls', async () => {
     await renderApps({ enabled: false });
-    expect(screen.getByText("The apps platform isn't set up on this AX")).toBeTruthy();
+    expect(screen.getByText("The apps platform isn't set up here")).toBeTruthy();
     expect(screen.queryAllByRole('button')).toHaveLength(0);
     expect(screen.queryAllByRole('textbox')).toHaveLength(0);
   });
 
   it('a server without the Apps routes reads the same as bridge off', async () => {
     await renderApps('unavailable');
-    expect(screen.getByText("The apps platform isn't set up on this AX")).toBeTruthy();
+    expect(screen.getByText("The apps platform isn't set up here")).toBeTruthy();
     expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
@@ -213,7 +229,11 @@ describe('AgentApps', () => {
     expect(asks).toBeDisabled();
     expect(denied).toBeDisabled();
     expect(within(dialog).getByText("Asks first, so apps can't use it. Set it to Allow under Connectors.")).toBeTruthy();
-    expect(within(dialog).getByText("Set to Deny, so apps can't use it.")).toBeTruthy();
+    expect(within(dialog).getByText("Set to Deny under Connectors, so apps can't use it.")).toBeTruthy();
+    // Not granted and not Allow: it can't be ticked, by a click either.
+    expect(asks).not.toBeChecked();
+    fireEvent.click(asks);
+    expect(asks).not.toBeChecked();
     // Untrusted tool descriptions are text.
     expect(within(dialog).getByText('What search_issues does')).toBeTruthy();
 
@@ -269,8 +289,83 @@ describe('AgentApps', () => {
     const dialog = await screen.findByRole('dialog');
     const row = within(dialog).getByText('old_tool').closest('li');
     expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText('No longer offered')).toBeTruthy();
+    expect(within(row as HTMLElement).getByText('No longer offered. Saving removes it.')).toBeTruthy();
     expect(within(row as HTMLElement).queryByRole('checkbox')).toBeNull();
+  });
+
+  it('saving a mode change keeps a granted tool that has since become Ask first', async () => {
+    api.saveGrant.mockResolvedValue(GRANT);
+    const held: AppGrant = { ...GRANT, tools: [...GRANT.tools, { toolKey: key('create_issue'), name: 'create_issue' }] };
+    await renderApps(read({ links: [{ ...LINK, grants: [held] }] }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Linear for Sprint board' }));
+    const dialog = await screen.findByRole('dialog');
+
+    const asks = within(dialog).getByRole('checkbox', { name: 'create_issue' });
+    expect(asks).toBeChecked();
+    expect(asks).toBeEnabled();
+    expect(
+      within(dialog).getByText("Still given to this app, but it won't work until it's set to Allow under Connectors."),
+    ).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole('radio', { name: "Each viewer's own sign-in, after they say yes" }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(api.saveGrant).toHaveBeenCalledWith('a1', {
+        appId: LINK.appId,
+        connectorId: 'linear',
+        mode: 'viewer',
+        toolKeys: [key('search_issues'), key('create_issue')],
+      }),
+    );
+  });
+
+  it('a granted tool that is no longer Allow can be unticked, but not ticked again', async () => {
+    const held: AppGrant = { ...GRANT, tools: [{ toolKey: key('create_issue'), name: 'create_issue' }] };
+    await renderApps(read({ links: [{ ...LINK, grants: [held] }] }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Linear for Sprint board' }));
+    const dialog = await screen.findByRole('dialog');
+    // Only that tool, and it isn't Allow: Save still works for a mode-only change.
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled();
+
+    const asks = within(dialog).getByRole('checkbox', { name: 'create_issue' });
+    fireEvent.click(asks);
+    expect(asks).not.toBeChecked();
+    expect(asks).toBeDisabled();
+    expect(within(dialog).getByText("Asks first, so apps can't use it. Set it to Allow under Connectors.")).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+  });
+
+  it("the editor says when the agent's connectors or a connector's tools can't be read, and retries", async () => {
+    hooks.connectorsStatus = 'failed';
+    await renderApps();
+    fireEvent.click(screen.getByRole('button', { name: 'Add a connector to Sprint board' }));
+    let dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText("We couldn't load this agent's connectors.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    expect(hooks.refresh).toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    hooks.connectorsStatus = 'ok';
+    hooks.toolsStatus = 'failed';
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Linear for Sprint board' }));
+    dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText("We couldn't list this connector's tools just now.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    expect(hooks.reload).toHaveBeenCalled();
+  });
+
+  it("while an app is being unlinked, nothing else on its row can start", async () => {
+    let finish: () => void = () => {};
+    api.unlinkApp.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    await renderApps();
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink Sprint board' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Unlink' }));
+    await waitFor(() => expect(api.unlinkApp).toHaveBeenCalled());
+    for (const name of ['Add a connector to Sprint board', 'Edit Linear for Sprint board', 'Remove Linear from Sprint board']) {
+      expect(screen.getByRole('button', { name, hidden: true })).toBeDisabled();
+    }
+    await act(async () => finish());
   });
 
   it('removes a grant and unlinks an app only after confirming', async () => {
@@ -313,8 +408,21 @@ describe('AgentApps', () => {
     expect(screen.queryByRole('list', { name: "Apps using this agent's sign-ins as you" })).toBeNull();
   });
 
+  it('a dialog keeps drawing its last value until its close has finished, then lets go', () => {
+    const { result, rerender } = renderHook(({ v }: { v: string | null }) => useHeldThroughClose(v), {
+      initialProps: { v: 'axl_code' as string | null },
+    });
+    expect(result.current.held).toBe('axl_code');
+    rerender({ v: null });
+    expect(result.current.held).toBe('axl_code');
+    act(() => result.current.release());
+    expect(result.current.held).toBeNull();
+    rerender({ v: 'next' });
+    expect(result.current.held).toBe('next');
+  });
+
   it('uses no raw colours', () => {
-    for (const file of ['AgentApps.tsx', 'AppGrantEditor.tsx', 'AppLinkCodeDialog.tsx']) {
+    for (const file of ['AgentApps.tsx', 'AgentAppsRows.tsx', 'AppGrantEditor.tsx', 'AppLinkCodeDialog.tsx']) {
       const src = readFileSync(join(__dirname, '..', file), 'utf8')
         // Comments may name the colours they avoid.
         .replace(/\/\*[\s\S]*?\*\//g, '')

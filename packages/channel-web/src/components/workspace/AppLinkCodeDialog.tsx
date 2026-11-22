@@ -5,7 +5,8 @@
  * which app it is when it claims the code.
  *
  * The code lives in the parent's state only while this dialog is open, and is
- * dropped the moment it closes. It is never logged.
+ * dropped the moment it closes; this dialog keeps drawing it only until its
+ * close animation ends. It is never logged.
  */
 import { useState } from 'react';
 import { Check, Copy } from 'lucide-react';
@@ -21,6 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
+import { useHeldThroughClose } from './use-held-through-close';
 
 /** "3:45 PM", in the person's own locale; a value that isn't a time shows as it came. */
 function shortTime(iso: string): string {
@@ -39,6 +41,7 @@ export function AppLinkCodeDialog({
 }) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const { held: shown, release } = useHeldThroughClose(minted);
 
   async function copy(code: string) {
     setCopyFailed(false);
@@ -55,33 +58,36 @@ export function AppLinkCodeDialog({
     <Dialog
       open={minted !== null}
       onOpenChange={(open) => {
-        if (open) return;
-        setCopied(false);
-        setCopyFailed(false);
-        onDone();
+        if (!open) onDone();
       }}
     >
-      <DialogContent>
+      <DialogContent
+        onCloseAutoFocus={() => {
+          release();
+          setCopied(false);
+          setCopyFailed(false);
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Link an app</DialogTitle>
           <DialogDescription>
             Give this code to your apps platform, or to the agent building the app. It works once, until{' '}
-            {minted !== null ? shortTime(minted.expiresAt) : ''}.
+            {shown !== null ? shortTime(shown.expiresAt) : ''}.
           </DialogDescription>
         </DialogHeader>
-        {minted !== null && (
+        {shown !== null && (
           <Field>
             <FieldLabel htmlFor="app-link-code">Link code</FieldLabel>
             <InputGroup>
               <InputGroupInput
                 id="app-link-code"
                 readOnly
-                value={minted.code}
+                value={shown.code}
                 className="font-mono"
                 onFocus={(e) => e.currentTarget.select()}
               />
               <InputGroupAddon align="inline-end">
-                <InputGroupButton onClick={() => void copy(minted.code)}>
+                <InputGroupButton onClick={() => void copy(shown.code)}>
                   {copied ? <Check data-icon="inline-start" aria-hidden="true" /> : <Copy data-icon="inline-start" aria-hidden="true" />}
                   {copied ? 'Copied' : 'Copy'}
                 </InputGroupButton>
@@ -93,15 +99,7 @@ export function AppLinkCodeDialog({
           </Field>
         )}
         <DialogFooter>
-          <Button
-            onClick={() => {
-              setCopied(false);
-              setCopyFailed(false);
-              onDone();
-            }}
-          >
-            Done
-          </Button>
+          <Button onClick={onDone}>Done</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

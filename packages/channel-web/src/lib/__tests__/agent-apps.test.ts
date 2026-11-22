@@ -84,18 +84,26 @@ afterEach(() => {
 describe('fetchAgentApps', () => {
   it('fetchAgentApps GETs /settings/apps/<id> and parses the answer', async () => {
     answer = () => json(200, READ);
-    await expect(fetchAgentApps('a/1')).resolves.toEqual(READ);
-    expect(calls[0]).toMatchObject({ url: '/settings/apps/a%2F1', method: 'GET', credentials: 'include' });
+    await expect(fetchAgentApps('a-1_B')).resolves.toEqual(READ);
+    expect(calls[0]).toMatchObject({ url: '/settings/apps/a-1_B', method: 'GET', credentials: 'include' });
 
     answer = () => json(200, { enabled: false });
     await expect(fetchAgentApps('a1')).resolves.toEqual({ enabled: false });
   });
 
   it('a 404 or a non-JSON answer is unavailable', async () => {
-    answer = () => json(404, { error: 'agent-not-found' });
+    // http-server's own answer for a path nobody registered.
+    answer = () => json(404, { error: 'not-found' });
+    await expect(fetchAgentApps('a1')).resolves.toBe('unavailable');
+    answer = () => new Response('', { status: 404 });
     await expect(fetchAgentApps('a1')).resolves.toBe('unavailable');
     answer = () => new Response('<!doctype html><title>app</title>', { status: 200, headers: { 'content-type': 'text/html' } });
     await expect(fetchAgentApps('a1')).resolves.toBe('unavailable');
+  });
+
+  it("the route's own 404 (an agent we can't see) throws rather than reading as unavailable", async () => {
+    answer = () => json(404, { error: 'agent-not-found' });
+    await expect(fetchAgentApps('a1')).rejects.toMatchObject({ status: 404, code: 'agent-not-found' });
   });
 
   it('an answer off the schema is a bad response, and any other failure throws for a retry', async () => {
@@ -197,13 +205,54 @@ describe('the approve page (Task 14)', () => {
   });
 });
 
+describe('ids off their grammar', () => {
+  const BAD = ['..', '.', '%2F', 'a/b', '', 'a%2Fb', 'a?b', 'a#b'];
+  const APP = LINK.appId;
+
+  it.each(BAD)('an agent id of %j makes no request', async (bad) => {
+    for (const call of [
+      () => fetchAgentApps(bad),
+      () => mintLinkCode(bad),
+      () => unlinkApp(bad, APP),
+      () => saveGrant(bad, { appId: APP, connectorId: 'linear', mode: 'builder', toolKeys: ['mcp.c0123456789.x'] }),
+      () => removeGrant(bad, APP, 'linear'),
+      () => revokeApproval(bad, APP, 'linear'),
+    ]) {
+      await expect(call()).rejects.toMatchObject({ status: 0, code: 'agent-not-found' });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it.each(BAD)('a platform, app or connector id of %j makes no request', async (bad) => {
+    const cases: Array<[string, string, string]> = [
+      [bad, APP, 'linear'],
+      ['acme-apps', bad, 'linear'],
+      ['acme-apps', APP, bad],
+    ];
+    for (const [platformId, appId, connectorId] of cases) {
+      await expect(fetchApprovalPrompt(platformId, appId, connectorId)).rejects.toMatchObject({ status: 0, code: 'not-found' });
+      await expect(approveApp(platformId, appId, connectorId, 'a1', ['search_issues'])).rejects.toMatchObject({
+        status: 0,
+        code: 'not-found',
+      });
+    }
+    await expect(approveApp('acme-apps', APP, 'linear', bad, ['search_issues'])).resolves.toBeUndefined();
+    // The agent id rides in the body, never the path: only that last call went out, to the right path.
+    expect(calls.map((c) => c.url)).toEqual([`/settings/app-approval/acme-apps/${APP}/linear`]);
+  });
+});
+
 describe('error copy', () => {
   it('says something a person can act on, and never the code itself', () => {
-    for (const code of ['forbidden', 'not-linked', 'bridge-off', 'unknown', 'bad-response'] as const) {
+    for (const code of ['forbidden', 'not-linked', 'bridge-off', 'agent-not-eligible', 'agent-not-found', 'unknown', 'bad-response'] as const) {
       const text = agentAppsErrorCopy(new AgentAppsError(400, code));
       expect(text.length).toBeGreaterThan(10);
       expect(text).not.toContain(code);
+      expect(text).not.toMatch(/\bAX\b/);
     }
+    expect(agentAppsErrorCopy(new AgentAppsError(400, 'agent-not-eligible'))).not.toBe(
+      agentAppsErrorCopy(new AgentAppsError(400, 'unknown')),
+    );
     expect(agentAppsErrorCopy(new Error('boom'))).toBe(agentAppsErrorCopy(new AgentAppsError(0, 'unknown')));
   });
 

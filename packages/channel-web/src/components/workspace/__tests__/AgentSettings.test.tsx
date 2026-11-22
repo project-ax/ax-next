@@ -128,7 +128,7 @@ describe('AgentSettings — desktop', () => {
     render(<Harness initial="apps" />);
     expect(headingOutline()[1]).toBe('h2: Apps');
     expect(screen.getByText('Apps built on your apps platform that use Quill and its connectors.')).toBeTruthy();
-    expect(await screen.findByText("The apps platform isn't set up on this AX")).toBeTruthy();
+    expect(await screen.findByText("The apps platform isn't set up here")).toBeTruthy();
   });
 
   it('names the section in the breadcrumb', () => {

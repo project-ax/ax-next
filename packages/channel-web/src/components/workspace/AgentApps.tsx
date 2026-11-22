@@ -16,19 +16,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppWindow, Plus } from 'lucide-react';
-import type { AgentAppsRead, AppGrant, AppLink, LinkCodeResponse, ViewerApproval } from '@ax/apps-bridge-contract';
+import type { AgentAppsRead, AppLink, LinkCodeResponse } from '@ax/apps-bridge-contract';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -42,8 +33,9 @@ import {
   unlinkApp,
 } from '@/lib/agent-apps';
 import { logRequestFailure } from '@/lib/http';
-import { APP_MODE_COPY, AppGrantEditor, type AppGrantEditorTarget } from './AppGrantEditor';
+import { AppGrantEditor, type AppGrantEditorTarget } from './AppGrantEditor';
 import { AppLinkCodeDialog } from './AppLinkCodeDialog';
+import { ApprovalRow, LinkRow, UnlinkDialog } from './AgentAppsRows';
 
 type Enabled = Extract<AgentAppsRead, { enabled: true }>;
 type Load = { status: 'loading' } | { status: 'failed' } | { status: 'off' } | { status: 'ok'; read: Enabled };
@@ -110,7 +102,7 @@ export function AgentApps({ agentId, agentName }: AgentAppsProps) {
             <EmptyMedia variant="icon" className="bg-primary-soft text-primary">
               <AppWindow aria-hidden="true" />
             </EmptyMedia>
-            <EmptyTitle>The apps platform isn&apos;t set up on this AX</EmptyTitle>
+            <EmptyTitle>The apps platform isn&apos;t set up here</EmptyTitle>
             <EmptyDescription>
               Once an admin connects one, apps built there can use {agentName} and its connectors.
             </EmptyDescription>
@@ -298,169 +290,5 @@ function AppsBody({
         }
       />
     </div>
-  );
-}
-
-function LinkRow({
-  link,
-  canManage,
-  busy,
-  onAdd,
-  onEdit,
-  onRemove,
-  onUnlink,
-}: {
-  link: AppLink;
-  canManage: boolean;
-  busy: ReadonlySet<string>;
-  onAdd: () => void;
-  onEdit: (grant: AppGrant) => void;
-  onRemove: (grant: AppGrant) => void;
-  onUnlink: () => void;
-}) {
-  const nameId = `app-${link.appId}-name`;
-  return (
-    <li aria-labelledby={nameId} className="flex flex-col gap-3 px-4 py-3">
-      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span id={nameId} className="break-words text-[14px] font-medium">
-            {link.appName}
-          </span>
-          <span className="truncate font-mono text-[12px] text-muted-foreground">{link.appId}</span>
-        </div>
-        {canManage && (
-          <div className="flex flex-wrap gap-1">
-            <Button variant="ghost" size="sm" onClick={onAdd} aria-label={`Add a connector to ${link.appName}`}>
-              <Plus data-icon="inline-start" aria-hidden="true" />
-              Add a connector
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy.has(link.appId)}
-              onClick={onUnlink}
-              aria-label={`Unlink ${link.appName}`}
-            >
-              Unlink
-            </Button>
-          </div>
-        )}
-      </div>
-      {link.grants.length === 0 ? (
-        <p className="text-[12.5px] text-muted-foreground">
-          {canManage ? 'It can’t use any connectors yet. Add one to get it going.' : 'It can’t use any connectors yet.'}
-        </p>
-      ) : (
-        <ul aria-label={`What ${link.appName} can use`} className="m-0 flex list-none flex-col gap-2 p-0">
-          {link.grants.map((grant) => {
-            const rowBusy = busy.has(`${link.appId}:${grant.connectorId}`);
-            return (
-              <li key={grant.connectorId} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted px-3 py-2">
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-medium">{grant.connectorName}</span>
-                    <Badge variant="secondary" size="compact">
-                      {APP_MODE_COPY[grant.mode].badge}
-                    </Badge>
-                  </div>
-                  <span className="break-all font-mono text-[12px] text-muted-foreground">
-                    {grant.tools.map((t) => t.name).join(', ')}
-                  </span>
-                </div>
-                {canManage && (
-                  <div className="flex gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={rowBusy}
-                      onClick={() => onEdit(grant)}
-                      aria-label={`Edit ${grant.connectorName} for ${link.appName}`}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={rowBusy}
-                      onClick={() => onRemove(grant)}
-                      aria-label={`Remove ${grant.connectorName} from ${link.appName}`}
-                    >
-                      {rowBusy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-                      Remove
-                    </Button>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-function ApprovalRow({
-  approval,
-  busy,
-  onRevoke,
-}: {
-  approval: ViewerApproval;
-  busy: boolean;
-  onRevoke: () => void;
-}) {
-  return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="break-words text-[14px] font-medium">{approval.appName}</span>
-        <span className="text-[12.5px] text-muted-foreground">Uses {approval.connectorName} as you</span>
-      </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={busy}
-        onClick={onRevoke}
-        aria-label={`Revoke ${approval.appName} using ${approval.connectorName}`}
-      >
-        {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-        Revoke
-      </Button>
-    </li>
-  );
-}
-
-function UnlinkDialog({
-  link,
-  agentName,
-  busy,
-  onCancel,
-  onConfirm,
-}: {
-  link: AppLink | null;
-  agentName: string;
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: (link: AppLink) => void;
-}) {
-  return (
-    <Dialog open={link !== null} onOpenChange={(open) => !open && !busy && onCancel()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Unlink {link?.appName}?</DialogTitle>
-          <DialogDescription>
-            It stops using {agentName} straight away, along with every connector you gave it. To use it again,
-            link it with a new code.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="destructive" disabled={busy} onClick={() => link !== null && onConfirm(link)}>
-            {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-            Unlink
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

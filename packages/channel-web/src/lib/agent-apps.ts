@@ -17,10 +17,19 @@
  * 401), and every POST the `x-requested-with: ax-admin` header the CSRF check
  * wants. A link code is returned to the caller and goes nowhere else: it is
  * never logged and never kept here.
+ *
+ * Every id is checked against its grammar BEFORE a path is built from it, and
+ * a bad one makes no request at all. `encodeURIComponent` alone is not enough:
+ * it leaves `.` and `..` as they are, and URL parsing resolves those, so an id
+ * of `..` (say, from a crafted approve link) would aim a POST carrying the
+ * session cookie and the CSRF header at some other path on this origin.
  */
 import {
   AgentAppsReadSchema,
+  APP_ID_RE,
   APPS_SETTINGS_ROUTES,
+  CONNECTOR_ID_RE,
+  PLATFORM_ID_RE,
   ApprovalPromptSchema,
   LinkCodeResponseSchema,
   SaveGrantResponseSchema,
@@ -64,15 +73,28 @@ function isSettingsError(value: unknown): value is SettingsError {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SETTINGS_ERRORS, value);
 }
 
+/**
+ * An agent id as the settings routes accept it (the same literal as
+ * `AGENT_ID_RE` in @ax/apps-bridge's `settings-routes.ts`, which isn't
+ * exported: the SPA depends on no host plugin).
+ */
+const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
+
+/** No request is made for an agent id off its grammar: the server would answer `agent-not-found` too. */
 function agentPath(route: string, agentId: string): string {
-  return route.replace(':agentId', encodeURIComponent(agentId));
+  if (!AGENT_ID_RE.test(agentId)) throw new AgentAppsError(0, 'agent-not-found');
+  return route.replace(':agentId', agentId);
 }
 
+/** No request is made for an id off its grammar: the server would answer `not-found` too. */
 function approvalPath(platformId: string, appId: string, connectorId: string): string {
+  if (!PLATFORM_ID_RE.test(platformId) || !APP_ID_RE.test(appId) || !CONNECTOR_ID_RE.test(connectorId)) {
+    throw new AgentAppsError(0, 'not-found');
+  }
   return APPS_SETTINGS_ROUTES.approval
-    .replace(':platformId', encodeURIComponent(platformId))
-    .replace(':appId', encodeURIComponent(appId))
-    .replace(':connectorId', encodeURIComponent(connectorId));
+    .replace(':platformId', platformId)
+    .replace(':appId', appId)
+    .replace(':connectorId', connectorId);
 }
 
 async function failure(res: Response): Promise<AgentAppsError> {
@@ -106,14 +128,21 @@ async function post(path: string, body: unknown): Promise<Response> {
 }
 
 /**
- * The Apps section for one agent. A 404 means this server has no Apps routes
- * (or the agent isn't one we can see), and so does a page that isn't JSON: a
- * host that serves the app answers an unknown GET with the app's own HTML.
- * Any other failure throws, for a retry.
+ * The Apps section for one agent. A 404 from the route itself names
+ * `agent-not-found` and throws. Any other 404 means this server has no Apps
+ * routes: http-server's own answer for an unknown path is a bare
+ * `{ error: 'not-found' }` (a word the settings routes also use, but never on
+ * this GET), and a host that serves the app answers an unknown GET with the
+ * app's own HTML, so a page that isn't JSON means the same. Any other failure
+ * throws, for a retry.
  */
 export async function fetchAgentApps(agentId: string): Promise<AgentAppsRead | 'unavailable'> {
   const res = await httpFetch(agentPath(APPS_SETTINGS_ROUTES.read, agentId));
-  if (res.status === 404) return 'unavailable';
+  if (res.status === 404) {
+    const err = await failure(res);
+    if (err.code === 'agent-not-found') throw err;
+    return 'unavailable';
+  }
   if (!res.ok) throw await failure(res);
   let body: unknown;
   try {
@@ -192,7 +221,9 @@ export function agentAppsStale(err: unknown): boolean {
 
 const COPY: Partial<Record<AgentAppsErrorCode, string>> = {
   forbidden: 'Only people who manage this agent can change its apps.',
-  'bridge-off': "The apps platform isn't set up on this AX any more.",
+  'agent-not-found': "We couldn't find this agent. It may have been deleted.",
+  'agent-not-eligible': "That agent can't lend this connector. Pick one of your own agents that has it.",
+  'bridge-off': "The apps platform isn't set up here any more.",
   'not-linked': "That app isn't linked to this agent any more.",
   'not-found': 'That was already gone.',
   'connector-not-on-agent': "That connector isn't on this agent any more.",
