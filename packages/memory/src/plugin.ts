@@ -1131,12 +1131,15 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         const slot = deriveSlot(relation);
 
         // `recordFacts`, like every engine write here: it stamps the turn's
-        // audience on the statement (TASK-1091), and in a shared turn it
-        // refuses a statement about a person — the rewritten speaker below
-        // included — before anything is written.
+        // audience on the statement (TASK-1091). In a turn that isn't
+        // private it refuses, before anything is written, a statement the
+        // speaker rule doesn't file as written: in a turn that keeps the
+        // rule, the rewritten speaker below included. Handed the access
+        // already resolved, so it knows whose memory this is (TASK-1204).
         const raw = await recordFacts<EngineRecordOutput>(
           bus,
           ctx,
+          access,
           FACTS_RECORD_HOOK,
           {
             // No `batchKey`. Idempotency keys exist because `chat:end` can
@@ -1795,7 +1798,10 @@ async function observe(
         return out;
       },
       record: async (input: ObserverRecordInput) => {
-        await resolveMemoryAccess(bus, ctx);
+        // Re-resolved before each write, as always: a member revoked
+        // mid-pass writes nothing. The write door is handed this fresh
+        // answer, to know whose memory it writes (TASK-1204).
+        const fresh = await resolveMemoryAccess(bus, ctx);
         // `recordFacts`: the batch is stamped with this turn's audience, and
         // the person-subject backstop runs, from the same `ctx` and the same
         // names as the `audience` and `speakerNames` below that already
@@ -1803,6 +1809,7 @@ async function observe(
         const out = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
+          fresh,
           FACTS_RECORD_HOOK,
           input,
           check.speakerNames,

@@ -8,11 +8,13 @@ import {
   reject,
   type AgentContext,
   type AgentContextAudience,
+  type AgentContextSource,
   type LlmCallOutput,
   type MemoryPreCapturePayload,
 } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { MemoryAccess } from '../access.js';
 import {
   breaksSpeakerRule,
   isPersonSubject,
@@ -33,6 +35,7 @@ import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
 import {
   ALICE,
   answerSpeakerNames,
+  BOB,
   engineRecord,
   eventsNamed,
   makeMemoryHarness,
@@ -620,6 +623,13 @@ const NOT_A_SPEAKER = [
 const TOO_LONG_TO_READ = 'x'.repeat(1025);
 
 /**
+ * A personal agent's memory, as `resolveMemoryAccess` answers its owner: the
+ * access a bare-bus `recordFacts` call is handed (TASK-1204). A personal
+ * agent's shared turn keeps the speaker rule.
+ */
+const PERSONAL: MemoryAccess = { userId: ALICE, visibility: 'personal' };
+
+/**
  * The extractor's answer in the speaker tests: four ways a model writes the
  * speaker, and one fact about something else.
  */
@@ -1066,7 +1076,7 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
       });
       // Refused FOR THIS RULE: the backstop's generic `forbidden` doesn't count.
       const note = !result.ok && result.error === 'forbidden' && result.message.endsWith(PERSON_IN_SHARED_MESSAGE);
-      const record = await recordFacts(engine, ctx, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
+      const record = await recordFacts(engine, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
         () => false,
         (err: unknown) => err instanceof PluginError && err.code === 'forbidden',
       );
@@ -1090,13 +1100,14 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
 
 describe('recordFacts — the one door every engine write goes through', () => {
   const ANSWER = { records: [{ id: 'row-1' }] };
-  const turn = (audience?: AgentContextAudience, conversationId?: string): AgentContext =>
+  const turn = (audience?: AgentContextAudience, conversationId?: string, source?: AgentContextSource): AgentContext =>
     makeAgentContext({
       sessionId: 's',
       agentId: 'agent-1',
       userId: ALICE,
       ...(audience !== undefined ? { audience } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
+      ...(source !== undefined ? { source } : {}),
     });
 
   /** A bus whose engine records every write it is sent, and answers {@link ANSWER}. */
@@ -1122,7 +1133,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
       { about: 'b', value: '2', audience: 'private' },
       { about: 'c', value: '3', audience: 'shared' },
     ];
-    await recordFacts(bus, turn(audience as AgentContextAudience | undefined), FACTS_RECORD_HOOK, {
+    await recordFacts(bus, turn(audience as AgentContextAudience | undefined), PERSONAL, FACTS_RECORD_HOOK, {
       batchKey: 'batch-1',
       statements,
     });
@@ -1144,7 +1155,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     'a shared write about %j is refused forbidden: the whole batch, naming nothing, sending nothing',
     async (about) => {
       const { bus, written } = engineRecording();
-      const failure: unknown = await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, {
+      const failure: unknown = await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, {
         statements: [
           { about: 'billing_service', value: 'Dana' },
           { about, value: 'Paris-secret' },
@@ -1162,7 +1173,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
   it('an audience this build does not know refuses a person subject too', async () => {
     const { bus, written } = engineRecording();
     await expect(
-      recordFacts(bus, turn('public' as AgentContextAudience), FACTS_RECORD_HOOK, {
+      recordFacts(bus, turn('public' as AgentContextAudience), PERSONAL, FACTS_RECORD_HOOK, {
         statements: [{ about: 'user', value: 'Paris' }],
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
@@ -1171,14 +1182,14 @@ describe('recordFacts — the one door every engine write goes through', () => {
 
   it.each(NOT_PERSON_SUBJECTS)('a shared write about %j goes through, stamped shared', async (about) => {
     const { bus, written } = engineRecording();
-    await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements: [{ about }] });
+    await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about }] });
     expect(written).toEqual([{ statements: [{ about, audience: 'shared' }] }]);
   });
 
   it('a private write sends a person subject on: the speaker rewrite already ran upstream', async () => {
     for (const ctx of [turn(), turn('private')]) {
       const { bus, written } = engineRecording();
-      await recordFacts(bus, ctx, FACTS_RECORD_HOOK, {
+      await recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, {
         statements: [{ about: `user:${ALICE}` }, { about: 'User' }],
       });
       expect(written).toEqual([
@@ -1189,7 +1200,9 @@ describe('recordFacts — the one door every engine write goes through', () => {
 
   it("returns the engine's answer as it came", async () => {
     const { bus } = engineRecording();
-    expect(await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements: [{ about: 'x' }] })).toBe(ANSWER);
+    expect(
+      await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'x' }] }),
+    ).toBe(ANSWER);
   });
 
   // Both engines validate with `map`, which skips a hole, so a hole sent on
@@ -1198,7 +1211,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const { bus, written } = engineRecording();
     const statements: object[] = [{ about: 'a' }];
     statements.length = 2;
-    await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements });
+    await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, { statements });
     expect(written).toEqual([{ statements: [{ about: 'a', audience: 'shared' }, { audience: 'shared' }] }]);
     expect(1 in (written[0] as { statements: unknown[] }).statements).toBe(true);
   });
@@ -1209,7 +1222,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
   it('with no names given, a shared write asks memory:pre-capture once and refuses a speaker name, sending nothing', async () => {
     const { bus, written } = engineRecording();
     const asked = answerSpeakerNames(bus, ['vinay']);
-    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, {
       statements: [
         { about: 'billing_service', value: 'Dana' },
         { about: 'vinay', value: 'Paris-secret' },
@@ -1230,7 +1243,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const asked = answerSpeakerNames(bus, ['vinay']);
     for (const about of ['user', 'user:abc', TOO_LONG_TO_READ]) {
       await expect(
-        recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about }] }),
+        recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about }] }),
       ).rejects.toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
     }
     expect(asked).toEqual([]);
@@ -1245,7 +1258,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     }));
     // `forbidden`, not the `invalid-return` the ask would have thrown.
     await expect(
-      recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about: 'user' }] }),
+      recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'user' }] }),
     ).rejects.toMatchObject({ code: 'forbidden', hookName: FACTS_RECORD_HOOK });
   });
 
@@ -1254,11 +1267,11 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const asked = answerSpeakerNames(bus, ['vinay']);
     const ctx = turn('shared', CHANNEL);
     await expect(
-      recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, ['vinay']),
+      recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, ['vinay']),
     ).rejects.toMatchObject({ code: 'forbidden' });
     // `[]` means "asked, and nobody was named", so it is sent, though the
     // subscriber would have named `vinay` had it been asked.
-    await recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, []);
+    await recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, []);
     expect(asked).toEqual([]);
     expect(written).toEqual([{ statements: [{ about: 'vinay', audience: 'shared' }] }]);
   });
@@ -1266,7 +1279,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
   it('a refused ask refuses the batch', async () => {
     const { bus, written } = engineRecording();
     bus.subscribe(MEMORY_PRE_CAPTURE_HOOK, 'test-refuser', async () => reject({ reason: 'channel-not-remembered' }));
-    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, {
       statements: [{ about: 'billing_service', value: 'Dana-secret' }],
     }).then(
       () => undefined,
@@ -1281,7 +1294,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const { bus, written } = engineRecording();
     const asked = answerSpeakerNames(bus, ['vinay']);
     for (const ctx of [turn(undefined, CHANNEL), turn('private', CHANNEL)]) {
-      await recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] });
+      await recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] });
     }
     expect(asked).toEqual([]);
     expect(written).toEqual([
@@ -1291,7 +1304,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
 
     // The control: the same write in a shared turn asks, and is refused.
     await expect(
-      recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }),
+      recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }),
     ).rejects.toMatchObject({ code: 'forbidden' });
     expect(asked).toEqual([{ conversationId: CHANNEL }]);
   });
@@ -1302,7 +1315,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
       ...payload,
       speakerNames: 'vinay' as unknown as string[],
     }));
-    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, {
       statements: [{ about: 'billing_service', value: 'Dana' }],
     }).then(
       () => undefined,
@@ -1310,6 +1323,112 @@ describe('recordFacts — the one door every engine write goes through', () => {
     );
     expect(failure).toMatchObject({ code: 'invalid-return', plugin: '@ax/memory', hookName: MEMORY_PRE_CAPTURE_HOOK });
     expect((failure as Error).message).not.toContain('vinay');
+    expect(written).toEqual([]);
+  });
+
+  // TASK-1204: a team agent's member turn runs as the member who wrote it, so
+  // a fact about them is filed under their own key. The backstop sends a
+  // statement only once its subject is what `speakerSubject` files it under:
+  // a writer that forgot to file it is refused, never misfiled.
+  const TEAM: MemoryAccess = { userId: ALICE, visibility: 'team' };
+  /** The refusal text of a turn that keeps the speaker rule (TASK-1091). */
+  const WITHHELD_REFUSAL = 'the speaker could be anyone in the room';
+  /** The refusal text of a team agent's member turn (TASK-1204). */
+  const TEAM_REFUSAL = "isn't filed under its speaker";
+
+  it("a team agent's member turn writes statements filed under the speaker, stamped shared", async () => {
+    const { bus, written } = engineRecording();
+    await recordFacts(
+      bus,
+      turn('shared', CHANNEL, 'user'),
+      TEAM,
+      FACTS_RECORD_HOOK,
+      { statements: [{ about: `user:${ALICE}` }, { about: 'team_standup' }, { about: 'ada' }] },
+      NAMES,
+    );
+    expect(written).toEqual([
+      {
+        statements: [
+          { about: `user:${ALICE}`, audience: 'shared' },
+          { about: 'team_standup', audience: 'shared' },
+          { about: 'ada', audience: 'shared' },
+        ],
+      },
+    ]);
+  });
+
+  it.each(['user', 'vinay', 'user_vinay', 'UHTE83XE1', 'User', `user:${BOB}`])(
+    "a team agent's member turn refuses %j: not yet filed under its speaker",
+    async (about) => {
+      const { bus, written } = engineRecording();
+      const failure: unknown = await recordFacts(
+        bus,
+        turn('shared', CHANNEL, 'user'),
+        TEAM,
+        FACTS_RECORD_HOOK,
+        {
+          statements: [
+            { about: 'billing_service', value: 'Dana' },
+            { about, value: 'Paris-secret' },
+          ],
+        },
+        NAMES,
+      ).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+      expect((failure as Error).message).toContain(TEAM_REFUSAL);
+      expect((failure as Error).message).not.toContain('Paris-secret');
+      expect(written).toEqual([]);
+    },
+  );
+
+  it('a team member turn refuses another person key before it asks', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, NAMES);
+    await expect(
+      recordFacts(bus, turn('shared', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, {
+        statements: [{ about: `user:${BOB}` }],
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden', hookName: FACTS_RECORD_HOOK });
+    expect(asked).toEqual([]);
+    expect(written).toEqual([]);
+  });
+
+  it('a team member turn with no names handed asks once', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, NAMES);
+    await recordFacts(bus, turn('shared', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, {
+      statements: [{ about: 'team_standup' }],
+    });
+    expect(asked).toEqual([{ conversationId: CHANNEL }]);
+    expect(written).toEqual([{ statements: [{ about: 'team_standup', audience: 'shared' }] }]);
+  });
+
+  it('an outsider turn on a team agent keeps the speaker rule: nothing under the requester', async () => {
+    const { bus, written } = engineRecording();
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL, 'external'), TEAM, FACTS_RECORD_HOOK, {
+      statements: [{ about: `user:${ALICE}` }],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    expect((failure as Error).message).toContain(WITHHELD_REFUSAL);
+    expect(written).toEqual([]);
+  });
+
+  it("a personal agent's member turn keeps the speaker rule", async () => {
+    const { bus, written } = engineRecording();
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL, 'user'), PERSONAL, FACTS_RECORD_HOOK, {
+      statements: [{ about: `user:${ALICE}` }],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    expect((failure as Error).message).toContain(WITHHELD_REFUSAL);
     expect(written).toEqual([]);
   });
 });

@@ -16,10 +16,12 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * The audience of a memory READ (TASK-1091): a turn whose reply people
  * without access to the agent can read recalls only what was learned where
  * they could see it. And of a memory WRITE: every statement is stamped with
- * the audience of the turn it was learned in, and a shared turn stores
- * nothing under a person subject: `user`, `user:<id>`, or a subject made of
- * the speakers' names that `memory:pre-capture` answered with (TASK-1146;
- * {@link breaksSpeakerRule}).
+ * the audience of the turn it was learned in, and a turn that isn't private
+ * files a person subject only where {@link speakerSubject} says (TASK-1204):
+ * a team agent's member turn files the speaker's facts under the speaker's
+ * own key, and any other shared turn stores nothing under `user`,
+ * `user:<id>`, or a subject made of the speakers' names that
+ * `memory:pre-capture` answered with (TASK-1146; {@link breaksSpeakerRule}).
  *
  * `ctx.audience` is stamped by the host and never read off a payload (see
  * `FORBIDDEN_PAYLOAD_FIELDS` in `plugin.ts`), so this scope comes from `ctx`
@@ -259,10 +261,13 @@ export const SPEAKER_RULE_READS_AT_MOST = 1024;
 
 /**
  * The speaker rule (TASK-1091, design §2a): a turn with this audience may not
- * store a statement whose subject is `about`. It is the ONE test every memory
- * write asks. The observer drops a fact on it (`toStatements`), `memory_note`
- * refuses a note on it, and {@link recordFacts} refuses a batch on it, so the
- * three can't drift apart (TASK-1136).
+ * store a statement whose subject is `about`, in every turn that keeps the
+ * rule: a personal agent's shared turn, and any outsider's turn (`'withheld'`
+ * in {@link speakerScope}). A team agent's member turn files the speaker's
+ * facts under them instead ({@link speakerSubject}, TASK-1204). The observer
+ * drops a fact on it (`toStatements`), `memory_note` refuses a note on it, and
+ * {@link recordFacts} refuses a batch on it (through {@link speakerSubject}),
+ * so the three can't drift apart (TASK-1136).
  *
  * `!== 'private'`, not `=== 'shared'`, so an audience this build doesn't know
  * fails closed.
@@ -410,15 +415,29 @@ export function speakerSubject(
  * statements are an interface, which TypeScript won't widen to an index
  * signature. The engine validates every field; this reads only `about`.
  *
+ * `access` is whose memory this is, as the caller already resolved it
+ * (`resolveMemoryAccess`). It is REQUIRED, so no writer can forget it, and
+ * every caller already holds it, so this makes no `agents:resolve` of its own.
+ *
  * ## The backstop
  *
- * In a shared turn, a batch holding any statement that breaks the speaker
- * rule ({@link breaksSpeakerRule}: `user`, `user:<id>`, a subject made of the
- * speakers' names, or one too long to read) is refused `forbidden` before
- * anything is sent: the
- * whole batch, as the engine refuses a batch. The observer and `memory_note`
- * drop or refuse those statements themselves, before the speaker rewrite, so
- * they can count them and say why. `memory:remember` and `memory:correct`
+ * In a turn that isn't private ({@link speakerScope}), a batch holding any
+ * statement whose subject isn't already what {@link speakerSubject} files it
+ * under is refused `forbidden` before anything is sent: the whole batch, as
+ * the engine refuses a batch.
+ *
+ * - In a turn that keeps the speaker rule (`'withheld'`: a personal agent's
+ *   shared turn, any outsider's turn), that is any subject that breaks it
+ *   ({@link breaksSpeakerRule}: `user`, `user:<id>`, a subject made of the
+ *   speakers' names, or one too long to read).
+ * - In a team agent's member turn (`'team'`, TASK-1204), it is a subject not
+ *   yet filed under its speaker (`user`, or a speaker's name, rather than the
+ *   speaker's own `user:<id>`), any other person's key, and one too long to
+ *   read. A writer was meant to file it first, and one that forgot is refused,
+ *   never misfiled.
+ *
+ * The observer and `memory_note` deal with those statements themselves first,
+ * so they can count them and say why. `memory:remember` and `memory:correct`
  * don't, because only owner routes call them, and those carry no audience.
  * For them, and for any writer added later that forgets, this is the refusal.
  *
@@ -428,7 +447,8 @@ export function speakerSubject(
  * private, makes this ask (`captureCheck`), so a writer added later can't
  * forget the names either. A refused ask refuses the batch `forbidden`, and
  * an answer memory can't read throws `invalid-return`; either way nothing is
- * sent. A private write never asks: the rule never applies there.
+ * sent. A private write is never checked and never asks: the speaker rewrite
+ * already ran upstream, and the rule never applies there.
  *
  * The message names no statement: `about` and `value` can be model output,
  * and the error reaches logs.
@@ -436,16 +456,23 @@ export function speakerSubject(
 export async function recordFacts<TOut>(
   bus: HookBus,
   ctx: AgentContext,
+  access: MemoryAccess,
   hookName: string,
   input: { batchKey?: string; statements: ReadonlyArray<object> },
   speakerNames?: readonly string[],
 ): Promise<TOut | null> {
   const audience = audienceOf(ctx);
-  // The cheap refusal first: a `user` subject or one too long to read needs no
-  // names, so refuse it before any ask, and a garbled answer can't mask it.
-  refuseSpeakerFacts(audience, input.statements, [], hookName);
-  const names = speakerNames ?? (audience === 'private' ? [] : await askSpeakerNames(bus, ctx, hookName));
-  refuseSpeakerFacts(audience, input.statements, names, hookName);
+  const scope = speakerScope(ctx, access);
+  if (scope !== 'private') {
+    // The cheap refusal first: a subject no name can file (`User`, another
+    // person's key, one too long to read) needs no names, so refuse it before
+    // any ask, and a garbled answer can't mask it. With no names a subject is
+    // refused only if it would be with them too, so this refuses nothing the
+    // full check below wouldn't.
+    refuseUnfiled(scope, input.statements, access.userId, [], hookName);
+    const names = speakerNames ?? (await askSpeakerNames(bus, ctx, hookName));
+    refuseUnfiled(scope, input.statements, access.userId, names, hookName);
+  }
   return bus.call<Record<string, unknown>, TOut | null>(hookName, ctx, {
     ...input,
     // `Array.from`, not `map`: `map` keeps a hole, and the engines' own `map`
@@ -463,27 +490,36 @@ async function askSpeakerNames(bus: HookBus, ctx: AgentContext, hookName: string
       code: 'forbidden',
       plugin: PLUGIN_NAME,
       hookName,
-      message: `a shared-audience write through ${hookName} in a conversation memory may not learn from: memory writes none of the batch`,
+      message: `a write through ${hookName} in a conversation memory may not learn from: memory writes none of the batch`,
     });
   }
   return check.speakerNames;
 }
 
-function refuseSpeakerFacts(
-  audience: AgentContextAudience,
+/**
+ * Refuse the whole batch when any statement's subject isn't already what
+ * {@link speakerSubject} files it under in this scope: a subject it would drop,
+ * or one it would file under the speaker's key instead.
+ */
+function refuseUnfiled(
+  scope: Exclude<SpeakerScope, 'private'>,
   statements: ReadonlyArray<object>,
+  userId: string,
   speakerNames: readonly string[],
   hookName: string,
 ): void {
   // `?.`: `for...of` reads a hole as `undefined`, which names nobody.
   for (const statement of statements as ReadonlyArray<{ about?: unknown } | undefined>) {
     const about = statement?.about;
-    if (typeof about === 'string' && breaksSpeakerRule(audience, about, speakerNames)) {
+    if (typeof about === 'string' && speakerSubject(scope, about, userId, speakerNames) !== about) {
       throw new PluginError({
         code: 'forbidden',
         plugin: PLUGIN_NAME,
         hookName,
-        message: `a shared-audience turn tried to write a statement about a person through ${hookName}: the speaker could be anyone in the room, so memory writes none of the batch rather than file their words under a person`,
+        message:
+          scope === 'team'
+            ? `a team agent's turn tried to write a statement through ${hookName} that isn't filed under its speaker: memory writes none of the batch rather than file someone's words under the wrong subject`
+            : `a shared-audience turn tried to write a statement about a person through ${hookName}: the speaker could be anyone in the room, so memory writes none of the batch rather than file their words under a person`,
       });
     }
   }

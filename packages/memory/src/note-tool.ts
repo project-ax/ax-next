@@ -281,10 +281,12 @@ export async function registerMemoryNote(
         const slot = deriveSlot(input.relation as string);
         // `recordFacts`, like every engine write: it stamps the turn's
         // audience on the note (TASK-1091). Handed the names this note was
-        // answered with, so a note asks once (TASK-1146).
+        // answered with, so a note asks once (TASK-1146), and the access
+        // resolved above, so it knows whose memory this is (TASK-1204).
         const result = await recordFacts<{ records?: Array<{ id?: unknown }> }>(
           bus,
           ctx,
+          access,
           'memory:facts:record',
           {
             statements: [
