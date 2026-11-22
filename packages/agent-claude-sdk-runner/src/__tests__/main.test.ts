@@ -503,12 +503,15 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    // Two JSON calls at boot: session.get-config + tool.list. Nothing streams
-    // as a binary either way (TASK-995: no workspace to materialize at boot or
-    // to bundle at the turn boundary).
-    expect(fakeClient.call).toHaveBeenCalledTimes(2);
+    // Two JSON calls at boot: session.get-config + tool.list. One more when
+    // the person's message is pulled: proxy.drain-allowed-hosts (TASK-1199;
+    // this fake doesn't answer it, so the runner logs and the turn runs).
+    // Nothing streams as a binary either way (TASK-995: no workspace to
+    // materialize at boot or to bundle at the turn boundary).
+    expect(fakeClient.call).toHaveBeenCalledTimes(3);
     expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
+    expect(fakeClient.call).toHaveBeenCalledWith('proxy.drain-allowed-hosts', {});
     expect(fakeClient.callBinary).not.toHaveBeenCalled();
     expect(fakeClient.callBinaryUpload).not.toHaveBeenCalled();
 

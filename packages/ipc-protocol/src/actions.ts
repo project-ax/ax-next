@@ -193,6 +193,43 @@ export type ProxyDrainEgressBlocksResponse = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// proxy.drain-allowed-hosts — the "now allowed" line (TASK-1199).
+//
+// Exposes the host's `proxy:drain-session-allowed-hosts` service hook to
+// runners over IPC. When a person allows a blocked host (the web "Allow access"
+// card, or a Slack host prompt), the host's `proxy:add-host` widens the live
+// session allowlist and records the host. The runner drains that record at the
+// start of each person's turn and opens the turn with a system line saying the
+// host is now allowed, so the agent knows it can retry a request the block
+// note told it to stop retrying.
+//
+// Auth: the request body is EMPTY by design — exactly like
+// proxy.drain-egress-blocks. The host reads the session from `ctx.sessionId`
+// (bearer-token-bound by the IPC server), NEVER from the body, so an agent can
+// only drain ITS OWN session. A non-empty body is a hard 400 here
+// (`.strict({})`), keeping the no-sessionId-smuggling invariant visible at the
+// schema layer. The drained hosts are ones a person allowed for this session,
+// which the agent could learn by retrying; draining never widens egress (only
+// the host-internal proxy:add-host does, and it is deliberately NOT exposed
+// over IPC).
+export const ProxyDrainAllowedHostsRequestSchema = z.object({}).strict();
+export type ProxyDrainAllowedHostsRequest = z.infer<
+  typeof ProxyDrainAllowedHostsRequestSchema
+>;
+
+export const ProxyDrainAllowedHostsResponseSchema = z.object({
+  /** Hostnames a person allowed on the caller's live session since the last
+   *  drain (insertion order, each once, capped, surface-once). Empty when
+   *  nothing was allowed or the deployment has no egress proxy (the
+   *  single-session CLI). The runner filters them again before any reaches
+   *  the model. */
+  hosts: z.array(z.string()),
+});
+export type ProxyDrainAllowedHostsResponse = z.infer<
+  typeof ProxyDrainAllowedHostsResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
 // session.get-config
 //
 // Runner → host RPC fetched at boot. Authentication is the bearer token

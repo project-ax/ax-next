@@ -11,6 +11,7 @@ import {
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
+  ProxyDrainAllowedHostsResponseSchema,
   ProxyDrainEgressBlocksResponseSchema,
   SessionGetDisplayHistoryResponseSchema,
   SkillProposeResponseSchema,
@@ -63,7 +64,7 @@ import {
 // Retry and timeout policy lives in this file:
 //   - Connection errors → retry with exponential backoff until the wall-clock
 //     budget runs out: `maxElapsedMs` (default 2 min), or a fixed 3 s for
-//     tool.execute-host / tool.pre-call / tool.list.
+//     tool.execute-host / tool.pre-call / tool.list / proxy.drain-allowed-hosts.
 //   - 5xx → at most MAX_5XX_RETRIES (3) retries on the same backoff, never the
 //     wall-clock window.
 //   - `event()` → one attempt with a 10 s timeout, never retried. A non-2xx or
@@ -128,6 +129,8 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'skill.propose': SkillProposeResponseSchema,
   // Agent-visible egress-block note: small JSON response `{ hosts: string[] }`.
   'proxy.drain-egress-blocks': ProxyDrainEgressBlocksResponseSchema,
+  // TASK-1199 "now allowed" line: small JSON response `{ hosts: string[] }`.
+  'proxy.drain-allowed-hosts': ProxyDrainAllowedHostsResponseSchema,
   // Cross-runner history reconstruction: bounded, text-only prior turns, used
   // to seed a runner that was handed another runner's transcript.
   'session.get-display-history': SessionGetDisplayHistoryResponseSchema,
@@ -165,7 +168,8 @@ export interface IpcClientOptions {
    * 30 s/attempt) until the next wait would pass this much real time since the
    * first attempt, then the last error is rethrown. Only connection-level
    * errors use this window: a 5xx gets at most MAX_5XX_RETRIES (3) retries,
-   * tool.execute-host / tool.pre-call / tool.list have a fixed 3 s budget, and
+   * tool.execute-host / tool.pre-call / tool.list / proxy.drain-allowed-hosts
+   * have a fixed 3 s budget, and
    * `event()` never retries. This is the knob that lets the runner survive a
    * host OOMKill → reschedule → boot instead of giving up after the old ~3 s /
    * 6-attempt budget and dropping the turn's transcript ship or crashing
@@ -844,10 +848,14 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   // the response was lost, so replaying it across a 2-min window would DUPLICATE
   // the action (Codex). It (and the cheap veto `tool.pre-call` / `tool.list`)
   // keep a SHORT budget — a couple of quick connection retries, no long wait.
+  // `proxy.drain-allowed-hosts` (TASK-1199) is short too: it runs at the start
+  // of every person's turn, so a long wait stalls the turn, and a surface-once
+  // drain gains nothing from a 2-minute replay (the runner skips the line).
   const SHORT_BUDGET_ACTIONS: ReadonlySet<IpcActionName> = new Set<IpcActionName>([
     'tool.execute-host',
     'tool.pre-call',
     'tool.list',
+    'proxy.drain-allowed-hosts',
   ]);
   const SHORT_ELAPSED_BUDGET_MS = 3_000;
   const elapsedBudgetFor = (action: IpcActionName): number =>

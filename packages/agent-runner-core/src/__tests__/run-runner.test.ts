@@ -171,6 +171,9 @@ beforeEach(() => {
       if (action === 'tool.list') return { tools: [] };
       // A conversation-bound boot copies the conversation's uploads.
       if (action === 'attachments.list') return { files: [] };
+      // Each person's message drains the hosts allowed since the last turn
+      // (TASK-1199). None by default, so no "now allowed" line.
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
       throw new Error(`unexpected call: ${action}`);
     }),
     callGet: vi.fn(),
@@ -187,6 +190,13 @@ const NOT_ATTACHED = {
   type: 'text',
   text: 'Some new files could not be attached here. Look for them in the Files tab.',
 };
+
+/**
+ * The "now allowed" line for `example.com` (egress-note.ts, TASK-1199), written
+ * out rather than built, so these tests pin the copy the model reads.
+ */
+const NOW_ALLOWED =
+  'System message (not from the user): network egress is now ALLOWED for: `example.com`. Requests to these hosts are no longer blocked, so you can retry one that was.';
 
 describe('runRunner — generated file attachment', () => {
   // New files in the agent's home are attached to the turn that made them, by
@@ -374,8 +384,11 @@ describe('runRunner — uploads', () => {
     sizeBytes: NOTES.length,
   });
 
-  /** One conversation-bound run that pulls one message carrying `blocks`. */
-  async function pullOne(opts: { lists: string[][]; blocks: unknown[] }): Promise<unknown> {
+  /**
+   * One conversation-bound run that pulls one message carrying `blocks`, and
+   * `text` as the typed words ('see this' unless given).
+   */
+  async function pullOne(opts: { lists: string[][]; blocks: unknown[]; text?: string }): Promise<unknown> {
     const original = fakeClient.call.getMockImplementation()!;
     const lists = [...opts.lists];
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
@@ -395,7 +408,7 @@ describe('runRunner — uploads', () => {
       return { path: tmp, bytes: NOTES.length };
     });
     scriptInbox([
-      { type: 'user-message', payload: { role: 'user', content: 'see this', contentBlocks: opts.blocks }, reqId: 'r1', cursor: 1 },
+      { type: 'user-message', payload: { role: 'user', content: opts.text ?? 'see this', contentBlocks: opts.blocks }, reqId: 'r1', cursor: 1 },
     ]);
     let seen: unknown;
     const loop: Loop = {
@@ -497,6 +510,33 @@ describe('runRunner — uploads', () => {
       { type: 'text', text: "User attached 'notes.txt' (text/plain), but the file could not be loaded." },
     ]);
     expect(fakeClient.call.mock.calls.some((c) => c[0] === 'workspace.read')).toBe(false);
+  });
+
+  describe('with a host allowed since the last turn (TASK-1199)', () => {
+    const GHOST_MENTION = {
+      type: 'text',
+      text: "User attached 'notes.txt' (text/plain), but the file could not be loaded.",
+    };
+
+    // `pullOne` captures the mock in place when it is called, so the drain's
+    // answer has to be set before it.
+    beforeEach(() => {
+      const original = fakeClient.call.getMockImplementation()!;
+      fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) =>
+        action === 'proxy.drain-allowed-hosts' ? { hosts: ['example.com'] } : original(action, ...args),
+      );
+    });
+
+    it('the line is the first block, before the typed text and the attachment', async () => {
+      const seen = await pullOne({ lists: [[]], blocks: [attachmentBlock('att-ghost')] });
+      expect(seen).toEqual([{ type: 'text', text: NOW_ALLOWED }, { type: 'text', text: 'see this' }, GHOST_MENTION]);
+    });
+
+    it('with no typed text, the attachment follows the line directly (no empty text block)', async () => {
+      const seen = await pullOne({ lists: [[]], blocks: [attachmentBlock('att-ghost')], text: '' });
+      expect((seen as unknown[])[1]).toEqual(GHOST_MENTION);
+      expect(seen).toEqual([{ type: 'text', text: NOW_ALLOWED }, GHOST_MENTION]);
+    });
   });
 });
 
@@ -2113,12 +2153,14 @@ describe('runRunner — no workspace tier (TASK-995)', () => {
     expect(actions.filter((a) => a.startsWith('workspace.'))).toEqual([]);
     expect(actions).not.toContain('conversation.drain-save-refusals');
     // Not vacuous: the run went the whole way — boot, the uploads copy, the
-    // transcript ship and the bind, both turn-ends, the final ship and the one
-    // chat-end.
+    // person's message (which drains the hosts allowed since the last turn,
+    // TASK-1199), the transcript ship and the bind, both turn-ends, the final
+    // ship and the one chat-end.
     expect(actions).toEqual([
       'session.get-config',
       'attachments.list',
       'tool.list',
+      'proxy.drain-allowed-hosts',
       'session.append-transcript',
       'conversation.store-runner-session',
       'event.turn-end',
@@ -2268,6 +2310,122 @@ describe('runRunner — no workspace tier (TASK-995)', () => {
       expect(fakeClient.close).toHaveBeenCalledOnce();
       expect(actions).not.toContain('event.chat-end');
     });
+  });
+});
+
+describe('runRunner — hosts allowed since the last turn (TASK-1199)', () => {
+  // A person allowed a blocked host (the web "Allow access" card, or a Slack
+  // host prompt) between turns. The block note told the agent to stop
+  // retrying, so the person's next message has to open by saying the host is
+  // allowed now — for the model only.
+
+  /** Answer each drain with the next scripted host list (an Error throws), then none. */
+  function drainAnswers(...answers: Array<string[] | Error>): void {
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action !== 'proxy.drain-allowed-hosts') return original(action, ...args);
+      const next = answers.shift() ?? [];
+      if (next instanceof Error) throw next;
+      return { hosts: next };
+    });
+  }
+
+  const said = (content: string, n: number) => ({
+    type: 'user-message',
+    payload: { role: 'user', content },
+    reqId: `req-${n}`,
+    cursor: n,
+  });
+
+  /** Run the scripted inbox; each turn records what the model was handed. */
+  async function run(entries: unknown[]): Promise<{ code: number; seen: unknown[] }> {
+    scriptInbox(entries);
+    const seen: unknown[] = [];
+    const loop: Loop = {
+      run: vi.fn(async (ctx: LoopContext) => {
+        for (;;) {
+          const msg = await ctx.nextMessage();
+          if (msg === null) return 0;
+          seen.push(msg.content);
+          await ctx.endTurn({ contentBlocks: [], toolResultBlocks: [], readTurnId: async () => undefined, usage: null });
+        }
+      }),
+    };
+    const code = await runRunner(() => loop, seams(fakeEnv));
+    return { code, seen };
+  }
+
+  const drainCalls = () => fakeClient.call.mock.calls.filter((c) => c[0] === 'proxy.drain-allowed-hosts');
+
+  it('a host allowed between turns: the next turn starts with the now-allowed line, the earlier one does not', async () => {
+    drainAnswers([], ['example.com']);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { code, seen } = await run([said('first', 1), said('second', 2)]);
+      expect(code).toBe(0);
+      expect(seen).toEqual(['first', `${NOW_ALLOWED}\n\nsecond`]);
+      // An empty drain and a successful one are both quiet.
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).not.toContain('drain-allowed-hosts');
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('a failing drain leaves the message as the person wrote it', async () => {
+    drainAnswers(new Error('boom'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { code, seen } = await run([said('hello', 1)]);
+      expect(code).toBe(0);
+      expect(seen).toEqual(['hello']);
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain(
+        'runner: drain-allowed-hosts failed (continuing): boom\n',
+      );
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('the line reaches the model but never the chat-end history', async () => {
+    drainAnswers([], ['example.com']);
+    const { seen } = await run([said('first', 1), said('second', 2)]);
+    // Not vacuous: the model was handed the line.
+    expect(String(seen[1]).startsWith(NOW_ALLOWED)).toBe(true);
+    // `outcome.messages` feeds memory's extraction, which must not save a
+    // system line as something the person said.
+    const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end')!;
+    const messages = (chatEnd[1] as { outcome: { messages: Array<{ role: string; content: unknown }> } }).outcome
+      .messages;
+    expect(messages).toContainEqual({ role: 'user', content: 'second' });
+    for (const m of messages) expect(JSON.stringify(m.content)).not.toContain('ALLOWED');
+    // Nor any other event the runner sends (turn-ends, stream chunks).
+    for (const [, payload] of fakeClient.event.mock.calls) expect(JSON.stringify(payload)).not.toContain('ALLOWED');
+  });
+
+  it('hosts that fail the host-shape filter never reach the model', async () => {
+    drainAnswers(['bad host']);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { seen } = await run([said('hello', 1)]);
+      expect(fakeClient.call).toHaveBeenCalledWith('proxy.drain-allowed-hosts', {});
+      expect(seen).toEqual(['hello']);
+      // The drain already cleared them, so dropping them is said out loud.
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain(
+        'runner: drain-allowed-hosts: 1 allowed host(s) failed the host-shape filter; no line added\n',
+      );
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('a decision-resolved turn does not drain: the line waits for the next person\'s message', async () => {
+    drainAnswers(['example.com']);
+    const { seen } = await run([
+      { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'They said yes.' },
+      said('thanks', 1),
+    ]);
+    expect(seen).toEqual(['System message (not from the user): They said yes.', `${NOW_ALLOWED}\n\nthanks`]);
+    expect(drainCalls()).toHaveLength(1);
   });
 });
 

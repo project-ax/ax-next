@@ -1385,6 +1385,41 @@ describe('dispatcher', () => {
   });
 
   // -------------------------------------------------------------------------
+  // /proxy.drain-allowed-hosts (TASK-1199)
+  // -------------------------------------------------------------------------
+
+  it("POST /proxy.drain-allowed-hosts — drains the BEARER's session; a body sessionId is refused (TASK-1199)", async () => {
+    const seenSessions: string[] = [];
+    const s = await setup({
+      services: {
+        'proxy:drain-session-allowed-hosts': async (ctx) => {
+          seenSessions.push((ctx as { sessionId: string }).sessionId);
+          return { hosts: ['example.com'] };
+        },
+      },
+    });
+    setups.push(s);
+
+    const ok = await doRequest(s.socketPath, 'POST', '/proxy.drain-allowed-hosts', s.token, '{}');
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.body)).toEqual({ hosts: ['example.com'] });
+    // The session the token was minted for (setup's 's-dispatch'), not one
+    // the runner named.
+    expect(seenSessions).toEqual(['s-dispatch']);
+
+    const smuggled = await doRequest(
+      s.socketPath,
+      'POST',
+      '/proxy.drain-allowed-hosts',
+      s.token,
+      JSON.stringify({ sessionId: 'someone-else' }),
+    );
+    expect(smuggled.status).toBe(400);
+    expect(JSON.parse(smuggled.body).error.code).toBe('VALIDATION');
+    expect(seenSessions).toEqual(['s-dispatch']); // the hook never ran again
+  });
+
+  // -------------------------------------------------------------------------
   // Unknown path
   // -------------------------------------------------------------------------
 

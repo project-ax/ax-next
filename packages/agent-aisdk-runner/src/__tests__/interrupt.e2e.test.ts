@@ -252,6 +252,8 @@ beforeEach(async () => {
           return { output: 'host tool output' };
         case 'proxy.drain-egress-blocks':
           return { hosts: [] };
+        case 'proxy.drain-allowed-hosts':
+          return { hosts: [] };
         case 'conversation.store-runner-session':
           return {};
         default:

@@ -6,6 +6,7 @@ import {
   IpcRequestError,
   type ContentBlock,
   type IpcClient,
+  type ProxyDrainAllowedHostsResponse,
   type SessionGetConfigResponse,
   type ToolListResponse,
 } from '@ax/ipc-protocol';
@@ -20,6 +21,7 @@ import { commitTrace } from './commit-trace.js';
 import { assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import { decisionResolvedTurn } from './decision-turn.js';
+import { buildEgressAllowedNote } from './egress-note.js';
 import { createInboxLoop, type InboxLoopEntry } from './inbox-loop.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { createLocalDispatcher, type LocalDispatcher } from './local-dispatcher.js';
@@ -209,6 +211,24 @@ function normalizeTurnUsage(usage: TurnUsage | null | undefined): TurnUsage | un
     cacheReadTokens: normalizeTokenCount(usage.cacheReadTokens),
     cacheWriteTokens: normalizeTokenCount(usage.cacheWriteTokens),
   };
+}
+
+/**
+ * Put a system `line` in front of a turn's user content — before a plain-text
+ * message with a blank line between, or as the leading text block of a block
+ * array (the shape the shell builds when a turn carries attachments, and one
+ * both loops already read). An empty message becomes the line alone, so no
+ * empty text is added. The input is never mutated.
+ *
+ * TASK-732's `prependNotice`, restored for TASK-1199 (TASK-995 removed it only
+ * because its notice went away).
+ */
+function prependLine(content: unknown, line: string): unknown {
+  if (Array.isArray(content)) {
+    return [{ type: 'text', text: line }, ...content];
+  }
+  const text = typeof content === 'string' ? content : String(content ?? '');
+  return text.length > 0 ? `${line}\n\n${text}` : line;
 }
 
 /** What the loop hands the shell at a turn boundary. */
@@ -1039,6 +1059,39 @@ async function runRunnerInner(
     };
   }
 
+  /**
+   * TASK-1199: the "now allowed" line for the hosts a person allowed on this
+   * live session since the last drain (the web "Allow access" card, or a Slack
+   * host prompt), or `null` when there are none.
+   *
+   * The host reads the session from this runner's bearer token, never from the
+   * body, so this drains only our own session. Hosts are filtered to a safe
+   * host shape before any reaches the model (`buildEgressAllowedNote`).
+   *
+   * Best-effort, like TASK-732's turn-start drain: a failure writes one
+   * operator line and the turn runs with the person's message unchanged. The
+   * action has a short budget, so a slow host can't stall the turn for long.
+   */
+  async function allowedHostsLine(): Promise<string | null> {
+    try {
+      const r = (await client.call('proxy.drain-allowed-hosts', {})) as ProxyDrainAllowedHostsResponse;
+      const line = buildEgressAllowedNote(r.hosts);
+      // The drain already cleared these hosts, so a drop here is permanent:
+      // say so, rather than lose the notice without a trace.
+      if (line === null && r.hosts.length > 0) {
+        process.stderr.write(
+          `runner: drain-allowed-hosts: ${r.hosts.length} allowed host(s) failed the host-shape filter; no line added\n`,
+        );
+      }
+      return line;
+    } catch (err) {
+      process.stderr.write(
+        `runner: drain-allowed-hosts failed (continuing): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return null;
+    }
+  }
+
   // Inbox → loop user-message pull. Resolving null on cancel tells the loop no
   // more user messages are coming, which lets it drain naturally and exit.
   //
@@ -1169,7 +1222,24 @@ async function runRunnerInner(
       // by conversationId, one-shot keep-warm, clear-active-req-id), closing
       // the live stream before the turn even runs. See orchestrator.
 
-      return { content: messageContent, id: trackMessage(messageReqId) };
+      // TASK-1199: when a person allowed a blocked host since the last turn,
+      // open this one by saying so — the block note told the agent to stop
+      // retrying, and nothing else would tell it the host is reachable now.
+      // Same shape as TASK-732's turn-start notice. Only a person's message
+      // drains: a host-authored decision-resolved turn leaves the hosts for
+      // the next one, which is when the person expects the retry.
+      //
+      // Model-facing only. chatEndHistory above keeps the person's words:
+      // `outcome.messages` feeds memory's extraction, which must not save a
+      // system line as something the person said. (The display log saved the
+      // person's turn host-side before routing it here, so it never sees the
+      // line either.) Drained last, so a host drained here can't be lost to a
+      // failure earlier in this pull.
+      const line = await allowedHostsLine();
+      return {
+        content: line === null ? messageContent : prependLine(messageContent, line),
+        id: trackMessage(messageReqId),
+      };
     }
   }
 

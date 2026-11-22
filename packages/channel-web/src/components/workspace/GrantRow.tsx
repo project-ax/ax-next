@@ -109,8 +109,10 @@ interface Props {
    * REQUIRED, and not optional-with-a-no-op default. A missing resume is
    * exactly the silence this task is about, and a default would let the next
    * render site reintroduce it without writing a line of code. Fires only for
-   * `skill`: a `host` grant widens the LIVE session allowlist
-   * and the agent never stopped, so there is nothing to pick up.
+   * `skill`: a `host` grant widens the LIVE session allowlist and holds
+   * nothing, so there is nothing to resume. The person asks again, and the
+   * runner opens that turn by telling the agent the host is now allowed
+   * (TASK-1199).
    */
   onGranted: (grant: WorkspaceGrant) => Promise<GrantResume>;
 }
@@ -479,7 +481,7 @@ export function GrantRow({
     decision is made.
 
     Unreachable on a `host` grant: that arm returns above, and `onGranted` is
-    never called there because the agent never stopped.
+    never called there because a host grant holds nothing to resume.
   */
   if (stalled) {
     return (
