@@ -1,5 +1,5 @@
 import { CallResponseSchema, GrantsResponseSchema, REFUSAL_STATUS, RefusalSchema } from '@ax/apps-bridge-contract';
-import { PluginError, type AgentContext, type Logger } from '@ax/core';
+import { PluginError, ownerlessIdFor, type AgentContext, type Logger } from '@ax/core';
 import { describe, expect, it, vi } from 'vitest';
 import { answerCall, answerClaim, answerGrants, type BridgeAnswer, type BridgeDeps } from '../bridge-call.js';
 import { LINK_CODE_TTL_MS, hashLinkCode, newLinkCode } from '../link-codes.js';
@@ -18,6 +18,7 @@ const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
 const APP2 = 'app_02OTHER';
 const CONN = 'linear';
 const NS = 'c0123456789';
+const NS_GITHUB = 'cabcdefabcd';
 const TOOL = 'list_issues';
 const KEY = `mcp.${NS}.${TOOL}`;
 const KEY_CREATE = `mcp.${NS}.create_issue`;
@@ -88,6 +89,13 @@ function defaultHandlers(): Record<string, Handler> {
       if (agent === undefined) throw pluginError('not-found');
       return { agent };
     },
+    // Both connectors reach every agent in this fake, each with its own namespace.
+    'connectors:list-effective': () => ({
+      connectors: [
+        { summary: { id: CONN, name: 'Linear' }, source: 'attached', toolNamespaces: [{ toolNamespace: NS, server: 'main' }] },
+        { summary: { id: 'github', name: 'GitHub' }, source: 'attached', toolNamespaces: [{ toolNamespace: NS_GITHUB, server: 'main' }] },
+      ],
+    }),
     'tool-policy:evaluate': () => ({ verdict: 'allow', ruleId: null, capability: null, irreversible: false, effect: [] }),
     'connectors:call-tool-result': () => SUCCEEDED,
     'auth:find-user-by-email': (_ctx, input: { email: string }) => (input.email === VIEWER_EMAIL ? { userId: VIEWER } : null),
@@ -316,6 +324,20 @@ describe('answerClaim', () => {
     expect(h.store.linkCount()).toBe(0);
   });
 
+  it('claim: a store throw on the replay lookup is unavailable', async () => {
+    // Peek finds nothing, then the replay lookup throws.
+    const h = harness();
+    vi.spyOn(h.store, 'getLinkByCode').mockRejectedValue(new Error('db down'));
+    expectRefusal(await answerClaim(h.deps, { appId: APP, appName: 'Desk', code: newLinkCode() }), 'unavailable', 5);
+
+    // A lost race: the claim answers 'invalid', then the replay lookup throws.
+    const r = harness();
+    const code = await mint(r);
+    vi.spyOn(r.store, 'claimLinkCode').mockResolvedValueOnce({ result: 'invalid' });
+    vi.spyOn(r.store, 'getLinkByCode').mockRejectedValue(new Error('db down'));
+    expectRefusal(await answerClaim(r.deps, { appId: APP, appName: 'Desk', code }), 'unavailable', 5);
+  });
+
   it('claim: a retried claim of the code that made the link answers 200; the same code for another app id is link_code_invalid', async () => {
     const h = harness();
     const code = await mint(h);
@@ -423,8 +445,17 @@ describe('answerCall', () => {
     const body = JSON.parse(JSON.stringify(builderBody())) as { input: Record<string, unknown> };
     const a = await answerCall(h.deps, body);
 
-    expect(h.hooks()).toEqual(['agents:resolve', 'tool-policy:evaluate', 'connectors:call-tool-result']);
+    expect(h.hooks()).toEqual([
+      'agents:resolve',
+      'agents:can-manage-connectors',
+      'connectors:list-effective',
+      'tool-policy:evaluate',
+      'connectors:call-tool-result',
+    ]);
     expect(h.callOf('agents:resolve')?.input).toEqual({ agentId: AGENT, userId: LINKER });
+    // The linker's rights are asked on every builder call, as at claim time.
+    expect(h.callOf('agents:can-manage-connectors')?.input).toEqual({ agentId: AGENT, actor: { userId: LINKER, isAdmin: false } });
+    expect(h.callOf('connectors:list-effective')?.input).toEqual({ userId: LINKER, attachmentIds: [CONN], exclusions: [] });
     const policy = h.callOf('tool-policy:evaluate');
     expect(policy?.input).toEqual({ call: { name: KEY, input: body.input }, agentId: AGENT });
     expect((policy?.input as { call: { input: unknown } }).call.input).toBe(body.input);
@@ -488,6 +519,30 @@ describe('answerCall', () => {
     ['a tool key spelled as the tool name is tool_not_allowed', linked(), () => builderBody({ tool: KEY }), 'tool_not_allowed'],
     ['resolve not-found is agent_unavailable', setHandler('agents:resolve', () => { throw pluginError('not-found'); }), () => builderBody(), 'agent_unavailable'],
     ['resolve forbidden is agent_unavailable', setHandler('agents:resolve', () => { throw pluginError('forbidden'); }), () => builderBody(), 'agent_unavailable'],
+    [
+      'a linker who can no longer manage the agent is agent_unavailable',
+      setHandler('agents:can-manage-connectors', () => ({ allowed: false })),
+      () => builderBody(),
+      'agent_unavailable',
+    ],
+    [
+      'a linker who can no longer reach the agent to manage it is agent_unavailable',
+      setHandler('agents:can-manage-connectors', () => { throw pluginError('forbidden'); }),
+      () => builderBody(),
+      'agent_unavailable',
+    ],
+    ['can-manage timing out is unavailable', setHandler('agents:can-manage-connectors', () => { throw pluginError('timeout'); }), () => builderBody(), 'unavailable', 5],
+    [
+      "a grant key whose namespace is another connector's is tool_not_allowed",
+      async (h) => {
+        await link(h);
+        await grant(h, 'builder', [`mcp.${NS_GITHUB}.search`]);
+      },
+      () => builderBody({ tool: 'search' }),
+      'tool_not_allowed',
+    ],
+    ['the effective set failing is unavailable', setHandler('connectors:list-effective', () => { throw pluginError('timeout'); }), () => builderBody(), 'unavailable', 5],
+    ['an unreadable effective set is unavailable', setHandler('connectors:list-effective', () => ({ nope: 1 })), () => builderBody(), 'unavailable', 5],
     ['policy hold is approval_required', setHandler('tool-policy:evaluate', () => ({ verdict: 'hold' })), () => builderBody(), 'approval_required'],
     ['policy deny is tool_not_allowed', setHandler('tool-policy:evaluate', () => ({ verdict: 'deny' })), () => builderBody(), 'tool_not_allowed'],
     ['policy throws is unavailable', setHandler('tool-policy:evaluate', () => { throw pluginError('timeout'); }), () => builderBody(), 'unavailable', 5],
@@ -528,6 +583,32 @@ describe('answerCall', () => {
     if (code === 'rate_limited') expect(h.calls).toEqual([]);
   });
 
+  it('builder: a linker demoted on a team agent (still a member, can no longer manage it) is agent_unavailable', async () => {
+    const h = harness({ handlers: { 'agents:can-manage-connectors': () => ({ allowed: false }) } });
+    // The link is to a team agent the linker still reaches.
+    const code = await mint(h, { agentId: TEAM_AGENT });
+    h.handlers['agents:can-manage-connectors'] = () => ({ allowed: true });
+    expect((await answerClaim(h.deps, { appId: APP, appName: 'Desk', code })).status).toBe(200);
+    await grant(h, 'builder');
+    expect((await answerCall(h.deps, builderBody())).status).toBe(200);
+    h.handlers['agents:can-manage-connectors'] = () => ({ allowed: false });
+    const before = h.calls.filter((c) => c.hook === 'connectors:call-tool-result').length;
+    const a = await answerCall(h.deps, builderBody());
+    expectRefusal(a, 'agent_unavailable');
+    expect(h.calls.filter((c) => c.hook === 'connectors:call-tool-result').length).toBe(before);
+    expectRefusal(await answerGrants(h.deps, APP), 'agent_unavailable');
+  });
+
+  it('a grant key whose namespace is on no connector of the agent goes on to the call hook, which decides', async () => {
+    const h = harness();
+    await link(h);
+    const orphan = 'mcp.c9999999999.list_issues';
+    await grant(h, 'builder', [orphan]);
+    const a = await answerCall(h.deps, builderBody());
+    expect(a.status).toBe(200);
+    expect(h.callOf('connectors:call-tool-result')?.input).toMatchObject({ toolKey: orphan });
+  });
+
   it('viewer: no approval answers viewer_approval_required with the path-only approve link', async () => {
     const h = harness();
     await link(h);
@@ -539,6 +620,10 @@ describe('answerCall', () => {
     expect(h.verifyViewer).toHaveBeenCalledWith(ASSERTION);
     expect(h.hooks()).toEqual(['auth:find-user-by-email']);
     expect(h.callOf('auth:find-user-by-email')?.input).toEqual({ email: VIEWER_EMAIL });
+    // The lookup is asked as no one: an owner-less stand-in, never a real person or ''.
+    const lookup = h.callOf('auth:find-user-by-email');
+    expect(lookup?.ctx.userId).toBe(ownerlessIdFor('apps-bridge'));
+    expect(lookup?.ctx.agentId).toBe(ownerlessIdFor('apps-bridge'));
   });
 
   it('viewer: a bad assertion is viewer_invalid; a JWKS outage is unavailable; an email with no account is viewer_invalid', async () => {
@@ -594,7 +679,14 @@ describe('answerCall', () => {
       body: SUCCEEDED,
       log: { appId: APP, connectorId: CONN, tool: TOOL, mode: 'viewer', outcome: 'succeeded' },
     });
-    expect(h.hooks()).toEqual(['auth:find-user-by-email', 'agents:resolve', 'tool-policy:evaluate', 'connectors:call-tool-result']);
+    // No can-manage question: a viewer borrows their own agent, not the linker's rights.
+    expect(h.hooks()).toEqual([
+      'auth:find-user-by-email',
+      'agents:resolve',
+      'connectors:list-effective',
+      'tool-policy:evaluate',
+      'connectors:call-tool-result',
+    ]);
     expect(h.callOf('agents:resolve')?.input).toEqual({ agentId: VIEWER_AGENT, userId: VIEWER });
     expect(h.callOf('tool-policy:evaluate')?.input).toMatchObject({ call: { name: KEY }, agentId: VIEWER_AGENT });
     expect(h.callOf('connectors:call-tool-result')?.input).toMatchObject({ userId: VIEWER, agentId: VIEWER_AGENT, toolKey: KEY });
@@ -824,6 +916,20 @@ describe('answerGrants', () => {
     }
   });
 
+  it('grants: a linker demoted on a team agent (still a member, can no longer manage it) is agent_unavailable', async () => {
+    const h = await seeded({ 'agents:can-manage-connectors': () => ({ allowed: false }) });
+    const a = await answerGrants(h.deps, APP);
+    expectRefusal(a, 'agent_unavailable');
+    expect(a.log).toEqual({ appId: APP, outcome: 'agent_unavailable' });
+    expect(h.callOf('agents:can-manage-connectors')?.input).toEqual({ agentId: AGENT, actor: { userId: LINKER, isAdmin: false } });
+    expect(h.hooks()).toEqual(['agents:can-manage-connectors']);
+
+    const gone = await seeded({ 'agents:can-manage-connectors': () => { throw pluginError('not-found'); } });
+    expectRefusal(await answerGrants(gone.deps, APP), 'agent_unavailable');
+    const down = await seeded({ 'agents:can-manage-connectors': () => { throw pluginError('timeout'); } });
+    expectRefusal(await answerGrants(down.deps, APP), 'unavailable', 5);
+  });
+
   it('grants: a link with no grants answers an empty list', async () => {
     const h = harness();
     await link(h);
@@ -873,16 +979,17 @@ describe('answerGrants', () => {
         },
       ],
     });
-    // The throw is logged by its code and the connector id, nothing else.
-    const warned = h.lines.filter((l) => l.level === 'warn');
-    expect(warned).toEqual([{ level: 'warn', msg: 'apps_bridge_describe_tools_failed', bindings: { connectorId: 'github', code: 'timeout' } }]);
-    expect(JSON.stringify(h.lines)).not.toContain('SECRET-MESSAGE');
+    // One log line per request: the failure rides on it as a code, and
+    // nothing else is logged.
+    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed' });
+    expect(h.lines).toEqual([]);
   });
 
   it('grants: an unreadable describe-tools answer degrades the same way', async () => {
     const h = await seeded({ 'connectors:describe-tools': () => ({ status: 'ok', tools: 'nope' }) });
     const a = await answerGrants(h.deps, APP);
     expect(a.status).toBe(200);
+    expect(a.log).toEqual({ appId: APP, outcome: 'succeeded', reason: 'describe-tools-failed' });
     const tools = (a.body as { grants: Array<{ tools: unknown[] }> }).grants.flatMap((g) => g.tools);
     expect(tools).toEqual([
       { name: 'search', description: '', inputSchema: null },

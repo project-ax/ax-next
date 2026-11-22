@@ -11,7 +11,8 @@
 // emails, so a caller learns who can run the deployment. Only auth-better
 // (which registers all three) and channel-slack (which asks the first two
 // about a Slack sender, and the third who to DM about a bot request) may name
-// them. ipc-core's dependencies test keeps every `auth:` hook off the runner's
+// them, plus the files listed below by name (the apps bridge's viewer-mode
+// call asks the first one about a verified viewer assertion's email). ipc-core's dependencies test keeps every `auth:` hook off the runner's
 // direct IPC actions, but `tool:execute:<name>` dispatches into host tool
 // plugins and those can call ANY hook. Nothing at runtime stops that, so this
 // scan does.
@@ -79,6 +80,11 @@ const RULES = {
       ['presets/memory/src/__tests__/canary.test.ts', "the canary's auth stub registers the email hooks and `auth:list-admins` so channel-slack boots"],
       ['presets/k8s/src/__tests__/channel-slack-composition.test.ts', 'stubs auth to map fake Slack senders to users, and `auth:list-admins`'],
       ['presets/k8s/src/__tests__/preset.test.ts', "pins channel-slack's manifest `calls`: the email hooks and `auth:list-admins`"],
+      [
+        'packages/apps-bridge/src/bridge-call.ts',
+        "maps a viewer assertion's verified email to an account (`auth:find-user-by-email` only; apps-connector-bridge design)",
+      ],
+      ['packages/apps-bridge/src/__tests__/bridge-call.test.ts', 'stubs `auth:find-user-by-email` for the viewer-mode call tests'],
     ]),
   },
   'slack-prefix': {

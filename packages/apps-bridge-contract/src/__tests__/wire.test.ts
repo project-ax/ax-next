@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   APP_ID_RE, APP_MODES, APPS_BRIDGE_V1_BASE_PATH, CallRequestSchema, CallResponseSchema, CONNECTOR_ID_RE,
   CONTRACT_VERSION, FAILED_REASONS, GrantsResponseSchema, LINK_CODE_RE, LinkClaimRequestSchema,
   LinkClaimResponseSchema, MAX_APP_NAME_CHARS, MAX_APP_NAME_INPUT_CHARS, MAX_TOKEN_CHARS, normalizeAppName,
   PLATFORM_ID_RE, REFUSAL_STATUS, RefusalSchema, TOOL_NAME_RE, UNKNOWN_REASONS,
+  type Refusal, type RefusalCode,
 } from '../wire.js';
 
 const WIRE_URL = new URL('../wire.ts', import.meta.url);
@@ -13,7 +14,7 @@ const WIRE_URL = new URL('../wire.ts', import.meta.url);
 // The vendoring alarm. The apps platform vendors wire.ts byte for byte from a
 // pinned ax-next commit. Editing wire.ts means: update this pin, decide whether
 // CONTRACT_VERSION bumps, and tell the platform side.
-const WIRE_SHA256 = '42054b732c73ff69b0d86e5ec97502ca02d0f4e84fb9bda32523dfda06aa52b8';
+const WIRE_SHA256 = '7b94153ac59e5e71cabf0d325c138bc71a49d9281f546b8cd8ffd2ee6c94c8e6';
 
 const APP = 'app_01JDZ8M5Q4X7RT3VKF0N2C9H6B';
 const CODE = `axl_${'abcdefghijklmnopqrstuvwxyz234567'}`;
@@ -187,6 +188,16 @@ describe('wire contract v1', () => {
     }
     expect(RefusalSchema.safeParse({ code: 'teapot' }).success).toBe(false);
     expect(RefusalSchema.safeParse({ code: 'unavailable', message: 'x' }).success).toBe(false);
+  });
+
+  it('the Refusal type admits every refusal code, and approveUrl only on viewer_approval_required', () => {
+    // Type-level: checked by tsc over this file, not by vitest's runner. The
+    // plain arm's `code` was once inferred as `never` (Object.keys widened the
+    // enum tuple), so Refusal admitted only viewer_approval_required.
+    expectTypeOf<Refusal['code']>().toEqualTypeOf<RefusalCode>();
+    expectTypeOf<Extract<Refusal, { approveUrl: string }>['code']>().toEqualTypeOf<'viewer_approval_required'>();
+    const plain: Refusal = { code: 'invalid_request' };
+    expect(RefusalSchema.parse(plain)).toEqual(plain);
   });
 
   it('REFUSAL_STATUS is the contract table', () => {

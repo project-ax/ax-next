@@ -33,9 +33,9 @@ import {
   type Refusal,
   type RefusalCode,
 } from '@ax/apps-bridge-contract';
-import { PluginError, type AgentContext, type Logger } from '@ax/core';
+import { PluginError, ownerlessIdFor, type AgentContext, type Logger } from '@ax/core';
 import { z } from 'zod';
-import { bridgeCtx, canManageAgent, connectorNames, resolveAgent, type BridgeBus } from './access.js';
+import { bridgeCtx, canManageAgent, connectorNames, effectiveConnectors, resolveAgent, type BridgeBus } from './access.js';
 import { hashLinkCode } from './link-codes.js';
 import type { BridgeLimiter } from './limits.js';
 import { loggableCode } from './log-code.js';
@@ -78,21 +78,11 @@ type PlainRefusalCode = Exclude<RefusalCode, 'viewer_approval_required'>;
 
 const RETRY_AFTER_SECONDS: Partial<Record<RefusalCode, number>> = { rate_limited: 60, unavailable: 5 };
 
-/**
- * `{ code }` as a Refusal. The cast is for the type only: wire.ts's inferred
- * `Refusal` gives its plain arm `code: never` (`z.enum(...).exclude(...)` over
- * a widened tuple), though RefusalSchema accepts every plain code at run
- * time. The tests parse every refusal body with RefusalSchema.
- */
-function plainRefusal(code: PlainRefusalCode): Refusal {
-  return { code } as unknown as Refusal;
-}
-
 function refuse(code: PlainRefusalCode, fields: LogFields, reason?: string): BridgeAnswer {
   const retry = RETRY_AFTER_SECONDS[code];
   return {
     status: REFUSAL_STATUS[code],
-    body: plainRefusal(code),
+    body: { code },
     ...(retry !== undefined ? { retryAfterSeconds: retry } : {}),
     log: { ...fields, outcome: code, ...(reason !== undefined ? { reason } : {}) },
   };
@@ -185,10 +175,14 @@ export async function answerClaim(deps: BridgeDeps, body: unknown): Promise<Brid
 /** Read for its verdict only; anything else about the answer is the policy plugin's business. */
 const PolicyAnswerSchema = z.object({ verdict: z.enum(['allow', 'hold', 'deny']) }).passthrough();
 
+/** bridgeCtx's session id: the owner-less stand-in for the email lookup is minted from it. */
+const LOOKUP_SESSION = 'apps-bridge';
+
 /** `auth:find-user-by-email`: the account, or null. An answer that is neither throws. */
 async function findViewer(deps: BridgeDeps, email: string): Promise<string | null> {
   // Asked as no one: the lookup itself is the step that names the person.
-  const found = await deps.bus.call<{ email: string }, unknown>('auth:find-user-by-email', bridgeCtx('', '', deps.logger), {
+  const nobody = ownerlessIdFor(LOOKUP_SESSION);
+  const found = await deps.bus.call<{ email: string }, unknown>('auth:find-user-by-email', bridgeCtx(nobody, nobody, deps.logger), {
     email,
   });
   if (found === null) return null;
@@ -214,8 +208,13 @@ function interrupted(fields: LogFields): BridgeAnswer {
  *     that account approved this connector for this app including this tool
  *     (else viewer_approval_required with the approve link); then the viewer
  *     and the agent they approved;
- *  7. the agent resolves for that person (else agent_unavailable); in viewer
- *     mode it must also be the viewer's own personal agent;
+ *  7. the agent resolves for that person (else agent_unavailable). Builder:
+ *     the linker must still manage the agent's connectors, as at claim time
+ *     (else agent_unavailable). Viewer: it must be the viewer's own personal
+ *     agent (else agent_unavailable). Then, defence in depth: the tool key's
+ *     namespace must not belong to a connector other than the granted one in
+ *     the agent's effective set (else tool_not_allowed). A namespace on no
+ *     connector goes on: the call hook answers it `not-connected`;
  *  8. tool-policy:evaluate: allow proceeds, hold → approval_required,
  *     deny → tool_not_allowed;
  *  9. connectors:call-tool-result as that person and agent; its answer is the
@@ -279,9 +278,21 @@ export async function answerCall(deps: BridgeDeps, body: unknown): Promise<Bridg
     const agent = await resolveAgent(deps.bus, ctx, agentId, userId);
     if (agent === null) return refuse('agent_unavailable', fields);
     // A viewer lends only their own personal agent, whatever the approval says.
-    if (req.mode === 'viewer' && !(agent.ownerType === 'user' && agent.ownerId === userId)) {
+    if (req.mode === 'builder') {
+      // The link is only as good as the linker's rights: the claim needed
+      // them, and so does every call made on the link.
+      if (!(await canManageAgent(deps.bus, ctx, agentId, userId))) return refuse('agent_unavailable', fields);
+    } else if (!(agent.ownerType === 'user' && agent.ownerId === userId)) {
       return refuse('agent_unavailable', fields);
     }
+
+    // A mis-written grant must not reach another connector's tool through
+    // this connector's grant.
+    const namespace = TOOL_KEY_RE.exec(toolKey)?.[1];
+    const owners = (await effectiveConnectors(deps.bus, ctx, userId, agent)).filter(
+      (c) => namespace !== undefined && c.toolNamespaces.includes(namespace),
+    );
+    if (owners.some((c) => c.id !== connectorId)) return refuse('tool_not_allowed', fields);
 
     const policy = PolicyAnswerSchema.safeParse(
       await deps.bus.call<{ call: { name: string; input: Record<string, unknown> }; agentId: string }, unknown>(
@@ -331,11 +342,16 @@ interface Described {
 }
 
 /**
- * The linked agent's inventory for one connector, by tool key. A throw is
- * logged by its code and degrades to an empty inventory, as does an answer
- * that can't be read.
+ * The linked agent's inventory for one connector, by tool key, and whether
+ * the read failed. A throw degrades to an empty inventory, as does an answer
+ * that can't be read; the caller notes it on the request's one log line.
  */
-async function describeConnector(deps: BridgeDeps, ctx: AgentContext, link: AppLink, connectorId: string): Promise<Map<string, Described>> {
+async function describeConnector(
+  deps: BridgeDeps,
+  ctx: AgentContext,
+  link: AppLink,
+  connectorId: string,
+): Promise<{ tools: Map<string, Described>; failed: boolean }> {
   const out = new Map<string, Described>();
   let answer: unknown;
   try {
@@ -344,13 +360,11 @@ async function describeConnector(deps: BridgeDeps, ctx: AgentContext, link: AppL
       agentId: link.agentId,
       connectorId,
     });
-  } catch (err) {
-    const code = loggableCode(err);
-    deps.logger.warn('apps_bridge_describe_tools_failed', { connectorId, ...(code !== undefined ? { code } : {}) });
-    return out;
+  } catch {
+    return { tools: out, failed: true };
   }
   const tools = isRecord(answer) ? answer['tools'] : undefined;
-  if (!Array.isArray(tools)) return out;
+  if (!Array.isArray(tools)) return { tools: out, failed: true };
   for (const t of tools) {
     if (!isRecord(t) || typeof t['toolKey'] !== 'string' || out.has(t['toolKey'])) continue;
     out.set(t['toolKey'], {
@@ -358,15 +372,17 @@ async function describeConnector(deps: BridgeDeps, ctx: AgentContext, link: AppL
       inputSchema: isPlainObject(t['inputSchema']) ? t['inputSchema'] : null,
     });
   }
-  return out;
+  return { tools: out, failed: false };
 }
 
 /**
  * The app id fails APP_ID_RE → invalid_request; no link → app_not_linked;
- * otherwise 200 with one entry per grant in connector id order. Display names
+ * the linker can no longer manage the linked agent's connectors →
+ * agent_unavailable; otherwise 200 with one entry per grant in connector id order. Display names
  * come from the linker's `connectors:list` (the id when it lacks one); each
  * tool's description and schema from the linked agent's inventory, matched on
- * the tool key ('' and null when the inventory lacks it or its read threw).
+ * the tool key ('' and null when the inventory lacks it or its read failed;
+ * a failed read puts `reason: 'describe-tools-failed'` on the log line).
  * Any other throw → unavailable (Retry-After 5).
  */
 export async function answerGrants(deps: BridgeDeps, appId: string): Promise<BridgeAnswer> {
@@ -375,8 +391,11 @@ export async function answerGrants(deps: BridgeDeps, appId: string): Promise<Bri
   try {
     const link = await deps.store.getLink(deps.platformId, appId);
     if (link === null) return refuse('app_not_linked', fields);
-    const grants = await deps.store.listGrants(deps.platformId, appId);
     const ctx = bridgeCtx(link.linkedByUserId, link.agentId, deps.logger);
+    if (!(await canManageAgent(deps.bus, ctx, link.agentId, link.linkedByUserId))) {
+      return refuse('agent_unavailable', fields);
+    }
+    const grants = await deps.store.listGrants(deps.platformId, appId);
     const names = grants.length === 0 ? new Map<string, string>() : await connectorNames(deps.bus, ctx, link.linkedByUserId);
     const inventories = await Promise.all(grants.map((g) => describeConnector(deps, ctx, link, g.connectorId)));
 
@@ -388,12 +407,13 @@ export async function answerGrants(deps: BridgeDeps, appId: string): Promise<Bri
         tools: g.toolKeys.flatMap((key) => {
           const name = TOOL_KEY_RE.exec(key)?.[2];
           if (name === undefined) return [];
-          const known = inventories[i]?.get(key);
+          const known = inventories[i]?.tools.get(key);
           return [{ name, description: known?.description ?? '', inputSchema: known?.inputSchema ?? null }];
         }),
       })),
     };
-    return { status: 200, body, log: { ...fields, outcome: 'succeeded' } };
+    const degraded = inventories.some((inv) => inv.failed);
+    return { status: 200, body, log: { ...fields, outcome: 'succeeded', ...(degraded ? { reason: 'describe-tools-failed' } : {}) } };
   } catch (err) {
     return unavailable(fields, err);
   }

@@ -185,7 +185,35 @@ export const REFUSAL_STATUS = {
 } as const;
 export type RefusalCode = keyof typeof REFUSAL_STATUS;
 
-const REFUSAL_CODES = Object.keys(REFUSAL_STATUS) as [RefusalCode, ...RefusalCode[]];
+/** Every refusal code but viewer_approval_required, which carries an approveUrl. */
+type PlainRefusalCode = Exclude<RefusalCode, 'viewer_approval_required'>;
+
+/**
+ * Identity at run time. At compile time `codes` must name every plain refusal
+ * code (and only those), so a code added to REFUSAL_STATUS can't be missed
+ * here. A literal tuple, not Object.keys: zod infers the enum's type from it,
+ * and a widened tuple would make the plain arm's `code` type `never`.
+ */
+function everyPlainCode<const T extends readonly [PlainRefusalCode, ...PlainRefusalCode[]]>(
+  codes: T & ([PlainRefusalCode] extends [T[number]] ? unknown : never),
+): T {
+  return codes;
+}
+
+const PLAIN_REFUSAL_CODES = everyPlainCode([
+  'invalid_request',
+  'unauthenticated',
+  'link_code_invalid',
+  'already_linked',
+  'app_not_linked',
+  'not_granted',
+  'tool_not_allowed',
+  'approval_required',
+  'viewer_invalid',
+  'agent_unavailable',
+  'rate_limited',
+  'unavailable',
+]);
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -207,7 +235,7 @@ export const RefusalSchema = z.union([
       approveUrl: z.string().url().max(2048).refine(isHttpUrl, { message: 'Expected an http(s) URL' }),
     })
     .strict(),
-  z.object({ code: z.enum(REFUSAL_CODES).exclude(['viewer_approval_required']) }).strict(),
+  z.object({ code: z.enum(PLAIN_REFUSAL_CODES) }).strict(),
 ]);
 export type Refusal = z.infer<typeof RefusalSchema>;
 
