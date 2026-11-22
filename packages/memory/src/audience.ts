@@ -56,8 +56,9 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  *    reads its reply, so it recalls only what was learned where they could
  *    see it, backstop and all: §4c shares a team agent's memory with the
  *    team, not with people outside AX. A private stamp or none fails closed
- *    here (TASK-1204 review), though no live producer sends one: channel-slack
- *    stamps an outsider's turn shared. (The orchestrator's security review
+ *    here (TASK-1204 review), channel-slack stamps an outsider's turn shared,
+ *    but a stored session source this build doesn't know reads as external
+ *    with no audience stamp (`ipc-core` auth), and that now fails closed. (The orchestrator's security review
  *    reversed the planner's "every session" on a team agent; lifting it is
  *    this step, for team agents.)
  * 2. A team agent's MEMBER turn, in any audience (TASK-1204, design §4c):
@@ -404,7 +405,10 @@ export function speakerScope(
  *      key (TASK-1204 review F9). One list, `self-report.ts`'s, so the two
  *      can't drift. Accepted: a member's own fact the extractor writes as
  *      bare `agent` is kept as written too (a missed attribution, never a
- *      misfiled one); `agent_smith` is still theirs.
+ *      misfiled one); `agent_smith` is still theirs. Since a missed
+ *      attribution keeps the turn's shared stamp, such a fact (like any
+ *      self-fact the names rule can't recognize) can reach an outsider's
+ *      recall; accepted, same class.
  *   3. `user`, or the runner's own key `user:<userId>`: the runner's key.
  *   4. A subject made of the speakers' names ({@link namesASpeaker}): the
  *      runner's key. The names are how memory recognizes the speaker in a
@@ -458,7 +462,8 @@ export function speakerSubject(
  * not know stamps `'shared'`, the least recall) and OVERWRITES anything a
  * statement carried, so no caller-built statement picks its own audience.
  * Every row is stamped, private ones included: a row stored from now on
- * always says who could see the turn it was learned in.
+ * says who could see the turn it was learned in, or (the exception below)
+ * that it is a member's fact about themself.
  *
  * With one exception, which only ever narrows (TASK-1204 review): in a team
  * agent's member turn (`'team'`), a statement filed under the member's own
@@ -475,7 +480,9 @@ export function speakerSubject(
  * backstop below has checked it is already where {@link speakerSubject}
  * files it, so the only way to the private stamp is to be about the runner.
  *
- * Only a read's audience scope reads the stamp. Twin reads don't, and slot
+ * Only a read's audience scope reads the stamp. Twin matching never
+ * compares stamps (a twin read in a shared-scoped turn carries the scope
+ * like any read), and slot
  * chains are audience-blind, so a member's channel fact closes their
  * web-chat one in the same slot as before. One visible effect: the owner's
  * memory view shows no "Shared" badge on such a row, though it was said

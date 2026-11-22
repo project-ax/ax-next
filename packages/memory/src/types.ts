@@ -113,7 +113,9 @@ export interface MemoryStatement {
   sourceTurnId?: string;
   /**
    * `'shared'` when the statement was learned in a conversation people
-   * without access to the agent could read (TASK-1091). A read-only display
+   * without access to the agent could read (TASK-1091), except a team
+   * member's fact about themself, which is stored private wherever it was
+   * said so outsiders never recall it (TASK-1204). A read-only display
    * field: absent for a private row and for one stored before memory kept
    * audiences, and refused on every input payload.
    */

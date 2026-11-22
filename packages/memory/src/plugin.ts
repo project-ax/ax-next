@@ -701,7 +701,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             //   stamp (TASK-1204, design §4c: a team agent's memory is shared
             //   with the team, not with people outside AX). Someone without
             //   access reads its replies, so a private stamp or none fails
-            //   closed (review F3); no live producer sends one.
+            //   closed (review F3), e.g. a stored session source this build
+            //   doesn't know, which ipc-core reads as external with no stamp.
             // - a personal agent's session that isn't private.
             //
             // A member's session on a team agent keeps the view in every

@@ -896,7 +896,9 @@ export interface FactMemoryStatement {
   savedBy?: 'person' | 'agent';
   /**
    * `shared` = learned in a shared conversation, where people without access
-   * to this agent could see it (TASK-1091). Absent on private memories. Display
+   * to this agent could see it (TASK-1091). A team member's fact about
+   * themself is stored private wherever it was said, so it has no badge even
+   * when it came from a channel (TASK-1204). Absent on private memories. Display
    * only: it is never sent back to the server.
    */
   audience?: 'shared';
