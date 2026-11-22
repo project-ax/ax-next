@@ -42,14 +42,15 @@ export const SLACK_AUGMENT_HOOK = `${SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX}slack
 
 /**
  * The line a turn's message starts with, before its label, when the thread
- * it runs in won't be remembered (TASK-1191): a private channel's, or an
- * outsiders' thread (capture-veto.ts refuses both; a Slack Connect channel
- * never gets a turn). Without it the agent promised "I'll have it on hand
+ * it runs in won't be remembered (TASK-1191): an outsiders' thread, or one
+ * marked before TASK-1203 (a turn while its channel was private, or switched
+ * off). capture-veto.ts refuses both; a private channel's new threads are
+ * remembered like any other (TASK-1203), and a Slack Connect channel never
+ * gets a turn. Without it the agent promised "I'll have it on hand
  * next time" in a thread memory never learns from. Fixed text: no channel
  * name, nothing from the message. Per turn, in the message and not in this
- * note, because the note
- * is built once per spawn and a warm session's thread can stop being
- * remembered between turns. Before the label, where nothing the sender
+ * note, because the note is built once per spawn and the line follows the
+ * thread's record as each turn reads it back. Before the label, where nothing the sender
  * types can land (the content is `<line>\n<label>: <their words>`). Not on
  * a turn woken by an Allow: it has no message from channel-slack.
  */

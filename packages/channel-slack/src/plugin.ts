@@ -70,8 +70,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // @ax/channel-slack — connect a Slack workspace from AX admin settings, let
 // every AX user DM the shared bot to talk to their own personal agent
 // (TASK-1093), and let a team agent answer @mentions in the channels its own
-// Slack bot was invited to (TASK-1094, TASK-1167), never remembering a
-// private one (TASK-1188). Design:
+// Slack bot was invited to (TASK-1094, TASK-1167), public or private
+// (TASK-1188), remembering what members say in either (TASK-1203). Design:
 // docs/plans/2026-11-09-channel-slack-design.md.
 //
 // It registers one service, `system-prompt:augment:optional:slack`

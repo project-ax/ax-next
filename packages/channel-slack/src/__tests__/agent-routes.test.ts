@@ -552,7 +552,9 @@ describe('the routes', () => {
     expect(w.routes.filter((r) => r.path.endsWith('/remember'))).toEqual([]);
   });
 
-  it("a bot channel's row carries no memory switch: its id, its name and whether it is private, nothing else (TASK-1202)", async () => {
+  // TASK-1203 (design §4c): nor whether it is private. A private channel is
+  // remembered like any other, so the settings have nothing to say about it.
+  it("a bot channel's row carries no memory switch and no privacy: its id and its name, nothing else (TASK-1202, TASK-1203)", async () => {
     const w = world();
     w.state.bot = OWN_BOT;
     w.bots.answers.status = LIVE;
@@ -563,7 +565,7 @@ describe('the routes', () => {
       expect(rows, as.id).toHaveLength(1);
       for (const row of rows) {
         expect('remember' in row, as.id).toBe(false);
-        expect(Object.keys(row).sort(), as.id).toEqual(['channelId', 'isPrivate', 'name']);
+        expect(Object.keys(row).sort(), as.id).toEqual(['channelId', 'name']);
       }
     }
   });
@@ -892,7 +894,7 @@ describe('the section', () => {
           workspaceName: 'Canopy Works',
           canManage,
           bot: LIVE,
-          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk', isPrivate: false }],
+          botChannels: [{ channelId: SUPPORT_CH, name: 'support-desk' }],
         },
       });
     }
@@ -1659,11 +1661,9 @@ describe("the live bot's channels in the section", () => {
     // The bot answered in #support-desk first, then in #alpha-room.
     await answerOnBot(w, SUPPORT_CH);
     await answerOnBot(w, BOT_ONLY_CH, 'alpha-room');
-    // #alpha-room is private now (TASK-1188): never remembered, and the row says so.
-    expect(await w.memory.store.setPrivate(OWN_BOT.installId, BOT_ONLY_CH, SUPPORT.id, true)).toBe(true);
     const botChannels = [
-      { channelId: SUPPORT_CH, name: 'support-desk', isPrivate: false },
-      { channelId: BOT_ONLY_CH, name: 'alpha-room', isPrivate: true },
+      { channelId: SUPPORT_CH, name: 'support-desk' },
+      { channelId: BOT_ONLY_CH, name: 'alpha-room' },
     ];
 
     for (const [as, canManage] of [

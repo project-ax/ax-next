@@ -5,23 +5,22 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
 /**
  * An in-memory ChannelStore with the real one's rules (channel-store.ts,
  * pinned against Postgres in channel-store.test.ts): one agent per (install,
- * channel); `upsert` answers `connected` (private as given, off by default),
- * `reconnected` (the connector and name replaced, privacy and createdAt
- * kept) or `taken` (nothing changes); `remove` and `setPrivate` act only on
- * the named agent's binding; a name is stored cleaned; `listForAgent` is
- * oldest first.
+ * channel); `upsert` answers `connected`, `reconnected` (the connector and
+ * name replaced, createdAt kept) or `taken` (nothing changes); `remove` acts
+ * only on the named agent's binding; a name is stored cleaned;
+ * `listForAgent` is oldest first.
  * A thread is keyed by its conversation alone and written once: a later
- * `recordThread` changes only `notRemembered`, `external` and
- * `speakerNames`, and neither flag ever goes back to false. `recordThread`
- * takes `notRemembered` from the named agent's binding as it is at the write
- * (the channel private) or the turn's own `isPrivate`, and `external` from
- * the turn's mode (anything but `attended` is external), and answers
- * `no-binding` (writing nothing) when there is no binding, and
- * `reconnected` (writing nothing) for an outsider's turn whose `runAs` no
- * longer connects the channel. A member's turn adds its `speakerNames` to
- * the thread's (TASK-1146): the union, each name once at the place it was
- * last seen, oldest first, the THREAD_SPEAKER_NAMES_MAX most recent kept; an
- * outsider's turn adds none, whatever it was handed.
+ * `recordThread` changes only `external` and `speakerNames`. A new thread is
+ * recorded remembered (TASK-1203), and one marked before keeps its mark
+ * (a test marks one by setting `notRemembered` on `threads` directly, as the
+ * database holds one from before). `external` comes from the turn's mode
+ * (anything but `attended` is external) and never goes back to false.
+ * `recordThread` answers `no-binding` (writing nothing) when there is no
+ * binding, and `reconnected` (writing nothing) for an outsider's turn whose
+ * `runAs` no longer connects the channel. A member's turn adds its
+ * `speakerNames` to the thread's (TASK-1146): the union, each name once at
+ * the place it was last seen, oldest first, the THREAD_SPEAKER_NAMES_MAX
+ * most recent kept; an outsider's turn adds none, whatever it was handed.
  * `removeForAgent` takes the agent's threads too; nothing else does.
  *
  * Each new binding is one second younger than the one before, so "oldest
@@ -70,7 +69,6 @@ export function memoryChannelStore() {
         agentId: b.agentId,
         connectedByUserId: b.connectedByUserId,
         channelName,
-        isPrivate: b.isPrivate ?? false,
         createdAt: new Date(created),
       });
       return 'connected';
@@ -81,18 +79,6 @@ export function memoryChannelStore() {
       if (rows.get(at)?.agentId !== agentId) return false;
       rows.delete(at);
       return true;
-    },
-    async setPrivate(installId, channelId, agentId, isPrivate) {
-      calls.push('setPrivate');
-      const row = rows.get(key(installId, channelId));
-      if (row === undefined || row.agentId !== agentId) return false;
-      row.isPrivate = isPrivate;
-      return true;
-    },
-    async markNotRemembered(conversationId) {
-      calls.push('markNotRemembered');
-      const known = threads.get(conversationId);
-      if (known !== undefined) known.notRemembered = true;
     },
     async removeForAgent(agentId) {
       calls.push('removeForAgent');
@@ -116,7 +102,6 @@ export function memoryChannelStore() {
       if (binding === undefined || binding.agentId !== t.agentId) return 'no-binding';
       const external = t.mode !== 'attended';
       if (external && binding.connectedByUserId !== (t.mode === 'external' ? t.runAs : undefined)) return 'reconnected';
-      const notRemembered = binding.isPrivate || t.isPrivate !== false;
       const turnNames = t.mode === 'attended' ? t.speakerNames : [];
       const known = threads.get(t.conversationId);
       threads.set(
@@ -126,13 +111,12 @@ export function memoryChannelStore() {
               installId: t.installId,
               channelId: t.channelId,
               agentId: t.agentId,
-              notRemembered,
+              notRemembered: false,
               external,
               speakerNames: mostRecentNames(turnNames),
             }
           : {
               ...known,
-              notRemembered: known.notRemembered || notRemembered,
               external: known.external || external,
               speakerNames: mostRecentNames([...known.speakerNames, ...turnNames]),
             },

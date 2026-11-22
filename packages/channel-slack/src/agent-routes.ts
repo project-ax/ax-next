@@ -87,14 +87,13 @@ import { checkUser } from './user-auth.js';
  */
 
 /**
- * A channel the agent's own bot has answered in (a binding on its install),
- * and whether Slack last described it as private (TASK-1188): never
- * remembered there, which the settings say.
+ * A channel the agent's own bot has answered in (a binding on its install).
+ * Nothing about its privacy: a private channel is remembered like any other
+ * (TASK-1203, design §4c), so the settings have nothing to say about it.
  */
 export interface AgentSlackBotChannel {
   channelId: string;
   name: string;
-  isPrivate: boolean;
 }
 
 export type AgentSlackStatus =
@@ -390,13 +389,7 @@ export function createAgentSlackRoutes(
       ownBindings === null
         ? {}
         : {
-            botChannels: ownBindings.map(
-              (b): AgentSlackBotChannel => ({
-                channelId: b.channelId,
-                name: b.channelName,
-                isPrivate: b.isPrivate,
-              }),
-            ),
+            botChannels: ownBindings.map((b): AgentSlackBotChannel => ({ channelId: b.channelId, name: b.channelName })),
           };
     if (!sharedActive) {
       return json(200, { state: 'no-workspace', canManage: manage.ok, bot, ...botChannels } satisfies AgentSlackStatus);

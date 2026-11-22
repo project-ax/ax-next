@@ -223,9 +223,9 @@ export const COPY = {
     "I don't answer in channels. To talk to your own agent, send me a direct message. " +
     'To bring a team agent into this channel, invite its own bot with /invite.',
   /*
-    A bound channel Slack no longer allows (TASK-1184): made private,
-    archived or shared with another company since a team agent's own bot
-    first answered there, or a private channel a bot Allowed before
+    A bound channel Slack no longer allows (TASK-1184): archived or shared
+    with another company since a team agent's own bot first answered
+    there, or a private channel a bot Allowed before
     `groups:read` (TASK-1188) can't read: Rebuild fixes that one. Checked when each turn starts. The turn that finds
     it disconnects the channel and says this once, to its sender. Archived
     and deleted channels take no line at all, so it names the two cases

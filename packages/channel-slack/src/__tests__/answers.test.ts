@@ -250,8 +250,8 @@ interface Run {
   prompt: Prompt;
   action: PromptAction;
   extra: { install: InstallRow; botToken: string; messageTs: string | null };
-  /** The prompt's binding and thread as they stood when the answer ran (TASK-1188). */
-  seen: { bindingPrivate: boolean | undefined; threadNotRemembered: boolean | undefined };
+  /** The prompt's thread as it stood when the answer ran: whether it was marked not remembered. */
+  seen: { threadNotRemembered: boolean | undefined };
 }
 
 type Fault = 'fails' | 'hang';
@@ -282,10 +282,6 @@ interface WorldOptions {
   registry?: (real: PromptRegistry) => PromptRegistry;
   /** The channel check's answer (channel-check.ts), or a check that never ends. Its default: public and allowed. */
   channelNow?: ChannelCheckResult | 'hang';
-  /** The binding's privacy write fails. */
-  privateWrite?: Fault;
-  /** Runs just before the binding's privacy write (the binding removed meanwhile, say). */
-  beforePrivateWrite?: (store: ChannelStore) => Promise<void>;
 }
 
 const fault = (plugin: string) =>
@@ -346,30 +342,19 @@ async function world(o: WorldOptions = {}) {
     channelName: 'support',
   });
   const bindingReads: Array<[string, string]> = [];
-  const channelStore: Pick<ChannelStore, 'get' | 'setPrivate' | 'markNotRemembered'> = {
+  const channelStore: Pick<ChannelStore, 'get'> = {
     async get(installId, channelId) {
       bindingReads.push([installId, channelId]);
       if (o.binding === 'hang') return never();
       if (o.binding === 'fails') throw new Error(`database down reading ${channelId}`);
       return channels.store.get(installId, channelId);
     },
-    async setPrivate(installId, channelId, agentId, isPrivate) {
-      if (o.privateWrite === 'hang') return never();
-      if (o.privateWrite === 'fails') throw new Error(`database down writing ${channelId}`);
-      await o.beforePrivateWrite?.(channels.store);
-      return channels.store.setPrivate(installId, channelId, agentId, isPrivate);
-    },
-    async markNotRemembered(conversationId) {
-      return channels.store.markNotRemembered(conversationId);
-    },
   };
   /** Every channel check the gate asked: install, token, channel. */
   const channelChecks: Array<[string, string, string]> = [];
-  const channelCheckOpts: unknown[] = [];
   const channelCheck = {
-    async check(installId: string, botToken: string, channelId: string, opts?: unknown): Promise<ChannelCheckResult> {
+    async check(installId: string, botToken: string, channelId: string): Promise<ChannelCheckResult> {
       channelChecks.push([installId, botToken, channelId]);
-      channelCheckOpts.push(opts);
       if (o.channelNow === 'hang') return never();
       return o.channelNow ?? { kind: 'allowed', isPrivate: false };
     },
@@ -405,15 +390,8 @@ async function world(o: WorldOptions = {}) {
 
   const runs: Run[] = [];
   const decision: SubjectAnswer = async (ctx, prompt, action, extra) => {
-    const binding = channels.rows.get(`${prompt.installId}/${prompt.channel}`);
     const thread = channels.threads.get(prompt.conversationId);
-    runs.push({
-      ctx,
-      prompt,
-      action,
-      extra,
-      seen: { bindingPrivate: binding?.isPrivate, threadNotRemembered: thread?.notRemembered },
-    });
+    runs.push({ ctx, prompt, action, extra, seen: { threadNotRemembered: thread?.notRemembered } });
     if (o.answer !== undefined) return o.answer(runs.length);
     return { line: action === 'deny' ? COPY.decisionDenied : COPY.decisionAllowed, settle: true };
   };
@@ -439,7 +417,6 @@ async function world(o: WorldOptions = {}) {
     resolved,
     bindingReads,
     channelChecks,
-    channelCheckOpts,
     vault,
     agents,
     channels,
@@ -943,73 +920,31 @@ describe('the click gate: each step refuses on its own (each case valid on every
     expect(told).toEqual([line]);
   });
 
-  it.each([
-    ['private', true],
-    ['public', false],
-  ] as const)("step 8: the check is told the binding's privacy (%s): channel-check.ts decides what a private one refuses", async (_n, isPrivate) => {
-    const w = await world({ channelNow: { kind: 'allowed', isPrivate } });
-    await w.channels.store.setPrivate(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, isPrivate);
-    const prompt = w.open(MEL_SUPPORT);
-    await w.onClick(INSTALL, w.clickOn(prompt));
-    expect(w.channelCheckOpts).toEqual([{ knownPrivate: isPrivate }]);
-  });
-
-  it('step 8: the binding goes between its read and the privacy write: the prompt closes as disconnected, and nothing runs', async () => {
-    const w = await world({
-      channelNow: { kind: 'allowed', isPrivate: true },
-      beforePrivateWrite: (store) => store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id).then(() => undefined),
-    });
-    const prompt = w.open(MEL_SUPPORT);
-    await w.onClick(INSTALL, w.clickOn(prompt));
-    expect(w.runs).toEqual([]);
-    expect(w.state(prompt)).toBe('gone');
-    expect(w.logged('slack_prompt_declined').map((f) => f['reason'])).toEqual(['disconnected']);
-  });
-
-  it('step 8: #support was made private since the turn: the answer runs, and memory stays out of the thread for good', async () => {
+  // TASK-1203 (design §4c): a private channel is remembered like any other.
+  // Before the fix an Allow there wrote the binding private and marked the
+  // held turn's thread not remembered for good, before the answer ran.
+  it('step 8: #support is private now: the answer runs, and nothing marks the thread or touches the binding (TASK-1203)', async () => {
     const w = await world({ channelNow: { kind: 'allowed', isPrivate: true } });
     const prompt = w.open(MEL_SUPPORT);
-    // The held turn's thread, recorded while #support was public.
+    // The held turn's thread, recorded remembered.
     await w.channels.store.recordThread({
       conversationId: MEL_SUPPORT.conversationId,
       installId: INSTALL_ID,
       channelId: SUPPORT,
       agentId: SUPPORT_AGENT.id,
-      isPrivate: false,
       mode: 'attended',
       speakerNames: ['Mel'],
     });
+    const bindingBefore = w.channels.row(INSTALL_ID, SUPPORT);
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    expect(w.runs.map((r) => r.action)).toEqual(['allow']);
+    // As the answer saw it when it was called, and after: still remembered.
+    expect(w.runs[0]!.seen).toEqual({ threadNotRemembered: false });
     expect(w.channels.threads.get(MEL_SUPPORT.conversationId)?.notRemembered).toBe(false);
-
-    await w.onClick(INSTALL, w.clickOn(prompt));
-
-    expect(w.runs.map((r) => r.action)).toEqual(['allow']);
-    // Both written before the answer ran: as the answer saw them when it was called.
-    expect(w.runs[0]!.seen).toEqual({ bindingPrivate: true, threadNotRemembered: true });
+    expect(w.channels.row(INSTALL_ID, SUPPORT)).toEqual(bindingBefore);
     expect(w.state(prompt)).toBe('gone');
-  });
-
-  it('step 8: public again since the turn: the binding says so, and the answer runs', async () => {
-    const w = await world();
-    await w.channels.store.setPrivate(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id, true);
-    const prompt = w.open(MEL_SUPPORT);
-
-    await w.onClick(INSTALL, w.clickOn(prompt));
-
-    expect(w.runs.map((r) => r.action)).toEqual(['allow']);
-    expect(w.channels.row(INSTALL_ID, SUPPORT)?.isPrivate).toBe(false);
-    expect(w.channels.calls).not.toContain('markNotRemembered');
-  });
-
-  it("step 8: the privacy write fails: 'try again', privately; the prompt stays open, and nothing runs", async () => {
-    const w = await world({ channelNow: { kind: 'allowed', isPrivate: true }, privateWrite: 'fails' });
-    const prompt = w.open(MEL_SUPPORT);
-
-    await w.onClick(INSTALL, w.clickOn(prompt));
-
-    expect(w.runs).toEqual([]);
-    expect(w.state(prompt)).toBe('open');
-    expect(w.logged('slack_prompt_failed').map((f) => f['stage'])).toEqual(['channel-private']);
   });
 
   it('a DM prompt asks Slack about no channel', async () => {

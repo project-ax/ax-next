@@ -18,11 +18,12 @@ import { THREAD_SPEAKER_NAMES_MAX } from '../limits.js';
   The capture veto (TASK-1094), as memory sees it: `memory:pre-capture
   { conversationId }` before every extraction pass and every `memory_note`.
   channel-slack refuses a conversation of one of its channel threads when an
-  outsider's (external) turn ran in it; and a member's when the thread ever
-  had a turn while its channel was private (sticky, TASK-1188), when the
-  channel is no longer connected to the thread's agent, or when it is
-  private now. There is no per-channel memory switch (TASK-1202). A
-  conversation it never recorded (a web chat, a DM) gets no opinion. It
+  outsider's (external) turn ran in it; and a member's when the thread was
+  marked before TASK-1203 (a turn while its channel was private, TASK-1188,
+  or switched off, TASK-1202: sticky), or when the channel is no longer
+  connected to the thread's agent. A private channel is remembered like any
+  other (TASK-1203), and there is no per-channel memory switch (TASK-1202).
+  A conversation it never recorded (a web chat, a DM) gets no opinion. It
   fails closed: a lookup that throws, or that misses half of memory's own
   bound, refuses.
 
@@ -62,7 +63,6 @@ const binding = (o: Partial<ChannelBinding> = {}): ChannelBinding => ({
   agentId: AGENT,
   connectedByUserId: 'usr_ada',
   channelName: 'support',
-  isPrivate: false,
   createdAt: new Date('2026-11-13T09:00:00Z'),
   ...o,
 });
@@ -134,7 +134,7 @@ describe('channelCaptureVeto: what it refuses', () => {
     expect(channels.get).not.toHaveBeenCalled();
   });
 
-  it("a member's thread whose channel is connected and public, with no turn in it while private: no opinion", async () => {
+  it("a member's thread whose channel is connected to its agent: no opinion", async () => {
     const channels = channelsWith({ threads: { [THREAD]: thread() } });
     expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toBeUndefined();
     expect(channels.get).toHaveBeenCalledWith(INSTALL, SUPPORT);
@@ -146,21 +146,38 @@ describe('channelCaptureVeto: what it refuses', () => {
     expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toBeUndefined();
   });
 
+  // TASK-1203 (design §4c): a private channel is remembered like any other.
+  // Before the fix the veto refused every thread of a binding that didn't
+  // plainly say public.
+  it('reads no privacy (TASK-1203): a binding that still carries `isPrivate: true`, as one from before the column went would, lets memory in', async () => {
+    const stray = { ...binding(), isPrivate: true } as ChannelBinding;
+    const channels = channelsWith({ threads: { [THREAD]: thread() }, binding: stray });
+    expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD })).toBeUndefined();
+  });
+
   it.each([
-    ['a thread that had a turn while its channel was private, though it is public now', { threads: { [THREAD]: thread({ notRemembered: true }) } }],
     ['the channel is no longer connected (disconnected, or its install removed)', { threads: { [THREAD]: thread() }, binding: null }],
     ['the channel is connected to another agent now', { threads: { [THREAD]: thread() }, binding: binding({ agentId: 'agt_sales' }) }],
-    // TASK-1188 (design §4b.3): a private channel is answered in and never
-    // remembered. Its turns mark their threads, and its binding refuses
-    // every thread of it while it stays private: one with no turn since the
-    // channel was made private too.
-    ['the channel is private now, the thread from before', { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: true }) }],
-    [
-      'a private flag that is anything but false (fails closed)',
-      { threads: { [THREAD]: thread() }, binding: binding({ isPrivate: undefined as unknown as boolean }) },
-    ],
   ] as const)('refuses: %s', async (_name, world) => {
     expect(await channelCaptureVeto(channelsWith(world), pass(), { conversationId: THREAD })).toEqual(REFUSED);
+  });
+
+  // Memory leaves its cursor where a refusal stopped it, so a thread marked
+  // before TASK-1203 (a turn while its channel was private, TASK-1188, or
+  // switched off, TASK-1202) stays refused: let in, the next pass would read
+  // the turns said under the old promise.
+  it('a thread marked before TASK-1203 is refused as channel-not-remembered, whatever its binding says', async () => {
+    const marked = thread({ notRemembered: true, speakerNames: ['Mel', 'U07MEL00001'] });
+    const bindings: Array<[string, ChannelBinding | null]> = [
+      ['connected to its agent', binding()],
+      ['carrying a stray isPrivate: false', { ...binding(), isPrivate: false } as ChannelBinding],
+      ['no longer connected', null],
+      ['connected to another agent', binding({ agentId: 'agt_sales' })],
+    ];
+    for (const [why, b] of bindings) {
+      const channels = channelsWith({ threads: { [THREAD]: marked }, binding: b });
+      expect(await channelCaptureVeto(channels, pass(), { conversationId: THREAD }), why).toEqual(REFUSED);
+    }
   });
 
   it("is keyed on the conversation, never on who asks: any source, user or agent on a tainted thread is refused", async () => {
@@ -192,8 +209,8 @@ describe("channelCaptureVeto: an outsider's thread is never remembered", () => {
     so memory learns only from members' (attended) threads.
   */
   it.each([
-    ['the channel connected and public, never a turn in private', thread({ external: true })],
-    ['and a turn in private too', thread({ external: true, notRemembered: true })],
+    ['the channel connected, the thread never marked', thread({ external: true })],
+    ['and marked before TASK-1203 too', thread({ external: true, notRemembered: true })],
     ['a flag that is anything but false (fails closed)', thread({ external: undefined as unknown as boolean })],
   ] as const)('refuses it: %s, before any binding is read', async (_name, outsider) => {
     const channels = channelsWith({ threads: { [THREAD]: outsider }, binding: binding() });
@@ -376,8 +393,7 @@ describe('channelCaptureVeto: the speakers memory must not file facts under (TAS
   it('a refused thread answers the refusal and no names, whatever names it holds', async () => {
     const named = thread({ speakerNames: MEL });
     const refused: Array<[string, Parameters<typeof channelsWith>[0], unknown]> = [
-      ['a turn ran while the channel was private', { threads: { [THREAD]: thread({ notRemembered: true, speakerNames: MEL }) } }, REFUSED],
-      ['the channel is private now', { threads: { [THREAD]: named }, binding: binding({ isPrivate: true }) }, REFUSED],
+      ['the thread was marked before TASK-1203', { threads: { [THREAD]: thread({ notRemembered: true, speakerNames: MEL }) } }, REFUSED],
       ['the channel is no longer connected', { threads: { [THREAD]: named }, binding: null }, REFUSED],
       ['the channel is connected to another agent now', { threads: { [THREAD]: named }, binding: binding({ agentId: 'agt_sales' }) }, REFUSED],
       ["outsiders' turns run in it", { threads: { [THREAD]: thread({ external: true, speakerNames: MEL }) } }, OUTSIDER_THREAD],
