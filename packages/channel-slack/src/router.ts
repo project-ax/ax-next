@@ -19,6 +19,7 @@ import type { EventDispatcher, SlackEnvelope } from './events.js';
 import { channelSenderLabel, cleanSenderName, dmSenderLabel, mentionedUserIds, senderLabelNames } from './format.js';
 import { cleanChannelName } from './label.js';
 import { logCode } from './log-code.js';
+import { postMemoryNotice } from './memory-notice.js';
 import type { MentionNames } from './mention-names.js';
 import type { SecretStore } from './secrets.js';
 import type { SlackChannel } from './slack-api.js';
@@ -138,6 +139,14 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      (TASK-1146); an outsider's records none. If the record can't be
  *      written the turn doesn't run, and the sender is told privately to try
  *      again. A DM records nothing: it is no channel's thread.
+ *  9b. The channel's memory notice (memory-notice.ts, TASK-1203; design
+ *      §4c): the first turn in a channel since it was bound (or since the
+ *      notice existed, for a binding made before it) tells everyone there,
+ *      in a top-level post, that what the bot hears is shared with its team.
+ *      One turn claims it, on whichever replica (channel-store.ts
+ *      `claimNotice`), and only that one posts; one Slack refuses is given
+ *      back, so the next turn tries again. Whatever becomes of it, the turn
+ *      runs: it never throws, and logs no `slack_event_failed`.
  *  10. The thread is read back. One memory won't learn from (outsiders', or
  *      marked before TASK-1203) gets a fixed line before its label, so the
  *      agent doesn't promise to remember it (turn-note.ts
@@ -166,9 +175,11 @@ export interface RouterDeps extends TurnDeps {
    * TASK-1167). And a binding removed when Slack says its channel can't be
    * served any more (`remove`, TASK-1184). The thread as recorded, read back
    * so a turn's agent is told when memory won't learn from it (`getThread`,
-   * TASK-1191). The shared app reads and writes none (TASK-1186).
+   * TASK-1191). The binding's memory notice, claimed before it is posted and
+   * given back when Slack refuses it (`claimNotice`, `releaseNotice`,
+   * TASK-1203). The shared app reads and writes none (TASK-1186).
    */
-  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'getThread' | 'upsert' | 'remove'>;
+  channels: Pick<ChannelStore, 'get' | 'recordThread' | 'getThread' | 'upsert' | 'remove' | 'claimNotice' | 'releaseNotice'>;
   /** Outsiders' channel turns: one lane per channel. */
   externalQueue: KeyedQueue;
   /**
@@ -762,6 +773,12 @@ async function routeMention(
       await droppedReconnected();
       return;
     }
+    // 9b. The channel's memory notice (TASK-1203, design §4c), at its first
+    // turn: after the record, so a turn dropped above tells nobody; before
+    // the agent runs, so the channel reads it before the reply. The team is
+    // named as the person this turn runs as sees it. It never throws: the
+    // turn goes on whatever becomes of the notice.
+    await postMemoryNotice(d, lookupCtx(runAs), { installId, channelId: m.channel, agentId, botToken, userId: runAs }, log);
     // 10. Whether memory will learn from this thread, read back from the row
     // just written, with the flags capture-veto.ts reads first: so the agent
     // is told when it won't (TASK-1191), rather than promise to remember: an

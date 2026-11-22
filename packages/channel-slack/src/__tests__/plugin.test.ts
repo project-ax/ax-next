@@ -804,8 +804,13 @@ describe('@ax/channel-slack plugin', () => {
           hook: 'agent:interrupt',
           degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
-        // A bot request's team (bot-requests.ts): without @ax/teams none is named.
-        { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
+        // A bot request's team (bot-requests.ts), and a team agent's in its bot's memory notice and Slack card
+        // (TASK-1203): without @ax/teams none is named.
+        {
+          hook: 'teams:list-for-user',
+          degradation:
+            "Admin › Slack's list of bot requests names no team, and a team bot's memory notice and Slack card say \"my team\" or \"its team\" instead of the team's name",
+        },
         // The approval buttons (TASK-1095): optional, never hard.
         ...[
           'decisions:recent-for-conversation',
@@ -3103,6 +3108,17 @@ describe('@ax/channel-slack plugin', () => {
     // Nothing of Alice's is kept: memory never learns from her thread, so it needs no names.
     expect((await channels.getThread(outsiderThread))?.speakerNames).toEqual([]);
     expect(await askMemory(harness.bus, outsiderThread)).toEqual(OUTSIDER_THREAD);
+
+    // TASK-1203: #support's first turn told everyone there, once, in a top-level post with the bot's own
+    // token, that what it hears is shared with its team ("my team": no @ax/teams here). Claimed on
+    // Postgres, so Alice's turn after it posted nothing.
+    expect(slack.calls.filter((c) => c.method === 'chat.postMessage')).toEqual([
+      {
+        method: 'chat.postMessage',
+        auth: `Bearer ${SUPPORT_BOT_TOKEN}`,
+        body: { channel: SUPPORT_CH, text: COPY.memoryNotice(null), unfurl_links: false, unfurl_media: false },
+      },
+    ]);
   });
 
   /*

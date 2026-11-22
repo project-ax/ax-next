@@ -225,6 +225,13 @@ export interface SlackApi {
     botToken: string,
     a: { channel: string; user: string; text: string; threadTs?: string },
   ): Promise<void>;
+  /**
+   * A top-level message in a channel, for everyone in it (`chat.postMessage`
+   * with no `thread_ts`): a channel's memory notice (memory-notice.ts,
+   * TASK-1203). `text` is mrkdwn, the bot's own words (copy.ts), never model
+   * text. Unfurls off, as every post.
+   */
+  postToChannel(botToken: string, a: { channel: string; text: string }): Promise<void>;
   startStream(
     botToken: string,
     a: {
@@ -685,6 +692,14 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       const ts = idOf(r['ts']);
       if (channel === null || ts === null) throw badResponse(method);
       return { channel, ts };
+    },
+
+    async postToChannel(botToken, a) {
+      await call(
+        'chat.postMessage',
+        bearer(botToken),
+        json({ channel: a.channel, text: a.text, unfurl_links: false, unfurl_media: false }),
+      );
     },
 
     async updateMessage(botToken, a) {

@@ -309,6 +309,7 @@ type Method =
   | 'postMessage'
   | 'postBlocks'
   | 'postEphemeral'
+  | 'postToChannel'
   | 'startStream'
   | 'appendStream'
   | 'stopStream';
@@ -383,6 +384,10 @@ function fakeSlack(
     async postEphemeral(token, a) {
       record('postEphemeral', token, { ...a });
     },
+    // A top-level post for everyone in the channel: a channel's memory notice (TASK-1203).
+    async postToChannel(token, a) {
+      record('postToChannel', token, { ...a });
+    },
     async startStream(token, a) {
       const call = record('startStream', token, { ...a });
       call.ts = `1763039999.${String(nextTs++).padStart(6, '0')}`;
@@ -455,6 +460,14 @@ function world(o: {
   now?: () => number;
   /** The channel store fails to remove a binding Slack no longer allows (TASK-1184). */
   removeFails?: boolean;
+  /** The channel store fails to claim a channel's memory notice (TASK-1203). */
+  claimNoticeFails?: boolean;
+  /**
+   * @ax/teams' teams:list-for-user, naming each team by these display names
+   * (TASK-1203: a channel's memory notice names the agent's team). Absent:
+   * no teams service at all.
+   */
+  teams?: Record<string, string>;
   /** auth:is-approved-email fails. */
   approvedFails?: boolean;
   /**
@@ -533,6 +546,19 @@ function world(o: {
   bus.registerService('agents:can-set-shared-credential', 'fake-agents', async (ctx, input) =>
     agentsBus.call('agents:can-set-shared-credential', ctx, input),
   );
+  /** Whom @ax/teams was asked about, in order. */
+  const teamsAsked: string[] = [];
+  if (o.teams !== undefined) {
+    const names = o.teams;
+    // The teams a person has a role on, by name, as @ax/teams lists them.
+    bus.registerService('teams:list-for-user', 'fake-teams', async (_ctx, input) => {
+      const { userId } = input as { userId: string };
+      teamsAsked.push(userId);
+      return {
+        teams: agents.teamsOf(userId).map((id) => ({ id, displayName: names[id] ?? id, createdBy: 'usr_ada', createdAt: new Date(0) })),
+      };
+    });
+  }
   bus.registerService('agents:list-for-user', 'fake-agents', async (ctx, input) => {
     listed.push({ ctx, input });
     if (o.listFails === true) throw new PluginError({ code: 'store-unavailable', plugin: 'fake-agents', message: 'down' });
@@ -685,6 +711,16 @@ function world(o: {
       }
       return channels.store.remove(installId, channelId, agentId);
     },
+    // A channel's memory notice (TASK-1203): claimed before it posts, given back when Slack refuses it.
+    async claimNotice(installId: string, channelId: string, agentId: string): Promise<boolean> {
+      if (o.claimNoticeFails === true) {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-store', message: 'db down: #support' });
+      }
+      return channels.store.claimNotice(installId, channelId, agentId);
+    },
+    async releaseNotice(installId: string, channelId: string, agentId: string): Promise<void> {
+      await channels.store.releaseNotice(installId, channelId, agentId);
+    },
   };
   /**
    * The install rows, as the store would answer a re-read. `disconnect()`
@@ -783,6 +819,7 @@ function world(o: {
     threadWrites,
     prompts,
     lookups,
+    teamsAsked,
   };
 }
 
@@ -2249,7 +2286,11 @@ describe("createEventRouter: a mention in a team agent's own bot's channel", () 
       { agentId: 'agt_support', userId: 'usr_ada' },
       { agentId: 'agt_support', userId: 'usr_ada' },
     ]);
-    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_sender_not_mapped', fields: { installId: OWN_BOT_ID } }]);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_sender_not_mapped', fields: { installId: OWN_BOT_ID } },
+      // #support's first turn tells the channel its memory is shared with the team (TASK-1203).
+      { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID } },
+    ]);
   });
 
   it('tier D: a member whose email is on no approved domain gets silence, and nobody is asked about the agent', async () => {
@@ -2819,6 +2860,8 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
     expect(w.lanes).toEqual([{ lane: 'conversation', key: `conv:${botKey(MENTION_TS)}`, group: OWN_BOT_ID }]);
     expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([
       { level: 'info', msg: 'slack_bot_channel_bound', fields: { installId: OWN_BOT_ID } },
+      // The channel's first turn tells it its memory is shared with the team (TASK-1203).
+      { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID } },
     ]);
 
     // A second mention there reads the binding, and the turn's check is still fresh: Slack isn't asked again.
@@ -3583,6 +3626,156 @@ describe('createEventRouter: a private channel is remembered like any other (TAS
     expect(w.channels.threads.get(marked)?.notRemembered).toBe(true);
     expect(await memoryAsks(w.channels.store, marked)).toEqual({ observer: MARKED, note: MARKED });
     expect(await memoryAsks(w.channels.store, `conv:${botKey(later)}`)).toEqual({ observer: REMEMBERED, note: REMEMBERED });
+  });
+});
+
+// ── A channel's memory notice, at its first turn (TASK-1203) ────────────────
+
+/*
+  TASK-1203 (design §4c): a team agent's memory is shared with its team, so
+  every channel its bot answers in is told so, once, by the bot itself:
+  top-level, for everyone there, at the channel's first turn. #support's
+  binding in botWorld was made before any notice (no claim on it), like a
+  binding from before this card; a first mention binds one fresh.
+*/
+describe("createEventRouter: a channel's memory notice, at its first turn (TASK-1203)", () => {
+  /** The support agent's team, as @ax/teams names it. */
+  const TEAMS = { [SUPPORT_TEAM]: 'Customer Support' };
+  const notices = (w: ReturnType<typeof world>) =>
+    w.slack.calls.filter((c) => c.method === 'postToChannel').map((c) => [c.token, c.args]);
+  const posted = (w: ReturnType<typeof world>) => w.lines.filter((l) => l.msg === 'slack_notice_posted');
+  const second = () => botMention({ ts: '1763035301.000301', text: `<@${OWN_BOT_USER_ID}> and now?` });
+
+  it("a channel's first turn posts the memory notice once, top-level, before the reply; its second turn posts none (TASK-1203)", async () => {
+    const w = botWorld({ teams: TEAMS });
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Two tickets.' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    // One post, with the bot's own token, in the channel itself (no thread), naming the agent's team.
+    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }]]);
+    // The team as Alice, whose turn it is, sees it.
+    expect(w.teamsAsked).toEqual(['usr_alice']);
+    // Before the reply, which still goes to her thread, unchanged.
+    const order = methods(w.slack.calls);
+    expect(order.indexOf('postToChannel')).toBeGreaterThan(-1);
+    expect(order.indexOf('postToChannel')).toBeLessThan(order.indexOf('startStream'));
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe('Two tickets.');
+    expect(w.invokes).toHaveLength(1);
+    expect(posted(w)).toEqual([{ level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID } }]);
+
+    // Her second turn there, and a third: the channel was told, so neither posts or asks anything for it.
+    await w.dispatch(OWN_BOT, second());
+    await w.idle();
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035302.000302', text: `<@${OWN_BOT_USER_ID}> and then?` }));
+    await w.idle();
+    expect(w.invokes).toHaveLength(3);
+    expect(notices(w)).toHaveLength(1);
+    expect(w.teamsAsked).toEqual(['usr_alice']);
+    expect(posted(w)).toHaveLength(1);
+  });
+
+  it("a channel bound at its first mention is told at that mention's turn", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toBeDefined();
+    // No teams service: "my team".
+    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice(null) }]]);
+    expect(w.invokes).toHaveLength(1);
+  });
+
+  it('a notice Slack refuses is posted at the next turn, and both turns run', async () => {
+    let refuse = true;
+    const w = botWorld({
+      teams: TEAMS,
+      slackFail: (method) =>
+        method === 'postToChannel' && refuse ? new SlackApiError('chat.postMessage', 'restricted_action') : undefined,
+    });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    // The turn ran: the refusal is logged by stage and code, nobody is told anything, and nothing says the event failed.
+    expect(w.invokes).toHaveLength(1);
+    expect(w.lines.filter((l) => l.msg === 'slack_notice_failed')).toEqual([
+      { level: 'warn', msg: 'slack_notice_failed', fields: { installId: OWN_BOT_ID, stage: 'post', code: 'restricted_action' } },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+    expect(posted(w)).toEqual([]);
+
+    // Slack takes it at the next turn; the one after that posts nothing.
+    refuse = false;
+    await w.dispatch(OWN_BOT, second());
+    await w.idle();
+    expect(w.invokes).toHaveLength(2);
+    expect(notices(w)).toEqual([
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }],
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }],
+    ]);
+    expect(posted(w)).toHaveLength(1);
+    await w.dispatch(OWN_BOT, botMention({ ts: '1763035302.000302', text: `<@${OWN_BOT_USER_ID}> and then?` }));
+    await w.idle();
+    expect(w.invokes).toHaveLength(3);
+    expect(notices(w)).toHaveLength(2);
+  });
+
+  it("a claim the store can't make costs the turn nothing: it runs, and the next turn claims again", async () => {
+    const w = botWorld({ claimNoticeFails: true });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.invokes).toHaveLength(1);
+    expect(notices(w)).toEqual([]);
+    expect(w.lines.filter((l) => l.msg === 'slack_notice_failed')).toEqual([
+      { level: 'warn', msg: 'slack_notice_failed', fields: { installId: OWN_BOT_ID, stage: 'claim', code: 'store-unavailable' } },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual([]);
+  });
+
+  it("an outsider's first turn posts it too", async () => {
+    // Bob has an account but isn't on the agent's team: his turn runs external, as Ada, the bot's requester.
+    const w = botWorld({ teams: TEAMS });
+    await w.dispatch(OWN_BOT, botMention({ user: BOB }));
+    await w.idle();
+
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source])).toEqual([['usr_ada', 'external']]);
+    expect(notices(w)).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice('Customer Support') }]]);
+    // The team is read as the person the turn runs as, never as the outsider.
+    expect(w.teamsAsked).toEqual(['usr_ada']);
+
+    // A member's turn after it finds the channel told.
+    await w.dispatch(OWN_BOT, second());
+    await w.idle();
+    expect(w.invokes).toHaveLength(2);
+    expect(notices(w)).toHaveLength(1);
+  });
+
+  it('a DM never posts one, nor does a mention of the shared bot in a channel', async () => {
+    const w = world({ teams: TEAMS });
+    await w.dispatch(INSTALL, dm());
+    await w.dispatch(INSTALL, mention());
+    await w.idle();
+
+    expect(w.invokes).toHaveLength(1);
+    expect(methods(w.slack.calls)).not.toContain('postToChannel');
+    expect(w.channels.calls).not.toContain('claimNotice');
+    expect(w.teamsAsked).toEqual([]);
+  });
+
+  it('a turn dropped before its thread is recorded claims nothing and tells nobody', async () => {
+    // The binding goes between the turn's read of it and its record (an admin's Disconnect): no turn, no notice.
+    const w = botWorld({
+      beforeThreadWrite: async (store) => {
+        await store.remove(OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id);
+      },
+    });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+    expect(w.invokes).toEqual([]);
+    expect(notices(w)).toEqual([]);
+    expect(w.channels.calls).not.toContain('claimNotice');
   });
 });
 

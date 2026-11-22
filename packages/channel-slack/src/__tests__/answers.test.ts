@@ -220,6 +220,7 @@ function fakeSlack(o: { users: Record<string, unknown>; hang?: Method; hold?: { 
     postMessage: notHere('postMessage'),
     postBlocks: notHere('postBlocks'),
     postDirect: notHere('postDirect'),
+    postToChannel: notHere('postToChannel'),
     usersLookupByEmail: notHere('usersLookupByEmail'),
     async updateMessage(token, a) {
       await record('updateMessage', token, { ...a });

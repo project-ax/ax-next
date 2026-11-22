@@ -157,6 +157,7 @@ function everyMethod(api: SlackApi): Array<[string, () => Promise<unknown>]> {
       () => api.postBlocks(BOT, { channel: 'D1', threadTs: '1.2', text: 'hi', blocks: [] }),
     ],
     ['chat.postMessage', () => api.postDirect(BOT, { user: 'U07ADA00001', text: 'hi' })],
+    ['chat.postMessage', () => api.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'hi' })],
     ['chat.update', () => api.updateMessage(BOT, { channel: 'D1', ts: '1.3', text: 'hi', blocks: [] })],
     ['chat.postEphemeral', () => api.postEphemeral(BOT, { channel: 'C1', user: 'U1', text: 'hi' })],
     [
@@ -473,6 +474,30 @@ describe('requests', () => {
       const err = await failure(api.postDirect(BOT, { user: 'U07ADA00001', text: 'x' }));
       expect(err.code).toBe('bad-response');
     }
+  });
+
+  it('postToChannel posts top-level mrkdwn text in the channel, unfurls off, no thread_ts', async () => {
+    const slack = fakeSlack(() => okJson({ channel: 'C07SUPPORT1', ts: '1700000000.000400' }));
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    await expect(api.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'Heads up: *see* https://example.com' })).resolves.toBeUndefined();
+
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(slack.sent[0]!.headers.get('content-type')).toMatch(/^application\/json/);
+    expect(slack.sent[0]!.headers.get('authorization')).toBe(`Bearer ${BOT}`);
+    expect(slack.sent[0]!.body).not.toContain(BOT);
+    // `text`, so Slack reads it as mrkdwn (what copy.ts escapes for); no thread, no blocks, no preview fetched.
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'C07SUPPORT1',
+      text: 'Heads up: *see* https://example.com',
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+
+    // A refusal (an announcement-only channel) rejects with Slack's own code, and nothing else.
+    const refused = createSlackApi({ fetchImpl: fakeSlack(() => slackError('restricted_action')).fetchImpl });
+    const err = await failure(refused.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'x' }));
+    expect(err.code).toBe('restricted_action');
+    expect(err.message).toBe('slack chat.postMessage: restricted_action');
   });
 
   it('updateMessage sends exactly channel, ts, text, blocks to chat.update', async () => {

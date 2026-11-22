@@ -2,7 +2,7 @@ import { HookBus, PluginError, makeAgentContext, type Logger } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { isTemporarySlackCode } from '../admission.js';
 import { createBotRequestDms } from '../bot-request-dms.js';
-import { agentSeenBy } from '../bot-requests.js';
+import { agentSeenBy } from '../team-name.js';
 import { createLifetime } from '../lifetime.js';
 import {
   BOT_REQUEST_DMS_MAX,
@@ -392,6 +392,7 @@ function fakeSlack() {
       if (failure !== undefined) throw failure;
     },
     postEphemeral: notHere('postEphemeral'),
+    postToChannel: notHere('postToChannel'),
     startStream: notHere('startStream'),
     appendStream: notHere('appendStream'),
     stopStream: notHere('stopStream'),

@@ -303,8 +303,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           hook: 'agent:interrupt',
           degradation: 'a Slack turn that reaches the 15-minute cap ends its Slack reply but runs on until it finishes',
         },
-        // A bot request's team, in Admin › Slack's list (bot-requests.ts).
-        { hook: 'teams:list-for-user', degradation: "Admin › Slack's list of bot requests names no team" },
+        // A team's name: a bot request's, in Admin › Slack's list (bot-requests.ts), and a
+        // team agent's, in its bot's memory notice (memory-notice.ts, TASK-1203).
+        {
+          hook: 'teams:list-for-user',
+          degradation:
+            "Admin › Slack's list of bot requests names no team, and a team bot's memory notice and Slack card say \"my team\" or \"its team\" instead of the team's name",
+        },
         // The approval buttons (TASK-1095). Each is looked at with
         // `bus.hasService` before it is called; without them a call held in
         // a Slack turn links to Today, as before.

@@ -1142,6 +1142,20 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   const channelTurnCalls = (from: number): Promise<SlackCall[]> =>
     slackCallsUntil(from, 'chat.startStream', 'chat.stopStream', 'reactions.remove');
 
+  /**
+   * A channel turn whose reply asks: its Slack calls once the reply is closed, 👀 is off and its prompt (a
+   * chat.postMessage with blocks) is in the thread. Waited for by the prompt itself, never by any post: a
+   * channel's first turn also posts its memory notice, a chat.postMessage of its own (TASK-1203).
+   */
+  async function promptTurnCalls(from: number): Promise<SlackCall[]> {
+    await vi.waitFor(() => expect(promptsIn(slackCalls.slice(from))).not.toEqual([]), { timeout: 10_000 });
+    return slackCallsUntil(from, 'chat.stopStream', 'reactions.remove');
+  }
+
+  /** Where the prompt is in `calls`: the post with blocks, never the memory notice (which has none). */
+  const promptAt = (calls: SlackCall[]): number =>
+    calls.findIndex((c) => c.method === 'chat.postMessage' && Array.isArray(c.body['blocks']));
+
   /** Wait for `n` turns to have reached agent:invoke; the latest one. */
   async function invokedTurn(n: number): Promise<{ ctx: AgentContext; input: unknown; note: unknown }> {
     await vi.waitFor(() => expect(invokes).toHaveLength(n), { timeout: 10_000 });
@@ -1356,7 +1370,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       const attended = await invokedTurn(2);
       expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
       expect(isHold(await holdOf(2))).toBe(true);
-      calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      calls = await promptTurnCalls(mark);
       said = sentText(calls);
       expect(said).toContain('I need your OK before I can do part of this.');
       expect(said).not.toContain("my owner's OK");
@@ -1364,8 +1378,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(asked).toHaveLength(1);
       expect(asked[0]).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
       // After the reply, not before it.
-      const methods = calls.map((c) => c.method);
-      expect(methods.indexOf('chat.postMessage')).toBeGreaterThan(methods.indexOf('chat.stopStream'));
+      expect(promptAt(calls)).toBeGreaterThan(calls.map((c) => c.method).indexOf('chat.stopStream'));
       // Nothing was posted with blocks for Carol, then or since: Mel's is the only prompt.
       expect(promptsIn(slackCalls.slice(externalMark))).toHaveLength(1);
       const attendedRows = await listDecisions('usr_mel');
@@ -1407,7 +1420,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       let mark = slackCalls.length;
       expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'please book it'))).status).toBe(200);
       await invokedTurn(1);
-      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      let calls = await promptTurnCalls(mark);
       expect(sentText(calls)).toContain('I need your OK before I can do part of this.');
       const [prompt] = promptsIn(calls);
       expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
@@ -1458,7 +1471,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       mark = slackCalls.length;
       expect((await deliverToOwnBot(botId, botMention(MEL, secondTs, 'and my files'))).status).toBe(200);
       await invokedTurn(2);
-      calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      calls = await promptTurnCalls(mark);
       const [second] = promptsIn(calls);
       expect(second).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: secondTs });
       expect(second!.promptId).not.toBe(prompt!.promptId);
@@ -1515,11 +1528,10 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       let mark = slackCalls.length;
       expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'fetch it'))).status).toBe(200);
       await invokedTurn(1);
-      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      let calls = await promptTurnCalls(mark);
       const [prompt] = promptsIn(calls);
       expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
-      const methods = calls.map((c) => c.method);
-      expect(methods.indexOf('chat.postMessage')).toBeGreaterThan(methods.indexOf('chat.stopStream'));
+      expect(promptAt(calls)).toBeGreaterThan(calls.map((c) => c.method).indexOf('chat.stopStream'));
       expect(JSON.stringify(prompt!.blocks)).toContain('Wants to connect to api.example.com');
       expect(promptsIn(calls)).toHaveLength(1);
 
@@ -1582,13 +1594,12 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       let mark = slackCalls.length;
       expect((await deliverToOwnBot(botId, botMention(MEL, melTs, 'book it'))).status).toBe(200);
       const attended = await invokedTurn(1);
-      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      let calls = await promptTurnCalls(mark);
       const [prompt] = promptsIn(calls);
       expect(prompt).toMatchObject({ channel: SUPPORT_CHANNEL, threadTs: melTs });
       expect(promptsIn(calls)).toHaveLength(1);
       expect(JSON.stringify(prompt!.blocks)).toContain('Books meetings for you.');
-      const methods = calls.map((c) => c.method);
-      expect(methods.indexOf('chat.postMessage')).toBeGreaterThan(methods.indexOf('chat.stopStream'));
+      expect(promptAt(calls)).toBeGreaterThan(calls.map((c) => c.method).indexOf('chat.stopStream'));
 
       // Ada is not who asked: refused, nothing attached.
       mark = slackCalls.length;
@@ -1675,7 +1686,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       const attended = await invokedTurn(1);
       expect(attended.ctx).toMatchObject({ userId: 'usr_mel', source: 'user' });
       expect(isHold(await verdictOf(1))).toBe(false);
-      let calls = await slackCallsUntil(mark, 'chat.stopStream', 'reactions.remove', 'chat.postMessage');
+      let calls = await promptTurnCalls(mark);
       expect(await listDecisions('usr_mel')).toEqual([]);
       const asked = promptsIn(calls);
       expect(asked).toHaveLength(1);

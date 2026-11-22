@@ -80,6 +80,7 @@ function fakeApi(users: Record<string, unknown> = { [ALICE]: member() }) {
     postMessage: notHere,
     postBlocks: notHere,
     postDirect: notHere,
+    postToChannel: notHere,
     usersLookupByEmail: notHere,
     updateMessage: notHere,
     async postEphemeral(token, a) {
