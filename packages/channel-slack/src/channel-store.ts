@@ -72,7 +72,8 @@ export interface ChannelThread {
    * display name and Slack id (format.ts `senderLabelNames`). Each once,
    * oldest first by when it was last seen, at most THREAD_SPEAKER_NAMES_MAX
    * (the most recently seen). The capture veto hands them to memory, which
-   * stores no shared statement whose subject is made of them. Empty for an
+   * files a subject made of them under the member's own AX key on a team
+   * agent (TASK-1204), and never under the name itself. Empty for an
    * outsiders' thread, and for a row from before TASK-1146 until its next
    * member turn. Slack's untrusted profile text: compared, never shown,
    * logged or used for identity.

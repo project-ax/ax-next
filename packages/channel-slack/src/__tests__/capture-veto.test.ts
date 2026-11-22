@@ -347,11 +347,13 @@ describe('channelCaptureVeto: fails closed, and says the check failed', () => {
 
 describe('channelCaptureVeto: the speakers memory must not file facts under (TASK-1146)', () => {
   /*
-    Memory reads `speakerNames` from the fire's final payload and, in a turn
-    that isn't private, stores no statement whose subject is made of them.
-    So a name is a fact memory won't file under it: the veto hands over every
-    name a member's turns in the thread were labelled with, keeps every name
-    an earlier subscriber added, and refuses rather than drop one.
+    Memory reads `speakerNames` from the fire's final payload and never files
+    a statement under a subject made of them: on a team agent (every
+    channel's) it files it under the member's own AX key (TASK-1204), and in
+    an outsider's turn, or a personal agent's shared turn, it drops it. So a
+    dropped name lets a fact through under that name: the veto hands over
+    every name a member's turns in the thread were labelled with, keeps every
+    name an earlier subscriber added, and refuses rather than drop one.
   */
 
   /** The names Mel's turns in the thread were labelled with: display name, then Slack id. */
