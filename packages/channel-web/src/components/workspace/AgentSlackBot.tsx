@@ -751,7 +751,7 @@ function Live({
         </Alert>
       )}
       {channels.length > 0 && (
-        <AgentSlackBotChannels agentId={agentId} canManage={canManage} invite={bot} channels={channels} onStale={onChanged} />
+        <AgentSlackBotChannels invite={bot} channels={channels} />
       )}
       <p className="text-[12.5px] text-muted-foreground">{C.helpLine(who)}</p>
       {canManage && (

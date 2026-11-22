@@ -8,7 +8,7 @@ import { checkRights, liveOwnBot, type Rights } from './channels.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
 import { INSTALL_ID_RE } from './ingress.js';
-import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX, SLACK_ID_RE } from './limits.js';
+import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX } from './limits.js';
 import { logCode } from './log-code.js';
 import { personalAgentFor } from './router.js';
 import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
@@ -19,18 +19,16 @@ import { checkUser } from './user-auth.js';
  * The Slack section of a team agent's settings: the agent's own Slack bot
  * (TASK-1167, bots.ts). Asking for it, picking the request back up in Slack,
  * cancelling it, and disconnecting it (TASK-1172); once it's live, the
- * channels it has answered in (a binding on its install), each with its own
- * memory switch (`botChannels`, TASK-1180), renaming it or changing its
- * picture (TASK-1171, bot-changes.ts), its approver replacing their
- * configuration token, and a team admin claiming it once its requester is no
- * longer one (TASK-1173). Or, for a team admin who can't install Slack apps,
- * asking an AX admin to approve it instead (TASK-1169, bot-requests.ts), and
- * taking that ask back. The shared app connects no channel here (TASK-1186;
- * design §4b.1): a team agent is reached in a channel only through its own bot.
+ * channels it has answered in (`botChannels`, a binding on its install),
+ * renaming it or changing its picture (TASK-1171, bot-changes.ts), its
+ * approver replacing their configuration token, and a team admin claiming it
+ * once its requester is no longer one (TASK-1173). Or, for a team admin who
+ * can't install Slack apps, asking an AX admin to approve it instead
+ * (TASK-1169, bot-requests.ts), and taking that ask back. The shared app
+ * connects no channel here (TASK-1186; design §4b.1): a team agent is reached
+ * in a channel only through its own bot.
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
- *   POST /settings/slack/:agentId/bot/remember  { channelId, remember } → {}, a channel its live bot has
- *                                               answered in, with or without the shared app (TASK-1180)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
  *   POST /settings/slack/:agentId/bot/install-url  → { installUrl }, its approver only, while pending
  *   POST /settings/slack/:agentId/bot/cancel  { installId } → { appDeleted }, while pending (the domain
@@ -90,14 +88,12 @@ import { checkUser } from './user-auth.js';
 
 /**
  * A channel the agent's own bot has answered in (a binding on its install),
- * with that binding's memory switch (TASK-1180), and whether Slack last
- * described it as private (TASK-1188): never remembered there, whatever the
- * switch says, so the settings show that instead of the switch.
+ * and whether Slack last described it as private (TASK-1188): never
+ * remembered there, which the settings say.
  */
 export interface AgentSlackBotChannel {
   channelId: string;
   name: string;
-  remember: boolean;
   isPrivate: boolean;
 }
 
@@ -134,13 +130,13 @@ export const AGENT_SLACK_PATH = '/settings/slack/:agentId';
 /**
  * What the section's routes read for themselves (invariant 5): the shared
  * install (is Slack connected, its names), the agent's own bot, and that
- * bot's channels and their memory switches. No Slack client and no vault:
+ * bot's channels, which it only lists. No Slack client and no vault:
  * whatever reaches Slack goes through the bot domains.
  */
 export interface AgentRoutesDeps {
   bus: HookBus;
   installs: Pick<InstallStore, 'current' | 'botForAgent'>;
-  channels: Pick<ChannelStore, 'listForAgent' | 'setRemember'>;
+  channels: Pick<ChannelStore, 'listForAgent'>;
   logger: Logger;
 }
 
@@ -169,49 +165,12 @@ const json = (status: number, body: unknown): Reply => ({ status, body });
 const NOT_FOUND = json(404, { error: 'not-found' });
 const INVALID_BODY = json(400, { error: 'invalid-body' });
 const INTERNAL = json(500, { error: 'internal' });
-const utf8 = new TextDecoder('utf-8', { fatal: true });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** A refused manage check, as the answer. */
 function refused(reason: Extract<Rights, { ok: false }>['reason']): Reply {
   if (reason === 'forbidden') return json(403, { error: 'forbidden' });
   if (reason === 'personal-agent') return json(409, { error: 'personal-agent' });
   return NOT_FOUND;
-}
-
-type WriteBody = { ok: true; channelId: string; fields: Record<string, unknown> } | { ok: false; reply: Reply };
-
-/**
- * A write's JSON body: an object with a Slack-shaped `channelId` and no key
- * but `keys`. 413 past the cap (http-server's `maxBodyBytes` refused it
- * first; this is the backstop), 400 for anything else.
- */
-function readBody(req: RouteRequest, keys: readonly string[]): WriteBody {
-  if (req.body.length > ADMIN_BODY_MAX_BYTES) return { ok: false, reply: json(413, { error: 'body-too-large' }) };
-  let fields: unknown;
-  try {
-    fields = JSON.parse(utf8.decode(req.body));
-  } catch {
-    return { ok: false, reply: INVALID_BODY };
-  }
-  if (!isRecord(fields) || Object.keys(fields).some((k) => !keys.includes(k))) {
-    return { ok: false, reply: INVALID_BODY };
-  }
-  const channelId = fields['channelId'];
-  if (typeof channelId !== 'string' || !SLACK_ID_RE.test(channelId)) return { ok: false, reply: INVALID_BODY };
-  return { ok: true, channelId, fields };
-}
-
-/** A memory switch flip's body: readBody's, with a boolean `remember` beside the `channelId`, and no other key. */
-function readSwitchBody(req: RouteRequest): { ok: true; channelId: string; remember: boolean } | { ok: false; reply: Reply } {
-  const body = readBody(req, ['channelId', 'remember']);
-  if (!body.ok) return body;
-  const remember = body.fields['remember'];
-  if (typeof remember !== 'boolean') return { ok: false, reply: INVALID_BODY };
-  return { ok: true, channelId: body.channelId, remember };
 }
 
 type BotBody =
@@ -435,7 +394,6 @@ export function createAgentSlackRoutes(
               (b): AgentSlackBotChannel => ({
                 channelId: b.channelId,
                 name: b.channelName,
-                remember: b.remember,
                 isPrivate: b.isPrivate,
               }),
             ),
@@ -452,27 +410,6 @@ export function createAgentSlackRoutes(
       ...botChannels,
     };
     return json(200, out);
-  }
-
-  /**
-   * The switch of a channel the agent's own bot has answered in (TASK-1180):
-   * any team admin who manages the agent may flip it, with or without the
-   * shared app. It flips the bot's binding and the switch kept for the agent
-   * and channel (channel-store.ts `setRemember`), which outlives a
-   * Disconnect: a bot of the agent's that binds the channel later starts
-   * from it (`bindBot`). The bot is the agent's, never the body's to name.
-   * `404 not-connected` while the agent has no live bot, or its bot hasn't
-   * answered there.
-   */
-  async function rememberBotChannel(a: Asked): Promise<Reply> {
-    const rights = await manages(a);
-    if (!rights.ok) return refused(rights.reason);
-    const body = readSwitchBody(a.req);
-    if (!body.ok) return body.reply;
-    const own = await liveOwnBot(d.installs, a.agentId);
-    const changed =
-      own !== null && (await d.channels.setRemember(own.installId, body.channelId, a.agentId, body.remember));
-    return changed ? json(200, {}) : json(404, { error: 'not-connected' });
   }
 
   /** Ask for the agent's own bot, as the person asking, who becomes its requester and approver. */
@@ -637,8 +574,6 @@ export function createAgentSlackRoutes(
 
   return [
     route('GET', '', 'status', status),
-    // A channel the agent's own bot has answered in has its own switch (TASK-1180).
-    route('POST', '/bot/remember', 'bot-remember', rememberBotChannel),
     // Its body can carry the bot's picture (icon.ts), as Admin › Slack's Connect can.
     route('POST', '/bot', 'bot', requestBot, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
     route('POST', '/bot/install-url', 'bot-install-url', botInstallUrl),
