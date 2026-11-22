@@ -18,6 +18,7 @@ import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
 import type { InstallRow } from '../store.js';
+import { SLACK_NOT_REMEMBERED_LINE } from '../turn-note.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import {
   followContinuation,
@@ -342,8 +343,9 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   const slack = fakeSlack(o.postBlocksFails === true ? { postBlocksFails: true } : {});
   slackCalls = () => slack.calls;
 
-  const request = (mode: TurnMode): TurnRequest => ({
+  const request = (mode: TurnMode, remembered = true): TurnRequest => ({
     mode,
+    remembered,
     label: LABEL,
     install: INSTALL,
     botToken: BOT_TOKEN,
@@ -393,7 +395,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     reply: () => replyOf(slack.calls),
     /** The reply's own text: what its stream carried, without any message posted after it. */
     streamed: () => replyOf(slack.calls.filter((c) => c.method.endsWith('Stream'))),
-    run: (mode: TurnMode) =>
+    run: (mode: TurnMode, remembered = true) =>
       runTurn(
         {
           bus,
@@ -404,7 +406,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
           logger,
           clock: systemClock,
         },
-        request(mode),
+        request(mode, remembered),
       ),
   };
 }
@@ -518,6 +520,37 @@ describe("runTurn: the agent runs as the request says, under its mode's context"
     // The caller's label as it is, then the text as its sender typed it.
     expect(input).toEqual({ message: { role: 'user', content: `${LABEL}: is x < 3?` } });
     expect(h.reply()).toBe('ok');
+  });
+});
+
+describe("runTurn: a conversation memory won't learn from says so before the label (TASK-1191)", () => {
+  /*
+    Walk TASK-1189, check 4: in a private channel the agent answered "I'll
+    have it on hand next time" to "remember that my favorite fruit is
+    mango", in a thread memory never learns from. Nothing in its input said
+    so. The line is fixed text, on its own line before the label, where
+    nothing the sender types can land.
+  */
+  it.each(['attended', 'external', 'dm'] as const)('%s, not remembered: the line, then the label and the words', async (mode) => {
+    const h = harness();
+    await h.run(mode, false);
+    expect(h.invokes).toHaveLength(1);
+    expect(h.invokes[0]!.input).toEqual({
+      message: { role: 'user', content: `This conversation isn't remembered: don't say you'll remember it.\n${LABEL}: is x < 3?` },
+    });
+  });
+
+  it.each(['attended', 'external', 'dm'] as const)('%s, remembered: no line, the label first', async (mode) => {
+    const h = harness();
+    await h.run(mode, true);
+    const content = (h.invokes[0]!.input as { message: { content: string } }).message.content;
+    expect(content).toBe(`${LABEL}: is x < 3?`);
+    expect(content).not.toContain('remember');
+  });
+
+  it('the line is the one the note exports, in plain words, naming no channel', () => {
+    expect(SLACK_NOT_REMEMBERED_LINE).toBe("This conversation isn't remembered: don't say you'll remember it.");
+    expect(SLACK_NOT_REMEMBERED_LINE).not.toMatch(/[#<@\n]/);
   });
 });
 

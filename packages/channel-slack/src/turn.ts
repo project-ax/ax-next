@@ -26,6 +26,7 @@ import type { Prompt, PromptContext, PromptRegistry, PromptSubject } from './pro
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
+import { SLACK_NOT_REMEMBERED_LINE } from './turn-note.js';
 import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.js';
 
 /**
@@ -190,6 +191,12 @@ export interface TurnRequest {
   userId: string;
   agentId: string;
   conversationId: string;
+  /**
+   * Whether memory may learn from this conversation, as its thread record
+   * says now (router.ts). False puts SLACK_NOT_REMEMBERED_LINE before the
+   * label (TASK-1191). Required, so a new caller has to answer it.
+   */
+  remembered: boolean;
   /**
    * The sender's words as Slack sent them. The turn undoes Slack's `&amp;`,
    * `&lt;` and `&gt;` (format.ts `decodeSlackEntities`) and nothing else.
@@ -389,7 +396,11 @@ export async function runTurn(d: TurnDeps, r: TurnRequest): Promise<void> {
     start: {
       kind: 'invoke',
       // As its sender typed it: `if x &lt; 3` reaches the model as `if x < 3`.
-      message: { role: 'user', content: `${r.label}: ${decodeSlackEntities(r.text)}` },
+      // A thread memory won't learn from says so first, on its own line (TASK-1191).
+      message: {
+        role: 'user',
+        content: `${r.remembered ? '' : `${SLACK_NOT_REMEMBERED_LINE}\n`}${r.label}: ${decodeSlackEntities(r.text)}`,
+      },
       messageTs: r.messageTs,
     },
   });
