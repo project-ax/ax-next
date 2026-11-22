@@ -1,8 +1,16 @@
-import { audienceOf, PluginError, type AgentContext, type AgentContextAudience, type HookBus } from '@ax/core';
+import {
+  audienceOf,
+  isOutsiderTurn,
+  PluginError,
+  type AgentContext,
+  type AgentContextAudience,
+  type HookBus,
+} from '@ax/core';
 
+import type { MemoryAccess } from './access.js';
 import { captureCheck } from './capture.js';
 import { PLUGIN_NAME } from './plugin-name.js';
-import { SPEAKER_SUBJECT } from './subject.js';
+import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 
 /**
  * The audience of a memory READ (TASK-1091): a turn whose reply people
@@ -284,6 +292,106 @@ export function breaksSpeakerRule(
     audience !== 'private' &&
     (about.length > SPEAKER_RULE_READS_AT_MOST || isPersonSubject(about) || namesASpeaker(about, speakerNames))
   );
+}
+
+/**
+ * Whose memory a write lands in, and who is talking (TASK-1204, design §4c):
+ *
+ * - `'private'`: the owner's own turn. The person talking is the person the
+ *   turn runs as, and `user` is filed under their key ({@link rewriteSpeaker}),
+ *   as it always was.
+ * - `'team'`: a team agent's shared turn, run as the member who wrote it. A
+ *   member's conversation holds only that member's turns (one conversation per
+ *   person per thread), so the person talking IS `ctx.userId`. A fact about
+ *   them is filed under their own key, the one their web chats write and read.
+ * - `'withheld'`: any outsider's turn, and any other shared turn (a personal
+ *   agent's). The speaker could be anyone in the room, so nothing is filed
+ *   under a person ({@link breaksSpeakerRule}, TASK-1091 and TASK-1146).
+ */
+export type SpeakerScope = 'private' | 'team' | 'withheld';
+
+/**
+ * The {@link SpeakerScope} of a turn, from `ctx` and the agent's resolved
+ * access (`resolveMemoryAccess`: a team agent's `visibility` is `'team'`).
+ *
+ * An outsider's turn is `'withheld'` whatever its audience: there `ctx.userId`
+ * is whoever answers for the channel, never the person talking, so not even a
+ * private stamp may file `user` under them. No live outsider turn is private,
+ * so this changes nothing today; it fails closed, as `isOutsiderTurn` does for
+ * a source this build doesn't know. A visibility this build doesn't know isn't
+ * `'team'`, so it fails closed too.
+ */
+export function speakerScope(
+  ctx: Pick<AgentContext, 'audience' | 'source'>,
+  access: Pick<MemoryAccess, 'visibility'>,
+): SpeakerScope {
+  if (isOutsiderTurn(ctx)) return 'withheld';
+  if (audienceOf(ctx) === 'private') return 'private';
+  return access.visibility === 'team' ? 'team' : 'withheld';
+}
+
+/**
+ * The extraction prompt's subject for the agent itself: never a person.
+ * Spelled here, not imported, because the prompt is fingerprint-pinned and
+ * exports no word list.
+ */
+const AGENT_SUBJECT = 'assistant';
+
+/**
+ * The subject a write in `scope` files `about` under, or `undefined`: not
+ * stored at all. The ONE answer every memory write asks: the observer drops a
+ * fact this says `undefined` for, `memory_note` refuses one, and
+ * {@link recordFacts} refuses any statement whose subject isn't already what
+ * this returns, so a writer that forgets to ask is refused, not misfiled.
+ *
+ * - `'private'`: {@link rewriteSpeaker}, the narrow rewrite (unchanged).
+ * - `'withheld'`: `undefined` when the subject breaks the speaker rule
+ *   ({@link breaksSpeakerRule}), else as written (unchanged).
+ * - `'team'`, in this order:
+ *   1. Longer than {@link SPEAKER_RULE_READS_AT_MOST}: `undefined`, unread.
+ *   2. `assistant`: as written. The extractor's word for the agent itself is
+ *      never a person, whatever a member's display name says.
+ *   3. `user`, or the runner's own key `user:<userId>`: the runner's key.
+ *   4. A subject made of the speakers' names ({@link namesASpeaker}): the
+ *      runner's key. The names are how memory recognizes the speaker in a
+ *      subject; the key is where their facts go. It is the key their web chats
+ *      read, it survives a rename, and two members with one name don't share
+ *      it. With no names answered (a conversation recorded before TASK-1146),
+ *      a name subject isn't recognized, so it is kept as written (step 6).
+ *   5. Any other person subject (`User`, ` user `, `user:<anyone else>`):
+ *      `undefined`. Nothing in a member's own turn vouches for another
+ *      person's key, and dropping beats filing a fact under the wrong person.
+ *   6. Anything else (the work, a third party by name): as written.
+ *
+ * So the only person key a team turn ever produces is the runner's own. The
+ * names are untrusted display text a member sets themself, and the most one
+ * can do is file the speaker's own words under the speaker.
+ */
+export function speakerSubject(
+  scope: SpeakerScope,
+  about: string,
+  userId: string,
+  speakerNames: readonly string[],
+): string | undefined {
+  switch (scope) {
+    case 'private':
+      return rewriteSpeaker(about, userId);
+    case 'withheld':
+      return breaksSpeakerRule('shared', about, speakerNames) ? undefined : about;
+    case 'team': {
+      if (about.length > SPEAKER_RULE_READS_AT_MOST) return undefined;
+      if (about === AGENT_SUBJECT) return about;
+      const own = rewriteSpeaker(SPEAKER_SUBJECT, userId);
+      if (about === SPEAKER_SUBJECT || about === own || namesASpeaker(about, speakerNames)) return own;
+      return isPersonSubject(about) ? undefined : about;
+    }
+    default: {
+      // A scope this build doesn't know stores nothing.
+      const _exhaustive: never = scope;
+      void _exhaustive;
+      return undefined;
+    }
+  }
 }
 
 /**

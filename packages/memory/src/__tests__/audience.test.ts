@@ -20,12 +20,15 @@ import {
   recallAudienceScope,
   recallFacts,
   recordFacts,
+  speakerScope,
+  speakerSubject,
 } from '../audience.js';
 import { OBSERVER_RUN_EVENT } from '../failure.js';
 import { MEMORY_NOTE_TOOL_HOOK, PERSON_IN_SHARED_MESSAGE, type MemoryNoteResult } from '../note-tool.js';
 import { toStatements } from '../observer.js';
 import { FACTS_RECALL_HOOK, FACTS_RECORD_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
+import { rewriteSpeaker } from '../subject.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
 import {
   ALICE,
@@ -1308,5 +1311,131 @@ describe('recordFacts — the one door every engine write goes through', () => {
     expect(failure).toMatchObject({ code: 'invalid-return', plugin: '@ax/memory', hookName: MEMORY_PRE_CAPTURE_HOOK });
     expect((failure as Error).message).not.toContain('vinay');
     expect(written).toEqual([]);
+  });
+});
+
+describe('one rule for every write: whose memory, and who is talking (TASK-1204)', () => {
+  /** The member a team agent's channel turn runs as, and their own key. */
+  const X = 'user-x';
+  const OWN = 'user:user-x';
+  /**
+   * The names a channel labels that member's words with. Not the file's
+   * `NAMES` (Vinay's), so the two lists can't stand in for each other.
+   */
+  const ALICE_NAMES = Object.freeze(['Alice Smith', 'U123']);
+
+  it.each([
+    // audience, source, visibility, expected
+    [undefined, undefined, 'team', 'private'],
+    ['private', 'routine', 'personal', 'private'],
+    ['private', 'external', 'team', 'withheld'], // an outsider's turn never files under its runner, whatever the audience
+    ['private', 'external', 'personal', 'withheld'],
+    ['shared', 'user', 'team', 'team'],
+    ['shared', undefined, 'team', 'team'],
+    ['shared', 'routine', 'team', 'team'],
+    ['shared', 'external', 'team', 'withheld'],
+    ['shared', 'bogus', 'team', 'withheld'], // an unknown source fails closed
+    ['public', 'user', 'team', 'team'], // an unknown audience reads as shared
+    ['shared', 'user', 'personal', 'withheld'],
+    ['shared', 'user', 'bogus', 'withheld'], // an unknown visibility fails closed
+  ])('audience %j, source %j, %s agent: %s', (audience, source, visibility, expected) => {
+    expect(speakerScope({ audience, source } as never, { visibility } as never)).toBe(expected);
+  });
+
+  it.each([
+    ['user', OWN],
+    [OWN, OWN],
+    ['alice', OWN],
+    ['Alice', OWN],
+    ['alice_smith', OWN],
+    ['smith_alice', OWN],
+    ['alicesmith', OWN],
+    ['Alice Smith', OWN],
+    ['u123', OWN],
+    ['U123', OWN],
+    ['user_alice', OWN],
+    ['user:U123', OWN],
+    ['user:alice', OWN],
+    ['User', undefined],
+    [' user ', undefined],
+    ['user:user-y', undefined],
+    ['user:bob', undefined],
+    ['user :x', undefined],
+    ['a'.repeat(1025), undefined],
+    ['team_standup', 'team_standup'],
+    ['billing_service', 'billing_service'],
+    ['ada', 'ada'],
+    ['alice_laptop', 'alice_laptop'],
+    ['alices_team', 'alices_team'],
+    ['assistant', 'assistant'],
+  ])('a team member turn files %j under %j', (about, expected) => {
+    expect(speakerSubject('team', about, X, ALICE_NAMES)).toBe(expected);
+  });
+
+  it('with no names, a team member turn keeps a name as written and never under a key', () => {
+    expect(speakerSubject('team', 'alice_smith', X, [])).toBe('alice_smith');
+    expect(speakerSubject('team', 'user', X, [])).toBe(OWN);
+    expect(speakerSubject('team', 'user:U123', X, [])).toBeUndefined();
+  });
+
+  it("a display name never files the agent's own facts, or anyone's key but the runner's", () => {
+    expect(speakerSubject('team', 'assistant', X, ['Assistant', 'U9'])).toBe('assistant');
+    // A member whose display name is another member's id: the subject lands
+    // on the runner's own key, never on `user:user-y`.
+    expect(speakerSubject('team', 'user:user-y', X, ['user-y'])).toBe(OWN);
+  });
+
+  // Pinned so they stay visible: bounded, since the most a name can do is
+  // file the speaker's own words under the speaker.
+  it('accepted residuals: a name made of work words, or a namesake, files under the speaker', () => {
+    expect(speakerSubject('team', 'team_standup', X, ['Standup Team', 'U7'])).toBe(OWN);
+    expect(speakerSubject('team', 'alex', X, ['Alex Kim', 'U8'])).toBe(OWN);
+  });
+
+  it('a display name changed mid-thread: every name the thread kept is the speaker', () => {
+    const names = ['Vinay Pulim', 'UHTE83XE1', 'vp'];
+    expect(speakerSubject('team', 'vp', X, names)).toBe(OWN);
+    expect(speakerSubject('team', 'vinay', X, names)).toBe(OWN);
+  });
+
+  const EVERY_SUBJECT = [
+    ...new Set([
+      ...PERSON_SUBJECTS,
+      ...NOT_PERSON_SUBJECTS,
+      ...NAMES_A_SPEAKER,
+      ...NOT_A_SPEAKER,
+      TOO_LONG_TO_READ,
+      OWN,
+      'user:user-y',
+    ]),
+  ];
+  const NAME_LISTS: ReadonlyArray<readonly string[]> = [[], ALICE_NAMES, NAMES, ['user-y'], ['Assistant']];
+
+  it("never a person key but the runner's own", () => {
+    const wrong: string[] = [];
+    for (const names of NAME_LISTS) {
+      for (const about of EVERY_SUBJECT) {
+        const out = speakerSubject('team', about, X, names);
+        const keptOrOwn = out === undefined || out === about || out === OWN;
+        const noOtherPerson = out === undefined || !isPersonSubject(out) || out === OWN;
+        if (!keptOrOwn || !noOtherPerson) wrong.push(`${JSON.stringify(about)} ${JSON.stringify(names)}: ${out}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('withheld is the TASK-1146 rule, private is the narrow rewrite', () => {
+    const wrong: string[] = [];
+    for (const names of NAME_LISTS) {
+      for (const about of EVERY_SUBJECT) {
+        const withheld = speakerSubject('withheld', about, X, names);
+        if (withheld !== (breaksSpeakerRule('shared', about, names) ? undefined : about)) {
+          wrong.push(`withheld ${JSON.stringify(about)} ${JSON.stringify(names)}: ${withheld}`);
+        }
+        const own = speakerSubject('private', about, X, names);
+        if (own !== rewriteSpeaker(about, X)) wrong.push(`private ${JSON.stringify(about)}: ${own}`);
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 });
