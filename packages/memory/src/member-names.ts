@@ -26,7 +26,10 @@
  * from recall. A personal agent has no teammates and asks nobody. A team
  * agent's turn from a source this build doesn't know reads shared rows only
  * (it fails closed), and it is told no names either: its members read "a
- * teammate", with no lookup.
+ * teammate", with no lookup. ("Doesn't know" means a context a host built
+ * with a source outside the type. A stored session's unknown source never
+ * reaches memory raw: it reads as 'external' and is named like an outsider's
+ * turn. See `recallAudienceScope` step 2.)
  *
  * ## Whose names
  *
@@ -147,11 +150,27 @@ export function memberName(raw: unknown): string | undefined {
  * `teams:is-member`, then one `auth:get-user` if and only if it answered
  * `member: true`. Ids are asked in parallel. Never throws.
  *
- * A name is shown only when no other key in this answer reads the same,
- * compared word by word as the reserved check does ({@link nameWords}), so
- * `Bob Smith` and `bob  smith.` collide. Otherwise every key holding it reads
- * {@link TEAMMATE_TEXT}: a member who renames themself to a teammate's name
- * can't pass for them, and neither reads as the other.
+ * A name is shown only when no other key WITHIN THIS ONE ANSWER reads the
+ * same, compared word by word as the reserved check does ({@link nameWords}),
+ * so `Bob Smith` and `bob  smith.` collide. Otherwise every key holding it
+ * reads {@link TEAMMATE_TEXT}: a member who renames themself to a teammate's
+ * name can't pass for them beside that teammate's rows, and neither reads as
+ * the other.
+ *
+ * Residuals, documented and pinned by tests, not fixed here:
+ *
+ * - The check sees only the keys in this answer. A member who renames
+ *   themself to a teammate's display name reads as that name wherever the
+ *   real teammate's rows aren't in the same answer. Display names are
+ *   self-chosen account text, the same as wherever names show (Slack
+ *   included). A team-wide check needs the member list, which
+ *   `teams:list-members` gives only admins: follow-up.
+ * - Homoglyph and invisible variants of a name (a Cyrillic `а` for a Latin
+ *   `a`) pass {@link nameWords}, so they don't collide.
+ * - `self` never enters the check: the caller's own key is never looked up,
+ *   so it holds no name. In Alice's turn, a Bob renamed "Alice Jones" reads
+ *   "Alice Jones" beside Alice's own rows, which read `you`. Follow-up:
+ *   count the caller's name as a holder.
  */
 export async function memberLabels(
   bus: HookBus,
@@ -213,6 +232,8 @@ export async function memberLabels(
   );
   // Two different members whose names read the same, word by word, would
   // pass for each other: both read "a teammate" in this answer instead.
+  // Within this answer only, and `self` holds no name here: see the
+  // residuals on {@link memberLabels}.
   const holders = new Map<string, number>();
   for (const name of named.values()) {
     const key = nameWords(name).join(' ');

@@ -725,9 +725,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // view in every audience, an outsider's included (TASK-1209,
             // design §4c), as its recall reads everything. That includes a
             // stored session source a newer build wrote: session-postgres and
-            // ipc-core read it as `'external'` with no stamp, so it is withheld
-            // on a personal agent (the outsider rule above) and mounted on a
-            // team agent, like any outsider's (accepted; see
+            // ipc-core read it as `'external'` whatever its stamp, so it is
+            // withheld on a personal agent (the outsider rule above) and
+            // mounted on a team agent, like any outsider's (accepted; see
             // `recallAudienceScope`, step 2).
             //
             // The owner's audience and source are the session's own:

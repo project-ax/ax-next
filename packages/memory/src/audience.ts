@@ -98,8 +98,8 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  *    see it, backstop and all. A private stamp or none fails closed here
  *    (TASK-1204 review F3): channel-slack stamps an outsider's turn shared,
  *    but a stored session source this build doesn't know reads as external
- *    with no audience stamp (`ipc-core` auth). On a personal agent this step
- *    is what keeps that session to shared rows.
+ *    whatever its audience stamp (`ipc-core` auth). On a personal agent this
+ *    step is what keeps that session to shared rows.
  * 4. Anything else: `{ audience: 'shared' }` for a shared turn, and for an
  *    audience this build does not know (`audienceOf` reads that as shared,
  *    the least recall). Nothing at all for a private turn, whose reads are

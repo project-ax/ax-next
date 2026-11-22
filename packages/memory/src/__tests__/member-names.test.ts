@@ -449,6 +449,46 @@ describe('member names (TASK-1209)', () => {
       expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob', 'user:u-carol': 'Bob Smith' });
     });
 
+    // DOCUMENTED RESIDUAL (round-2 review), pinned so a change is deliberate:
+    // the duplicate-name check sees only the keys in ONE answer. Bob renamed
+    // "Carol Chen" reads as "Carol Chen" wherever Carol's rows aren't in the
+    // same answer. A team-wide check needs a member list, which
+    // `teams:list-members` gives only admins (follow-up).
+    it("DOCUMENTED RESIDUAL: a member renamed to a teammate's name reads as it when the teammate's rows are not in the same answer", async () => {
+      const { bus, asked } = authBus(
+        (userId) =>
+          ({
+            'u-bob': { id: 'u-bob', displayName: 'Carol Chen' },
+            'u-carol': { id: 'u-carol', displayName: 'Carol Chen' },
+          })[userId] ?? null,
+      );
+      // Only Bob's row is in this answer: nothing to collide with.
+      const alone = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob'], undefined);
+      expect(Object.fromEntries(alone)).toEqual({ 'user:u-bob': 'Carol Chen' });
+      expect(asked).toEqual(['u-bob']);
+      // The same two members in one answer do collide: that is the per-answer check.
+      const together = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob', 'user:u-carol'], undefined);
+      expect(Object.fromEntries(together)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+    });
+
+    // DOCUMENTED RESIDUAL (round-2 review): `self` is never looked up, so the
+    // caller's own name never enters the collision set. In Alice's turn, Bob
+    // renamed "Alice Jones" reads "Alice Jones" beside Alice's rows, which the
+    // surfaces show as `you` (follow-up: count the caller's name as a holder).
+    it("DOCUMENTED RESIDUAL: the caller's own name is not a holder, so a member renamed to it reads as it", async () => {
+      const { bus, asked } = authBus(
+        (userId) =>
+          ({
+            'u-alice': { id: 'u-alice', displayName: 'Alice Jones' },
+            'u-bob': { id: 'u-bob', displayName: 'Alice Jones' },
+          })[userId] ?? null,
+      );
+      const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-alice', 'user:u-bob'], 'user:u-alice');
+      // Alice's key holds no label (it reads `you` where it is shown) and was never looked up.
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Alice Jones' });
+      expect(asked).toEqual(['u-bob']);
+    });
+
     it('never throws on a subject that is not a string', async () => {
       const { bus, asked } = authBus(named);
       const labels = await memberLabels(bus, ctxOf([]), TEAM, [42 as unknown as string, 'user:u-bob'], undefined);
