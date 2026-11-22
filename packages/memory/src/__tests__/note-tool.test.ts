@@ -26,6 +26,7 @@ import {
   MEMORY_NOTE_DESCRIPTOR,
   MEMORY_NOTE_TOOL_HOOK,
   PERSON_IN_SHARED_MESSAGE,
+  TEAM_PERSON_KEY_MESSAGE,
   type MemoryNoteResult,
 } from '../note-tool.js';
 import {
@@ -866,10 +867,12 @@ describe('a note under a speaker name in a shared turn (TASK-1146)', () => {
 
       expect(result).toEqual({ ok: false, error: 'forbidden', message: PERSON_REFUSAL });
       expect(asked).toEqual([{ conversationId: 'conv-channel' }]);
-      // After the ask, before access and the engine: nothing read, nothing written.
+      // A shared turn reads whose memory it is first (TASK-1204); still no
+      // memory read or written.
       const called = spy.mock.calls.map(([hook]) => String(hook));
       spy.mockRestore();
-      expect(called.filter((hook) => hook === 'agents:resolve' || hook.startsWith('memory:facts:'))).toEqual([]);
+      expect(called.filter((hook) => hook.startsWith('memory:facts:'))).toEqual([]);
+      expect(called.filter((hook) => hook === 'agents:resolve')).toEqual(['agents:resolve']);
       expect(readRows(h.databasePath)).toHaveLength(0);
       // A decision, at info, and no name in any line.
       expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
@@ -971,6 +974,165 @@ describe('a note under a speaker name in a shared turn (TASK-1146)', () => {
     // of the line, whatever they hold.
     expect(Object.keys(failures[0]!.bindings).sort()).toEqual(['agentId', 'code', 'hookName', 'path', 'reason']);
     expect(JSON.stringify(failures[0])).not.toContain('vinay');
+  });
+});
+
+describe("memory_note in a team agent's channel turn (TASK-1204)", () => {
+  // A team agent's member turn runs as the member who wrote it, so a note
+  // about them is theirs: saved under their own key, the one their web chats
+  // read. Another person's key is refused, in words that say how to file it.
+  const NAMES = ['Vinay Pulim', 'UHTE83XE1'];
+  const NOT_SAVED = 'NOT SAVED: nothing was written to memory — do not tell the person it was saved.';
+  const STANDUP = { relation: 'standup_time', value: '10:15 on Tuesdays' };
+
+  function teamHarness(options: Parameters<typeof makeMemoryHarness>[1] = {}): Promise<MemoryHarness> {
+    return withHarness({}, { ...options, agent: { visibility: 'team' } });
+  }
+  /** A member (Alice) talking in a team agent's channel: the turn runs as her, and the room reads the reply. */
+  function memberCtx(h: MemoryHarness): AgentContext {
+    return h.ctx({ conversationId: 'conv-channel', source: 'user', audience: 'shared' });
+  }
+  function filed(h: MemoryHarness): Array<{ about: string; audience: string | null; provenance: string }> {
+    return readRows(h.databasePath).map(({ about, audience, provenance }) => ({ about, audience, provenance }));
+  }
+
+  // Stamped private (review F2): what a member says about themself is the
+  // team's, not the room's, so an outsider's turn never recalls it.
+  it.each(['user', 'vinay', 'Vinay', 'vinay_pulim', 'UHTE83XE1', 'user_vinay'])(
+    "a member's note about themself (%j) is saved under their own key",
+    async (about) => {
+      const h = await teamHarness();
+      const asked = answerSpeakerNames(h.bus, NAMES);
+
+      expect(await note(h, { about, ...STANDUP }, memberCtx(h))).toEqual({ ok: true });
+
+      expect(filed(h)).toEqual([{ about: `user:${ALICE}`, audience: 'private', provenance: 'agent' }]);
+      // One ask: the write is handed the note's names.
+      expect(asked).toEqual([{ conversationId: 'conv-channel' }]);
+    },
+  );
+
+  it('a note about the work, or a third party by name, is saved as written', async () => {
+    const h = await teamHarness();
+    answerSpeakerNames(h.bus, NAMES);
+
+    expect(await note(h, { about: 'team_standup', relation: 'time', value: '10:15 on Tuesdays' }, memberCtx(h))).toEqual({
+      ok: true,
+    });
+    expect(await note(h, { about: 'ada', relation: 'role', value: 'release manager' }, memberCtx(h))).toEqual({
+      ok: true,
+    });
+
+    expect(filed(h)).toEqual([
+      { about: 'team_standup', audience: 'shared', provenance: 'agent' },
+      { about: 'ada', audience: 'shared', provenance: 'agent' },
+    ]);
+  });
+
+  it.each(['User', ' user', `user:${BOB}`, 'user:someone'])(
+    'a note under %j is refused before memory asks, saying how to file it',
+    async (about) => {
+      const h = await teamHarness();
+      const asked = answerSpeakerNames(h.bus, NAMES);
+      const spy = vi.spyOn(h.bus, 'call');
+
+      const result = await note(h, { about, ...STANDUP }, memberCtx(h));
+
+      const called = spy.mock.calls.map(([hook]) => String(hook));
+      spy.mockRestore();
+      expect(result).toEqual({ ok: false, error: 'forbidden', message: `${NOT_SAVED} ${TEAM_PERSON_KEY_MESSAGE}` });
+      expect(asked).toEqual([]);
+      // Nothing read, nothing written.
+      expect(called.filter((hook) => hook.startsWith('memory:facts:'))).toEqual([]);
+      expect(readRows(h.databasePath)).toEqual([]);
+      // A decision, at info.
+      expect(eventsNamed(h.logs, NOTE_FAILED_EVENT).map((e) => [e.level, e.bindings.reason])).toEqual([
+        ['info', 'forbidden'],
+      ]);
+    },
+  );
+
+  // Review focus 5: the twin check sees the canonical key, so a note
+  // restating what the observer already filed under the member is not a
+  // second row. And it sees a private row (review F2: the member's own key is
+  // stamped private), because a member's reads have no audience scope.
+  it("a member's note and the observer's fact land on one row", async () => {
+    const h = await teamHarness({
+      llm: () => ({
+        text: JSON.stringify({
+          facts: [
+            {
+              network: 'world',
+              subject: 'vinay',
+              predicate: 'favorite_color',
+              object: 'teal',
+              validStart: JAN,
+              invalidatesPrevious: false,
+            },
+          ],
+        }),
+        stopReason: 'end_turn',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    });
+    answerSpeakerNames(h.bus, NAMES);
+    await h.bus.fire('chat:end', memberCtx(h), {
+      outcome: {
+        kind: 'complete',
+        messages: [
+          { role: 'user', content: '[Slack · #team · Vinay Pulim (UHTE83XE1)]: my favorite color is teal.' },
+          { role: 'assistant', content: 'Teal, noted.' },
+        ],
+      },
+    });
+    await h.settleObserver();
+    const rows = (): Array<Array<string | null>> =>
+      readRows(h.databasePath).map((r) => [r.about, r.value, r.provenance, r.audience]);
+    expect(rows()).toEqual([[`user:${ALICE}`, 'teal', 'extracted', 'private']]);
+
+    expect(await note(h, { about: 'vinay', relation: 'favorite_color', value: 'teal' }, memberCtx(h))).toEqual({
+      ok: true,
+    });
+
+    expect(rows()).toEqual([[`user:${ALICE}`, 'teal', 'extracted', 'private']]);
+  });
+
+  it('in an outsider turn on a team agent, a note about the person is still refused', async () => {
+    const h = await teamHarness();
+    const asked = answerSpeakerNames(h.bus, NAMES);
+    // An outsider's turn runs as the requester (Alice here), never as the
+    // person talking.
+    const outsider = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+    const PERSON_REFUSAL = { ok: false, error: 'forbidden', message: `${NOT_SAVED} ${PERSON_IN_SHARED_MESSAGE}` };
+
+    expect(await note(h, { about: 'user', ...STANDUP }, outsider)).toEqual(PERSON_REFUSAL);
+    expect(asked).toEqual([]);
+    // Nor under a speaker's name, which only the ask can tell.
+    expect(await note(h, { about: 'vinay', ...STANDUP }, outsider)).toEqual(PERSON_REFUSAL);
+    expect(asked).toEqual([{ conversationId: 'conv-ext' }]);
+    expect(readRows(h.databasePath)).toEqual([]);
+  });
+
+  it("a team member's note reads access, then asks, then reads its twin and writes", async () => {
+    const h = await teamHarness();
+    const asked = answerSpeakerNames(h.bus, NAMES);
+    const call = vi.spyOn(h.bus, 'call');
+    const fire = vi.spyOn(h.bus, 'fire');
+
+    expect(await note(h, { about: 'vinay', ...STANDUP }, memberCtx(h))).toEqual({ ok: true });
+
+    // `call` and `fire` in the order they happened, across both spies.
+    const order = [
+      ...call.mock.calls.map(([hook], i) => ({ hook: String(hook), at: call.mock.invocationCallOrder[i]! })),
+      ...fire.mock.calls.map(([hook], i) => ({ hook: String(hook), at: fire.mock.invocationCallOrder[i]! })),
+    ]
+      .sort((a, b) => a.at - b.at)
+      .map(({ hook }) => hook)
+      .filter((hook) => hook === 'agents:resolve' || hook === 'memory:pre-capture' || hook.startsWith('memory:facts:'));
+    call.mockRestore();
+    fire.mockRestore();
+    expect(order).toEqual(['agents:resolve', 'memory:pre-capture', 'memory:facts:recall', 'memory:facts:record']);
+    expect(asked).toHaveLength(1);
   });
 });
 

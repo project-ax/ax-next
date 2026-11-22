@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyAgentFact, isAgentContextSelfReport } from '../self-report.js';
+import { classifyAgentFact, isAgentContextSelfReport, isAgentSubject } from '../self-report.js';
 
 /**
  * TASK-612. The fact below is the one walk TASK-607 measured the observer
@@ -610,4 +610,37 @@ describe("the assistant's narration of its own actions, and what it says it can'
     classifyAgentFact({ subject: 'assistant', predicate: `created_${'a_new_'.repeat(20_000)}routine`, object: 'x' });
     expect(performance.now() - start).toBeLessThan(250);
   });
+});
+
+// TASK-1204 review F9: the one answer to "is this subject the agent itself?",
+// for `speakerSubject` too. A team agent's member turn files a subject made of
+// the speaker's names under the speaker, and a member whose display name is
+// "AI Assistant" or "Agent Smith" must not pull the agent's facts with it.
+describe('isAgentSubject: the subjects classifyAgentFact reads as the agent itself', () => {
+  it.each([
+    'assistant',
+    'Assistant',
+    ' assistant ',
+    'the_assistant',
+    'the assistant',
+    'ai_assistant',
+    'AI Assistant',
+    'ai-assistant',
+    'agent',
+    'Agent',
+    'the_agent',
+    'The Agent',
+  ])('%j is the agent', (subject) => {
+    expect(isAgentSubject(subject)).toBe(true);
+    // The same answer classifyAgentFact starts from: the agent is the subject.
+    expect(classifyAgentFact({ subject, predicate: 'has_no_rules', object: 'from the user' })).not.toBeNull();
+  });
+
+  it.each(['user', 'agent_smith', 'ai', 'bot', 'assistants', 'travel_agent', 'assistant_manager', ''])(
+    '%j is not',
+    (subject) => {
+      expect(isAgentSubject(subject)).toBe(false);
+      expect(classifyAgentFact({ subject, predicate: 'has_no_rules', object: 'from the user' })).toBeNull();
+    },
+  );
 });

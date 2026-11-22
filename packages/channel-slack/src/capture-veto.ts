@@ -25,11 +25,18 @@ import { logCode } from './log-code.js';
 // TASK-1146: the answer also tells memory who is speaking. Each member turn
 // records the names its sender label showed on the thread (channel-store.ts
 // `speakerNames`); a thread this lets memory learn from is answered with
-// them, added after any an earlier subscriber put in the payload, and in a
-// turn that isn't private memory stores no statement whose subject is made
-// of them. A name is a fact memory won't file under it, so this never drops
-// one: past what one answer may carry, or on a payload it can't read, it
-// refuses instead. The names are never logged.
+// them, added after any an earlier subscriber put in the payload. Memory
+// reads a subject made of them as the speaker, and never files anything
+// under the name itself: on a team agent (every channel's agent, since only
+// a team agent has a bot) it files what the member says about themself under
+// the member's own AX key, the one their web chats use, kept for the team
+// (TASK-1204); in an outsider's turn, or a personal agent's shared turn, it
+// drops it. A thread's names are its one member's (one conversation per
+// member), which is all memory may be told on a team agent: another person's
+// name would file what's said about them under this member. A dropped name
+// would let what the member says about themself through under that name, so
+// this never drops one: past what one answer may carry, or on a payload it
+// can't read, it refuses instead. The names are never logged.
 // ---------------------------------------------------------------------------
 
 /** The subscriber's name on the bus. Memory logs it as the plugin that refused. */

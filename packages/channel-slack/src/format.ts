@@ -359,7 +359,8 @@ function senderOf(name: string, slackUserId: string): string {
  * `channelSenderLabel` show for them, so the names the model reads in the
  * transcript, and the ones an extractor can file what they said under.
  * channel-slack keeps a member's on their thread (channel-store.ts), and the
- * capture veto hands them to memory, which stores no shared fact under them.
+ * capture veto hands them to memory, which files such a fact under the
+ * member's own AX key on a team agent (TASK-1204), never under the name.
  * The sender's own Slack profile text: untrusted, compared and never logged.
  */
 export function senderLabelNames(name: string, slackUserId: string): string[] {

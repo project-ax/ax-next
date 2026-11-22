@@ -135,8 +135,9 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      while the binding still names the person it runs as: a Claim since
  *      step 8 drops it as there. A member's turn also records the names its
  *      sender label shows (format.ts `senderLabelNames`), which the veto
- *      hands to memory so nothing said in the thread is stored under them
- *      (TASK-1146); an outsider's records none. If the record can't be
+ *      hands to memory so it can tell the member in what it learns: what
+ *      they say about themself is filed under their own AX key, never under
+ *      their name (TASK-1146, TASK-1204); an outsider's records none. If the record can't be
  *      written the turn doesn't run, and the sender is told privately to try
  *      again. A DM records nothing: it is no channel's thread.
  *  9b. The channel's memory notice (memory-notice.ts, TASK-1203; design
@@ -755,8 +756,9 @@ async function routeMention(
         agentId,
         // An outsiders' thread is never remembered (capture-veto.ts), so it
         // keeps no names. A member's keeps the names their label shows, from
-        // the same `admission.name` and `m.sender` as the label below: what
-        // memory must not file their words under.
+        // the same `admission.name` and `m.sender` as the label below: how
+        // memory tells them in what it learns, to file their words about
+        // themself under their own AX key rather than their name.
         ...(external
           ? { mode: 'external' as const, runAs }
           : { mode: 'attended' as const, speakerNames: senderLabelNames(admission.name, m.sender) }),

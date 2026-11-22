@@ -232,6 +232,19 @@ const AGENT_SUBJECTS = new Set([
 ]);
 
 /**
+ * Whether the extractor wrote `subject` for the agent itself: one of
+ * {@link AGENT_SUBJECTS} after {@link normalizeSubject}. The one answer to
+ * that question: {@link classifyAgentFact} starts from it, and so does
+ * `speakerSubject` (`audience.ts`, TASK-1204 review F9), which keeps every
+ * one of these as written in a team agent's member turn, so a member whose
+ * display name is "AI Assistant" or "Agent Smith" never pulls the agent's
+ * facts under their own key.
+ */
+export function isAgentSubject(subject: string): boolean {
+  return AGENT_SUBJECTS.has(normalizeSubject(subject));
+}
+
+/**
  * "rules"/"instructions" as the agent's OWN, not a topic: "rules of chess",
  * "instructions for the desk" and "rules about parking" are content.
  */
@@ -574,8 +587,8 @@ export function classifyAgentFact(fact: {
   object: string;
 }): AgentFactClass | null {
   // The agent as subject, FIRST: everything below is only its own narration.
+  if (!isAgentSubject(fact.subject)) return null;
   const subject = normalizeSubject(fact.subject);
-  if (!AGENT_SUBJECTS.has(subject)) return null;
   // TASK-612 reads `agent` as the agent too, but under a class of its own.
   const context = ASSISTANT_SUBJECTS.has(subject) ? 'context' : 'agent-context';
   const predicate = fact.predicate.trim().toLowerCase();

@@ -8,11 +8,13 @@ import {
   reject,
   type AgentContext,
   type AgentContextAudience,
+  type AgentContextSource,
   type LlmCallOutput,
   type MemoryPreCapturePayload,
 } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { MemoryAccess } from '../access.js';
 import {
   breaksSpeakerRule,
   isPersonSubject,
@@ -20,16 +22,26 @@ import {
   recallAudienceScope,
   recallFacts,
   recordFacts,
+  speakerScope,
+  speakerSubject,
 } from '../audience.js';
 import { OBSERVER_RUN_EVENT } from '../failure.js';
-import { MEMORY_NOTE_TOOL_HOOK, PERSON_IN_SHARED_MESSAGE, type MemoryNoteResult } from '../note-tool.js';
+import {
+  MEMORY_NOTE_TOOL_HOOK,
+  PERSON_IN_SHARED_MESSAGE,
+  TEAM_PERSON_KEY_MESSAGE,
+  type MemoryNoteResult,
+} from '../note-tool.js';
 import { toStatements } from '../observer.js';
 import { FACTS_RECALL_HOOK, FACTS_RECORD_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
+import { isAgentSubject } from '../self-report.js';
+import { rewriteSpeaker } from '../subject.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
 import {
   ALICE,
   answerSpeakerNames,
+  BOB,
   engineRecord,
   eventsNamed,
   makeMemoryHarness,
@@ -130,8 +142,11 @@ const RECALL_SHAPES: MemoryRecallInput[] = [
 ];
 
 describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091)', () => {
+  // `sharedCtx` is an outsider's turn: on any agent it recalls shared
+  // statements only. A team agent's MEMBER turn recalls everything (TASK-1204):
+  // see the next test.
   it.each(['personal', 'team'] as const)(
-    'a private statement is never recalled in a shared turn (%s agent)',
+    "a private statement is never recalled in an outsider's shared turn (%s agent)",
     async (visibility) => {
       const h = await makeHarness({ agent: { visibility } });
       const mine = h.ctx({ conversationId: PRIVATE_CONV });
@@ -172,6 +187,94 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
       expect(tool).not.toContain('Nightjar');
     },
   );
+
+  // Review F3: an outsider's turn is read by someone without access to the
+  // agent whatever its stamp, so a private stamp, or none, reads what the
+  // room could see too. No live producer sends either (channel-slack stamps
+  // an outsider's turn shared): this fails closed, like `isOutsiderTurn`.
+  it.each([
+    ['personal', 'private'],
+    ['personal', undefined],
+    ['team', 'private'],
+    ['team', undefined],
+  ] as const)(
+    "nor in an outsider's turn stamped otherwise (%s agent, audience %j): it reads shared statements only",
+    async (visibility, audience) => {
+      const h = await makeHarness({ agent: { visibility } });
+      const mine = h.ctx({ conversationId: PRIVATE_CONV });
+      await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, mine);
+      await engineRecord(h.bus, mine, [
+        {
+          about: 'launch_plan',
+          relation: 'date',
+          value: PUBLIC,
+          when: JAN,
+          ownerUserId: ALICE,
+          conversationId: CHANNEL,
+          audience: 'shared',
+        },
+      ]);
+      const outsider = h.ctx({ conversationId: CHANNEL, source: 'external', ...(audience !== undefined ? { audience } : {}) });
+
+      const reads = await engineReadsDuring(h, async () => {
+        expect(values(await h.recall({}, outsider))).toEqual([PUBLIC]);
+        for (const input of RECALL_SHAPES) {
+          expect(values(await h.recall(input, outsider)), JSON.stringify(input)).not.toContain(SECRET);
+        }
+        const block = await augment(h, outsider);
+        expect(block).toContain(PUBLIC);
+        expect(block).not.toContain('Nightjar');
+        const tool = await recallTool(h, outsider, 'launch');
+        expect(tool).toContain(PUBLIC);
+        expect(tool).not.toContain('Nightjar');
+      });
+      expect(reads.length).toBeGreaterThan(0);
+      for (const input of reads) expect(input.audience).toBe('shared');
+    },
+  );
+
+  // Design §4c (TASK-1204): a team agent's memory is the team's, so a
+  // member's shared turn reads exactly what the member's own private turn
+  // reads. (An outsider's turn on it doesn't: the tests above.)
+  it("a team agent's member turn in a shared conversation recalls everything (TASK-1204)", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    const mine = h.ctx({ conversationId: PRIVATE_CONV });
+    // A member in the channel: the turn runs as her, and the room reads the reply.
+    const shared = h.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
+    await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, mine);
+    await engineRecord(h.bus, shared, [
+      {
+        about: 'launch_plan',
+        relation: 'date',
+        value: PUBLIC,
+        when: JAN,
+        ownerUserId: ALICE,
+        conversationId: CHANNEL,
+        audience: 'shared',
+      },
+    ]);
+
+    expect(values(await h.recall({}, shared)).sort()).toEqual([PUBLIC, SECRET].sort());
+    expect(values(await h.recall({ query: 'launch' }, shared)).sort()).toEqual([PUBLIC, SECRET].sort());
+    // Every read shape answers the shared turn what it answers the owner's
+    // own turn. (Not every shape finds the private statement there either: a
+    // profile read is about the person, and a conversation feed is one chat.)
+    for (const input of RECALL_SHAPES) {
+      expect(values(await h.recall(input, shared)).sort(), JSON.stringify(input)).toEqual(
+        values(await h.recall(input, mine)).sort(),
+      );
+    }
+    for (const input of [{}, { query: 'launch' }, { about: 'launch_plan' }, { activeOnly: false }, { conversationId: PRIVATE_CONV }]) {
+      expect(values(await h.recall(input, shared)), JSON.stringify(input)).toContain(SECRET);
+    }
+    // The block injected into the shared turn's prompt, and the tool.
+    const block = await augment(h, shared);
+    expect(block).toContain(PUBLIC);
+    expect(block).toContain('Nightjar');
+    const tool = await recallTool(h, shared, 'launch');
+    expect(tool).toContain(PUBLIC);
+    expect(tool).toContain('Nightjar');
+  });
 
   // Review focus 5: a row stored before audience existed carries no stamp, and
   // unstamped is not provably shared.
@@ -324,9 +427,10 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
 
   // Review focus 3: both engines drop an unknown recall field without a word,
   // so an engine without audience support would answer a shared read with
-  // every row it has.
-  it('a shared read that gets a non-shared row back fails instead of returning it', async () => {
-    const h = await makeHarness();
+  // every row it has. `sharedCtx` is an outsider's turn, which keeps the
+  // backstop on a team agent too (TASK-1204).
+  it.each(['personal', 'team'] as const)('a shared read that gets a non-shared row back fails instead of returning it (%s agent)', async (visibility) => {
+    const h = await makeHarness({ agent: { visibility } });
     const { id } = await h.remember(
       { about: 'launch_plan', relation: 'codename', value: SECRET },
       h.ctx({ conversationId: PRIVATE_CONV }),
@@ -398,6 +502,12 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
 });
 
 describe('recallFacts — the one door every engine read goes through', () => {
+  /**
+   * Whose memory a read is in: a personal agent keeps the audience scope, and
+   * a team agent's memory is the team's in every session (TASK-1204).
+   */
+  const PERSONAL_AGENT = { visibility: 'personal' } as const;
+  const TEAM_AGENT = { visibility: 'team' } as const;
   const ROW = { id: 'row-1', about: 'launch_plan', relation: 'codename', value: SECRET, when: JAN };
   const turn = (audience?: 'private' | 'shared'): AgentContext =>
     makeAgentContext({
@@ -426,7 +536,7 @@ describe('recallFacts — the one door every engine read goes through', () => {
     ['a non-object row', 'row-1'],
   ])('a shared read refuses %s beside a shared one, naming no row', async (_label, row) => {
     const { bus } = engineAnswering({ statements: [{ ...ROW, audience: 'shared' }, row], degraded: [] });
-    const failure: unknown = await recallFacts(bus, turn('shared'), FACTS_RECALL_HOOK, {}).then(
+    const failure: unknown = await recallFacts(bus, turn('shared'), PERSONAL_AGENT, FACTS_RECALL_HOOK, {}).then(
       () => undefined,
       (err: unknown) => err,
     );
@@ -439,7 +549,7 @@ describe('recallFacts — the one door every engine read goes through', () => {
     const statements: unknown[] = [{ ...ROW, audience: 'shared' }];
     statements.length = 2;
     const { bus } = engineAnswering({ statements, degraded: [] });
-    await expect(recallFacts(bus, turn('shared'), FACTS_RECALL_HOOK, {})).rejects.toMatchObject({
+    await expect(recallFacts(bus, turn('shared'), PERSONAL_AGENT, FACTS_RECALL_HOOK, {})).rejects.toMatchObject({
       code: 'invalid-return',
     });
   });
@@ -451,15 +561,15 @@ describe('recallFacts — the one door every engine read goes through', () => {
       userId: ALICE,
       audience: 'public' as never,
     });
-    expect(recallAudienceScope(odd)).toEqual({ audience: 'shared' });
+    expect(recallAudienceScope(odd, PERSONAL_AGENT)).toEqual({ audience: 'shared' });
     const { bus, asked } = engineAnswering({ statements: [{ ...ROW }], degraded: [] });
-    await expect(recallFacts(bus, odd, FACTS_RECALL_HOOK, {})).rejects.toMatchObject({ code: 'invalid-return' });
+    await expect(recallFacts(bus, odd, PERSONAL_AGENT, FACTS_RECALL_HOOK, {})).rejects.toMatchObject({ code: 'invalid-return' });
     expect(asked).toEqual([{ audience: 'shared' }]);
   });
 
   it('spreads the scope last, so a caller-built input cannot widen a shared read', async () => {
     const { bus, asked } = engineAnswering({ statements: [], degraded: [] });
-    await recallFacts(bus, turn('shared'), FACTS_RECALL_HOOK, { limit: 5, audience: 'private' });
+    await recallFacts(bus, turn('shared'), PERSONAL_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience: 'private' });
     expect(asked).toEqual([{ limit: 5, audience: 'shared' }]);
   });
 
@@ -467,7 +577,7 @@ describe('recallFacts — the one door every engine read goes through', () => {
     const answer = { statements: [{ ...ROW }, { ...ROW, audience: 'private' }], degraded: [] };
     for (const ctx of [turn(), turn('private')]) {
       const { bus, asked } = engineAnswering(answer);
-      expect(await recallFacts(bus, ctx, FACTS_RECALL_HOOK, { limit: 5 })).toBe(answer);
+      expect(await recallFacts(bus, ctx, PERSONAL_AGENT, FACTS_RECALL_HOOK, { limit: 5 })).toBe(answer);
       expect(asked).toEqual([{ limit: 5 }]);
     }
   });
@@ -479,7 +589,7 @@ describe('recallFacts — the one door every engine read goes through', () => {
     async (audience) => {
       for (const ctx of [turn(), turn('private')]) {
         const { bus, asked } = engineAnswering({ statements: [], degraded: [] });
-        await recallFacts(bus, ctx, FACTS_RECALL_HOOK, { limit: 5, audience });
+        await recallFacts(bus, ctx, PERSONAL_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience });
         // Strict: a key holding `undefined` is still a key.
         expect(asked).toStrictEqual([{ limit: 5 }]);
       }
@@ -493,7 +603,99 @@ describe('recallFacts — the one door every engine read goes through', () => {
     ['a non-array statements', { statements: 'rows', degraded: [] }],
   ])('leaves %s to the caller, unchanged', async (_label, answer) => {
     const { bus } = engineAnswering(answer);
-    expect(await recallFacts(bus, turn('shared'), FACTS_RECALL_HOOK, {})).toBe(answer);
+    expect(await recallFacts(bus, turn('shared'), PERSONAL_AGENT, FACTS_RECALL_HOOK, {})).toBe(answer);
+  });
+
+  // TASK-1204, design §4c: a team agent's memory is the team's, so a member's
+  // read is not scoped by audience in any session, and a private or unstamped
+  // row in the answer is simply part of it. (`turn` names no source: a member's.)
+  it("a team agent's member read carries no audience scope, and its answer is not checked for stamps (TASK-1204)", async () => {
+    const answer = { statements: [{ ...ROW, audience: 'private' }, { ...ROW }], degraded: [] };
+    const odd = makeAgentContext({ sessionId: 's', agentId: 'agent-1', userId: ALICE, audience: 'public' as never });
+    for (const ctx of [turn('shared'), odd, turn(), turn('private')]) {
+      expect(recallAudienceScope(ctx, TEAM_AGENT)).toEqual({});
+      const { bus, asked } = engineAnswering(answer);
+      expect(await recallFacts(bus, ctx, TEAM_AGENT, FACTS_RECALL_HOOK, { limit: 5 })).toBe(answer);
+      // Strict: no `audience` key at all, not even one holding `undefined`.
+      expect(asked).toStrictEqual([{ limit: 5 }]);
+    }
+  });
+
+  it("a team agent's read still drops a caller-built audience: the scope never comes from input", async () => {
+    for (const audience of ['shared', 'private', 'public']) {
+      const { bus, asked } = engineAnswering({ statements: [], degraded: [] });
+      await recallFacts(bus, turn('shared'), TEAM_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience });
+      expect(asked).toStrictEqual([{ limit: 5 }]);
+    }
+  });
+
+  // §4c shares a team agent's memory with the TEAM, not with people outside
+  // AX: an outsider's turn keeps shared-only recall, and its backstop, on a
+  // team agent too. A source this build doesn't know reads as an outsider's.
+  // And whatever its audience stamp (review F3): an outsider's turn is read
+  // by someone without access to the agent, so a private stamp, or none,
+  // fails closed. No live producer sends one.
+  it.each([
+    ['shared', 'external'],
+    ['public', 'external'],
+    ['shared', 'satellite'],
+    ['private', 'external'],
+    [undefined, 'external'],
+    ['private', 'satellite'],
+  ])("an outsider's read keeps the shared scope and its backstop on any agent: audience %j, source %j", async (audience, source) => {
+    const outsider = makeAgentContext({
+      sessionId: 's',
+      agentId: 'agent-1',
+      userId: ALICE,
+      ...(audience !== undefined ? { audience: audience as never } : {}),
+      source: source as never,
+    });
+    for (const agent of [TEAM_AGENT, PERSONAL_AGENT]) {
+      const { bus, asked } = engineAnswering({ statements: [{ ...ROW, audience: 'shared' }, { ...ROW, audience: 'private' }], degraded: [] });
+      const failure: unknown = await recallFacts(bus, outsider, agent, FACTS_RECALL_HOOK, { limit: 5, audience: 'private' }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure, agent.visibility).toMatchObject({ code: 'invalid-return', hookName: FACTS_RECALL_HOOK });
+      expect((failure as Error).message).not.toContain('Nightjar');
+      expect(asked, agent.visibility).toStrictEqual([{ limit: 5, audience: 'shared' }]);
+    }
+  });
+
+  it.each([
+    // audience, source, visibility, scope
+    ['shared', 'user', 'team', {}],
+    ['shared', undefined, 'team', {}],
+    ['shared', 'routine', 'team', {}],
+    ['public', 'user', 'team', {}], // a member's turn in an audience this build doesn't know: still the team's
+    [undefined, 'user', 'team', {}],
+    ['shared', 'external', 'team', { audience: 'shared' }], // an outsider's turn: what the room could see
+    ['public', 'external', 'team', { audience: 'shared' }],
+    ['shared', 'satellite', 'team', { audience: 'shared' }], // an unknown source reads as an outsider's
+    // An outsider's turn, whatever its stamp (review F3: fail closed, no live producer).
+    ['private', 'external', 'team', { audience: 'shared' }],
+    [undefined, 'external', 'team', { audience: 'shared' }],
+    ['private', 'satellite', 'team', { audience: 'shared' }],
+    ['private', 'external', 'personal', { audience: 'shared' }],
+    [undefined, 'external', 'personal', { audience: 'shared' }],
+    ['shared', 'user', 'personal', { audience: 'shared' }],
+    ['shared', 'external', 'personal', { audience: 'shared' }],
+    ['private', 'user', 'personal', {}],
+    [undefined, undefined, 'personal', {}], // an owner route: no stamp, no source
+    ['shared', 'user', 'bogus', { audience: 'shared' }], // an unknown visibility keeps the scope
+  ])('the recall scope of audience %j, source %j on a %s agent is %j', (audience, source, visibility, scope) => {
+    expect(recallAudienceScope({ audience, source } as never, { visibility } as never)).toStrictEqual(scope);
+  });
+
+  // Only a team agent reads unscoped: a visibility this build doesn't know
+  // keeps a shared turn's scope, as a personal agent's does.
+  it('a visibility this build does not know keeps the scope', async () => {
+    expect(recallAudienceScope(turn('shared'), { visibility: 'bogus' } as never)).toEqual({ audience: 'shared' });
+    const { bus, asked } = engineAnswering({ statements: [{ ...ROW, audience: 'private' }], degraded: [] });
+    await expect(
+      recallFacts(bus, turn('shared'), { visibility: 'bogus' } as never, FACTS_RECALL_HOOK, {}),
+    ).rejects.toMatchObject({ code: 'invalid-return' });
+    expect(asked).toEqual([{ audience: 'shared' }]);
   });
 });
 
@@ -615,6 +817,33 @@ const NOT_A_SPEAKER = [
  * rule unread, on every path.
  */
 const TOO_LONG_TO_READ = 'x'.repeat(1025);
+
+/**
+ * Spellings self-report reads as the agent itself (`isAgentSubject`): a team
+ * agent's member turn keeps each as written, whatever a display name says
+ * (TASK-1204 review F9).
+ */
+const AGENT_SELF_SUBJECTS = [
+  'assistant',
+  'Assistant',
+  ' assistant ',
+  'the_assistant',
+  'the assistant',
+  'ai_assistant',
+  'AI Assistant',
+  'ai-assistant',
+  'agent',
+  'Agent',
+  'the_agent',
+  'The Agent',
+];
+
+/**
+ * A personal agent's memory, as `resolveMemoryAccess` answers its owner: the
+ * access a bare-bus `recordFacts` call is handed (TASK-1204). A personal
+ * agent's shared turn keeps the speaker rule.
+ */
+const PERSONAL: MemoryAccess = { userId: ALICE, visibility: 'personal' };
 
 /**
  * The extractor's answer in the speaker tests: four ways a model writes the
@@ -854,6 +1083,506 @@ describe("@ax/memory — every write carries its turn's audience; a shared turn 
   });
 });
 
+// ---------------------------------------------------------------------------
+// TASK-1204: a team agent's member turn runs as the member who wrote it (one
+// conversation per person per thread), so what they say about themself is
+// theirs: kept, and filed under their own key, the one their web chats read.
+// ---------------------------------------------------------------------------
+
+describe('a team agent keeps what a member says about themself, under their own key (TASK-1204)', () => {
+  /** A member talking in a team agent's channel: the turn runs as them, and the room reads the reply. */
+  function member(h: MemoryHarness, userId: string, conversationId: string): AgentContext {
+    return h.ctx({ userId, conversationId, source: 'user', audience: 'shared' });
+  }
+  /** An outsider's turn in a channel: it runs as the requester (Bob here), never as the person talking. */
+  function outsider(h: MemoryHarness): AgentContext {
+    return h.ctx({ userId: BOB, conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+  }
+  /** Every stored row as `about|value|audience`, sorted. */
+  function rows(h: MemoryHarness): string[] {
+    return storedRows(h)
+      .map((r) => `${r.about}|${r.value}|${r.audience}`)
+      .sort();
+  }
+  function lastRun(h: MemoryHarness): Record<string, unknown> | undefined {
+    return eventsNamed(h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings;
+  }
+
+  const ALICE_LABEL = ['Alice Smith', 'U123'];
+  /** What Alice says about herself, as the extractor writes it, and one fact about the work. */
+  const ALICE_FACTS = [
+    { subject: 'alice_smith', predicate: 'favorite_color', object: 'teal' },
+    { subject: 'user', predicate: 'lives_in', object: 'Lisbon' },
+    { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+  ];
+  const ALICE_TURN = [
+    {
+      role: 'user',
+      content: '[Slack · #general · Alice Smith (U123)]: my favorite color is teal. I live in Lisbon. Dana owns billing.',
+    },
+    { role: 'assistant', content: 'Noted.' },
+  ];
+
+  it('a member\'s "my favorite color is teal" is kept under their own key: not the requester\'s, not their name', async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
+    const asked = answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
+
+    // Both facts about Alice under her own key, however the extractor named
+    // her, stamped private: they're the team's, not the room's (review F2).
+    // The work as written, stamped shared. Nothing under her label name, and
+    // nothing under anyone else's key.
+    expect(rows(h)).toEqual(
+      [`user:${ALICE}|teal|private`, `user:${ALICE}|Lisbon|private`, 'billing_service|Dana|shared'].sort(),
+    );
+    expect(storedRows(h).map((r) => r.about)).not.toContain('alice_smith');
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 3, speakerFacts: 0 });
+    // One ask for the pass: its write is handed the names, and doesn't ask again.
+    expect(asked).toEqual([{ conversationId: 'conv-x' }]);
+
+    // Alice's later web chat (a private turn, run as her) finds both...
+    const web = values(await h.recall({ about: 'user' }, h.ctx({ conversationId: 'conv-web' })));
+    expect(web.sort()).toEqual(['Lisbon', 'teal']);
+    // ...and Bob's own key holds neither.
+    expect(values(await h.recall({ about: 'user' }, h.ctx({ userId: BOB, conversationId: 'conv-web-b' })))).toEqual(
+      [],
+    );
+  });
+
+  it("two members in one Slack thread: each one's facts land under their own key, and a claim about the other under neither", async () => {
+    // One Slack thread, two conversations: each member's turns run as them.
+    const BOB_LABEL = 'Bob Jones (U456)';
+    const h = await makeHarness({
+      agent: { visibility: 'team' },
+      llm: (input) =>
+        String(input.messages[0]?.content ?? '').includes(BOB_LABEL)
+          ? extractionReply([
+              { subject: 'bob_jones', predicate: 'lives_in', object: 'Berlin' },
+              { subject: 'alice', predicate: 'favorite_color', object: 'teal' },
+            ])
+          : extractionReply([{ subject: 'alice_smith', predicate: 'favorite_color', object: 'teal' }]),
+    });
+    answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    answerSpeakerNames(h.bus, ['Bob Jones', 'U456'], 'conv-y');
+
+    await observeTurn(h, member(h, ALICE, 'conv-x'), [
+      { role: 'user', content: '[Slack · #general · Alice Smith (U123)]: my favorite color is teal.' },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+    await observeTurn(h, member(h, BOB, 'conv-y'), [
+      { role: 'user', content: `[Slack · #general · ${BOB_LABEL}]: I live in Berlin, and Alice's favorite color is teal.` },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+
+    // Bob's claim about Alice is a third party's fact: as written, under
+    // neither member's key, and shared like any fact said in the room. What
+    // each says about themself is the team's (review F2).
+    expect(rows(h)).toEqual(
+      [`user:${ALICE}|teal|private`, `user:${BOB}|Berlin|private`, 'alice|teal|shared'].sort(),
+    );
+    expect(h.llmCalls).toHaveLength(2);
+    // So an outsider's turn recalls the third party's claim, as it always
+    // could, and neither member's own words.
+    const away = outsider(h);
+    expect((await h.recall({}, away)).statements.map((s) => `${s.about}|${s.value}`)).toEqual(['alice|teal']);
+  });
+
+  // Review F2: §4c shares a team agent's memory with the TEAM, not with
+  // people outside AX. What a member says about themself in a channel is
+  // filed under their own key stamped private, so every member's turn reads
+  // it (a member's reads have no audience scope) and no outsider's turn does
+  // (its reads are shared-only, backstop and all). The work they mention in
+  // the room stays shared, as it always was.
+  it("what a member says about themself in a channel stays with the team: members recall it, an outsider's turn never does", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
+    answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    const channel = member(h, ALICE, 'conv-x');
+    await observeTurn(h, channel, ALICE_TURN);
+    expect(rows(h)).toEqual(
+      [`user:${ALICE}|teal|private`, `user:${ALICE}|Lisbon|private`, 'billing_service|Dana|shared'].sort(),
+    );
+
+    // Her own channel turn and her web chat read it as hers...
+    const web = h.ctx({ conversationId: 'conv-web' });
+    for (const ctx of [channel, web]) {
+      const label = ctx.conversationId;
+      expect(values(await h.recall({}, ctx)).sort(), label).toEqual(['Dana', 'Lisbon', 'teal']);
+      expect(values(await h.recall({ about: 'user' }, ctx)).sort(), label).toEqual(['Lisbon', 'teal']);
+      const block = await augment(h, ctx);
+      expect(block, label).toContain('### Profile');
+      expect(block, label).toContain('teal');
+      expect(block, label).toContain('Lisbon');
+      expect(await recallTool(h, ctx, 'teal'), label).toContain('user favorite color: teal');
+    }
+    // ...and a teammate's channel turn reads it as the team's.
+    const teammate = member(h, BOB, 'conv-y');
+    expect(values(await h.recall({}, teammate)).sort()).toEqual(['Dana', 'Lisbon', 'teal']);
+    expect(await recallTool(h, teammate, 'teal')).toContain('a teammate favorite color: teal');
+
+    // An outsider's turn (run as Bob, who answers for the channel) recalls
+    // the work she mentioned, and nothing she said about herself: by no read
+    // shape, not in the block, not through the tool.
+    const away = outsider(h);
+    expect(values(await h.recall({}, away))).toEqual(['Dana']);
+    for (const input of [...RECALL_SHAPES, { query: 'teal' }, { query: 'Lisbon' }, { conversationId: 'conv-x' }]) {
+      const got = values(await h.recall(input, away));
+      expect(got, JSON.stringify(input)).not.toContain('teal');
+      expect(got, JSON.stringify(input)).not.toContain('Lisbon');
+    }
+    const block = await augment(h, away);
+    expect(block).toContain('Dana');
+    expect(block).not.toContain('teal');
+    expect(block).not.toContain('Lisbon');
+    for (const query of ['teal', 'Lisbon', 'favorite color', 'lives in']) {
+      const tool = await recallTool(h, away, query);
+      expect(tool, query).not.toContain('teal');
+      expect(tool, query).not.toContain('Lisbon');
+    }
+    expect(await recallTool(h, away, 'billing')).toContain('Dana');
+  });
+
+  /** An outsider's words: about themself, under the requester's own key, and about the work. */
+  const OUTSIDER_FACTS = [
+    { subject: 'user', predicate: 'lives_in', object: 'Paris' },
+    { subject: `user:${BOB}`, predicate: 'works_at', object: 'Initech' },
+    { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+  ];
+  const OUTSIDER_TURN = [
+    { role: 'user', content: 'I live in Paris and I work at Initech. Dana owns the billing service.' },
+    { role: 'assistant', content: 'Thanks.' },
+  ];
+
+  // channel-slack's veto refuses every thread an outsider talks in (TASK-1094).
+  it("an outsider's words are still never remembered: with the veto, nothing is extracted or stored", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
+    h.bus.subscribe(MEMORY_PRE_CAPTURE_HOOK, 'test-veto', async () => reject({ reason: 'channel-external-turn' }));
+    await observeTurn(h, outsider(h), OUTSIDER_TURN);
+
+    expect(storedRows(h)).toEqual([]);
+    expect(h.llmCalls).toHaveLength(0);
+  });
+
+  // The backstop: a veto subscriber that throws, or misses memory's bound, is
+  // skipped by the bus. In an outsider's turn `ctx.userId` is the requester,
+  // so memory's own speaker rule keeps every person fact out, the requester's
+  // key above all. Work facts in an outsider's thread still ride on
+  // channel-slack's veto, as today.
+  it("an outsider's words are still never remembered: with no veto at all, nothing lands under a person", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
+    await observeTurn(h, outsider(h), OUTSIDER_TURN);
+
+    expect(storedRows(h).filter((r) => r.about.startsWith('user:'))).toEqual([]);
+    expect(rows(h)).toEqual(['billing_service|Dana|shared']);
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
+  // Neither combination has a live producer (channel-slack stamps an
+  // outsider's turn shared), so both must fail closed: an outsider's turn is
+  // `withheld` whatever its audience, and a source this build doesn't know
+  // reads as an outsider's (`isOutsiderTurn`).
+  it.each([
+    ['an outsider turn stamped private', 'external', 'private'],
+    ['a turn from a source this build does not know', 'satellite', 'shared'],
+  ] as const)("%s keeps the speaker rule on the observer and the note: nothing under the runner's key", async (_label, source, audience) => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
+    const ctx = h.ctx({ userId: BOB, conversationId: 'conv-ext', source: source as AgentContextSource, audience });
+
+    await observeTurn(h, ctx, OUTSIDER_TURN);
+    const note = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
+      input: { about: 'user', relation: 'lives_in', value: 'Paris' },
+    });
+
+    expect(note).toEqual({
+      ok: false,
+      error: 'forbidden',
+      message: `NOT SAVED: nothing was written to memory — do not tell the person it was saved. ${PERSON_IN_SHARED_MESSAGE}`,
+    });
+    expect(rows(h)).toEqual([`billing_service|Dana|${audience}`]);
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
+  it("a personal agent's member turn is unchanged: no speaker fact, the work fact stamped shared", async () => {
+    const h = await makeHarness({ llm: () => extractionReply(ALICE_FACTS) });
+    answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
+    await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
+
+    expect(rows(h)).toEqual(['billing_service|Dana|shared']);
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
+  // Review F9: a member whose display name is the agent's own word ("AI
+  // Assistant", "Agent Smith") doesn't pull the agent's facts under their
+  // key. Every subject self-report reads as the agent stays as written, on
+  // the observer and the note alike; the member's own facts are still theirs.
+  it("a member named like the agent: the agent's own facts stay the agent's, the member's are theirs", async () => {
+    const h = await makeHarness({
+      agent: { visibility: 'team' },
+      llm: (input) =>
+        String(input.messages[0]?.content ?? '').includes('Agent Smith (U8)')
+          ? extractionReply([
+              { subject: 'agent', predicate: 'could_not_get', object: 'the seller to accept 450k' },
+              { subject: 'agent_smith', predicate: 'lives_in', object: 'Porto' },
+            ])
+          : extractionReply([
+              { subject: 'ai_assistant', predicate: 'favorite_color', object: 'teal' },
+              { subject: 'user', predicate: 'lives_in', object: 'Lisbon' },
+            ]),
+    });
+    answerSpeakerNames(h.bus, ['AI Assistant', 'U7'], 'conv-x');
+    answerSpeakerNames(h.bus, ['Agent Smith', 'U8'], 'conv-y');
+
+    await observeTurn(h, member(h, ALICE, 'conv-x'), [
+      { role: 'user', content: '[Slack · #general · AI Assistant (U7)]: I live in Lisbon. What colour do you like?' },
+      { role: 'assistant', content: 'Teal, I think.' },
+    ]);
+    await observeTurn(h, member(h, BOB, 'conv-y'), [
+      { role: 'user', content: '[Slack · #general · Agent Smith (U8)]: I live in Porto. Our agent could not get the seller to accept 450k.' },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+    const note = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, member(h, ALICE, 'conv-x'), {
+      input: { about: 'AI Assistant', relation: 'tone', value: 'friendly' },
+    });
+    expect(note).toEqual({ ok: true });
+
+    expect(rows(h)).toEqual(
+      [
+        'ai_assistant|teal|shared',
+        `user:${ALICE}|Lisbon|private`,
+        'agent|the seller to accept 450k|shared',
+        `user:${BOB}|Porto|private`,
+        'AI Assistant|friendly|shared',
+      ].sort(),
+    );
+  });
+
+  // A thread recorded before TASK-1146 has no names: a name subject can't be
+  // recognized as the speaker, so it is kept as written, never under a key.
+  // Kept as written, it is any third party's fact, stamped shared (an
+  // accepted residual of review F2: only the member's own key is private).
+  it("with no names answered, a member's name subject is kept as written, never under a key", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
+    await observeTurn(h, member(h, ALICE, 'conv-x'), ALICE_TURN);
+
+    expect(rows(h)).toEqual(
+      ['alice_smith|teal|shared', `user:${ALICE}|Lisbon|private`, 'billing_service|Dana|shared'].sort(),
+    );
+    expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 3, speakerFacts: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1204, the read side (design §4c): a team agent's memory is the team's,
+// so no read in a member's turn is scoped by audience, in any session. §4c
+// shares it with the TEAM, not with people outside AX, so an outsider's turn
+// keeps shared-only recall and its backstop. And an outsider's turn runs as
+// the requester, so the requester's own key is never presented there as the
+// person talking.
+// ---------------------------------------------------------------------------
+
+describe('a team agent recalls everything for its members, and an outsider is never "you" (TASK-1204)', () => {
+  /** Alice's and Bob's web chats (private turns, each run as its person), and one fact said where the room could see it. */
+  async function teamWithWebChats(): Promise<MemoryHarness> {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    await h.remember({ about: 'user', relation: 'lives in', value: 'Lisbon' }, h.ctx({ conversationId: 'conv-web' }));
+    await h.remember(
+      { about: 'launch_plan', relation: 'codename', value: SECRET },
+      h.ctx({ userId: BOB, conversationId: 'conv-web-b' }),
+    );
+    // Bob's note in his own channel conversation: shared, the room saw it.
+    const note = await h.bus.call<unknown, MemoryNoteResult>(
+      MEMORY_NOTE_TOOL_HOOK,
+      h.ctx({ userId: BOB, conversationId: 'conv-y', source: 'user', audience: 'shared' }),
+      { input: { about: 'launch_plan', relation: 'date', value: PUBLIC } },
+    );
+    expect(note).toEqual({ ok: true });
+    return h;
+  }
+
+  it("a team agent's channel turn recalls what a member said in a web chat", async () => {
+    const h = await teamWithWebChats();
+    // Alice in the team agent's channel: the turn runs as her, and the room reads the reply.
+    const channel = h.ctx({ conversationId: 'conv-x', source: 'user', audience: 'shared' });
+
+    expect(values(await h.recall({ about: 'user' }, channel))).toEqual(['Lisbon']);
+    expect(values(await h.recall({}, channel)).sort()).toEqual(['Lisbon', PUBLIC, SECRET].sort());
+    const block = await augment(h, channel);
+    expect(block).toContain('### Profile');
+    expect(block).toContain('Lisbon');
+    expect(block).toContain('Nightjar');
+    // She is the person talking, so her own fact reads as the speaker's.
+    expect(await recallTool(h, channel, 'Lisbon')).toContain('user lives in: Lisbon');
+    expect(await recallTool(h, channel, 'launch')).toContain('Nightjar');
+  });
+
+  // §4c shares a team agent's memory with the team, not with people outside
+  // AX. An outsider's turn runs as the member who answers for the channel
+  // (Alice here), but nothing it recalls was said out of the room's sight.
+  it("an outsider's turn on the same agent recalls what the room could see, never a member's web chat", async () => {
+    const h = await teamWithWebChats();
+    const outsider = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+
+    expect(values(await h.recall({}, outsider))).toEqual([PUBLIC]);
+    expect(values(await h.recall({ query: 'launch' }, outsider))).toEqual([PUBLIC]);
+    // Not the requester's own web chat either.
+    expect(values(await h.recall({ about: 'user' }, outsider))).toEqual([]);
+    for (const input of RECALL_SHAPES) {
+      const got = values(await h.recall(input, outsider));
+      expect(got, JSON.stringify(input)).not.toContain(SECRET);
+      expect(got, JSON.stringify(input)).not.toContain('Lisbon');
+    }
+    const block = await augment(h, outsider);
+    expect(block).toContain(PUBLIC);
+    expect(block).not.toContain('Nightjar');
+    expect(block).not.toContain('Lisbon');
+    const tool = await recallTool(h, outsider, 'launch');
+    expect(tool).toContain(PUBLIC);
+    expect(tool).not.toContain('Nightjar');
+  });
+
+  it("no engine read in a team agent's member turn carries an audience scope; every read in an outsider's turn carries 'shared'", async () => {
+    const h = await makeHarness({
+      agent: { visibility: 'team' },
+      llm: () =>
+        extractionReply([
+          { subject: 'office', predicate: 'lives_in', object: 'Boston' },
+          { subject: 'billing_service', predicate: 'owner', object: 'Dana' },
+        ]),
+    });
+    const member = h.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
+    const outsider = h.ctx({ userId: BOB, conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+    // A private row, and one agent-saved slotted row in the member's
+    // conversation, so the reads below take the slot-chain and twin branches.
+    await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, h.ctx({ conversationId: PRIVATE_CONV }));
+    await engineRecord(h.bus, member, [
+      {
+        about: 'office',
+        relation: 'lives_in',
+        value: 'Boston',
+        when: JAN,
+        slot: 'lives_in',
+        provenance: 'agent',
+        ownerUserId: ALICE,
+        conversationId: CHANNEL,
+        audience: 'shared',
+      },
+    ]);
+
+    const observed: Array<Array<Record<string, unknown>>> = [];
+    for (const ctx of [member, outsider]) {
+      const routes = {
+        'memory:recall': await engineReadsDuring(h, async () => {
+          for (const input of RECALL_SHAPES) await h.recall(input, ctx);
+        }),
+        augment: await engineReadsDuring(h, () => augment(h, ctx)),
+        memory_recall: await engineReadsDuring(h, () => recallTool(h, ctx, 'Boston')),
+        memory_note: await engineReadsDuring(h, () =>
+          h.bus.call(MEMORY_NOTE_TOOL_HOOK, ctx, { input: { about: 'standup', relation: 'held_at', value: '9am' } }),
+        ),
+        observer: await engineReadsDuring(h, () =>
+          observeTurn(h, ctx, [
+            { role: 'user', content: 'Our office is in Boston now.' },
+            { role: 'assistant', content: 'Noted. Dana owns the billing service.' },
+          ]),
+        ),
+      };
+      for (const [route, reads] of Object.entries(routes)) {
+        expect(reads.length, `${ctx.source} ${route}`).toBeGreaterThan(0);
+        for (const input of reads) {
+          if (ctx === member) expect(input, `${ctx.source} ${route}`).not.toHaveProperty('audience');
+          else expect(input.audience, `${ctx.source} ${route}`).toBe('shared');
+        }
+      }
+      observed.push(routes.observer);
+    }
+    // The member's observer pass took all three twin reads: the conversation's
+    // rows, the chain its "Boston" is sent to, and the every-conversation read.
+    const [observer] = observed;
+    expect(observer!.some((i) => i.conversationId === CHANNEL && i.about === 'office')).toBe(true);
+    expect(observer!.some((i) => Array.isArray(i.slots) && i.slots.length === 1)).toBe(true);
+    expect(observer!.some((i) => i.about === 'billing_service' && !('conversationId' in i))).toBe(true);
+  });
+
+  // Review F2: Bob, as a member, in his own channel conversation: "I live in
+  // Boston". A member's turn files that under his own key stamped private:
+  // the team's, not the room's. So an outsider's turn in a channel he
+  // answers for (run as him) never recalls it, as "you" or otherwise.
+  it("a member's note about themself in a channel never reaches an outsider's turn, even one run as that member", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    const own = h.ctx({ userId: BOB, conversationId: 'conv-b', source: 'user', audience: 'shared' });
+    const note = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, own, {
+      input: { about: 'user', relation: 'lives in', value: 'Boston' },
+    });
+    expect(note).toEqual({ ok: true });
+    expect(storedRows(h).map((r) => `${r.about}|${r.audience}`)).toEqual([`user:${BOB}|private`]);
+    const outsider = h.ctx({ userId: BOB, conversationId: CHANNEL, source: 'external', audience: 'shared' });
+
+    for (const input of [...RECALL_SHAPES, { query: 'Boston' }, { about: 'user' }, { conversationId: 'conv-b' }]) {
+      expect(values(await h.recall(input, outsider)), JSON.stringify(input)).toEqual([]);
+    }
+    const block = await augment(h, outsider);
+    expect(block).not.toContain('Boston');
+    expect(block).not.toContain('### Profile');
+    expect(await recallTool(h, outsider, 'Boston')).not.toContain('Boston');
+
+    // The control: Bob's own channel turn runs as him, so his memory is his.
+    const mine = await augment(h, own);
+    expect(mine).toContain('### Profile');
+    expect(mine).toContain('Boston');
+    expect(await recallTool(h, own, 'Boston')).toContain('user lives in: Boston');
+    expect((await h.recall({}, own)).statements.map((s) => s.aboutText)).toEqual(['you']);
+  });
+
+  // No writer in this build stores a SHARED row under a person's key: a
+  // member's facts about themself are stamped private (review F2), and every
+  // other shared turn files no person. An engine can still hold one (an
+  // import, a writer added later). An outsider's turn may recall it, as the
+  // team's memory the room could see, and never as the person talking.
+  it("in an outsider turn, the requester's own memory is never the person talking", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      {
+        about: `user:${BOB}`,
+        relation: 'lives in',
+        value: 'Boston',
+        when: JAN,
+        slot: 'lives_in',
+        provenance: 'agent',
+        ownerUserId: BOB,
+        conversationId: 'conv-b',
+        audience: 'shared',
+      },
+    ]);
+    // An outsider's turn in a channel runs as the requester (Bob), never as
+    // the person talking.
+    const outsider = h.ctx({ userId: BOB, conversationId: CHANNEL, source: 'external', audience: 'shared' });
+
+    let block = '';
+    const reads = await engineReadsDuring(h, async () => {
+      block = await augment(h, outsider);
+    });
+    // No Profile: it is the caller's, and the caller isn't the one talking.
+    // Not even read: the Profile's read is the one for the caller's active
+    // rows. (Recent may read that key's chain, as it does any subject's.)
+    expect(block).not.toContain('### Profile');
+    expect(reads.filter((i) => i.about === `user:${BOB}` && i.activeOnly === true)).toEqual([]);
+    // Still recalled, as the team's memory, but never as "you".
+    expect(block).toContain('Boston');
+    expect(block).not.toContain('you lives in');
+    const tool = await recallTool(h, outsider, 'Boston');
+    expect(tool).toContain('a teammate lives in: Boston');
+    expect(tool).not.toMatch(/\| user lives in: Boston/);
+    expect((await h.recall({}, outsider)).statements.map((s) => s.aboutText)).toEqual(['a teammate']);
+
+    // The control: Bob's own channel turn runs as him, so his memory is his.
+    const member = h.ctx({ userId: BOB, conversationId: 'conv-b', source: 'user', audience: 'shared' });
+    const own = await augment(h, member);
+    expect(own).toContain('### Profile');
+    expect(own).toContain('Boston');
+    expect(await recallTool(h, member, 'Boston')).toContain('user lives in: Boston');
+    expect((await h.recall({}, member)).statements.map((s) => s.aboutText)).toEqual(['you']);
+  });
+});
+
 describe('isPersonSubject — what a shared turn stores nothing about', () => {
   it.each(PERSON_SUBJECTS)('%j is a person', (about) => {
     expect(isPersonSubject(about)).toBe(true);
@@ -1055,7 +1784,7 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
       const observer =
         toStatements([{ subject: about, predicate: 'r', object: 'v', validStart: JAN }], {
           ownerUserId: ALICE,
-          audience: audienceOf(ctx),
+          speakerScope: speakerScope(ctx, PERSONAL),
           speakerNames: NAMES,
         }).speakerFacts === 1;
       const result = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
@@ -1063,7 +1792,7 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
       });
       // Refused FOR THIS RULE: the backstop's generic `forbidden` doesn't count.
       const note = !result.ok && result.error === 'forbidden' && result.message.endsWith(PERSON_IN_SHARED_MESSAGE);
-      const record = await recordFacts(engine, ctx, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
+      const record = await recordFacts(engine, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
         () => false,
         (err: unknown) => err instanceof PluginError && err.code === 'forbidden',
       );
@@ -1083,17 +1812,93 @@ describe('drift guard: the observer, memory_note and recordFacts refuse exactly 
       audienceOf(ctx) === 'shared' ? PERSON_SUBJECTS.length + NAMES_A_SPEAKER.length + 1 : 0,
     );
   });
+
+  // TASK-1204: in a team agent's member turn the three paths don't only
+  // refuse alike, they FILE alike. The observer and the note land each
+  // subject exactly where `speakerSubject` says, and the write door sends a
+  // subject only once it is already filed there, so a writer that forgot to
+  // file one is refused, never misfiled.
+  it("drift guard, team agent member turn: the observer, memory_note and recordFacts file exactly what speakerSubject says (TASK-1204)", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    answerSpeakerNames(h.bus, NAMES);
+    const ctx = h.ctx({ conversationId: CHANNEL, source: 'user', audience: 'shared' });
+    const TEAM: MemoryAccess = { userId: ALICE, visibility: 'team' };
+    expect(speakerScope(ctx, TEAM)).toBe('team');
+    const engine = new HookBus();
+    engine.registerService(FACTS_RECORD_HOOK, 'stub-engine', async () => ({ records: [{ id: 'row-1' }] }));
+    answerSpeakerNames(engine, NAMES);
+    const record = (about: string): Promise<string> =>
+      recordFacts(engine, ctx, TEAM, FACTS_RECORD_HOOK, { statements: [{ about }] }).then(
+        () => 'sent',
+        (err: unknown) => (err instanceof PluginError && err.code === 'forbidden' ? 'refused' : `threw ${String(err)}`),
+      );
+    const disagreements: string[] = [];
+    for (const about of SUBJECTS) {
+      const expected = speakerSubject('team', about, ALICE, NAMES);
+      const where = (out: string | undefined): string => (out === undefined ? 'nowhere' : JSON.stringify(out));
+      const observer = toStatements([{ subject: about, predicate: 'r', object: 'v', validStart: JAN }], {
+        ownerUserId: ALICE,
+        speakerScope: speakerScope(ctx, TEAM),
+        speakerNames: NAMES,
+      }).statements[0]?.about;
+      if (observer !== expected) disagreements.push(`${JSON.stringify(about)}: observer ${where(observer)}`);
+
+      // The note tool refuses an empty subject, and one over 1024 code units,
+      // as bad input in EVERY audience, before the rule (pinned in
+      // note-tool.test.ts), so those aren't compared here.
+      if (about !== TOO_LONG_TO_READ && about.trim() !== '') {
+        const before = storedRows(h).length;
+        const result = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, ctx, {
+          input: { about, relation: 'r', value: 'v' },
+        });
+        const after = storedRows(h);
+        // Refused FOR THIS RULE: any other refusal doesn't count.
+        const note = result.ok
+          ? after.length === before + 1
+            ? after.at(-1)!.about
+            : 'saved, but no new row'
+          : result.error === 'forbidden' && result.message.endsWith(TEAM_PERSON_KEY_MESSAGE)
+            ? undefined
+            : `refused ${result.error}`;
+        if (note !== expected) disagreements.push(`${JSON.stringify(about)}: note ${where(note)}`);
+      }
+
+      // The write door, handed the subject as written: sent only if that is
+      // already where it is filed.
+      const raw = await record(about);
+      if (raw !== (expected === about ? 'sent' : 'refused')) {
+        disagreements.push(`${JSON.stringify(about)}: recordFacts as written ${raw}`);
+      }
+      // ...and handed it filed: always sent.
+      if (expected !== undefined) {
+        const filed = await record(expected);
+        if (filed !== 'sent') disagreements.push(`${JSON.stringify(about)}: recordFacts filed ${filed}`);
+      }
+    }
+    expect(disagreements).toEqual([]);
+    // Not vacuous: `user` and every subject made of the speaker's names are
+    // filed under the runner's own key (and the note saved each one there),
+    // every other person subject and the one too long to read are filed
+    // nowhere, and the rest stay as written.
+    const OWN = `user:${ALICE}`;
+    const filedUnder = SUBJECTS.map((about) => speakerSubject('team', about, ALICE, NAMES));
+    const personSubjectsButUser = PERSON_SUBJECTS.filter((about) => about !== 'user');
+    expect(filedUnder.filter((out) => out === OWN)).toHaveLength(1 + NAMES_A_SPEAKER.length);
+    expect(filedUnder.filter((out) => out === undefined)).toHaveLength(personSubjectsButUser.length + 1);
+    expect(storedRows(h).filter((r) => r.about === OWN)).toHaveLength(1 + NAMES_A_SPEAKER.length);
+  });
 });
 
 describe('recordFacts — the one door every engine write goes through', () => {
   const ANSWER = { records: [{ id: 'row-1' }] };
-  const turn = (audience?: AgentContextAudience, conversationId?: string): AgentContext =>
+  const turn = (audience?: AgentContextAudience, conversationId?: string, source?: AgentContextSource): AgentContext =>
     makeAgentContext({
       sessionId: 's',
       agentId: 'agent-1',
       userId: ALICE,
       ...(audience !== undefined ? { audience } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
+      ...(source !== undefined ? { source } : {}),
     });
 
   /** A bus whose engine records every write it is sent, and answers {@link ANSWER}. */
@@ -1119,7 +1924,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
       { about: 'b', value: '2', audience: 'private' },
       { about: 'c', value: '3', audience: 'shared' },
     ];
-    await recordFacts(bus, turn(audience as AgentContextAudience | undefined), FACTS_RECORD_HOOK, {
+    await recordFacts(bus, turn(audience as AgentContextAudience | undefined), PERSONAL, FACTS_RECORD_HOOK, {
       batchKey: 'batch-1',
       statements,
     });
@@ -1141,7 +1946,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     'a shared write about %j is refused forbidden: the whole batch, naming nothing, sending nothing',
     async (about) => {
       const { bus, written } = engineRecording();
-      const failure: unknown = await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, {
+      const failure: unknown = await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, {
         statements: [
           { about: 'billing_service', value: 'Dana' },
           { about, value: 'Paris-secret' },
@@ -1159,7 +1964,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
   it('an audience this build does not know refuses a person subject too', async () => {
     const { bus, written } = engineRecording();
     await expect(
-      recordFacts(bus, turn('public' as AgentContextAudience), FACTS_RECORD_HOOK, {
+      recordFacts(bus, turn('public' as AgentContextAudience), PERSONAL, FACTS_RECORD_HOOK, {
         statements: [{ about: 'user', value: 'Paris' }],
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
@@ -1168,14 +1973,14 @@ describe('recordFacts — the one door every engine write goes through', () => {
 
   it.each(NOT_PERSON_SUBJECTS)('a shared write about %j goes through, stamped shared', async (about) => {
     const { bus, written } = engineRecording();
-    await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements: [{ about }] });
+    await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about }] });
     expect(written).toEqual([{ statements: [{ about, audience: 'shared' }] }]);
   });
 
   it('a private write sends a person subject on: the speaker rewrite already ran upstream', async () => {
     for (const ctx of [turn(), turn('private')]) {
       const { bus, written } = engineRecording();
-      await recordFacts(bus, ctx, FACTS_RECORD_HOOK, {
+      await recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, {
         statements: [{ about: `user:${ALICE}` }, { about: 'User' }],
       });
       expect(written).toEqual([
@@ -1186,7 +1991,9 @@ describe('recordFacts — the one door every engine write goes through', () => {
 
   it("returns the engine's answer as it came", async () => {
     const { bus } = engineRecording();
-    expect(await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements: [{ about: 'x' }] })).toBe(ANSWER);
+    expect(
+      await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'x' }] }),
+    ).toBe(ANSWER);
   });
 
   // Both engines validate with `map`, which skips a hole, so a hole sent on
@@ -1195,7 +2002,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const { bus, written } = engineRecording();
     const statements: object[] = [{ about: 'a' }];
     statements.length = 2;
-    await recordFacts(bus, turn('shared'), FACTS_RECORD_HOOK, { statements });
+    await recordFacts(bus, turn('shared'), PERSONAL, FACTS_RECORD_HOOK, { statements });
     expect(written).toEqual([{ statements: [{ about: 'a', audience: 'shared' }, { audience: 'shared' }] }]);
     expect(1 in (written[0] as { statements: unknown[] }).statements).toBe(true);
   });
@@ -1206,7 +2013,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
   it('with no names given, a shared write asks memory:pre-capture once and refuses a speaker name, sending nothing', async () => {
     const { bus, written } = engineRecording();
     const asked = answerSpeakerNames(bus, ['vinay']);
-    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, {
       statements: [
         { about: 'billing_service', value: 'Dana' },
         { about: 'vinay', value: 'Paris-secret' },
@@ -1227,7 +2034,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const asked = answerSpeakerNames(bus, ['vinay']);
     for (const about of ['user', 'user:abc', TOO_LONG_TO_READ]) {
       await expect(
-        recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about }] }),
+        recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about }] }),
       ).rejects.toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
     }
     expect(asked).toEqual([]);
@@ -1242,7 +2049,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     }));
     // `forbidden`, not the `invalid-return` the ask would have thrown.
     await expect(
-      recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about: 'user' }] }),
+      recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'user' }] }),
     ).rejects.toMatchObject({ code: 'forbidden', hookName: FACTS_RECORD_HOOK });
   });
 
@@ -1251,11 +2058,11 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const asked = answerSpeakerNames(bus, ['vinay']);
     const ctx = turn('shared', CHANNEL);
     await expect(
-      recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, ['vinay']),
+      recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, ['vinay']),
     ).rejects.toMatchObject({ code: 'forbidden' });
     // `[]` means "asked, and nobody was named", so it is sent, though the
     // subscriber would have named `vinay` had it been asked.
-    await recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, []);
+    await recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }, []);
     expect(asked).toEqual([]);
     expect(written).toEqual([{ statements: [{ about: 'vinay', audience: 'shared' }] }]);
   });
@@ -1263,7 +2070,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
   it('a refused ask refuses the batch', async () => {
     const { bus, written } = engineRecording();
     bus.subscribe(MEMORY_PRE_CAPTURE_HOOK, 'test-refuser', async () => reject({ reason: 'channel-not-remembered' }));
-    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, {
       statements: [{ about: 'billing_service', value: 'Dana-secret' }],
     }).then(
       () => undefined,
@@ -1278,7 +2085,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
     const { bus, written } = engineRecording();
     const asked = answerSpeakerNames(bus, ['vinay']);
     for (const ctx of [turn(undefined, CHANNEL), turn('private', CHANNEL)]) {
-      await recordFacts(bus, ctx, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] });
+      await recordFacts(bus, ctx, PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] });
     }
     expect(asked).toEqual([]);
     expect(written).toEqual([
@@ -1288,7 +2095,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
 
     // The control: the same write in a shared turn asks, and is refused.
     await expect(
-      recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }),
+      recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'vinay' }] }),
     ).rejects.toMatchObject({ code: 'forbidden' });
     expect(asked).toEqual([{ conversationId: CHANNEL }]);
   });
@@ -1299,7 +2106,7 @@ describe('recordFacts — the one door every engine write goes through', () => {
       ...payload,
       speakerNames: 'vinay' as unknown as string[],
     }));
-    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), FACTS_RECORD_HOOK, {
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL), PERSONAL, FACTS_RECORD_HOOK, {
       statements: [{ about: 'billing_service', value: 'Dana' }],
     }).then(
       () => undefined,
@@ -1308,5 +2115,348 @@ describe('recordFacts — the one door every engine write goes through', () => {
     expect(failure).toMatchObject({ code: 'invalid-return', plugin: '@ax/memory', hookName: MEMORY_PRE_CAPTURE_HOOK });
     expect((failure as Error).message).not.toContain('vinay');
     expect(written).toEqual([]);
+  });
+
+  // TASK-1204: a team agent's member turn runs as the member who wrote it, so
+  // a fact about them is filed under their own key. The backstop sends a
+  // statement only once its subject is what `speakerSubject` files it under:
+  // a writer that forgot to file it is refused, never misfiled.
+  const TEAM: MemoryAccess = { userId: ALICE, visibility: 'team' };
+  /** The refusal text of a turn that keeps the speaker rule (TASK-1091). */
+  const WITHHELD_REFUSAL = 'the speaker could be anyone in the room';
+  /** The refusal text of a team agent's member turn (TASK-1204). */
+  const TEAM_REFUSAL = "isn't filed under its speaker";
+
+  // Review F2: §4c shares a team agent's memory with the team, not with
+  // people outside AX. A statement filed under the member's own key is about
+  // them, so it is stamped private: every member's turn reads it (no audience
+  // scope), no outsider's turn does. Everything else keeps the turn's stamp.
+  it("a team agent's member turn writes statements filed under the speaker: the speaker's own stamped private, the rest shared", async () => {
+    const { bus, written } = engineRecording();
+    await recordFacts(
+      bus,
+      turn('shared', CHANNEL, 'user'),
+      TEAM,
+      FACTS_RECORD_HOOK,
+      { statements: [{ about: `user:${ALICE}` }, { about: 'team_standup' }, { about: 'ada' }] },
+      NAMES,
+    );
+    expect(written).toEqual([
+      {
+        statements: [
+          { about: `user:${ALICE}`, audience: 'private' },
+          { about: 'team_standup', audience: 'shared' },
+          { about: 'ada', audience: 'shared' },
+        ],
+      },
+    ]);
+  });
+
+  it.each([
+    // audience, source: every turn a team agent's member files under their key in
+    ['shared', 'user'],
+    ['shared', undefined],
+    ['shared', 'routine'],
+    ['public', 'user'], // an audience this build doesn't know reads as shared
+  ] as const)(
+    "in a team member turn (audience %j, source %j) only the runner's own key is stamped private, over whatever a statement carried",
+    async (audience, source) => {
+      const { bus, written } = engineRecording();
+      const statements = [
+        { about: `user:${ALICE}`, value: '1', audience: 'shared' },
+        { about: 'billing_service', value: '2', audience: 'private' },
+        { about: 'assistant', value: '3' },
+        // A third party, by a name the turn wasn't answered with.
+        { about: 'bob', value: '4' },
+      ];
+      const ctx = turn(audience as AgentContextAudience, CHANNEL, source as AgentContextSource | undefined);
+      expect(speakerScope(ctx, TEAM)).toBe('team');
+      await recordFacts(bus, ctx, TEAM, FACTS_RECORD_HOOK, { batchKey: 'batch-1', statements }, NAMES);
+      expect(written).toEqual([
+        {
+          batchKey: 'batch-1',
+          statements: [
+            { about: `user:${ALICE}`, value: '1', audience: 'private' },
+            { about: 'billing_service', value: '2', audience: 'shared' },
+            { about: 'assistant', value: '3', audience: 'shared' },
+            { about: 'bob', value: '4', audience: 'shared' },
+          ],
+        },
+      ]);
+      // The stamp goes on what is sent, not on the caller's objects.
+      expect(statements[0]).toEqual({ about: `user:${ALICE}`, value: '1', audience: 'shared' });
+    },
+  );
+
+  it('a team member turn sends a hole on as a statement with no subject, stamped with the turn', async () => {
+    const { bus, written } = engineRecording();
+    const statements: object[] = [{ about: `user:${ALICE}` }];
+    statements.length = 2;
+    await recordFacts(bus, turn('shared', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, { statements }, NAMES);
+    expect(written).toEqual([{ statements: [{ about: `user:${ALICE}`, audience: 'private' }, { audience: 'shared' }] }]);
+  });
+
+  // Only a team member turn has a key of its own that the room didn't earn:
+  // a private turn stamps everything private as always, and the other shared
+  // turns (personal agents', outsiders') never send a person key at all.
+  it("the runner's key stamp is the team member turn's alone: a private turn on a team agent stamps private, a work fact in an outsider's turn shared", async () => {
+    const { bus, written } = engineRecording();
+    await recordFacts(bus, turn('private', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, {
+      statements: [{ about: `user:${ALICE}` }, { about: 'billing_service' }],
+    });
+    await recordFacts(bus, turn('shared', CHANNEL, 'external'), TEAM, FACTS_RECORD_HOOK, { statements: [{ about: 'billing_service' }] }, NAMES);
+    await recordFacts(bus, turn('shared', CHANNEL, 'user'), PERSONAL, FACTS_RECORD_HOOK, { statements: [{ about: 'billing_service' }] }, NAMES);
+    expect(written).toEqual([
+      { statements: [{ about: `user:${ALICE}`, audience: 'private' }, { about: 'billing_service', audience: 'private' }] },
+      { statements: [{ about: 'billing_service', audience: 'shared' }] },
+      { statements: [{ about: 'billing_service', audience: 'shared' }] },
+    ]);
+  });
+
+  it.each(['user', 'vinay', 'user_vinay', 'UHTE83XE1', 'User', `user:${BOB}`])(
+    "a team agent's member turn refuses %j: not yet filed under its speaker",
+    async (about) => {
+      const { bus, written } = engineRecording();
+      const failure: unknown = await recordFacts(
+        bus,
+        turn('shared', CHANNEL, 'user'),
+        TEAM,
+        FACTS_RECORD_HOOK,
+        {
+          statements: [
+            { about: 'billing_service', value: 'Dana' },
+            { about, value: 'Paris-secret' },
+          ],
+        },
+        NAMES,
+      ).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+      expect((failure as Error).message).toContain(TEAM_REFUSAL);
+      expect((failure as Error).message).not.toContain('Paris-secret');
+      expect(written).toEqual([]);
+    },
+  );
+
+  it('a team member turn refuses another person key before it asks', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, NAMES);
+    await expect(
+      recordFacts(bus, turn('shared', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, {
+        statements: [{ about: `user:${BOB}` }],
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden', hookName: FACTS_RECORD_HOOK });
+    expect(asked).toEqual([]);
+    expect(written).toEqual([]);
+  });
+
+  it('a team member turn with no names handed asks once', async () => {
+    const { bus, written } = engineRecording();
+    const asked = answerSpeakerNames(bus, NAMES);
+    await recordFacts(bus, turn('shared', CHANNEL, 'user'), TEAM, FACTS_RECORD_HOOK, {
+      statements: [{ about: 'team_standup' }],
+    });
+    expect(asked).toEqual([{ conversationId: CHANNEL }]);
+    expect(written).toEqual([{ statements: [{ about: 'team_standup', audience: 'shared' }] }]);
+  });
+
+  it('an outsider turn on a team agent keeps the speaker rule: nothing under the requester', async () => {
+    const { bus, written } = engineRecording();
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL, 'external'), TEAM, FACTS_RECORD_HOOK, {
+      statements: [{ about: `user:${ALICE}` }],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    expect((failure as Error).message).toContain(WITHHELD_REFUSAL);
+    expect(written).toEqual([]);
+  });
+
+  it("a personal agent's member turn keeps the speaker rule", async () => {
+    const { bus, written } = engineRecording();
+    const failure: unknown = await recordFacts(bus, turn('shared', CHANNEL, 'user'), PERSONAL, FACTS_RECORD_HOOK, {
+      statements: [{ about: `user:${ALICE}` }],
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'forbidden', plugin: '@ax/memory', hookName: FACTS_RECORD_HOOK });
+    expect((failure as Error).message).toContain(WITHHELD_REFUSAL);
+    expect(written).toEqual([]);
+  });
+});
+
+describe('one rule for every write: whose memory, and who is talking (TASK-1204)', () => {
+  /** The member a team agent's channel turn runs as, and their own key. */
+  const X = 'user-x';
+  const OWN = 'user:user-x';
+  /**
+   * The names a channel labels that member's words with. Not the file's
+   * `NAMES` (Vinay's), so the two lists can't stand in for each other.
+   */
+  const ALICE_NAMES = Object.freeze(['Alice Smith', 'U123']);
+
+  it.each([
+    // audience, source, visibility, expected
+    [undefined, undefined, 'team', 'private'],
+    ['private', 'routine', 'personal', 'private'],
+    ['private', 'external', 'team', 'withheld'], // an outsider's turn never files under its runner, whatever the audience
+    ['private', 'external', 'personal', 'withheld'],
+    ['shared', 'user', 'team', 'team'],
+    ['shared', undefined, 'team', 'team'],
+    ['shared', 'routine', 'team', 'team'],
+    ['shared', 'external', 'team', 'withheld'],
+    ['shared', 'bogus', 'team', 'withheld'], // an unknown source fails closed
+    ['public', 'user', 'team', 'team'], // an unknown audience reads as shared
+    ['shared', 'user', 'personal', 'withheld'],
+    ['shared', 'user', 'bogus', 'withheld'], // an unknown visibility fails closed
+  ])('audience %j, source %j, %s agent: %s', (audience, source, visibility, expected) => {
+    expect(speakerScope({ audience, source } as never, { visibility } as never)).toBe(expected);
+  });
+
+  it.each([
+    ['user', OWN],
+    [OWN, OWN],
+    ['alice', OWN],
+    ['Alice', OWN],
+    ['alice_smith', OWN],
+    ['smith_alice', OWN],
+    ['alicesmith', OWN],
+    ['Alice Smith', OWN],
+    ['u123', OWN],
+    ['U123', OWN],
+    ['user_alice', OWN],
+    ['user:U123', OWN],
+    ['user:alice', OWN],
+    ['User', undefined],
+    [' user ', undefined],
+    ['user:user-y', undefined],
+    ['user:bob', undefined],
+    ['user :x', undefined],
+    ['a'.repeat(1025), undefined],
+    ['team_standup', 'team_standup'],
+    ['billing_service', 'billing_service'],
+    ['ada', 'ada'],
+    ['alice_laptop', 'alice_laptop'],
+    ['alices_team', 'alices_team'],
+    ['assistant', 'assistant'],
+  ])('a team member turn files %j under %j', (about, expected) => {
+    expect(speakerSubject('team', about, X, ALICE_NAMES)).toBe(expected);
+  });
+
+  it('with no names, a team member turn keeps a name as written and never under a key', () => {
+    expect(speakerSubject('team', 'alice_smith', X, [])).toBe('alice_smith');
+    expect(speakerSubject('team', 'user', X, [])).toBe(OWN);
+    expect(speakerSubject('team', 'user:U123', X, [])).toBeUndefined();
+  });
+
+  it("a display name never files the agent's own facts, or anyone's key but the runner's", () => {
+    expect(speakerSubject('team', 'assistant', X, ['Assistant', 'U9'])).toBe('assistant');
+    // A member whose display name is another member's id: the subject lands
+    // on the runner's own key, never on `user:user-y`.
+    expect(speakerSubject('team', 'user:user-y', X, ['user-y'])).toBe(OWN);
+  });
+
+  // Review F9: not only `assistant`. Every subject self-report reads as the
+  // agent itself (`isAgentSubject`) stays as written, whatever a member's
+  // display name says.
+  it.each([
+    ['ai_assistant', ['AI Assistant', 'U7']],
+    ['AI Assistant', ['AI Assistant', 'U7']],
+    ['ai-assistant', ['AI Assistant', 'U7']],
+    ['the_assistant', ['The Assistant', 'U7']],
+    ['Assistant', ['Assistant', 'U7']],
+    [' assistant ', ['Assistant', 'U7']],
+    ['agent', ['Agent Smith', 'U8']],
+    ['Agent', ['Agent Smith', 'U8']],
+    ['the_agent', ['The Agent', 'U9']],
+  ])("a member named like the agent never pulls the agent's %j under their key (names %j)", (about, names) => {
+    expect(isAgentSubject(about)).toBe(true);
+    expect(speakerSubject('team', about, X, names)).toBe(about);
+  });
+
+  it("such a member's own name is still theirs: only the agent's subjects are kept as written", () => {
+    expect(speakerSubject('team', 'agent_smith', X, ['Agent Smith', 'U8'])).toBe(OWN);
+    expect(speakerSubject('team', 'smith', X, ['Agent Smith', 'U8'])).toBe(OWN);
+    expect(speakerSubject('team', 'u7', X, ['AI Assistant', 'U7'])).toBe(OWN);
+    expect(speakerSubject('team', 'user', X, ['AI Assistant', 'U7'])).toBe(OWN);
+  });
+
+  // Pinned so they stay visible: bounded, since the most a name can do is
+  // file the speaker's own words under the speaker.
+  it('accepted residuals: a name made of work words, or a namesake, files under the speaker', () => {
+    expect(speakerSubject('team', 'team_standup', X, ['Standup Team', 'U7'])).toBe(OWN);
+    expect(speakerSubject('team', 'alex', X, ['Alex Kim', 'U8'])).toBe(OWN);
+  });
+
+  it('a display name changed mid-thread: every name the thread kept is the speaker', () => {
+    const names = ['Vinay Pulim', 'UHTE83XE1', 'vp'];
+    expect(speakerSubject('team', 'vp', X, names)).toBe(OWN);
+    expect(speakerSubject('team', 'vinay', X, names)).toBe(OWN);
+  });
+
+  const EVERY_SUBJECT = [
+    ...new Set([
+      ...PERSON_SUBJECTS,
+      ...NOT_PERSON_SUBJECTS,
+      ...NAMES_A_SPEAKER,
+      ...NOT_A_SPEAKER,
+      TOO_LONG_TO_READ,
+      OWN,
+      'user:user-y',
+      ...AGENT_SELF_SUBJECTS,
+    ]),
+  ];
+  const NAME_LISTS: ReadonlyArray<readonly string[]> = [
+    [],
+    ALICE_NAMES,
+    NAMES,
+    ['user-y'],
+    ['Assistant'],
+    ['AI Assistant', 'Agent Smith', 'The Agent'],
+  ];
+
+  it('the agent itself stays as written in a team member turn, under every name list (review F9)', () => {
+    const wrong: string[] = [];
+    for (const names of NAME_LISTS) {
+      for (const about of EVERY_SUBJECT.filter((s) => isAgentSubject(s))) {
+        const out = speakerSubject('team', about, X, names);
+        if (out !== about) wrong.push(`${JSON.stringify(about)} ${JSON.stringify(names)}: ${out}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    // Not vacuous: every spelling below is one self-report reads as the agent.
+    expect(EVERY_SUBJECT.filter((s) => isAgentSubject(s)).length).toBeGreaterThanOrEqual(AGENT_SELF_SUBJECTS.length);
+  });
+
+  it("never a person key but the runner's own", () => {
+    const wrong: string[] = [];
+    for (const names of NAME_LISTS) {
+      for (const about of EVERY_SUBJECT) {
+        const out = speakerSubject('team', about, X, names);
+        const keptOrOwn = out === undefined || out === about || out === OWN;
+        const noOtherPerson = out === undefined || !isPersonSubject(out) || out === OWN;
+        if (!keptOrOwn || !noOtherPerson) wrong.push(`${JSON.stringify(about)} ${JSON.stringify(names)}: ${out}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('withheld is the TASK-1146 rule, private is the narrow rewrite', () => {
+    const wrong: string[] = [];
+    for (const names of NAME_LISTS) {
+      for (const about of EVERY_SUBJECT) {
+        const withheld = speakerSubject('withheld', about, X, names);
+        if (withheld !== (breaksSpeakerRule('shared', about, names) ? undefined : about)) {
+          wrong.push(`withheld ${JSON.stringify(about)} ${JSON.stringify(names)}: ${withheld}`);
+        }
+        const own = speakerSubject('private', about, X, names);
+        if (own !== rewriteSpeaker(about, X)) wrong.push(`private ${JSON.stringify(about)}: ${own}`);
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 });
