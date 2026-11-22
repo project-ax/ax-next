@@ -146,16 +146,20 @@ export const COPY = {
   /*
     `hostSubject` is the prompt's subject, plain_text: only ever a host that
     passed HOST_RE (lowercase letters, digits, dots and dashes), never mrkdwn.
-    The other three take the buttons' place once the asker has answered.
-    Allow lets the host through for the conversation's LIVE sandbox session
-    only: the web app's "Just this once", not the whole chat. That session
-    ends when it idles (or when a skill's Allow retires it) while the chat
-    goes on, so the lines say "for now", never "this chat". `hostEnded` is
-    Allow on a session already gone. "Always" stays a web choice, and
-    nothing about a blocked host waits in Today, so none of them links there.
+    It says before the click that an Allow lasts (TASK-1208). The other four
+    take the buttons' place once the asker has answered. Allow lets the host
+    through for the conversation's live sandbox session, then keeps it on
+    the agent's allowed sites for the asker (the web app's "Always for this
+    agent"), even when that session has already ended: `hostAllowed`. When
+    it can't be kept, `hostAllowedForNow` (let through for the live session
+    only) or `hostEnded` (Allow on a session already gone). A session ends
+    when it idles (or when a skill's Allow retires it) while the chat goes
+    on, so no line says "this chat". Nothing about a blocked host waits in
+    Today, so none of them links there.
   */
-  hostSubject: (host: string) => `Wants to connect to ${host}`,
-  hostAllowed: "Allowed for now. Ask me again and I'll try it.",
+  hostSubject: (host: string) => `Wants to connect to ${host}. Once allowed, it stays allowed.`,
+  hostAllowed: "Allowed from now on. Ask me again and I'll try it.",
+  hostAllowedForNow: "Allowed for now. Ask me again and I'll try it.",
   hostEnded: "I'd already finished working on that, so nothing changed. If I need it again, I'll ask.",
   hostDenied: "Okay. I won't connect to it.",
 

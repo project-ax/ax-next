@@ -189,9 +189,11 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // `followContinuation`) and bound to the conversation (TASK-1150:
 // `conversations:bind-session`). External turns never get buttons. A host the
 // sandbox was refused mid-turn (the egress wall's `chat:permission-request`
-// card) gets a prompt after the reply too, and its Allow lets that host
-// through for the conversation's live session only, as the asker
-// (permission-prompts.ts: `proxy:add-host`). So does a catalog skill the
+// card) gets a prompt after the reply too, and its Allow, as the asker, lets
+// that host through for the conversation's live session, then keeps it on
+// the agent's allowed sites for the asker, even once that session has ended
+// (permission-prompts.ts: `proxy:add-host`, then `host-grants:grant`,
+// TASK-1208). So does a catalog skill the
 // agent asked to use (request_capability's card): its Allow reads the
 // conversation back as the asker and checks its agent, as the web app's
 // `/api/chat/permission-decision` does, then attaches the skill
@@ -316,6 +318,13 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // Allow on a refused host's prompt (permission-prompts.ts). Without
         // it the turn offers no prompt for the host (turn.ts checks first).
         { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
+        // Then the host is kept on the agent's allowed sites for the asker
+        // (@ax/host-grants, TASK-1208). Without it, an Allow's line says
+        // "for now" (permission-prompts.ts checks first).
+        {
+          hook: 'host-grants:grant',
+          degradation: 'a website allowed from Slack is let through for the live session only, not kept for the agent',
+        },
         // Allow on a skill prompt: the conversation read back (its owner and
         // agent), then the grant (permission-prompts.ts). Without either, a
         // skill card gets a link to the web app instead (skillPromptFor).
