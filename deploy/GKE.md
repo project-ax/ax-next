@@ -2237,8 +2237,8 @@ two parts:
    problem go away.
 
    The bridge speaks plain HTTP, so the example serves it on port 80, not
-   443 (a plain-HTTP port 443 would only confuse the next person). If the
-   platform's path to it leaves a network we trust, put TLS in front (an internal Application Load Balancer, or a
+   443, to avoid implying TLS. If the platform's path to it leaves a network
+   we trust, put TLS in front (an internal Application Load Balancer, or a
    mesh). Every request is authenticated either way, but the tool results it
    sends back deserve better than crossing the wire in the clear.
 

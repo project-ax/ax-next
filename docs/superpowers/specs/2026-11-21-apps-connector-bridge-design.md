@@ -163,7 +163,7 @@ Upstream failures reuse `connectors:call-tool`'s closed reasons (`invalid-call`,
                 "tools": [ { "name": "list_issues", "description": "…", "inputSchema": { … } | null } ] } ] }
 ```
 
-`description` and `inputSchema` come from the connector inventory, as the linked agent's sign-in last saw them. They are the connector server's own words (untrusted). `inputSchema` is `null` when the inventory doesn't have one. The answer is bounded by a 4 MiB schema budget: once the schemas so far reach it, later tools' `inputSchema` is `null`.
+`description` and `inputSchema` come from the connector inventory, as the linked agent's sign-in last saw them. They are the connector server's own words (untrusted). `inputSchema` is `null` when the inventory doesn't have one. The grants response has a 4 MiB budget that counts the whole answer so far: the first `inputSchema` that would push it past 4 MiB, and every one after it, becomes `null`. The tools themselves stay listed, so their names and descriptions can carry the answer a little past 4 MiB.
 
 ### AX UI (channel-web, shadcn)
 
