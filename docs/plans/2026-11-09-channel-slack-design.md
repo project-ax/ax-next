@@ -55,6 +55,14 @@ the owner chose to put there.
    The admin can change it when connecting the workspace and rename it later.
 9. **Memory follows who sees the reply, not who is talking** (§2a). Something
    said privately is never recalled in a channel.
+10. **A website Allow lasts (decided 2026-11-22, Vinay; TASK-1208).** Allow on a
+    blocked website's prompt keeps the site on the agent's own allowed sites
+    (`@ax/host-grants`, the list its people see and remove in Settings >
+    Allowed sites and on the agent's "Granted by you"), so the agent's later
+    sessions can reach it, not just the one that asked. The list is per person
+    and agent (JIT design P1), so on a team agent it covers the sessions of the
+    person who allowed it. Who may answer is unchanged (§5's click gate), and
+    the live session still gets TASK-1199's "now allowed" line.
 
 ## 2. Who is talking, and what they can do
 
@@ -1308,13 +1316,16 @@ Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory ke
        passes the egress proxy's own host pattern (a plain lowercase DNS name),
        and checked again before it acts. **Allow** calls `proxy:add-host` with
        exactly the prompt's session and host, as the asker; the proxy lets
-       only the session's owner do it. It widens that one session's live
-       allowlist and is never saved (`host-grants:grant`, "always for this
-       agent", stays a web-app choice): the web app's "Just this once", so
-       it reads "Allowed for now", never "for this chat" (the session ends
-       when it idles, or when a skill's Allow retires it, while the chat goes
-       on). A session that has ended reads "I'd already finished working on
-       that". **Deny** calls nothing; the host stays refused and
+       only the session's owner do it. The subject ends "Once allowed, it
+       stays allowed." Allow is, in order, `proxy:add-host` (the live session;
+       only its owner; the "now allowed" line at the next turn) and then
+       `host-grants:grant` with the prompt's user, agent and host (the web
+       app's "Always for this agent"). The host is kept even when the session
+       has already ended, so the line reads "Allowed from now on". If it
+       can't be kept (no `host-grants:grant`, the list is full, an answer that
+       can't be read), the line says "Allowed for now" while the session
+       lives, or "I'd already finished working on that" once it has ended.
+       **Deny** calls nothing; the host stays refused and
        the agent asks again if it needs it. A host prompt has no Today link:
        the web app keeps host cards out of Today on purpose.
      - **A catalog skill the agent asked to use.** The card comes in the turn
@@ -1564,6 +1575,14 @@ connectors. The protections are:
 
 **Known gaps, accepted (TASK-1095, PR B: permission cards):**
 
+- **A website Allow is kept for the person who clicked it** (TASK-1208).
+  Allowed sites are per person and agent. In a team agent's channel, a
+  team-mate's own turn is still asked, though the thread shows "Allowed from
+  now on". An outsider's turn runs as the bot's requester, so it reaches the
+  sites the requester allowed, as it already did their web "Always" ones.
+- **The web app's "Always for this agent" keeps nothing once the session has
+  ended.** Its route keeps a site only after the live widen succeeds, while a
+  Slack Allow keeps it anyway. The web says "Nothing changed".
 - **A host prompt shows the host to everyone in a connected channel.** The web
   app shows it to the person alone. The host passes the proxy's pattern, so it
   is plain text, but it is visible. A host prompt also has no Today link, so an

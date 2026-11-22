@@ -23,9 +23,12 @@ import { fakeBotToken } from './fake-slack-tokens.js';
   A host the sandbox was refused (the egress wall's card), asked about in
   Slack (permission-prompts.ts). The host is whatever the sandbox tried to
   reach: untrusted. It is shown, and acted on, only once it passes the egress
-  proxy's own HOST_RE. Allow widens the turn's LIVE session only, as the
-  prompt's own user (`proxy:add-host`, which re-checks that the user owns the
-  session); Deny calls nothing. Every answer is a COPY line, and settles.
+  proxy's own HOST_RE. Allow widens the turn's live session, as the prompt's
+  own user (`proxy:add-host`, which re-checks that the user owns the
+  session), and then keeps the host on the agent's allowed sites for that
+  user (`host-grants:grant`, TASK-1208), even once the session has ended.
+  Nothing is kept unless the live add answered first. Deny calls nothing.
+  Every answer is a COPY line, and settles.
 
   And a catalog skill the agent asked to use (request_capability's card).
   Only a card that needs nothing but a yes gets Allow and Deny; one that
@@ -73,6 +76,8 @@ const MEL_DM: PromptContext = {
 const SESSION = 'sess_live_0001';
 const HOST = 'api.example.com';
 const HOST_PROMPT: PromptSubject = { kind: 'host', host: HOST, sessionId: SESSION };
+/** What an Allow on Mel's prompt keeps: the host, on her agent's allowed sites, for her (@ax/host-grants' key). */
+const MEL_KEY = { ownerUserId: 'usr_mel', agentId: 'agt_mel', host: HOST };
 
 /** The longest name HOST_RE takes: 253 characters, in labels of at most 63. */
 const LONGEST = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`;
@@ -144,8 +149,22 @@ interface ProxyOptions {
   until?: Promise<void>;
 }
 
-/** A host answer on a bus whose `proxy:add-host` answers as credential-proxy's does, unless told otherwise. */
-function world(proxy: ProxyOptions | 'absent' = {}) {
+interface GrantOptions {
+  /** Instead of @ax/host-grants' rules: this answer, or this throw. */
+  answer?: () => unknown;
+  /** The bus's deadline for the call, as a registration would set it. */
+  timeoutMs?: number;
+  /** The call answers only once this settles. */
+  until?: Promise<void>;
+}
+
+/**
+ * A host answer on a bus whose `proxy:add-host` answers as credential-proxy's
+ * does, and whose `host-grants:grant` keeps a host as @ax/host-grants does
+ * (once per person, agent and host: `created: false` for one already kept),
+ * unless told otherwise. `order` is both hooks' calls, as they came.
+ */
+function world(proxy: ProxyOptions | 'absent' = {}, grants: GrantOptions | 'absent' = {}) {
   const lines: Line[] = [];
   const at = (level: string) => (msg: string, fields?: Record<string, unknown>) => {
     lines.push({ level, msg, fields: { ...fields } });
@@ -154,6 +173,9 @@ function world(proxy: ProxyOptions | 'absent' = {}) {
 
   const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
   const calls: Array<{ ctx: AgentContext; input: unknown }> = [];
+  /** Each `host-grants:grant` call: what an Allow asked to keep on the agent's allowed sites. */
+  const remembered: Array<{ ctx: AgentContext; input: unknown }> = [];
+  const order: string[] = [];
   /** The live session's allowlist: what the proxy now lets the sandbox reach. */
   const allowlist = new Set<string>();
   if (proxy !== 'absent') {
@@ -162,6 +184,7 @@ function world(proxy: ProxyOptions | 'absent' = {}) {
       'proxy:add-host',
       'fake-credential-proxy',
       async (ctx, input) => {
+        order.push('add-host');
         calls.push({ ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
         if (proxy.until !== undefined) await proxy.until;
         if (proxy.answer !== undefined) return proxy.answer();
@@ -180,6 +203,26 @@ function world(proxy: ProxyOptions | 'absent' = {}) {
       proxy.timeoutMs !== undefined ? { timeoutMs: proxy.timeoutMs } : {},
     );
   }
+  if (grants !== 'absent') {
+    /** The allowed sites @ax/host-grants keeps, one row per person, agent and host. */
+    const kept = new Set<string>();
+    bus.registerService(
+      'host-grants:grant',
+      'fake-host-grants',
+      async (ctx, input) => {
+        order.push('remember');
+        remembered.push({ ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
+        if (grants.until !== undefined) await grants.until;
+        if (grants.answer !== undefined) return grants.answer();
+        const { ownerUserId, agentId, host } = input as { ownerUserId: string; agentId: string; host: string };
+        const key = `${ownerUserId}|${agentId}|${host}`;
+        const had = kept.has(key);
+        kept.add(key);
+        return { created: !had };
+      },
+      grants.timeoutMs !== undefined ? { timeoutMs: grants.timeoutMs } : {},
+    );
+  }
 
   let minted = 0;
   const prompts = createPromptRegistry({
@@ -192,6 +235,8 @@ function world(proxy: ProxyOptions | 'absent' = {}) {
 
   return {
     calls,
+    remembered,
+    order,
     allowlist,
     lines,
     /** A prompt as the turn opens one: a host card's subject and its ask. */
@@ -240,10 +285,13 @@ describe("HOST_RE: the egress proxy's own host pattern", () => {
 });
 
 describe('hostSubject: what a host prompt asks', () => {
-  it('a host the proxy would take: the ask, naming it exactly as the sandbox asked for it', () => {
+  it('a host the proxy would take: the ask, naming it exactly as the sandbox asked for it, and saying before the click that an Allow lasts (TASK-1208)', () => {
     expect(hostSubject(HOST)).toBe(COPY.hostSubject(HOST));
-    expect(hostSubject(HOST)).toBe('Wants to connect to api.example.com');
+    expect(hostSubject(HOST)).toBe('Wants to connect to api.example.com. Once allowed, it stays allowed.');
     expect(hostSubject(LONGEST)).toBe(COPY.hostSubject(LONGEST));
+    // The longest host still fits, and the draw keeps every word: the "stays allowed" is never cut off.
+    expect(COPY.hostSubject(LONGEST).length).toBeLessThanOrEqual(PROMPT_SUBJECT_MAX);
+    expect(cleanPromptSubject(COPY.hostSubject(LONGEST))).toBe(COPY.hostSubject(LONGEST));
   });
 
   it('anything else is null: never shown, never asked about', () => {
@@ -255,7 +303,7 @@ describe('hostSubject: what a host prompt asks', () => {
 });
 
 describe('createHostAnswer: Allow and Deny on a host prompt', () => {
-  it("Allow: proxy:add-host once, as the prompt's user, for exactly the session and host the card named; the host is let through for that session", async () => {
+  it("Allow: proxy:add-host once, as the prompt's user, for exactly the session and host the card named; then the host is kept on the agent's allowed sites for that user (TASK-1208)", async () => {
     const w = world();
     const prompt = w.open();
 
@@ -269,16 +317,177 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
       agentId: 'agt_mel',
       conversationId: 'conv_mel_dm',
     });
+    // The live session first, then kept: for the prompt's own user and agent, exactly the host the card named.
+    expect(w.order).toEqual(['add-host', 'remember']);
+    expect(w.remembered.map((r) => r.input)).toEqual([MEL_KEY]);
+    const keptAs = w.remembered[0]!.ctx;
+    expect({ userId: keptAs.userId, agentId: keptAs.agentId }).toEqual({ userId: 'usr_mel', agentId: 'agt_mel' });
     expect(w.allowlist).toEqual(new Set([HOST]));
     expect(w.lines).toEqual([]);
   });
 
-  it('Allow once the chat has ended: the proxy changes nothing, and the prompt says so', async () => {
+  it('Allow once the session has ended (a prompt lives a day, a session idles out in minutes): the proxy changes nothing, but the host is still kept, from now on', async () => {
     const w = world({ ended: true });
-    expect(await w.click(w.open())).toEqual({ line: COPY.hostEnded, settle: true });
+    expect(await w.click(w.open())).toEqual({ line: COPY.hostAllowed, settle: true });
     expect(w.calls).toHaveLength(1);
     expect(w.allowlist.size).toBe(0);
+    expect(w.remembered.map((r) => r.input)).toEqual([MEL_KEY]);
     expect(w.lines).toEqual([]);
+  });
+
+  it('a host already kept (`created: false`): kept all the same, from now on', async () => {
+    const w = world({}, { answer: () => ({ created: false }) });
+    expect(await w.click(w.open())).toEqual({ line: COPY.hostAllowed, settle: true });
+    expect(w.remembered.map((r) => r.input)).toEqual([MEL_KEY]);
+    expect(w.lines).toEqual([]);
+  });
+
+  it("kept for the prompt's own user and agent, never the agent the proxy names, and in a team channel for the asker on the channel's agent", async () => {
+    const w = world({ answer: () => ({ added: true, agentId: 'agt_other' }) });
+    expect(await w.click(w.open())).toEqual({ line: COPY.hostAllowed, settle: true });
+    expect(w.remembered.map((r) => r.input)).toEqual([MEL_KEY]);
+    expect((w.remembered[0]!.input as { agentId: string }).agentId).toBe('agt_mel');
+
+    // Mel's turn in #support, a team agent's channel: kept for Mel on that agent, nobody else.
+    const team = world({ answer: () => ({ added: true, agentId: 'agt_other' }) });
+    const melInSupport: PromptContext = {
+      ...MEL_DM,
+      channel: 'C07SUPPORT01',
+      agentId: 'agt_support',
+      conversationId: 'conv_mel_support',
+      mode: 'attended',
+    };
+    expect(await team.click(team.open(HOST_PROMPT, melInSupport))).toEqual({ line: COPY.hostAllowed, settle: true });
+    expect(team.remembered.map((r) => r.input)).toEqual([{ ownerUserId: 'usr_mel', agentId: 'agt_support', host: HOST }]);
+  });
+
+  it('no host-grants:grant on the bus: let through for the live session only, and the line says for now (or nothing changed, once the session has ended)', async () => {
+    const live = world({}, 'absent');
+    expect(await live.click(live.open())).toEqual({ line: COPY.hostAllowedForNow, settle: true });
+    expect(live.allowlist).toEqual(new Set([HOST]));
+    expect(live.lines).toEqual([]);
+
+    const ended = world({ ended: true }, 'absent');
+    expect(await ended.click(ended.open())).toEqual({ line: COPY.hostEnded, settle: true });
+    expect(ended.lines).toEqual([]);
+  });
+
+  it.each(['grant-limit', 'invalid-host', 'missing-field'])(
+    "the allowed sites refuse it (%s): never 'from now on'; for now while the session lives, nothing changed once it has ended; logged by code",
+    async (code) => {
+      const refuse = (): never => {
+        throw new PluginError({ code, plugin: 'fake-host-grants', message: 'x' });
+      };
+      const live = world({}, { answer: refuse });
+      expect(await live.click(live.open())).toEqual({ line: COPY.hostAllowedForNow, settle: true });
+      expect(live.allowlist).toEqual(new Set([HOST]));
+      expect(live.logged('slack_prompt_failed')).toEqual([{ installId: INSTALL_ID, kind: 'host', stage: 'remember', code }]);
+
+      const ended = world({ ended: true }, { answer: refuse });
+      expect(await ended.click(ended.open())).toEqual({ line: COPY.hostEnded, settle: true });
+      expect(ended.logged('slack_prompt_failed')).toEqual([{ installId: INSTALL_ID, kind: 'host', stage: 'remember', code }]);
+    },
+  );
+
+  it("an answer from the allowed sites it can't read: it may have kept it, so not 'try again', but never 'from now on': logged by code", async () => {
+    for (const unreadable of [undefined, null, 'created', [], {}, { created: 'yes' }, { created: 1 }]) {
+      const w = world({}, { answer: () => unreadable });
+      expect(await w.click(w.open()), JSON.stringify(unreadable)).toEqual({ line: COPY.hostAllowedForNow, settle: true });
+      expect(w.logged('slack_prompt_failed'), JSON.stringify(unreadable)).toEqual([
+        { installId: INSTALL_ID, kind: 'host', stage: 'remember', code: 'bad-response' },
+      ]);
+    }
+    const ended = world({ ended: true }, { answer: () => ({ created: 'yes' }) });
+    expect(await ended.click(ended.open())).toEqual({ line: COPY.hostEnded, settle: true });
+  });
+
+  it("any other failure of the allowed sites is the gate's, thrown as it is: the asker can try again, and the retry keeps it (both calls are idempotent)", async () => {
+    const down = new PluginError({ code: 'store-unavailable', plugin: 'fake-host-grants', message: 'database down' });
+    let failing = true;
+    const w = world(
+      {},
+      {
+        answer: () => {
+          if (failing) throw down;
+          return { created: true };
+        },
+      },
+    );
+    const prompt = w.open();
+    await expect(w.click(prompt)).rejects.toBe(down);
+    expect(w.calls).toHaveLength(1);
+    expect(w.remembered).toHaveLength(1);
+    expect(w.lines).toEqual([]);
+
+    // The gate opens the prompt again ("try again"); the asker's second click goes through both again.
+    failing = false;
+    expect(await w.click(prompt)).toEqual({ line: COPY.hostAllowed, settle: true });
+    expect(w.order).toEqual(['add-host', 'remember', 'add-host', 'remember']);
+    expect(w.allowlist).toEqual(new Set([HOST]));
+    expect(w.lines).toEqual([]);
+  });
+
+  it("past the bus's deadline, keeping it fails only once the allowed sites' call has settled: nothing it started still runs when the gate lets the prompt go", async () => {
+    vi.useFakeTimers();
+    const keptAnswers = deferred();
+    const w = world({}, { timeoutMs: 1_000, until: keptAnswers.promise });
+    let settled = false;
+    const outcome = w
+      .click(w.open())
+      .finally(() => {
+        settled = true;
+      })
+      .then(
+        () => 'answered',
+        (err: unknown) => err,
+      );
+
+    // Well past the bus's deadline, the allowed sites are still working on it: so is the answer.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(settled).toBe(false);
+
+    keptAnswers.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toMatchObject({ name: 'PluginError', code: 'timeout' });
+    expect(w.order).toEqual(['add-host', 'remember']);
+  });
+
+  it('nothing is kept unless the live add answered first: not for a refusal, a failure, an answer it cannot read, no proxy, a Deny or a host past HOST_RE', async () => {
+    const notOwner = world({ owner: 'usr_ada' });
+    await notOwner.click(notOwner.open());
+    expect(notOwner.remembered, 'forbidden').toEqual([]);
+
+    const refused = world({
+      answer: () => {
+        throw new PluginError({ code: 'invalid-host', plugin: 'fake-credential-proxy', message: 'invalid host' });
+      },
+    });
+    await refused.click(refused.open());
+    expect(refused.remembered, 'invalid-host').toEqual([]);
+
+    const down = world({
+      answer: () => {
+        throw new PluginError({ code: 'store-unavailable', plugin: 'fake-credential-proxy', message: 'proxy down' });
+      },
+    });
+    await expect(down.click(down.open())).rejects.toMatchObject({ code: 'store-unavailable' });
+    expect(down.remembered, 'store-unavailable').toEqual([]);
+
+    const unreadable = world({ answer: () => null });
+    await unreadable.click(unreadable.open());
+    expect(unreadable.remembered, 'unreadable').toEqual([]);
+
+    const noProxy = world('absent');
+    await noProxy.click(noProxy.open());
+    expect(noProxy.remembered, 'no proxy').toEqual([]);
+
+    const denied = world();
+    await denied.click(denied.open(), 'deny');
+    expect(denied.remembered, 'deny').toEqual([]);
+
+    const hostile = world();
+    await hostile.click(hostile.open({ kind: 'host', host: '<!channel>', sessionId: SESSION }));
+    expect(hostile.remembered, '<!channel>').toEqual([]);
   });
 
   it("Allow by a user the proxy says doesn't own the session: the prompt closes, nothing is let through, logged by code", async () => {
@@ -384,19 +593,23 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
     expect(await w.click(held)).toEqual({ line: COPY.promptClosed, settle: true });
     expect(await w.click(held, 'deny')).toEqual({ line: COPY.promptClosed, settle: true });
     expect(w.calls).toEqual([]);
+    expect(w.remembered).toEqual([]);
   });
 
   it("an action this build doesn't know does nothing", async () => {
     const w = world();
     expect(await w.click(w.open(), 'maybe' as PromptAction)).toEqual({ line: COPY.promptClosed, settle: true });
     expect(w.calls).toEqual([]);
+    expect(w.remembered).toEqual([]);
   });
 
   it('every answer is one of its COPY lines, and settles: the redraw is mrkdwn, so nothing else may reach it', async () => {
     const outs: Answer[] = [];
     const allowed = world();
     outs.push(await allowed.click(allowed.open()));
-    const ended = world({ ended: true });
+    const notKept = world({}, 'absent');
+    outs.push(await notKept.click(notKept.open()));
+    const ended = world({ ended: true }, 'absent');
     outs.push(await ended.click(ended.open()));
     const notOwner = world({ owner: 'usr_ada' });
     outs.push(await notOwner.click(notOwner.open()));
@@ -409,7 +622,7 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
     const hostile = world();
     outs.push(await hostile.click(hostile.open({ kind: 'host', host: '<!channel>', sessionId: SESSION })));
 
-    const lines = new Set([COPY.hostAllowed, COPY.hostEnded, COPY.hostDenied, COPY.promptClosed]);
+    const lines = new Set<string>([COPY.hostAllowed, COPY.hostAllowedForNow, COPY.hostEnded, COPY.hostDenied, COPY.promptClosed]);
     for (const out of outs) {
       expect(lines.has(out.line), out.line).toBe(true);
       expect(out.settle).toBe(true);
@@ -429,8 +642,19 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
     const hostile = world();
     await hostile.click(hostile.open({ kind: 'host', host: '<!channel>', sessionId: SESSION }));
     lines.push(...hostile.lines);
+    // The allowed sites are full: its error names the host, and the log still doesn't.
+    const full = world(
+      {},
+      {
+        answer: () => {
+          throw new PluginError({ code: 'grant-limit', plugin: 'fake-host-grants', message: `no room for ${HOST} on agt_mel` });
+        },
+      },
+    );
+    await full.click(full.open());
+    lines.push(...full.lines);
 
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(4);
     for (const line of lines) {
       expect(line.msg).toBe('slack_prompt_failed');
       expect(Object.keys(line.fields).sort()).toEqual(['code', 'installId', 'kind', 'stage']);

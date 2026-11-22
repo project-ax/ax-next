@@ -110,6 +110,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'decisionNotRun',
         'hostSubject',
         'hostAllowed',
+        'hostAllowedForNow',
         'hostEnded',
         'hostDenied',
         'skillSubject',
@@ -201,6 +202,7 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     ['decisionInterrupted', COPY.decisionInterrupted(link)],
     ['decisionNotRun', COPY.decisionNotRun(link)],
     ['hostAllowed', COPY.hostAllowed],
+    ['hostAllowedForNow', COPY.hostAllowedForNow],
     ['hostEnded', COPY.hostEnded],
     ['hostDenied', COPY.hostDenied],
     ['skillAllowed', COPY.skillAllowed],
@@ -254,15 +256,22 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     expect(COPY.promptStillWorking).not.toBe(COPY.promptFailed);
   });
 
-  it("a host prompt: its subject names the host as given, Allow says it is for now only, and nothing links anywhere", () => {
-    expect(COPY.hostSubject('api.example.com')).toBe('Wants to connect to api.example.com');
-    // The live sandbox session only (the web's "Just this once"): "always" stays a choice in the web app.
-    expect(COPY.hostAllowed).toMatch(/for now/);
-    expect(COPY.hostAllowed).not.toMatch(/always/i);
+  it('a host prompt: its subject says the Allow lasts, Allow says from now on, the fallback says for now, and nothing links anywhere', () => {
+    // Said before the click: an Allow keeps the host on the agent's allowed sites (TASK-1208).
+    expect(COPY.hostSubject('api.example.com')).toBe('Wants to connect to api.example.com. Once allowed, it stays allowed.');
+    expect(COPY.hostAllowed).toBe("Allowed from now on. Ask me again and I'll try it.");
+    // Let through for the live session, but not kept (no allowed sites, the list full, an answer it can't read).
+    expect(COPY.hostAllowedForNow).toBe("Allowed for now. Ask me again and I'll try it.");
     // Not the chat: the session ends when it idles (or a skill's Allow retires it) while the chat goes on.
-    for (const line of [COPY.hostAllowed, COPY.hostEnded]) expect(line).not.toMatch(/\bchat\b/i);
+    for (const line of [COPY.hostAllowed, COPY.hostAllowedForNow, COPY.hostEnded]) expect(line).not.toMatch(/\bchat\b/i);
     // A blocked host never waits in Today, so none of its lines points there.
-    for (const line of [COPY.hostSubject('api.example.com'), COPY.hostAllowed, COPY.hostEnded, COPY.hostDenied]) {
+    for (const line of [
+      COPY.hostSubject('api.example.com'),
+      COPY.hostAllowed,
+      COPY.hostAllowedForNow,
+      COPY.hostEnded,
+      COPY.hostDenied,
+    ]) {
       expect(line).not.toMatch(/https?:|\]\(|Today/);
     }
   });
@@ -348,7 +357,7 @@ describe("COPY: an approval prompt's lines (mrkdwn: a context line, a private re
     const outcomes = PROMPT_LINES(TODAY).filter(
       ([key]) => key.startsWith('decision') || key.startsWith('host') || key.startsWith('skill') || key === 'promptClosed',
     );
-    expect(outcomes).toHaveLength(17);
+    expect(outcomes).toHaveLength(18);
     expect(new Set(outcomes.map(([, line]) => line)).size).toBe(outcomes.length);
   });
 });

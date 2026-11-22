@@ -23,32 +23,51 @@ import type { PermissionIn, SkillReach } from './turn-registry.js';
  *
  * Once the click gate (answers.ts) has proved the clicker is the person whose
  * turn it was, the answer runs as them (the gate's ctx: the prompt's user,
- * agent and conversation), for the prompt's own session and host:
+ * agent and conversation), for the prompt's own session and host. The
+ * prompt's subject says before the click that an Allow lasts.
  *
- *   - Allow: `proxy:add-host` with exactly `{ sessionId, host }`. The proxy
- *     widens that session's LIVE allowlist, and only for its owner: it throws
- *     `forbidden` unless the ctx's user owns the session, and answers
- *     `{ added: false }` once the session has ended. Session only: nothing is
- *     remembered for the agent (`host-grants:grant`, "Always for this agent",
- *     stays a choice in the web app).
+ *   - Allow, in this order (TASK-1208):
  *
- *       added: true                  → hostAllowed
- *       added: false (session ended) → hostEnded
- *       forbidden, invalid-host      → promptClosed (logged by code)
- *       an answer it can't read      → promptClosed (logged: bad-response)
- *       anything else                → thrown to the gate: "try again"
+ *       1. `proxy:add-host` with exactly `{ sessionId, host }`. The proxy
+ *          widens that session's LIVE allowlist, and only for its owner: it
+ *          throws `forbidden` unless the ctx's user owns the session, and
+ *          answers `{ added: false }` once the session has ended. A host it
+ *          lets through reaches the agent's next turn as a "now allowed"
+ *          line (TASK-1199).
+ *       2. `host-grants:grant` with `{ ownerUserId, agentId, host }`: the
+ *          ctx's user and agent (the prompt's, which the gate re-proved),
+ *          never the click's and never the agent the proxy answered with.
+ *          It keeps the host on that agent's allowed sites for that person
+ *          (the web app's "Always for this agent"; Settings › Allowed sites
+ *          shows it, and removes it), so the agent's later sessions reach it
+ *          too. It runs even when the session has already ended: a prompt
+ *          lives a day, and the click is still the asker's. Nothing is kept
+ *          unless step 1 answered.
  *
- *     Every line settles the prompt. A failure the asker may retry is the
- *     gate's to say; adding a host twice changes nothing. The call is
- *     JOINED (`callJoined`): past the bus's deadline it fails only once the
- *     proxy's own handler has settled, so nothing it started is still
- *     running when the gate lets the prompt go.
+ *       add-host refuses (forbidden, invalid-host)  → promptClosed (logged by code)
+ *       add-host's answer can't be read             → promptClosed (logged: bad-response)
+ *       added (true or false), then kept            → hostAllowed
+ *       added, but not kept: no host-grants:grant,
+ *       or it refuses (grant-limit, invalid-host,
+ *       missing-field, logged by code), or its
+ *       answer can't be read (logged: bad-response) → hostAllowedForNow, or hostEnded once ended
+ *       anything else, at either step               → thrown to the gate: "try again"
+ *
+ *     Every line settles the prompt, and none says "from now on" unless the
+ *     host was kept. A failure the asker may retry is the gate's to say, and
+ *     both steps are safe to repeat: the proxy records a host once (so the
+ *     agent is told once), and the grant answers `created: false` for a host
+ *     already kept. Both calls are JOINED (`callJoined`): past the bus's
+ *     deadline one fails only once its handler has settled, so nothing it
+ *     started is still running when the gate lets the prompt go.
  *   - Deny: nothing is called. The host stays refused, and the agent asks
  *     again if it needs it. hostDenied.
  *
- * Known gap: in a connected channel the prompt shows the host to everyone
+ * Known gaps: in a connected channel the prompt shows the host to everyone
  * there (the web app shows it to the person alone), and whether Slack links
- * a domain-shaped plain_text is unmeasured (TASK-1097's walk).
+ * a domain-shaped plain_text is unmeasured (TASK-1097's walk). Allowed sites
+ * are per person and agent, so on a team agent an Allow is kept for the
+ * person who clicked: a team-mate's own turn is still asked.
  *
  * A SKILL: a catalog skill the agent asked to use (`request_capability`'s
  * card, kind `skill`), asked about in a DM or an attended turn after its
@@ -120,8 +139,14 @@ import type { PermissionIn, SkillReach } from './turn-registry.js';
 export const HOST_RE =
   /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
-/** What Allow on a host prompt calls (credential-proxy). Optional: without it, no host prompt is offered. */
+/** What Allow on a host prompt calls first (credential-proxy). Optional: without it, no host prompt is offered. */
 export const ADD_HOST = 'proxy:add-host';
+/**
+ * What Allow calls next, to keep the host on the agent's allowed sites for
+ * the asker (@ax/host-grants, TASK-1208). Optional: without it, an Allow lets
+ * the host through for the live session only, and its line says so.
+ */
+export const REMEMBER_HOST = 'host-grants:grant';
 
 /**
  * What a host prompt asks (`COPY.hostSubject`), or null when `host` is not
@@ -134,6 +159,8 @@ export function hostSubject(host: string): string | null {
 
 /** The proxy's refusals that close a prompt for good: not the asker's session, or a host it won't take. */
 const REFUSALS: ReadonlySet<string> = new Set(['forbidden', 'invalid-host']);
+/** The allowed sites' refusals, which trying again can't change: the list is full, or a host or key it won't take. */
+const REMEMBER_REFUSALS: ReadonlySet<string> = new Set(['grant-limit', 'invalid-host', 'missing-field']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -142,24 +169,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createHostAnswer(d: { bus: HookBus }): SubjectAnswer {
   return async (ctx, prompt, action, extra) => {
     const subject = prompt.subject;
-    const closed = { line: COPY.promptClosed, settle: true };
+    const closed: Answer = { line: COPY.promptClosed, settle: true };
     // The gate hands this answer host prompts only.
     if (subject.kind !== 'host') return closed;
     if (action === 'deny') return { line: COPY.hostDenied, settle: true };
     // No other button exists (blocks.ts `actionOf`); one this build doesn't know does nothing.
     if (action !== 'allow' || !d.bus.hasService(ADD_HOST)) return closed;
 
-    const failed = (code: string): typeof closed => {
+    /** Logged by stage and code (never the host, the session or an id), then `answer`. */
+    const failed = (stage: 'add-host' | 'remember', code: string, answer: Answer = closed): Answer => {
       try {
-        ctx.logger.warn('slack_prompt_failed', { installId: extra.install.installId, kind: 'host', stage: 'add-host', code });
+        ctx.logger.warn('slack_prompt_failed', { installId: extra.install.installId, kind: 'host', stage, code });
       } catch {
         // A log line never changes an answer.
       }
-      return closed;
+      return answer;
     };
     // Before acting, as before showing: only a host the proxy would take, whatever the prompt holds.
-    if (!HOST_RE.test(subject.host)) return failed('invalid-host');
+    if (!HOST_RE.test(subject.host)) return failed('add-host', 'invalid-host');
 
+    // 1. The live session, as its owner. Its refusals keep nothing.
     let out: unknown;
     try {
       out = await d.bus.callJoined<{ sessionId: string; host: string }, unknown>(ADD_HOST, ctx, {
@@ -167,13 +196,31 @@ export function createHostAnswer(d: { bus: HookBus }): SubjectAnswer {
         host: subject.host,
       });
     } catch (err) {
-      if (err instanceof PluginError && REFUSALS.has(err.code)) return failed(err.code);
+      if (err instanceof PluginError && REFUSALS.has(err.code)) return failed('add-host', err.code);
       throw err;
     }
-    if (isRecord(out) && out['added'] === true) return { line: COPY.hostAllowed, settle: true };
-    if (isRecord(out) && out['added'] === false) return { line: COPY.hostEnded, settle: true };
-    // It may have let the host through: closed, not "try again".
-    return failed('bad-response');
+    const added = isRecord(out) ? out['added'] : undefined;
+    // It may have let the host through: closed, not "try again". Nothing is kept.
+    if (typeof added !== 'boolean') return failed('add-host', 'bad-response');
+
+    // 2. Kept on the agent's allowed sites for the asker: the gate's ctx, never the click or the proxy's agentId.
+    const notKept: Answer = { line: added ? COPY.hostAllowedForNow : COPY.hostEnded, settle: true };
+    if (!d.bus.hasService(REMEMBER_HOST)) return notKept;
+    let kept: unknown;
+    try {
+      kept = await d.bus.callJoined<{ ownerUserId: string; agentId: string; host: string }, unknown>(REMEMBER_HOST, ctx, {
+        ownerUserId: ctx.userId,
+        agentId: ctx.agentId,
+        host: subject.host,
+      });
+    } catch (err) {
+      if (err instanceof PluginError && REMEMBER_REFUSALS.has(err.code)) return failed('remember', err.code, notKept);
+      throw err;
+    }
+    // `created: false` is a host already kept: kept all the same.
+    if (isRecord(kept) && typeof kept['created'] === 'boolean') return { line: COPY.hostAllowed, settle: true };
+    // It may have kept it: not "try again", but never "from now on" either.
+    return failed('remember', 'bad-response', notKept);
   };
 }
 

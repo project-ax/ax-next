@@ -821,8 +821,13 @@ describe('@ax/channel-slack plugin', () => {
           hook,
           degradation: 'a call held in a Slack turn links to Today instead of showing Allow and Deny buttons',
         })),
-        // A host the sandbox was refused, allowed for the live session from Slack.
+        // A host the sandbox was refused, allowed from Slack: let through for the live session first.
         { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
+        // A website allowed from Slack is kept on the agent's allowed sites for the asker (TASK-1208).
+        {
+          hook: 'host-grants:grant',
+          degradation: 'a website allowed from Slack is let through for the live session only, not kept for the agent',
+        },
         // A catalog skill the agent asked to use: attached from Slack once its conversation is read back.
         ...['agent:apply-capability-grant', 'conversations:get'].map((hook) => ({
           hook,
@@ -1225,9 +1230,9 @@ describe('@ax/channel-slack plugin', () => {
     });
   });
 
-  it("an Allow on a refused host's prompt lets it through for the turn's live session, as the asker, through the plugin wiring (TASK-1095)", async () => {
+  it("an Allow on a refused host's prompt lets it through for the live session and keeps it for the asker's agent, as the asker, through the plugin wiring (TASK-1095, TASK-1208)", async () => {
     // The host answer (`createHostAnswer`) is plugin.ts's to wire: without it
-    // the click closes the prompt, and nothing is let through.
+    // the click closes the prompt, and nothing is let through or kept.
     const slack = fakeSlackFetch();
     const { s, harness, call } = await boot({ fetchImpl: slack.fetchImpl });
     await insertActiveInstall();
@@ -1252,6 +1257,12 @@ describe('@ax/channel-slack plugin', () => {
       added.push({ userId: ctx.userId, input });
       return { added: true, agentId: 'agt_alice' };
     });
+    // @ax/host-grants: the agent's allowed sites, kept per person and agent.
+    const kept: Array<{ userId: string; input: unknown }> = [];
+    bus.registerService('host-grants:grant', 'fake-host-grants', async (ctx, input) => {
+      kept.push({ userId: ctx.userId, input });
+      return { created: true };
+    });
 
     const dmBody = eventBody('message', 'Check the status page');
     await call(
@@ -1266,8 +1277,9 @@ describe('@ax/channel-slack plugin', () => {
     const actions = blocks.find((b) => b['type'] === 'actions')!;
     const promptId = (actions['elements'] as Array<{ value: string }>)[0]!.value;
     const promptTs = '1763039999.000002';
-    // Asking let nothing through.
+    // Asking let nothing through, and kept nothing.
     expect(added).toEqual([]);
+    expect(kept).toEqual([]);
 
     // Alice clicks Allow, signed as Slack signs a click.
     const payload = {
@@ -1295,6 +1307,10 @@ describe('@ax/channel-slack plugin', () => {
     await vi.waitFor(() => expect(slack.calls.slice(mark).map((c) => c.method)).toContain('chat.update'));
     // Her own session, for exactly that host, as her.
     expect(added).toEqual([{ userId: 'usr_alice', input: { sessionId: 'sess_live', host: 'api.example.com' } }]);
+    // Then kept on her agent's allowed sites, for her: once, for exactly that host.
+    expect(kept).toEqual([
+      { userId: 'usr_alice', input: { ownerUserId: 'usr_alice', agentId: 'agt_alice', host: 'api.example.com' } },
+    ]);
     const update = slack.calls.slice(mark).find((c) => c.method === 'chat.update')!;
     expect(update.body['text']).toBe(COPY.hostAllowed);
   });
