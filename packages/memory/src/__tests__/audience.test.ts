@@ -35,6 +35,7 @@ import {
 import { toStatements } from '../observer.js';
 import { FACTS_RECALL_HOOK, FACTS_RECORD_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
+import { isAgentSubject } from '../self-report.js';
 import { rewriteSpeaker } from '../subject.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from '../types.js';
 import {
@@ -818,6 +819,26 @@ const NOT_A_SPEAKER = [
 const TOO_LONG_TO_READ = 'x'.repeat(1025);
 
 /**
+ * Spellings self-report reads as the agent itself (`isAgentSubject`): a team
+ * agent's member turn keeps each as written, whatever a display name says
+ * (TASK-1204 review F9).
+ */
+const AGENT_SELF_SUBJECTS = [
+  'assistant',
+  'Assistant',
+  ' assistant ',
+  'the_assistant',
+  'the assistant',
+  'ai_assistant',
+  'AI Assistant',
+  'ai-assistant',
+  'agent',
+  'Agent',
+  'the_agent',
+  'The Agent',
+];
+
+/**
  * A personal agent's memory, as `resolveMemoryAccess` answers its owner: the
  * access a bare-bus `recordFacts` call is handed (TASK-1204). A personal
  * agent's shared turn keeps the speaker rule.
@@ -1287,6 +1308,51 @@ describe('a team agent keeps what a member says about themself, under their own 
 
     expect(rows(h)).toEqual(['billing_service|Dana|shared']);
     expect(lastRun(h)).toMatchObject({ outcome: 'recorded', recorded: 1, speakerFacts: 2 });
+  });
+
+  // Review F9: a member whose display name is the agent's own word ("AI
+  // Assistant", "Agent Smith") doesn't pull the agent's facts under their
+  // key. Every subject self-report reads as the agent stays as written, on
+  // the observer and the note alike; the member's own facts are still theirs.
+  it("a member named like the agent: the agent's own facts stay the agent's, the member's are theirs", async () => {
+    const h = await makeHarness({
+      agent: { visibility: 'team' },
+      llm: (input) =>
+        String(input.messages[0]?.content ?? '').includes('Agent Smith (U8)')
+          ? extractionReply([
+              { subject: 'agent', predicate: 'could_not_get', object: 'the seller to accept 450k' },
+              { subject: 'agent_smith', predicate: 'lives_in', object: 'Porto' },
+            ])
+          : extractionReply([
+              { subject: 'ai_assistant', predicate: 'favorite_color', object: 'teal' },
+              { subject: 'user', predicate: 'lives_in', object: 'Lisbon' },
+            ]),
+    });
+    answerSpeakerNames(h.bus, ['AI Assistant', 'U7'], 'conv-x');
+    answerSpeakerNames(h.bus, ['Agent Smith', 'U8'], 'conv-y');
+
+    await observeTurn(h, member(h, ALICE, 'conv-x'), [
+      { role: 'user', content: '[Slack · #general · AI Assistant (U7)]: I live in Lisbon. What colour do you like?' },
+      { role: 'assistant', content: 'Teal, I think.' },
+    ]);
+    await observeTurn(h, member(h, BOB, 'conv-y'), [
+      { role: 'user', content: '[Slack · #general · Agent Smith (U8)]: I live in Porto. Our agent could not get the seller to accept 450k.' },
+      { role: 'assistant', content: 'Noted.' },
+    ]);
+    const note = await h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, member(h, ALICE, 'conv-x'), {
+      input: { about: 'AI Assistant', relation: 'tone', value: 'friendly' },
+    });
+    expect(note).toEqual({ ok: true });
+
+    expect(rows(h)).toEqual(
+      [
+        'ai_assistant|teal|shared',
+        `user:${ALICE}|Lisbon|private`,
+        'agent|the seller to accept 450k|shared',
+        `user:${BOB}|Porto|private`,
+        'AI Assistant|friendly|shared',
+      ].sort(),
+    );
   });
 
   // A thread recorded before TASK-1146 has no names: a name subject can't be
@@ -2294,6 +2360,31 @@ describe('one rule for every write: whose memory, and who is talking (TASK-1204)
     expect(speakerSubject('team', 'user:user-y', X, ['user-y'])).toBe(OWN);
   });
 
+  // Review F9: not only `assistant`. Every subject self-report reads as the
+  // agent itself (`isAgentSubject`) stays as written, whatever a member's
+  // display name says.
+  it.each([
+    ['ai_assistant', ['AI Assistant', 'U7']],
+    ['AI Assistant', ['AI Assistant', 'U7']],
+    ['ai-assistant', ['AI Assistant', 'U7']],
+    ['the_assistant', ['The Assistant', 'U7']],
+    ['Assistant', ['Assistant', 'U7']],
+    [' assistant ', ['Assistant', 'U7']],
+    ['agent', ['Agent Smith', 'U8']],
+    ['Agent', ['Agent Smith', 'U8']],
+    ['the_agent', ['The Agent', 'U9']],
+  ])("a member named like the agent never pulls the agent's %j under their key (names %j)", (about, names) => {
+    expect(isAgentSubject(about)).toBe(true);
+    expect(speakerSubject('team', about, X, names)).toBe(about);
+  });
+
+  it("such a member's own name is still theirs: only the agent's subjects are kept as written", () => {
+    expect(speakerSubject('team', 'agent_smith', X, ['Agent Smith', 'U8'])).toBe(OWN);
+    expect(speakerSubject('team', 'smith', X, ['Agent Smith', 'U8'])).toBe(OWN);
+    expect(speakerSubject('team', 'u7', X, ['AI Assistant', 'U7'])).toBe(OWN);
+    expect(speakerSubject('team', 'user', X, ['AI Assistant', 'U7'])).toBe(OWN);
+  });
+
   // Pinned so they stay visible: bounded, since the most a name can do is
   // file the speaker's own words under the speaker.
   it('accepted residuals: a name made of work words, or a namesake, files under the speaker', () => {
@@ -2316,9 +2407,30 @@ describe('one rule for every write: whose memory, and who is talking (TASK-1204)
       TOO_LONG_TO_READ,
       OWN,
       'user:user-y',
+      ...AGENT_SELF_SUBJECTS,
     ]),
   ];
-  const NAME_LISTS: ReadonlyArray<readonly string[]> = [[], ALICE_NAMES, NAMES, ['user-y'], ['Assistant']];
+  const NAME_LISTS: ReadonlyArray<readonly string[]> = [
+    [],
+    ALICE_NAMES,
+    NAMES,
+    ['user-y'],
+    ['Assistant'],
+    ['AI Assistant', 'Agent Smith', 'The Agent'],
+  ];
+
+  it('the agent itself stays as written in a team member turn, under every name list (review F9)', () => {
+    const wrong: string[] = [];
+    for (const names of NAME_LISTS) {
+      for (const about of EVERY_SUBJECT.filter((s) => isAgentSubject(s))) {
+        const out = speakerSubject('team', about, X, names);
+        if (out !== about) wrong.push(`${JSON.stringify(about)} ${JSON.stringify(names)}: ${out}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    // Not vacuous: every spelling below is one self-report reads as the agent.
+    expect(EVERY_SUBJECT.filter((s) => isAgentSubject(s)).length).toBeGreaterThanOrEqual(AGENT_SELF_SUBJECTS.length);
+  });
 
   it("never a person key but the runner's own", () => {
     const wrong: string[] = [];

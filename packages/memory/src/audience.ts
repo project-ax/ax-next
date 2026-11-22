@@ -10,6 +10,7 @@ import {
 import type { MemoryAccess } from './access.js';
 import { captureCheck } from './capture.js';
 import { PLUGIN_NAME } from './plugin-name.js';
+import { isAgentSubject } from './self-report.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 
 /**
@@ -384,13 +385,6 @@ export function speakerScope(
 }
 
 /**
- * The extraction prompt's subject for the agent itself: never a person.
- * Spelled here, not imported, because the prompt is fingerprint-pinned and
- * exports no word list.
- */
-const AGENT_SUBJECT = 'assistant';
-
-/**
  * The subject a write in `scope` files `about` under, or `undefined`: not
  * stored at all. The ONE answer every memory write asks: the observer drops a
  * fact this says `undefined` for, `memory_note` refuses one, and
@@ -402,8 +396,15 @@ const AGENT_SUBJECT = 'assistant';
  *   ({@link breaksSpeakerRule}), else as written (unchanged).
  * - `'team'`, in this order:
  *   1. Longer than {@link SPEAKER_RULE_READS_AT_MOST}: `undefined`, unread.
- *   2. `assistant`: as written. The extractor's word for the agent itself is
- *      never a person, whatever a member's display name says.
+ *   2. The agent itself, as self-report reads it (`isAgentSubject`:
+ *      `assistant`, `the_assistant`, `ai_assistant`, `agent`, `the_agent`,
+ *      however cased or spaced): as written. The agent is never a person,
+ *      whatever a member's display name says, so a member named "AI
+ *      Assistant" or "Agent Smith" never pulls the agent's facts under their
+ *      key (TASK-1204 review F9). One list, `self-report.ts`'s, so the two
+ *      can't drift. Accepted: a member's own fact the extractor writes as
+ *      bare `agent` is kept as written too (a missed attribution, never a
+ *      misfiled one); `agent_smith` is still theirs.
  *   3. `user`, or the runner's own key `user:<userId>`: the runner's key.
  *   4. A subject made of the speakers' names ({@link namesASpeaker}): the
  *      runner's key. The names are how memory recognizes the speaker in a
@@ -433,7 +434,7 @@ export function speakerSubject(
       return breaksSpeakerRule('shared', about, speakerNames) ? undefined : about;
     case 'team': {
       if (about.length > SPEAKER_RULE_READS_AT_MOST) return undefined;
-      if (about === AGENT_SUBJECT) return about;
+      if (isAgentSubject(about)) return about;
       const own = rewriteSpeaker(SPEAKER_SUBJECT, userId);
       if (about === SPEAKER_SUBJECT || about === own || namesASpeaker(about, speakerNames)) return own;
       return isPersonSubject(about) ? undefined : about;
