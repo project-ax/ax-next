@@ -33,16 +33,16 @@ export const DEFAULT_VIEWER_MAX_AGE_SECONDS = 600;
 
 /** The raw strings, one per env var; the preset reads each variable literally. */
 export interface AppsBridgeEnv {
-  platformId?: string;
-  port?: string;
-  callerIssuer?: string;
-  callerJwksUrl?: string;
-  callerAudience?: string;
-  callerSubject?: string;
-  viewerIssuer?: string;
-  viewerJwksUrl?: string;
-  viewerAudience?: string;
-  viewerMaxAgeSeconds?: string;
+  platformId?: string | undefined;
+  port?: string | undefined;
+  callerIssuer?: string | undefined;
+  callerJwksUrl?: string | undefined;
+  callerAudience?: string | undefined;
+  callerSubject?: string | undefined;
+  viewerIssuer?: string | undefined;
+  viewerJwksUrl?: string | undefined;
+  viewerAudience?: string | undefined;
+  viewerMaxAgeSeconds?: string | undefined;
   /** `AX_HTTP_HOST`: the bridge binds where the main listener does, on its own port. */
   bindHost: string;
 }

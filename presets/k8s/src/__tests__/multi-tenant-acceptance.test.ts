@@ -234,6 +234,8 @@ const PLUGINS_TO_DROP = new Set<string>([
   // database in prod-bootstrap.test.ts. Its DM path runs end to end against
   // real agents, conversations and vault in channel-slack-composition.test.ts.
   '@ax/channel-slack',
+  // @ax/apps-bridge: it needs Postgres, and it mounts settings routes this test pins. Its canary reach is in the memory preset's canary.
+  '@ax/apps-bridge',
 ]);
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';

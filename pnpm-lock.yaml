@@ -2887,6 +2887,9 @@ importers:
       '@ax/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      '@ax/apps-bridge':
+        specifier: workspace:*
+        version: link:../../packages/apps-bridge
       '@ax/attachments':
         specifier: workspace:*
         version: link:../../packages/attachments
