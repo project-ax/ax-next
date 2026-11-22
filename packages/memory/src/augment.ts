@@ -15,6 +15,11 @@
  * it recalls everything else a member's turn does (TASK-1209), and the
  * requester's key reads as any member's.
  *
+ * On a team agent a member's key reads as their display name, or "a teammate"
+ * (TASK-1209, `member-names.ts`): never the raw id. Asking costs up to two
+ * reads per member the block shows (`teams:is-member`, then `auth:get-user`),
+ * in parallel, after the store queries. A personal agent asks nobody.
+ *
  * Soft cap ~800 tokens; over it, parts drop **digest → recent → profile**. The
  * degraded notice and the section heading never drop.
  *
@@ -69,6 +74,7 @@ import {
 import { PLUGIN_NAME } from './plugin-name.js';
 import { memoryReadScope, resolveMemoryAccess } from './access.js';
 import { recallFacts } from './audience.js';
+import { memberLabels } from './member-names.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // The profile whitelist IS the normalizer's slot list — the same constant, not
 // a copy (design 3.3/4.1, Invariant 4).
@@ -312,15 +318,23 @@ function provenanceTag(raw: unknown): string {
  *
  * The caller's own subject key is `user:<userId>`, and putting that in the
  * prompt would spend tokens on an opaque id and leak an internal identifier
- * into text the model may repeat back. It renders as `you`. Everything else is
- * an extractor-canonical subject and renders escaped, as written.
+ * into text the model may repeat back. It renders as `you`. On a team agent
+ * another member's key renders as its label (TASK-1209, {@link memberLabels}:
+ * the member's display name, else "a teammate"), never the raw id. Everything
+ * else (and on a personal agent, every other key) is an extractor-canonical
+ * subject and renders as written. Both escaped: a name is account-holder
+ * text, already cleaned, and `escapeStatementText` still runs on it.
  *
  * `self` is the caller's own key, or `undefined` in an outsider's turn
  * (TASK-1204): there the caller is the requester, never the person talking,
- * so no subject is `you`.
+ * so no subject is `you`, and the requester's key reads by its label.
  */
-function renderSubject(about: string, self: string | undefined): string {
-  return self !== undefined && about === self ? 'you' : escapeStatementText(about);
+function renderSubject(
+  about: string,
+  self: string | undefined,
+  labels: ReadonlyMap<string, string>,
+): string {
+  return self !== undefined && about === self ? 'you' : escapeStatementText(labels.get(about) ?? about);
 }
 
 /**
@@ -357,7 +371,11 @@ function renderProfile(
 }
 
 /**
- * Build the Recent section — **grouped by conversation**, not a flat last-N.
+ * The Recent section's rows — **grouped by conversation**, not a flat last-N:
+ * the first `conversations` conversations in the store's recency order, and
+ * at most `perConversation` rows of each. Exported for tests. The block asks
+ * for names (TASK-1209) only for what these groups and the Digest hold, so it
+ * groups before it renders.
  *
  * This is a spec rule with a measurement behind it: one `chat:end` emits ~12
  * statements, so the 9 most recent rows are almost always nine facts from the
@@ -371,12 +389,11 @@ function renderProfile(
  * named after. They are not lost: they are exactly the rows the Profile and
  * the fresh `memory_recall` path show.
  */
-function renderRecent(
+export function recentGroups(
   rows: EngineFactRecord[],
-  self: string | undefined,
   conversations: number,
   perConversation: number,
-): string {
+): EngineFactRecord[][] {
   // Insertion order is the store's recency order, so the first `conversations`
   // keys are the most recent conversations and each group is already ordered
   // newest-first within itself.
@@ -392,15 +409,23 @@ function renderRecent(
       group.push(row);
     }
   }
+  return [...groups.values()];
+}
 
+/** Render the Recent section from {@link recentGroups}' groups. */
+function renderRecent(
+  groups: EngineFactRecord[][],
+  self: string | undefined,
+  labels: ReadonlyMap<string, string>,
+): string {
   const blocks: string[] = [];
-  for (const group of groups.values()) {
+  for (const group of groups) {
     const lines = group
       .map((row) => {
         const value = escapeStatementText(row.value);
         if (value === '') return null;
         const day = formatDay(row.when) ?? 'undated';
-        const subject = renderSubject(row.about, self);
+        const subject = renderSubject(row.about, self, labels);
         const relation = escapeStatementText(row.relation);
         return `- ${day} — ${subject} ${relation}: ${value} ${provenanceTag(row.provenance)}`;
       })
@@ -474,16 +499,18 @@ export function rankDigestSubjects(
     .map(([about, v]) => ({ about, count: v.count, latest: v.latest }));
 }
 
-/** `I hold memory about: cedar_creek (4, Aug 2026), acme (2, Sep 2026)`. */
+/**
+ * `I hold memory about: cedar_creek (4, Aug 2026), acme (2, Sep 2026)`, from
+ * {@link rankDigestSubjects}' answer. On a team agent a member's key reads as
+ * its label (TASK-1209), escaped like any subject.
+ */
 function renderDigest(
-  rows: EngineFactRecord[],
-  speakerSubject: string | undefined,
-  limit: number,
+  ranked: ReadonlyArray<{ about: string; count: number; latest: string }>,
+  labels: ReadonlyMap<string, string>,
 ): string {
-  const ranked = rankDigestSubjects(rows, speakerSubject, limit);
   const entries = ranked
     .map(({ about, count, latest }) => {
-      const name = escapeStatementText(about);
+      const name = escapeStatementText(labels.get(about) ?? about);
       if (name === '') return null;
       const month = formatMonthYear(latest);
       return month === null ? `${name} (${count})` : `${name} (${count}, ${month})`;
@@ -587,6 +614,11 @@ export function assembleUnderCap(parts: BlockPart[], maxTokens: number): Assembl
  * Returns `''` when there is nothing to say — no statements. An empty
  * contribution is dropped by the orchestrator, so an agent with no memory yet
  * gets a prompt byte-identical to the un-augmented one.
+ *
+ * Who a subject is: the caller's own key reads `you`. On a team agent another
+ * member's key reads as their display name, or "a teammate" (TASK-1209,
+ * {@link memberLabels}: only current members of its team, only in a turn
+ * whose recall reads everything). On a personal agent it reads as written.
  */
 export async function buildMemoryBlock(
   bus: HookBus,
@@ -712,13 +744,21 @@ export async function buildMemoryBlock(
   ].filter((flag, i, all) => all.indexOf(flag) === i);
 
   const profile = renderProfile(profileOut.statements, profileChainOut.statements, cfg.profileRows);
-  const recent = renderRecent(
-    recentRows,
+  const groups = recentGroups(recentRows, cfg.recentConversations, cfg.recentPerConversation);
+  const ranked = rankDigestSubjects(digestOut.statements, self, cfg.digestSubjects);
+  // On a team agent, the members these show, by name (TASK-1209): asked once,
+  // only about the subjects Recent's groups and the ranked Digest hold (at
+  // most 9 + 20 keys by default, never every scanned row), and never failing
+  // the block. Empty on a personal agent, which asks nobody.
+  const labels = await memberLabels(
+    bus,
+    ctx,
+    access,
+    [...groups.flat().map((row) => row.about), ...ranked.map((entry) => entry.about)],
     self,
-    cfg.recentConversations,
-    cfg.recentPerConversation,
   );
-  const digest = renderDigest(digestOut.statements, self, cfg.digestSubjects);
+  const recent = renderRecent(groups, self, labels);
+  const digest = renderDigest(ranked, labels);
 
   const hasStoreContent = profile !== '' || recent !== '' || digest !== '';
   const storeHeader = hasStoreContent ? `${STORE_HEADING}\n\n${STORE_SECTION_PREAMBLE}` : '';

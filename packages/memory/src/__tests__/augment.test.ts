@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { HookBus, makeAgentContext, ownerlessIdFor, type Logger } from '@ax/core';
+import { HookBus, makeAgentContext, ownerlessIdFor, type AgentContextSource, type Logger } from '@ax/core';
 import Database from 'better-sqlite3';
 
 import {
@@ -1471,23 +1471,33 @@ describe('system-prompt:augment:optional:memory — shared team agents', () => {
     expect(body).toContain('acme_corp');
   });
 
-  it('keeps the caller as "you" while a teammate\'s own-speaker row stays literal', async () => {
-    const h = await makeHarness({ agent: { visibility: 'team' } });
-    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
-      {
-        about: `user:${BOB}`,
-        relation: 'mentioned',
-        value: 'a thing Bob said',
-        when: JUN,
-        ownerUserId: BOB,
-        conversationId: 'conv-bob',
-      },
-    ]);
+  // TASK-1209: a teammate's key reads as their display name, else "a
+  // teammate". Never the raw id on a team agent, and never "you".
+  it.each([
+    ['with', { authUser: (userId: string) => ({ id: userId, displayName: 'Bob Smith', email: 'bob@x.test', isAdmin: false }) }, 'Bob Smith'],
+    ['without', {}, 'a teammate'],
+  ] as const)(
+    "a teammate's key reads as their name, or 'a teammate', never the raw id (%s auth:get-user)",
+    async (_with, options, label) => {
+      const h = await makeHarness({ agent: { visibility: 'team' }, ...options });
+      await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+        {
+          about: `user:${BOB}`,
+          relation: 'mentioned',
+          value: 'a thing Bob said',
+          when: JUN,
+          ownerUserId: BOB,
+          conversationId: 'conv-bob',
+        },
+      ]);
 
-    const body = await augment(h, h.ctx({ userId: ALICE }));
-    expect(body).toContain('user:user-bob');
-    expect(body).not.toContain('you mentioned: a thing Bob said');
-  });
+      const body = await augment(h, h.ctx({ userId: ALICE }));
+      expect(body).toContain(`${label} mentioned: a thing Bob said`);
+      expect(body).not.toContain('user:user-bob');
+      expect(body).not.toContain('you mentioned: a thing Bob said');
+      expect(body).not.toContain('bob@x.test');
+    },
+  );
 
   it('excludes a foreign-owner raw-engine row on a personal agent', async () => {
     const h = await makeHarness();
@@ -1517,6 +1527,196 @@ describe('system-prompt:augment:optional:memory — shared team agents', () => {
     expect(
       spy.mock.calls.filter(([hook]) => hook === FACTS_RECALL_HOOK),
     ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1209: on a team agent the block names the members it shows, by their
+// display name (`member-names.ts`), the way `memory:recall` does. Account-
+// holder text in the most privileged position in the prompt, so: cleaned,
+// one line, escaped, never "you", only for current members, and only for the
+// subjects the block renders. A personal agent is unchanged and asks nobody.
+// ---------------------------------------------------------------------------
+
+describe('system-prompt:augment:optional:memory — teammates by name (TASK-1209)', () => {
+  const CAROL = 'user-carol';
+  const DAVE = 'user-dave';
+  /** An account auth knows, who is not on the agent's team. */
+  const EVE = 'user-eve';
+  const NAMES: Record<string, string> = {
+    [ALICE]: 'Alice Jones',
+    [BOB]: 'Bob Smith',
+    [CAROL]: 'Carol Chen',
+    [DAVE]: 'Dave Diaz',
+    [EVE]: 'Eve Example',
+  };
+
+  /** `auth:get-user` as auth answers it, with some display names replaced. */
+  function authWith(names: Record<string, unknown> = {}): (userId: string) => unknown {
+    return (userId) =>
+      NAMES[userId] === undefined
+        ? null
+        : {
+            id: userId,
+            displayName: userId in names ? names[userId] : NAMES[userId],
+            email: `${userId}@x.test`,
+            isAdmin: false,
+          };
+  }
+
+  /** A fact filed under `about`'s key, in a conversation of its own. */
+  function said(
+    about: string,
+    value: string,
+    opts: { when?: string; owner?: string; conversationId?: string; audience?: 'shared' } = {},
+  ) {
+    return {
+      about: `user:${about}`,
+      relation: 'mentioned',
+      value,
+      when: opts.when ?? JUN,
+      ownerUserId: opts.owner ?? about,
+      conversationId: opts.conversationId ?? `conv-${about}-${value}`,
+      ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
+    };
+  }
+
+  const TEAM = { visibility: 'team' } as const;
+
+  it('the Digest names a teammate, never their raw id', async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith() });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      said(BOB, 'bob-one', { when: JAN }),
+      said(BOB, 'bob-two', { when: MAR }),
+      said(BOB, 'bob-three', { when: JUN }),
+    ]);
+    const body = await augment(h, h.ctx());
+    expect(body.slice(body.indexOf('### Digest'))).toContain('Bob Smith (3, ');
+    expect(body).not.toContain('user:user-bob');
+  });
+
+  it('a name lands on one line, cleaned and escaped', async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith({ [BOB]: 'Bob | Smith‮\nX' }) });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said')]);
+    const body = await augment(h, h.ctx());
+    const line = body.split('\n').find((l) => l.includes('a thing Bob said'));
+    expect(line).toContain('Bob \\| Smith X mentioned: a thing Bob said');
+    expect(body).toContain('Bob \\| Smith X (1, ');
+    expect(body).not.toContain('‮');
+    expect(body).not.toContain('Bob | Smith');
+  });
+
+  it('a teammate whose name reads as "you" reads "a teammate"', async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith({ [BOB]: 'You' }) });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said')]);
+    const body = await augment(h, h.ctx());
+    expect(body).toContain('a teammate mentioned: a thing Bob said');
+    expect(body).not.toMatch(/you mentioned/i);
+  });
+
+  it('looks up only the members the block shows', async () => {
+    harness = await makeMemoryHarness(
+      { block: { recentConversations: 1, recentPerConversation: 1, digestSubjects: 1 } },
+      { agent: { visibility: 'team', members: new Set([ALICE, BOB, CAROL, DAVE]) }, authUser: authWith() },
+    );
+    const h = harness;
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      said(BOB, 'bob-one', { when: JAN }),
+      said(BOB, 'bob-two', { when: JAN }),
+      said(BOB, 'bob-three', { when: JAN }),
+    ]);
+    await engineRecord(h.bus, h.ctx({ userId: CAROL }), [said(CAROL, 'carol-fact', { when: MAR })]);
+    await engineRecord(h.bus, h.ctx({ userId: DAVE }), [said(DAVE, 'dave-fact', { when: SEP })]);
+
+    const body = await augment(h, h.ctx());
+    // Recent: the newest conversation, Dave's, one row. Digest: the one most
+    // mentioned subject, Bob. Carol is in neither.
+    expect(body).toContain('Dave Diaz mentioned: dave-fact');
+    expect(body).toContain('Bob Smith (3, ');
+    expect(body).not.toContain('carol-fact');
+    expect(body).not.toContain('Carol Chen');
+    expect([...h.memberCalls].sort()).toEqual([BOB, DAVE].sort());
+    expect([...h.authCalls].sort()).toEqual([BOB, DAVE].sort());
+  });
+
+  it("in an outsider's turn the requester reads by their name: no Profile, nobody is you", async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith() });
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value: 'Lisbon',
+        slot: 'lives_in',
+        when: JUN,
+        ownerUserId: ALICE,
+        conversationId: 'conv-alice',
+      },
+    ]);
+
+    // In Alice's own turn the row is hers: her Profile, and "you". Her own
+    // key is never looked up.
+    const own = await augment(h, h.ctx());
+    expect(own).toContain('### Profile');
+    expect(own).toContain('— you lives_in: Lisbon');
+    expect(own).not.toContain('Alice Jones');
+    expect(h.memberCalls).toEqual([]);
+    expect(h.authCalls).toEqual([]);
+
+    const outsider = h.ctx({ conversationId: 'conv-ext', source: 'external', audience: 'shared' });
+    const body = await augment(h, outsider);
+    expect(body).toContain('— Alice Jones lives_in: Lisbon');
+    expect(body).not.toContain('### Profile');
+    expect(body).not.toMatch(/— you /);
+    expect(h.authCalls).toEqual([ALICE]);
+  });
+
+  it("a key for an account that isn't on the team reads 'a teammate', and auth is never asked about it", async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith() });
+    // A member's private turn keeps a model-written `user:<id>` as written.
+    await engineRecord(h.bus, h.ctx(), [said(EVE, 'a thing about Eve', { owner: ALICE })]);
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said')]);
+    const body = await augment(h, h.ctx());
+    expect(body).toContain('a teammate mentioned: a thing about Eve');
+    expect(body).toContain('Bob Smith mentioned: a thing Bob said');
+    expect(body).not.toContain('Eve Example');
+    expect(body).not.toContain('user:user-eve');
+    expect(h.memberCalls).toContain(EVE);
+    expect(h.authCalls).not.toContain(EVE);
+  });
+
+  it("a turn from a source this build doesn't know is told no names, and shows no raw id", async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith() });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said', { audience: 'shared' })]);
+    await engineRecord(h.bus, h.ctx(), [said(ALICE, 'a thing Alice said', { audience: 'shared' })]);
+    const unknown = h.ctx({ conversationId: 'conv-x', source: 'satellite' as AgentContextSource, audience: 'shared' });
+    const body = await augment(h, unknown);
+    expect(body).toContain('a teammate mentioned: a thing Bob said');
+    expect(body).toContain('a teammate mentioned: a thing Alice said');
+    for (const hidden of ['Bob Smith', 'Alice Jones', 'user:user-']) expect(body).not.toContain(hidden);
+    expect(h.memberCalls).toEqual([]);
+    expect(h.authCalls).toEqual([]);
+  });
+
+  it('a lookup that fails still builds the block', async () => {
+    const h = await makeHarness({
+      agent: TEAM,
+      authUser: () => {
+        throw new Error('auth down');
+      },
+    });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said')]);
+    const body = await augment(h, h.ctx());
+    expect(body).toContain('a teammate mentioned: a thing Bob said');
+    expect(eventsNamed(h.logs, 'memory_member_names_failed')).toHaveLength(1);
+  });
+
+  it('a personal agent shows another key as written and asks nobody', async () => {
+    const h = await makeHarness({ authUser: authWith() });
+    await engineRecord(h.bus, h.ctx(), [said(BOB, 'a thing about Bob', { owner: ALICE })]);
+    const body = await augment(h, h.ctx());
+    expect(body).toContain('user:user-bob mentioned: a thing about Bob');
+    expect(h.memberCalls).toEqual([]);
+    expect(h.authCalls).toEqual([]);
   });
 });
 
