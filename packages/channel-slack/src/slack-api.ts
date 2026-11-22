@@ -228,10 +228,12 @@ export interface SlackApi {
   /**
    * A top-level message in a channel, for everyone in it (`chat.postMessage`
    * with no `thread_ts`): a channel's memory notice (memory-notice.ts,
-   * TASK-1203). `text` is mrkdwn, the bot's own words (copy.ts), never model
-   * text. Unfurls off, as every post.
+   * TASK-1203). With `threadTs`, the same message in that thread instead: the
+   * notice in an announcement-only channel, where Slack refuses the bot a
+   * top-level post. `text` is mrkdwn, the bot's own words (copy.ts), never
+   * model text. Unfurls off, as every post.
    */
-  postToChannel(botToken: string, a: { channel: string; text: string }): Promise<void>;
+  postToChannel(botToken: string, a: { channel: string; text: string; threadTs?: string }): Promise<void>;
   startStream(
     botToken: string,
     a: {
@@ -698,7 +700,13 @@ export function createSlackApi(opts: { fetchImpl: typeof fetch; timeoutMs?: numb
       await call(
         'chat.postMessage',
         bearer(botToken),
-        json({ channel: a.channel, text: a.text, unfurl_links: false, unfurl_media: false }),
+        json({
+          channel: a.channel,
+          ...(a.threadTs !== undefined ? { thread_ts: a.threadTs } : {}),
+          text: a.text,
+          unfurl_links: false,
+          unfurl_media: false,
+        }),
       );
     },
 

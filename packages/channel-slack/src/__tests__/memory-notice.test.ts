@@ -18,7 +18,9 @@ import { memoryChannelStore } from './memory-channel-store.js';
 
   What is pinned here: only a claim that wins posts, so a channel is told
   once; a post Slack refuses gives the claim back, so the next turn tries
-  again; nothing here throws, so the turn it runs in goes on; the team is
+  again, except in an announcement-only channel (`restricted_action`), where
+  the notice goes in the mention's thread instead and the claim is kept;
+  nothing here throws, so the turn it runs in goes on; the team is
   named as the person the turn runs as sees it, escaped, else "my team"; and
   every log line carries a stage and a code at most, never a name.
 */
@@ -32,6 +34,8 @@ const ADA = 'usr_ada';
 /** On no team the support agent is on. */
 const SAM = 'usr_sam';
 const BOT_TOKEN = fakeBotToken('NOTICETESTSECRET');
+/** The thread the bot is about to reply in: the mention's. */
+const THREAD_TS = '1763035300.000300';
 /** A team name that tries to ping, link and break the escaping. */
 const HOSTILE = '<!channel> & <@U1> @here';
 /** The mark that keeps a reference or a broadcast from working. */
@@ -98,9 +102,9 @@ function world(
     },
   };
 
-  const posts: Array<{ token: string; channel: string; text: string }> = [];
+  const posts: Array<{ token: string; channel: string; text: string; threadTs?: string }> = [];
   const api = {
-    async postToChannel(token: string, a: { channel: string; text: string }): Promise<void> {
+    async postToChannel(token: string, a: { channel: string; text: string; threadTs?: string }): Promise<void> {
       posts.push({ token, ...a });
       const err = o.postFails?.(posts.length);
       if (err !== undefined) throw err;
@@ -118,7 +122,7 @@ function world(
     postMemoryNotice(
       { bus, api, channels },
       ctx,
-      { installId: INSTALL_ID, channelId: SUPPORT_CH, agentId: SUPPORT.id, botToken: BOT_TOKEN, userId: ADA, ...over },
+      { installId: INSTALL_ID, channelId: SUPPORT_CH, threadTs: THREAD_TS, agentId: SUPPORT.id, botToken: BOT_TOKEN, userId: ADA, ...over },
       log,
     );
   /** Whether #support's notice is claimed, as the store holds it. */
@@ -162,8 +166,6 @@ describe('postMemoryNotice', () => {
   });
 
   it.each([
-    // An announcement-only channel, where only admins may post.
-    ['restricted_action', new SlackApiError('chat.postMessage', 'restricted_action')],
     ['not_in_channel', new SlackApiError('chat.postMessage', 'not_in_channel')],
     ['ratelimited', new SlackApiError('chat.postMessage', 'ratelimited', 30_000)],
     ['http-503', new SlackApiError('chat.postMessage', 'http-503')],
@@ -181,6 +183,66 @@ describe('postMemoryNotice', () => {
     expect(w.posts.map((p) => p.text)).toEqual([NAMED, NAMED]);
     expect(w.claimed()).toBe(true);
     expect(w.lines.map((l) => l.msg)).toEqual(['slack_notice_failed', 'slack_notice_posted']);
+  });
+
+  it("an announcement-only channel (restricted_action): the notice goes in the mention's thread instead, and the claim is kept", async () => {
+    const restricted = new SlackApiError('chat.postMessage', 'restricted_action');
+    const w = world({ postFails: (n) => (n === 1 ? restricted : undefined) });
+    await expect(w.notice()).resolves.toBeUndefined();
+
+    // Top-level first, then the same words in the thread the bot is about to reply in.
+    expect(w.posts).toEqual([
+      { token: BOT_TOKEN, channel: SUPPORT_CH, text: NAMED },
+      { token: BOT_TOKEN, channel: SUPPORT_CH, text: NAMED, threadTs: THREAD_TS },
+    ]);
+    expect('threadTs' in w.posts[0]!).toBe(false);
+    // Slack won't take a top-level post there at any turn, so this one is final: kept, and logged by stage.
+    expect(w.claimed()).toBe(true);
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'post', code: 'restricted_action' } },
+      { level: 'info', msg: 'slack_notice_posted', fields: { stage: 'thread' } },
+    ]);
+    // The team was looked up once, for both posts.
+    expect(w.teams.asked).toEqual([ADA]);
+
+    // The next turn finds it told: no lookup, no post.
+    await w.notice();
+    expect(w.posts).toHaveLength(2);
+    expect(w.teams.asked).toEqual([ADA]);
+  });
+
+  it('an announcement-only channel whose thread post fails too releases the claim, and the next turn tries again', async () => {
+    const w = world({
+      postFails: (n) =>
+        n === 1
+          ? new SlackApiError('chat.postMessage', 'restricted_action')
+          : n === 2
+            ? new SlackApiError('chat.postMessage', 'ratelimited', 30_000)
+            : undefined,
+    });
+    await expect(w.notice()).resolves.toBeUndefined();
+
+    expect(w.posts.map((p) => p.threadTs)).toEqual([undefined, THREAD_TS]);
+    expect(w.claimed()).toBe(false);
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'post', code: 'restricted_action' } },
+      { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'thread', code: 'ratelimited' } },
+    ]);
+
+    // The next turn claims again and posts top-level first, as any first try.
+    await w.notice();
+    expect(w.posts.map((p) => p.threadTs)).toEqual([undefined, THREAD_TS, undefined]);
+    expect(w.claimed()).toBe(true);
+    expect(w.lines.map((l) => l.msg)).toEqual(['slack_notice_failed', 'slack_notice_failed', 'slack_notice_posted']);
+  });
+
+  it('only restricted_action falls back to the thread: any other refusal posts nothing there', async () => {
+    for (const code of ['not_in_channel', 'ratelimited', 'http-503', 'channel_not_found']) {
+      const w = world({ postFails: (n) => (n === 1 ? new SlackApiError('chat.postMessage', code) : undefined) });
+      await w.notice();
+      expect(w.posts.map((p) => p.threadTs), code).toEqual([undefined]);
+      expect(w.claimed(), code).toBe(false);
+    }
   });
 
   it('a claim that throws logs stage claim and posts nothing', async () => {

@@ -500,6 +500,22 @@ describe('requests', () => {
     expect(err.message).toBe('slack chat.postMessage: restricted_action');
   });
 
+  it("postToChannel with a threadTs posts the same text in that thread (an announcement-only channel's notice), unfurls off", async () => {
+    const slack = fakeSlack(() => okJson({ channel: 'C07SUPPORT1', ts: '1700000000.000401' }));
+    const api = createSlackApi({ fetchImpl: slack.fetchImpl });
+    await expect(
+      api.postToChannel(BOT, { channel: 'C07SUPPORT1', text: 'Heads up', threadTs: '1700000000.000100' }),
+    ).resolves.toBeUndefined();
+    expect(slack.sent[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(JSON.parse(slack.sent[0]!.body)).toStrictEqual({
+      channel: 'C07SUPPORT1',
+      thread_ts: '1700000000.000100',
+      text: 'Heads up',
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  });
+
   it('updateMessage sends exactly channel, ts, text, blocks to chat.update', async () => {
     const slack = fakeSlack(() => okJson());
     const blocks = [{ type: 'section', text: { type: 'plain_text', text: 'Allowed' } }];

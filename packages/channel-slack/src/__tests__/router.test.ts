@@ -322,7 +322,8 @@ interface SlackCall {
 
 function fakeSlack(
   o: {
-    fail?: (method: Method) => Error | undefined;
+    /** What a call throws, if anything; `args` as recorded. */
+    fail?: (method: Method, args: Record<string, unknown>) => Error | undefined;
     /**
      * conversations.info's answer for a channel; an Error is thrown, and a
      * promise is waited for first (a Slack slow to answer). Default: CHANNEL_INFO.
@@ -346,7 +347,7 @@ function fakeSlack(
     const call: SlackCall = { method, token, args };
     if (typeof args['ts'] === 'string') call.ts = args['ts'];
     calls.push(call);
-    const err = o.fail?.(method);
+    const err = o.fail?.(method, args);
     if (err !== undefined) throw err;
     return call;
   };
@@ -423,7 +424,7 @@ interface Invoke {
 }
 
 function world(o: {
-  slackFail?: (method: Method) => Error | undefined;
+  slackFail?: (method: Method, args: Record<string, unknown>) => Error | undefined;
   botToken?: string | null | Error;
   findUserFails?: boolean;
   listFails?: boolean;
@@ -3686,12 +3687,49 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     expect(w.invokes).toHaveLength(1);
   });
 
-  it('a notice Slack refuses is posted at the next turn, and both turns run', async () => {
+  it("an announcement-only channel (restricted_action) gets the notice in the mention's thread, before the reply, and once", async () => {
+    // Slack refuses the bot a top-level post there at every turn; a threaded one it takes.
+    const w = botWorld({
+      teams: TEAMS,
+      slackFail: (method, args) =>
+        method === 'postToChannel' && args['threadTs'] === undefined
+          ? new SlackApiError('chat.postMessage', 'restricted_action')
+          : undefined,
+    });
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Two tickets.' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention());
+    await w.idle();
+
+    const text = COPY.memoryNotice('Customer Support');
+    // Top-level first; then the same words in the thread the reply goes to (the mention's own ts starts it).
+    expect(notices(w)).toEqual([
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text }],
+      [OWN_BOT_TOKEN, { channel: SUPPORT, text, threadTs: MENTION_TS }],
+    ]);
+    const start = w.slack.calls.find((c) => c.method === 'startStream')!;
+    expect(start.args['threadTs']).toBe(MENTION_TS);
+    expect(w.slack.calls.indexOf(start)).toBeGreaterThan(w.slack.calls.findLastIndex((c) => c.method === 'postToChannel'));
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe('Two tickets.');
+    expect(w.lines.filter((l) => l.msg === 'slack_notice_failed' || l.msg === 'slack_notice_posted')).toEqual([
+      { level: 'warn', msg: 'slack_notice_failed', fields: { installId: OWN_BOT_ID, stage: 'post', code: 'restricted_action' } },
+      { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID, stage: 'thread' } },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([]);
+
+    // Final: the claim is kept, so later turns try nothing, top-level or threaded.
+    await w.dispatch(OWN_BOT, second());
+    await w.idle();
+    expect(w.invokes).toHaveLength(2);
+    expect(notices(w)).toHaveLength(2);
+    expect(w.teamsAsked).toEqual(['usr_alice']);
+  });
+
+  it('a notice Slack refuses for a passing reason (rate limit, 5xx) is posted at the next turn, and both turns run', async () => {
     let refuse = true;
     const w = botWorld({
       teams: TEAMS,
       slackFail: (method) =>
-        method === 'postToChannel' && refuse ? new SlackApiError('chat.postMessage', 'restricted_action') : undefined,
+        method === 'postToChannel' && refuse ? new SlackApiError('chat.postMessage', 'ratelimited', 30_000) : undefined,
     });
     await w.dispatch(OWN_BOT, botMention());
     await w.idle();
@@ -3699,7 +3737,7 @@ describe("createEventRouter: a channel's memory notice, at its first turn (TASK-
     // The turn ran: the refusal is logged by stage and code, nobody is told anything, and nothing says the event failed.
     expect(w.invokes).toHaveLength(1);
     expect(w.lines.filter((l) => l.msg === 'slack_notice_failed')).toEqual([
-      { level: 'warn', msg: 'slack_notice_failed', fields: { installId: OWN_BOT_ID, stage: 'post', code: 'restricted_action' } },
+      { level: 'warn', msg: 'slack_notice_failed', fields: { installId: OWN_BOT_ID, stage: 'post', code: 'ratelimited' } },
     ]);
     expect(w.lines.filter((l) => l.msg === 'slack_event_failed')).toEqual([]);
     expect(ephemerals(w.slack.calls)).toEqual([]);
