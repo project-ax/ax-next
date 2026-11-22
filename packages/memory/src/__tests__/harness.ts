@@ -103,6 +103,12 @@ export interface MemoryHarness {
    */
   settleObserver: () => Promise<void>;
   teamMembers: Set<string>;
+  /**
+   * Every id `auth:get-user` was asked about, in order (TASK-1209). Stays `[]`
+   * when the harness was built without `authUser`: then no such service is
+   * registered at all.
+   */
+  authCalls: string[];
   teardown: () => Promise<void>;
 }
 
@@ -123,6 +129,14 @@ export interface MemoryHarnessOptions {
     ownerUserId?: string;
     members?: Set<string>;
   };
+  /**
+   * Registers `auth:get-user` (TASK-1209), answering with whatever this returns
+   * (or throws) for the id asked about, the way `@ax/auth-better` answers
+   * `{ id, email, displayName, isAdmin } | null`. Omit it to build a harness
+   * with NO such service, the degraded shape memory's `optionalCalls` entry
+   * describes.
+   */
+  authUser?: (userId: string) => unknown | Promise<unknown>;
 }
 
 export async function makeMemoryHarness(
@@ -156,6 +170,19 @@ export async function makeMemoryHarness(
     ownerUserId: options.agent?.ownerUserId,
     members: teamMembers,
   });
+
+  const authCalls: string[] = [];
+  if (options.authUser !== undefined) {
+    const authUser = options.authUser;
+    bus.registerService<{ userId: string }, unknown>(
+      'auth:get-user',
+      '@ax/test-auth',
+      async (_ctx, input) => {
+        authCalls.push(input.userId);
+        return authUser(input.userId);
+      },
+    );
+  }
 
   if (options.llm !== undefined) {
     const llm = options.llm;
@@ -201,6 +228,7 @@ export async function makeMemoryHarness(
     llmCalls,
     toolDescriptors,
     teamMembers,
+    authCalls,
     settleObserver: async () => {
       // Loop: a settle can race a run that starts another. Bounded so a
       // pathological test cannot hang the suite.

@@ -113,8 +113,21 @@ describe('@ax/memory — manifest', () => {
       'conversations:get',
       'storage:get',
       'storage:set',
+      'auth:get-user',
     ]);
     expect(manifest.optionalCalls?.[0]?.degradation).toContain('chat:end');
+  });
+
+  // TASK-1209: a team agent's memories about a member read by that member's
+  // display name. Nothing about recall depends on it, so it degrades.
+  it("names auth:get-user as OPTIONAL: without it a teammate's memories read 'a teammate'", () => {
+    for (const config of [{}, { incremental: false }] as const) {
+      const { manifest } = createMemoryPlugin(config);
+      expect(manifest.calls).not.toContain('auth:get-user');
+      const entries = (manifest.optionalCalls ?? []).filter((oc) => oc.hook === 'auth:get-user');
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.degradation).toMatch(/a teammate/);
+    }
   });
 
   it('names the transcript and cursor store as OPTIONAL — without them extraction waits for chat:end', () => {
@@ -130,8 +143,9 @@ describe('@ax/memory — manifest', () => {
       'llm:call:openrouter',
       'storage:get',
       'storage:set',
+      'auth:get-user',
     ]);
-    for (const entry of off!.slice(1)) {
+    for (const entry of off!.filter((oc) => oc.hook.startsWith('storage:'))) {
       expect(entry.degradation).not.toMatch(/chat:end/);
       expect(entry.degradation).toMatch(/recall receipts/);
     }

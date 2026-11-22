@@ -227,8 +227,11 @@ export function isPersonSubject(about: string): boolean {
  * space/joiner, BOM), lowercased, accents dropped (NFD, then every combining
  * mark, so `José` and `jose` are one word), then each run of letters and
  * digits. Anything else (`_`, `-`, `.`, a space) separates words.
+ *
+ * Also how `member-names.ts` tells whether a member's display name would read
+ * as the person talking or as the agent (TASK-1209).
  */
-function nameWords(text: string): string[] {
+export function nameWords(text: string): string[] {
   return (
     text
       .normalize('NFKC')
