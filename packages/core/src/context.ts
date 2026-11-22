@@ -293,10 +293,12 @@ export interface AgentContext {
    * only shared statements and stores no speaker facts, and so does an
    * outsider's turn (`isOutsiderTurn`) whatever this field says. A team
    * agent's memory is shared with anyone who talks to it (design §4c,
-   * TASK-1209): every turn on it recalls everything, and a member's turn
-   * files their facts under them. An outsider's turn, on any agent and
-   * whatever this field says, stores no person fact. Host-stamped only:
-   * never taken from an IPC payload.
+   * TASK-1209): a member's, a routine's or an outsider's turn on it
+   * recalls everything whatever this field says, and a member's turn files
+   * their facts under them. A turn from a source this build doesn't know
+   * recalls only shared statements, on any agent. An outsider's turn, on any
+   * agent and whatever this field says, stores no person fact. Host-stamped
+   * only: never taken from an IPC payload.
    * It decides memory, not approvals; instructions and files are not
    * governed by it (an outsider's `source` is what makes files read-only). Must stay constant for a conversation, because memory
    * extracts a conversation in batches under the latest turn's audience.

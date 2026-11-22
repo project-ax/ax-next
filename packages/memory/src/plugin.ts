@@ -813,9 +813,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
             // `recallFacts`, like every engine read here: it adds the turn's
             // audience scope (TASK-1091), last, and refuses a row a shared
-            // turn may not see. On a team agent no turn has that scope, a
-            // member's in any audience (TASK-1204) or an outsider's
-            // (TASK-1209).
+            // turn may not see. On a team agent neither a member's turn, in
+            // any audience (TASK-1204), nor an outsider's (TASK-1209) has
+            // that scope; one from a source this build doesn't know does.
             const raw = await recallFacts<EngineRecallOutput>(
               bus,
               ctx,
@@ -2186,11 +2186,12 @@ const PRIOR_ROWS_PER_ABOUT = 200;
  * the caller fails open (see `TwinCheck`).
  *
  * Audience-scoped too, like every engine read (`recallFacts`, handed the
- * resolved `access`): a personal agent's shared or outsider's turn checks its
- * statements against shared rows only, as if no private row existed, and
- * every turn on a team agent against every row, in any audience: a member's
- * (TASK-1204) and an outsider's (TASK-1209). The same holds for the two reads
- * below.
+ * resolved `access`): a turn with the shared scope (a personal agent's shared
+ * or outsider's turn, and one from a source this build doesn't know on any
+ * agent) checks its statements against shared rows only, as if no private
+ * row existed, and a member's or an outsider's turn on a team agent against
+ * every row, in any audience (TASK-1204, TASK-1209). The same holds for the
+ * two reads below.
  */
 async function readPriorRows(
   bus: HookBus,

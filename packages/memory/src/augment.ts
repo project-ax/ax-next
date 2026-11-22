@@ -186,10 +186,10 @@ interface EngineFactRecord {
   // row from the person's own turn can bring back a value they retracted.
   sourceRole?: string;
   // Checked by `recallFacts` on a read with the shared scope (TASK-1091: a
-  // personal agent's shared turn or outsider's turn), never rendered: every
-  // row that reaches the block is one this turn may see. Every turn on a team
-  // agent may see every row, a member's (TASK-1204) and an outsider's
-  // (TASK-1209).
+  // personal agent's shared turn or outsider's turn, and a turn from a source
+  // this build doesn't know on any agent), never rendered: every row that
+  // reaches the block is one this turn may see. A member's turn (TASK-1204)
+  // and an outsider's (TASK-1209) on a team agent may see every row.
   audience?: string;
 }
 
@@ -610,8 +610,9 @@ export async function buildMemoryBlock(
   const recall = async (input: Record<string, unknown>): Promise<EngineRecallOutput> => {
     // On a personal agent, a shared or outsider's turn's block holds shared
     // statements only (TASK-1091): `recallFacts` adds that scope last and
-    // refuses a row outside it. On a team agent every turn's block reads
-    // everything, a member's (TASK-1204) and an outsider's (TASK-1209).
+    // refuses a row outside it. On a team agent a member's block (TASK-1204)
+    // and an outsider's (TASK-1209) read everything; a turn from a source
+    // this build doesn't know keeps the shared scope there too.
     const raw = await recallFacts<EngineRecallOutput>(bus, ctx, access, factsRecallHook, {
       ...ownerScope,
       activeOnly: true,

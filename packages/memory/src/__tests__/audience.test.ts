@@ -119,6 +119,22 @@ async function engineReadsDuring(
   }
 }
 
+/**
+ * Make the engine one without audience support: it drops the `audience` of
+ * every recall it is sent, so it answers a shared read with every row it has.
+ * The case memory's backstop exists for.
+ */
+function engineIgnoresAudience(h: MemoryHarness): void {
+  const realCall = h.bus.call.bind(h.bus) as (hook: string, c: AgentContext, input: unknown) => Promise<unknown>;
+  vi.spyOn(h.bus, 'call').mockImplementation((async (hook: string, c: AgentContext, input: unknown) => {
+    if (hook !== FACTS_RECALL_HOOK || input === null || typeof input !== 'object') {
+      return realCall(hook, c, input);
+    }
+    const { audience: _ignored, ...rest } = input as Record<string, unknown>;
+    return realCall(hook, c, rest);
+  }) as never);
+}
+
 function extractionReply(facts: Array<Record<string, unknown>>): LlmCallOutput {
   return {
     text: JSON.stringify({
@@ -143,8 +159,10 @@ const RECALL_SHAPES: MemoryRecallInput[] = [
 
 describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091)', () => {
   // `sharedCtx` is an outsider's turn: on a personal agent it recalls shared
-  // statements only. Every turn on a team agent recalls everything, a
-  // member's (TASK-1204) and an outsider's (TASK-1209): see the tests below.
+  // statements only. On a team agent a member's turn (TASK-1204) and an
+  // outsider's (TASK-1209) recall everything, and one from a source this
+  // build doesn't know still recalls shared statements only: see the tests
+  // below.
   it.each(['personal'] as const)(
     "a private statement is never recalled in an outsider's shared turn (%s agent)",
     async (visibility) => {
@@ -263,7 +281,7 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
   );
 
   // TASK-1209: on a team agent the stamp of an outsider's turn changes
-  // nothing either. Every turn there reads unscoped.
+  // nothing either. An outsider's turn there reads unscoped whatever it says.
   it.each([
     ['team', 'private'],
     ['team', undefined],
@@ -298,6 +316,57 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
       });
       expect(reads.length).toBeGreaterThan(0);
       for (const input of reads) expect(input).not.toHaveProperty('audience');
+    },
+  );
+
+  // TASK-1209's security review: on a team agent only a source this build
+  // knows reads unscoped. One it doesn't know fails closed, as
+  // `isOutsiderTurn` does: whatever its stamp, it reads what the room could
+  // see, backstop and all.
+  it.each(['shared', 'private', undefined] as const)(
+    "a turn from a source this build doesn't know recalls shared statements only on a team agent (audience %j), backstop and all",
+    async (audience) => {
+      const h = await makeHarness({ agent: { visibility: 'team' } });
+      const mine = h.ctx({ conversationId: PRIVATE_CONV });
+      await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, mine);
+      await engineRecord(h.bus, mine, [
+        {
+          about: 'launch_plan',
+          relation: 'date',
+          value: PUBLIC,
+          when: JAN,
+          ownerUserId: ALICE,
+          conversationId: CHANNEL,
+          audience: 'shared',
+        },
+      ]);
+      const unknown = h.ctx({
+        conversationId: CHANNEL,
+        source: 'satellite' as AgentContextSource,
+        ...(audience !== undefined ? { audience } : {}),
+      });
+
+      const reads = await engineReadsDuring(h, async () => {
+        expect(values(await h.recall({}, unknown))).toEqual([PUBLIC]);
+        for (const input of RECALL_SHAPES) {
+          expect(values(await h.recall(input, unknown)), JSON.stringify(input)).not.toContain(SECRET);
+        }
+        const block = await augment(h, unknown);
+        expect(block).toContain(PUBLIC);
+        expect(block).not.toContain('Nightjar');
+        const tool = await recallTool(h, unknown, 'launch');
+        expect(tool).toContain(PUBLIC);
+        expect(tool).not.toContain('Nightjar');
+      });
+      expect(reads.length).toBeGreaterThan(0);
+      for (const input of reads) expect(input.audience).toBe('shared');
+
+      // The backstop: an engine that drops the scope hands back the private
+      // row, and every read fails rather than show it.
+      engineIgnoresAudience(h);
+      await expect(h.recall({}, unknown)).rejects.toMatchObject({ code: 'invalid-return', hookName: FACTS_RECALL_HOOK });
+      await expect(recallTool(h, unknown, 'launch')).rejects.toMatchObject({ code: 'invalid-return' });
+      await expect(augment(h, unknown)).rejects.toMatchObject({ code: 'invalid-return' });
     },
   );
 
@@ -541,14 +610,7 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
       { about: 'launch_plan', relation: 'codename', value: SECRET },
       h.ctx({ conversationId: PRIVATE_CONV }),
     );
-    const realCall = h.bus.call.bind(h.bus) as (hook: string, c: AgentContext, input: unknown) => Promise<unknown>;
-    vi.spyOn(h.bus, 'call').mockImplementation((async (hook: string, c: AgentContext, input: unknown) => {
-      if (hook !== FACTS_RECALL_HOOK || input === null || typeof input !== 'object') {
-        return realCall(hook, c, input);
-      }
-      const { audience: _ignored, ...rest } = input as Record<string, unknown>;
-      return realCall(hook, c, rest);
-    }) as never);
+    engineIgnoresAudience(h);
 
     const shared = sharedCtx(h);
     expect(values(await h.recall({}, shared))).toEqual([SECRET]);
@@ -598,8 +660,8 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
 describe('recallFacts — the one door every engine read goes through', () => {
   /**
    * Whose memory a read is in: a personal agent keeps the audience scope, and
-   * a team agent's memory is read unscoped in every turn, a member's
-   * (TASK-1204) and an outsider's (TASK-1209).
+   * a team agent's memory is read unscoped in a member's turn (TASK-1204) and
+   * an outsider's (TASK-1209), but not from a source this build doesn't know.
    */
   const PERSONAL_AGENT = { visibility: 'personal' } as const;
   const TEAM_AGENT = { visibility: 'team' } as const;
@@ -762,9 +824,9 @@ describe('recallFacts — the one door every engine read goes through', () => {
 
   // TASK-1209, design §4c: a team agent's memory is shared with anyone who
   // talks to it, so an outsider's read there is a member's read: no scope,
-  // whatever its stamp or source, and its answer is not checked for stamps.
-  // It still drops a caller-built audience.
-  it.each(OUTSIDER_TURNS)("an outsider's read on a team agent is unscoped and never backstopped: audience %j, source %j", async (audience, source) => {
+  // whatever its stamp, and its answer is not checked for stamps. It still
+  // drops a caller-built audience.
+  it.each(OUTSIDER_TURNS.filter(([, source]) => source === 'external'))("an outsider's read on a team agent is unscoped and never backstopped: audience %j, source %j", async (audience, source) => {
     const outsider = outsiderTurn(audience, source);
     expect(recallAudienceScope(outsider, TEAM_AGENT)).toStrictEqual({});
     const answer = { statements: [{ ...ROW, audience: 'shared' }, { ...ROW, audience: 'private' }], degraded: [] };
@@ -776,21 +838,46 @@ describe('recallFacts — the one door every engine read goes through', () => {
     expect(asked).toStrictEqual([{ limit: 5 }]);
   });
 
+  // TASK-1209's security review: only a source this build knows reads a team
+  // agent's memory unscoped. One it doesn't know fails closed there too,
+  // whatever its stamp: the shared scope, and its backstop.
+  it.each(OUTSIDER_TURNS.filter(([, source]) => source !== 'external'))("a read from a source this build doesn't know keeps the shared scope and its backstop on a team agent: audience %j, source %j", async (audience, source) => {
+    const unknown = outsiderTurn(audience, source);
+    expect(recallAudienceScope(unknown, TEAM_AGENT)).toStrictEqual({ audience: 'shared' });
+    const { bus, asked } = engineAnswering({ statements: [{ ...ROW, audience: 'shared' }, { ...ROW, audience: 'private' }], degraded: [] });
+    const failure: unknown = await recallFacts(bus, unknown, TEAM_AGENT, FACTS_RECALL_HOOK, { limit: 5, audience: 'private' }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toMatchObject({ code: 'invalid-return', hookName: FACTS_RECALL_HOOK });
+    expect((failure as Error).message).not.toContain('Nightjar');
+    expect(asked).toStrictEqual([{ limit: 5, audience: 'shared' }]);
+  });
+
   it.each([
     // audience, source, visibility, scope
     ['shared', 'user', 'team', {}],
     ['shared', undefined, 'team', {}],
-    ['shared', 'routine', 'team', {}],
     ['public', 'user', 'team', {}], // a member's turn in an audience this build doesn't know: still the team's
+    ['public', undefined, 'team', {}],
     [undefined, 'user', 'team', {}],
+    // A member's own scheduled run reads what their turn does (TASK-1204), in any audience.
+    ['shared', 'routine', 'team', {}],
+    ['private', 'routine', 'team', {}],
+    [undefined, 'routine', 'team', {}],
+    ['public', 'routine', 'team', {}],
     // An outsider's turn on a team agent reads what a member's does (TASK-1209),
-    // whatever its stamp, and so does a source this build doesn't know.
+    // whatever its stamp, an audience this build doesn't know included.
     ['shared', 'external', 'team', {}],
     ['public', 'external', 'team', {}],
-    ['shared', 'satellite', 'team', {}],
     ['private', 'external', 'team', {}],
     [undefined, 'external', 'team', {}],
-    ['private', 'satellite', 'team', {}],
+    // A source this build doesn't know fails closed on a team agent too
+    // (TASK-1209's security review), whatever its stamp.
+    ['shared', 'satellite', 'team', { audience: 'shared' }],
+    ['public', 'satellite', 'team', { audience: 'shared' }],
+    ['private', 'satellite', 'team', { audience: 'shared' }],
+    [undefined, 'satellite', 'team', { audience: 'shared' }],
     // On a personal agent an outsider's turn, whatever its stamp, reads what
     // the room could see (review F3: fail closed, no live producer), and an
     // unknown source reads as an outsider's.
@@ -1312,7 +1399,7 @@ describe('a team agent keeps what a member says about themself, under their own 
   // What a member says about themself in a channel is filed under their own
   // key. A team agent's memory is shared with anyone who talks to it
   // (TASK-1209, design §4c), so every member's turn reads it, and so does an
-  // outsider's: no turn on a team agent has an audience scope.
+  // outsider's: neither turn has an audience scope on a team agent.
   it("what a member says about themself in a channel is the team's: members and outsiders recall it", async () => {
     const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(ALICE_FACTS) });
     answerSpeakerNames(h.bus, ALICE_LABEL, 'conv-x');
