@@ -90,7 +90,7 @@ async function rawRow(installId: string, channelId: string) {
 /** Whether a binding's stored notice claim is exactly `stamp` (a claimNotice answer), compared by the database at full precision. */
 async function noticeStampIs(installId: string, channelId: string, stamp: string): Promise<boolean> {
   const r = await sql<{ same: boolean | null }>`
-    SELECT notice_posted_at = ${stamp}::timestamptz AS same FROM channel_slack_v1_channels
+    SELECT to_char(notice_posted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') = ${stamp} AS same FROM channel_slack_v1_channels
      WHERE install_id = ${installId} AND channel_id = ${channelId}
   `.execute(db);
   return r.rows[0]?.same === true;

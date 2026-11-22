@@ -859,9 +859,10 @@ describe('the section', () => {
 
     // A personal agent has no team, and the answer says none.
     w.state.install = { ...INSTALL };
-    const personal = await w.status(PATS.id, PAT);
-    expect(personal.body).not.toHaveProperty('agentTeamName');
-    expect(personal.body).not.toHaveProperty('teamName');
+    expect(await w.status(PATS.id, PAT)).toEqual({
+      status: 200,
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true },
+    });
   });
 
   it("a team name the teams service can't give is left out, and the status still answers (TASK-1203)", async () => {

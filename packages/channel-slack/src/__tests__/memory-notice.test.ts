@@ -241,20 +241,35 @@ describe('postMemoryNotice', () => {
     expect(w.lines.map((l) => l.msg)).toEqual(['slack_notice_top_level_refused', 'slack_notice_failed', 'slack_notice_posted']);
   });
 
-  it.each(['restricted_action', 'restricted_action_thread_only_channel', 'restricted_action_read_only_channel'])(
+  it.each(['restricted_action', 'restricted_action_thread_only_channel'])(
     'an admins-only refusal (%s) falls back to the thread, and a thread post that lands keeps the claim',
     async (code) => {
       const w = world({ postFails: (n) => (n === 1 ? new SlackApiError('chat.postMessage', code) : undefined) });
       await w.notice();
       expect(w.posts.map((p) => p.threadTs)).toEqual([undefined, THREAD_TS]);
       expect(w.claimed()).toBe(true);
-      // Not a failure: the channel was told, in the thread.
-      expect(w.lines.filter((l) => l.msg === 'slack_notice_failed')).toEqual([]);
+      // Not a failure: the channel was told, in the thread; the refusal's own code is logged, for walk D.
+      expect(w.lines).toEqual([
+        { level: 'info', msg: 'slack_notice_top_level_refused', fields: { code } },
+        { level: 'info', msg: 'slack_notice_posted', fields: { stage: 'thread' } },
+      ]);
     },
   );
 
+  it("a read-only channel's refusal is an ordinary one: no thread post, the claim given back", async () => {
+    const w = world({
+      postFails: (n) => (n === 1 ? new SlackApiError('chat.postMessage', 'restricted_action_read_only_channel') : undefined),
+    });
+    await w.notice();
+    expect(w.posts.map((p) => p.threadTs)).toEqual([undefined]);
+    expect(w.claimed()).toBe(false);
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_notice_failed', fields: { stage: 'post', code: 'restricted_action_read_only_channel' } },
+    ]);
+  });
+
   it('only an admins-only refusal falls back to the thread: any other refusal posts nothing there', async () => {
-    for (const code of ['not_in_channel', 'ratelimited', 'http-503', 'channel_not_found', 'restricted', 'not_restricted_action']) {
+    for (const code of ['not_in_channel', 'ratelimited', 'http-503', 'channel_not_found', 'restricted', 'not_restricted_action', 'restricted_actions', 'restricted_action_other']) {
       const w = world({ postFails: (n) => (n === 1 ? new SlackApiError('chat.postMessage', code) : undefined) });
       await w.notice();
       expect(w.posts.map((p) => p.threadTs), code).toEqual([undefined]);

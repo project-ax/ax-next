@@ -21,10 +21,12 @@ import { agentTeamName } from './team-name.js';
  * down) gives the claim back, so the next turn tries again: telling a
  * channel twice, when Slack took a post we saw fail, is the better failure
  * for a privacy notice than never telling it. The one refusal no later turn
- * gets past is a channel where only admins post top-level (an
- * announcement-only or thread-only channel: Slack answers `restricted_action`
- * or a `restricted_action_…` variant; which one is unmeasured, so any of
- * them): the notice goes in the mention's thread instead, which reaches the
+ * gets past is a channel where only admins post top-level but anyone may
+ * reply in a thread (Slack answers `restricted_action`, or
+ * `restricted_action_thread_only_channel`; which one an announcement-only
+ * channel gets is unmeasured, so both. A read-only channel's
+ * `restricted_action_read_only_channel` refuses thread replies too, so it
+ * is an ordinary refusal: released, and the next turn tries again): the notice goes in the mention's thread instead, which reaches the
  * readers of that thread only, and the claim is kept once that lands (it is
  * given back only if the thread post fails too). So later threads there are
  * not told: accepted, since retrying would put a claim, two lookups and a
@@ -123,7 +125,10 @@ export async function postMemoryNotice(
   say('info', 'slack_notice_posted');
 }
 
-/** Slack refused a top-level post because only admins may post one there (`restricted_action`, or a `restricted_action_…` variant). */
+/** Slack's refusals of a top-level post where a thread reply would still land. */
+const THREAD_STILL_OPEN = new Set(['restricted_action', 'restricted_action_thread_only_channel']);
+
+/** Slack refused a top-level post because only admins may post one there, and a thread reply is still open. */
 function isAdminsOnlyRefusal(err: unknown): boolean {
-  return err instanceof SlackApiError && (err.code === 'restricted_action' || err.code.startsWith('restricted_action_'));
+  return err instanceof SlackApiError && THREAD_STILL_OPEN.has(err.code);
 }
