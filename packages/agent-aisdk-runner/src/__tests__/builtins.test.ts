@@ -319,6 +319,44 @@ describe('resolveBashTimeoutMs', () => {
     expect(resolveBashTimeoutMs(999_999_999)).toBe(600_000);
   });
 
+  it('bash max follows the turn limit', () => {
+    expect(resolveBashTimeoutMs(3_600_000, 7_200_000)).toBe(3_600_000);
+    expect(resolveBashTimeoutMs(999_999_999, 7_200_000)).toBe(7_200_000);
+  });
+
+  it('default stays 2 min', () => {
+    expect(resolveBashTimeoutMs(undefined, 7_200_000)).toBe(120_000);
+  });
+
+  it('without a turn limit the max stays 10 min', () => {
+    expect(resolveBashTimeoutMs(3_600_000)).toBe(600_000);
+  });
+
+  it('refuses nonsense: NaN and Infinity fall back to the default, negatives floor', () => {
+    expect(resolveBashTimeoutMs(Number.NaN, 7_200_000)).toBe(120_000);
+    expect(resolveBashTimeoutMs(Infinity, 7_200_000)).toBe(120_000);
+    expect(resolveBashTimeoutMs(-5, 7_200_000)).toBe(1_000);
+  });
+
+  it('a nonsense max falls back to 10 min', () => {
+    expect(resolveBashTimeoutMs(3_600_000, Number.NaN)).toBe(600_000);
+    expect(resolveBashTimeoutMs(3_600_000, -1)).toBe(600_000);
+  });
+
+  it('the Bash tool description names the live max', () => {
+    const tools = buildBuiltinTools({
+      policy: fakePolicy(), homeDir: home, env: {}, holdLatch: createHoldLatch(),
+      onHold: () => {}, onToolFailure: () => {}, bashMaxTimeoutMs: 7_200_000,
+    });
+    const d = (tools['Bash'] as { description?: string }).description ?? '';
+    expect(d).toContain('up to 120 minutes');
+    const plain = buildBuiltinTools({
+      policy: fakePolicy(), homeDir: home, env: {}, holdLatch: createHoldLatch(),
+      onHold: () => {}, onToolFailure: () => {},
+    });
+    expect((plain['Bash'] as { description?: string }).description).toContain('up to 10 minutes');
+  });
+
   it('floors a zero/negative timeout instead of killing instantly', () => {
     expect(resolveBashTimeoutMs(0)).toBe(1_000);
     expect(resolveBashTimeoutMs(-5)).toBe(1_000);

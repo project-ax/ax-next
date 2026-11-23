@@ -3869,6 +3869,62 @@ describe('main()', () => {
   // ---------------------------------------------------------------------
 
   describe('Phase C: HOME for the SDK subprocess', () => {
+    async function sdkEnvFor(extra: Record<string, string>): Promise<Record<string, string | undefined>> {
+      setEnv({ ...COMPLETE_ENV, ...extra });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      const arg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string | undefined> };
+      };
+      return arg.options.env;
+    }
+
+    it('SDK env carries BASH_MAX_TIMEOUT_MS and API_TIMEOUT_MS', async () => {
+      const env = await sdkEnvFor({ AX_TURN_LIMIT_MS: '7200000' });
+      expect(env['BASH_MAX_TIMEOUT_MS']).toBe('7200000');
+      expect(env['API_TIMEOUT_MS']).toBe('1800000');
+    });
+
+    it('SDK env leaves both unset without a turn limit', async () => {
+      const env = await sdkEnvFor({});
+      expect(env['BASH_MAX_TIMEOUT_MS']).toBeUndefined();
+      expect(env['API_TIMEOUT_MS']).toBeUndefined();
+    });
+
     it('happy path: SDK env.HOME is the agent home and ANTHROPIC_API_KEY is preserved', async () => {
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();

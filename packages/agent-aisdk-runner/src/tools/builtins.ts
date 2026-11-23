@@ -48,7 +48,10 @@ import { wrapWithPolicy, type ToolRunResult } from './policy-wrap.js';
 
 /** Default wall-clock for a Bash call, matching the Claude built-in. */
 const BASH_DEFAULT_TIMEOUT_MS = 120_000;
-/** Hard ceiling, whatever the model asks for. Ten minutes of a turn is plenty. */
+/**
+ * Hard ceiling when the host passes no turn limit. With one, the ceiling is
+ * the turn limit instead (`BuiltinToolsOptions.bashMaxTimeoutMs`).
+ */
 const BASH_MAX_TIMEOUT_MS = 600_000;
 /** Floor, so a `timeout: 0` can't turn every command into an instant kill. */
 const BASH_MIN_TIMEOUT_MS = 1_000;
@@ -150,6 +153,11 @@ export interface BuiltinToolsOptions {
    * stays host-side on tool.pre-call. Absent/empty = all six built-ins.
    */
   disallowed?: readonly string[] | undefined;
+  /**
+   * The agent's turn limit in ms (`AX_TURN_LIMIT_MS`): the longest a Bash call
+   * may ask to run. Absent or nonsense = the 10-minute ceiling.
+   */
+  bashMaxTimeoutMs?: number | undefined;
 }
 
 /**
@@ -168,6 +176,7 @@ export function buildBuiltinTools(
       run(input, { abortSignal: ctx.abortSignal }),
     );
 
+  const bashMaxMinutes = Math.floor(effectiveBashMaxMs(opts.bashMaxTimeoutMs) / 60_000);
   const all: Record<string, Tool> = {
     Bash: tool({
       description:
@@ -175,14 +184,17 @@ export function buildBuiltinTools(
         "agent's home directory. Returns the command's stdout and stderr; a " +
         'non-zero exit is reported with its exit code rather than hidden. Use ' +
         'this for builds, tests, package managers and git — but prefer Read, ' +
-        'Glob and Grep over cat/find/grep, which return better-shaped results.',
+        'Glob and Grep over cat/find/grep, which return better-shaped results. ' +
+        `A command may run up to ${bashMaxMinutes} minutes if you set \`timeout\`; ` +
+        'the default is 2 minutes, so give e2e runs and installs an explicit ' +
+        'timeout, or run them in the background and poll.',
       inputSchema: jsonSchema({
         type: 'object',
         properties: {
           command: { type: 'string', description: 'The shell command to run.' },
           timeout: {
             type: 'number',
-            description: `Timeout in milliseconds. Defaults to ${BASH_DEFAULT_TIMEOUT_MS}, maximum ${BASH_MAX_TIMEOUT_MS}.`,
+            description: `Timeout in milliseconds. Defaults to ${BASH_DEFAULT_TIMEOUT_MS}, maximum ${effectiveBashMaxMs(opts.bashMaxTimeoutMs)}.`,
           },
           description: {
             type: 'string',
@@ -360,15 +372,26 @@ export function buildBuiltinTools(
 
 // --- Bash ------------------------------------------------------------------
 
+/** The turn limit when it is a usable number, else the 10-minute ceiling. */
+function effectiveBashMaxMs(maxMs: number | undefined): number {
+  return maxMs !== undefined && Number.isFinite(maxMs) && maxMs >= BASH_MIN_TIMEOUT_MS
+    ? maxMs
+    : BASH_MAX_TIMEOUT_MS;
+}
+
 /**
  * Exported for the test, which is the only way to prove the clamp: the ceiling
  * is otherwise only observable by waiting ten minutes.
  */
-export function resolveBashTimeoutMs(raw: unknown): number {
+export function resolveBashTimeoutMs(
+  raw: unknown,
+  maxMs: number = BASH_MAX_TIMEOUT_MS,
+): number {
+  const max = effectiveBashMaxMs(maxMs);
   if (typeof raw !== 'number' || !Number.isFinite(raw)) {
-    return BASH_DEFAULT_TIMEOUT_MS;
+    return Math.min(max, BASH_DEFAULT_TIMEOUT_MS);
   }
-  return Math.min(BASH_MAX_TIMEOUT_MS, Math.max(BASH_MIN_TIMEOUT_MS, raw));
+  return Math.min(max, Math.max(BASH_MIN_TIMEOUT_MS, raw));
 }
 
 /**
@@ -460,7 +483,7 @@ async function runBashTool(
   abortSignal: AbortSignal | undefined,
 ): Promise<ToolRunResult> {
   const command = requireString(input, 'command', 'Bash');
-  const timeoutMs = resolveBashTimeoutMs(input['timeout']);
+  const timeoutMs = resolveBashTimeoutMs(input['timeout'], opts.bashMaxTimeoutMs);
   const outcome = await spawnBash(command, opts, timeoutMs, abortSignal);
   const output = formatBashOutcome(outcome, timeoutMs);
   // The model reads `output` either way — identical bytes to before TASK-430,

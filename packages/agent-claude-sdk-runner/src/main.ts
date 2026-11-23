@@ -470,6 +470,16 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // the model for a turn nobody asked for, and one past its timeout is
             // killed, not backgrounded. Same floor; see background-tasks-env.ts.
             ...buildBackgroundTasksEnv(),
+            // Long tool calls (spec §6.3): the SDK's Bash tool may run as long
+            // as the turn does, and one model request may take 30 minutes.
+            // Only these two names, only when the host sent a turn limit; the
+            // SDK's own 10-minute defaults apply otherwise.
+            ...(env.turnLimitMs !== undefined
+              ? {
+                  BASH_MAX_TIMEOUT_MS: String(env.turnLimitMs),
+                  API_TIMEOUT_MS: '1800000',
+                }
+              : {}),
             HOME: sdkHome,
             // Redirect npx/uvx fetch caches onto the session scratch root so they
             // don't fill the agent's home, which is durable and counts toward the
