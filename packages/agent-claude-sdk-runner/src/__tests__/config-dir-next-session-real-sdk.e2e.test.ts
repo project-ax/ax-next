@@ -114,13 +114,19 @@ describe.skipIf(!HAVE_BINARY)('a config dir an earlier session wrote, on the rea
     expect(bBodies[0], 'the planted CLAUDE.md was not loaded').toContain('PLANTED-MEM-T1217');
   }, 60_000);
 
-  it('FIX: the used dir is refused at boot, and the fresh dir the sandbox gives next sees no hook and no env', async () => {
+  // The fix-dependent assertion is the refusal: against the unfixed code there
+  // is no guard, so the runner would start a CLI on `cfg` and CONTROL shows what
+  // that CLI runs. The exit-2-before-any-work half lives in run-runner.test.ts.
+  // The `cfg2` half is a SANITY check, not proof of the fix: a dir that never
+  // saw the plant cannot see it. It pins that a guard-approved dir boots clean.
+  it('FIX: the used dir is refused at boot (sanity: the fresh dir the sandbox gives next sees no hook and no env)', async () => {
     const marker = path.join(tmp, 'fix-marker.log');
     await runSessionA(marker);
 
     await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).rejects.toThrow(
       /refusing to start: CLAUDE_CONFIG_DIR .* is not fresh/,
     );
+    await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).rejects.toThrow(/settings\.json/);
 
     const cfg2 = await makeFreshConfigDir(tmp, 'cfg2');
     await expect(assertConfigDirFresh({ claudeConfigDir: cfg2 })).resolves.toBeUndefined();
