@@ -254,7 +254,7 @@ Run `security-checklist` for this task: it's a consent-surface claim, and the or
   - `pnpm --filter @ax/tool-policy build`
 
   Expected: all green.
-- [ ] **Step 5: Commit** `[TASK-1207] Rail: say the agent cannot use the CLI's built-in scheduler instead of a routine; every denied SDK built-in is a row or a written reason`.
+- [ ] **Step 5: Commit.** Landed as `10b5b7c09` `[TASK-1207] tool-policy: rail states the scheduling denial (builtins.cron-create); drift guard accounts for every denied SDK built-in`. The clause was reworded twice in review after that (`6efc15356`, then `ba9fba0d5` to "schedule things with its built-in timer instead of a routine").
 
 ### Task 3: Switch off the two bundled skills the CLI lets us switch off [tier: integration]
 
