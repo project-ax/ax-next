@@ -771,6 +771,53 @@ describe('@ax/session-inmemory plugin', () => {
     });
   });
 
+  it('queue-work stores and returns host-note (inmemory)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-hn',
+      workspaceRoot: '/tmp/ws',
+    });
+    const queued = await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      { sessionId: 's-hn', entry: { type: 'host-note', note: 'Services are up.', reqId: 'r-1' } },
+    );
+    expect(queued.cursor).toBe(0);
+    expect(
+      await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>('session:claim-work', ctx, {
+        sessionId: 's-hn',
+        cursor: 0,
+        timeoutMs: 500,
+      }),
+    ).toEqual({ type: 'host-note', note: 'Services are up.', reqId: 'r-1', cursor: 1 });
+  });
+
+  it('queue-work refuses an empty or over-4000-character host-note, and a junk reqId', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-hn2',
+      workspaceRoot: '/tmp/ws',
+    });
+    const bad = [
+      { type: 'host-note', note: '' },
+      { type: 'host-note', note: 'x'.repeat(4001) },
+      { type: 'host-note', note: 'n', reqId: '' },
+    ];
+    for (const entry of bad) {
+      await expect(
+        h.bus.call('session:queue-work', ctx, { sessionId: 's-hn2', entry }),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
+    await expect(
+      h.bus.call('session:queue-work', ctx, {
+        sessionId: 's-hn2',
+        entry: { type: 'host-note', note: 'x'.repeat(4000) },
+      }),
+    ).resolves.toEqual({ cursor: 0 });
+  });
+
   it('round-trips an interrupt entry, in order behind the message it stops (TASK-688)', async () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
     const ctx = h.ctx();

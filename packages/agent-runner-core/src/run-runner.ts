@@ -21,6 +21,7 @@ import { commitTrace } from './commit-trace.js';
 import { assertConfigDirFresh, assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import { decisionResolvedTurn } from './decision-turn.js';
+import { composeHostNoteMessage } from './host-note-turn.js';
 import { buildEgressAllowedNote } from './egress-note.js';
 import { createInboxLoop, type InboxLoopEntry } from './inbox-loop.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
@@ -1164,6 +1165,22 @@ async function runRunnerInner(
         adoptReqIdForTurn({ reqId: continuationReqId });
         chatEndHistory.push({ role: 'user', content });
         return { content, id: trackMessage(continuationReqId) };
+      }
+      if (entry.type === 'host-note') {
+        // A note the HOST wrote (restart_with_services swapped this sandbox
+        // mid-turn). It opens a turn like decision-resolved, and for the same
+        // reason needs no chat:start re-check: it belongs to the agent:invoke
+        // already in flight, which passed it. Framed and quoted, never trusted.
+        const content = composeHostNoteMessage(entry.note ?? '');
+        if (content === null) {
+          process.stderr.write('runner: host-note delivery had an empty note; ignoring\n');
+          continue;
+        }
+        const noteReqId =
+          typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
+        adoptReqIdForTurn({ reqId: noteReqId });
+        chatEndHistory.push({ role: 'user', content });
+        return { content, id: trackMessage(noteReqId) };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk

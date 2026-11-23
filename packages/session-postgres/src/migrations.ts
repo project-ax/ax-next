@@ -167,7 +167,7 @@ export interface InboxRow {
   id: string; // BIGSERIAL — pg returns BIGINT as string by default
   session_id: string;
   cursor: string; // BIGINT — string for safety; we coerce in code
-  type: 'user-message' | 'cancel' | 'interrupt' | 'decision-resolved';
+  type: 'user-message' | 'cancel' | 'interrupt' | 'decision-resolved' | 'host-note';
   payload: unknown; // JSONB — null for cancel/interrupt, AgentMessage for user-message
   created_at: Date;
 }

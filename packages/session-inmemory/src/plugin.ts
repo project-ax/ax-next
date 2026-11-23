@@ -343,6 +343,12 @@ const VALID_ROLES = new Set(['user', 'assistant']);
  */
 const DECISION_NOTE_MAX = 2000;
 
+/**
+ * Cap on the host-authored `host-note` note. Mirrors `HOST_NOTE_MAX` in
+ * @ax/ipc-protocol, for the same reason as above.
+ */
+const HOST_NOTE_MAX = 4000;
+
 function requireInboxEntry(
   value: unknown,
   hookName: string,
@@ -402,6 +408,27 @@ function requireInboxEntry(
   // TASK-688. Payload-free: there is nothing to validate, and anything a caller
   // hangs on the object is dropped by `deliver` (it rebuilds the entry).
   if (type === 'interrupt') return;
+  if (type === 'host-note') {
+    const note = (value as { note?: unknown }).note;
+    if (typeof note !== 'string' || note.length === 0 || note.length > HOST_NOTE_MAX) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.note' must be a non-empty string of at most ${HOST_NOTE_MAX} characters`,
+      });
+    }
+    const reqId = (value as { reqId?: unknown }).reqId;
+    if (reqId !== undefined && (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.reqId' must be a non-empty string of at most 128 characters for host-note entries`,
+      });
+    }
+    return;
+  }
   // AW-6. `decision-resolved` is HOST-INTERNAL: it is produced only by
   // @ax/decisions after a human answered, and no IPC action routes to
   // `session:queue-work`. The checks below are the trust-boundary belt anyway
@@ -460,7 +487,7 @@ function requireInboxEntry(
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     hookName,
-    message: `'entry.type' must be 'user-message', 'cancel', 'interrupt' or 'decision-resolved'`,
+    message: `'entry.type' must be 'user-message', 'cancel', 'interrupt', 'host-note' or 'decision-resolved'`,
   });
 }
 

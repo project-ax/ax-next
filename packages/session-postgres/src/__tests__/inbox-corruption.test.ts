@@ -278,6 +278,25 @@ describe('inbox corruption: malformed JSONB throws corrupt-inbox-row', () => {
     await inbox.shutdown();
   }, 15000);
 
+  it('round-trips a host-note entry, and a malformed host-note row throws corrupt-inbox-row', async () => {
+    const { inbox, db } = await makeInbox();
+    await inbox.queue('s-hn-pg', { type: 'host-note', note: 'Services are up.', reqId: 'r-1' });
+    expect(await inbox.claim('s-hn-pg', 0, 1000)).toEqual({
+      type: 'host-note',
+      note: 'Services are up.',
+      reqId: 'r-1',
+      cursor: 1,
+    });
+    await sql`
+      INSERT INTO session_postgres_v1_inbox (session_id, cursor, type, payload)
+      VALUES ('s-hn-pg', 1, 'host-note', ${JSON.stringify({ note: '' })}::jsonb)
+    `.execute(db);
+    await expect(inbox.claim('s-hn-pg', 1, 1000)).rejects.toMatchObject({
+      code: 'corrupt-inbox-row',
+    });
+    await inbox.shutdown();
+  }, 15000);
+
   it('round-trips a decision-resolved entry carrying a continuation reqId (TASK-278)', async () => {
     const { inbox } = await makeInbox();
     const { cursor } = await inbox.queue('s-dec-pg-cont', {

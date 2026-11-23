@@ -70,6 +70,14 @@ export function createInbox(): Inbox {
         cursor: cursor + 1,
       };
     }
+    if (entry.type === 'host-note') {
+      return {
+        type: 'host-note',
+        note: entry.note,
+        ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
+        cursor: cursor + 1,
+      };
+    }
     if (entry.type === 'interrupt') {
       // TASK-688. Built fresh rather than spread from the stored entry, so
       // nothing a caller hung on the object can ride to the runner.

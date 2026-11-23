@@ -57,6 +57,7 @@ export type {
   CreateToolPolicyOptions,
 } from './tool-policy.js';
 export { decisionResolvedTurn, sanitizeDecisionNote } from './decision-turn.js';
+export { composeHostNoteMessage } from './host-note-turn.js';
 export { createHoldLatch, drainHoldLatch } from './hold-latch.js';
 export type { HoldLatch } from './hold-latch.js';
 export { createHeldCallRegistry } from './held-calls.js';

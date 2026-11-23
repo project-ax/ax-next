@@ -302,6 +302,58 @@ describe('@ax/session-postgres plugin', () => {
     });
   });
 
+  it('queue-work stores and returns host-note (postgres)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-hn',
+      workspaceRoot: '/tmp/ws',
+    });
+    const queued = await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      { sessionId: 's-hn', entry: { type: 'host-note', note: 'Services are up.', reqId: 'r-1' } },
+    );
+    expect(queued.cursor).toBe(0);
+    expect(
+      await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>('session:claim-work', ctx, {
+        sessionId: 's-hn',
+        cursor: 0,
+        timeoutMs: 500,
+      }),
+    ).toEqual({ type: 'host-note', note: 'Services are up.', reqId: 'r-1', cursor: 1 });
+
+    await h.bus.call('session:queue-work', ctx, {
+      sessionId: 's-hn',
+      entry: { type: 'host-note', note: 'no reqId' },
+    });
+    expect(
+      await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>('session:claim-work', ctx, {
+        sessionId: 's-hn',
+        cursor: 1,
+        timeoutMs: 500,
+      }),
+    ).toEqual({ type: 'host-note', note: 'no reqId', cursor: 2 });
+  });
+
+  it('queue-work refuses an empty or over-4000-character host-note (postgres)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-hn2',
+      workspaceRoot: '/tmp/ws',
+    });
+    for (const entry of [
+      { type: 'host-note', note: '' },
+      { type: 'host-note', note: 'x'.repeat(4001) },
+      { type: 'host-note', note: 'n', reqId: '' },
+    ]) {
+      await expect(
+        h.bus.call('session:queue-work', ctx, { sessionId: 's-hn2', entry }),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
+  });
+
   it('session:queue-work on unknown session throws PluginError code unknown-session', async () => {
     const h = await makeHarness();
     const ctx = h.ctx();

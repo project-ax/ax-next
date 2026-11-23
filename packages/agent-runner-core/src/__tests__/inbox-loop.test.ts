@@ -284,6 +284,18 @@ describe('inbox-loop idle floor', () => {
     expect(loop.cursor).toBe(4);
   });
 
+  it('surfaces a host-note delivery, with its reqId, and advances the cursor', async () => {
+    const { client } = makeMockClient([
+      { type: 'host-note', note: 'Services are up.', reqId: 'req-1', cursor: 5 },
+      { type: 'host-note', note: 'No reqId.', cursor: 6 },
+    ]);
+    const loop = createInboxLoop({ client });
+    expect(await loop.next()).toEqual({ type: 'host-note', note: 'Services are up.', reqId: 'req-1' });
+    expect(loop.cursor).toBe(5);
+    expect(await loop.next()).toEqual({ type: 'host-note', note: 'No reqId.' });
+    expect(loop.cursor).toBe(6);
+  });
+
   it('defence-in-depth (non-validating client only): re-polls past an unknown delivery type instead of crashing the turn', async () => {
     // Reachable only because this mock skips schema validation. Against the
     // real ipc-client the response below is rejected upstream and the error
