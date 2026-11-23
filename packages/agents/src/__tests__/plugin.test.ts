@@ -218,6 +218,12 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           degradation:
             'update_identity and complete_bootstrap are not offered to agents; their tool:execute services still answer',
         },
+        {
+          // TASK-1214 — GET /admin/agents/tools reads the catalog's names.
+          hook: 'tool:list',
+          degradation:
+            "GET /admin/agents/tools answers 503, so the agent form can't offer tools to pick and leaves each agent's tool list as it is",
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
     });
