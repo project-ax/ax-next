@@ -17,7 +17,9 @@
 //      `proxy:add-host` (a person's own Allow click) records a host it newly
 //      put on a live session's allowlist, and the runner drains it at the
 //      start of the person's next turn to tell the agent the host is now
-//      allowed.
+//      allowed. `proxy:open-session` also records the sites kept for the agent
+//      while it wasn't running (TASK-1212, `newlyAllowedHosts`), each one only
+//      if it is on the new session's allowlist.
 //
 // Deliberately mechanism-free and tiny: it stores (sessionId → set of hosts)
 // and nothing else. `drain` is surface-once: it returns and clears, so each
