@@ -30,6 +30,18 @@ import { ALICE, answerSpeakerNames, BOB, makeMemoryHarness, type MemoryHarness }
  *   as `assistant | replied_with | hello <!channel>, testing` in 4 of 5 trials
  *   (and `replied_with` in 2 of 5 for "alpha beta gamma"). The act of replying
  *   is now narration, dropped like the rest (`self-report.ts`).
+ *
+ * TASK-1210 replayed the walk again (2026-11-23, same extractor, 5 trials per
+ * thread, from kind's transcripts) and pinned more of what it wrote about the
+ * turn itself, all dropped now: the agent's memory misses ("has no record of
+ * his favorite color", and `vinay | team_standup_time | no team standup time
+ * is on record for vinay's team`, filed under the real standup time's very
+ * predicate), its request to its admin (`requested_admin_capability`), and
+ * the speaker's request narration (`requested_exact_reply`,
+ * `instructed_assistant | … reply with exactly …`, `slack_user_id`). The
+ * standup question's reply comes from a replay of its full thread; the
+ * walk's thread had a second exchange ("check your memory") that isn't
+ * replayed here.
  */
 
 let harness: MemoryHarness | undefined;
@@ -71,6 +83,22 @@ const ALPHA_TURN = [
   },
   { role: 'assistant', content: 'alpha beta gamma.' },
 ];
+const COLOR_QUESTION_TURN = [
+  { role: 'user', content: '[Slack · #walk-two-bots · vinay (UHTE83XE1)]: @[Fern (you)] what’s my favorite color?' },
+  {
+    role: 'assistant',
+    content:
+      "I don't have any record of your favorite color — it hasn't come up in our conversations before! What is it? I'll make a note for the future.",
+  },
+];
+const STANDUP_QUESTION_TURN = [
+  { role: 'user', content: '[Slack · #walk-two-bots · vinay (UHTE83XE1)]: @[Fern (you)] when is our team standup?' },
+  {
+    role: 'assistant',
+    content:
+      "I don't have your team standup time on file — I don't have access to your calendar yet, so I can't look it up directly.\n\nA couple of ways I can help:\n\n1. **Tell me now** — let me know the time and I'll remember it for future questions.\n2. **Connect your calendar** — if you'd like me to check your Google Calendar or Outlook, I can request that access. Just say the word and I'll get it set up.",
+  },
+];
 const BOT_TURN = [
   {
     role: 'user',
@@ -83,10 +111,13 @@ const BOT_TURN = [
   },
 ];
 
-/** The extractor's replies: subject, predicate and object as it wrote them. */
+/**
+ * The extractor's replies: subject, predicate and object as it wrote them.
+ * Each marker is in its own thread's prompt alone.
+ */
 const REPLIES: Array<[marker: string, facts: Array<Record<string, string>>]> = [
   [
-    'our team standup',
+    'our team standup is at',
     [{ subject: 'vinay', predicate: 'team_standup_time', object: 'Team standup is at 9:30 every weekday' }],
   ],
   [
@@ -98,6 +129,12 @@ const REPLIES: Array<[marker: string, facts: Array<Record<string, string>>]> = [
         object: 'In Slack #walk-two-bots, vinay (UHTE83XE1) asked Fern to reply with exactly these lines: hello <!channel>, testing',
       },
       { subject: 'assistant', predicate: 'replied_with', object: 'hello <!channel>, testing' },
+      // TASK-1210 replay.
+      {
+        subject: 'vinay',
+        predicate: 'slack_user_id',
+        object: 'UHTE83XE1 (Slack user ID, interacts with Fern bot in Slack)',
+      },
     ],
   ],
   [
@@ -108,16 +145,61 @@ const REPLIES: Array<[marker: string, facts: Array<Record<string, string>>]> = [
         predicate: 'replied_with',
         object: 'Replied with exactly the three words "alpha beta gamma" as requested by vinay in Slack channel #walk-two-bots',
       },
+      // TASK-1210 replay: 3 of 5 trials.
+      {
+        subject: 'vinay',
+        predicate: 'instructed_assistant',
+        object:
+          'In Slack #walk-two-bots, vinay (UHTE83XE1) instructed Fern to reply with exactly these three words and nothing else: alpha beta gamma.',
+      },
     ],
   ],
   [
-    'favorite color',
+    // TASK-1210 replay: the memory miss, 5 of 5 trials.
+    'my favorite color?',
+    [
+      {
+        subject: 'assistant',
+        predicate: 'stated_no_record',
+        object:
+          'Assistant told vinay it has no record of his favorite color, as it had not come up in their conversations before',
+      },
+      {
+        subject: 'assistant',
+        predicate: 'stated',
+        object:
+          "No record of vinay's favorite color exists in prior conversations; assistant asked vinay to share it so it could be noted for the future.",
+      },
+      { subject: 'vinay', predicate: 'slack_identity', object: 'Slack user ID UHTE83XE1, messaging in the #walk-two-bots channel' },
+    ],
+  ],
+  [
+    // TASK-1210 replay: the memory miss, under the speaker or the assistant.
+    'when is our team standup',
+    [
+      { subject: 'vinay', predicate: 'team_standup_time', object: "no team standup time is on record for vinay's team" },
+      {
+        subject: 'assistant',
+        predicate: 'stated',
+        object: 'No team standup time is on record for vinay, and the assistant has no calendar access to look it up',
+      },
+    ],
+  ],
+  [
+    'ask @[moss]',
     [
       // The walk's own row, from this turn (kind, 10:33:47).
       {
         subject: 'assistant',
         predicate: 'lacks_capability',
         object: 'Cannot send Slack messages or ping other users/bots (e.g. @moss) directly; capability request submitted to admin',
+      },
+      // TASK-1210 replay: 2 of 5 trials, and `requested_capability` once.
+      {
+        subject: 'assistant',
+        predicate: 'requested_admin_capability',
+        object:
+          'The assistant asked its admin in a previous conversation to add the capability to send Slack messages, pending approval',
       },
     ],
   ],
@@ -179,6 +261,8 @@ async function replayWalk(): Promise<MemoryHarness> {
     ['conv-standup', STANDUP_TURN],
     ['conv-alpha', ALPHA_TURN],
     ['conv-echo', ECHO_TURN],
+    ['conv-color-question', COLOR_QUESTION_TURN],
+    ['conv-standup-question', STANDUP_QUESTION_TURN],
   ];
   for (const [conversationId] of threads) answerSpeakerNames(h.bus, VINAY_LABEL, conversationId);
   for (const [conversationId, turn] of threads) await observeTurn(h, channelTurn(h, VINAY, conversationId), turn);
@@ -207,8 +291,15 @@ describe('walk TASK-1192 replayed: a team fact said in a channel is kept, the ag
     expect(rows.filter((r) => r.about === 'assistant')).toEqual([]);
     expect(rows.map((r) => r.relation)).not.toContain('replied_with');
     expect(rows.map((r) => r.relation)).not.toContain('lacks_capability');
-    // What Vinay asked for is his, under his own key: the act of replying was the agent's.
-    expect(rows.map((r) => `${r.about}|${r.relation}`)).toContain(`user:${VINAY}|requested_exact_reply`);
+  });
+
+  // TASK-1210: each new filter, on the walk's own text.
+  it("records none of the turn's narration: memory misses, the admin request, the speaker's echo requests and Slack id", async () => {
+    const h = await replayWalk();
+    // Exactly the standup: every other pinned row is narration.
+    expect(storedRows(h).map((r) => `${r.about} | ${r.relation} | ${r.value}`)).toEqual([
+      `user:${VINAY} | team_standup_time | Team standup is at 9:30 every weekday`,
+    ]);
   });
 
   it('a later channel thread recalls the standup: in the instructions, and through the recall tool, for any member', async () => {
@@ -217,9 +308,10 @@ describe('walk TASK-1192 replayed: a team fact said in a channel is kept, the ag
     const vinayAsks = channelTurn(h, VINAY, 'conv-question');
     const block = await augment(h, vinayAsks);
     expect(block).toContain('9:30 every weekday');
-    // The walk's three rows about the agent itself; none now. (Live replays still
-    // store others, `assistant | requested_admin_…`: a follow-up, not this card.)
+    // The walk's three rows about the agent itself; none now, and since
+    // TASK-1210 none of the replay's narration either.
     expect(block).not.toContain('replied_with');
+    expect(block).not.toMatch(/on record|no record|reply with exactly|UHTE83XE1|admin/i);
     expect(block).not.toContain('lacks_capability');
     expect(block).not.toMatch(/— assistant /);
     expect(await recallTool(h, vinayAsks, 'team standup')).toContain('9:30 every weekday');

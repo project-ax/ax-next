@@ -28,6 +28,11 @@
 //   seller" is about someone's real-estate agent), and this delete can't be
 //   taken back. So those rows are kept, and counted on their own.
 //
+//   So is `memory-miss` (TASK-1210): the assistant saying it had no record of
+//   something. Its rules read free text ("it has no record of …", "no … is on
+//   record for …"), and answers can read the same way, so the observer stops
+//   saving new ones and this leaves the saved ones alone.
+//
 // ONE RULE, NOT TWO
 //   This file has no copy of the rule. The runbook pipes self-report.ts in
 //   front of it, so it deletes with the observer's own function. That's why
@@ -41,7 +46,7 @@
 //   written by a model from the chat, so it can say anything.
 //     {"mode":"dry-run","examined":n,"delete":{"context":n,"own-narration":n,
 //      "action-narration":n,"capability":n},"keep":{"identity":n,"other":n,
-//      "agent-context":n},"ftsRows":n,"vecRows":n,"keptClosedByDeleted":n,
+//      "agent-context":n,"memory-miss":n},"ftsRows":n,"vecRows":n,"keptClosedByDeleted":n,
 //      "deleted":n,"refused":null}
 //   - examined: every `extracted` row it read. A fact about anyone but the
 //     assistant counts here and nowhere else, unless it's keep.agent-context.
@@ -50,6 +55,8 @@
 //     wider than "its name and its rules": `renamed_file` counts here too.
 //   - keep.agent-context: rows about `agent` or `the_agent` that the
 //     observer drops but this keeps (see WHAT IT DELETES).
+//   - keep.memory-miss: the assistant saying it had no record of something
+//     (TASK-1210), which the observer drops but this keeps (same section).
 //   - ftsRows, vecRows: the search rows the deleted facts have. vecRows is
 //     null when there are vectors but the extension isn't loaded (no
 //     --vec-extension, or a wrong one).
@@ -130,7 +137,7 @@ import { DatabaseSync } from 'node:sqlite';
 function cleanAssistantNarration() {
   const DROPPED = ['context', 'own-narration', 'action-narration', 'capability'];
   // `agent-context`: the observer drops it, this keeps it (see WHAT IT DELETES).
-  const KEPT = ['identity', 'other', 'agent-context'];
+  const KEPT = ['identity', 'other', 'agent-context', 'memory-miss'];
   const VEC_FLAG = '--vec-extension=';
   const print = (report) => console.log(JSON.stringify(report));
   const refuse = (refused) => {
@@ -179,7 +186,7 @@ function cleanAssistantNarration() {
       mode: apply ? 'apply' : 'dry-run',
       examined: 0,
       delete: { context: 0, 'own-narration': 0, 'action-narration': 0, capability: 0 },
-      keep: { identity: 0, other: 0, 'agent-context': 0 },
+      keep: { identity: 0, other: 0, 'agent-context': 0, 'memory-miss': 0 },
       ftsRows: 0,
       vecRows: hasVec && !vecLoaded ? null : 0,
       keptClosedByDeleted: 0,
