@@ -236,9 +236,39 @@ describe('"Always for this agent" keeps the site on the agent (TASK-44, TASK-121
     // The key is server-authoritative: the person from auth, the agent from the
     // proxy's own SessionConfig.
     expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
-    // The body's agent is never even looked up.
-    expect(w.resolves).toEqual([]);
+    // The access check is about the proxy's agent too; the body's is never looked up.
+    expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
   });
+
+  it.each([
+    ['forbidden', 'forbidden'],
+    ['not-found', 'not-found'],
+    ['a fault', 'unknown'],
+  ])(
+    'a live Always on an agent the person can no longer use (%s) keeps nothing',
+    async (_label, code) => {
+      // A session can outlive its owner's access — e.g. removed from the team
+      // mid-session. The live widen stands; the agent's list is not touched.
+      const w = keepWorld({
+        live: { added: true, agentId: 'agent-7' },
+        resolve: async () => {
+          if (code === 'unknown') throw new Error('agents store down');
+          throw pluginError(code);
+        },
+      });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-7',
+      });
+      expect(out.statusCode).toBe(200);
+      expect(out.body).toStrictEqual({ added: true, kept: false });
+      expect(w.grants).toEqual([]);
+      expect(w.logger.warns).toEqual([{ event: 'host_grant_persist_failed', fields: { code } }]);
+      expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+    },
+  );
 
   it('Always on an ended session keeps the site for an agent the person can use, and says kept', async () => {
     const w = keepWorld({ live: { added: false } });

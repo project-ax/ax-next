@@ -19,12 +19,14 @@
  * Which agent it is kept on:
  *  - The session is live (`added: true`): the one the proxy's own
  *    SessionConfig names. The body's `agentId` is ignored.
- *  - The session has ended (`added: false`): the body's `agentId`, trusted
- *    only once `agents:resolve` admits the AUTHENTICATED person to that agent.
- *    A refusal (forbidden / not-found), a missing id and a fault all answer
- *    the same `kept: false`, so the answer says nothing about which agents
- *    exist. The reach equals a live Allow's: anyone who may use the agent
- *    could open a session and Allow any host there.
+ *  - The session has ended (`added: false`): the body's `agentId`.
+ * Either way the site is kept only once `agents:resolve` admits the
+ * AUTHENTICATED person to that agent NOW. A live session can outlive its
+ * owner's access (removed from the team mid-session), and the ended case's id
+ * is the browser's word. A refusal (forbidden / not-found), a missing id and a
+ * fault all answer the same `kept: false`, so the answer says nothing about
+ * which agents exist. The reach equals a live Allow's: anyone who may use the
+ * agent could open a session and Allow any host there.
  * The answer is `{ added }` for "Just this once" and `{ added, kept }` for
  * "Always", plus `full: true` when the agent's list of allowed sites is at its
  * cap. The keep is best-effort: it never turns the answer into a 500, and its
@@ -205,11 +207,20 @@ async function keepSite(
   // A preset without @ax/host-grants keeps nothing; the live widen is all there is.
   if (!deps.bus.hasService('host-grants:grant')) return { kept: false };
   try {
-    // A live session with no agent (an owner-less one) has nowhere to keep it.
-    const agentId = args.live.added
-      ? args.live.agentId
-      : await agentThePersonMayUse(deps, args.userId, args.bodyAgentId);
+    // Which agent: while the session is live, the one the proxy's own
+    // SessionConfig names (the body's id is ignored); once it has ended, only
+    // the browser can say. A live session with no agent (an owner-less one),
+    // or an ended one with no id, has nowhere to keep it.
+    const agentId = args.live.added ? args.live.agentId : args.bodyAgentId;
     if (agentId === undefined) return { kept: false };
+    // Either way, kept only on an agent the person may use NOW: agents:resolve
+    // admits the authenticated person or throws, and the catch below answers
+    // the same `kept: false` for a refusal and a fault alike. A live session
+    // can outlive its owner's access; the ended case's id is the browser's word.
+    await deps.bus.call<AgentsResolveInput, unknown>('agents:resolve', deps.initCtx, {
+      agentId,
+      userId: args.userId,
+    });
     // `created: false` means the agent already had it — kept either way. The
     // store re-validates the host and enforces the per-agent cap.
     await deps.bus.call<HostGrantsGrantInput, { created: boolean }>('host-grants:grant', ctx, {
@@ -223,23 +234,4 @@ async function keepSite(
     deps.initCtx.logger.warn('host_grant_persist_failed', { code });
     return code === 'grant-limit' ? { kept: false, full: true } : { kept: false };
   }
-}
-
-/**
- * The session has ended, so only the browser can say which agent the card was
- * for. That id is trusted only once `agents:resolve` admits the authenticated
- * person to the agent: a refusal or a fault throws, and `keepSite` answers the
- * same `kept: false` for every one of them. No id means nothing to keep.
- */
-async function agentThePersonMayUse(
-  deps: Deps,
-  userId: string,
-  agentId: string | undefined,
-): Promise<string | undefined> {
-  if (agentId === undefined) return undefined;
-  await deps.bus.call<AgentsResolveInput, unknown>('agents:resolve', deps.initCtx, {
-    agentId,
-    userId,
-  });
-  return agentId;
 }
