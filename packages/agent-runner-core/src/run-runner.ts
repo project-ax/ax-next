@@ -20,6 +20,7 @@ import { translateContentBlocks } from './attachment-translation.js';
 import { commitTrace } from './commit-trace.js';
 import { assertConfigDirFresh, assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
+import { startServiceForwards } from './service-forwards.js';
 import { decisionResolvedTurn } from './decision-turn.js';
 import { composeHostNoteMessage } from './host-note-turn.js';
 import { buildEgressAllowedNote } from './egress-note.js';
@@ -1264,6 +1265,10 @@ async function runRunnerInner(
     }
   }
 
+  // Loopback forwards for published service ports (127.0.0.1:<published> ->
+  // 127.0.0.1:<target>). Bind failures are logged and skipped inside.
+  const serviceForwards = await startServiceForwards(env.serviceForwards ?? []);
+
   let exitCode = 0;
   let terminatedReason: string | undefined;
   let terminatedError:
@@ -1840,5 +1845,8 @@ async function runRunnerInner(
       /* swallow */
     }
   }
+  await serviceForwards.close().catch(() => {
+    /* best-effort; the process is exiting */
+  });
   return exitCode;
 }

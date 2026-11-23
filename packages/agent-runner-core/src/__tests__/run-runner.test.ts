@@ -58,7 +58,13 @@ vi.mock('../inbox-loop.js', () => ({
   createInboxLoop: vi.fn(() => ({ next: vi.fn(), cursor: 0 })),
 }));
 
+const forwardsClose = vi.fn().mockResolvedValue(undefined);
+vi.mock('../service-forwards.js', () => ({
+  startServiceForwards: vi.fn(async () => ({ close: forwardsClose })),
+}));
+
 const { runRunner } = await import('../run-runner.js');
+const { startServiceForwards } = await import('../service-forwards.js');
 const { createInboxLoop } = await import('../inbox-loop.js');
 
 /** Drive the shell's message pump with a scripted inbox. */
@@ -106,6 +112,25 @@ const transcriptSource: TranscriptSource = {
   read: vi.fn().mockResolvedValue(null),
   write: vi.fn().mockResolvedValue('accepted'),
 };
+
+describe('runRunner — service forwards wiring', () => {
+  it('starts the env forwards at boot and closes them on exit', async () => {
+    (startServiceForwards as unknown as Mock).mockClear();
+    forwardsClose.mockClear();
+    const map = [{ published: 47017, target: 27017 }];
+    const loop: Loop = { run: async () => 0 };
+    expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), serviceForwards: map })))).toBe(0);
+    expect(startServiceForwards).toHaveBeenCalledWith(map);
+    expect(forwardsClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes them when the loop fails too', async () => {
+    forwardsClose.mockClear();
+    const loop: Loop = { run: async () => { throw new Error('boom'); } };
+    expect(await runRunner(() => loop, seams(fakeEnv))).toBe(1);
+    expect(forwardsClose).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('runRunner — inbox idle floor from the env', () => {
   const idleOptionFor = async (env: RunnerEnv): Promise<unknown> => {

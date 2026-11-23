@@ -941,6 +941,12 @@ export function buildPodSpec(
   // `securityContext.fsGroup: 1000` so the per-service `emptyDir`s are
   // group-writable by the non-root sidecar (I5).
   const services = input.services ?? [];
+  // Published ports (compose `"47017:27017"`): the runner forwards
+  // 127.0.0.1:<published> -> 127.0.0.1:<target>. Set only when non-empty, so a
+  // pod with none renders exactly as before. Pushed after extraEnv so nothing
+  // can shadow it (the kubelet keeps the last entry for a name).
+  const forwards = services.flatMap((s) => (s.publishedPorts ?? []).map((p) => ({ published: p.published, target: p.target })));
+  if (forwards.length > 0) env.push({ name: 'AX_SERVICE_FORWARDS', value: JSON.stringify(forwards) });
   const sidecarRender = renderServiceSidecars(services, config);
 
   // filestore-user-files (design §4) — realize the durable per-agent mounts the

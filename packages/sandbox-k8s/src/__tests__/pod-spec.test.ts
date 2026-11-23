@@ -1094,6 +1094,31 @@ describe('buildPodSpec', () => {
       expect(spec.hostAliases).toEqual([{ ip: '127.0.0.1', hostnames: ['a', 'b'] }]);
     });
 
+    it('publishedPorts become AX_SERVICE_FORWARDS on the runner', () => {
+      const spec = buildPodSpec(
+        'pod-fwd',
+        {
+          ...baseInput,
+          services: [
+            svc({ name: 'mongo', publishedPorts: [{ published: 47017, target: 27017 }] }),
+            svc({ name: 'kafka', publishedPorts: [{ published: 9294, target: 9094 }] }),
+          ],
+        },
+        baseResolved(),
+      ).spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      const e = spec.containers[0]!.env.filter((x) => x.name === 'AX_SERVICE_FORWARDS');
+      expect(e).toHaveLength(1);
+      expect(JSON.parse(e[0]!.value)).toEqual([
+        { published: 47017, target: 27017 },
+        { published: 9294, target: 9094 },
+      ]);
+    });
+
+    it('no publishedPorts → no AX_SERVICE_FORWARDS', () => {
+      const spec = podOf([svc({ name: 'a' })]) as unknown as { containers: Array<{ env: Array<{ name: string }> }> };
+      expect(spec.containers[0]!.env.some((x) => x.name === 'AX_SERVICE_FORWARDS')).toBe(false);
+    });
+
     it('no services → no hostAliases', () => {
       const spec = buildPodSpec('pod-none', baseInput, baseResolved()).spec as Record<string, unknown>;
       expect('hostAliases' in spec).toBe(false);

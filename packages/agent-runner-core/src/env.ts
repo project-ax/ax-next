@@ -112,6 +112,39 @@ export interface RunnerEnv {
   inboxIdleMs?: number;
   /** `AX_TURN_LIMIT_MS`: the longest one turn may run. Same parsing; absent means the runner's own default. */
   turnLimitMs?: number;
+  /**
+   * `AX_SERVICE_FORWARDS`: loopback forwards for published service ports
+   * (`127.0.0.1:<published>` -> `127.0.0.1:<target>`). Absent means none.
+   */
+  serviceForwards?: Array<{ published: number; target: number }>;
+}
+
+const SERVICE_FORWARDS_MAX_PAIRS = 64;
+const SERVICE_FORWARDS_MAX_CHARS = 4096;
+/**
+ * Strict parse of `AX_SERVICE_FORWARDS`: a JSON array of at most 64
+ * `{published, target}` integer pairs in 1..65535, no other keys, bounded
+ * length. Same rule as `@ax/sandbox-protocol`'s `parseServiceForwards` (not
+ * imported: the runner stays independent of the host-side package). Null on
+ * anything else.
+ */
+export function parseServiceForwardsEnv(value: string): Array<{ published: number; target: number }> | null {
+  if (value.length > SERVICE_FORWARDS_MAX_CHARS) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { return null; }
+  if (!Array.isArray(parsed) || parsed.length > SERVICE_FORWARDS_MAX_PAIRS) return null;
+  const out: Array<{ published: number; target: number }> = [];
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+    const keys = Object.keys(item);
+    if (keys.length !== 2 || !keys.includes('published') || !keys.includes('target')) return null;
+    const { published, target } = item as Record<string, unknown>;
+    for (const n of [published, target]) {
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 65535) return null;
+    }
+    out.push({ published: published as number, target: target as number });
+  }
+  return out;
 }
 
 /**
@@ -256,5 +289,13 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   if (inboxIdleMs !== undefined) result.inboxIdleMs = inboxIdleMs;
   const turnLimitMs = positiveMs('AX_TURN_LIMIT_MS');
   if (turnLimitMs !== undefined) result.turnLimitMs = turnLimitMs;
+  const forwardsRaw = opt('AX_SERVICE_FORWARDS');
+  if (forwardsRaw !== undefined) {
+    const forwards = parseServiceForwardsEnv(forwardsRaw);
+    if (forwards === null) {
+      throw new InvalidEnvError('AX_SERVICE_FORWARDS', 'expected a JSON array of at most 64 {published, target} port pairs');
+    }
+    if (forwards.length > 0) result.serviceForwards = forwards;
+  }
   return result;
 }

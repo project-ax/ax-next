@@ -28,6 +28,27 @@ describe('bootstrap process capabilities', () => {
     'rejects %s=%j (digits only)', (name, value) => {
       expect(allowedBootstrapEnv(name, value)).toBe(false);
     });
+  it('AX_SERVICE_FORWARDS is allowed', () => {
+    const v = JSON.stringify([{ published: 47017, target: 27017 }]);
+    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', v)).toBe(true);
+    expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_SERVICE_FORWARDS: v })).success).toBe(true);
+    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', '[]')).toBe(true);
+  });
+  it.each([
+    ['not json', 'nope'],
+    ['an object', '{"published":1,"target":2}'],
+    ['a string port', '[{"published":"1","target":2}]'],
+    ['a float', '[{"published":1.5,"target":2}]'],
+    ['port 0', '[{"published":0,"target":2}]'],
+    ['port 65536', '[{"published":1,"target":65536}]'],
+    ['an extra key', '[{"published":1,"target":2,"host":"evil"}]'],
+    ['a missing key', '[{"published":1}]'],
+    ['a bare number', '[1]'],
+    ['65 pairs', JSON.stringify(Array.from({ length: 65 }, (_, i) => ({ published: i + 1, target: 9 })))],
+    ['too long', '[' + ' '.repeat(5000) + ']'],
+  ])('AX_SERVICE_FORWARDS rejects %s', (_label, value) => {
+    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', value)).toBe(false);
+  });
   it('rejects an assignment without AX_PROXY_TOKEN (TASK-784)', () => {
     const a = assignment();
     delete (a.env as Record<string, string>).AX_PROXY_TOKEN;

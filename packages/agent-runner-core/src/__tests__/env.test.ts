@@ -30,6 +30,14 @@ const PROXY_UNIX = {
 };
 
 describe('readRunnerEnv', () => {
+  it('parses AX_SERVICE_FORWARDS strictly', () => {
+    const ok = readRunnerEnv({ ...PROXY_TCP, AX_SERVICE_FORWARDS: '[{"published":47017,"target":27017}]' });
+    expect(ok.serviceForwards).toEqual([{ published: 47017, target: 27017 }]);
+    expect(readRunnerEnv(PROXY_TCP).serviceForwards).toBeUndefined();
+    for (const bad of ['nope', '{}', '[{"published":0,"target":1}]', '[{"published":1,"target":2,"x":3}]', '[{"published":"1","target":2}]']) {
+      expect(() => readRunnerEnv({ ...PROXY_TCP, AX_SERVICE_FORWARDS: bad })).toThrow(InvalidEnvError);
+    }
+  });
   it('readRunnerEnv parses AX_INBOX_IDLE_MS and AX_TURN_LIMIT_MS', () => {
     const env = readRunnerEnv({ ...PROXY_TCP, AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' });
     expect(env.inboxIdleMs).toBe(2_100_000);
