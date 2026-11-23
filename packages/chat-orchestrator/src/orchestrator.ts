@@ -3267,14 +3267,19 @@ export function createOrchestrator(
   //      No caller (web stream, Slack, routines, conversations, activity)
   //      sees a turn end. onTurnSegmentEnd settles the segment's waiter.
   //   3. continueAfterServiceRestart (the agent:invoke wrapper) rebinds the
-  //      conversation to a new session id FIRST, then closes the old sandbox:
-  //      its waiter is already settled and unregistered, so neither the R19
-  //      routed-end listener nor onSessionTerminate fires for this request.
+  //      conversation to a new session id FIRST, then closes the old sandbox.
+  //      This request's waiter is already settled and unregistered there.
+  //      Any OTHER request still waiting on the old sandbox (routed in while
+  //      this one ran) is detached first (R30, MovableWait), so the close
+  //      fires neither its R19 listener nor a `sandbox-terminated` error.
   //   4. runAgentInvokeTurn runs again in restart mode: no chat:start, no
   //      saved user message, no routing; a fresh spawn that folds the set and
   //      queues a host-note (built only from host constants, set ids, service
   //      names and ports) under the same reqId, with what is left of the turn
-  //      limit. Its turn-end is the one `chat:turn-end` callers see.
+  //      limit. Its turn-end is the one `chat:turn-end` callers see. The
+  //      detached requests follow (R30): one folded into the held segment
+  //      settles with this request; any other is re-attached to the new
+  //      sandbox and its message queued behind the note.
   //
   // A restart that doesn't reach step 3 (a Stop, stop_services, a turn that
   // failed, or a segment end that wasn't held) is called off: its slot is
@@ -3293,6 +3298,21 @@ export function createOrchestrator(
   // restarted sandbox gets only what is left of the turn limit (§3.2: the
   // limit counts the whole turn, restart included).
   const turnClockStartByReqId = new Map<string, number>();
+  // R30 — every routed turn waiting on a sandbox, by reqId, so a service
+  // restart of ANOTHER request in that sandbox can carry it across instead of
+  // ending it `sandbox-terminated`: detach it before the old sandbox closes,
+  // then either attach it to the new one (its message re-queued behind the
+  // note) or settle it with the restarting request (it was folded into the
+  // held segment). Registered once its message is queued; dropped in the
+  // routed path's finally. In-memory, like the waiter maps.
+  interface MovableWait {
+    message: AgentMessage;
+    detach(): void;
+    attach(sessionId: string): void;
+    settle(): void;
+    end(reason: string): void;
+  }
+  const movableWaits = new Map<string, MovableWait>();
 
   function turnTimeLeftMs(reqId: string, turnMs: number): number {
     const now = performance.now();
@@ -3447,16 +3467,30 @@ export function createOrchestrator(
   // (the assistant's; the tool turn-end comes first) settles the segment's
   // waiter, so the request's path returns and the wrapper swaps the sandbox.
   // Nothing else a turn-end does here applies: the sandbox is about to close.
+  // It records the requests the runner folded into the segment (R30: the
+  // continuing turn answers them; continueAfterServiceRestart settles them).
+  // R31: only the named request's own waiter, registered on this sandbox, is
+  // settled, like resolveFoldedWaiters: no oldest-waiter fallback, so a
+  // segment end can never settle another request in its place.
   function onTurnSegmentEnd(ctx: AgentContext, payload: unknown): void {
-    const p = payload as { reqId?: unknown; role?: unknown } | null | undefined;
+    const p = payload as { reqId?: unknown; role?: unknown; foldedReqIds?: unknown } | null | undefined;
     if (typeof p?.reqId !== 'string' || p.role === 'tool') return;
-    if (!serviceRestarts.endSegment(ctx.sessionId, p.reqId)) return;
-    resolveWaiterFor(p.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
+    const folded = Array.isArray(p.foldedReqIds)
+      ? p.foldedReqIds.filter((id): id is string => typeof id === 'string')
+      : [];
+    if (!serviceRestarts.endSegment(ctx.sessionId, p.reqId, folded)) return;
+    if (reqIdsBySession.get(ctx.sessionId)?.has(p.reqId) !== true) return;
+    const deferred = waitersByReqId.get(p.reqId);
+    if (deferred !== undefined && !deferred.settled) deferred.resolve({ kind: 'complete', messages: [] });
   }
 
-  // Step 3 of the restart: close the old sandbox. Its waiter is settled and
-  // unregistered by now, and the conversation already names the new session,
-  // so this ends no turn and unbinds nothing. Mirrors the routing retire.
+  // Step 3 of the restart: close the old sandbox. The restarting request's
+  // waiter is settled and unregistered by now, and every other movable wait
+  // on it was detached just before (R30); the conversation already names the
+  // new session. So this ends none of those turns and unbinds nothing. A
+  // waiter registered there with no movable wait yet (a routed message still
+  // being queued at that instant) still ends `sandbox-terminated`, as for a
+  // routing retire. Mirrors the routing retire.
   async function closeSandboxForServiceRestart(ctx: AgentContext, oldSessionId: string): Promise<void> {
     clearReapTimers(oldSessionId);
     const entry = warmSessions.get(oldSessionId);
@@ -3511,6 +3545,39 @@ export function createOrchestrator(
     ctx.logger.info('service_restart_swap', {
       fromSessionId: pending.sessionId, toSessionId: restartCtx.sessionId, set: pending.set,
     });
+    // R30 — the OTHER requests waiting on the old sandbox (routed in while
+    // this one ran) are detached BEFORE it closes, so closing it ends none of
+    // them. One the runner folded into the held segment was answered by it
+    // and settles with this request; any other is moved to the new sandbox,
+    // its message queued behind the note. A waiter with no movable wait yet
+    // (its message still being queued) is left as is.
+    const folded = new Set(pending.foldedReqIds);
+    const foldedWaits: MovableWait[] = [];
+    const movedWaits: Array<{ reqId: string; wait: MovableWait }> = [];
+    for (const reqId of [...(reqIdsBySession.get(pending.sessionId) ?? [])]) {
+      if (reqId === ctx.reqId || waitersByReqId.get(reqId)?.settled !== false) continue;
+      const wait = movableWaits.get(reqId);
+      if (wait === undefined) continue;
+      wait.detach();
+      if (folded.has(reqId)) foldedWaits.push(wait);
+      else movedWaits.push({ reqId, wait });
+    }
+    let moved = false;
+    const moveWaits = async (sessionId: string): Promise<void> => {
+      moved = true;
+      for (const { reqId, wait } of movedWaits) {
+        wait.attach(sessionId);
+        try {
+          await bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>('session:queue-work', restartCtx, {
+            sessionId,
+            entry: { type: 'user-message', payload: wait.message, reqId },
+          });
+        } catch (err) {
+          ctx.logger.warn('service_restart_move_failed', { movedReqId: reqId, ...errorLogFields(err) });
+          wait.end('queue-work-failed');
+        }
+      }
+    };
     // A Stop clicked during the swap waits behind the note (afterUserMessageQueued).
     pendingMessageReqIds.add(ctx.reqId);
     // R19 — rebind FIRST: closing the old sandbox makes @ax/conversations
@@ -3526,9 +3593,20 @@ export function createOrchestrator(
       }
     }
     await closeSandboxForServiceRestart(ctx, pending.sessionId);
-    const restarted = await runAgentInvokeTurn(restartCtx, input, { serviceSet: pending.set });
+    const restarted = await runAgentInvokeTurn(restartCtx, input, {
+      serviceSet: pending.set,
+      afterNoteQueued: moveWaits,
+    });
     if (restarted.kind !== 'complete' && conversationId !== undefined) {
       await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-failed');
+    }
+    // No new sandbox took them: their sandbox is gone, so they end as it did.
+    if (!moved) for (const { wait } of movedWaits) wait.end('sandbox-terminated');
+    // Folded into the held segment: the continuing turn answered them, so
+    // they end with it (its own reason, if it failed).
+    for (const wait of foldedWaits) {
+      if (restarted.kind === 'complete') wait.settle();
+      else wait.end(restarted.reason);
     }
     return restarted;
   }
@@ -3626,7 +3704,7 @@ export function createOrchestrator(
   async function runAgentInvokeTurn(
     ctx: AgentContext,
     input: AgentInvokeInput,
-    restart?: { serviceSet: string },
+    restart?: { serviceSet: string; afterNoteQueued?: (sessionId: string) => Promise<void> },
   ): Promise<AgentOutcome> {
     // 1. chat:start — subscribers can veto.
     //    Bounded (TASK-514): a subscriber past the bound is skipped and named,
@@ -4328,24 +4406,48 @@ export function createOrchestrator(
         resolvedByChatEndSubscriber = false;
         deferred.resolve({ kind: 'terminated', reason });
       };
-      const stopWatchingSessionEnd = onRoutedSessionEnd(sessionId, () =>
-        endOnSessionGone('sandbox-terminated'),
-      );
-      warmSessions.get(sessionId)?.handle.exited
-        .then((info) => {
-          if (deferred.settled) return;
-          const reason = classifyRunnerExit(info);
-          ctx.logger.warn('runner_exit_before_chat_end', { reason, ...runnerExitLogFields(info) });
-          endOnSessionGone(reason);
-        })
-        .catch(() => undefined);
+      // R30 — the sandbox this wait is on. Another request's service restart
+      // in this sandbox may move it to the new one (MovableWait); '' while it
+      // is between the two.
+      let waitSessionId = sessionId;
+      const watchSession = (sid: string): (() => void) => {
+        warmSessions.get(sid)?.handle.exited
+          .then((info) => {
+            if (deferred.settled || waitSessionId !== sid) return;
+            const reason = classifyRunnerExit(info);
+            ctx.logger.warn('runner_exit_before_chat_end', { reason, ...runnerExitLogFields(info) });
+            endOnSessionGone(reason);
+          })
+          .catch(() => undefined);
+        return onRoutedSessionEnd(sid, () => endOnSessionGone('sandbox-terminated'));
+      };
+      let stopWatchingSessionEnd = watchSession(sessionId);
       // The turn limit counts the whole request: a restarted sandbox gets
       // what is left of it (turnTimeLeftMs).
       const timeoutHandle = setTimeout(() => {
         deferred.reject(new ChatTimeoutError(limits.turnMs));
       }, turnTimeLeftMs(ctx.reqId, limits.turnMs));
       timeoutHandle.unref?.();
-      const stopMidTurnRotation = startMidTurnRotation(ctx, sessionId);
+      let stopMidTurnRotation = startMidTurnRotation(ctx, sessionId);
+      movableWaits.set(ctx.reqId, {
+        message: input.message,
+        detach: () => {
+          stopWatchingSessionEnd();
+          stopMidTurnRotation();
+          unregisterWaiter(waitSessionId, ctx.reqId);
+          waitSessionId = '';
+        },
+        attach: (newSessionId) => {
+          waitSessionId = newSessionId;
+          registerWaiter(newSessionId, ctx.reqId, deferred);
+          stopWatchingSessionEnd = watchSession(newSessionId);
+          stopMidTurnRotation = startMidTurnRotation(ctx, newSessionId);
+        },
+        settle: () => {
+          if (!deferred.settled) deferred.resolve({ kind: 'complete', messages: [] });
+        },
+        end: endOnSessionGone,
+      });
 
       let outcome: AgentOutcome;
       try {
@@ -4358,10 +4460,11 @@ export function createOrchestrator(
           error: err,
         };
       } finally {
+        movableWaits.delete(ctx.reqId);
         clearTimeout(timeoutHandle);
         stopMidTurnRotation();
         stopWatchingSessionEnd();
-        unregisterWaiter(sessionId, ctx.reqId);
+        if (waitSessionId !== '') unregisterWaiter(waitSessionId, ctx.reqId);
       }
 
       if (!resolvedByChatEndSubscriber) {
@@ -4378,7 +4481,7 @@ export function createOrchestrator(
       // session it runs on (belt and braces: since TASK-1150 a grant whose
       // read fails marks the conversation's warm sessions itself). Mark it
       // now: its next turn restarts it.
-      markIfSkillGrantFlagged(ctx, sessionId);
+      if (waitSessionId !== '') markIfSkillGrantFlagged(ctx, waitSessionId);
       // No handle.kill() — we did not open this sandbox.
       return outcome;
     }
@@ -5674,6 +5777,13 @@ export function createOrchestrator(
         reason,
         error: err,
       };
+      // R32 — a sandbox carrying the conversation's service set failed to
+      // open (a restart's or a re-spawn's). The set goes off: otherwise every
+      // later turn fails the same way, with no sandbox left to call
+      // stop_services from.
+      if (serviceSet !== null && ctx.conversationId !== undefined) {
+        await setConversationServiceSet(ctx, ctx.conversationId, ctx.userId, null, 'open-failed');
+      }
       // F2b — surface on the SSE. This early return unregistered the waiter
       // above, so onChatEnd won't fire turn-error for the chat:end below; we
       // hold the original ctx.reqId here, so the SSE matches by reqId.
@@ -5773,6 +5883,9 @@ export function createOrchestrator(
     // TASK-688 — the message is in the inbox; a Stop clicked during the cold
     // spawn goes in right behind it.
     await afterUserMessageQueued(ctx, sessionId);
+    // R30 — a restart moves the other requests that were waiting on the old
+    // sandbox here, behind the note.
+    if (restart?.afterNoteQueued !== undefined) await restart.afterNoteQueued(sessionId);
 
     // 5. Await chat:end with a bounded timeout, or sandbox early-exit.
     //    Both failure modes synthesize a terminated outcome so audit-log

@@ -62,6 +62,11 @@ async function waitFor(cond: () => boolean, what: string): Promise<void> {
     if (cond()) return;
     await flush();
   }
+  // Then by the clock, for steps that wait on a timer (a turn limit).
+  for (let i = 0; i < 400; i++) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
   throw new Error(`timed out waiting for ${what}`);
 }
 
@@ -71,6 +76,7 @@ async function setup(opts: {
   connectorId?: string;
   maxPerAgent?: number;
   enabled?: boolean;
+  chatTimeoutMs?: number;
   openSessionThrowsOn?: number;
 } = {}) {
   const rows: Record<string, Row> = {};
@@ -164,7 +170,7 @@ async function setup(opts: {
   const h = await createTestHarness({
     services,
     plugins: [createChatOrchestratorPlugin({
-      runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 60_000,
+      runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: opts.chatTimeoutMs ?? 60_000,
       keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
       onDemandServices: {
         ...(opts.maxPerAgent !== undefined ? { maxPerAgent: opts.maxPerAgent } : {}),
@@ -197,17 +203,19 @@ async function setup(opts: {
     });
 
   /** Mirrors @ax/ipc-core `fireEventTurnEnd`: ask the hold, then segment-end or chat:turn-end. */
-  async function emitTurnEnd(sessionId: string, conversationId: string, reqId: string, role: 'tool' | 'assistant') {
+  async function emitTurnEnd(
+    sessionId: string, conversationId: string, reqId: string, role: 'tool' | 'assistant', foldedReqIds?: string[],
+  ) {
     const c = ipcCtx(sessionId, conversationId);
-    const payload = { reason: 'user-message-wait', role, reqId };
+    const payload = { reason: 'user-message-wait', role, reqId, ...(foldedReqIds !== undefined ? { foldedReqIds } : {}) };
     const answer = await h.bus.fire<ChatTurnEndHoldPayload>(CHAT_TURN_END_HOLD_HOOK, c, { sessionId, reqId, held: false });
     if (!answer.rejected && answer.payload.held) await h.bus.fire(CHAT_TURN_SEGMENT_END_HOOK, c, payload);
     else await h.bus.fire('chat:turn-end', c, payload);
   }
   /** A runner segment ends: its two turn-ends, tool then assistant. */
-  async function endSegment(sessionId: string, conversationId: string, reqId: string) {
-    await emitTurnEnd(sessionId, conversationId, reqId, 'tool');
-    await emitTurnEnd(sessionId, conversationId, reqId, 'assistant');
+  async function endSegment(sessionId: string, conversationId: string, reqId: string, foldedReqIds?: string[]) {
+    await emitTurnEnd(sessionId, conversationId, reqId, 'tool', foldedReqIds);
+    await emitTurnEnd(sessionId, conversationId, reqId, 'assistant', foldedReqIds);
   }
   function tool(name: string, sessionId: string, conversationId: string, input: unknown, source?: AgentContextSource) {
     return h.bus.call<unknown, ServiceToolResult>(`tool:execute:${name}`, ipcCtx(sessionId, conversationId, source), {
@@ -516,5 +524,160 @@ describe('restart_with_services (dev services on demand)', () => {
     for (const maxPerAgent of [0, -1, 1.5, Number.NaN]) {
       await expect(setup({ maxPerAgent })).rejects.toThrow(/maxPerAgent must be a positive integer/);
     }
+  });
+
+  // ---- Fix round 1 -------------------------------------------------------
+
+  /** Settles-once probe: how many times an invoke's promise settled, and with what. */
+  function track(p: Promise<AgentOutcome>) {
+    const seen: AgentOutcome[] = [];
+    void p.then((o) => { seen.push(o); });
+    return seen;
+  }
+
+  it('R30: a message queued behind the restarting turn moves to the new sandbox, after the note', async () => {
+    const t = await setup();
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'turn 1');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    // A second message arrives while the segment runs: routed into the busy s-1, not yet claimed.
+    const p2 = t.invoke('placeholder', 'conv-1', 'req-2');
+    await waitFor(() => t.queued.length === 2, 'message 2 queued on s-1');
+    expect(t.queued[1]).toMatchObject({ sessionId: 's-1', entry: { type: 'user-message', reqId: 'req-2' } });
+    const out1 = track(p1);
+    const out2 = track(p2);
+
+    await t.endSegment('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+    const fresh = t.opens[1]!.sessionId;
+    // On the new sandbox: the host note first, then the moved message.
+    expect(t.queued.slice(2)).toEqual([
+      { sessionId: fresh, entry: expect.objectContaining({ type: 'host-note', reqId: 'req-1' }) },
+      { sessionId: fresh, entry: expect.objectContaining({ type: 'user-message', reqId: 'req-2' }) },
+    ]);
+    expect(t.turnErrors).toEqual([]);
+    expect(out2).toEqual([]);
+
+    await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+    await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+    await Promise.all([p1, p2]);
+    await flush();
+    expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+    expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+    expect(t.turnErrors).toEqual([]);
+  });
+
+  it('R30: a message folded into the held segment settles with the restarting turn, never sandbox-terminated', async () => {
+    const t = await setup();
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'turn 1');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    const p2 = t.invoke('placeholder', 'conv-1', 'req-2');
+    await waitFor(() => t.queued.length === 2, 'message 2 queued on s-1');
+    const out1 = track(p1);
+    const out2 = track(p2);
+
+    // The runner folded req-2 into the segment that called the restart.
+    await t.endSegment('s-1', 'conv-1', 'req-1', ['req-2']);
+    await waitFor(() => t.notes().length === 1, 'the note');
+    const fresh = t.opens[1]!.sessionId;
+    // Answered already: not queued again.
+    expect(t.queued.filter((q) => q.sessionId === fresh).map((q) => q.entry.type)).toEqual(['host-note']);
+    expect(t.turnErrors).toEqual([]);
+    expect(out2).toEqual([]);
+
+    await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+    await Promise.all([p1, p2]);
+    await flush();
+    expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+    expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+    expect(t.turnErrors).toEqual([]);
+  });
+
+  it('a live restarted sandbox keeps its slot; it comes back when that sandbox goes', async () => {
+    const t = await setup({ maxPerAgent: 1 });
+    const pa = t.invoke('s-a', 'conv-a', 'req-a');
+    await waitFor(() => t.queued.length === 1, 'turn a');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-a', 'conv-a', { set: 'e2e' })).ok).toBe(true);
+    await t.endSegment('s-a', 'conv-a', 'req-a');
+    await waitFor(() => t.notes().length === 1, 'the note');
+    const live = t.opens[1]!.sessionId;
+    await t.emitTurnEnd(live, 'conv-a', 'req-a', 'assistant');
+    await pa; // the request is over; its sandbox stays warm with the set
+
+    const pb = t.invoke('s-b', 'conv-b', 'req-b');
+    await waitFor(() => t.queued.filter((q) => q.entry.type === 'user-message').length === 2, 'turn b');
+    const refused = await t.tool(RESTART_WITH_SERVICES, 's-b', 'conv-b', { set: 'e2e' });
+    expect(refused).toEqual({ ok: false, message: expect.stringContaining('already has 1 conversations running services') });
+
+    // conv-a's sandbox goes (reaped / terminated): the slot comes back.
+    await t.h.bus.call('session:terminate', makeAgentContext({ sessionId: live, agentId: AGENT.id, userId: AGENT.ownerId }), { sessionId: live });
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-b', 'conv-b', { set: 'e2e' })).ok).toBe(true);
+    await t.endSegment('s-b', 'conv-b', 'req-b');
+    await waitFor(() => t.notes().length === 2, 'note b');
+    await t.emitTurnEnd(t.opens.at(-1)!.sessionId, 'conv-b', 'req-b', 'assistant');
+    await pb;
+  });
+
+  it('R29: a re-spawn at the cap opens without the set and clears it', async () => {
+    const t = await setup({ maxPerAgent: 1, rows: { 'conv-c': { serviceSet: 'e2e' } } });
+    const pa = t.invoke('s-a', 'conv-a', 'req-a');
+    await waitFor(() => t.queued.length === 1, 'turn a');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-a', 'conv-a', { set: 'e2e' })).ok).toBe(true);
+    await t.endSegment('s-a', 'conv-a', 'req-a');
+    await waitFor(() => t.notes().length === 1, 'the note');
+    await t.emitTurnEnd(t.opens[1]!.sessionId, 'conv-a', 'req-a', 'assistant');
+    await pa;
+
+    // conv-c had its set on; its sandbox was reaped; the agent is at its cap.
+    const pc = t.invoke('s-c', 'conv-c', 'req-c');
+    await waitFor(() => t.queued.filter((q) => q.entry.type === 'user-message').length === 2, 'turn c');
+    expect(t.opens.at(-1)).toEqual({ sessionId: 's-c' }); // no services
+    expect(t.row('conv-c').serviceSet).toBeNull();
+    expect(t.setServiceSetCalls.at(-1)).toEqual({ conversationId: 'conv-c', userId: AGENT.ownerId, serviceSet: null });
+    await t.emitTurnEnd('s-c', 'conv-c', 'req-c', 'assistant');
+    await pc;
+  });
+
+  it('R32: a failed open of a sandbox carrying the set clears it (a re-spawn, not only a restart)', async () => {
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    const out = await t.invoke('s-1', 'conv-1', 'req-1');
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+    expect(t.opens[0]!.services?.map((s) => s.name)).toEqual(['mongo']);
+    expect(t.row('conv-1').serviceSet).toBeNull();
+    expect(t.turnErrors).toEqual([
+      { reqId: 'req-1', reason: 'dev-service-failed', detail: expect.stringContaining('mongo') },
+    ]);
+  });
+
+  it('R31: a held segment end settles only its own request, never the oldest waiter', async () => {
+    // req-1 times out while its restart is pending; its turn-error is held up
+    // by a slow subscriber, so the restart isn't called off yet. A segment end
+    // naming req-1 then arrives: req-2, routed into the same sandbox, must not
+    // be settled in its place.
+    const t = await setup({ chatTimeoutMs: 150 });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    t.h.bus.subscribe<{ reqId: string }>('chat:turn-error', 'test/slow', async (_c, p) => {
+      if (p.reqId === 'req-1') await gate;
+      return undefined;
+    });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'turn 1');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 100)); // req-2's own clock runs out well after req-1's
+    const p2 = t.invoke('placeholder', 'conv-1', 'req-2');
+    await waitFor(() => t.queued.length === 2, 'message 2');
+    const out2 = track(p2);
+    await waitFor(() => t.turnErrors.some((e) => e.reqId === 'req-1'), 'req-1 timed out');
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    await flush();
+    expect(out2).toEqual([]); // req-2 still waiting
+    release();
+    await p1;
+    await p2;
+    await flush();
+    expect(out2).toEqual([expect.objectContaining({ kind: 'terminated', reason: 'chat-run-timeout' })]);
+    expect(t.opens).toHaveLength(1);
   });
 });

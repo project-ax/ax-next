@@ -191,6 +191,12 @@ export interface PendingServiceRestart {
   set: string;
   /** True once that sandbox's runner segment has ended (the held turn-end arrived). */
   segmentEnded: boolean;
+  /**
+   * Other requests the runner folded into that segment (its closing
+   * turn-end's `foldedReqIds`): the continuing turn answers them, so they
+   * settle with this request, never as a moved message (R30).
+   */
+  foldedReqIds: string[];
 }
 
 /**
@@ -230,6 +236,7 @@ export class ServiceRestartBook {
       agentId: input.agentId,
       set: input.set,
       segmentEnded: false,
+      foldedReqIds: [],
     });
     return 'ok';
   }
@@ -261,11 +268,12 @@ export class ServiceRestartBook {
     return p !== undefined && p.sessionId === sessionId;
   }
 
-  /** The held segment ended. False when nothing is held for this sandbox and request. */
-  endSegment(sessionId: string, reqId: string): boolean {
+  /** The held segment ended, answering `foldedReqIds` too. False when nothing is held for this sandbox and request. */
+  endSegment(sessionId: string, reqId: string, foldedReqIds: readonly string[] = []): boolean {
     const p = this.pending.get(reqId);
     if (p === undefined || p.sessionId !== sessionId) return false;
     p.segmentEnded = true;
+    p.foldedReqIds = foldedReqIds.filter((id) => id !== reqId);
     return true;
   }
 
