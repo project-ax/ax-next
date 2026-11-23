@@ -53,8 +53,8 @@ export type ServicesValidateOutput =
 /**
  * Cross-service port check over already-parsed descriptors. A published
  * (host-visible) port must not equal another published port, nor a container
- * port of a different service. Returns a reason naming both services, or null.
- * A service re-publishing its own container port is not a clash.
+ * port of ANY service, its own included (one shared network namespace).
+ * Returns a reason naming the services involved, or null.
  */
 export function checkPortClashes(services: ServiceDescriptor[]): string | null {
   const publishedBy = new Map<number, string>();
@@ -70,7 +70,10 @@ export function checkPortClashes(services: ServiceDescriptor[]): string | null {
   for (const svc of services) {
     for (const { published } of svc.publishedPorts ?? []) {
       for (const owner of services) {
-        if (owner === svc || !owner.ports.includes(published)) continue;
+        if (!owner.ports.includes(published)) continue;
+        if (owner === svc) {
+          return `published port ${published} of "${svc.name}" is the service's own container port (all services share one network namespace, so it must differ)`;
+        }
         return `published port ${published} of "${svc.name}" clashes with a container port of "${owner.name}"`;
       }
     }

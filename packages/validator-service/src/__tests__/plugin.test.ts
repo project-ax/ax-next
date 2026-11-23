@@ -125,6 +125,17 @@ describe('validateServices (pure)', () => {
     }
   });
 
+  it('a published port equal to its own container port is invalid', () => {
+    const r = validateServices([
+      { ...wellFormed(), publishedPorts: [{ published: 5432, target: 5432 }] },
+    ]);
+    expect(r.verdict).toBe('invalid');
+    if (r.verdict === 'invalid') {
+      expect(r.reason).toContain('postgres');
+      expect(r.reason).toMatch(/own container port/);
+    }
+  });
+
   it('two services publishing the same port is invalid, naming both', () => {
     const r = validateServices([
       { ...wellFormed(), name: 'a', publishedPorts: [{ published: 6000, target: 5432 }] },
