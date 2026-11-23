@@ -277,6 +277,19 @@ interface AttachmentsCommitOutput {
  */
 const MAX_PER_MESSAGE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
+/**
+ * The block types a person's message may carry from the browser (step 2.5).
+ * An allowlist, so a block type added to `ContentBlockSchema` later is
+ * refused here until someone decides a person may send it. No `image`: the
+ * composer sends a picture as an `attachment_ref` (stored, metered, hash-
+ * checked), and a raw `image` block could name any URL for the provider to
+ * fetch.
+ */
+const BROWSER_BLOCK_TYPES: ReadonlySet<ContentBlock['type']> = new Set([
+  'text',
+  'attachment_ref',
+]);
+
 // --- early-bind authoritativeness (TASK-89) -------------------------------
 //
 // The early bind of `active_req_id` (below, before the 202) is what lets the
@@ -461,10 +474,10 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         return;
       }
 
-      // 2.5) Two block types are never the browser's to send, so they are
-      // refused here — before the agent is resolved, a conversation is
-      // created or anything is committed. The browser never sends either; a
-      // request that does is crafted.
+      // 2.5) Only BROWSER_BLOCK_TYPES are the browser's to send; anything
+      // else is refused here — before the agent is resolved, a conversation
+      // is created or anything is committed. The browser never sends the
+      // others; a request that does is crafted. The refused types:
       //
       // - `attachment`: only step 4.5 may put one into a turn. It commits an
       //   `attachment_ref` through attachments:commit, which is what makes
@@ -476,11 +489,16 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       //   here it would store a file reference the agent never made in the
       //   person's turn, and the orchestrator would hand the block to the
       //   runner as if it were real.
-      if (
-        body.contentBlocks.some(
-          (block) => block.type === 'attachment' || block.type === 'agent_file',
-        )
-      ) {
+      // - `tool_use`, `tool_result`, `thinking`, `redacted_thinking`
+      //   (TASK-1220): the model's and the tools' vocabulary, never a
+      //   person's. Measured on the pinned CLI: a `tool_use` or `thinking`
+      //   block in a person's turn stays inside a user message in the
+      //   session's history for good, and a `tool_result` is silently
+      //   dropped. The runner refuses them too (translateContentBlocks), but
+      //   refusing here keeps the forged block out of the stored turn.
+      // - `image` (TASK-1220): pictures come as `attachment_ref`; a raw one
+      //   could name any URL for the provider to fetch.
+      if (body.contentBlocks.some((block) => !BROWSER_BLOCK_TYPES.has(block.type))) {
         res.status(400).json({ error: 'invalid-content-block' });
         return;
       }
@@ -763,7 +781,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // `content` carries the typed text; `contentBlocks` carries only
-      // non-text blocks (attachments, images). The runner's user-message
+      // non-text blocks (attachments; step 2.5 admits nothing else). The runner's user-message
       // handoff prepends `content` as a text block to the translated
       // contentBlocks — leaving a text block in contentBlocks here would
       // duplicate the user's prompt in both the SDK input and the

@@ -97,8 +97,8 @@ export async function assertConfigDirOutsideAgentHome(
     throw new Error(
       `refusing to start: CLAUDE_CONFIG_DIR resolves to ${realConfig}, which overlaps the agent's home ${realHome}. ` +
         'Anything the agent writes there (settings.json hooks, CLAUDE.md, skills, MCP servers in .claude.json) ' +
-        "would load as the SDK's own trusted configuration. Point CLAUDE_CONFIG_DIR at a runner-private " +
-        "directory outside the agent's files (k8s: /home/runner/.ax/session).",
+        "would load as the SDK's own trusted configuration. Point CLAUDE_CONFIG_DIR at a directory private to the session, " +
+        "outside the agent's files (k8s: /home/runner/.ax/session).",
     );
   }
 
@@ -108,7 +108,7 @@ export async function assertConfigDirOutsideAgentHome(
     throw new Error(
       `refusing to start: AX_TRANSCRIPTS_ROOT resolves to ${realTranscripts}, which overlaps the agent's home ${realHome}. ` +
         'The SDK reads session transcripts back from there on resume, so the agent could plant one. ' +
-        "Point AX_TRANSCRIPTS_ROOT at a runner-private directory outside the agent's files (k8s: /tmp/transcripts).",
+        "Point AX_TRANSCRIPTS_ROOT at a directory private to the session, outside the agent's files (k8s: /tmp/transcripts).",
     );
   }
 }
