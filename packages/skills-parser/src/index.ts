@@ -19,9 +19,15 @@ export { buildSkillManifestYaml } from './build.js';
 export { MANIFEST_CODES, parseSkillManifest } from './manifest.js';
 export type { ManifestCode, ParsedManifest, ParseResult } from './manifest.js';
 export { splitSkillMd } from './split.js';
-export { translateComposeToServices } from './compose-translate.js';
+export {
+  translateComposeToServices,
+  sortByDependsOn,
+  unescapeComposeDollars,
+} from './compose-translate.js';
 export type {
+  ComposeAppService,
   ComposeDrop,
+  ComposeService,
   ComposeInvalid,
   ComposeTranslateResult,
 } from './compose-translate.js';

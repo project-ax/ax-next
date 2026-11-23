@@ -1,0 +1,118 @@
+# Synthetic compose file for importer tests. Not any real project's file.
+x-mongo: &mongo
+  image: mongo:4.4
+  restart: always
+
+services:
+  configsvr:
+    <<: *mongo
+    container_name: configsvr-e2e
+    command: ["mongod", "--configsvr", "--replSet", "cfg", "--port", "27019", "--bind_ip_all"]
+    ports:
+      - "47019:27019"
+    tmpfs:
+      - /data/configdb
+    healthcheck:
+      test: ["CMD", "mongo", "--port", "27019", "--eval", "db.adminCommand('ping')"]
+    profiles: [e2e]
+
+  configsvr-init:
+    image: mongo:4.4
+    restart: "no"
+    depends_on:
+      configsvr:
+        condition: service_healthy
+    environment:
+      - CONFIGSVR_HOST=configsvr
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mongo --host $${CONFIGSVR_HOST}:27019 --eval 'rs.initiate({_id: "cfg", configsvr: true, members: [{_id: 0, host: "configsvr:27019"}]})'
+    profiles: [e2e]
+
+  shard0:
+    <<: *mongo
+    command: mongod --shardsvr --replSet shard0 --port 27018 --bind_ip_all
+    depends_on:
+      configsvr-init:
+        condition: service_completed_successfully
+    ports:
+      - "47018:27018"
+    volumes:
+      - shard0-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongo", "--port", "27018", "--eval", "db.adminCommand('ping')"]
+    profiles: [e2e]
+
+  shard-init:
+    image: mongo:4.4
+    restart: "no"
+    depends_on:
+      shard0:
+        condition: service_healthy
+    environment:
+      SHARD_HOST: shard0
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - mongo --host $${SHARD_HOST}:27018 --eval 'rs.initiate()'
+    profiles: [e2e]
+
+  mongos:
+    image: mongo:4.4
+    command: mongos --configdb cfg/configsvr:27019 --port 27017 --bind_ip_all
+    depends_on:
+      shard-init:
+        condition: service_completed_successfully
+    ports:
+      - "47017:27017"
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+    profiles: [e2e]
+
+  mongo-init:
+    image: mongo:4.4
+    restart: "no"
+    depends_on:
+      mongos:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - mongo --host mongos:27017 --eval 'sh.addShard("shard0/shard0:27018")'
+    profiles: [e2e]
+
+  kafka:
+    image: example/kafka:latest
+    ports:
+      - "9092:9092"
+      - "9294:9094"
+    environment:
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9294
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+    depends_on:
+      - mongo-init
+    profiles: [e2e, test]
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+    tmpfs:
+      - /data
+    profiles: [e2e, test, dev]
+
+  emulator:
+    image: example/cloud-emulator:1.0
+    ports:
+      - "8085:8085"
+    profiles: [e2e]
+
+  app:
+    image: node:20
+    build: .
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      - redis
+    profiles: [e2e, dev]
