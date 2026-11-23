@@ -179,7 +179,7 @@ describe('BUILTIN_RULES', () => {
       match: { tool: 'CronCreate' },
       providedBy: 'sandbox',
       verdict: 'deny',
-      capability: 'set itself to run again later outside routines',
+      capability: 'schedule things with its built-in timer instead of a routine',
       subject: 'agent',
       provenance: 'rule',
     });
@@ -193,7 +193,7 @@ describe('BUILTIN_RULES', () => {
       'builtins.ask-user-question',
       'builtins.cron-create',
     ]);
-    expect(lintCapability('set itself to run again later outside routines')).toEqual([]);
+    expect(lintCapability('schedule things with its built-in timer instead of a routine')).toEqual([]);
   });
 
   it('answers deny for CronCreate at the evaluator: defence in depth, not the enforcement', () => {

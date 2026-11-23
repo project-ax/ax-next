@@ -140,11 +140,16 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // and RemoteTrigger are denied too; the drift guard's `OFF_RAIL` records
     // them as covered by this row.
     //
-    // The clause is narrow on purpose. What the runner took away is the agent
-    // setting ITSELF to run again later. It can still start work that finishes
-    // later (a Bash `(sleep 600; ...) &`, a connector's own scheduling API), so
-    // "Cannot schedule work for later" would be false, and a false "Cannot"
-    // understates reach (design H4).
+    // The clause is narrow on purpose: it names the mechanism the runner took
+    // away, the CLI's built-in scheduler (CronCreate, CronDelete, CronList,
+    // ScheduleWakeup, RemoteTrigger). Other ways to have something happen later
+    // remain. Bash `run_in_background` is kept on purpose, and when a
+    // background command finishes the CLI sends a task-notification that wakes
+    // the model for an unprompted turn while the runner is still warm
+    // (minutes). A shell `(sleep 600; ...) &` and a connector's own scheduling
+    // API remain too. So "Cannot schedule work for later" or "Cannot set itself
+    // to run again later" would be false, and a false "Cannot" understates
+    // reach (design H4).
     //
     // It goes AFTER the four, never ahead of them: `@ax/decisions`' canary
     // builds on the first deny rule (rules.test.ts pins the order).
@@ -152,7 +157,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     match: { tool: 'CronCreate' },
     providedBy: 'sandbox',
     verdict: 'deny',
-    capability: 'set itself to run again later outside routines',
+    capability: 'schedule things with its built-in timer instead of a routine',
     subject: 'agent',
     provenance: 'rule',
   },

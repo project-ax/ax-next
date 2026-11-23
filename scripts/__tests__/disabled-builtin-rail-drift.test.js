@@ -24,10 +24,13 @@
 // same jobs; NotebookEdit is denied, but Edit and Write still change a notebook.
 // A "Cannot" there understates reach, the one direction design H4 forbids.
 // The same standard sets the wording of the row a name DOES get. The scheduling
-// row says "Cannot set itself to run again later outside routines", not "Cannot
-// schedule work for later": Bash `(sleep N; ...) &` and a connector's own API
-// can still start work that runs later. What is gone is the agent setting
-// itself to run again.
+// row says "Cannot schedule things with its built-in timer instead of a
+// routine", not "Cannot schedule work for later" or "Cannot set itself to run
+// again later". Bash `run_in_background` stays, and the task-notification it
+// sends when the command finishes wakes the model for another turn while the
+// runner is still warm; a shell `(sleep N; ...) &` and a connector's own API
+// can still start work that runs later too. What is gone is the CLI's built-in
+// scheduler (CronCreate, CronDelete, CronList, ScheduleWakeup, RemoteTrigger).
 // Others are aliases or companions of a row that already says it (`Agent` is
 // `Task` on the wire; CronList lists what only CronCreate could make), a UI mode
 // with no reach (plan mode), inert in an AX session (PushNotification), or
@@ -121,19 +124,21 @@ const OFF_RAIL = Object.freeze({
   },
   ScheduleWakeup: {
     coveredBy: 'builtins.cron-create',
-    why: 'a timer that wakes this session later: the agent setting itself to run again',
+    why: "a timer that wakes this session later: part of the CLI's built-in scheduler",
   },
   RemoteTrigger: {
     coveredBy: 'builtins.cron-create',
     why:
-      "schedules agent runs on Anthropic's cloud: the agent setting itself to run " +
-      'again later, outside routines',
+      "schedules agent runs on Anthropic's cloud: part of the CLI's built-in " +
+      'scheduler, outside routines',
   },
   Monitor: {
     why:
       'watches a background command; Bash run_in_background plus Read can still watch ' +
-      'one, so a Cannot row would understate reach (H4). Being woken by it later is the ' +
-      'agent running again, which the builtins.cron-create row already says',
+      'one, so a Cannot row would understate reach (H4). Monitor is not the only thing ' +
+      'that wakes the model later either: a finished Bash run_in_background command ' +
+      'sends a task-notification that does too, so "Cannot be woken by a background ' +
+      'command" would be false as well',
   },
   TaskOutput: { why: "reads a background task's output; Read still can" },
   TaskStop: { why: 'stops a background task; Bash still can' },
