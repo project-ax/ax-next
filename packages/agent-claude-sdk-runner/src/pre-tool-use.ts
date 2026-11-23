@@ -116,7 +116,9 @@ export function createPreToolUseHook(
       // `Skill` tool is allowed, and the CLI offers its own bundled skills
       // through it next to AX's. Most of those cannot be switched off
       // (bundled-skills-env.ts), so a call for any name outside AX's
-      // projection is refused here, before the host is asked. Measured on CLI
+      // projection is refused here, before the host is asked. So is a
+      // projected name the CLI has a command of its own for (TASK-1217,
+      // `CLI_COMMAND_NAMES`): the CLI's would run instead. Measured on CLI
       // 2.1.119: the hook sees `tool_input.skill` verbatim (a leading `/`
       // included), and a deny reaches the model as an `is_error` result.
       // `skillRefusal` echoes the name only when it is a plain short one,

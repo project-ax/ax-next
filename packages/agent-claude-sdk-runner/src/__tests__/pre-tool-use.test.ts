@@ -274,6 +274,56 @@ describe('createPreToolUseHook', () => {
     });
   });
 
+  // TASK-1217: an AX skill whose name a built-in CLI command already has never
+  // runs (the CLI resolves the name to its own command, so that would run
+  // instead). The runner refuses it before the host is asked, and the reason
+  // asks for a rename. Other projected skills are unaffected.
+  it('refuses a projected Skill that a built-in CLI command shadows, without touching IPC', async () => {
+    const { client, calls } = mkClient(async () => {
+      throw new Error('IPC should not be reached for a skill a CLI command shadows');
+    });
+    const hook = createPreToolUseHook({
+      client,
+      idGen: () => 'id-skill-6',
+      projectedSkills: { names: new Set(['simplify', 'weekly-report']) },
+    });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'simplify' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([]);
+    const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
+    expect(hso.hookEventName).toBe('PreToolUse');
+    expect(hso.permissionDecision).toBe('deny');
+    expect(hso.permissionDecisionReason).toContain('"simplify" can\'t be opened here');
+    expect(hso.permissionDecisionReason).toContain('give the skill a different name');
+    expect(out).not.toHaveProperty('continue');
+  });
+
+  it('still forwards a projected Skill with another name to tool.pre-call when one is shadowed', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({
+      client,
+      idGen: () => 'id-skill-7',
+      projectedSkills: { names: new Set(['simplify', 'weekly-report']) },
+    });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'weekly-report' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([
+      {
+        action: 'tool.pre-call',
+        payload: { call: { id: 'tu_abc', name: 'Skill', input: { skill: 'weekly-report' } } },
+      },
+    ]);
+    expect(out).toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    });
+  });
+
   it('refuses every Skill call when no projection was passed (fails closed)', async () => {
     const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
     const hook = createPreToolUseHook({ client, idGen: () => 'id-skill-3' });

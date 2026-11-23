@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readProjectedSkills, skillRefusal } from '../projected-skills.js';
+import { CLI_COMMAND_NAMES, readProjectedSkills, skillRefusal } from '../projected-skills.js';
 
 // TASK-1207: the claude-sdk runner lets the model invoke a skill only when AX
 // installed it, i.e. when it is a folder in the projection under
@@ -217,5 +217,55 @@ describe('skillRefusal', () => {
     const reason = skillRefusal({ skill: 'weekly-report' }, both);
     expect(reason).toBeDefined();
     expect(reason).toContain("this agent's skills couldn't be read when the session started");
+  });
+
+  // TASK-1217: the CLI resolves a `Skill` name to its own command first, so an
+  // AX skill that shares a name with one never runs; the CLI's would run in
+  // its place (measured with `simplify`). The name IS a projected folder, so
+  // the allowlist alone lets it through. The refusal asks for a rename.
+  describe('an AX skill named like a built-in CLI command', () => {
+    const shadowed = { names: new Set(['simplify', 'weekly-report']) };
+    const RENAME =
+      "\"simplify\" can't be opened here, because the agent's toolkit has a built-in command " +
+      'with the same name and that would run instead. Ask the person to give the skill a different name.';
+
+    it('is refused with a rename request, however the name is written', () => {
+      for (const skill of ['simplify', '/simplify', ' simplify ', ' /simplify ']) {
+        expect(skillRefusal({ skill }, shadowed), skill).toBe(RENAME);
+      }
+    });
+
+    it('is refused for every name the CLI answers to', () => {
+      // The full list is pinned against the binary by the DRIFT case in
+      // bundled-skills-real-sdk.e2e.test.ts. Here: the loop below is not
+      // vacuous, and it covers the names a bundled skill or a local command
+      // owns, not just the ones in the model's listing.
+      for (const name of ['simplify', 'update-config', 'batch', 'debug', 'clear', 'compact']) {
+        expect(CLI_COMMAND_NAMES.has(name), name).toBe(true);
+      }
+      for (const name of CLI_COMMAND_NAMES) {
+        const reason = skillRefusal({ skill: name }, { names: new Set([name]) });
+        expect(reason, name).toContain(`"${name}" can't be opened here`);
+        expect(reason, name).toContain('give the skill a different name');
+      }
+    });
+
+    it('leaves a projected skill with any other name alone', () => {
+      expect(skillRefusal({ skill: 'weekly-report' }, shadowed)).toBeUndefined();
+      expect(skillRefusal({ skill: ' /weekly-report ' }, shadowed)).toBeUndefined();
+    });
+
+    it('keeps the plain refusal for a CLI command name AX did not project', () => {
+      expect(skillRefusal({ skill: 'update-config' }, shadowed)).toBe(
+        '"update-config" is not one of this agent\'s skills, so it isn\'t available here. ' +
+          'Use the skills and tools you were given.',
+      );
+    });
+
+    it('says the skills could not be read before it asks for a rename', () => {
+      const reason = skillRefusal({ skill: 'simplify' }, { names: new Set(['simplify']), loadError: 'EACCES' });
+      expect(reason).toContain("this agent's skills couldn't be read when the session started");
+      expect(reason).not.toContain('different name');
+    });
   });
 });
