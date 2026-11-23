@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CHAT_TURN_END_HOLD_HOOK,
   CHAT_TURN_SEGMENT_END_HOOK,
@@ -77,6 +77,10 @@ async function setup(opts: {
   maxPerAgent?: number;
   enabled?: boolean;
   chatTimeoutMs?: number;
+  /** Hold the Nth sandbox:open-session until this resolves. */
+  openGate?: { on: number; until: Promise<void> };
+  /** The invoking request's logger throws on a line containing this. */
+  throwOnLog?: string;
   openSessionThrowsOn?: number;
 } = {}) {
   const rows: Record<string, Row> = {};
@@ -151,6 +155,7 @@ async function setup(opts: {
     'sandbox:open-session': async (_c, input: unknown) => {
       const i = input as { sessionId: string; services?: Array<{ name: string }> };
       opens.push({ sessionId: i.sessionId, ...(i.services !== undefined ? { services: i.services } : {}) });
+      if (opts.openGate !== undefined && opts.openGate.on === opens.length) await opts.openGate.until;
       if (opts.openSessionThrowsOn === opens.length) {
         throw new PluginError({
           code: 'service-sidecar-failed', plugin: '@ax/sandbox-k8s', hookName: 'sandbox:open-session',
@@ -184,6 +189,9 @@ async function setup(opts: {
   // and clears active_req_id; none may arrive mid-restart.
   h.bus.subscribe<{ reqId?: string }>('chat:turn-end', 'test/callers', async (c, p) => {
     turnEnds.push({ reqId: p.reqId, sessionId: c.sessionId });
+    // @ax/conversations: compare-and-clear active_req_id on the turn's end.
+    const r = c.conversationId !== undefined ? rows[c.conversationId] : undefined;
+    if (r !== undefined && p.reqId !== undefined && r.activeReqId === p.reqId) r.activeReqId = null;
     return undefined;
   });
   h.bus.subscribe<{ reqId?: string }>(CHAT_TURN_SEGMENT_END_HOOK, 'test/segments', async (c, p) => {
@@ -228,7 +236,13 @@ async function setup(opts: {
       makeAgentContext({
         sessionId, agentId: AGENT.id, userId: AGENT.ownerId, conversationId, reqId,
         ...(source !== undefined ? { source } : {}),
-        logger: createLogger({ reqId, writer: (line) => { logs.push(line); } }),
+        logger: createLogger({
+          reqId,
+          writer: (line) => {
+            logs.push(line);
+            if (opts.throwOnLog !== undefined && line.includes(opts.throwOnLog)) throw new Error('log sink down');
+          },
+        }),
       }),
       { message: { role: 'user', content: 'run the e2e tests' } },
     );
@@ -679,5 +693,125 @@ describe('restart_with_services (dev services on demand)', () => {
     await flush();
     expect(out2).toEqual([expect.objectContaining({ kind: 'terminated', reason: 'chat-run-timeout' })]);
     expect(t.opens).toHaveLength(1);
+  });
+
+  // ---- Fix round 2 -------------------------------------------------------
+
+  /** Restart req-1 on s-1 with req-2 routed in behind it; returns once the swap's note is queued. */
+  async function restartWithQueued(t: Awaited<ReturnType<typeof setup>>) {
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'turn 1');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    const p2 = t.invoke('placeholder', 'conv-1', 'req-2');
+    await waitFor(() => t.queued.length === 2, 'message 2 queued on s-1');
+    return { p1, p2, out1: track(p1), out2: track(p2) };
+  }
+
+  it('N2: after the restarting turn ends, the row still binds the moved request, and Stop reaches it', async () => {
+    const t = await setup();
+    const { p1, p2, out2 } = await restartWithQueued(t);
+    await t.endSegment('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+    const fresh = t.opens[1]!.sessionId;
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+
+    await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+    await p1;
+    // req-1's turn end compare-and-clears req-1 only: the moved req-2 still owns the row.
+    expect(t.row('conv-1').activeReqId).toBe('req-2');
+    expect(out2).toEqual([]);
+
+    const stop = await t.h.bus.call<unknown, { interrupted: boolean }>(
+      'agent:interrupt', makeAgentContext({ sessionId: 'x', agentId: AGENT.id, userId: AGENT.ownerId }),
+      { conversationId: 'conv-1', userId: AGENT.ownerId },
+    );
+    expect(stop.interrupted).toBe(true);
+    expect(t.queued.at(-1)).toEqual({ sessionId: fresh, entry: { type: 'interrupt' } });
+    await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+    await p2;
+    expect(t.row('conv-1').activeReqId).toBeNull();
+    expect(t.turnErrors).toEqual([]);
+  });
+
+  it('N1: a moved request whose own turn timer fires during the swap is not re-attached or re-queued', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      let openNew!: () => void;
+      const t = await setup({
+        chatTimeoutMs: 1_000,
+        openGate: { on: 2, until: new Promise<void>((r) => { openNew = r; }) },
+      });
+      const { p1, p2, out2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.opens.length === 2, 'the restart opening'); // held at the gate
+      await vi.advanceTimersByTimeAsync(1_100); // req-2's own limit runs out while it is detached
+      await waitFor(() => out2.length === 1, 'req-2 timed out');
+      expect(out2).toEqual([expect.objectContaining({ kind: 'terminated', reason: 'chat-run-timeout' })]);
+
+      openNew();
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      await flush();
+      // Only the note on the new sandbox: req-2 is not queued again, and the row stays on req-1.
+      expect(t.queued.filter((q) => q.sessionId === fresh).map((q) => q.entry.type)).toEqual(['host-note']);
+      expect(t.row('conv-1').activeReqId).toBe('req-1');
+      expect(t.turnErrors.filter((e) => e.reqId === 'req-2')).toHaveLength(1);
+
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p1;
+      await p2;
+      expect(out2).toHaveLength(1);
+      // No leaked mid-turn rotation interval for req-2: the one timer left is
+      // the idle reaper req-1's turn end armed for the warm sandbox.
+      expect(vi.getTimerCount()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a restart that throws still ends every detached request exactly once', async () => {
+    // The restart's own open fails, and logging that failure throws, so the
+    // continuation throws instead of returning an outcome.
+    const t = await setup({ openSessionThrowsOn: 2, throwOnLog: 'dev-service-failed' });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'turn 1');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    const p2 = t.invoke('placeholder', 'conv-1', 'req-2');
+    const p3 = t.invoke('placeholder', 'conv-1', 'req-3');
+    await waitFor(() => t.queued.length === 3, 'messages 2 and 3');
+    const out2 = track(p2);
+    const out3 = track(p3);
+    const thrown = p1.then(() => null, (err: unknown) => err);
+    await t.endSegment('s-1', 'conv-1', 'req-1', ['req-3']); // req-3 folded, req-2 queued
+    expect(await thrown).toBeInstanceOf(Error);
+    await Promise.all([p2, p3]);
+    await flush();
+    // Promptly, not at their own limits (60 s), and once each.
+    expect(out2).toEqual([expect.objectContaining({ kind: 'terminated', reason: 'sandbox-terminated' })]);
+    expect(out3).toEqual([expect.objectContaining({ kind: 'terminated', reason: 'chat-run-error' })]);
+    expect(t.turnErrors.filter((e) => e.reqId === 'req-2')).toHaveLength(1);
+    expect(t.turnErrors.filter((e) => e.reqId === 'req-3')).toHaveLength(1);
+    expect(t.row('conv-1').serviceSet).toBeNull();
+  });
+
+  it('N3: a moved request\'s R19 listener works on the new sandbox', async () => {
+    const t = await setup();
+    const { p1, p2, out2 } = await restartWithQueued(t);
+    await t.endSegment('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+    const fresh = t.opens[1]!.sessionId;
+    expect(out2).toEqual([]);
+
+    // The new sandbox dies.
+    await t.h.bus.call('session:terminate', makeAgentContext({ sessionId: fresh, agentId: AGENT.id, userId: AGENT.ownerId }), { sessionId: fresh });
+    await waitFor(() => out2.length === 1, 'req-2 ended');
+    expect(out2).toEqual([expect.objectContaining({ kind: 'terminated', reason: 'sandbox-terminated' })]);
+    await p2;
+    expect(t.turnErrors.filter((e) => e.reqId === 'req-2')).toEqual([
+      { reqId: 'req-2', reason: 'sandbox-terminated' },
+    ]);
+    // Let req-1 end too (its own path watches the handle).
+    await t.handles.get(fresh)!.handle.kill();
+    await p1;
   });
 });

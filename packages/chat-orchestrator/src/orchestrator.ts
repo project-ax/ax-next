@@ -3308,7 +3308,8 @@ export function createOrchestrator(
   interface MovableWait {
     message: AgentMessage;
     detach(): void;
-    attach(sessionId: string): void;
+    /** False (and a no-op) when the wait settled meanwhile, e.g. its own turn timer fired while detached. */
+    attach(sessionId: string): boolean;
     settle(): void;
     end(reason: string): void;
   }
@@ -3487,10 +3488,12 @@ export function createOrchestrator(
   // Step 3 of the restart: close the old sandbox. The restarting request's
   // waiter is settled and unregistered by now, and every other movable wait
   // on it was detached just before (R30); the conversation already names the
-  // new session. So this ends none of those turns and unbinds nothing. A
-  // waiter registered there with no movable wait yet (a routed message still
-  // being queued at that instant) still ends `sandbox-terminated`, as for a
-  // routing retire. Mirrors the routing retire.
+  // new session. So this ends none of those turns and unbinds nothing. Not
+  // covered (a known gap, carded): a waiter registered there with no movable
+  // wait yet, a routed message still being queued at that instant. It can be
+  // ended by the close (`sandbox-terminated`) and then get a second turn-error
+  // from its own failed queue, or, if its queue landed first, wait on a dead
+  // session until its turn timer. Mirrors the routing retire.
   async function closeSandboxForServiceRestart(ctx: AgentContext, oldSessionId: string): Promise<void> {
     clearReapTimers(oldSessionId);
     const entry = warmSessions.get(oldSessionId);
@@ -3565,16 +3568,37 @@ export function createOrchestrator(
     let moved = false;
     const moveWaits = async (sessionId: string): Promise<void> => {
       moved = true;
+      let lastMoved: string | undefined;
       for (const { reqId, wait } of movedWaits) {
-        wait.attach(sessionId);
+        // N1 — a wait that settled while detached (its own turn timer fired:
+        // its caller was told it timed out) is neither re-attached nor re-queued.
+        if (!wait.attach(sessionId)) continue;
         try {
           await bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>('session:queue-work', restartCtx, {
             sessionId,
             entry: { type: 'user-message', payload: wait.message, reqId },
           });
+          lastMoved = reqId;
         } catch (err) {
           ctx.logger.warn('service_restart_move_failed', { movedReqId: reqId, ...errorLogFields(err) });
           wait.end('queue-work-failed');
+        }
+      }
+      // N2 — the row binds the LAST request in the sandbox's queue, as a
+      // routed message's own bind did before the swap. Otherwise the
+      // restarting request's turn end compare-and-clears the row while a
+      // moved request still runs, and Stop, the reaper's hold and a stream
+      // reconnect all lose it. Only now, after the note and the moved
+      // messages are queued: binding a moved request earlier would send a
+      // Stop during the swap past the note.
+      if (lastMoved !== undefined && conversationId !== undefined && bus.hasService('conversations:bind-session')) {
+        try {
+          await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
+            'conversations:bind-session', restartCtx,
+            { conversationId, sessionId, reqId: lastMoved },
+          );
+        } catch (err) {
+          ctx.logger.warn('conversation_bind_failed_restart', { movedReqId: lastMoved, ...errorLogFields(err) });
         }
       }
     };
@@ -3592,21 +3616,29 @@ export function createOrchestrator(
         ctx.logger.warn('conversation_bind_failed_restart', { ...errorLogFields(err) });
       }
     }
-    await closeSandboxForServiceRestart(ctx, pending.sessionId);
-    const restarted = await runAgentInvokeTurn(restartCtx, input, {
-      serviceSet: pending.set,
-      afterNoteQueued: moveWaits,
-    });
-    if (restarted.kind !== 'complete' && conversationId !== undefined) {
-      await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-failed');
-    }
-    // No new sandbox took them: their sandbox is gone, so they end as it did.
-    if (!moved) for (const { wait } of movedWaits) wait.end('sandbox-terminated');
-    // Folded into the held segment: the continuing turn answered them, so
-    // they end with it (its own reason, if it failed).
-    for (const wait of foldedWaits) {
-      if (restarted.kind === 'complete') wait.settle();
-      else wait.end(restarted.reason);
+    let restarted: AgentOutcome | undefined;
+    try {
+      await closeSandboxForServiceRestart(ctx, pending.sessionId);
+      restarted = await runAgentInvokeTurn(restartCtx, input, {
+        serviceSet: pending.set,
+        afterNoteQueued: moveWaits,
+      });
+    } finally {
+      // Every detached wait ends or settles exactly once, even if the line
+      // above threw (end/settle are no-ops on a settled wait). A moved wait
+      // that was re-attached lives on in the new sandbox like any routed wait.
+      const failed = restarted === undefined ? 'chat-run-error' : restarted.kind === 'complete' ? null : restarted.reason;
+      // No new sandbox took them: their sandbox is gone, so they end as it did.
+      if (!moved) for (const { wait } of movedWaits) wait.end('sandbox-terminated');
+      // Folded into the held segment: the continuing turn answered them, so
+      // they end with it (its own reason, if it failed).
+      for (const wait of foldedWaits) {
+        if (failed === null) wait.settle();
+        else wait.end(failed);
+      }
+      if (failed !== null && conversationId !== undefined) {
+        await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-failed');
+      }
     }
     return restarted;
   }
@@ -4438,10 +4470,12 @@ export function createOrchestrator(
           waitSessionId = '';
         },
         attach: (newSessionId) => {
+          if (deferred.settled) return false;
           waitSessionId = newSessionId;
           registerWaiter(newSessionId, ctx.reqId, deferred);
           stopWatchingSessionEnd = watchSession(newSessionId);
           stopMidTurnRotation = startMidTurnRotation(ctx, newSessionId);
+          return true;
         },
         settle: () => {
           if (!deferred.settled) deferred.resolve({ kind: 'complete', messages: [] });
