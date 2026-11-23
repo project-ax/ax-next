@@ -1734,3 +1734,50 @@ describe('agents: only the owner or an admin may change a team agent connectors 
     });
   });
 });
+
+describe('per-agent turn, idle and runner size through the hooks', () => {
+  const size = { cpuMillis: { request: 250, limit: 1000 }, memoryMiB: { request: 512, limit: 2048 } };
+
+  it('round-trips turn, idle and runner size through create, resolve and update', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+    const actor = { userId: 'u1', isAdmin: false };
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor,
+      input: makeInput({ turnLimitMinutes: 45, idleMinutes: 10, runnerSize: size }),
+    });
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', ctx, {
+      agentId: created.agent.id,
+      userId: 'u1',
+    });
+    expect(resolved.agent).toMatchObject({ turnLimitMinutes: 45, idleMinutes: 10, runnerSize: size });
+    const updated = await h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+      actor,
+      agentId: created.agent.id,
+      patch: { turnLimitMinutes: null },
+    });
+    expect(updated.agent).toMatchObject({ turnLimitMinutes: null, idleMinutes: 10, runnerSize: size });
+    await expect(
+      h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+        actor,
+        agentId: created.agent.id,
+        patch: { runnerSize: { cpuMillis: { request: 5, limit: 1 } } },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('a member of a team agent can set them (existing rule: any member may write a team agent)', async () => {
+    const h = await makeHarness({ withTeams: 'always-member' });
+    const ctx = h.ctx({ userId: 'u2' });
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput({ visibility: 'team', teamId: 't1' }),
+    });
+    const updated = await h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+      actor: { userId: 'u2', isAdmin: false },
+      agentId: created.agent.id,
+      patch: { turnLimitMinutes: 30, idleMinutes: 5, runnerSize: size },
+    });
+    expect(updated.agent).toMatchObject({ turnLimitMinutes: 30, idleMinutes: 5, runnerSize: size });
+  });
+});

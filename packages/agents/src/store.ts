@@ -4,7 +4,7 @@ import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
-import type { Agent, AgentInput, RunnerId, SkillAttachment } from './types.js';
+import type { Agent, AgentInput, RunnerId, RunnerSize, SkillAttachment } from './types.js';
 
 const PLUGIN_NAME = '@ax/agents';
 
@@ -335,6 +335,56 @@ function validateTeamId(value: unknown): string {
   return value;
 }
 
+const MINUTES_MAX = 1440;
+
+function validateMinutes(value: unknown, field: string): number | null {
+  if (value === null) return null;
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MINUTES_MAX
+  ) {
+    throw invalid(`${field} must be a whole number of minutes from 1 to ${MINUTES_MAX}`);
+  }
+  return value;
+}
+
+function validatePair(value: unknown, field: string): { request: number; limit: number } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid(`${field} must be an object with request and limit`);
+  }
+  const v = value as Record<string, unknown>;
+  for (const k of Object.keys(v)) {
+    if (k !== 'request' && k !== 'limit') throw invalid(`${field} has unknown key '${k}'`);
+  }
+  const { request, limit } = v;
+  for (const [k, n] of [['request', request], ['limit', limit]] as const) {
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) {
+      throw invalid(`${field}.${k} must be a positive whole number`);
+    }
+  }
+  if ((request as number) > (limit as number)) {
+    throw invalid(`${field}.request must not be above ${field}.limit`);
+  }
+  return { request: request as number, limit: limit as number };
+}
+
+function validateRunnerSize(value: unknown): RunnerSize | null {
+  if (value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid('runnerSize must be an object');
+  }
+  const v = value as Record<string, unknown>;
+  for (const k of Object.keys(v)) {
+    if (k !== 'cpuMillis' && k !== 'memoryMiB') throw invalid(`runnerSize has unknown key '${k}'`);
+  }
+  const out: RunnerSize = {};
+  if (v['cpuMillis'] !== undefined) out.cpuMillis = validatePair(v['cpuMillis'], 'runnerSize.cpuMillis');
+  if (v['memoryMiB'] !== undefined) out.memoryMiB = validatePair(v['memoryMiB'], 'runnerSize.memoryMiB');
+  return out;
+}
+
 interface ValidatedAgentInput {
   displayName: string;
   allowedTools: string[];
@@ -343,6 +393,9 @@ interface ValidatedAgentInput {
   runner: RunnerId;
   visibility: 'personal' | 'team';
   teamId: string | null;
+  turnLimitMinutes?: number | null;
+  idleMinutes?: number | null;
+  runnerSize?: RunnerSize | null;
 }
 
 export function validateCreateInput(
@@ -368,6 +421,11 @@ export function validateCreateInput(
     runner,
     visibility,
     teamId,
+    turnLimitMinutes:
+      input.turnLimitMinutes === undefined ? null : validateMinutes(input.turnLimitMinutes, 'turnLimitMinutes'),
+    idleMinutes:
+      input.idleMinutes === undefined ? null : validateMinutes(input.idleMinutes, 'idleMinutes'),
+    runnerSize: input.runnerSize === undefined ? null : validateRunnerSize(input.runnerSize),
   };
 }
 
@@ -410,6 +468,13 @@ export function validateUpdatePatch(
     out.runner = validateRunner(patch.runner, SUPPORTED_RUNNERS);
     if (vctx.currentModel !== undefined) assertRunnerCanRun(out.runner, vctx.currentModel);
   }
+  if (patch.turnLimitMinutes !== undefined) {
+    out.turnLimitMinutes = validateMinutes(patch.turnLimitMinutes, 'turnLimitMinutes');
+  }
+  if (patch.idleMinutes !== undefined) {
+    out.idleMinutes = validateMinutes(patch.idleMinutes, 'idleMinutes');
+  }
+  if (patch.runnerSize !== undefined) out.runnerSize = validateRunnerSize(patch.runnerSize);
   return out;
 }
 
@@ -539,6 +604,20 @@ function rowToAgent(row: AgentsRow): Agent {
     });
   }
   const connectorExclusions = connectorExclusionsRaw as string[];
+  // Nullable settings: NULL (every pre-existing row) reads as null. Caps are
+  // applied where the values are used, never refused here.
+  let runnerSize: RunnerSize | null = null;
+  if (row.runner_size !== null && row.runner_size !== undefined) {
+    try {
+      runnerSize = validateRunnerSize(row.runner_size);
+    } catch {
+      throw new PluginError({
+        code: 'corrupt-row',
+        plugin: PLUGIN_NAME,
+        message: `agents_v1_agents.${row.agent_id} has invalid runner_size JSONB`,
+      });
+    }
+  }
   return {
     id: row.agent_id,
     ownerId: row.owner_id,
@@ -553,6 +632,9 @@ function rowToAgent(row: AgentsRow): Agent {
     skillAttachments,
     connectorAttachments,
     connectorExclusions,
+    turnLimitMinutes: row.turn_limit_minutes ?? null,
+    idleMinutes: row.idle_minutes ?? null,
+    runnerSize,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -715,6 +797,10 @@ async function insertAgentRow(
       skill_attachments: JSON.stringify([]) as unknown,
       connector_attachments: JSON.stringify([]) as unknown,
       connector_exclusions: JSON.stringify([]) as unknown,
+      turn_limit_minutes: validated.turnLimitMinutes ?? null,
+      idle_minutes: validated.idleMinutes ?? null,
+      runner_size:
+        validated.runnerSize == null ? null : (JSON.stringify(validated.runnerSize) as unknown),
       created_at: now,
       updated_at: now,
     } as never)
@@ -732,6 +818,9 @@ async function insertAgentRow(
       'skill_attachments',
       'connector_attachments',
       'connector_exclusions',
+      'turn_limit_minutes',
+      'idle_minutes',
+      'runner_size',
       'created_at',
       'updated_at',
     ])
@@ -788,6 +877,12 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       }
       if (patch.model !== undefined) setClause.model = patch.model;
       if (patch.runner !== undefined) setClause.runner = patch.runner;
+      if (patch.turnLimitMinutes !== undefined) setClause.turn_limit_minutes = patch.turnLimitMinutes;
+      if (patch.idleMinutes !== undefined) setClause.idle_minutes = patch.idleMinutes;
+      if (patch.runnerSize !== undefined) {
+        setClause.runner_size =
+          patch.runnerSize === null ? null : JSON.stringify(patch.runnerSize);
+      }
 
       const row = await db
         .updateTable('agents_v1_agents')
@@ -807,6 +902,9 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'skill_attachments',
           'connector_attachments',
           'connector_exclusions',
+          'turn_limit_minutes',
+          'idle_minutes',
+          'runner_size',
           'created_at',
           'updated_at',
         ])
@@ -977,6 +1075,9 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'skill_attachments',
           'connector_attachments',
           'connector_exclusions',
+          'turn_limit_minutes',
+          'idle_minutes',
+          'runner_size',
           'created_at',
           'updated_at',
         ])

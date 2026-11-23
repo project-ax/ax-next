@@ -691,3 +691,97 @@ describe('store.countByModel', () => {
     expect(await createAgentStore(db).countByModel([])).toEqual([]);
   });
 });
+
+describe('turn, idle and runner size', () => {
+  const vctx = { allowedModels: ALLOWED };
+  const size = {
+    cpuMillis: { request: 500, limit: 2000 },
+    memoryMiB: { request: 1024, limit: 4096 },
+  };
+
+  it('round-trips turn, idle and runner size', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(
+        makeInput({ turnLimitMinutes: 90, idleMinutes: 15, runnerSize: size }),
+        vctx,
+      ),
+    });
+    expect(created).toMatchObject({ turnLimitMinutes: 90, idleMinutes: 15, runnerSize: size });
+    expect(await store.getById(created.id)).toMatchObject({
+      turnLimitMinutes: 90,
+      idleMinutes: 15,
+      runnerSize: size,
+    });
+
+    // Update only one; the others stay. null clears.
+    const patched = await store.update(
+      created.id,
+      validateUpdatePatch({ idleMinutes: null, turnLimitMinutes: 1440 }, vctx),
+    );
+    expect(patched).toMatchObject({ turnLimitMinutes: 1440, idleMinutes: null, runnerSize: size });
+    const cleared = await store.update(created.id, validateUpdatePatch({ runnerSize: null }, vctx));
+    expect(cleared.runnerSize).toBeNull();
+  });
+
+  it('a new agent without them reads null', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const created = await createAgentStore(db).create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), vctx),
+    });
+    expect(created).toMatchObject({ turnLimitMinutes: null, idleMinutes: null, runnerSize: null });
+  });
+
+  it('a stored value above today\'s cap still loads', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(
+        makeInput({
+          turnLimitMinutes: 1440,
+          idleMinutes: 1440,
+          runnerSize: { cpuMillis: { request: 64000, limit: 64000 } },
+        }),
+        vctx,
+      ),
+    });
+    expect(await store.getById(created.id)).toMatchObject({ turnLimitMinutes: 1440, idleMinutes: 1440 });
+  });
+
+  it('request above limit is refused', () => {
+    expect(() =>
+      validateCreateInput(
+        makeInput({ runnerSize: { cpuMillis: { request: 3000, limit: 2000 } } }),
+        vctx,
+      ),
+    ).toThrow(/request must not be above/);
+    expect(() =>
+      validateUpdatePatch({ runnerSize: { memoryMiB: { request: 2, limit: 1 } } }, vctx),
+    ).toThrow(/request must not be above/);
+  });
+
+  it.each([
+    [{ turnLimitMinutes: 0 }],
+    [{ turnLimitMinutes: 1441 }],
+    [{ idleMinutes: 1.5 }],
+    [{ idleMinutes: '5' as unknown as number }],
+    [{ runnerSize: { cpuMillis: { request: 0, limit: 100 } } }],
+    [{ runnerSize: { cpuMillis: { request: 1.5, limit: 2 } } }],
+    [{ runnerSize: { cpuMillis: { request: 1, limit: 2 }, gpu: 1 } as never }],
+    [{ runnerSize: { memoryMiB: { request: '1Gi', limit: '2Gi' } } as never }],
+  ])('refuses a malformed value %j', (bad) => {
+    expect(() => validateCreateInput(makeInput(bad as Partial<AgentInput>), vctx)).toThrow(
+      /must|unknown key/i,
+    );
+  });
+});

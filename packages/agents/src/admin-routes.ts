@@ -151,6 +151,15 @@ const runnerSchema = z
   .min(1, 'runner must be a non-empty string')
   .max(64, 'runner must be at most 64 chars');
 
+const minutesSchema = z.number().int().min(1).max(1440).nullable();
+const pairSchema = z
+  .object({ request: z.number().int().min(1), limit: z.number().int().min(1) })
+  .strict();
+const runnerSizeSchema = z
+  .object({ cpuMillis: pairSchema.optional(), memoryMiB: pairSchema.optional() })
+  .strict()
+  .nullable();
+
 const visibilitySchema = z.enum(['personal', 'team']);
 
 const teamIdSchema = z.string().min(1).max(128);
@@ -169,6 +178,9 @@ const createBodySchema = z
     mcpConfigIds: mcpConfigIdsSchema,
     model: modelSchema,
     runner: runnerSchema.optional(),
+    turnLimitMinutes: minutesSchema.optional(),
+    idleMinutes: minutesSchema.optional(),
+    runnerSize: runnerSizeSchema.optional(),
     visibility: visibilitySchema,
     teamId: teamIdSchema.optional(),
   })
@@ -203,6 +215,9 @@ const updateBodySchema = z
     mcpConfigIds: mcpConfigIdsSchema.optional(),
     model: modelSchema.optional(),
     runner: runnerSchema.optional(),
+    turnLimitMinutes: minutesSchema.optional(),
+    idleMinutes: minutesSchema.optional(),
+    runnerSize: runnerSizeSchema.optional(),
   })
   .strict();
 
@@ -389,6 +404,9 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     skillAttachments: a.skillAttachments,
     connectorAttachments: a.connectorAttachments,
     connectorExclusions: a.connectorExclusions,
+    turnLimitMinutes: a.turnLimitMinutes ?? null,
+    idleMinutes: a.idleMinutes ?? null,
+    runnerSize: a.runnerSize ?? null,
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   };
