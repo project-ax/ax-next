@@ -805,8 +805,9 @@ export function toStatements(
     // moves. Dropped before the date check, and counted apart from `unusable`
     // because it is not an extractor failure. TASK-1210: so is the turn's
     // narration filed under someone else (the speaker's Slack id, their
-    // request for a verbatim reply, a memory miss filed under a person).
-    if (isAgentContextSelfReport(fact) || isTurnNarration(fact)) {
+    // request for a verbatim reply, a memory miss filed under a person). Read
+    // under the subject it's filed as: the Slack-id check takes person keys.
+    if (isAgentContextSelfReport(fact) || isTurnNarration({ ...fact, subject: about })) {
       selfReports += 1;
       continue;
     }

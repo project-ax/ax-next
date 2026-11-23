@@ -157,24 +157,29 @@
  * The same walk, replayed live (5 trials per turn), stored more of the turn
  * talking about itself:
  *
- * - Its memory misses: `assistant | stated | has no record of his favorite
- *   color`, `stated_no_standup_on_record`, "No record of X exists in prior
- *   conversations" ({@link MEMORY_MISS_PATTERNS}, `own-narration`). What
- *   memory holds has one source of truth, the store; "I don't have it" is a
- *   snapshot of one lookup, wrong the moment the person answers.
+ * - Its memory misses: `assistant | stated | it has no record of his
+ *   favorite color`, `stated_no_standup_on_record`, "No record of X exists
+ *   in prior conversations" ({@link MEMORY_MISS_PATTERNS}, `own-narration`,
+ *   after the identity guard). What memory holds has one source of truth,
+ *   the store; "I don't have it" is a snapshot of one lookup, wrong the
+ *   moment the person answers. Only when the assistant is the one without
+ *   it, or memory is named: "the IRS has no record of your payment" is an
+ *   answer. Kept, though it's a miss: the agent by its own name ("Fern had
+ *   no record of …").
  * - Its offers and its requests to its admin: `offered_to_…`,
  *   `requested_admin_capability`, `filed_admin_request`,
  *   `requested_capability`, and `complied_with_…` ({@link OFFER_PREDICATE},
  *   {@link isAdminRequest}, `action-narration`). The capability request has
  *   its own record; an offer is a line of the reply, not a thing it did.
  * - Not about the agent at all, so {@link isTurnNarration}, not
- *   {@link classifyAgentFact}: the speaker's Slack id (`has_slack_user_id`,
- *   `slack_identity`: the channel label shows it every turn), the speaker's
- *   request for a verbatim reply (`requested_exact_reply | asked Fern to
- *   reply with exactly these lines: …`), and the memory miss filed under
- *   the person or a topic (`vinay | team_standup_time | no team standup
- *   time is on record for vinay's team`), which would otherwise sit in the
- *   same slot as the real standup time.
+ *   {@link classifyAgentFact}: the speaker's Slack id under a person key
+ *   (`user:<id> | has_slack_user_id`, `slack_identity`: the channel label
+ *   shows it every turn), the speaker's request for a verbatim reply
+ *   (`requested_exact_reply | asked Fern to reply with exactly these lines:
+ *   …`), and the memory miss filed under the person or a topic (`vinay |
+ *   team_standup_time | no team standup time is on record for vinay's
+ *   team`, the whole object), which would otherwise sit beside the real
+ *   standup time under the same predicate.
  *
  * Measured over the 500 LongMemEval banks (166,869 rows, 87,790 about the
  * agent): these rules drop one row `main` keeps, `complied_with_jailbreak`
@@ -184,7 +189,11 @@
  * `instructed_formatting | use markdown`), and any `offered_…` drops 19
  * offers that are content (`offered_appointment_slots`, `offered_discount`).
  * So `user | requested_fetch` and `requested_routine` stay: a missed junk
- * row is the cheap direction.
+ * row is the cheap direction. That measurement has little power for the
+ * text rules: the banks hold only about ten kept rows with "on file", "on
+ * record" or "no record of", and none with "with exactly" or a Slack id. So
+ * each rule is also narrowed by hand against near misses (review of
+ * TASK-1210, pinned in `self-report.test.ts`).
  *
  * What the agent SUPPLIED stays: recommendations, lists, values, forecasts,
  * explanations, the plans and drafts it wrote. It is the pinned prompt's
@@ -383,47 +392,78 @@ const NARRATION_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * "No X is saved in memory" (TASK-1210): a lookup that came back empty, for
- * any subject. Bounded gaps, so it stays linear on untrusted text.
+ * "No X is saved anywhere in memory" (TASK-1210): a lookup that came back
+ * empty, for any subject. Only "anywhere in memory" or "in my/its memory":
+ * "no data is stored in memory once the power is cut" is about RAM. Bounded
+ * gaps, so it stays linear on untrusted text.
  */
-const NONE_SAVED_IN_MEMORY = new RegExp(
-  String.raw`\bno\b[^.;,]{0,80}?\b(?:is|was|are|were) (?:saved|stored|recorded|noted)\b[^.;]{0,40}?\b(?:in|to|into) (?:my |its |the )?${MEMORY}`,
-);
+const NONE_SAVED_IN_MEMORY =
+  /\bno\b[^.;,]{0,80}?\b(?:is|was|are|were) (?:saved|stored|recorded|noted) (?:anywhere in (?:my |its |the )?memory|in (?:my|its) memory)\b/;
+
+/**
+ * "No X is on record for Y" (TASK-1210). "For" must follow: "if no payment
+ * method is on file, Netflix pauses the account" and "no Category 5
+ * hurricane on record" are topics.
+ */
+const NONE_ON_RECORD_FOR = /\bno\b[^.;,]{0,80}?\b(?:is|was|are|were) on (?:record|file) for\b/;
 
 /**
  * The assistant's memory misses (TASK-1210), over the same `text` as
- * {@link CONTEXT_PATTERNS}. "On record"/"on file" only after "no" or "don't
- * have": "the largest snowflake on record" is a topic. "No record of" only
- * with whose it is or with memory: "had no record of saying that" is kept.
+ * {@link CONTEXT_PATTERNS}. The assistant must be the one without it ("I",
+ * "it", "the assistant"), or memory must be named: "the IRS has no record of
+ * your payment" and "the DMV does not have your address on file" are
+ * answers. Checked after the identity guard, so `name | Fern; no surname is
+ * on record for her` stays identity.
  */
 const MEMORY_MISS_PATTERNS: readonly RegExp[] = [
-  // "has no record of his favorite color", "had no record of vinay's …"
-  /\b(?:has|had|have|having|keeps?|kept|found) no records? (?:of|for|on|about) (?:your|his|her|their|the user's|[a-z0-9_]+'s) /,
+  // "it has no record of his favorite color"
+  /\b(?:i|it|assistant) (?:has|had|have) no records? (?:of|for|about) (?:your|his|her|their|the user's|[a-z0-9_]+'s) /,
   // "No record of vinay's favorite color exists in prior conversations"
   new RegExp(String.raw`\bno records? (?:of|for) [^.;]{0,200}?\b(?:in|from) (?:our |the |any )?${MEMORY}`),
-  // "No team standup time is on record", `stated_no_standup_time_on_file`
-  /\bno\b[^.;,]{0,80}?\b(?:(?:is|was|are|were) )?on (?:record|file)\b/,
+  // "No team standup time is on record for vinay"
+  NONE_ON_RECORD_FOR,
   // "I don't have your team standup time on file"
-  /\b(?:don't|do not|doesn't|does not|didn't|did not) have\b[^.;]{0,80}?\bon (?:file|record)\b/,
+  /\b(?:i|it) (?:don't|do not|doesn't|does not|didn't|did not) have\b[^.;]{0,80}?\bon (?:file|record)\b/,
   NONE_SAVED_IN_MEMORY,
 ];
 
 /**
- * A memory miss filed under a person or a topic (TASK-1210): "no team
- * standup time is on record for vinay's team". Narrower than the assistant's
- * "on record": "for" must follow, so "no allergies are on file at the
- * clinic" is a person's fact and stays.
+ * A memory miss filed under a person or a topic (TASK-1210), as the WHOLE
+ * object: "no team standup time is on record for vinay's team". Nothing
+ * after whose it is, and not the speaker's own ("for me", "for us"), so a
+ * person's fact stays: "no reservation was on file for us at the Hilton",
+ * "no prescription was on file for my mom at CVS", "no purchase order is on
+ * file for ACME yet; finance needs one". (Who said it, `sourceRole`, can't
+ * tell them apart: attribution gave the walk's miss to the question it
+ * answered, by word overlap.)
  */
-const NONE_ON_RECORD_FOR = /\bno\b[^.;,]{0,80}?\b(?:is|was|are|were) on (?:record|file) for\b/;
+const PERSON_MISS_OBJECT =
+  /^no\b[^.;,]{0,80}?\b(?:is|was|are|were) on (?:record|file) for (?!(?:me|us|my|our)\b)(?:(?! (?:at|with|in|yet|until|since|by)\b)[^.;,]){1,60}$/;
 
-/** The speaker's Slack id (TASK-1210): `has_slack_user_id`, `slack_identity`. The channel label carries it. */
-const SLACK_ID_PREDICATE = /(?:^|_)slack_(?:(?:user|member)_)?id(?:_|$)|(?:^|_)slack_identity(?:_|$)/;
+/** A memory miss as the predicate itself (TASK-1210): `stated_no_standup_time_on_file`. */
+const MEMORY_MISS_PREDICATE = /^(?:stated|noted|reported|said|confirmed|told)_no_(?:[a-z0-9]+_){0,6}on_(?:record|file)$/;
+
+/**
+ * The speaker's Slack id (TASK-1210): `has_slack_user_id`, `slack_identity`.
+ * The whole predicate, and only under a person key: the channel label shows
+ * the speaker's id every turn, but `user | manager_slack_id` is someone
+ * else's, and `bob | slack_user_id` is a fact about Bob.
+ */
+const SLACK_ID_PREDICATE = /^(?:has_)?slack_(?:(?:user|member)_)?id$|^slack_identity$/;
 
 /** A request's verb (TASK-1210): `requested_exact_reply`, `instructed_assistant`. */
 const REQUEST_VERBS = new Set(['requested', 'asked', 'instructed', 'told']);
 
-/** A request for a verbatim reply, in the object (TASK-1210): "asked Fern to reply with exactly these lines". */
-const EXACT_REPLY_OBJECT = /\b(?:reply|respond|answer|say)(?:ing)? with exactly\b/;
+/** What a verbatim request asks for, next to `exact` in the predicate: `requested_exact_reply`, not `requested_exact_quote`. */
+const EXACT_WORDS = new Set(['exact', 'exactly', 'verbatim']);
+const REPLY_WORDS = new Set(['reply', 'replies', 'response', 'answer', 'echo', 'words', 'lines', 'text', 'phrase']);
+
+/**
+ * A request for a verbatim reply, in the object (TASK-1210): "reply with
+ * exactly these lines: …", "with exactly: …". The words to echo must follow:
+ * "always reply with exactly three bullet points" is a standing instruction.
+ */
+const EXACT_REPLY_OBJECT = /\b(?:reply|respond|answer|say)(?:ing)? with exactly(?: (?:these|this|the following)\b|:)/;
 
 /**
  * A predicate saying the assistant failed at something (TASK-1136):
@@ -502,9 +542,12 @@ const REPLY_PREDICATE = /^(?:echoed(?:_|$)|(?:replied|responded)(?:_with(?:_|$)|
  * help. Not any `offered_…`: `offered_appointment_slots | 9:00-9:30, …` and
  * `offered_discount` are what it supplied (19 such rows in LongMemEval).
  */
-const OFFER_PREDICATE = /^offered_to(?:_|$)|^offered_(?:(?:further|more|additional|extra)_)?(?:help|assistance|support)$/;
-/** TASK-1210: the verbs of a request it made, to its admin or for a capability. */
-const ADMIN_REQUEST_VERBS = new Set(['requested', 'filed', 'submitted', 'raised', 'escalated', 'asked', 'sent']);
+// `offered_to_<verb>`, not a recipient: `offered_to_user | a 20% discount code` is what it supplied.
+// Not `support`: `offered_support | the 988 Lifeline` names resources.
+const OFFER_PREDICATE =
+  /^offered_to_(?!(?:the_)?(?:users?|you|them|him|her|customers?|clients?)(?:_|$))[a-z]|^offered_(?:(?:further|more|additional|extra)_)?(?:help|assistance)$/;
+/** TASK-1210: the verbs of a request it made to its admin. Not `raised`: "raised administrator concerns" is a topic. */
+const ADMIN_REQUEST_VERBS = new Set(['requested', 'filed', 'submitted', 'asked', 'sent']);
 const ADMIN_WORDS = new Set(['admin', 'admins', 'administrator', 'administrators']);
 // Narration only when the head of the verb's object is an artifact noun: "created a meal plan", "wrote
 // a haiku", "built a 12-week training plan" and "tested the hypothesis" are content. `setup` stands for
@@ -635,15 +678,18 @@ function isOwnFailure(rest: string, object: string, text: string): boolean {
   return TOOL_VERB.test(verb) || OWN_MEMORY.test(text);
 }
 
-/**
- * TASK-1136: the assistant narrating its own memory operations and tool
- * failures; TASK-1210: and its memory misses.
- */
+/** TASK-1136: the assistant narrating its own memory operations and tool failures. */
 function isOwnNarration(normalized: string, object: string, text: string): boolean {
   const failure = FAILURE_PREDICATE.exec(normalized);
   if (failure !== null && isOwnFailure(normalized.slice(failure[0].length), object, text)) return true;
   if (MEMORY_OP_PREDICATE.test(normalized)) return true;
-  if (NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  return NARRATION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/** TASK-1210: the assistant's memory miss. After the identity guard. */
+function isMemoryMiss(normalized: string, object: string): boolean {
+  if (MEMORY_MISS_PREDICATE.test(normalized)) return true;
+  const text = scannedText(normalized, object);
   return MEMORY_MISS_PATTERNS.some((pattern) => pattern.test(text));
 }
 
@@ -656,8 +702,8 @@ function isOwnNarration(normalized: string, object: string, text: string): boole
 function isAdminRequest(words: readonly string[], normalized: string): boolean {
   const verb = words[0] ?? '';
   if (ADMIN_REQUEST_VERBS.has(verb) && words.some((word) => ADMIN_WORDS.has(word))) return true;
-  if (/^requested_capabilit(?:y|ies)$/.test(normalized)) return true;
-  return (verb === 'filed' || verb === 'submitted') && words.includes('request');
+  // The whole predicate: `filed_request_template | Dear HR, …` is a template it wrote.
+  return /^requested_capabilit(?:y|ies)$|^(?:filed|submitted)_(?:(?:a|an|capability|access)_)?requests?$/.test(normalized);
 }
 
 /** What a fact about the agent is. The cleanup script prints these names. */
@@ -681,6 +727,7 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
   const words = normalized.split('_').filter((word) => word !== '');
   // Who it is, first: `saved_standing_preference` starts with an action verb.
   if (words.some((word) => IDENTITY_WORDS.has(word)) || CREATED_BY.test(normalized)) return 'identity';
+  if (isMemoryMiss(normalized, object)) return 'own-narration';
   // A holder (`has_limitation`) is the assistant. Anything else, a reporting
   // verb or none, needs it marked: `its`/`own` in the predicate, or a
   // self-limit at the object's start.
@@ -784,13 +831,14 @@ export function isAgentContextSelfReport(fact: {
  */
 export function isTurnNarration(fact: { subject: string; predicate: string; object: string }): boolean {
   if (isAgentSubject(fact.subject)) return false;
+  const subject = fact.subject.trim().toLowerCase();
   const normalized = normalizePredicate(fact.predicate);
-  if (SLACK_ID_PREDICATE.test(normalized)) return true;
+  if ((subject === 'user' || subject.startsWith('user:')) && SLACK_ID_PREDICATE.test(normalized)) return true;
   const words = normalized.split('_').filter((word) => word !== '');
   if (REQUEST_VERBS.has(words[0] ?? '')) {
-    if (words.some((word) => word === 'exact' || word === 'exactly' || word === 'verbatim')) return true;
+    if (words.some((word) => EXACT_WORDS.has(word)) && words.some((word) => REPLY_WORDS.has(word))) return true;
     if (EXACT_REPLY_OBJECT.test(fact.object.slice(0, MAX_SCANNED_CHARS).toLowerCase())) return true;
   }
-  const text = scannedText(fact.predicate, fact.object);
-  return NONE_SAVED_IN_MEMORY.test(text) || NONE_ON_RECORD_FOR.test(text);
+  if (NONE_SAVED_IN_MEMORY.test(scannedText(fact.predicate, fact.object))) return true;
+  return PERSON_MISS_OBJECT.test(fact.object.slice(0, MAX_SCANNED_CHARS).trim().toLowerCase());
 }

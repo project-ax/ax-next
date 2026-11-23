@@ -650,7 +650,6 @@ describe("more of the turn's narration (TASK-1210)", () => {
   it.each([
     // Its memory misses.
     ['assistant', 'stated_no_record', 'Assistant told vinay it has no record of his favorite color, as it had not come up'],
-    ['assistant', 'stated', "Fern had no record of vinay's favorite color and asked vinay to share it"],
     ['assistant', 'stated', "No record of vinay's favorite color existed in prior conversations as of 2026-11-22"],
     ['assistant', 'stated_no_standup_on_record', "No team standup time is saved anywhere in memory for vinay's team"],
     ['assistant', 'stated', 'No team standup time is on record for vinay, and the assistant has no calendar access'],
@@ -658,6 +657,13 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['assistant', 'stated', "I don't have your team standup time on file"],
   ])('drops the memory miss %s | %s | %s as its own narration', (subject, predicate, object) => {
     expect(classifyAgentFact({ subject, predicate, object })).toBe('own-narration');
+  });
+
+  it.each([
+    ['assistant', 'name', 'Fern; no surname is on record for her'],
+    ['assistant', 'standing_preference', 'short answers; no other preference is on file for the team'],
+  ])('keeps who it is, %s | %s | %s, even with a miss in it', (subject, predicate, object) => {
+    expect(classifyAgentFact({ subject, predicate, object })).toBe('identity');
   });
 
   it.each([
@@ -684,6 +690,21 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['assistant', 'stated_fact', "The world's largest snowflake on record measured 15 inches wide"],
     ['assistant', 'stated_notion_pricing', 'Notion free plan (limitations on file uploads and version history)'],
     ['assistant', 'stated', 'There is no record of Shakespeare attending university'],
+    // Review: answers phrased like a memory miss, where someone else lacks it.
+    ['assistant', 'stated', 'If no payment method is on file, Netflix pauses the account'],
+    ['assistant', 'stated', 'No Category 5 hurricane on record has ever made landfall in California'],
+    ['assistant', 'stated', 'If the DMV does not have your current address on file, update it online'],
+    ['assistant', 'stated', 'If the IRS has no record of your payment, call them'],
+    ['assistant', 'stated', "Historians have no record of Shakespeare's education"],
+    ['assistant', 'stated', 'A credit bureau keeps no record of your income'],
+    ['assistant', 'stated', 'RAM is volatile: no data is stored in memory once the power is cut'],
+    // Review: content in the offer and request shapes.
+    ['assistant', 'offered_support', 'the 988 Suicide & Crisis Lifeline and GriefShare groups'],
+    ['assistant', 'offered_to_user', 'a 20% discount code SAVE20'],
+    ['assistant', 'raised_administrator_concerns', 'school administrators may object to the schedule'],
+    ['assistant', 'filed_request_template', 'Dear HR, I am requesting PTO from June 3 to June 10'],
+    // Accepted residual: the agent by its own name, not "it" (1 of 5 replay trials).
+    ['assistant', 'stated', "Fern had no record of vinay's favorite color and asked vinay to share it"],
   ])('keeps %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
   });
@@ -691,12 +712,12 @@ describe("more of the turn's narration (TASK-1210)", () => {
   it.each([
     // The speaker's Slack id.
     ['user:u1', 'slack_user_id', 'UHTE83XE1 (Slack user ID, interacts with Fern bot in Slack)'],
-    ['vinay', 'has_slack_user_id', 'UHTE83XE1'],
+    ['user:u1', 'has_slack_user_id', 'UHTE83XE1'],
     ['user:u1', 'slack_identity', 'Slack user ID UHTE83XE1, messaging in the #walk-two-bots channel'],
     // The speaker's request for a verbatim reply.
     ['user:u1', 'requested_exact_reply', 'asked Fern to reply with exactly these lines: hello <!channel>, testing'],
     ['user:u1', 'requested_exact_reply', 'hello <!channel>, testing'], // the predicate alone says it
-    ['user:u1', 'asked_verbatim', 'alpha beta gamma.'],
+    ['user:u1', 'requested_verbatim_echo', 'alpha beta gamma.'],
     ['user:u1', 'instructed_assistant', 'instructed Fern to reply with exactly these three words and nothing else'],
     ['vinay', 'instructed_in_slack', 'instructed Fern to reply with exactly these lines: hello <!channel>, testing'],
     // A memory miss filed under the person, or a topic.
@@ -722,18 +743,35 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['user:u1', 'requested_fetch', 'asked Fern to fetch example.com and report the page title'],
     // A person's own "no … on file", not a lookup that came back empty.
     ['user:u1', 'medical_records', 'no allergies are on file at the clinic'],
+    ['user:u1', 'medical_records', 'no allergies are on file for me at the clinic'],
+    ['user:u1', 'pharmacy', 'no prescription was on file for my mom at CVS'],
+    ['user:u1', 'hotel', 'no reservation was on file for us at the Hilton'],
+    ['acme', 'po_status', 'no purchase order is on file for ACME yet; finance needs one before payment'],
+    // Review: standing instructions and requests that name "exact".
+    ['user:u1', 'instructed_response_format', 'Answer with exactly one word: Agree or Disagree'],
+    ['user:u1', 'instructed_style', 'From now on, always reply with exactly three bullet points'],
+    ['user:u1', 'requested_exact_dates', 'June 3-10 for the Lisbon trip'],
+    ['user:u1', 'requested_exact_quote', '$4,500 for the kitchen remodel'],
+    ['user:u1', 'instructed_verbatim_quotes', 'always quote sources verbatim'],
+    // Someone else's Slack id, or one not under a person key.
+    ['bob', 'slack_user_id', 'U0BOB'],
+    ['user:u1', 'manager_slack_id', 'U0MGR'],
     // The agent's own rows are classifyAgentFact's.
     ['assistant', 'slack_user_id', 'U0FERN'],
   ])('isTurnNarration keeps %s | %s | %s', (subject, predicate, object) => {
     expect(isTurnNarration({ subject, predicate, object })).toBe(false);
   });
 
-  it('stays fast on huge, repetitive, untrusted input', () => {
+  // Everything is cut to the 1,000-character window first, so the adversarial
+  // input is a window's worth: the regex shapes, not the cut, are under test.
+  it('stays fast on a window of adversarial input', () => {
     const start = performance.now();
-    for (const word of ['no ', 'no record of ', 'is on record ', "don't have ", 'reply with ']) {
-      const object = `${word.repeat(100_000)}x`;
-      classifyAgentFact({ subject: 'assistant', predicate: 'stated', object });
-      isTurnNarration({ subject: 'user', predicate: `requested_${word.replace(/ /g, '_').repeat(20_000)}`, object });
+    for (let i = 0; i < 20; i += 1) {
+      for (const word of ['no ', 'no record of ', 'no x is on record for ', "i don't have ", 'reply with exactly ']) {
+        const object = `${word.repeat(Math.ceil(1_000 / word.length))}`.slice(0, 999);
+        classifyAgentFact({ subject: 'assistant', predicate: 'stated', object });
+        isTurnNarration({ subject: 'user', predicate: `requested_${word.replace(/ /g, '_')}`.slice(0, 999), object });
+      }
     }
     expect(performance.now() - start).toBeLessThan(250);
   });
