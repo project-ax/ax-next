@@ -19,6 +19,7 @@ import {
   KNOWN_SDK_BUILTINS,
   MCP_HOST_SERVER_NAME,
 } from '../tool-names.js';
+import { stripClaudeCodeEnv } from './real-sdk-env.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1200 — which SDK built-ins can the agent actually reach? Checked against
@@ -135,22 +136,6 @@ afterEach(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
-/**
- * The test process's env minus anything that steers a Claude Code CLI. Run from
- * inside a Claude Code session (as builders do), the parent's `CLAUDECODE` /
- * `CLAUDE_CODE_*` flags reach the spawned CLI and change its built-in set
- * (measured: an agent-teams flag drops Monitor/PushNotification/RemoteTrigger
- * and lists ToolSearch at init), so DRIFT would measure the caller, not the SDK.
- */
-function cleanEnv(): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (k === 'CLAUDECODE' || k.startsWith('CLAUDE_') || k.startsWith('ANTHROPIC_')) continue;
-    out[k] = v;
-  }
-  return out;
-}
-
 /** A stand-in for the runner's in-process host MCP server: one AX tool. */
 function hostTools() {
   return createSdkMcpServer({
@@ -187,7 +172,7 @@ async function runOneTurn(runner: boolean | 'tools-only'): Promise<SDKMessage[]>
       settingSources: ['user'],
       cwd: tmp,
       env: {
-        ...cleanEnv(),
+        ...stripClaudeCodeEnv(),
         HOME: tmp,
         CLAUDE_CONFIG_DIR: cfg,
         ANTHROPIC_BASE_URL: baseUrl,

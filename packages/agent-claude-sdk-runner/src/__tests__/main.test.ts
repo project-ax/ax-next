@@ -597,6 +597,8 @@ describe('main()', () => {
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
           DISABLE_TELEMETRY?: string;
           DISABLE_ERROR_REPORTING?: string;
+          CLAUDE_CODE_DISABLE_CRON?: string;
+          CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL?: string;
         };
       };
     };
@@ -706,6 +708,17 @@ describe('main()', () => {
     ).toBe('1');
     expect(queryArg.options.env.DISABLE_TELEMETRY).toBe('1');
     expect(queryArg.options.env.DISABLE_ERROR_REPORTING).toBe('1');
+
+    // TASK-1207: the CLI's bundled `loop` skill (it schedules with CronCreate
+    // and ScheduleWakeup, which the `tools` allowlist keeps out) and its
+    // `claude-api` skill are switched off at the source, in the same floor as
+    // the telemetry flags. CLAUDE_CODE_DISABLE_CRON also stops the CLI's own
+    // scheduler, which otherwise runs prompts planted in
+    // `<cwd>/.claude/scheduled_tasks.json` (an agent can Write that file) with
+    // no user turn. A regression that drops the buildBundledSkillsEnv() spread
+    // puts `loop` back in front of the model and reopens that self-scheduling path.
+    expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
+    expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
@@ -3759,6 +3772,71 @@ describe('main()', () => {
       );
     });
 
+    // TASK-1207: buildBundledSkillsEnv() is a floor, spread AFTER
+    // providerEnv. The one way a name outside proxy-startup's ENV_ALLOWLIST
+    // reaches providerEnv is the credential-placeholder value rule (any var
+    // whose value is `ax-cred:<32-hex>` rides through), so a credential slot
+    // that happened to be named CLAUDE_CODE_DISABLE_CRON would land there
+    // with a value other than '1'. The floor must still win. Moving the
+    // spread above providerEnv fails this test.
+    it('the bundled-skills switches win over a providerEnv that sets them (TASK-1207)', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        CLAUDE_CODE_DISABLE_CRON: 'ax-cred:00000000000000000000000000000001',
+        CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL: 'ax-cred:00000000000000000000000000000002',
+      });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: {
+            CLAUDE_CODE_DISABLE_CRON?: string;
+            CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL?: string;
+          };
+        };
+      };
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
+    });
+
     it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {
       // The runner process keeps its own HOME (k8s: /home/runner, the
       // pod-level setting). Mutating process.env.HOME here would hand every
@@ -4592,6 +4670,167 @@ describe('main()', () => {
       expect(queryArg.options.env.CLAUDE_CONFIG_DIR).not.toBe(
         queryArg.options.env.HOME,
       );
+    });
+
+    // TASK-1207: the CLI also offers skills it ships itself (update-config,
+    // simplify, init, …), and most cannot be switched off. The PreToolUse hook
+    // refuses any `Skill` whose name is not a folder in the projection, which
+    // main.ts reads once from CLAUDE_CONFIG_DIR before the first turn. Boots
+    // main() for one turn in which the CLI fires that hook for each named
+    // skill; returns what the hook answered for each, and which skills the
+    // host was asked about.
+    async function bootAndFireSkillCalls(skills: readonly string[]): Promise<{
+      outcomes: Map<string, unknown>;
+      askedHostAbout: string[];
+    }> {
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'tool.pre-call') return { verdict: 'allow' };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('write the weekly report'), cancelEntry]);
+      const outcomes = new Map<string, unknown>();
+      queryMock.mockImplementation((arg: unknown) => {
+        const { prompt, options } = arg as {
+          prompt: AsyncIterable<SDKUserMessage>;
+          options: {
+            hooks: {
+              PreToolUse: Array<{
+                hooks: Array<
+                  (input: unknown, toolUseID: string | undefined, opts: unknown) => Promise<unknown>
+                >;
+              }>;
+            };
+          };
+        };
+        const preToolUse = options.hooks.PreToolUse[0]!.hooks[0]!;
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          for (const [i, skill] of skills.entries()) {
+            const id = `tu_skill_${i}`;
+            outcomes.set(
+              skill,
+              await preToolUse(
+                {
+                  hook_event_name: 'PreToolUse',
+                  session_id: 'sess-1',
+                  transcript_path: '/tmp/t.jsonl',
+                  cwd: HOME_DIR,
+                  tool_name: 'Skill',
+                  tool_input: { skill },
+                  tool_use_id: id,
+                },
+                id,
+                { signal: new AbortController().signal },
+              ),
+            );
+          }
+          yield assistantText('ok');
+          yield resultSuccess();
+          await it.next();
+        })();
+      });
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const askedHostAbout = fakeClient.call.mock.calls
+        .filter((c) => c[0] === 'tool.pre-call')
+        .map((c) => {
+          const { call } = c[1] as { call: { name: string; input: { skill: string } } };
+          expect(call.name).toBe('Skill');
+          return call.input.skill;
+        });
+      return { outcomes, askedHostAbout };
+    }
+
+    it('a Skill call reaches the host only for a skill in the projection; a bundled one is refused (TASK-1207)', async () => {
+      const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-skills-'));
+      onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+      const cfg = nodePath.join(t, 'cfg');
+      await fs.mkdir(nodePath.join(cfg, 'skills', 'weekly-report'), { recursive: true });
+      await fs.writeFile(
+        nodePath.join(cfg, 'skills', 'weekly-report', 'SKILL.md'),
+        '---\nname: weekly-report\ndescription: Write the weekly report.\n---\nWrite it.\n',
+      );
+      // The subprocess sandbox writes the projection before the runner starts
+      // and sets no AX_INSTALLED_SKILLS_JSON, so the k8s materializer returns
+      // early (installed-skills.ts) and the projection is exactly this.
+      setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg, AX_INSTALLED_SKILLS_JSON: undefined });
+
+      const { outcomes, askedHostAbout } = await bootAndFireSkillCalls(['update-config', 'weekly-report']);
+
+      expect(outcomes.get('update-config')).toMatchObject({
+        hookSpecificOutput: {
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('"update-config" is not one of this agent\'s skills'),
+        },
+      });
+      expect(outcomes.get('weekly-report')).toMatchObject({
+        hookSpecificOutput: { permissionDecision: 'allow' },
+      });
+      expect(askedHostAbout).toEqual(['weekly-report']);
+    });
+
+    // The k8s shape: the projection does not exist until runRunner's
+    // materializer writes it from AX_INSTALLED_SKILLS_JSON. Reading it any
+    // earlier would refuse every skill in production, which the planted-dir
+    // case above cannot see.
+    it('reads the projection after the k8s materializer wrote it, so an installed skill and a connector bundle stay invocable (TASK-1207)', async () => {
+      const cfg = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-skills-k8s-'));
+      onTestFinished(async () => {
+        // The materializer locks the tree 0555; unlock so rm can clean it.
+        for (const dir of ['skills', 'skills/weekly-report', 'skills/cx-linear-1a2b3c4d']) {
+          await fs.chmod(nodePath.join(cfg, dir), 0o755).catch(() => {});
+        }
+        await fs.rm(cfg, { recursive: true, force: true });
+      });
+      setEnv({
+        ...COMPLETE_ENV,
+        CLAUDE_CONFIG_DIR: cfg,
+        AX_INSTALLED_SKILLS_JSON: JSON.stringify([
+          {
+            id: 'weekly-report',
+            files: [{ path: 'SKILL.md', contents: '---\nname: weekly-report\ndescription: Write the weekly report.\n---\nWrite it.\n' }],
+          },
+          // A connector's usage note, as the orchestrator's connector fold
+          // emits it: folder and frontmatter name are both the derived dir id.
+          {
+            id: 'cx-linear-1a2b3c4d',
+            files: [{ path: 'SKILL.md', contents: '---\nname: cx-linear-1a2b3c4d\ndescription: Connector linear\n---\nUse the Linear tools.\n' }],
+          },
+        ]),
+      });
+
+      const { outcomes, askedHostAbout } = await bootAndFireSkillCalls([
+        'simplify',
+        'weekly-report',
+        'cx-linear-1a2b3c4d',
+      ]);
+
+      expect(outcomes.get('simplify')).toMatchObject({
+        hookSpecificOutput: { permissionDecision: 'deny' },
+      });
+      expect(askedHostAbout).toEqual(['weekly-report', 'cx-linear-1a2b3c4d']);
     });
   });
 

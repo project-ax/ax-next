@@ -1,6 +1,7 @@
 // SDK adapter over the runner-agnostic ToolPolicy in @ax/agent-runner-core.
 // Responsibilities kept here are exactly the SDK-shaped ones: classifying the
-// SDK's tool name, short-circuiting disabled built-ins, and mapping a
+// SDK's tool name, short-circuiting disabled built-ins, refusing a `Skill`
+// call for any skill AX did not install (projected-skills.ts), and mapping a
 // PreToolVerdict onto `hookSpecificOutput`.
 //
 // Why `PreToolUse` and not `canUseTool`: `canUseTool` only fires for tools
@@ -24,6 +25,7 @@ import {
   type CreateToolPolicyOptions,
   type HoldLatch,
 } from '@ax/agent-runner-core';
+import { skillRefusal, type ProjectedSkills } from './projected-skills.js';
 import { classifySdkToolName } from './tool-names.js';
 
 export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
@@ -48,7 +50,20 @@ export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
    * `toolUseID` — see the comment below on `''` vs `undefined`.
    */
   onHold?: (toolCallId: string) => void;
+  /**
+   * The skills AX installed for this session: the folder names under
+   * `$CLAUDE_CONFIG_DIR/skills/`, read once at boot (`readProjectedSkills`).
+   * A `Skill` call naming anything else (the CLI's bundled skills, a built-in
+   * prompt command, a typo) is refused here, without asking the host.
+   *
+   * Absent means an EMPTY set, so the hook fails closed: every `Skill` call is
+   * refused. `main.ts` always passes it. A projection that could not be read
+   * carries a `loadError`, and the refusal then says so.
+   */
+  projectedSkills?: ProjectedSkills;
 };
+
+const NO_PROJECTED_SKILLS: ProjectedSkills = { names: new Set() };
 
 export function createPreToolUseHook(
   opts: CreatePreToolUseHookOptions,
@@ -94,6 +109,31 @@ export function createPreToolUseHook(
           permissionDecisionReason: klass.reason,
         },
       };
+    }
+
+    if (input.tool_name === 'Skill') {
+      // TASK-1207. Unlike the branch above, this is the enforcement path: the
+      // `Skill` tool is allowed, and the CLI offers its own bundled skills
+      // through it next to AX's. Most of those cannot be switched off
+      // (bundled-skills-env.ts), so a call for any name outside AX's
+      // projection is refused here, before the host is asked. Measured on CLI
+      // 2.1.119: the hook sees `tool_input.skill` verbatim (a leading `/`
+      // included), and a deny reaches the model as an `is_error` result.
+      // `skillRefusal` echoes the name only when it is a plain short one,
+      // because the reason is model-controlled text bound for the transcript.
+      const refusal = skillRefusal(
+        input.tool_input,
+        opts.projectedSkills ?? NO_PROJECTED_SKILLS,
+      );
+      if (refusal !== undefined) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: refusal,
+          },
+        };
+      }
     }
 
     // Pass toolUseID straight through — do NOT coerce to '' here. The
