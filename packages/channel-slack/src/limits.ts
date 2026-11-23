@@ -213,8 +213,8 @@ export const MAX_TURNS_PER_CONVERSATION = 3;
  * and one more is told the channel is busy.
  */
 export const MAX_EXTERNAL_TURNS_PER_CHANNEL = 5;
-/** The longest one Slack turn may run: 15 minutes. */
-export const TURN_HARD_CAP_MS = 900_000;
+/** The longest one Slack turn may run: 30 minutes. */
+export const TURN_HARD_CAP_MS = 1_800_000;
 /**
  * After `agent:invoke` reports a complete turn, how long the reply waits for
  * that turn's `chat:turn-end` before finishing anyway (the same grace

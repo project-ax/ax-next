@@ -133,12 +133,28 @@ export interface ChannelWebServerConfig {
    * of truth for the timeout (the orchestrator owns that); it's a sizing hint.
    */
   chatTimeoutMs?: number;
+  /**
+   * The longest any one turn may run (ms): the chart's turn cap. A per-agent
+   * turn limit can reach it, so the cursor-shell reap ceiling sizes from it
+   * rather than from the 10 min default timeout. Wins over `chatTimeoutMs`
+   * when set; sizing hint only.
+   */
+  maxTurnMs?: number;
 }
 
 // How far above the configured chat timeout the cursor-shell reap ceiling sits,
 // so a turn that runs right up to the timeout still has its shell preserved
 // until the orchestrator's terminal chat:turn-error fires (which evicts it).
 const SHELL_AGE_SLACK_MS = 5 * 60_000;
+
+/** Options for the chunk buffer's shell reap ceiling; `{}` keeps its default. */
+export function chunkBufferOptsFor(config: {
+  chatTimeoutMs?: number;
+  maxTurnMs?: number;
+}): { shellMaxAgeMs?: number } {
+  const turnMs = config.maxTurnMs ?? config.chatTimeoutMs;
+  return turnMs !== undefined && turnMs > 0 ? { shellMaxAgeMs: turnMs + SHELL_AGE_SLACK_MS } : {};
+}
 
 export function createChannelWebServerPlugin(
   config: ChannelWebServerConfig = {},
@@ -807,11 +823,7 @@ export function createChannelWebServerPlugin(
       // (the configured chat timeout + slack) so a long-but-still-live quiet
       // turn never has its seq cursor reset mid-stream (TASK-23 / Codex P2).
       // When chatTimeoutMs is unset, createChunkBuffer uses its own default.
-      const localBuffer = createChunkBuffer(
-        config.chatTimeoutMs !== undefined && config.chatTimeoutMs > 0
-          ? { shellMaxAgeMs: config.chatTimeoutMs + SHELL_AGE_SLACK_MS }
-          : {},
-      );
+      const localBuffer = createChunkBuffer(chunkBufferOptsFor(config));
       buffer = localBuffer;
 
       // Buffer-fill subscriber — host-side, captures every chunk

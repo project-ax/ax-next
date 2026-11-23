@@ -1597,6 +1597,10 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(
     createChannelWebServerPlugin({
       chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+      // A per-agent turn limit can reach the chart cap; size the stream buffer from it.
+      ...(config.chat?.maxTurnMinutes !== undefined
+        ? { maxTurnMs: config.chat.maxTurnMinutes * 60_000 }
+        : {}),
     }),
   );
 
