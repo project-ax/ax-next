@@ -67,6 +67,9 @@ export interface Capabilities {
    * so a PARSED capabilities object always carries `services` as an array.
    */
   services?: ServiceDescriptor[];
+  /** 'always' (default): at most ALWAYS_ON_SERVICES_MAX services start with the sandbox.
+   *  'on-demand': up to SERVICES_MAX, started by the agent when needed. */
+  servicesMode?: 'always' | 'on-demand';
 }
 
 /**
@@ -120,4 +123,5 @@ export const CapabilitiesSchema = z.object({
   mcpServers: z.array(McpServerSpecSchema),
   packages: PackagesSpecSchema,
   services: ServicesArraySchema,
+  servicesMode: z.enum(['always', 'on-demand']).optional(),
 }) as unknown as z.ZodType<Capabilities>;

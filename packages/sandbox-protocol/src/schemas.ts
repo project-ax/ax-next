@@ -226,6 +226,13 @@ const HealthcheckSchema = z.union([
     .strict(),
 ]);
 
+const SERVICE_ARGV = z.array(z.string().max(4096)).max(32);
+const SERVICE_POSITIVE_INT = z.number().int().positive();
+const SERVICE_SIZE_RANGE = z
+  .object({ request: SERVICE_POSITIVE_INT, limit: SERVICE_POSITIVE_INT })
+  .strict()
+  .refine((r) => r.request <= r.limit, { message: 'request must not exceed limit' });
+
 export const ServiceDescriptorSchema = z
   .object({
     name: z.string().regex(ID_RE, 'invalid service name shape'),
@@ -249,6 +256,18 @@ export const ServiceDescriptorSchema = z
       .array(z.string().regex(/^\//, 'writablePaths entries must be absolute').max(256))
       .max(16)
       .default([]),
+    command: SERVICE_ARGV.optional(),
+    entrypoint: SERVICE_ARGV.optional(),
+    job: z.boolean().optional(),
+    publishedPorts: z
+      .array(z.object({ published: SERVICE_PORT, target: SERVICE_PORT }).strict())
+      .max(16)
+      .optional(),
+    resources: z
+      .object({ cpuMillis: SERVICE_SIZE_RANGE.optional(), memoryMiB: SERVICE_SIZE_RANGE.optional() })
+      .strict()
+      .optional(),
+    storageMiB: SERVICE_POSITIVE_INT.optional(),
   })
   .strict();
 export type ServiceDescriptorParsed = z.infer<typeof ServiceDescriptorSchema>;
@@ -338,8 +357,8 @@ export const OpenSessionInputSchema = z.object({
   // TASK-150 — dev SERVICES the orchestrator folded from the agent's connector
   // capabilities. Optional + back-compat with non-orchestrator callers (tests,
   // ad-hoc CLI) that don't set it. Each entry is re-validated at the wire
-  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 8.
-  services: z.array(ServiceDescriptorSchema).max(8).optional(),
+  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 16 (the on-demand ceiling).
+  services: z.array(ServiceDescriptorSchema).max(16).optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;

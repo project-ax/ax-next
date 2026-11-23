@@ -230,7 +230,21 @@ function makeCapabilitiesSchema(
     packages: PackagesSpecSchema,
     // Optional on ingress (legacy rows + existing callers omit it); the schema
     // defaults it to `[]` so a parsed Capabilities always carries `services`.
-    services: z.array(ServiceDescriptorSchema).max(8).default([]),
+    services: z.array(ServiceDescriptorSchema).max(SERVICES_MAX).default([]),
+    // Absent means 'always'. Only 'on-demand' may carry more than
+    // ALWAYS_ON_SERVICES_MAX services.
+    servicesMode: z.enum(['always', 'on-demand']).optional(),
+  }).superRefine((caps, ctx) => {
+    if (caps.servicesMode !== 'on-demand' && caps.services.length > ALWAYS_ON_SERVICES_MAX) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: 'array',
+        maximum: ALWAYS_ON_SERVICES_MAX,
+        inclusive: true,
+        path: ['services'],
+        message: `at most ${ALWAYS_ON_SERVICES_MAX} always-on services (got ${caps.services.length})`,
+      });
+    }
   }) as unknown as ZodType<Capabilities>;
 }
 
@@ -251,6 +265,12 @@ const HealthcheckSchema = z.union([
     })
     .strict(),
 ]);
+const ServiceArgvSchema = z.array(z.string().max(4096)).max(32);
+const ServicePositiveInt = z.number().int().positive();
+const ServiceSizeRangeSchema = z
+  .object({ request: ServicePositiveInt, limit: ServicePositiveInt })
+  .strict()
+  .refine((r) => r.request <= r.limit, { message: 'request must not exceed limit' });
 const ServiceDescriptorSchema = z
   .object({
     name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
@@ -266,8 +286,27 @@ const ServiceDescriptorSchema = z
     }),
     healthcheck: HealthcheckSchema.optional(),
     writablePaths: z.array(z.string().regex(/^\//).max(256)).max(16).default([]),
+    command: ServiceArgvSchema.optional(),
+    entrypoint: ServiceArgvSchema.optional(),
+    job: z.boolean().optional(),
+    publishedPorts: z
+      .array(z.object({ published: ServicePortSchema, target: ServicePortSchema }).strict())
+      .max(16)
+      .optional(),
+    resources: z
+      .object({
+        cpuMillis: ServiceSizeRangeSchema.optional(),
+        memoryMiB: ServiceSizeRangeSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    storageMiB: ServicePositiveInt.optional(),
   })
   .strict();
+
+/** Mirrors SERVICES_MAX / ALWAYS_ON_SERVICES_MAX in @ax/skills-parser. */
+const SERVICES_MAX = 16;
+const ALWAYS_ON_SERVICES_MAX = 8;
 
 /** Reads and return schemas: never bounded, so every stored row parses. */
 export const CapabilitiesSchema = makeCapabilitiesSchema({});

@@ -117,3 +117,38 @@ describe('connector capability list limits apply on write only (TASK-945)', () =
     expect(validateCapabilities(spec).allowedHosts).toHaveLength(L.allowedHosts + 1);
   });
 });
+
+describe('services cap depends on servicesMode', () => {
+  const svc = (i: number) => ({
+    name: `svc-${i}`,
+    image: `registry.example.com/x@sha256:${'a'.repeat(64)}`,
+    ports: [5432],
+    env: {},
+    writablePaths: [],
+  });
+  const many = (n: number) => Array.from({ length: n }, (_, i) => svc(i));
+
+  it('9 services refused when always-on, accepted on-demand', () => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: many(9) }).success).toBe(false);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(9), servicesMode: 'always' }).success,
+    ).toBe(false);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(9), servicesMode: 'on-demand' }).success,
+    ).toBe(true);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(16), servicesMode: 'on-demand' }).success,
+    ).toBe(true);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(17), servicesMode: 'on-demand' }).success,
+    ).toBe(false);
+  });
+
+  it('servicesMode defaults to always', () => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: many(8) }).success).toBe(true);
+    expect(CapabilitiesWriteSchema.safeParse({ ...base(), services: many(9) }).success).toBe(false);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), servicesMode: 'sometimes' }).success,
+    ).toBe(false);
+  });
+});
