@@ -11,7 +11,7 @@ import { buildBundledSkillsEnv } from '../bundled-skills-env.js';
 import { buildInstructionFilesEnv } from '../instruction-files-env.js';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { createPreToolUseHook } from '../pre-tool-use.js';
-import { readProjectedSkills } from '../projected-skills.js';
+import { CLI_COMMAND_NAMES, readProjectedSkills } from '../projected-skills.js';
 import { buildTelemetryEnv } from '../telemetry-env.js';
 import { ALLOWED_SDK_BUILTINS, DENIED_SDK_BUILTINS } from '../tool-names.js';
 import { stripClaudeCodeEnv } from './real-sdk-env.js';
@@ -30,6 +30,12 @@ import { stripClaudeCodeEnv } from './real-sdk-env.js';
 //      says "Unknown skill" before any hook runs).
 //   2. `createPreToolUseHook({ projectedSkills })` refuses every other `Skill`
 //      call whose name is not a folder AX installed.
+//
+// TASK-1217 adds two things (item 2): the CLI also answers to 16 command names
+// of its own (`CLI_COMMAND_NAMES`), not only the ones in the model's listing.
+// DRIFT pins that list on this binary; the collision cases show what happens to
+// an AX skill with one of those names (the CLI's bundled body runs instead)
+// and that the PreToolUse hook refuses it with a rename message.
 //
 // Probe recipe for the next CLI bump: copy this file's setup, change the
 // `skillCall`, and read the `system/init` `skills` list and the tool_result.
@@ -160,8 +166,10 @@ function stubClient(): { client: IpcClient; calls: Array<{ action: string; paylo
  * main.ts's CLI env floor, so the CLI's listing is the one production sees)
  * and the PreToolUse hook that refuses any `Skill` call outside AX's
  * projection. Without it the CLI runs with its defaults (the control).
+ * `withHook: false` keeps the likeMain env but leaves the hook out (the
+ * collision CONTROL: the TASK-1207 known hole, re-pinned).
  */
-async function runOneTurn(likeMain: boolean): Promise<{
+async function runOneTurn(likeMain: boolean, { withHook = likeMain }: { withHook?: boolean } = {}): Promise<{
   seen: SDKMessage[];
   preCalls: Array<{ action: string; payload: unknown }>;
 }> {
@@ -198,7 +206,7 @@ async function runOneTurn(likeMain: boolean): Promise<{
       allowedTools: ['Skill'],
       canUseTool: async (_name: string, input: Record<string, unknown>) =>
         ({ behavior: 'allow' as const, updatedInput: input }),
-      ...(likeMain
+      ...(withHook
         ? {
             hooks: {
               PreToolUse: [
@@ -241,6 +249,32 @@ function initSkills(seen: SDKMessage[]): string[] {
   return init!.skills ?? [];
 }
 
+function initMessage(seen: SDKMessage[]): { skills: string[]; slash_commands: string[] } {
+  const init = seen.find(
+    (m): m is Extract<SDKMessage, { type: 'system'; subtype: 'init' }> =>
+      m.type === 'system' && (m as { subtype?: string }).subtype === 'init',
+  );
+  expect(init, 'the CLI sent no system/init message').toBeDefined();
+  return { skills: init!.skills ?? [], slash_commands: init!.slash_commands ?? [] };
+}
+
+/** Every string in a parsed request body (system prompt and message blocks alike). */
+function allStrings(node: unknown, out: string[] = []): string[] {
+  if (typeof node === 'string') out.push(node);
+  else if (Array.isArray(node)) for (const n of node) allStrings(n, out);
+  else if (typeof node === 'object' && node !== null) for (const n of Object.values(node)) allStrings(n, out);
+  return out;
+}
+
+/** The skill names in the model-facing listing of one request body. */
+function listedSkillNames(body: string): string[] {
+  const marker = 'The following skills are available for use with the Skill tool';
+  const text = allStrings(JSON.parse(body)).find((t) => t.includes(marker));
+  expect(text, 'the request carried no skill listing').toBeDefined();
+  const listing = text!.slice(text!.indexOf(marker)).split('</system-reminder>')[0] ?? '';
+  return [...listing.matchAll(/^- ([a-z0-9:-]+):/gm)].map((m) => m[1] as string);
+}
+
 /** The `Skill` tool_result the CLI sent back to the model, read from the follow-up call. */
 function skillResult(): { isError: boolean; text: string } {
   const body = JSON.parse(bodies[1] ?? '{}') as {
@@ -273,6 +307,18 @@ describe.skipIf(!HAVE_BINARY)('bundled skills on the real claude-sdk binary (TAS
     expect(skills).toContain('weekly-report');
     expect(skills).not.toContain('loop');
     expect(skills).not.toContain('claude-api');
+
+    // DRIFT (TASK-1217 item 2): every name the CLI answers to in this
+    // configuration, minus the AX skill we installed, is exactly
+    // CLI_COMMAND_NAMES. `simplify` etc. are NOT projected here: subtracting
+    // them would hide the name from the union.
+    const init = initMessage(seen);
+    const union = new Set([...listedSkillNames(bodies[0] ?? '{}'), ...init.skills, ...init.slash_commands]);
+    union.delete('weekly-report');
+    expect(
+      [...union].sort(),
+      "the CLI's command names changed — update CLI_COMMAND_NAMES and re-check Task 5's refusal (projected-skills.ts)",
+    ).toEqual([...CLI_COMMAND_NAMES].sort());
   }, 60_000);
 
   it('FIX: update-config is refused by the runner', async () => {
@@ -311,5 +357,42 @@ describe.skipIf(!HAVE_BINARY)('bundled skills on the real claude-sdk binary (TAS
     const r = skillResult();
     expect(r.isError).toBe(true);
     expect(r.text).toContain('Unknown skill: loop');
+  }, 60_000);
+  // -- TASK-1217 item 2: an AX skill the CLI shadows --------------------------
+
+  /** A separate config dir whose only skill is an AX `simplify`, named like a CLI command. */
+  async function projectShadowedSimplify(): Promise<void> {
+    cfg = path.join(tmp, 'cfg-collision');
+    await fs.mkdir(path.join(cfg, 'skills', 'simplify'), { recursive: true });
+    await fs.writeFile(
+      path.join(cfg, 'skills', 'simplify', 'SKILL.md'),
+      '---\nname: simplify\ndescription: Simplify things the AX way.\n---\n\nAX-SIMPLIFY-T1217\n',
+    );
+  }
+
+  it('collision CONTROL: without the hook the CLI launches ITS simplify, not the AX one (the TASK-1207 hole, re-pinned)', async () => {
+    await projectShadowedSimplify();
+    skillCall = 'simplify';
+    await runOneTurn(true, { withHook: false });
+    const r = skillResult();
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('Launching skill: simplify');
+    const next = bodies[1] ?? '';
+    expect(next, "the CLI's bundled simplify body did not run").toContain('Launch Three Review Agents in Parallel');
+    expect(next, 'the AX simplify body ran, so the name is not shadowed after all').not.toContain('AX-SIMPLIFY-T1217');
+  }, 60_000);
+
+  it('collision FIX: the production hook refuses the shadowed name with a rename message', async () => {
+    await projectShadowedSimplify();
+    skillCall = 'simplify';
+    const { preCalls } = await runOneTurn(true);
+    const r = skillResult();
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('give the skill a different name');
+    expect(r.text).toContain('"simplify"');
+    // Refused before the host is asked, and neither body reaches the model.
+    expect(preCalls).toEqual([]);
+    expect(bodies[1] ?? '').not.toContain('AX-SIMPLIFY-T1217');
+    expect(bodies[1] ?? '').not.toContain('Launch Three Review Agents in Parallel');
   }, 60_000);
 });
