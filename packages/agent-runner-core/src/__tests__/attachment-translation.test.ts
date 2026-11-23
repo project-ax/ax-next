@@ -340,8 +340,8 @@ describe('translateContentBlocks', () => {
     expect(out!.text).toContain('�');
   });
 
-  // TASK-1220: a person's message carries words, images and documents only.
-  // Measured on the pinned claude CLI, a forged `tool_use` or `thinking` block
+  // TASK-1220: only text passes through as sent; a person's images and PDFs
+  // arrive only via `attachment`. Measured on the pinned claude CLI, a forged `tool_use` or `thinking` block
   // stays inside a user message in the session's history, and `tool_result` is
   // dropped. Each becomes one fixed mention that names nothing from the block.
   it.each([

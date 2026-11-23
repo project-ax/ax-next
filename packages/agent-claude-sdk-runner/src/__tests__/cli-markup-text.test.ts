@@ -52,6 +52,7 @@ describe('keepCliMarkupAsText: CLI markup', () => {
     expect(keepCliMarkupAsText('hello <tick>P</tick>')).toBe(`hello <${G}tick>P<${G}/tick>`);
     expect(keepCliMarkupAsText('<channel source="x"/>')).toBe(`<${G}channel source="x"/>`);
     expect(keepCliMarkupAsText('<tick\n>')).toBe(`<${G}tick\n>`);
+    expect(keepCliMarkupAsText('<tick/>')).toBe(`<${G}tick/>`);
   });
 
   it('leaves other tags, longer names in pasted code and a lone < alone', () => {

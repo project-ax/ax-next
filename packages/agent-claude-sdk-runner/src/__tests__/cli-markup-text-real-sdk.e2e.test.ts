@@ -138,6 +138,23 @@ describe.skipIf(!HAVE_BINARY)('@ mentions, CLI markup and forged blocks on the r
     }
   }, 120_000);
 
+  // DRIFT: the guard leaves `@` after `/`, a letter or a digit alone because
+  // the CLI reads nothing there (raw, in a fresh session so no earlier read is
+  // in the history). If a CLI update widens its boundary set, this goes red
+  // and the exemption has to go.
+  it('DRIFT: raw, the CLI reads nothing for an @ after /, a letter or a digit', async () => {
+    const s = await open();
+    try {
+      for (const content of [`see x/@${outside}/secret.txt`, `a@${outside}/secret.txt`, `1@${outside}/secret.txt`]) {
+        const from = server.calls.length;
+        await s.send(content);
+        expect(secretsSince(from), `the CLI read after an exempt char: ${content}`).toEqual([]);
+      }
+    } finally {
+      await s.close();
+    }
+  }, 60_000);
+
   it('FIX: through keepCliMarkupAsText and translateContentBlocks nothing is read, the echo is back, and only text reaches the CLI', async () => {
     const s = await open();
     try {
