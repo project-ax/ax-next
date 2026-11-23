@@ -87,8 +87,10 @@
  *     first find the caller's own conversation (404 otherwise), and the
  *     resolve runs on the agent that conversation names (one shared gate,
  *     `chipFileOr404`). The order on each is:
- *     `authOr401` → empty-id 400 → `resolveAgentOr404` → (path validation)
- *     → read. Nothing reads before the resolve. The task page then shows
+ *     `authOr401` (or `authActorOr401`, the same check plus the admin bit,
+ *     as `rail` and `grants/revoke` use since TASK-1212) → empty-id 400 →
+ *     `resolveAgentOr404` → (path validation) → read. Nothing reads before
+ *     the resolve. The task page then shows
  *     only the caller's own task (`isOwnTask`), and reads no run history and
  *     no reply before deciding that. A check-in's transcript (TASK-911) must
  *     also be one of that task's newest 200 check-ins before its
@@ -583,15 +585,17 @@ interface CatalogPermissions {
   outOfReach: string[];
 }
 
+/**
+ * @ax/host-grants, keyed by agent (TASK-1212): an agent's allowed sites belong
+ * to the agent, whoever added them. It checks no ACL, so the routes here do.
+ */
 interface HostGrantsListInput {
-  ownerUserId: string;
   agentId: string;
 }
 interface HostGrantsListOutput {
   hosts: Array<{ host: string; grantedAt: string }>;
 }
 interface HostGrantsRevokeInput {
-  ownerUserId: string;
   agentId: string;
   host: string;
 }
@@ -6645,25 +6649,54 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
+   * TASK-1212 — may this reader take this agent's allowed sites back? Display
+   * only, like the helper it leans on.
+   *
+   * A site is the AGENT's: on a team agent one Remove takes it away from every
+   * member, and `host-grants:revoke` checks no ACL. A personal agent's owner
+   * may (agents:resolve admits nobody else). Any other agent, a team agent or
+   * one whose visibility we were not told, takes the rule its connectors'
+   * Remove already uses, `agents:can-manage-connectors` asked as the person:
+   * one rule for one settings page. Fails closed through
+   * {@link connectorsManageable}. The revoke route asks again, and there a
+   * fault is not reported as a "no".
+   */
+  async function sitesRemovable(
+    agent: ResolvedAgent,
+    actor: { id: string; isAdmin: boolean },
+  ): Promise<boolean> {
+    if (!bus.hasService('host-grants:revoke')) return false;
+    if (agent.visibility === 'personal') return true;
+    return connectorsManageable(agent.id, actor);
+  }
+
+  /**
    * "Granted by you" — design §4.3.4.
    *
-   * Two records, one group. `@ax/host-grants` holds the sites a person let this
-   * agent reach; `@ax/skills`' approved-capability wall holds everything a
+   * Two records, one group. `@ax/host-grants` holds the sites this agent may
+   * always reach; `@ax/skills`' approved-capability wall holds everything a
    * person approved at a skill's or a connection's install gate. Both are
-   * things the reader did on purpose and has probably forgotten, which is the
+   * things somebody did on purpose and has probably forgotten, which is the
    * whole reason they are separated from the built-in rules.
+   *
+   * The sites are the AGENT's (TASK-1212). On a team agent that is every
+   * site anybody on the team allowed, because every member's runs reach each
+   * one, so every member is shown them all (H4: never understate reach) and
+   * `shared` says whose group it is. Only the agent's managers get a Revoke
+   * ({@link sitesRemovable}). The wall's rows stay the reader's own.
    *
    * The wall's store is keyed by SUBJECT and has no "list them all" read, so we
    * ask once per skill and once per connection this agent carries.
    */
   async function readGrants(
-    userId: string,
+    actor: { id: string; isAdmin: boolean },
     agent: ResolvedAgent,
   ): Promise<AgentRailData['grants']> {
+    const shared = agent.visibility === 'team';
     const hasSites = bus.hasService('host-grants:list');
     const hasWall = bus.hasService('skills:approved-caps-list');
     if (!hasSites && !hasWall) {
-      return { status: 'unavailable', rows: [], incomplete: false };
+      return { status: 'unavailable', rows: [], incomplete: false, shared };
     }
 
     const rows: GrantRow[] = [];
@@ -6674,27 +6707,36 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     let failed = false;
 
     if (hasSites) {
-      const revocable = bus.hasService('host-grants:revoke');
       try {
+        // The agent alone is the key: no reader's id, so no reader is shown a
+        // list narrower than what the agent actually reaches.
         const out = await bus.call<HostGrantsListInput, HostGrantsListOutput>(
           'host-grants:list',
           initCtx,
-          { ownerUserId: userId, agentId: agent.id },
+          { agentId: agent.id },
         );
+        const sites: Array<{ host: string; label: string; grantedAt: string | null }> = [];
         for (const row of out.hosts ?? []) {
           const label = fenceLine(row?.host, RAIL_LABEL_MAX_CHARS);
           if (label === null) {
             incomplete = true;
             continue;
           }
+          sites.push({ host: row.host, label, grantedAt: isoOrNull(row?.grantedAt) });
+        }
+        // Asked only when there is a site to offer the control on. It never
+        // throws: an answer it can't get hides the control, and the sites
+        // above were still read fine.
+        const revocable = sites.length > 0 && (await sitesRemovable(agent, actor));
+        for (const site of sites) {
           rows.push({
-            ref: { grant: 'site', host: row.host },
+            ref: { grant: 'site', host: site.host },
             verdict: 'allow',
             action: GRANT_ACTION.host,
-            label,
-            source: `grant:${label}`,
+            label: site.label,
+            source: `grant:${site.label}`,
             provenance: 'grant',
-            grantedAt: isoOrNull(row?.grantedAt),
+            grantedAt: site.grantedAt,
             grantedFor: null,
             revocable,
           });
@@ -6730,7 +6772,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             'skills:approved-caps-list',
             initCtx,
             {
-              ownerUserId: userId,
+              ownerUserId: actor.id,
               agentId: agent.id,
               ...(subject.kind === 'skill'
                 ? { skillId: subject.id }
@@ -6795,6 +6837,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       status: failed ? 'failed' : 'ok',
       rows: failed ? [] : dedupeGrants(rows),
       incomplete,
+      shared,
     };
   }
 
@@ -8541,8 +8584,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * this surface an empty array is a claim about the agent's reach.
      */
     async rail(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      // With the admin bit (TASK-1212): whether this reader may take a team
+      // agent's site back is the agent's manage check, asked as them.
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -8554,7 +8600,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const [activity, permissions, grants, counters] = await Promise.all([
         readActivity(agentId),
         readPermissions(agent),
-        readGrants(userId, agent),
+        readGrants(actor, agent),
         readCounters(userId, agentId),
       ]);
       res
@@ -8572,10 +8618,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *
      * `revoked: false` is a real answer — the grant was already gone — and it
      * is reported as one rather than dressed up as success.
+     *
+     * A site goes for everyone who uses the agent (TASK-1212), so taking one
+     * back is for a personal agent's owner or a team agent's managers. A
+     * plain member is 403 `forbidden` and nothing is removed.
      */
     async revokeGrant(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -8597,23 +8648,56 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
 
-      // Ownership is the (userId, agentId) pair on every write below. A ref
-      // naming somebody else's skill simply matches no row — the store's key
-      // includes the owner and the agent, so there is nothing to widen.
+      // A site is the AGENT's (TASK-1212). `host-grants:revoke({ agentId,
+      // host })` takes it off for everyone who uses the agent, whoever added
+      // it, and checks no ACL of its own. So the check below is all that
+      // stands between a team's plain member and every teammate's site, and
+      // nothing past it runs without an explicit yes.
+      //
+      // A personal agent needs no further question: agents:resolve above
+      // admitted its owner and nobody else. Any other agent (a team agent, or
+      // one whose visibility we were not told) takes the agent's manage check,
+      // asked as the person, the rule the rail's Revoke was drawn from. Its
+      // one "no" is `allowed: false`, a 403. A missing check is 503 and a
+      // fault rethrows to the router's 5xx, because a fault is not a denial
+      // (TASK-803, and the hook's own contract). Neither removes anything.
       if (ref.grant === 'site') {
         if (!bus.hasService('host-grants:revoke')) {
           res.status(503).json({ error: 'grants-unavailable' });
           return;
         }
+        if (agent.visibility !== 'personal') {
+          if (!bus.hasService('agents:can-manage-connectors')) {
+            res.status(503).json({ error: 'grants-unavailable' });
+            return;
+          }
+          let mayManage: boolean;
+          try {
+            mayManage = await askCanManageConnectors(agentId, actor);
+          } catch (err) {
+            if (err instanceof PluginError && err.code === 'not-found') {
+              res.status(404).json({ error: 'agent-not-found' });
+              return;
+            }
+            throw err;
+          }
+          if (!mayManage) {
+            res.status(403).json({ error: 'forbidden' });
+            return;
+          }
+        }
         const out = await bus.call<HostGrantsRevokeInput, HostGrantsRevokeOutput>(
           'host-grants:revoke',
           initCtx,
-          { ownerUserId: userId, agentId, host: ref.host },
+          { agentId, host: ref.host },
         );
         res.status(200).json({ revoked: out.revoked === true });
         return;
       }
 
+      // An approved capability stays the reader's own: the (userId, agentId)
+      // pair is the key on the write below. A ref naming somebody else's
+      // skill simply matches no row, so there is nothing to widen.
       if (!bus.hasService('skills:approved-caps-revoke')) {
         res.status(503).json({ error: 'grants-unavailable' });
         return;
@@ -10697,18 +10781,28 @@ function isoOrNull(raw: unknown): string | null {
  *
  * A host can legitimately appear twice — once as a site grant, once as a
  * skill's approved `host` capability — and two identical-looking rows with two
- * different Revoke buttons is a surface that cannot be acted on. First wins,
- * and site grants are collected first because that is the record the Settings
- * "Allowed sites" panel already lets a person manage.
+ * different Revoke buttons is a surface that cannot be acted on. On a
+ * collision the row the reader can revoke wins: on a team agent a plain
+ * member can't remove the team's site, but a host they approved for their own
+ * skill or connection is theirs to take back, and hiding it behind the site
+ * row would leave them no way to (TASK-1212). Otherwise first wins, and site
+ * grants are collected first because the site grant is the record people
+ * manage as an allowed site: in Settings › Sites for a personal agent, and
+ * here, by its owners and team admins, for a team agent.
  */
 function dedupeGrants(rows: readonly GrantRow[]): GrantRow[] {
-  const seen = new Set<string>();
+  const at = new Map<string, number>();
   const out: GrantRow[] = [];
   for (const row of rows) {
     const key = `${row.action}\u0000${row.label}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(row);
+    const i = at.get(key);
+    if (i === undefined) {
+      at.set(key, out.length);
+      out.push(row);
+    } else if (row.revocable && !out[i]!.revocable) {
+      // Same place in the list, the row the reader can act on.
+      out[i] = row;
+    }
   }
   return out;
 }

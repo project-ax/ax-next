@@ -80,7 +80,7 @@ export function rail(over: Partial<AgentRailData> = {}): AgentRailData {
       incomplete: false,
       unrestrictedTools: false,
     },
-    grants: { status: 'ok', rows: [], incomplete: false },
+    grants: { status: 'ok', rows: [], incomplete: false, shared: false },
     counters: { status: 'ok', rows: [], windowDays: 7 },
     ...over,
   };

@@ -1,8 +1,14 @@
 /**
- * @ax/host-grants store. Every query is scoped to (owner_user_id, agent_id):
- * the scope-isolation boundary — user A's queries MUST NEVER touch user B's
- * rows, and agent a1's grants never bleed into a2. The single exception is
- * `deleteAllForAgent` (agent deletion), which is keyed on `agent_id` alone.
+ * @ax/host-grants store. An agent's allowed sites belong to the agent
+ * (TASK-1212). `owner_user_id` records who added a row. On a personal agent
+ * only its owner can add, because every writer checks access to the agent
+ * first, so its list is the owner's. On a team agent the list is every
+ * member's adds, one entry per host.
+ *
+ * So `list`, `revoke`, the duplicate check and the cap are keyed by agent, and
+ * agent a1's sites never bleed into a2. `listForUser` is the one read keyed by
+ * the adder: the rows that person added, across their agents. This store
+ * checks no ACL; its callers do (see plugin.ts).
  */
 import { PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
@@ -10,6 +16,10 @@ import type { HostGrantsDatabase } from './migrations.js';
 import { assertValidHost } from './host-validate.js';
 
 const PLUGIN_NAME = '@ax/host-grants';
+/**
+ * At most this many distinct hosts per agent, whoever added them. It bounds a
+ * session's egress allowlist, so on a team agent every member shares it.
+ */
 const MAX_GRANTS_PER_AGENT = 256;
 
 export interface HostGrant {
@@ -26,19 +36,26 @@ export interface HostGrantForUser extends HostGrant {
 }
 
 export interface HostGrantsStore {
+  /**
+   * Keep `host` on the agent; `ownerUserId` is the person adding it. A host the
+   * agent already has, whoever added it, is a no-op (`created: false`) and is
+   * never limited. Otherwise throws `grant-limit` once the agent has
+   * MAX_GRANTS_PER_AGENT distinct hosts.
+   */
   grant(input: { ownerUserId: string; agentId: string; host: string }): Promise<{ created: boolean }>;
-  list(ownerUserId: string, agentId: string): Promise<HostGrant[]>;
-  /** Every grant the user owns across ALL their agents (each row carries its
-   *  agentId), ordered host asc then agentId asc. Owner-scoped — a foreign
+  /** The agent's sites: one entry per host whoever added it, with the earliest
+   *  `grantedAt`, ordered by host. */
+  list(agentId: string): Promise<HostGrant[]>;
+  /** Every row the user added across ALL their agents (each row carries its
+   *  agentId), ordered host asc then agentId asc. Adder-scoped — another
    *  user's rows are never returned. Backs the Settings one-list view. */
   listForUser(ownerUserId: string): Promise<HostGrantForUser[]>;
-  revoke(input: { ownerUserId: string; agentId: string; host: string }): Promise<{ revoked: boolean }>;
+  /** Take `host` off the agent for everyone: deletes every adder's row for it. */
+  revoke(input: { agentId: string; host: string }): Promise<{ revoked: boolean }>;
   /**
-   * Delete EVERY grant for `agentId`, under every owner (TASK-718). The one
-   * method here that is NOT owner-scoped, on purpose: it backs the
-   * `agents:deleted` subscriber, and a team agent has grants under several
-   * owner users, so scoping to one would strand the rest. Throws on an empty
-   * `agentId` — a delete must never run with an empty key.
+   * Delete EVERY grant for `agentId`, whoever added it (TASK-718). Backs the
+   * `agents:deleted` subscriber. Throws on an empty `agentId` — a delete must
+   * never run with an empty key.
    */
   deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
 }
@@ -47,33 +64,35 @@ export function createHostGrantsStore(db: Kysely<HostGrantsDatabase>): HostGrant
   return {
     async grant({ ownerUserId, agentId, host }) {
       assertValidHost(host);
-      // Idempotent: an existing host is a no-op and never counts against the cap.
+      // Idempotent: a host the agent already has, whoever added it, is a no-op
+      // and never counts against the cap — so this check runs before the cap's.
       const existing = await db
         .selectFrom('host_grants_v1_grants')
         .select('host')
-        .where('owner_user_id', '=', ownerUserId)
         .where('agent_id', '=', agentId)
         .where('host', '=', host)
         .executeTakeFirst();
       if (existing !== undefined) return { created: false };
 
+      // Distinct hosts, not rows: a host two people added counts once.
       const { count } = await db
         .selectFrom('host_grants_v1_grants')
-        .select((eb) => eb.fn.countAll<number>().as('count'))
-        .where('owner_user_id', '=', ownerUserId)
+        .select((eb) => eb.fn.count<number>('host').distinct().as('count'))
         .where('agent_id', '=', agentId)
         .executeTakeFirstOrThrow();
       if (Number(count) >= MAX_GRANTS_PER_AGENT) {
         throw new PluginError({
           code: 'grant-limit',
           plugin: PLUGIN_NAME,
-          message: `at most ${MAX_GRANTS_PER_AGENT} host grants per (user, agent)`,
+          message: `at most ${MAX_GRANTS_PER_AGENT} host grants per agent`,
         });
       }
 
-      // Accepted race (mirrors @ax/skills user-attachments-store): a concurrent
-      // insert of the same compound key surfaces as a PK violation, fine at
-      // user scale.
+      // Accepted races (mirrors @ax/skills user-attachments-store), fine at
+      // user scale. The same person adding one host twice at once surfaces as
+      // a PK violation. Two people adding one host at once may leave two rows:
+      // harmless, because reads group by host and revoke deletes every row for
+      // it. Concurrent adds of different hosts can overshoot the cap by a few.
       await db
         .insertInto('host_grants_v1_grants')
         .values({ owner_user_id: ownerUserId, agent_id: agentId, host, created_at: new Date() })
@@ -81,15 +100,17 @@ export function createHostGrantsStore(db: Kysely<HostGrantsDatabase>): HostGrant
       return { created: true };
     },
 
-    async list(ownerUserId, agentId) {
+    async list(agentId) {
+      // One entry per host: a host added by two people (at once, or before
+      // TASK-1212) reads as one site, granted when it was first added.
       const rows = await db
         .selectFrom('host_grants_v1_grants')
-        .select(['host', 'created_at'])
-        .where('owner_user_id', '=', ownerUserId)
+        .select((eb) => ['host', eb.fn.min('created_at').as('granted_at')])
         .where('agent_id', '=', agentId)
+        .groupBy('host')
         .orderBy('host', 'asc')
         .execute();
-      return rows.map((r) => ({ host: r.host, grantedAt: r.created_at.toISOString() }));
+      return rows.map((r) => ({ host: r.host, grantedAt: r.granted_at.toISOString() }));
     },
 
     async listForUser(ownerUserId) {
@@ -107,10 +128,10 @@ export function createHostGrantsStore(db: Kysely<HostGrantsDatabase>): HostGrant
       }));
     },
 
-    async revoke({ ownerUserId, agentId, host }) {
+    async revoke({ agentId, host }) {
+      // Every adder's row for the host: the site leaves the agent for everyone.
       const res = await db
         .deleteFrom('host_grants_v1_grants')
-        .where('owner_user_id', '=', ownerUserId)
         .where('agent_id', '=', agentId)
         .where('host', '=', host)
         .executeTakeFirst();

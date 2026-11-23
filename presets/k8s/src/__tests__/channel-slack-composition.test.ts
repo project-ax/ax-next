@@ -57,8 +57,8 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // the skill broker would; a DM or attended turn asks in the thread after its reply, an
 // outsider's turn asks nothing, and Allow reaches `proxy:add-host` and
 // `agent:apply-capability-grant` only for the person who asked. A website's Allow also
-// lands in the real @ax/host-grants store, filed under the person who clicked and the
-// channel's agent (TASK-1208).
+// lands in the real @ax/host-grants store, on the channel's agent's list, so everyone who
+// uses the agent has it (TASK-1212).
 //
 // Stubbed: `http:register-route` (records the routes so the test can call a
 // handler directly), `auth:require-user` (the test picks the actor),
@@ -69,7 +69,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // the orchestrator does), `branding:get`, and the two services a permission
 // prompt's Allow calls (`proxy:add-host`, `agent:apply-capability-grant`: they
 // need a sandbox, so they record the call and say yes). A website's Allow then keeps the
-// host through the REAL @ax/host-grants (it only needs the database).
+// host on the agent's list through the REAL @ax/host-grants (it only needs the database).
 // ---------------------------------------------------------------------------
 
 const SLACK_PLUGIN = '@ax/channel-slack';
@@ -1556,16 +1556,16 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(JSON.stringify(prompt!.blocks)).toContain('Once allowed, it stays allowed.');
       expect(promptsIn(calls)).toHaveLength(1);
 
-      // The real allowed-sites list of a person and this agent, read the way the orchestrator reads it.
-      const keptFor = async (userId: string): Promise<string[]> =>
+      // The real allowed-sites list of this agent, read the way the orchestrator reads it.
+      const agentSites = async (): Promise<string[]> =>
         (
           await theBus!.call<unknown, { hosts: Array<{ host: string }> }>(
             'host-grants:list',
-            makeAgentContext({ sessionId: 'test', agentId: '', userId }),
-            { ownerUserId: userId, agentId },
+            makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_mel' }),
+            { agentId },
           )
         ).hosts.map((h) => h.host);
-      expect(await keptFor('usr_mel')).toEqual([]);
+      expect(await agentSites()).toEqual([]);
 
       // Ada, a team admin, is not who asked: told privately, and the proxy is never called.
       mark = slackCalls.length;
@@ -1573,7 +1573,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       calls = await slackCallsUntil(mark, 'chat.postEphemeral');
       expect(String(callOf(calls, 'chat.postEphemeral').body['text'])).toBe('Only the person who asked can answer this.');
       expect(addHostCalls).toEqual([]);
-      expect(await keptFor('usr_mel')).toEqual([]);
+      expect(await agentSites()).toEqual([]);
 
       // Mel's Allow: the proxy hears exactly this session and host, as her, and the host is kept for her.
       mark = slackCalls.length;
@@ -1583,9 +1583,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       expect(addHostCalls).toEqual([
         { userId: 'usr_mel', input: { sessionId: 'sess_compose_host', host: 'api.example.com' } },
       ]);
-      // C1: filed under Mel and the channel's agent; Ada, who did not click, has nothing.
-      expect(await keptFor('usr_mel')).toEqual(['api.example.com']);
-      expect(await keptFor('usr_ada')).toEqual([]);
+      // C1: this is the agent's list, so Ada's sessions and an outsider's turn (run as Ada) load it too.
+      expect(await agentSites()).toEqual(['api.example.com']);
 
       // A second click on the settled prompt does nothing more.
       mark = slackCalls.length;
@@ -1602,9 +1601,8 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(promptsIn(slackCalls.slice(mark))).toEqual([]);
       expect(addHostCalls).toHaveLength(1);
-      // C2: the outsider's turn (run as Ada) kept nothing for Ada, and Mel's list is unchanged.
-      expect(await keptFor('usr_ada')).toEqual([]);
-      expect(await keptFor('usr_mel')).toEqual(['api.example.com']);
+      // C2: the outsider's turn added nothing: the agent's list is exactly Mel's one site.
+      expect(await agentSites()).toEqual(['api.example.com']);
     } finally {
       invokeScript = null;
       await dropAgent(agentId);

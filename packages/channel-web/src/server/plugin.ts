@@ -230,36 +230,46 @@ export function createChannelWebServerPlugin(
         },
         {
           // TASK-44 — when the user clicks "Always for this agent" on the
-          // reactive-wall card, the allow-host route persists a durable
-          // per-(user, agent) grant via host-grants:grant (after the live
-          // proxy:add-host widen). TASK-131 — the Settings "Allowed sites"
-          // section's proactive "Add a site" also grants through this hook
-          // (POST /api/chat/allowed-sites/:agentId); without host-grants that
-          // add returns 503 (the grant cannot persist — no silent success).
+          // reactive-wall card, the allow-host route keeps the site on the
+          // agent via host-grants:grant (beside the live proxy:add-host
+          // widen, or on its own once the session has ended), only after
+          // agents:resolve admits the person to that agent. An agent's sites
+          // belong to the agent (TASK-1212), so on a team agent one Allow
+          // covers every member. TASK-131 — the Settings
+          // "Allowed sites" section's proactive "Add a site" also grants
+          // through this hook (POST /api/chat/allowed-sites/:agentId, personal
+          // agents only); without host-grants that add returns 503 (the grant
+          // cannot persist — no silent success).
           hook: 'host-grants:grant',
           degradation:
             'the reactive-wall "Always for this agent" button persists nothing across sessions (the live proxy:add-host grant still applies for the current session); the Settings "Add a site" control returns 503',
         },
         {
-          // TASK-54 — the Settings "Allowed sites" panel reads the durable
-          // per-(user, agent) grants. host-grants is k8s-preset-only; a preset
-          // without it degrades the panel to empty.
+          // TASK-54 — an agent's allowed sites, read by agent (TASK-1212: on a
+          // team agent, every member's adds) for the agent settings'
+          // "Granted by you" group and the Settings "Allowed sites" per-agent
+          // read. host-grants is k8s-preset-only; a preset without it
+          // degrades both to empty.
           hook: 'host-grants:list',
           degradation:
             'the Settings "Allowed sites" panel shows no persisted hosts (the live reactive wall still applies per session)',
         },
         {
-          // The Settings "Allowed sites" one-list view reads every grant the user
-          // owns across all their agents. Same k8s-preset-only degradation as
-          // host-grants:list.
+          // The Settings "Allowed sites" one-list view reads every site the
+          // user added across all their agents. Same k8s-preset-only
+          // degradation as host-grants:list.
           hook: 'host-grants:list-for-user',
           degradation:
             'the Settings "Allowed sites" one-list panel shows no persisted hosts',
         },
         {
-          // TASK-54 — the Settings "Allowed sites" panel's Revoke control removes
-          // a durable grant so it is not re-loaded into the next session's
-          // allowlist. Degrades to an idempotent no-op without host-grants.
+          // TASK-54 — Revoke takes a site off the agent so it is not re-loaded
+          // into the next session's allowlist. Since TASK-1212 that is for
+          // everyone who uses the agent, and host-grants checks no ACL, so the
+          // routes ask first: a personal agent's owner (agents:resolve), or a
+          // team agent's managers (agents:can-manage-connectors, from its
+          // settings only; Settings › Sites refuses team agents). Degrades to
+          // an idempotent no-op without host-grants.
           hook: 'host-grants:revoke',
           degradation:
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
@@ -618,7 +628,9 @@ export function createChannelWebServerPlugin(
           // TASK-765 / TASK-798 — whether this person may change this
           // agent's connectors (add, remove). Slice 3 — asked with the admin
           // bit off, it is also the personal-agent owner check before a key
-          // is put on the agent.
+          // is put on the agent. TASK-1212 — also who may remove a team
+          // agent's allowed site: without it nobody can (no Revoke, and the
+          // revoke route answers 503 grants-unavailable).
           hook: 'agents:can-manage-connectors',
           degradation:
             'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT …/connectors/:connectorId/key answer 503 connectors-unavailable',

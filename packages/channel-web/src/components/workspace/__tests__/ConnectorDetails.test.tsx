@@ -677,7 +677,9 @@ describe('access you approved', () => {
   pinReaderClock();
   it('moves a connector’s approved access into its details, with Revoke', async () => {
     vi.mocked(workspaceApi.rail).mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [LINEAR_GRANT, siteGrant()], incomplete: false } }),
+      rail({
+        grants: { status: 'ok', rows: [LINEAR_GRANT, siteGrant()], incomplete: false, shared: false },
+      }),
     );
     renderTab();
     await screen.findByText('Linear');
@@ -696,7 +698,7 @@ describe('access you approved', () => {
 
   it('says it could not read approved access when the grants read failed, instead of hiding the section (TASK-757)', async () => {
     vi.mocked(workspaceApi.rail).mockResolvedValue(
-      rail({ grants: { status: 'failed', rows: [], incomplete: false } }),
+      rail({ grants: { status: 'failed', rows: [], incomplete: false, shared: false } }),
     );
     renderTab();
     await openDetails();
@@ -716,7 +718,7 @@ describe('access you approved', () => {
 
   it('a deployment that keeps no grants shows no section at all', async () => {
     vi.mocked(workspaceApi.rail).mockResolvedValue(
-      rail({ grants: { status: 'unavailable', rows: [], incomplete: false } }),
+      rail({ grants: { status: 'unavailable', rows: [], incomplete: false, shared: false } }),
     );
     renderTab();
     await openDetails();
@@ -727,7 +729,9 @@ describe('access you approved', () => {
   it('keeps approved access in "Granted by you" while the list has not confirmed the connector', async () => {
     vi.mocked(workspaceApi.connectors).mockRejectedValue(new WorkspaceApiError('/x', 500));
     vi.mocked(workspaceApi.rail).mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [LINEAR_GRANT, siteGrant()], incomplete: false } }),
+      rail({
+        grants: { status: 'ok', rows: [LINEAR_GRANT, siteGrant()], incomplete: false, shared: false },
+      }),
     );
     renderTab();
     const toggle = await screen.findByRole('button', { name: /Granted by you/ });

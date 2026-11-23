@@ -1802,13 +1802,18 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
    */
   async function hostWorld() {
     const added: Array<{ ctx: AgentContext; input: unknown }> = [];
+    /** Each `host-grants:grant` call's input: what the answer kept, and for whom. */
+    const kept: unknown[] = [];
     const w = await world({
       services: (bus) => {
         bus.registerService('proxy:add-host', 'fake-credential-proxy', async (ctx, input) => {
           added.push({ ctx, input: JSON.parse(JSON.stringify(input)) as unknown });
           return { added: true, agentId: 'agt_support' };
         });
-        bus.registerService('host-grants:grant', 'fake-host-grants', async () => ({ created: true }));
+        bus.registerService('host-grants:grant', 'fake-host-grants', async (_ctx, input) => {
+          kept.push(JSON.parse(JSON.stringify(input)) as unknown);
+          return { created: true };
+        });
       },
       answersOn: (bus) => ({ host: createHostAnswer({ bus }) }),
     });
@@ -1823,17 +1828,19 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
         { type: 'context', elements: [{ type: 'mrkdwn', text: line }] },
       ],
     });
-    return { w, added, open, redrawnHost };
+    return { w, added, kept, open, redrawnHost };
   }
 
   it("Mel's Allow on her host prompt in #support: proxy:add-host as usr_mel, for exactly the prompt's session and host; the prompt says so", async () => {
-    const { w, added, open, redrawnHost } = await hostWorld();
+    const { w, added, kept, open, redrawnHost } = await hostWorld();
     const prompt = open();
 
     await w.onClick(INSTALL, w.clickOn(prompt));
 
     expect(added.map((a) => a.input)).toEqual([{ sessionId: SESSION, host: HOST }]);
     expect(added[0]!.ctx.userId).toBe('usr_mel');
+    // Kept on the prompt's agent, added by Mel (TASK-1212: the agent's list, for everyone who uses it).
+    expect(kept).toEqual([{ ownerUserId: 'usr_mel', agentId: MEL_SUPPORT.agentId, host: HOST }]);
     expect(w.slack.calls).toEqual([
       MEL_LOOKED_UP,
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.hostAllowed) },
@@ -1845,23 +1852,25 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
   });
 
   it("Ada's click on Mel's host prompt: told privately it isn't hers, and nothing is let through", async () => {
-    const { w, added, open } = await hostWorld();
+    const { w, added, kept, open } = await hostWorld();
     const prompt = open();
 
     await w.onClick(INSTALL, w.clickOn(prompt, { slackUserId: ADA }));
 
     expect(added).toEqual([]);
+    expect(kept).toEqual([]);
     expect(w.slack.calls).toEqual([told(SUPPORT, ADA, COPY.promptOnlyAsker)]);
     expect(w.state(prompt)).toBe('open');
   });
 
   it("Mel's Deny: nothing is called, and the prompt says so", async () => {
-    const { w, added, open, redrawnHost } = await hostWorld();
+    const { w, added, kept, open, redrawnHost } = await hostWorld();
     const prompt = open();
 
     await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
 
     expect(added).toEqual([]);
+    expect(kept).toEqual([]);
     expect(w.slack.calls).toEqual([
       MEL_LOOKED_UP,
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.hostDenied) },
@@ -1870,13 +1879,14 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
   });
 
   it('a channel disconnected since the turn (Review Focus 5): the prompt closes, and nothing is let through', async () => {
-    const { w, added, open, redrawnHost } = await hostWorld();
+    const { w, added, kept, open, redrawnHost } = await hostWorld();
     const prompt = open();
     await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
 
     await w.onClick(INSTALL, w.clickOn(prompt));
 
     expect(added).toEqual([]);
+    expect(kept).toEqual([]);
     expect(w.slack.calls).toEqual([
       MEL_LOOKED_UP,
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.promptClosed) },

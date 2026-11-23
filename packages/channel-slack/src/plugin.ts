@@ -191,9 +191,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // sandbox was refused mid-turn (the egress wall's `chat:permission-request`
 // card) gets a prompt after the reply too, and its Allow, as the asker, lets
 // that host through for the conversation's live session, then keeps it on
-// the agent's allowed sites for the asker, even once that session has ended
+// the agent's allowed sites (added by the asker; on a team agent it covers
+// every member and an outsider's turn), even once that session has ended
 // (permission-prompts.ts: `proxy:add-host`, then `host-grants:grant`,
-// TASK-1208). So does a catalog skill the
+// TASK-1208, TASK-1212). So does a catalog skill the
 // agent asked to use (request_capability's card): its Allow reads the
 // conversation back as the asker and checks its agent, as the web app's
 // `/api/chat/permission-decision` does, then attaches the skill
@@ -321,8 +322,9 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         // Allow on a refused host's prompt (permission-prompts.ts). Without
         // it the turn offers no prompt for the host (turn.ts checks first).
         { hook: 'proxy:add-host', degradation: 'a blocked host in a Slack turn is not offered for approval' },
-        // Then the host is kept on the agent's allowed sites for the asker
-        // (@ax/host-grants, TASK-1208). Without it, an Allow's line says
+        // Then the host is kept on the agent's allowed sites, added by the
+        // asker (@ax/host-grants, TASK-1208; the agent's, so a team agent's
+        // whole team reaches it, TASK-1212). Without it, an Allow's line says
         // "for now" (permission-prompts.ts checks first).
         {
           hook: 'host-grants:grant',

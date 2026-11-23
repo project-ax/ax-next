@@ -8,13 +8,21 @@ import { listAllAllowedSites, setSiteAgents } from '@/lib/connections';
 import { SiteAgentsDialog } from './SiteAgentsDialog';
 
 /**
- * "Allowed sites" — the durable per-(user, agent) "always allow" egress host
- * grants, presented as ONE list across all the user's agents. Each host appears
- * once and shows which agents it applies to; per-host Edit opens the agent
+ * "Allowed sites" — the durable "always allow" egress host grants of the
+ * user's PERSONAL agents, presented as ONE list. Each host appears once and
+ * shows which agents it applies to; per-host Edit opens the agent
  * multi-select, Remove revokes it for every agent. "All agents" means every
- * agent the user has now — a grant per agent — so the underlying egress
- * least-privilege boundary (each session's allowlist is still per-(user, agent))
- * is unchanged; this is purely a management view over those rows.
+ * personal agent the user has now — a grant per agent — so the underlying
+ * egress least-privilege boundary (each session's allowlist is per agent) is
+ * unchanged; this is purely a management view over those rows.
+ *
+ * A TEAM agent's sites belong to the agent and reach every member (TASK-1212),
+ * so they are not listed or edited here: any member could otherwise change
+ * what the whole team's agent may reach. They live in that agent's settings
+ * (Connectors), where only its owners and team admins can remove them. The
+ * server refuses these routes for a team agent too; this filter is the
+ * friendly half. Without the agent list we cannot tell personal from team, so
+ * the panel says so instead of guessing.
  *
  * NOT connectors: these are individual hosts, not credentialed services. Hosts
  * render through React text nodes (auto-escaped); never raw inner HTML. shadcn
@@ -22,7 +30,11 @@ import { SiteAgentsDialog } from './SiteAgentsDialog';
  */
 export function AllowedSitesPanel() {
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
+  // Some agents, none of them personal: nothing here is theirs to manage.
+  const [onlyTeamAgents, setOnlyTeamAgents] = useState(false);
   const [grants, setGrants] = useState<Array<{ host: string; agentId: string }> | null>(null);
+  // False until the agent list loads; stays false when it can't be read.
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingHost, setEditingHost] = useState<string | null>(null);
@@ -40,11 +52,20 @@ export function AllowedSitesPanel() {
     let cancelled = false;
     listChatAgents()
       .then((a) => {
-        if (!cancelled) setAgents(a);
+        if (cancelled) return;
+        const personal = a.filter((x) => x.visibility === 'personal');
+        setAgents(personal);
+        setOnlyTeamAgents(a.length > 0 && personal.length === 0);
+        setAgentsLoaded(true);
       })
       .catch(() => {
-        // Best-effort: without the agent list the panel still lists hosts; the
-        // agent names just fall back to ids and Add is disabled.
+        // Without the agent list we cannot tell personal agents from team
+        // ones, so listing every grant would put a team agent's sites here.
+        if (!cancelled) {
+          setError(
+            'We couldn’t load your agents just now, so we can’t show your allowed sites. Try again in a moment.',
+          );
+        }
       });
     void refresh();
     return () => {
@@ -54,7 +75,9 @@ export function AllowedSitesPanel() {
 
   // host → agentIds (sorted host order). Derived from the flat grant list.
   const byHost = new Map<string, string[]>();
-  for (const g of grants ?? []) {
+  const personalIds = new Set(agents.map((a) => a.agentId));
+  for (const g of agentsLoaded ? (grants ?? []) : []) {
+    if (!personalIds.has(g.agentId)) continue;
     const set = byHost.get(g.host) ?? [];
     set.push(g.agentId);
     byHost.set(g.host, set);
@@ -88,7 +111,8 @@ export function AllowedSitesPanel() {
             Sites your agents may reach. These are plain web addresses rather
             than connected services, and each one lists which agents it applies
             to — add a site ahead of time, or allow it when an agent asks
-            mid-task.
+            mid-task. A team agent’s sites are in that agent’s settings, under
+            Connectors.
           </p>
         </div>
         <Button size="sm" disabled={agents.length === 0} onClick={() => setAdding(true)}>
@@ -103,12 +127,15 @@ export function AllowedSitesPanel() {
       )}
 
       <Card variant="settings" className="divide-y divide-border">
-        {grants === null && !error && (
+        {(grants === null || !agentsLoaded) && !error && (
           <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
         )}
-        {grants !== null && hosts.length === 0 && (
+        {grants !== null && agentsLoaded && hosts.length === 0 && (
           <div className="px-4 py-3 text-sm text-muted-foreground">
-            No allowed sites yet — add one above.
+            {/* With Add disabled, "add one above" would point at nothing. */}
+            {onlyTeamAgents
+              ? 'Your agents are all team agents. Their sites are in each agent’s settings, under Connectors.'
+              : 'No allowed sites yet — add one above.'}
           </div>
         )}
         {hosts.map((host) => {

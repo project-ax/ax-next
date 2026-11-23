@@ -1,3 +1,17 @@
+/**
+ * @ax/host-grants — the websites each agent may always reach (its kept
+ * "always allow" egress hosts). An agent's sites belong to the agent
+ * (TASK-1212): `host-grants:list` and `host-grants:revoke` are keyed by agent,
+ * so on a team agent one person's Allow covers every member, and one Remove
+ * takes the site off for everyone. `host-grants:grant`'s `ownerUserId` is the
+ * person adding it; `host-grants:list-for-user` lists the rows that person
+ * added.
+ *
+ * Callers' contract: host-grants checks no ACL. Before `host-grants:grant`, a
+ * caller proves the person may use the agent; before `host-grants:revoke`, that
+ * they may manage it. Each writer gating on the agent's own ACL is what keeps a
+ * personal agent's list its owner's.
+ */
 import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runHostGrantsMigration, type HostGrantsDatabase } from './migrations.js';
@@ -63,9 +77,9 @@ export function createHostGrantsPlugin(): Plugin {
 
       // TASK-718 — a deleted agent's grants must go with it. Payload (declared
       // locally, no cross-plugin import): `{ agentId, ownerId, ownerType }`;
-      // only `agentId` matters, and it is keyed on ALONE because a team agent
-      // holds grants under several owner users. K10: a subscriber must never
-      // throw — a failed purge is logged loudly and swallowed.
+      // only `agentId` matters, the same key as list and revoke, because a
+      // team agent's sites were added by several members. K10: a subscriber
+      // must never throw — a failed purge is logged loudly and swallowed.
       bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
         const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
         if (typeof agentId !== 'string' || agentId.length === 0) {
@@ -99,10 +113,7 @@ export function createHostGrantsPlugin(): Plugin {
         'host-grants:list',
         PLUGIN_NAME,
         async (_ctx, input) => ({
-          hosts: await store!.list(
-            requireField(input.ownerUserId, 'ownerUserId'),
-            requireField(input.agentId, 'agentId'),
-          ),
+          hosts: await store!.list(requireField(input.agentId, 'agentId')),
         }),
         { returns: HostGrantsListOutputSchema },
       );
@@ -121,7 +132,6 @@ export function createHostGrantsPlugin(): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) =>
           store!.revoke({
-            ownerUserId: requireField(input.ownerUserId, 'ownerUserId'),
             agentId: requireField(input.agentId, 'agentId'),
             host: input.host,
           }),

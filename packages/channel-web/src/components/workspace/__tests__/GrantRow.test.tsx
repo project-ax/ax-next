@@ -31,6 +31,9 @@ import {
   HOST_ALLOWED_TITLE,
   HOST_ENDED_DETAIL,
   HOST_ENDED_TITLE,
+  HOST_FOR_NOW_TITLE,
+  HOST_LIST_FULL_DETAIL,
+  HOST_NOT_KEPT_DETAIL,
   KEY_SAFETY,
   SLOT_HINT,
 } from '@/lib/grant-copy';
@@ -99,11 +102,19 @@ afterEach(() => {
   toastActions.reset();
 });
 
-/** A 200 whose body is the route's `{ added }`. */
+/** A 200 whose body is the route's "Just this once" answer, `{ added }`. */
 function hostFetch(added: unknown) {
+  return hostAnswer({ added });
+}
+
+/**
+ * A 200 whose body is exactly `body` — e.g. an "Always" answer,
+ * `{ added, kept, full? }`. A fresh `Response` per call: a body reads once.
+ */
+function hostAnswer(body: unknown) {
   return vi
     .spyOn(globalThis, 'fetch')
-    .mockResolvedValue(new Response(JSON.stringify({ added }), { status: 200 }));
+    .mockImplementation(async () => new Response(JSON.stringify(body), { status: 200 }));
 }
 
 describe('a payload the guard lets through but the row must survive', () => {
@@ -368,17 +379,65 @@ describe('a host grant', () => {
     expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
   });
 
-  test('"Always for this agent" says the same', async () => {
-    const fetchMock = hostFetch(true);
+  /*
+    "Always for this agent" says whether the site was KEPT (TASK-1212). Three
+    rules hold whatever the words become: never "Site allowed" or "from now
+    on" unless it was kept, a full list says it is full, and never the host
+    (model-chosen text).
+  */
+  const alwaysCases: Array<[string, { added: boolean; kept: boolean; full?: true }, string, string]> = [
+    ['kept, while the session was live', { added: true, kept: true }, HOST_ALLOWED_TITLE, HOST_ALLOWED_DETAIL],
+    ['kept after the session had ended', { added: false, kept: true }, HOST_ALLOWED_TITLE, HOST_ALLOWED_DETAIL],
+    ['the list is full, live', { added: true, kept: false, full: true }, HOST_FOR_NOW_TITLE, HOST_LIST_FULL_DETAIL],
+    ['the list is full, ended', { added: false, kept: false, full: true }, HOST_ENDED_TITLE, HOST_LIST_FULL_DETAIL],
+    ['not kept, live', { added: true, kept: false }, HOST_FOR_NOW_TITLE, HOST_NOT_KEPT_DETAIL],
+    ['not kept, ended', { added: false, kept: false }, HOST_ENDED_TITLE, HOST_ENDED_DETAIL],
+  ];
+  test.each(alwaysCases)(
+    '"Always for this agent", %s: the row goes, and the toast says so',
+    async (_label, answer, title, detail) => {
+      const fetchMock = hostAnswer(answer);
+      const { onResolved } = row(hostReq);
+
+      fireEvent.click(screen.getByRole('button', { name: /always for this agent/i }));
+
+      await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
+      expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"persist":true');
+      expect(show).toHaveBeenCalledTimes(1);
+      expect(show).toHaveBeenCalledWith({ title, detail });
+      const said = JSON.stringify(show.mock.calls);
+      expect(said).not.toContain('example.org');
+      if (!answer.kept) expect(said).not.toMatch(/site allowed|from now on/i);
+      if (answer.full === true) expect(said).toMatch(/full/i);
+    },
+  );
+
+  test('an "Always" answer that does not say whether the site was kept: the row goes with no toast', async () => {
+    hostAnswer({ added: true });
     const { onResolved } = row(hostReq);
 
     fireEvent.click(screen.getByRole('button', { name: /always for this agent/i }));
 
     await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
-    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"persist":true');
-    expect(show).toHaveBeenCalledTimes(1);
-    expect(show).toHaveBeenCalledWith({ title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL });
-    expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  test("Always sends the grant's agentId; Just this once does not", async () => {
+    const fetchMock = hostAnswer({ added: false, kept: true });
+    const always = row(hostReq);
+    fireEvent.click(screen.getByRole('button', { name: /always for this agent/i }));
+    await waitFor(() => expect(always.onResolved).toHaveBeenCalled());
+    always.unmount();
+
+    const once = row(hostReq);
+    fireEvent.click(screen.getByRole('button', { name: /just this once/i }));
+    await waitFor(() => expect(once.onResolved).toHaveBeenCalled());
+
+    const sent = fetchMock.mock.calls.map((c) => JSON.parse(c[1]?.body as string) as unknown);
+    expect(sent).toStrictEqual([
+      { sessionId: 'sess-9', host: 'example.org', persist: true, agentId: 'a-quill' },
+      { sessionId: 'sess-9', host: 'example.org', persist: false },
+    ]);
   });
 
   test('a session that had already ended: the row goes, and the toast says nothing changed', async () => {

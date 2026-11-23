@@ -5210,6 +5210,54 @@ describe('chat-orchestrator', () => {
     expect(proxy.state.lastOpenInput).toBeUndefined();
   });
 
+  // TASK-1212 — what a late Allow's "now allowed" line is measured against: the
+  // conversation's lastActivityAt (when the agent last spoke there). Literals,
+  // an hour apart.
+  const LAST_SPOKE = '2026-11-20T12:00:00.000Z';
+  const HOUR_BEFORE = '2026-11-20T11:00:00.000Z';
+  const HOUR_AFTER = '2026-11-20T13:00:00.000Z';
+
+  // The conversation hooks routing needs (the orchestrator reads the row only
+  // when all three are registered), answering one row.
+  function conversationHooks(row: {
+    lastActivityAt: string | null;
+    activeSessionId?: string;
+    liveSessions?: string[];
+  }): Record<string, ServiceHandler> {
+    const live = new Set(row.liveSessions ?? []);
+    return {
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return {
+          conversation: {
+            conversationId: i.conversationId,
+            userId: i.userId,
+            agentId: 'test-agent',
+            activeSessionId: row.activeSessionId ?? null,
+            activeReqId: null,
+            lastActivityAt: row.lastActivityAt,
+          },
+        };
+      },
+      'conversations:bind-session': async () => undefined,
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+    };
+  }
+
+  // silentCtx, in a conversation.
+  function conversationCtx(sessionId: string, source?: 'external' | 'routine') {
+    return makeAgentContext({
+      sessionId,
+      agentId: 'test-agent',
+      userId: 'test-user',
+      conversationId: 'conv-late-allow',
+      ...(source !== undefined ? { source } : {}),
+      logger: createLogger({ reqId: 'orch-test', writer: () => undefined }),
+    });
+  }
+
   it('TASK-44: unions persisted host grants into the proxy:open-session allowlist', async () => {
     const proxy = buildProxyHooks();
     let listInput: unknown;
@@ -5243,8 +5291,10 @@ describe('chat-orchestrator', () => {
       { message: { role: 'user', content: 'hi' } },
     );
     expect(outcome.kind).toBe('complete');
-    // Keyed by (user, agent) — never a browser-supplied id.
-    expect(listInput).toEqual({ ownerUserId: 'test-user', agentId: 'test-agent' });
+    // TASK-1212 — keyed by the agent alone (never a browser-supplied id, and
+    // no user in the key). So an outsider's turn (run as the bot's requester),
+    // a routine run and every member of a team agent read the same list.
+    expect(listInput).toEqual({ agentId: 'test-agent' });
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
     expect(openIn.allowlist).toContain('persisted.example.com');
   });
@@ -5267,7 +5317,14 @@ describe('chat-orchestrator', () => {
       }),
       openSession: makeChatEndOpenSession(busRef),
     });
-    Object.assign(mocks.services, proxy.services, hostGrants);
+    // TASK-1212 — in a conversation the agent has spoken in, so a late Allow's
+    // "now allowed" line could be due.
+    Object.assign(
+      mocks.services,
+      proxy.services,
+      hostGrants,
+      conversationHooks({ lastActivityAt: LAST_SPOKE }),
+    );
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
@@ -5276,15 +5333,226 @@ describe('chat-orchestrator', () => {
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
-      silentCtx('host-grants-failopen-session'),
+      conversationCtx('host-grants-failopen-session'),
       { message: { role: 'user', content: 'hi' } },
     );
     // Credential-free read: a throw FAILS OPEN — the turn completes and the
     // session opens; the persisted host is simply absent (fewer, never more).
     expect(outcome.kind).toBe('complete');
-    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      newlyAllowedHosts?: string[];
+    };
     expect(openIn).toBeDefined();
     expect(openIn.allowlist).not.toContain('persisted.example.com');
+    // TASK-1212 — and no line: nothing read, nothing to report.
+    expect(openIn.newlyAllowedHosts ?? []).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1212 — a late Allow's "now allowed" line. A site kept for the agent
+  // while it wasn't running (a day-old Slack prompt, a web "Always" after the
+  // session ended) used to be reachable at the next session, but nothing told
+  // the agent, so it kept believing the site was blocked. The orchestrator now
+  // names, in proxy:open-session's `newlyAllowedHosts`, the kept sites granted
+  // after the conversation's lastActivityAt that no other source already
+  // allows, and the proxy seeds the TASK-1199 record with them. Fresh spawns
+  // only: a live session's own record covers a turn routed into it.
+  // -------------------------------------------------------------------------
+  describe('TASK-1212: sites kept since the agent last spoke reach the next fresh session', () => {
+    interface OpenIn {
+      allowlist: string[];
+      newlyAllowedHosts?: string[];
+    }
+
+    /**
+     * One turn through the real orchestrator, on the TASK-44 agent row (its
+     * `allowedHosts` are a source other than the grants). `conversation` is the
+     * row conversations:get answers; omit it for a turn with no conversation.
+     * Reports what proxy:open-session was handed (undefined if it never ran)
+     * and how often host-grants:list was read.
+     */
+    async function runTurn(opts: {
+      sessionId: string;
+      conversation?: Parameters<typeof conversationHooks>[0];
+      grants: ServiceHandler;
+      source?: 'external' | 'routine';
+    }): Promise<{
+      outcome: AgentOutcome;
+      openIn: OpenIn | undefined;
+      openCalls: number;
+      grantReads: number;
+    }> {
+      const proxy = buildProxyHooks();
+      const busRef: { current: HookBus | null } = { current: null };
+      const live = new Set(opts.conversation?.liveSessions ?? []);
+      let grantReads = 0;
+      const mocks = buildMocks({
+        agentsResolve: async () => ({
+          agent: {
+            ...TEST_AGENT,
+            allowedHosts: ['api.anthropic.com'],
+            requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          },
+        }),
+        openSession: makeChatEndOpenSession(busRef),
+        // A turn routed into a live session ends when that session's runner
+        // answers: fire its chat:end once the message is in the inbox.
+        queueWork: async (_ctx, input: unknown) => {
+          const { sessionId, entry } = input as {
+            sessionId: string;
+            entry: { type: string; reqId?: string };
+          };
+          if (entry.type === 'user-message' && live.has(sessionId)) {
+            const reqId = entry.reqId ?? '';
+            setImmediate(() => {
+              void busRef.current!.fire(
+                'chat:end',
+                makeAgentContext({
+                  sessionId,
+                  agentId: 'a',
+                  userId: 'u',
+                  reqId,
+                  logger: createLogger({ reqId, writer: () => undefined }),
+                }),
+                { outcome: { kind: 'complete', messages: [] } },
+              );
+            });
+          }
+          return { cursor: 0 };
+        },
+      });
+      const listGrants: ServiceHandler = async (ctx, input) => {
+        grantReads += 1;
+        return opts.grants(ctx, input);
+      };
+      Object.assign(mocks.services, proxy.services, { 'host-grants:list': listGrants });
+      if (opts.conversation !== undefined) {
+        Object.assign(mocks.services, conversationHooks(opts.conversation));
+      }
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
+      });
+      busRef.current = h.bus;
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        opts.conversation !== undefined
+          ? conversationCtx(opts.sessionId, opts.source)
+          : silentCtx(opts.sessionId),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      return {
+        outcome,
+        openIn: proxy.state.lastOpenInput as OpenIn | undefined,
+        openCalls: proxy.state.openCalls,
+        grantReads,
+      };
+    }
+
+    it('a fresh spawn reports the sites allowed since the agent last spoke in this conversation', async () => {
+      const { outcome, openIn } = await runTurn({
+        sessionId: 'late-allow-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        // host-grants:list's order: by host.
+        grants: async () => ({
+          hosts: [
+            { host: 'new.example.com', grantedAt: HOUR_AFTER },
+            { host: 'old.example.com', grantedAt: HOUR_BEFORE },
+            // Kept the same millisecond the agent last spoke: not "since".
+            { host: 'same.example.com', grantedAt: LAST_SPOKE },
+          ],
+        }),
+      });
+      expect(outcome.kind).toBe('complete');
+      expect(openIn?.newlyAllowedHosts).toEqual(['new.example.com']);
+      // Every kept site is reachable; only the new one is news.
+      expect(openIn?.allowlist).toEqual(
+        expect.arrayContaining(['new.example.com', 'old.example.com', 'same.example.com']),
+      );
+    });
+
+    // TASK-1091's rule: on an outsider's turn (`isOutsiderTurn`) nothing
+    // owner-side is named to the agent, and the kept sites are the agent's
+    // members' choices. The sites stay reachable (the allowlist is the agent's,
+    // whoever asks); only the line naming them is withheld.
+    it("an outsider's turn is told nothing; a member's or a routine's turn on the same grants is", async () => {
+      const grants: ServiceHandler = async () => ({
+        hosts: [{ host: 'new.example.com', grantedAt: HOUR_AFTER }],
+      });
+      const outsider = await runTurn({
+        sessionId: 'late-allow-outsider-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        grants,
+        source: 'external',
+      });
+      expect(outsider.openIn?.allowlist).toContain('new.example.com');
+      expect(outsider.openIn).toBeDefined();
+      expect(outsider.openIn).not.toHaveProperty('newlyAllowedHosts');
+
+      const member = await runTurn({
+        sessionId: 'late-allow-member-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        grants,
+      });
+      expect(member.openIn?.newlyAllowedHosts).toEqual(['new.example.com']);
+
+      // A routine run is unattended but NOT an outsider's: it is told, which is
+      // where a late Allow matters most (pins isOutsiderTurn over isAttendedTurn).
+      const routine = await runTurn({
+        sessionId: 'late-allow-routine-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        grants,
+        source: 'routine',
+      });
+      expect(routine.openIn?.newlyAllowedHosts).toEqual(['new.example.com']);
+    });
+
+    it('a site another source already allows is not reported', async () => {
+      const { openIn } = await runTurn({
+        sessionId: 'late-allow-dup-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        grants: async () => ({
+          hosts: [
+            // The agent row allows it already: the agent could always reach it.
+            { host: 'api.anthropic.com', grantedAt: HOUR_AFTER },
+            { host: 'new.example.com', grantedAt: HOUR_AFTER },
+          ],
+        }),
+      });
+      expect(openIn?.newlyAllowedHosts).toEqual(['new.example.com']);
+    });
+
+    const noReference: ReadonlyArray<
+      readonly [string, Parameters<typeof conversationHooks>[0] | undefined]
+    > = [
+      ['the conversation has no lastActivityAt', { lastActivityAt: null }],
+      ["the conversation's lastActivityAt won't parse", { lastActivityAt: 'not a time' }],
+      ['there is no conversation', undefined],
+    ];
+    it.each(noReference)('nothing is reported when %s', async (_label, conversation) => {
+      const { openIn } = await runTurn({
+        sessionId: 'late-allow-none-session',
+        ...(conversation !== undefined ? { conversation } : {}),
+        grants: async () => ({ hosts: [{ host: 'new.example.com', grantedAt: HOUR_AFTER }] }),
+      });
+      // Still kept and reachable; only the line is withheld.
+      expect(openIn?.allowlist).toContain('new.example.com');
+      expect(openIn?.newlyAllowedHosts ?? []).toEqual([]);
+    });
+
+    it('a turn routed into a live session reads no grants and opens nothing', async () => {
+      const { outcome, openCalls, grantReads } = await runTurn({
+        sessionId: 'late-allow-routed-session',
+        conversation: { lastActivityAt: LAST_SPOKE, activeSessionId: 's-live', liveSessions: ['s-live'] },
+        grants: async () => ({ hosts: [{ host: 'new.example.com', grantedAt: HOUR_AFTER }] }),
+      });
+      expect(outcome.kind).toBe('complete');
+      // The live session's own record (a live Allow's proxy:add-host) covers
+      // it, so the agent is never told twice.
+      expect(grantReads).toBe(0);
+      expect(openCalls).toBe(0);
+    });
   });
 
   // -------------------------------------------------------------------------

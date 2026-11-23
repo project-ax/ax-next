@@ -150,21 +150,29 @@ export const COPY = {
   /*
     `hostSubject` is the prompt's subject, plain_text: only ever a host that
     passed HOST_RE (lowercase letters, digits, dots and dashes), never mrkdwn.
-    It says before the click that an Allow lasts (TASK-1208). The other four
+    It says before the click that an Allow lasts (TASK-1208). The others
     take the buttons' place once the asker has answered. Allow lets the host
     through for the conversation's live sandbox session, then keeps it on
-    the agent's allowed sites for the asker (the web app's "Always for this
-    agent"), even when that session has already ended: `hostAllowed`. When
-    it can't be kept, `hostAllowedForNow` (let through for the live session
-    only) or `hostEnded` (Allow on a session already gone). A session ends
-    when it idles (or when a skill's Allow retires it) while the chat goes
-    on, so no line says "this chat". Nothing about a blocked host waits in
-    Today, so none of them links there.
+    the agent's allowed sites (the web app's "Always for this agent"), even
+    when that session has already ended: `hostAllowed`. The site is the
+    agent's, so on a team agent it covers everyone who uses it (TASK-1212),
+    which is what "stays allowed" and "from now on" say. When it can't be
+    kept, `hostAllowedForNow` (let through for the live session only) or
+    `hostEnded` (Allow on a session already gone). When the agent's list of
+    allowed sites is full, `hostAllowedListFull` or `hostEndedListFull` say
+    that is why, so nobody retries it hoping it sticks. Neither names who
+    can make room: the answer doesn't know whether the asker manages the
+    agent. A session ends when it idles (or when a skill's Allow retires
+    it) while the chat goes on, so no line says "this chat". Nothing about
+    a blocked host waits in Today, so none of them links there.
   */
   hostSubject: (host: string) => `Wants to connect to ${host}. Once allowed, it stays allowed.`,
   hostAllowed: "Allowed from now on. Ask me again and I'll try it.",
   hostAllowedForNow: "Allowed for now. Ask me again and I'll try it.",
   hostEnded: "I'd already finished working on that, so nothing changed. If I need it again, I'll ask.",
+  hostAllowedListFull:
+    "Allowed for now, but my list of allowed sites is full, so I can't keep it. Ask me again and I'll try it.",
+  hostEndedListFull: "I couldn't keep it: my list of allowed sites is full. If I need it again, I'll ask.",
   hostDenied: "Okay. I won't connect to it.",
 
   // ── A catalog skill the agent asked to use (permission-prompts.ts) ─────────
