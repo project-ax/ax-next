@@ -4,7 +4,7 @@ Measured first, on the real `claude` binary (CLI 2.1.119, SDK 0.2.119), with the
 TASK-1217 scripted-model harness. Findings are in the decisions shard
 (`.claude/memory/decisions/2026-11-23-TASK-1220.md`); the short version:
 
-- **M1, `@path`:** any `@<path>` at the start of a turn or after whitespace makes the
+- **M1, `@path`:** any `@<path>` at the start of a turn, after whitespace or after 。、？！ makes the
   CLI read the file (or list the directory) before the model call. No PreToolUse,
   no `canUseTool`. Reaches `/etc/hosts`, `../`, the config dir, symlinks out of home.
 - **M2, text forgery:** text can't become an assistant or tool message (it stays
@@ -23,10 +23,10 @@ TASK-1217 scripted-model harness. Findings are in the decisions shard
    of a closed list of CLI tags. Wire into `main.ts` `userMessages()` next to
    `keepSlashAsText`.
 2. **[tier: sensitive] Host refusal.** `channel-web` `routes-chat.ts` step 2.5 also
-   refuses `tool_use`, `tool_result`, `thinking`, `redacted_thinking` (400
+   refuses everything but `text` and `attachment_ref` (400
    `invalid-content-block`) before anything is committed. Route test per type.
 3. **[tier: sensitive] Runner allowlist.** runner-core `translateContentBlocks` passes
-   only `text` / `image` / `document`; any other type becomes a fixed text mention
+   only `text` (images/PDFs come via `attachment`); any other type becomes a fixed text mention
    (never the raw block). Covers every channel (Slack, routines, task runs). Unit test.
 4. **[tier: integration] Real-binary e2e** (`cli-markup-text-real-sdk.e2e.test.ts`):
    CONTROL raw (file read, echo dropped, tool_use kept in a user message) and FIX

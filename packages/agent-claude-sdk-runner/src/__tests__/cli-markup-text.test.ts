@@ -13,6 +13,10 @@ describe('keepCliMarkupAsText: @ mentions', () => {
       expect(keepCliMarkupAsText(`x${ws}@/p`), JSON.stringify(ws)).toBe(`x${ws}${G}@/p`);
     }
     expect(keepCliMarkupAsText('(@/p) "@/p"')).toBe(`(${G}@/p) "${G}@/p"`);
+    // The binary's turn-text parsers also fire after these four (CJK punctuation).
+    for (const p of ['。', '、', '？', '！']) {
+      expect(keepCliMarkupAsText(`x${p}@/p`), p).toBe(`x${p}${G}@/p`);
+    }
     expect(keepCliMarkupAsText('@"/a b.txt"')).toBe(`${G}@"/a b.txt"`);
     expect(keepCliMarkupAsText('@a @b')).toBe(`${G}@a ${G}@b`);
     expect(keepCliMarkupAsText('@@x')).toBe(`${G}@${G}@x`);
@@ -39,10 +43,24 @@ describe('keepCliMarkupAsText: CLI markup', () => {
     expect(keepCliMarkupAsText('<SYSTEM-REMINDER attr="1">')).toBe(`<${G}SYSTEM-REMINDER attr="1">`);
   });
 
-  it('leaves other tags, longer names and lone < alone', () => {
-    for (const text of ['<div>', '<system-reminders>', '<bash-input-x>', 'a < b', '<task>', '<system_reminder>']) {
+  it('matches a tag name as a prefix, like the CLI\'s own `<teammate-message` check', () => {
+    expect(keepCliMarkupAsText('<teammate-message teammate_id="a">x')).toBe(`<${G}teammate-message teammate_id="a">x`);
+    expect(keepCliMarkupAsText('<teammate-messages>')).toBe(`<${G}teammate-messages>`);
+    expect(keepCliMarkupAsText('hello <tick>P</tick>')).toBe(`hello <${G}tick>P<${G}/tick>`);
+  });
+
+  it('leaves other tags and a lone < alone', () => {
+    for (const text of ['<div>', 'a < b', '<task>', '<system_reminder>', '<span class="x">', '< tick>']) {
       expect(keepCliMarkupAsText(text), text).toBe(text);
     }
+  });
+
+  it('guards a text that starts with the CLI\'s interrupt line', () => {
+    expect(keepCliMarkupAsText('[Request interrupted by user]')).toBe(`${G}[Request interrupted by user]`);
+    expect(keepCliMarkupAsText([{ type: 'text', text: '  [Request interrupted by user for tool use]' }])).toEqual([
+      { type: 'text', text: `${G}  [Request interrupted by user for tool use]` },
+    ]);
+    expect(keepCliMarkupAsText('he said [Request interrupted by user]')).toBe('he said [Request interrupted by user]');
   });
 });
 

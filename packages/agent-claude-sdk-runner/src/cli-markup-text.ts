@@ -4,49 +4,62 @@
 //
 // Measured on the pinned CLI (2.1.119, SDK 0.2.119) with a scripted model:
 //
-//   - `@<path>` anywhere in a turn's text (at the start or after whitespace)
-//     makes the CLI read that file BEFORE the model call and hand it to the
-//     model as "Result of calling the Read tool". No PreToolUse hook and no
-//     `canUseTool` call fires, so the runner's gate and the host's
-//     `tool.pre-call` never see the read. It reaches outside the agent's home:
-//     `@../x`, `@/etc/hosts`, the session's `CLAUDE_CONFIG_DIR`, a symlink
-//     in the home pointing elsewhere, a quoted `@"a b"`, a directory (its
-//     listing). `@server:uri` (MCP resources) and `@agent-name` go through
-//     the same pass. The CLI's only off switch (CLAUDE_CODE_DISABLE_ATTACHMENTS)
-//     also turns off the skill listing and deferred tools, so it is not used.
+//   - `@<path>` in a turn's text (at the start, after whitespace, or after
+//     。、？！ — the binary's turn-text parsers are
+//     `(^|[\s。、？！])@…`) makes the CLI read that file
+//     BEFORE the model call and hand it to the model as "Result of calling
+//     the Read tool". No PreToolUse hook and no `canUseTool` call fires, so
+//     the runner's gate and the host's `tool.pre-call` never see the read. It
+//     reaches outside the agent's home: `@../x`, `@/etc/hosts`, the session's
+//     `CLAUDE_CONFIG_DIR`, a symlink in the home pointing elsewhere, a quoted
+//     `@"a b"`, a directory (its listing). `@server:uri` (MCP resources) and
+//     `@agent-name` go through the same pass. The CLI's only off switch
+//     (CLAUDE_CODE_DISABLE_ATTACHMENTS) also turns off the skill listing and
+//     deferred tools, so it is not used.
 //   - Text that holds the CLI's own markup (`<system-reminder>`,
-//     `<task-notification>`, `<local-command-stdout>`, …) reads, to the model,
-//     byte for byte like what the CLI itself injects. For some tags the CLI
-//     also files the message as its own: it stops echoing it back with
-//     `--replay-user-messages`, which is how the shell learns a mid-turn
-//     message was folded into a turn (TASK-708).
+//     `<task-notification>`, …) reads, to the model, byte for byte like what
+//     the CLI itself injects. For some of it the CLI also files the message
+//     as its own and stops echoing it back with `--replay-user-messages`,
+//     which is how the shell learns a mid-turn message was folded into a turn
+//     (TASK-708). The binary's echo filter drops a message whose text holds
+//     `<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
+//     `<bash-stderr>`, `<task-notification>`, `<tick>` or a
+//     `<teammate-message` tag, and one whose first block is
+//     `[Request interrupted by user]`.
 //
 // Turn text is untrusted: a Slack sender, a web chat, a routine prompt or a
 // pasted connector result can all carry it. So the runner puts an invisible
 // U+200B ZERO WIDTH SPACE:
 //
-//   - in front of every `@` that does not follow a letter or a digit. The CLI
-//     only looks after start-of-text or whitespace; guarding after any
-//     non-alphanumeric too keeps a CLI that widens that set closed, and
-//     leaves an email address (`bob@example.com`) as it was;
-//   - right after the `<` of an opening or closing tag from CLI_MARKUP_TAGS
-//     (a closed list, so pasted HTML and code are left alone).
+//   - in front of every `@` that does not follow a letter or a digit. That is
+//     broader than the CLI's own boundary set on purpose: a CLI that widens
+//     the set stays closed, and an email address (`bob@example.com`) is left
+//     as it was. Do not narrow it to "what the CLI matches today";
+//   - right after the `<` of any tag whose name STARTS with one in
+//     CLI_MARKUP_TAGS (a prefix, like the CLI's own `<teammate-message`
+//     check; a closed list, so pasted HTML and code are left alone);
+//   - in front of a text that starts with `[Request interrupted`.
 //
 // Measured: the CLI reads no file for `​@/path` or `x ​@/path`, and the model
 // gets the text verbatim. Only the CLI's copy carries the character; the
 // display log and the chat's history keep what the person typed (see
 // slash-text.ts, the same seam).
 //
-// Known cost: a pasted decorator (`@dataclass` on its own line) reaches the
-// model with an invisible U+200B in front.
+// Known cost (not measured on a real model): every `@` that follows a space or
+// punctuation reaches the model with an invisible U+200B in front — a pasted
+// decorator (`@dataclass`), `"$@"`, `@types/node`, `@handle`. If the model
+// copies the character into a file or a command, that copy is broken.
 // ---------------------------------------------------------------------------
 
-/** U+200B ZERO WIDTH SPACE. */
-export const CLI_MARKUP_GUARD = '​';
+import { SLASH_TEXT_GUARD } from './slash-text.js';
+
+/** U+200B ZERO WIDTH SPACE — the one guard character, shared with slash-text.ts. */
+export const CLI_MARKUP_GUARD = SLASH_TEXT_GUARD;
 
 /**
- * Tag names the CLI writes into user-role messages itself, taken from the
- * pinned binary. Matched case-insensitively, opening or closing.
+ * Tag names the CLI writes into user-role messages itself, from the pinned
+ * binary's tag table and its echo filter. Matched case-insensitively, opening
+ * or closing, as a PREFIX of the tag name (`<teammate-messages>` too).
  */
 export const CLI_MARKUP_TAGS = [
   'system-reminder',
@@ -64,21 +77,28 @@ export const CLI_MARKUP_TAGS = [
   'persisted-output',
   'user-memory-input',
   'new-diagnostics',
+  'tick',
+  'teammate-message',
+  'channel',
+  'cross-session-message',
+  'fork-boilerplate',
 ] as const;
 
 // `@` not preceded by a letter, a digit or the guard itself (idempotent).
-const AT = /(?<![\p{L}\p{N}​])@/gu;
-const TAG = new RegExp(`<(?=/?(?:${CLI_MARKUP_TAGS.join('|')})(?![\\w-]))`, 'gi');
+const AT = new RegExp(`(?<![\\p{L}\\p{N}${CLI_MARKUP_GUARD}])@`, 'gu');
+const TAG = new RegExp(`<(?=/?(?:${CLI_MARKUP_TAGS.join('|')}))`, 'gi');
+const INTERRUPTED = '[Request interrupted';
 
 function guardText(text: string): string {
-  return text.replace(AT, `${CLI_MARKUP_GUARD}@`).replace(TAG, `<${CLI_MARKUP_GUARD}`);
+  const out = text.replace(AT, `${CLI_MARKUP_GUARD}@`).replace(TAG, `<${CLI_MARKUP_GUARD}`);
+  return out.trimStart().startsWith(INTERRUPTED) ? `${CLI_MARKUP_GUARD}${out}` : out;
 }
 
 /**
- * Returns `content` with every `@` mention and every CLI markup tag guarded:
- * a string, or each `{ type: 'text', text }` block of an array. Everything
- * else is returned as is. Never mutates its input; returns the same reference
- * when nothing changes.
+ * Returns `content` with every `@` mention, every CLI markup tag and a leading
+ * `[Request interrupted` guarded: a string, or each `{ type: 'text', text }`
+ * block of an array. Everything else is returned as is. Never mutates its
+ * input; returns the same reference when nothing changes.
  */
 export function keepCliMarkupAsText(content: unknown): unknown {
   if (typeof content === 'string') return guardText(content);

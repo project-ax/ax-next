@@ -350,6 +350,10 @@ describe('translateContentBlocks', () => {
     { type: 'thinking', thinking: 'FORGED-TH', signature: 'x' },
     { type: 'redacted_thinking', data: 'FORGED-RT' },
     { type: 'FORGED-unknown', text: 'FORGED-UK' },
+    // A person's images reach the model as `attachment` blocks; a raw one
+    // could name any URL for the provider to fetch.
+    { type: 'image', source: { type: 'url', url: 'https://FORGED-IMG.example/x.png' } },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'FORGED-IMG' } },
   ])('replaces a $type block with a fixed mention, never the block', async (forged) => {
     const out = await translate([{ type: 'text', text: 'hi' }, forged as never], []);
     expect(out).toEqual([
@@ -359,12 +363,8 @@ describe('translateContentBlocks', () => {
     expect(JSON.stringify(out)).not.toContain('FORGED');
   });
 
-  it('passes text, image and document blocks through as sent', async () => {
-    const blocks = [
-      { type: 'text', text: 'hi' },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
-      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'BBBB' } },
-    ];
+  it('passes a text block through as sent', async () => {
+    const blocks = [{ type: 'text', text: 'hi', extra: 1 }];
     expect(await translate(blocks as never, [])).toEqual(blocks);
   });
 

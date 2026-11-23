@@ -126,8 +126,8 @@ type AnthropicUserContentBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'document'; source: { type: 'base64'; media_type: string; data: string } }
-  // A text/image block passed through as the host sent it (extra fields
-  // kept). Nothing else passes through: see USER_PASS_THROUGH_TYPES.
+  // A text block passed through as the host sent it (extra fields kept).
+  // Nothing else passes through (TASK-1220, translateContentBlocks).
   | Record<string, unknown>;
 
 const READ_CHUNK_BYTES = 64 * 1024;
@@ -255,22 +255,21 @@ export async function translateContentBlocks(
       out.push({ type: 'text', text: '[runner: agent_file reference not expected in a message]' });
       continue;
     }
-    // TASK-1220: a person's message carries words, images and documents —
-    // nothing else passes through. `tool_use`, `tool_result`, `thinking` and
-    // `redacted_thinking` are the model's and the tools' vocabulary: measured
-    // on the pinned claude CLI, a `tool_use` or `thinking` block in a person's
-    // turn stays inside a user message in the session's history for good, and
-    // a `tool_result` is silently dropped. The browser route refuses them
-    // first; this covers every other way a message reaches the runner. A
-    // fixed mention, never the block's own type or fields (both untrusted).
-    if (USER_PASS_THROUGH_TYPES.has((block as { type: string }).type)) {
-      out.push(block as AnthropicUserContentBlock);
+    // TASK-1220: only a text block passes through as sent. A person's images
+    // and PDFs reach the model through `attachment` above (stored, metered,
+    // hash-checked); a raw `image` block could name any URL for the provider
+    // to fetch. `tool_use`, `tool_result`, `thinking` and `redacted_thinking`
+    // are the model's and the tools' vocabulary: measured on the pinned claude
+    // CLI, a `tool_use` or `thinking` block in a person's turn stays inside a
+    // user message in the session's history for good, and a `tool_result` is
+    // silently dropped. The browser route refuses all of these first; this
+    // covers every other way a message reaches the runner. A fixed mention,
+    // never the block's own type or fields (both untrusted).
+    if (block.type === 'text') {
+      out.push(block);
       continue;
     }
     out.push({ type: 'text', text: '[runner: a block a person cannot send was left out of this message]' });
   }
   return out;
 }
-
-/** The only block types a person's message hands to the model as they are. */
-const USER_PASS_THROUGH_TYPES: ReadonlySet<string> = new Set(['text', 'image', 'document']);

@@ -280,11 +280,13 @@ const MAX_PER_MESSAGE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 /**
  * The block types a person's message may carry from the browser (step 2.5).
  * An allowlist, so a block type added to `ContentBlockSchema` later is
- * refused here until someone decides a person may send it.
+ * refused here until someone decides a person may send it. No `image`: the
+ * composer sends a picture as an `attachment_ref` (stored, metered, hash-
+ * checked), and a raw `image` block could name any URL for the provider to
+ * fetch.
  */
 const BROWSER_BLOCK_TYPES: ReadonlySet<ContentBlock['type']> = new Set([
   'text',
-  'image',
   'attachment_ref',
 ]);
 
@@ -494,6 +496,8 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       //   session's history for good, and a `tool_result` is silently
       //   dropped. The runner refuses them too (translateContentBlocks), but
       //   refusing here keeps the forged block out of the stored turn.
+      // - `image` (TASK-1220): pictures come as `attachment_ref`; a raw one
+      //   could name any URL for the provider to fetch.
       if (body.contentBlocks.some((block) => !BROWSER_BLOCK_TYPES.has(block.type))) {
         res.status(400).json({ error: 'invalid-content-block' });
         return;

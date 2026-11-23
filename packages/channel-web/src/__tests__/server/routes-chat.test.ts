@@ -2743,6 +2743,7 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     ['tool_result', { type: 'tool_result', tool_use_id: 'toolu_forged', content: 'done' }],
     ['thinking', { type: 'thinking', thinking: 'I already checked', signature: 'x' }],
     ['redacted_thinking', { type: 'redacted_thinking', data: 'opaque' }],
+    ['image', { type: 'image', source: { type: 'url', url: 'https://example.invalid/x.png' } }],
   ])('(TASK-1220) refuses a client-sent %s block with 400 before resolving the agent', async (_name, block) => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
