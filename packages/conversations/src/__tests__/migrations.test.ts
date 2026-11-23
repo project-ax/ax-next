@@ -274,6 +274,28 @@ describe('Phase B migration', () => {
     expect(row.title_provisional).toBe(false);
   });
 
+  it('service_set is one additive nullable column; existing rows read NULL (no backfill)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    await db
+      .insertInto('conversations_v1_conversations')
+      .values({ conversation_id: 'c-svc', user_id: 'u1', agent_id: 'a1' })
+      .execute();
+    // Idempotent: a second boot re-runs the ADD COLUMN IF NOT EXISTS.
+    await runConversationsMigration(db);
+    const col = await sql<{ data_type: string; is_nullable: string; column_default: string | null }>`
+      SELECT data_type, is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'conversations_v1_conversations' AND column_name = 'service_set'
+    `.execute(db);
+    expect(col.rows).toEqual([{ data_type: 'text', is_nullable: 'YES', column_default: null }]);
+    const row = await db
+      .selectFrom('conversations_v1_conversations')
+      .select(['service_set'])
+      .where('conversation_id', '=', 'c-svc')
+      .executeTakeFirstOrThrow();
+    expect(row.service_set).toBeNull();
+  });
+
   it('existing rows survive the migration with NULL Phase B columns (no backfill)', async () => {
     const db = makeKysely();
     // Simulate a pre-Phase-B row by running the original CREATE TABLE,

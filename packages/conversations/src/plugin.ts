@@ -33,6 +33,7 @@ import {
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
+  SetServiceSetOutputSchema,
   StoreRunnerSessionOutputSchema,
 } from './types.js';
 import type {
@@ -67,6 +68,8 @@ import type {
   HideOutput,
   ListInput,
   ListOutput,
+  SetServiceSetInput,
+  SetServiceSetOutput,
   SetTitleInput,
   SetTitleOutput,
   StoreRunnerSessionInput,
@@ -258,6 +261,10 @@ export function createConversationsPlugin(
         // auto-title pipeline (caller is @ax/conversation-titles' Phase
         // F chat:turn-end subscriber) plus future user-driven rename UI.
         'conversations:set-title',
+        // Dev services on demand: records which service set the sandbox runs
+        // with. First caller lands with the orchestrator's
+        // `restart_with_services` (stacked, squashed with this).
+        'conversations:set-service-set',
         // Phase A (routines foundation, 2026-05-14): mark a conversation
         // hidden so it disappears from list queries but remains readable
         // by id. Half-wired window OPEN: caller lands in Phase B
@@ -458,6 +465,15 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           setConversationTitle(localStore, bus, ctx, input),
+      );
+
+      // Same owner scope and ACL posture as set-title.
+      bus.registerService<SetServiceSetInput, SetServiceSetOutput>(
+        'conversations:set-service-set',
+        PLUGIN_NAME,
+        async (ctx, input) =>
+          setConversationServiceSet(localStore, bus, ctx, input),
+        { returns: SetServiceSetOutputSchema },
       );
 
       // Phase A (routines foundation, 2026-05-14). Same ACL posture as
@@ -1561,6 +1577,52 @@ async function setConversationTitle(
   }
 
   return { updated: false };
+}
+
+async function setConversationServiceSet(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: SetServiceSetInput,
+): Promise<SetServiceSetOutput> {
+  const hookName = 'conversations:set-service-set';
+  const serviceSet: unknown = input.serviceSet;
+  if (serviceSet !== null && (typeof serviceSet !== 'string' || serviceSet === '')) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: 'serviceSet must be a non-empty string or null',
+    });
+  }
+  // Same order as set-title: owner pre-filter first (a foreign or tombstoned
+  // row is an identical not-found, so the ACL path never leaks existence),
+  // then the agent gate, then the write.
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
+  const updated = await store.setServiceSet({
+    conversationId: input.conversationId,
+    userId: input.userId,
+    serviceSet,
+  });
+  if (!updated) {
+    // Deleted between the check and the UPDATE.
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  return { ok: true };
 }
 
 async function getConversationMetadata(

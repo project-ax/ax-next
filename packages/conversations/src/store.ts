@@ -181,6 +181,7 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     lastActivityAt:
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     hidden: row.hidden,
+    serviceSet: row.service_set,
     // AW-6. Narrowed, never cast: see `readOrigin`.
     origin: readOrigin(row.origin),
     externalKey: row.external_key,
@@ -417,6 +418,16 @@ export interface ConversationStore {
    * layer; this method does NOT take userId.
    */
   hide(conversationId: string): Promise<boolean>;
+  /**
+   * Set (or, with null, clear) the conversation's on-demand service set,
+   * scoped by `(conversation_id, user_id, deleted_at IS NULL)`. Returns true
+   * iff a row matched. `serviceSet` is validated at the plugin layer.
+   */
+  setServiceSet(args: {
+    conversationId: string;
+    userId: string;
+    serviceSet: string | null;
+  }): Promise<boolean>;
   /**
    * Phase A (routines foundation, 2026-05-14). Find-or-create by stable
    * `(userId, agentId, externalKey)` tuple. Race-safe via the partial
@@ -989,6 +1000,17 @@ export function createConversationStore(
         );
       }
       const result = await q.executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async setServiceSet({ conversationId, userId, serviceSet }) {
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({ service_set: serviceSet, updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
 

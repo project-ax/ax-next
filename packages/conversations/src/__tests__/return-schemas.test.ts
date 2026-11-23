@@ -5,6 +5,7 @@ import {
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
+  SetServiceSetOutputSchema,
   StoreRunnerSessionOutputSchema,
   type AppendTranscriptOutput,
   type GetMetadataOutput,
@@ -85,6 +86,17 @@ describe('conversations return schemas', () => {
     // Drift guard: a fully-populated interface value round-trips without loss.
     it('round-trips a fully-populated value without stripping fields', () => {
       expect(GetMetadataOutputSchema.parse(full)).toEqual(full);
+    });
+  });
+
+  describe('SetServiceSetOutputSchema', () => {
+    it('accepts { ok: true }', () => {
+      expect(SetServiceSetOutputSchema.safeParse({ ok: true }).success).toBe(true);
+    });
+
+    it('rejects ok: false and a bare undefined', () => {
+      expect(SetServiceSetOutputSchema.safeParse({ ok: false }).success).toBe(false);
+      expect(SetServiceSetOutputSchema.safeParse(undefined).success).toBe(false);
     });
   });
 

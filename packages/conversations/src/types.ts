@@ -110,6 +110,14 @@ export interface Conversation {
   /** Phase A (2026-05-14). True for routine fire-log conversations that are not user-visible. */
   hidden: boolean;
   /**
+   * The on-demand service set this conversation's sandbox runs with: a
+   * connector id, or `null` for none (the default, and every row that
+   * predates the column). Set and cleared through
+   * `conversations:set-service-set`; the orchestrator reads it from
+   * `conversations:get` before opening a sandbox.
+   */
+  serviceSet: string | null;
+  /**
    * AW-6 (2026-08-21). Which CHANNEL opened this conversation.
    *
    * It exists so a held tool call can be classified as ATTENDED (a person is
@@ -644,6 +652,23 @@ export interface SetTitleInput {
    */
   ifProvisional?: boolean;
 }
+/**
+ * Set or clear the conversation's on-demand service set. Owner-scoped exactly
+ * like `conversations:set-title` (user_id pre-filter, then `agents:resolve`).
+ * `null` clears it.
+ */
+export interface SetServiceSetInput {
+  conversationId: string;
+  userId: string;
+  serviceSet: string | null;
+}
+export interface SetServiceSetOutput {
+  ok: true;
+}
+export const SetServiceSetOutputSchema = z.object({
+  ok: z.literal(true),
+}) as unknown as ZodType<SetServiceSetOutput>;
+
 export interface SetTitleOutput {
   /**
    * True iff a row was updated. False when:
