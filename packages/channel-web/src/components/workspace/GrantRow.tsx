@@ -26,7 +26,8 @@
  *     or the POST failed — and that sentence takes focus, exactly as a
  *     decision's receipt does.
  *   - It simply GOES. "Not now" on a host grant, and every successful resolve
- *     (a host Allow also says so, in a toast), remove the row outright; there
+ *     (a host Allow also says so, in a toast — for "Always", including whether
+ *     the site was kept; TASK-1212), remove the row outright; there
  *     is nothing left inside it to focus, and the browser's answer to that is
  *     `<body>`. So focus goes up to the
  *     surface's `data-consent-region` first, while this node is still in the
@@ -45,7 +46,11 @@ import {
   returnFocusToConsentRegion,
   useResolutionFocus,
 } from '@/lib/consent-focus';
-import { grantHost, setDestinationCredential } from '@/lib/credentials';
+import {
+  grantHost,
+  setDestinationCredential,
+  type HostGrantOutcome,
+} from '@/lib/credentials';
 import {
   AUTHORED_SKILL_WARNING,
   GRANT_CONNECT_LABEL,
@@ -65,6 +70,9 @@ import {
   HOST_ALLOWING_LABEL,
   HOST_ENDED_DETAIL,
   HOST_ENDED_TITLE,
+  HOST_FOR_NOW_TITLE,
+  HOST_LIST_FULL_DETAIL,
+  HOST_NOT_KEPT_DETAIL,
   HOST_WALL_EXPLANATION,
   KEY_SAFETY,
   PACKAGES_LINE,
@@ -141,6 +149,30 @@ function blankSlots(slots: readonly GrantSlot[]): string[] {
   return slots
     .filter((s) => s.haveExisting !== true && connectorServiceOf(s) === undefined)
     .map((s) => s.slot);
+}
+
+/**
+ * What the toast says as a host row leaves. "Just this once" says whether the
+ * live session took the site. "Always" says whether it was KEPT for the
+ * agent's later sessions (TASK-1212): "Site allowed" only when it was, and
+ * otherwise how far the Allow got, plus why when the agent's list is full.
+ * The copy, and the rules it keeps, are in `lib/grant-copy.ts`.
+ */
+function hostAllowToast(
+  persist: boolean,
+  outcome: HostGrantOutcome,
+): { title: string; detail: string } {
+  const allowed = { title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL };
+  const ended = { title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL };
+  if (!persist) return outcome.added ? allowed : ended;
+  if (outcome.kept === true) return allowed;
+  if (outcome.full === true) {
+    return {
+      title: outcome.added ? HOST_FOR_NOW_TITLE : HOST_ENDED_TITLE,
+      detail: HOST_LIST_FULL_DETAIL,
+    };
+  }
+  return outcome.added ? { title: HOST_FOR_NOW_TITLE, detail: HOST_NOT_KEPT_DETAIL } : ended;
 }
 
 export function GrantRow({
@@ -354,18 +386,19 @@ export function GrantRow({
     setBusy(true);
     setError(null);
     try {
-      const added = await grantHost({
+      const outcome = await grantHost({
         sessionId: request.sessionId,
         host: request.host,
         persist,
+        // "Always" names the agent, so the site can still be kept when the
+        // session has already ended (TASK-1212). The server trusts it only
+        // after checking this person may use that agent, and ignores it while
+        // the session is live. "Just this once" has nothing to keep.
+        ...(persist ? { agentId: grant.agentId } : {}),
       });
       // The row goes either way; the toast says which it was. An answer we
       // could not read (`null`) says nothing rather than guess.
-      if (added === true) {
-        toastActions.show({ title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL });
-      } else if (added === false) {
-        toastActions.show({ title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL });
-      }
+      if (outcome !== null) toastActions.show(hostAllowToast(persist, outcome));
       resolveAndReturnFocus();
     } catch (err) {
       setError(userFacingMessage(err, 'grant-row'));

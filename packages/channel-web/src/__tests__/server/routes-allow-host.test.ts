@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
 import { makeAllowHostHandler } from '../../server/routes-allow-host.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import { expectLoggedRequireUserFault, faultInitCtx, storeFault } from './require-user-fault.js';
@@ -136,94 +136,324 @@ describe('POST /api/chat/allow-host', () => {
     );
     expect(r2.captured.statusCode).toBe(400);
   });
+});
 
-  it('TASK-44: persist:true → calls host-grants:grant with the authed userId + proxy-returned agentId', async () => {
-    const grants: unknown[] = [];
-    const bus = new HookBus();
-    bus.registerService('auth:require-user', 'auth', async () => ({
-      user: { id: 'u1', isAdmin: false },
-    }));
-    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
+// --- "Always for this agent" (TASK-44; TASK-1212) ---------------------------
+
+interface WarnLogger extends Logger {
+  warns: Array<{ event: string; fields: Record<string, unknown> | undefined }>;
+}
+
+/** Records `warn` calls — the level a failed keep is logged at. */
+function warnLogger(): WarnLogger {
+  const warns: WarnLogger['warns'] = [];
+  const logger: WarnLogger = {
+    warns,
+    debug: () => {},
+    info: () => {},
+    warn: (event, fields) => {
+      warns.push({ event, fields });
+    },
+    error: () => {},
+    child: () => logger,
+  };
+  return logger;
+}
+
+type LiveAnswer = { added: boolean; agentId?: string };
+
+/**
+ * The world an "Always" click lands in: signed in as `u1`, the proxy answering
+ * `live` for the session, `agents:resolve` admitting `u1` unless `resolve`
+ * says otherwise, and `host-grants:grant` keeping the site unless `grant` says
+ * otherwise (`'absent'` = a preset without @ax/host-grants). Every call each
+ * hook receives is recorded.
+ */
+function keepWorld(opts: {
+  live: LiveAnswer | (() => Promise<LiveAnswer>);
+  resolve?: () => Promise<unknown>;
+  grant?: (() => Promise<unknown>) | 'absent';
+}) {
+  const addHosts: unknown[] = [];
+  const resolves: unknown[] = [];
+  const grants: unknown[] = [];
+  const bus = new HookBus();
+  bus.registerService('auth:require-user', 'auth', async () => ({
+    user: { id: 'u1', isAdmin: false },
+  }));
+  const live = opts.live;
+  bus.registerService('proxy:add-host', 'proxy', async (_ctx, input) => {
+    addHosts.push(input);
+    return typeof live === 'function' ? live() : live;
+  });
+  const resolve = opts.resolve;
+  bus.registerService('agents:resolve', 'agents', async (_ctx, input) => {
+    resolves.push(input);
+    if (resolve !== undefined) return resolve();
+    return { agent: { id: (input as { agentId: string }).agentId, visibility: 'team' } };
+  });
+  const grant = opts.grant;
+  if (grant !== 'absent') {
     bus.registerService('host-grants:grant', 'hg', async (_ctx, input) => {
       grants.push(input);
-      return { created: true };
+      return grant !== undefined ? grant() : { created: true };
     });
-    const handler = makeAllowHostHandler({ bus, initCtx });
+  }
+  const logger = warnLogger();
+  const handler = makeAllowHostHandler({
+    bus,
+    initCtx: makeAgentContext({ sessionId: 'init', agentId: 'test', userId: 'system', logger }),
+  });
+  return { handler, addHosts, resolves, grants, logger };
+}
 
-    const { res, captured } = fakeRes();
-    await handler(
-      fakeReq({
-        body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com', persist: true })),
-      }),
-      res,
-    );
-    expect(captured.statusCode).toBe(200);
-    // The live-grant response shape is unchanged (agentId never reaches the browser).
-    expect(captured.body).toEqual({ added: true });
-    // The grant key is server-authoritative: userId from auth, agentId from the proxy.
-    expect(grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+async function post(
+  handler: ReturnType<typeof makeAllowHostHandler>,
+  body: unknown,
+): Promise<CapturedRes> {
+  const { res, captured } = fakeRes();
+  await handler(fakeReq({ body: Buffer.from(JSON.stringify(body)) }), res);
+  return captured;
+}
+
+/** A refusal whose message names the host, so a log that copies it is caught. */
+function pluginError(code: string): PluginError {
+  return new PluginError({ code, plugin: 'test', message: `${code} for x.example.com` });
+}
+
+describe('"Always for this agent" keeps the site on the agent (TASK-44, TASK-1212)', () => {
+  it("a live Always keeps it on the proxy's agent, never the body's", async () => {
+    const w = keepWorld({ live: { added: true, agentId: 'agent-7' } });
+    const out = await post(w.handler, {
+      sessionId: 's1',
+      host: 'x.example.com',
+      persist: true,
+      agentId: 'agent-someone-elses',
+    });
+    expect(out.statusCode).toBe(200);
+    // agentId never reaches the browser (fork #2).
+    expect(out.body).toStrictEqual({ added: true, kept: true });
+    // The key is server-authoritative: the person from auth, the agent from the
+    // proxy's own SessionConfig.
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+    // The access check is about the proxy's agent too; the body's is never looked up.
+    expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
   });
 
-  it('TASK-44: persist omitted/false → does NOT persist (live grant only, TASK-37 behavior preserved)', async () => {
-    const grants: unknown[] = [];
-    const bus = new HookBus();
-    bus.registerService('auth:require-user', 'auth', async () => ({
-      user: { id: 'u1', isAdmin: false },
-    }));
-    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
-    bus.registerService('host-grants:grant', 'hg', async (_ctx, input) => {
-      grants.push(input);
-      return { created: true };
+  it.each([
+    ['forbidden', 'forbidden'],
+    ['not-found', 'not-found'],
+    ['a fault', 'unknown'],
+  ])(
+    'a live Always on an agent the person can no longer use (%s) keeps nothing',
+    async (_label, code) => {
+      // A session can outlive its owner's access — e.g. removed from the team
+      // mid-session. The live widen stands; the agent's list is not touched.
+      const w = keepWorld({
+        live: { added: true, agentId: 'agent-7' },
+        resolve: async () => {
+          if (code === 'unknown') throw new Error('agents store down');
+          throw pluginError(code);
+        },
+      });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-7',
+      });
+      expect(out.statusCode).toBe(200);
+      expect(out.body).toStrictEqual({ added: true, kept: false });
+      expect(w.grants).toEqual([]);
+      expect(w.logger.warns).toEqual([{ event: 'host_grant_persist_failed', fields: { code } }]);
+      expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+    },
+  );
+
+  it('Always on an ended session keeps the site for an agent the person can use, and says kept', async () => {
+    const w = keepWorld({ live: { added: false } });
+    const out = await post(w.handler, {
+      sessionId: 's-gone',
+      host: 'x.example.com',
+      persist: true,
+      agentId: 'agent-7',
     });
-    const handler = makeAllowHostHandler({ bus, initCtx });
-    const { res, captured } = fakeRes();
-    await handler(
-      fakeReq({ body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com' })) }),
-      res,
-    );
-    expect(captured.statusCode).toBe(200);
-    expect(grants).toEqual([]);
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: false, kept: true });
+    // The ACL is asked about exactly the body's agent, for the AUTHENTICATED person.
+    expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
   });
 
-  it('TASK-44: a host-grants:grant failure does NOT fail the request (live grant already succeeded → 200)', async () => {
-    // The live proxy:add-host widen already applied, so the host works for THIS
-    // session; a persist failure (e.g. grant-limit at the 256-host cap, or a
-    // transient DB blip) is logged + swallowed, never a 500.
-    const bus = new HookBus();
-    bus.registerService('auth:require-user', 'auth', async () => ({
-      user: { id: 'u1', isAdmin: false },
-    }));
-    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
-    bus.registerService('host-grants:grant', 'hg', async () => {
-      throw new PluginError({ code: 'grant-limit', plugin: 'hg', message: 'at most 256' });
+  it('a site the agent already has still says kept', async () => {
+    const w = keepWorld({ live: { added: false }, grant: async () => ({ created: false }) });
+    const out = await post(w.handler, {
+      sessionId: 's-gone',
+      host: 'x.example.com',
+      persist: true,
+      agentId: 'agent-7',
     });
-    const handler = makeAllowHostHandler({ bus, initCtx });
-    const { res, captured } = fakeRes();
-    await handler(
-      fakeReq({
-        body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com', persist: true })),
-      }),
-      res,
-    );
-    expect(captured.statusCode).toBe(200);
-    expect(captured.body).toEqual({ added: true });
+    expect(out.body).toStrictEqual({ added: false, kept: true });
   });
 
-  it('TASK-44: persist:true still returns 200 when @ax/host-grants is absent (degrades — no persistence)', async () => {
-    const bus = new HookBus();
-    bus.registerService('auth:require-user', 'auth', async () => ({
-      user: { id: 'u1', isAdmin: false },
-    }));
-    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
-    // no host-grants:grant registered
-    const handler = makeAllowHostHandler({ bus, initCtx });
-    const { res, captured } = fakeRes();
-    await handler(
-      fakeReq({
-        body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com', persist: true })),
-      }),
-      res,
-    );
-    expect(captured.statusCode).toBe(200);
+  it.each([
+    ['forbidden', 'forbidden'],
+    ['not-found', 'not-found'],
+    ['a fault', 'unknown'],
+  ])(
+    "Always on an ended session for an agent they can't use (%s) keeps nothing, with the same answer",
+    async (_label, code) => {
+      const w = keepWorld({
+        live: { added: false },
+        resolve: async () => {
+          // A raw throw is what a crashing store does; the bus wraps it as 'unknown'.
+          if (code === 'unknown') throw new Error('agents store down');
+          throw pluginError(code);
+        },
+      });
+      const out = await post(w.handler, {
+        sessionId: 's-gone',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-9',
+      });
+      // One answer for "no such agent", "not yours" and a fault: no existence oracle.
+      expect(out.statusCode).toBe(200);
+      expect(out.body).toStrictEqual({ added: false, kept: false });
+      expect(w.grants).toEqual([]);
+      expect(w.logger.warns).toEqual([{ event: 'host_grant_persist_failed', fields: { code } }]);
+    },
+  );
+
+  it('an ended Always with no agentId keeps nothing', async () => {
+    const w = keepWorld({ live: { added: false } });
+    const out = await post(w.handler, { sessionId: 's-gone', host: 'x.example.com', persist: true });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: false, kept: false });
+    expect(w.resolves).toEqual([]);
+    expect(w.grants).toEqual([]);
+  });
+
+  it.each([
+    ['live', { added: true, agentId: 'agent-7' }, { added: true, kept: false, full: true }],
+    ['ended', { added: false }, { added: false, kept: false, full: true }],
+  ])(
+    'at the cap (%s): kept false and full; the log has the code and never the host',
+    async (_label, live, answer) => {
+      const w = keepWorld({
+        live,
+        grant: async () => {
+          throw pluginError('grant-limit');
+        },
+      });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-7',
+      });
+      expect(out.statusCode).toBe(200);
+      expect(out.body).toStrictEqual(answer);
+      expect(w.logger.warns).toEqual([
+        { event: 'host_grant_persist_failed', fields: { code: 'grant-limit' } },
+      ]);
+      expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+    },
+  );
+
+  it('another save failure: kept false, still 200', async () => {
+    // The live widen already applied, so the site works for THIS session; a
+    // failed keep is said, never turned into a 500.
+    const w = keepWorld({
+      live: { added: true, agentId: 'agent-7' },
+      grant: async () => {
+        throw new Error('pg down while saving x.example.com');
+      },
+    });
+    const out = await post(w.handler, { sessionId: 's1', host: 'x.example.com', persist: true });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: true, kept: false });
+    expect(w.logger.warns).toEqual([
+      { event: 'host_grant_persist_failed', fields: { code: 'unknown' } },
+    ]);
+  });
+
+  it('without @ax/host-grants, Always still answers 200 and says nothing was kept', async () => {
+    const cases: Array<[LiveAnswer, unknown]> = [
+      [{ added: true, agentId: 'agent-7' }, { added: true, kept: false }],
+      [{ added: false }, { added: false, kept: false }],
+    ];
+    for (const [live, answer] of cases) {
+      const w = keepWorld({ live, grant: 'absent' });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-7',
+      });
+      expect(out.statusCode).toBe(200);
+      expect(out.body).toStrictEqual(answer);
+      expect(w.resolves).toEqual([]);
+    }
+  });
+
+  it('a refused live widen (forbidden, invalid-host) keeps nothing, whatever agent the body names', async () => {
+    // A forged sessionId for someone else's LIVE session is refused by the
+    // proxy. It must not fall through to the ended-session keep, which would
+    // otherwise trust the body's agentId.
+    for (const code of ['forbidden', 'invalid-host'] as const) {
+      const w = keepWorld({
+        live: async () => {
+          throw pluginError(code);
+        },
+      });
+      const out = await post(w.handler, {
+        sessionId: 's-theirs',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-7',
+      });
+      expect(out.statusCode).toBe(code === 'forbidden' ? 403 : 400);
+      expect(w.resolves).toEqual([]);
+      expect(w.grants).toEqual([]);
+    }
+  });
+
+  it.each([[''], ['x'.repeat(129)], [42]])(
+    'an agentId that is not a 1–128 character string is a 400 (%j)',
+    async (agentId) => {
+      const w = keepWorld({ live: { added: false } });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        persist: true,
+        agentId,
+      });
+      expect(out.statusCode).toBe(400);
+      expect(out.body).toEqual({ error: 'invalid-body' });
+      expect(w.addHosts).toEqual([]);
+      expect(w.grants).toEqual([]);
+    },
+  );
+
+  it('Just this once answers { added } only, and keeps and looks up nothing', async () => {
+    const cases: Array<[LiveAnswer, boolean | undefined]> = [
+      [{ added: true, agentId: 'agent-7' }, undefined],
+      [{ added: true, agentId: 'agent-7' }, false],
+      [{ added: false }, false],
+    ];
+    for (const [live, persist] of cases) {
+      const w = keepWorld({ live });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        ...(persist === undefined ? {} : { persist }),
+        agentId: 'agent-7',
+      });
+      expect(out.statusCode).toBe(200);
+      expect(out.body).toStrictEqual({ added: live.added });
+      expect(w.resolves).toEqual([]);
+      expect(w.grants).toEqual([]);
+    }
   });
 });

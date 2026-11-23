@@ -1256,7 +1256,7 @@ describe('@ax/channel-slack plugin', () => {
       added.push({ userId: ctx.userId, input });
       return { added: true, agentId: 'agt_alice' };
     });
-    // @ax/host-grants: the agent's allowed sites, kept per person and agent.
+    // @ax/host-grants: the agent's allowed sites, kept per agent (added by the person who clicked).
     const kept: Array<{ userId: string; input: unknown }> = [];
     bus.registerService('host-grants:grant', 'fake-host-grants', async (ctx, input) => {
       kept.push({ userId: ctx.userId, input });

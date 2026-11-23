@@ -76,7 +76,7 @@ const MEL_DM: PromptContext = {
 const SESSION = 'sess_live_0001';
 const HOST = 'api.example.com';
 const HOST_PROMPT: PromptSubject = { kind: 'host', host: HOST, sessionId: SESSION };
-/** What an Allow on Mel's prompt keeps: the host, on her agent's allowed sites, for her (@ax/host-grants' key). */
+/** What an Allow on Mel's prompt keeps: the host, on her agent's allowed sites, added by her (@ax/host-grants' key). */
 const MEL_KEY = { ownerUserId: 'usr_mel', agentId: 'agt_mel', host: HOST };
 
 /** The longest name HOST_RE takes: 253 characters, in labels of at most 63. */
@@ -342,7 +342,7 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
     expect(w.lines).toEqual([]);
   });
 
-  it("kept for the prompt's own user and agent, never the agent the proxy names, and in a team channel for the asker on the channel's agent", async () => {
+  it("kept on the channel's agent, added by the asker: the prompt's own user and agent, never the agent the proxy names", async () => {
     const w = world({ answer: () => ({ added: true, agentId: 'agt_other' }) });
     expect(await w.click(w.open())).toEqual({ line: COPY.hostAllowed, settle: true });
     expect(w.remembered.map((r) => r.input)).toEqual([MEL_KEY]);
@@ -372,8 +372,8 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
     expect(ended.lines).toEqual([]);
   });
 
-  it.each(['grant-limit', 'invalid-host', 'missing-field'])(
-    "the allowed sites refuse it (%s): never 'from now on'; for now while the session lives, nothing changed once it has ended; logged by code",
+  it.each(['invalid-host', 'missing-field', 'invalid-return'])(
+    "the allowed sites refuse it, or its answer fails its shape (%s): never 'from now on'; for now while the session lives, nothing changed once it has ended; logged by code",
     async (code) => {
       const refuse = (): never => {
         throw new PluginError({ code, plugin: 'fake-host-grants', message: 'x' });
@@ -388,6 +388,24 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
       expect(ended.logged('slack_prompt_failed')).toEqual([{ installId: INSTALL_ID, kind: 'host', stage: 'remember', code }]);
     },
   );
+
+  it("the agent's list is full (grant-limit): the line says so; for now while live, nothing kept once ended; logged by code", async () => {
+    const refuse = (): never => {
+      throw new PluginError({ code: 'grant-limit', plugin: 'fake-host-grants', message: 'x' });
+    };
+    const live = world({}, { answer: refuse });
+    expect(await live.click(live.open())).toEqual({ line: COPY.hostAllowedListFull, settle: true });
+    expect(live.allowlist).toEqual(new Set([HOST]));
+    expect(live.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'host', stage: 'remember', code: 'grant-limit' },
+    ]);
+
+    const ended = world({ ended: true }, { answer: refuse });
+    expect(await ended.click(ended.open())).toEqual({ line: COPY.hostEndedListFull, settle: true });
+    expect(ended.logged('slack_prompt_failed')).toEqual([
+      { installId: INSTALL_ID, kind: 'host', stage: 'remember', code: 'grant-limit' },
+    ]);
+  });
 
   it("an answer from the allowed sites it can't read: it may have kept it, so not 'try again', but never 'from now on': logged by code", async () => {
     for (const unreadable of [undefined, null, 'created', [], {}, { created: 'yes' }, { created: 1 }]) {
@@ -621,8 +639,23 @@ describe('createHostAnswer: Allow and Deny on a host prompt', () => {
     outs.push(await denied.click(denied.open(), 'deny'));
     const hostile = world();
     outs.push(await hostile.click(hostile.open({ kind: 'host', host: '<!channel>', sessionId: SESSION })));
+    const full = (): never => {
+      throw new PluginError({ code: 'grant-limit', plugin: 'fake-host-grants', message: 'x' });
+    };
+    const fullLive = world({}, { answer: full });
+    outs.push(await fullLive.click(fullLive.open()));
+    const fullEnded = world({ ended: true }, { answer: full });
+    outs.push(await fullEnded.click(fullEnded.open()));
 
-    const lines = new Set<string>([COPY.hostAllowed, COPY.hostAllowedForNow, COPY.hostEnded, COPY.hostDenied, COPY.promptClosed]);
+    const lines = new Set<string>([
+      COPY.hostAllowed,
+      COPY.hostAllowedForNow,
+      COPY.hostEnded,
+      COPY.hostAllowedListFull,
+      COPY.hostEndedListFull,
+      COPY.hostDenied,
+      COPY.promptClosed,
+    ]);
     for (const out of outs) {
       expect(lines.has(out.line), out.line).toBe(true);
       expect(out.settle).toBe(true);

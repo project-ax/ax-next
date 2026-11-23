@@ -96,13 +96,29 @@ export interface RouteResponse {
 // layer stays strict. Drift in the OTHER direction (this layer accepts
 // what the store rejects) gets caught by the hook impl and surfaces as
 // invalid-payload at runtime.
-// allowedTools is a union of MCP tool names (`mcp__<server>__<tool>`, all
-// lowercase) AND Claude Agent SDK built-ins (`Bash`, `Read`, `WebFetch`,
-// `Skill`, …, PascalCase). The MCP catalog's own regex stays strict-lower
-// in @ax/mcp-client; the agent layer relaxes the leading-letter case so
-// SDK built-ins parse without an out-of-band case-mapping table.
+// allowedTools holds HOST catalog names — the names `tool:list` returns, such
+// as `routine_create`, all lowercase per @ax/mcp-client's catalog regex —
+// plus the runner built-ins (`Bash`, `Read`, …, PascalCase). Only the catalog
+// names gate anything (`filterByAgentScope`, applied at `tool:list` time). A
+// built-in is reachable whether or not it is listed, so listing one only
+// keeps the list non-empty. The leading-letter case is relaxed here so the
+// built-ins parse. GET /admin/agents/tools offers exactly these two sets
+// (TASK-1214).
 const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+
+/**
+ * The runner built-ins an agent's tool list may name: the six both runners
+ * ship (@ax/agent-aisdk-runner's `tools/builtins.ts`; tool-policy's
+ * sandbox-floor rows name the same six). `TodoWrite`, `Skill` and
+ * `ToolSearch` load in the claude-sdk runner whatever the list says, and
+ * `WebFetch` is denied since TASK-1200, so none of them is offered.
+ */
+export const RUNNER_BUILTIN_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'] as const;
+
+/** Catalog names in this namespace are scoped by `mcpConfigIds`, never by
+ *  allowedTools, and their middle segment is a per-tenant config id. */
+const MCP_NAMESPACE_PREFIX = 'mcp.';
 
 const displayNameSchema = z
   .string()
@@ -438,6 +454,67 @@ async function listTeamIdsForUser(
   }
 }
 
+/**
+ * The host catalog's tool names for GET /admin/agents/tools, or null when the
+ * catalog can't be read whole: no `tool:list` producer, a throw, or a reply
+ * without a `tools` array. Null is never an empty list — the agent form flags
+ * every saved name the catalog lacks as unavailable, so an empty list from a
+ * failed read would flag every host tool an agent has. A failure is logged for
+ * the operator and never echoed to the client.
+ *
+ * `ctx` is the handlers' shared ctx. Its sessionId (`agents-admin`) is not a
+ * session, so the dispatcher's documented `unknown-session` pass-through
+ * returns the whole catalog rather than one agent's scope — the same way the
+ * workspace rail reads it. The SPA's unknown-name flagging (and the Remove it
+ * offers) RELIES on this reply being UNFILTERED: a per-agent scope here would
+ * flag that agent's real tools as unavailable. @ax/mcp-client's dispatcher
+ * passes `unknown-session` through, pinned by its `list-with-agent-scope.test.ts`
+ * ("passes everything through on unknown-session reject (pre-9.5 / system ctx)").
+ *
+ * Kept, in catalog order, first one wins: string names the write path's
+ * TOOL_NAME_RE accepts (so the picker never offers a name a save would
+ * refuse) outside the `mcp.` namespace.
+ */
+async function readCatalogToolNames(
+  bus: HookBus,
+  ctx: AgentContext,
+): Promise<string[] | null> {
+  if (!bus.hasService('tool:list')) {
+    ctx.logger.warn('agents_admin_list_tools_failed', { error: 'no tool:list producer' });
+    return null;
+  }
+  let reply: unknown;
+  try {
+    reply = await bus.call<Record<string, never>, unknown>('tool:list', ctx, {});
+  } catch (err) {
+    ctx.logger.warn('agents_admin_list_tools_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+  const entries =
+    typeof reply === 'object' && reply !== null
+      ? (reply as { tools?: unknown }).tools
+      : undefined;
+  if (!Array.isArray(entries)) {
+    ctx.logger.warn('agents_admin_list_tools_failed', {
+      error: 'tool:list replied without a tools array',
+    });
+    return null;
+  }
+  const names: string[] = [];
+  for (const entry of entries) {
+    const name: unknown =
+      typeof entry === 'object' && entry !== null
+        ? (entry as { name?: unknown }).name
+        : undefined;
+    if (typeof name !== 'string' || !TOOL_NAME_RE.test(name)) continue;
+    if (name.startsWith(MCP_NAMESPACE_PREFIX)) continue;
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
 export interface AdminRouteDeps {
   store: Pick<AgentStore, 'countByModel'>;
   bus: HookBus;
@@ -616,6 +693,32 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         (ref) => metadata.get(ref) ?? { id: ref, label: ref, kind: 'either' as const },
       );
       res.status(200).json({ models, defaultModel: policy.default });
+    },
+
+    /**
+     * GET /admin/agents/tools (TASK-1214)
+     *
+     * Backs the agent form's tool picker: `tools` is the host catalog's names
+     * (see readCatalogToolNames), `builtins` is RUNNER_BUILTIN_TOOLS. Any
+     * signed-in user, like listModels — every person manages their own agents
+     * in Settings, so an admin-only read would break the form for everyone
+     * else. Names only: descriptions are written for the model, not people.
+     *
+     * A catalog that can't be read whole answers 503 — never 200 with an
+     * empty list (see readCatalogToolNames for why).
+     *
+     * Route ordering: an exact path, matched before the `:id` pattern route
+     * (see listModels).
+     */
+    async listTools(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const tools = await readCatalogToolNames(deps.bus, ctx);
+      if (tools === null) {
+        res.status(503).json({ error: 'tool-catalog-unavailable' });
+        return;
+      }
+      res.status(200).json({ tools, builtins: [...RUNNER_BUILTIN_TOOLS] });
     },
 
     /** GET /admin/agents/:id */
@@ -1021,6 +1124,8 @@ export async function registerAdminAgentRoutes(
     // routes first) — see listModels' doc comment for why this is safe.
     { method: 'GET', path: '/admin/agents/models', handler: handlers.listModels },
     { method: 'POST', path: '/admin/agents/models/impact', handler: handlers.impact },
+    // TASK-1214 — the agent form's tool picker. Exact, so also matched before `:id`.
+    { method: 'GET', path: '/admin/agents/tools', handler: handlers.listTools },
 
     { method: 'GET', path: '/admin/agents/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/agents/:id', handler: handlers.update },

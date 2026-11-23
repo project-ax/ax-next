@@ -57,11 +57,14 @@ the owner chose to put there.
    said privately is never recalled in a channel.
 10. **A website Allow lasts (decided 2026-11-22, Vinay; TASK-1208).** Allow on a
     blocked website's prompt keeps the site on the agent's own allowed sites
-    (`@ax/host-grants`, the list its people see and remove in Settings >
-    Allowed sites and on the agent's "Granted by you"), so the agent's later
-    sessions can reach it, not just the one that asked. The list is per person
-    and agent (JIT design P1), so on a team agent it covers the sessions of the
-    person who allowed it. Who may answer is unchanged (§5's click gate), and
+    (`@ax/host-grants`), so the agent's later sessions can reach it, not just
+    the one that asked. On a personal agent the list is that agent's owner's,
+    who sees and removes it in Settings › Sites, or in the agent's settings
+    › Connectors. On a team agent one Allow
+    covers every member's later sessions of that agent, outsider turns and
+    routine runs included; every member sees the list in the agent's settings
+    under Connectors, and only its owners and team admins remove sites there
+    (decided 2026-11-23, Vinay; TASK-1212). Who may answer is unchanged (§5's click gate), and
     the live session still gets TASK-1199's "now allowed" line.
 
 ## 2. Who is talking, and what they can do
@@ -1342,9 +1345,13 @@ Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory ke
        `host-grants:grant` with the prompt's user, agent and host (the web
        app's "Always for this agent"). The host is kept even when the session
        has already ended, so the line reads "Allowed from now on". If it
-       can't be kept (no `host-grants:grant`, the list is full, an answer that
-       can't be read), the line says "Allowed for now" while the session
-       lives, or "I'd already finished working on that" once it has ended.
+       can't be kept (no `host-grants:grant`, an answer that can't be read, a
+       refusal: `invalid-host`, `missing-field`, or `invalid-return`, where it
+       may in fact have been kept but we can't confirm it), the line
+       says "Allowed for now" while the session lives, or "I'd already
+       finished working on that" once it has ended.
+       A full list (256 distinct sites per agent) says so instead of "Allowed
+       from now on".
        **Deny** calls nothing; the host stays refused and
        the agent asks again if it needs it. A host prompt has no Today link:
        the web app keeps host cards out of Today on purpose.
@@ -1596,14 +1603,17 @@ connectors. The protections are:
 
 **Known gaps, accepted (TASK-1095, PR B: permission cards):**
 
-- **A website Allow is kept for the person who clicked it** (TASK-1208).
-  Allowed sites are per person and agent. In a team agent's channel, a
-  team-mate's own turn is still asked, though the thread shows "Allowed from
-  now on". An outsider's turn runs as the bot's requester, so it reaches the
-  sites the requester allowed, as it already did their web "Always" ones.
-- **The web app's "Always for this agent" keeps nothing once the session has
-  ended.** Its route keeps a site only after the live widen succeeds, while a
-  Slack Allow keeps it anyway. The web says "Nothing changed".
+- **A website Allow on a team agent covers the whole team** (TASK-1208,
+  TASK-1212). Allowed sites belong to the agent: every member's later
+  sessions, outsider turns and routine runs of that agent reach them. This
+  widens a capability on purpose. Owners and team admins see and remove sites
+  in the agent's settings > Connectors. A late Allow (a day-old prompt, or a
+  web "Always" after the session ended) is kept, and its "now allowed" line
+  arrives at the agent's next fresh session (an outsider's turn reaches the
+  site but isn't told, per TASK-1091). A teammate's session that is
+  already running learns of a new site only at its next fresh spawn. A web
+  "Always" clicked mid-turn and then idle-reaped before the next message gets
+  no line.
 - **A host prompt shows the host to everyone in a connected channel.** The web
   app shows it to the person alone. The host passes the proxy's pattern, so it
   is plain text, but it is visible. A host prompt also has no Today link, so an

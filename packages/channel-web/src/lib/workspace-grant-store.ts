@@ -59,10 +59,16 @@ export interface WorkspaceGrant {
    *
    * Recorded so PRESENCE can route the row (TASK-351): the same grant renders
    * in that agent's thread when the person is there reading it, and in the
-   * Today queue always. It is compared for equality against the open route's
-   * agent id and used for nothing else — in particular it never reaches the
-   * answer POST, which targets `conversationId`. Where we DRAW a grant is
-   * therefore not an input to what we GRANT.
+   * Today queue always, by comparing it with the open route's agent id.
+   *
+   * Two answers also send it, and the server trusts it in neither. A skill's
+   * "Not now" records the refusal against it (TASK-444), and the server checks
+   * it against what is actually pending for the caller. A host's "Always for
+   * this agent" names the agent to keep the site on (TASK-1212): the
+   * allow-host route ignores it while the session is live (the proxy knows the
+   * session's agent), and once the session has ended keeps nothing unless
+   * `agents:resolve` admits the person to that agent. A skill's Connect never
+   * sends it; that POST targets `conversationId`.
    *
    * Not part of `grantKey`, deliberately: identity is the subject. Two agents
    * blocked on one skill is still one question, and keying on the pair is

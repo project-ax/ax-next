@@ -303,29 +303,52 @@ export async function removeDestinationCredential(args: DestinationCredentialTar
  * secret. Mirrors `setDestinationCredential`'s CSRF posture
  * (`x-requested-with: ax-admin`, `credentials: 'include'`).
  *
- * Resolves `true` when the live session took the host, `false` when the session
- * had already ended, `null` when the 200 carried no readable `added`.
+ * "Always for this agent" (`persist`, TASK-44) also keeps the site on the
+ * agent. `agentId` names that agent for the one case the server cannot work
+ * out for itself — the session had already ended (TASK-1212) — and the route
+ * trusts it only after checking the person may use that agent.
+ *
+ * Resolves the outcome, or `null` when the 200 can't be read.
  */
 export async function grantHost(input: {
   sessionId: string;
   host: string;
-  /** "Always for this agent" → durably persist a per-(user, agent) grant (TASK-44). */
+  /** "Always for this agent" → keep the site on the agent too (TASK-44). */
   persist?: boolean;
-}): Promise<boolean | null> {
+  /** The agent the card was raised for. Sent with "Always" only (TASK-1212). */
+  agentId?: string;
+}): Promise<HostGrantOutcome | null> {
   const res = await httpFetch('/api/chat/allow-host', {
     method: 'POST',
     headers: writeHeaders,
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new HttpError('/api/chat/allow-host', res.status);
-  // The route answers `{ added }`: true = the live session took it, false =
-  // that session had already ended. Anything else (or an unreadable body) is
-  // `null` — the caller says nothing rather than guess.
+  // Anything the route didn't say (or an unreadable body) is `null` — the
+  // caller says nothing rather than guess. That includes an "Always" answer
+  // with no `kept`: without it we can't tell whether "Always" stuck.
   try {
     const body: unknown = await res.json();
-    const added = (body as { added?: unknown } | null)?.added;
-    return typeof added === 'boolean' ? added : null;
+    if (typeof body !== 'object' || body === null) return null;
+    const { added, kept, full } = body as Record<string, unknown>;
+    if (typeof added !== 'boolean') return null;
+    if (input.persist === true && typeof kept !== 'boolean') return null;
+    return {
+      added,
+      ...(typeof kept === 'boolean' ? { kept } : {}),
+      ...(full === true ? { full: true } : {}),
+    };
   } catch {
     return null;
   }
+}
+
+/** What `/api/chat/allow-host` said about an Allow. */
+export interface HostGrantOutcome {
+  /** The live session took the host. `false` = that session had already ended. */
+  added: boolean;
+  /** "Always" only: the site is kept on the agent for its later sessions. */
+  kept?: boolean;
+  /** Not kept because the agent's list of allowed sites is full. */
+  full?: boolean;
 }
