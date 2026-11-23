@@ -438,7 +438,7 @@ describe('ConnectorEditDialog', () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText(/paste a docker-compose/i)).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /translate compose/i }),
+      screen.getByRole('button', { name: /add services from this file/i }),
     ).toBeInTheDocument();
   });
 
@@ -458,7 +458,7 @@ describe('ConnectorEditDialog', () => {
         value: `services:\n  db:\n    image: ${PINNED}\n    privileged: true\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n`,
       },
     });
-    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
     await waitFor(() =>
       expect(screen.getByText(/we removed a few things/i)).toBeInTheDocument(),
     );
@@ -480,7 +480,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.change(screen.getByLabelText(/paste a docker-compose/i), {
       target: { value: `services:\n  cache:\n    image: redis:7\n` },
     });
-    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
     await waitFor(() =>
       expect(screen.getByText(/we locked these to exact versions/i)).toBeInTheDocument(),
     );
@@ -500,13 +500,95 @@ describe('ConnectorEditDialog', () => {
     fireEvent.change(screen.getByLabelText(/paste a docker-compose/i), {
       target: { value: `services:\n  cache:\n    image: redis:7\n` },
     });
-    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
     await waitFor(() => expect(screen.getByText(/image not found/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() =>
       expect(screen.getAllByText(/still need to look up the exact version/i).length).toBeGreaterThan(0),
     );
     expect(create).not.toHaveBeenCalled();
+  });
+
+  const TWO_PROFILES = `services:\n  a:\n    image: ${PINNED}\n    profiles: [one]\n  b:\n    image: ${PINNED}\n    profiles: [two]\n`;
+
+  async function openAndPaste(yaml: string) {
+    render(
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Mine' } });
+    fireEvent.change(screen.getByLabelText(/paste a docker-compose/i), { target: { value: yaml } });
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
+  }
+
+  it('an edit made while a pin is in flight survives the pin result', async () => {
+    let finish!: (r: Array<{ image: string; pinned: string }>) => void;
+    vi.spyOn(connectorsLib, 'pinImages').mockReturnValue(
+      new Promise((res) => {
+        finish = res;
+      }),
+    );
+    await openAndPaste(`services:\n  cache:\n    image: redis:7\n`);
+    await screen.findByText(/looking up exact versions/i);
+    fireEvent.change(screen.getByLabelText(/service name/i), { target: { value: 'Edited name' } });
+    await act(async () => {
+      finish([{ image: 'redis:7', pinned: `redis@sha256:${'d'.repeat(64)}` }]);
+    });
+    await screen.findByDisplayValue(`redis@sha256:${'d'.repeat(64)}`);
+    expect(screen.getByLabelText(/service name/i)).toHaveValue('Edited name');
+  });
+
+  it('a stale pin result after a newer profile pick is ignored', async () => {
+    const yaml = `services:\n  a:\n    image: redis:7\n    profiles: [one]\n  b:\n    image: redis:6\n    profiles: [two]\n  c:\n    image: ${PINNED}\n    profiles: [one, two]\n`;
+    const pending: Array<(r: Array<{ image: string; pinned: string }>) => void> = [];
+    vi.spyOn(connectorsLib, 'pinImages').mockImplementation(
+      () => new Promise((res) => pending.push(res)),
+    );
+    await openAndPaste(yaml);
+    // Both profiles exist, none auto-picked: choose "one", then "two".
+    await screen.findByText(/pick a group to bring in services/i);
+    const trigger = document.getElementById('connector-compose-profile')!;
+    const pick = async (name: string) => {
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole('option', { name }));
+    };
+    await pick('one');
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await pick('two');
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => {
+      pending[1]!([{ image: 'redis:6', pinned: `redis@sha256:${'6'.repeat(64)}` }]);
+    });
+    await act(async () => {
+      pending[0]!([{ image: 'redis:7', pinned: `redis@sha256:${'7'.repeat(64)}` }]);
+    });
+    expect(screen.getByDisplayValue(`redis@sha256:${'6'.repeat(64)}`)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue(`redis@sha256:${'7'.repeat(64)}`)).toBeNull();
+  });
+
+  it('when every service has a profile and none is picked, says so and blocks Save', async () => {
+    const create = vi.spyOn(connectorsLib, 'createConnector');
+    await openAndPaste(TWO_PROFILES);
+    await screen.findByText(/pick a group to bring in services/i);
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() =>
+      expect(screen.getAllByText(/no services came in from your file/i).length).toBeGreaterThan(0),
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('a file with exactly one profile selects it automatically', async () => {
+    await openAndPaste(`services:\n  a:\n    image: ${PINNED}\n    profiles: [only]\n`);
+    await screen.findByDisplayValue(PINNED);
+    expect(screen.queryByText(/pick a group to bring in services/i)).toBeNull();
+  });
+
+  it('a pin request that fails with 401 blames the session, not the registry', async () => {
+    vi.spyOn(connectorsLib, 'pinImages').mockRejectedValue(
+      Object.assign(new Error('pin images: 401'), { status: 401 }),
+    );
+    await openAndPaste(`services:\n  cache:\n    image: redis:7\n`);
+    await screen.findByText(/session expired/i);
+    expect(screen.queryByText(/registry/i)).toBeNull();
   });
 
   it('lists app services to run in the sandbox', async () => {
@@ -519,9 +601,9 @@ describe('ConnectorEditDialog', () => {
         value: `services:\n  app:\n    image: ${PINNED}\n    volumes:\n      - ./src:/app\n`,
       },
     });
-    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
     await waitFor(() =>
-      expect(screen.getByText(/run these in the sandbox: app/i)).toBeInTheDocument(),
+      expect(screen.getByText(/skipped: app/i)).toBeInTheDocument(),
     );
   });
 
@@ -537,7 +619,7 @@ describe('ConnectorEditDialog', () => {
     await screen.findByLabelText(/service name/i);
     const paste = screen.getByLabelText(/paste a docker-compose/i);
     fireEvent.change(paste, { target: { value: '- not a mapping' } });
-    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
     await waitFor(() =>
       expect(
         screen.getByText(/couldn.?t read that as a compose file/i),
@@ -562,7 +644,7 @@ describe('ConnectorEditDialog', () => {
         value: `services:\n  db:\n    image: ${PINNED}\n    ports: ["5432:5432"]\n`,
       },
     });
-    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add services from this file/i }));
     await waitFor(() => expect(screen.getByDisplayValue(PINNED)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());

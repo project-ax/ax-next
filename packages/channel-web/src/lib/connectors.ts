@@ -173,7 +173,7 @@ export async function pinImages(
     credentials: 'include',
     body: JSON.stringify({ images }),
   });
-  if (!res.ok) throw new Error(`pin images: ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`pin images: ${res.status}`), { status: res.status });
   const body = (await res.json()) as {
     results?: Array<{ image: string; pinned?: string; error?: string }>;
   };

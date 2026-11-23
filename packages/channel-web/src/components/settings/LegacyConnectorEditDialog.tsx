@@ -31,7 +31,7 @@
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, ChevronDown } from 'lucide-react';
 import type { ComposeDrop, ComposeInvalid } from '@ax/skills-parser';
 import {
@@ -208,10 +208,18 @@ function ServicesSection({
   setForm,
 }: {
   form: ConnectorFormState;
-  setForm: (next: ConnectorFormState) => void;
+  setForm: (next: ConnectorFormState | ((prev: ConnectorFormState) => ConnectorFormState)) => void;
 }) {
   const services = form.services;
-  const onChange = (next: ServiceDescriptor[]) => setForm({ ...form, services: next });
+  // A hand edit that empties the list is "nothing declared", not "an empty import".
+  const onChange = (next: ServiceDescriptor[]) =>
+    setForm((f) => ({
+      ...f,
+      services: next,
+      ...(next.length === 0 ? { composePasted: false } : {}),
+    }));
+  // Newest translation wins: a slower pin result from an older one is dropped.
+  const seq = useRef(0);
   const [compose, setCompose] = useState('');
   const [drops, setDrops] = useState<ComposeDrop[]>([]);
   const [invalid, setInvalid] = useState<ComposeInvalid[]>([]);
@@ -219,30 +227,38 @@ function ServicesSection({
   const [composeError, setComposeError] = useState<string | null>(null);
   const [pinErrors, setPinErrors] = useState<Record<string, string>>({});
   const [pinning, setPinning] = useState(false);
+  const needsGroup =
+    profiles.length > 0 && form.composeProfile === null && services.length === 0;
 
-  // Look up the exact version of every image still written as a tag.
-  const pinDrafts = async (from: ConnectorFormState) => {
+  // Look up the exact version of every image still written as a tag. Results
+  // merge onto the LATEST form (never a stale snapshot), and only if no newer
+  // translation has started since.
+  const pinDrafts = async (from: ConnectorFormState, id: number) => {
     if (from.drafts.length === 0) return;
     setPinning(true);
     try {
       const results = await pinImages([...new Set(from.drafts.map((d) => d.image))]);
-      const out = applyPinResults(from, results);
-      setForm(out.form);
-      setPinErrors(out.errors);
-    } catch {
-      setPinErrors(
-        Object.fromEntries(
-          from.drafts.map((d) => [d.name, 'We couldn’t reach the image registry. Try again.']),
-        ),
-      );
+      if (id !== seq.current) return;
+      setPinErrors(applyPinResults(from, results).errors);
+      setForm((prev) => applyPinResults(prev, results).form);
+    } catch (e) {
+      if (id !== seq.current) return;
+      const status = (e as { status?: number } | null)?.status;
+      const msg =
+        status === 401 || status === 403
+          ? 'Your session expired, or your account can’t do this. Sign in again and try once more.'
+          : 'We couldn’t look up this image. The name may be misspelled or private, or the registry may be down. Try again, and if it keeps failing, check the name.';
+      setPinErrors(Object.fromEntries(from.drafts.map((d) => [d.name, msg])));
     } finally {
-      setPinning(false);
+      if (id === seq.current) setPinning(false);
     }
   };
 
   const translate = (profile: string | null) => {
+    const id = ++seq.current;
     setComposeError(null);
     setPinErrors({});
+    setPinning(false);
     // Translating REPLACES the imported services; the mode and other fields stay.
     const result = applyComposeToForm(form, compose, profile);
     if (!result.ok) {
@@ -251,12 +267,27 @@ function ServicesSection({
       setInvalid([]);
       return;
     }
-    setForm(result.form);
+    // Exactly one group in the file: pick it for them.
+    if (profile === null && result.profiles.length === 1) {
+      seq.current--;
+      translate(result.profiles[0]!);
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      services: result.form.services,
+      composeProfile: result.form.composeProfile,
+      pinned: result.form.pinned,
+      drafts: result.form.drafts,
+      composeOrder: result.form.composeOrder,
+      appServices: result.form.appServices,
+      composePasted: true,
+    }));
     setDrops(result.drops);
     // Tag-only images are handled by pinning; what's left here is a real problem.
     setInvalid(result.invalid.filter((iv) => iv.draft === undefined));
     setProfiles(result.profiles);
-    void pinDrafts(result.form);
+    void pinDrafts(result.form, id);
   };
 
   const updateService = (i: number, patch: Partial<ServiceDescriptor>) =>
@@ -290,8 +321,8 @@ function ServicesSection({
           />
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
-              We translate it — we don’t run it. Anything that can’t safely cross
-              into the sandbox gets dropped, and we’ll tell you what.
+              We read it and pick out the services. We don’t run anything. Anything that
+              can’t safely cross into the sandbox gets dropped, and we’ll tell you what.
             </p>
             <Button
               type="button"
@@ -300,7 +331,7 @@ function ServicesSection({
               onClick={() => translate(form.composeProfile)}
               disabled={compose.trim().length === 0}
             >
-              Translate compose
+              Add services from this file
             </Button>
           </div>
         </div>
@@ -316,17 +347,17 @@ function ServicesSection({
         {profiles.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="connector-compose-profile" className="text-xs">
-              Which group of services?
+              Which set of services should we bring in?
             </Label>
             <Select
-              value={form.composeProfile ?? NO_PROFILE}
+              value={form.composeProfile ?? (needsGroup ? '' : NO_PROFILE)}
               onValueChange={(v) => translate(v === NO_PROFILE ? null : v)}
             >
               <SelectTrigger id="connector-compose-profile">
-                <SelectValue />
+                <SelectValue placeholder="Choose a group…" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_PROFILE}>The ones that always start</SelectItem>
+                <SelectItem value={NO_PROFILE}>Services that aren’t in a group</SelectItem>
                 {profiles.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
@@ -335,8 +366,7 @@ function ServicesSection({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Your file sorts its services into named groups (Compose calls them
-              profiles). Pick the group to bring in.
+              Your file puts some services into named groups (Compose calls them “profiles”). Choosing a different one replaces the list below.
             </p>
           </div>
         )}
@@ -344,11 +374,10 @@ function ServicesSection({
         <div className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
           <div className="flex flex-col gap-0.5">
             <Label htmlFor="connector-services-on-demand" className="text-sm">
-              On demand
+              Start only when needed
             </Label>
             <p className="text-xs text-muted-foreground">
-              Start these services only when the work needs them, instead of
-              keeping them all running. Needed for more than 8 services (up to 16).
+              Off: all services start with the sandbox, up to 8. On: each one starts only when the agent asks for it, up to 16.
             </p>
           </div>
           <Switch
@@ -359,6 +388,16 @@ function ServicesSection({
             }
           />
         </div>
+
+        {needsGroup && (
+          <Alert>
+            <AlertTitle>Pick a group to bring in services</AlertTitle>
+            <AlertDescription>
+              Every service in your file belongs to a group, so none start by
+              default. Choose a group above and we’ll add its services.
+            </AlertDescription>
+          </Alert>
+        )}
 
         {pinning && (
           <p className="text-xs text-muted-foreground">Looking up exact versions…</p>
@@ -392,7 +431,7 @@ function ServicesSection({
                 {form.drafts.map((d) => (
                   <li key={d.name}>
                     <span className="font-mono">{d.name}</span> ({d.image}):{' '}
-                    {pinErrors[d.name] ?? 'not looked up yet'}
+                    {pinErrors[d.name] ?? 'we haven’t looked this one up yet'}
                   </li>
                 ))}
               </ul>
@@ -401,7 +440,7 @@ function ServicesSection({
                 variant="outline"
                 size="sm"
                 className="mt-2"
-                onClick={() => void pinDrafts(form)}
+                onClick={() => void pinDrafts(form, seq.current)}
               >
                 Try again
               </Button>
@@ -411,10 +450,11 @@ function ServicesSection({
 
         {form.appServices.length > 0 && (
           <Alert>
-            <AlertTitle>Some of these are your own app</AlertTitle>
+            <AlertTitle>We skipped services that run your own code</AlertTitle>
             <AlertDescription>
-              Run these in the sandbox: {form.appServices.map((a) => a.service).join(', ')}.
-              They use your own code, so we left them out of the saved services.
+              Skipped: {form.appServices.map((a) => a.service).join(', ')}. They use
+              your own code, so we didn’t save them as services. The agent can run
+              them inside its sandbox instead.
             </AlertDescription>
           </Alert>
         )}
@@ -497,7 +537,7 @@ function ServicesSection({
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={`svc-image-${i}`} className="text-xs">
-                  Image (digest-pinned)
+                  Image (exact version)
                 </Label>
                 <Input
                   id={`svc-image-${i}`}
@@ -509,7 +549,7 @@ function ServicesSection({
                 />
                 {svc.image.trim().length > 0 && !isDigestPinned(svc.image) && (
                   <p className="text-xs text-destructive">
-                    Pin this image to an immutable digest (…@sha256:&lt;64 hex&gt;) —
+                    This image needs an exact version. Pin it to an immutable digest (…@sha256:&lt;64 hex&gt;) —
                     a floating tag can change under us.
                   </p>
                 )}

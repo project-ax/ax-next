@@ -656,7 +656,7 @@ services:
     const r = applyComposeToForm(emptyConnectorForm(), PROFILED, 'dev');
     if (!r.ok) throw new Error('expected ok');
     const out = applyPinResults(r.form, [{ image: 'redis:7', error: 'not found' }]);
-    expect(out.errors).toEqual({ cache: 'not found' });
+    expect(out.errors).toEqual({ cache: 'We couldn’t find it: not found' });
     expect(out.form.drafts).toHaveLength(1);
     expect(servicesProblem(out.form)).not.toBeNull();
   });
@@ -669,12 +669,20 @@ services:
     expect(capabilitiesFromForm(r.form).services?.map((s) => s.name)).toEqual(['db']);
   });
 
+  it('a pasted file that yields no services blocks saving', () => {
+    const r = applyComposeToForm(emptyConnectorForm(), PROFILED.replace(/profiles: \[ci\]/, 'profiles: [dev]').replace(/\n  db:[\s\S]*$/, '\n  x:\n    image: ' + PINNED + '\n    profiles: [dev]\n'));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.form.services).toEqual([]);
+    expect(servicesProblem(r.form)).toMatch(/No services came in/);
+    expect(servicesProblem(emptyConnectorForm())).toBeNull();
+  });
+
   it('more than 8 services needs on-demand', () => {
     const many = Array.from({ length: 9 }, (_, i) => ({
       name: `s${i}`, image: PINNED, ports: [], env: {}, writablePaths: [],
     }));
     const off = { ...emptyConnectorForm(), services: many };
-    expect(servicesProblem(off)).toMatch(/On demand/);
+    expect(servicesProblem(off)).toMatch(/Start only when needed/);
     expect(servicesProblem({ ...off, servicesMode: 'on-demand' })).toBeNull();
     expect(
       servicesProblem({ ...off, servicesMode: 'on-demand', services: [...many, ...many] }),

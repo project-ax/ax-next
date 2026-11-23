@@ -128,6 +128,8 @@ export interface ConnectorFormState {
   drafts: ServiceDescriptor[];
   /** Start order of every imported service, drafts included. */
   composeOrder: string[];
+  /** True once a compose file was imported (so an empty result can be told apart from "nothing declared"). */
+  composePasted: boolean;
   /** Services that look like the person's own app: run in the sandbox. NOT saved. */
   appServices: ComposeAppService[];
   /**
@@ -158,6 +160,7 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   drafts: [],
   composeOrder: [],
   appServices: [],
+  composePasted: false,
   baseCapabilities: emptyCapabilities(),
 });
 
@@ -246,6 +249,7 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     drafts: [],
     composeOrder: [],
     appServices: [],
+    composePasted: false,
     baseCapabilities: caps,
   };
 }
@@ -674,6 +678,7 @@ export function applyComposeToForm(
       drafts: r.invalid.flatMap((i) => (i.draft ? [i.draft] : [])),
       composeOrder: r.order,
       appServices: r.appServices,
+      composePasted: true,
     },
     drops: r.drops,
     invalid: r.invalid,
@@ -709,7 +714,9 @@ export function applyPinResults(
       done.push({ ...d, image: r.pinned });
     } else {
       stillDrafts.push(d);
-      errors[d.name] = r?.error ?? 'We couldn’t look up this image.';
+      errors[d.name] = r?.error
+        ? `We couldn’t find it: ${r.error}`
+        : 'We couldn’t look up this image. Check the name, then try again.';
     }
   }
   const rank = (n: string) => {
@@ -725,6 +732,9 @@ export const ON_DEMAND_SERVICES_LIMIT = 16;
 
 /** Plain-language reason the services can't be saved yet, or null when they can. */
 export function servicesProblem(form: ConnectorFormState): string | null {
+  if (form.composePasted && form.services.length === 0 && form.drafts.length === 0) {
+    return 'No services came in from your file yet. Pick a group above, or add a service by hand.';
+  }
   if (form.drafts.length > 0) {
     const names = form.drafts.map((d) => d.name).join(', ');
     return `We still need to look up the exact version of: ${names}. Try again, or fix the image name.`;
@@ -734,7 +744,7 @@ export function servicesProblem(form: ConnectorFormState): string | null {
     return `That’s ${n} services. We can run up to ${ON_DEMAND_SERVICES_LIMIT}, so please remove some.`;
   }
   if (n > ALWAYS_ON_SERVICES_LIMIT && form.servicesMode !== 'on-demand') {
-    return `That’s ${n} services. Without “On demand”, we can keep up to ${ALWAYS_ON_SERVICES_LIMIT} running. Turn on “On demand” to start them only when they’re needed (up to ${ON_DEMAND_SERVICES_LIMIT}), or remove some.`;
+    return `That’s ${n} services. Without “Start only when needed”, we can keep up to ${ALWAYS_ON_SERVICES_LIMIT} running. Turn on “Start only when needed” to start them only when they’re needed (up to ${ON_DEMAND_SERVICES_LIMIT}), or remove some.`;
   }
   return null;
 }
