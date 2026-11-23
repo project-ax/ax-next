@@ -183,6 +183,15 @@ describe('member names (TASK-1209)', () => {
       // The agent's name as written still decides on its own words.
       expect(memberName('Fern', agent)).toBe('Fern');
     });
+
+    // And as written: a zero-width space inside the agent's name draws
+    // nothing wherever that name is shown, so a member named `Fern` still
+    // reads as an agent named Fe<ZWSP>rn. (Cleaned the way a member's name
+    // is, the agent's name would read `Fe rn`, and `Fern` would pass.)
+    it("an invisible character inside the agent's name hides nothing", () => {
+      expect(memberName('Fern', 'Fe​rn')).toBeUndefined();
+      expect(memberName('fern.', 'Fe​rn')).toBeUndefined();
+    });
   });
 
   describe('memberKeyId', () => {
