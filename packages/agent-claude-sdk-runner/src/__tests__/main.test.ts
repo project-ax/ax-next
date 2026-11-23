@@ -3770,6 +3770,71 @@ describe('main()', () => {
       );
     });
 
+    // TASK-1207: buildBundledSkillsEnv() is a floor, spread AFTER
+    // providerEnv. The one way a name outside proxy-startup's ENV_ALLOWLIST
+    // reaches providerEnv is the credential-placeholder value rule (any var
+    // whose value is `ax-cred:<32-hex>` rides through), so a credential slot
+    // that happened to be named CLAUDE_CODE_DISABLE_CRON would land there
+    // with a value other than '1'. The floor must still win. Moving the
+    // spread above providerEnv fails this test.
+    it('the bundled-skills switches win over a providerEnv that sets them (TASK-1207)', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        CLAUDE_CODE_DISABLE_CRON: 'ax-cred:00000000000000000000000000000001',
+        CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL: 'ax-cred:00000000000000000000000000000002',
+      });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: {
+            CLAUDE_CODE_DISABLE_CRON?: string;
+            CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL?: string;
+          };
+        };
+      };
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
+    });
+
     it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {
       // The runner process keeps its own HOME (k8s: /home/runner, the
       // pod-level setting). Mutating process.env.HOME here would hand every
