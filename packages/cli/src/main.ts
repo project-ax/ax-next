@@ -299,6 +299,9 @@ export async function main(opts: MainOptions): Promise<number> {
     createChatOrchestratorPlugin({
       runnerBinaries: resolveRunnerBinaries(opts),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
+      // sandbox-subprocess refuses `job` and `publishedPorts`, so a service
+      // set can't run here: none is offered and restart_with_services refuses.
+      onDemandServices: { enabled: false },
     }),
   );
 

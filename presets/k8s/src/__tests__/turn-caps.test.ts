@@ -56,4 +56,14 @@ describe('runner max env', () => {
     expect(loadK8sConfigFromEnv(base).chat?.maxIdleMinutes).toBeUndefined();
     expect(() => loadK8sConfigFromEnv({ ...base, AX_CHAT_MAX_IDLE_MINUTES: '0' })).toThrow(/AX_CHAT_MAX_IDLE_MINUTES/);
   });
+
+  it('AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT loads as a positive number', async () => {
+    const { loadK8sConfigFromEnv } = await import('../index.js');
+    const cfg = loadK8sConfigFromEnv({ ...base, AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT: '10' });
+    expect(cfg.chat?.maxServiceSandboxesPerAgent).toBe(10);
+    expect(loadK8sConfigFromEnv(base).chat?.maxServiceSandboxesPerAgent).toBeUndefined();
+    expect(() => loadK8sConfigFromEnv({ ...base, AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT: '0' })).toThrow(
+      /AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT/,
+    );
+  });
 });

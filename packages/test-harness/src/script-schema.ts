@@ -29,6 +29,12 @@ const TokenCount = z.number().int().nonnegative();
  */
 const TurnEndEntrySchema = z.object({
   kind: z.literal('turn-end'),
+  /**
+   * The request this turn-end answers. Real runners echo the reqId of the
+   * message they ran; the stub never reads its inbox, so a script that needs
+   * the host to match the turn-end to a request (a held segment) names it.
+   */
+  reqId: z.string().min(1).optional(),
   usage: z
     .object({
       model: z.string().min(1).optional(),

@@ -85,6 +85,17 @@ describe('@ax/preset-k8s orchestrator keepalive', () => {
     expect(captured.cfg?.sandboxMaxLifetimeMs).toBe(21_600_000);
   });
 
+  // Dev services on demand — the chart's per-agent cap reaches the orchestrator.
+  it('passes the per-agent service-sandbox cap and turns on-demand services on', () => {
+    createK8sPlugins({ ...stubConfig, chat: { ...stubConfig.chat, maxServiceSandboxesPerAgent: 3 } });
+    expect(captured.cfg?.onDemandServices).toEqual({ enabled: true, maxPerAgent: 3 });
+  });
+
+  it('without a cap, on-demand services are on and the orchestrator keeps its own default', () => {
+    createK8sPlugins(stubConfig);
+    expect(captured.cfg?.onDemandServices).toEqual({ enabled: true });
+  });
+
   it('hands channel-web the turn cap in ms, so the stream buffer outlives a long turn', () => {
     createK8sPlugins({ ...stubConfig, chat: { ...stubConfig.chat, maxTurnMinutes: 90 } });
     expect(captured.webCfg?.maxTurnMs).toBe(90 * 60_000);

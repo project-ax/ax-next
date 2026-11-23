@@ -2362,6 +2362,13 @@ describeIfHelm('ax-next chart: turn cap vs load balancer timeout', () => {
     expect(env.find((e) => e.name === 'AX_CHAT_MAX_IDLE_MINUTES')?.value).toBe('60');
   });
 
+  it('the host gets the per-agent service-sandbox cap as env, and follows an override', () => {
+    const name = 'AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT';
+    expect(findHostEnv(helmTemplate([])).find((e) => e.name === name)?.value).toBe('10');
+    const env = findHostEnv(helmTemplate(['--set', 'chat.maxServiceSandboxesPerAgent=4']));
+    expect(env.find((e) => e.name === name)?.value).toBe('4');
+  });
+
   it('gke values render timeoutSec 7500', () => {
     const docs = helmTemplate(['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']);
     const bc = docs.find((d) => d.kind === 'BackendConfig');

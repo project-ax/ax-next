@@ -15,6 +15,7 @@ import {
 } from '@testcontainers/postgresql';
 
 import {
+  CHAT_TURN_SEGMENT_END_HOOK,
   HookBus,
   PluginError,
   bootstrap,
@@ -36,6 +37,7 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createConversationsPlugin } from '@ax/conversations';
+import { createConnectorsPlugin } from '@ax/connectors';
 import type {
   CreateInput as ConversationsCreateInput,
   CreateOutput as ConversationsCreateOutput,
@@ -57,6 +59,7 @@ import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import {
   createTestProxyPlugin,
+  encodeScript,
   stubRunnerPath,
   type StubRunnerScript,
   startTestContainer,
@@ -322,7 +325,7 @@ const PERMISSIVE_AGENTS_STUB_NAME = '@ax/preset-k8s/test/permissive-agents-stub'
 // is the witness; module-level so a test can read it after the turn.
 let identityGetCalls = 0;
 
-function createPermissiveAgentsStubPlugin(): Plugin {
+function createPermissiveAgentsStubPlugin(opts: { connectorAttachments?: string[] } = {}): Plugin {
   return {
     manifest: {
       name: PERMISSIVE_AGENTS_STUB_NAME,
@@ -357,6 +360,9 @@ function createPermissiveAgentsStubPlugin(): Plugin {
               systemPrompt: 'You are a helpful assistant.',
               allowedTools: [] as string[],
               mcpConfigIds: [] as string[],
+              ...(opts.connectorAttachments !== undefined
+                ? { connectorAttachments: opts.connectorAttachments }
+                : {}),
               runner: 'claude-sdk',
               model: 'claude-sonnet-4-7',
               // The test-proxy ignores allowedHosts/requiredCredentials —
@@ -756,6 +762,187 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       origin,
     });
   }
+
+  it(
+    'canary: restart_with_services with a one-service set opens a second sandbox carrying it and the turn ends once',
+    { timeout: 120_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+      const userId = 'on-demand-user';
+      const agentId = 'on-demand-agent';
+      const DIGEST = '@sha256:' + 'a'.repeat(64);
+      // The stub never reads its inbox, so the scripts name the request the
+      // way a real runner echoes it.
+      const REQ_ID = 'on-demand-req';
+
+      // Session 1 asks for the set, then ends its segment. The hold keeps that
+      // turn-end from closing the turn. Session 2 (the continuation, carrying
+      // the set) finishes the turn.
+      const first: StubRunnerScript = {
+        entries: [
+          { kind: 'tool-call', name: 'restart_with_services', input: { set: 'e2e' }, executesIn: 'host', expectPostCall: false },
+          { kind: 'turn-end', reqId: REQ_ID },
+          // A real runner idles after its turn-end until the host replaces it;
+          // this call never answers, so the stub does too (it would otherwise
+          // `finish` and end the turn from the old sandbox).
+          { kind: 'tool-call', name: 'test-idle', input: {}, executesIn: 'host', expectPostCall: false },
+          { kind: 'finish', reason: 'end_turn' },
+        ],
+      };
+      const second: StubRunnerScript = {
+        entries: [
+          { kind: 'assistant-text', content: CANARY_TEXT },
+          { kind: 'turn-end', reqId: REQ_ID },
+          { kind: 'finish', reason: 'end_turn' },
+        ],
+      };
+      let proxyOpens = 0;
+      const PROXY = '@ax/preset-k8s/test/on-demand-proxy';
+      // proxy:open-session hands each new sandbox its script: the first one,
+      // then the continuation's. Everything else in the chain is the real plugin.
+      const proxyPlugin: Plugin = {
+        manifest: { name: PROXY, version: '0.0.0', registers: ['proxy:open-session', 'proxy:close-session'], calls: [], subscribes: [] },
+        init({ bus }) {
+          bus.registerService('proxy:open-session', PROXY, async () => {
+            proxyOpens += 1;
+            return {
+              proxyEndpoint: 'tcp://127.0.0.1:1',
+              caCertPem: '-----BEGIN CERTIFICATE-----\nMIIBtest-only\n-----END CERTIFICATE-----\n',
+              proxyAuthToken: '0'.repeat(32),
+              envMap: { AX_TEST_STUB_SCRIPT: encodeScript(proxyOpens === 1 ? first : second) },
+            };
+          });
+          bus.registerService('proxy:close-session', PROXY, async () => ({}));
+        },
+      };
+
+      // The real @ax/sandbox-subprocess, wrapped to record each open's
+      // `services`. It refuses a service set (job / publishedPorts), so the
+      // recorded set is dropped before it delegates: the second runner still
+      // spawns for real and finishes the turn.
+      const opens: Array<{ sessionId: string; services?: Array<{ name: string }> }> = [];
+      const innerSandbox = createSandboxSubprocessPlugin();
+      const sandboxPlugin: Plugin = {
+        ...innerSandbox,
+        init(args) {
+          const wrapped = new Proxy(args.bus, {
+            get(target, prop) {
+              const v = Reflect.get(target, prop, target) as unknown;
+              if (prop !== 'registerService') return typeof v === 'function' ? v.bind(target) : v;
+              return (hook: string, plugin: string, handler: (c: AgentContext, i: unknown) => Promise<unknown>, ...rest: unknown[]) => {
+                const h =
+                  hook !== 'sandbox:open-session'
+                    ? handler
+                    : async (c: AgentContext, input: unknown) => {
+                        const { services, ...plain } = input as { sessionId: string; services?: Array<{ name: string }> };
+                        opens.push({ sessionId: plain.sessionId, ...(services !== undefined ? { services } : {}) });
+                        return handler(c, plain);
+                      };
+                return (v as (...a: unknown[]) => unknown).call(target, hook, plugin, h, ...rest);
+              };
+            },
+          });
+          return innerSandbox.init({ ...args, bus: wrapped });
+        },
+      };
+
+      const presetConfig: K8sPresetConfig = {
+        database: { connectionString },
+        eventbus: { connectionString: 'postgres://stub:5432/stub' },
+        session: { connectionString: 'postgres://stub:5432/stub' },
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+        ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+        chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
+        http: { host: '127.0.0.1', port: 0, cookieKey: '0'.repeat(64), allowedOrigins: [] },
+      };
+      const kept = createK8sPlugins(presetConfig).filter((p) => !PLUGINS_TO_DROP.has(p.manifest.name));
+
+      const turnEndReqIds: string[] = [];
+      const segmentEndReqIds: string[] = [];
+      const observer: Plugin = {
+        manifest: {
+          name: '@ax/preset-k8s/test/on-demand-observer', version: '0.0.0', registers: ['tool:execute:test-idle'], calls: [],
+          subscribes: ['chat:turn-end', CHAT_TURN_SEGMENT_END_HOOK],
+        },
+        init({ bus }) {
+          const N = '@ax/preset-k8s/test/on-demand-observer';
+          bus.registerService('tool:execute:test-idle', N, () => new Promise<never>(() => {}));
+          bus.subscribe('chat:turn-end', N, async (_c: AgentContext, p: unknown) => {
+            turnEndReqIds.push((p as { reqId: string }).reqId);
+            return undefined;
+          });
+          bus.subscribe(CHAT_TURN_SEGMENT_END_HOOK, N, async (_c: AgentContext, p: unknown) => {
+            segmentEndReqIds.push((p as { reqId: string }).reqId);
+            return undefined;
+          });
+        },
+      };
+
+      const plugins: Plugin[] = [
+        ...kept,
+        createDatabasePostgresPlugin({ connectionString }),
+        createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
+        createConnectorsPlugin(),
+        createStorageSqlitePlugin({ databasePath: path.join(tmp, 'on-demand.sqlite') }),
+        createSessionInmemoryPlugin(),
+        sandboxPlugin,
+        createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
+        createIpcServerPlugin(),
+        proxyPlugin,
+        createPermissiveAgentsStubPlugin({ connectorAttachments: ['e2e'] }),
+        createMcpClientPlugin(),
+        observer,
+      ];
+      const bus = new HookBus();
+      const handle = await bootstrap({ bus, plugins, config: {} });
+      try {
+        const setupCtx = makeAgentContext({ sessionId: 'on-demand-setup', agentId, userId, workspace: { rootPath: tmp } });
+        await bus.call('connectors:upsert', setupCtx, {
+          userId,
+          connectorId: 'e2e',
+          name: 'End-to-end test services',
+          keyMode: 'personal',
+          capabilities: {
+            allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] },
+            servicesMode: 'on-demand',
+            services: [{
+              name: 'mongo', image: 'mongo' + DIGEST, ports: [27017], env: {}, writablePaths: [],
+              publishedPorts: [{ published: 47017, target: 27017 }],
+            }],
+          },
+        });
+        const conv = await bus.call<ConversationsCreateInput, ConversationsCreateOutput>(
+          'conversations:create', setupCtx, { userId, agentId },
+        );
+        const reqId = REQ_ID;
+        const turnCtx = makeAgentContext({
+          sessionId: 'on-demand-session', agentId, userId, conversationId: conv.conversationId, reqId,
+          workspace: { rootPath: tmp },
+        });
+        const outcome: AgentOutcome = await bus.call('agent:invoke', turnCtx, {
+          message: { role: 'user', content: 'run the e2e tests' },
+        });
+
+        // Two sandboxes: the first without the set, the second carrying it.
+        expect(opens).toHaveLength(2);
+        expect(opens[0]!.services).toBeUndefined();
+        expect(opens[1]!.services?.map((s) => s.name)).toEqual(['mongo']);
+        expect(opens[1]!.sessionId).not.toBe(opens[0]!.sessionId);
+        // The turn ended in the continuation, and exactly once.
+        expect(outcome.kind).toBe('complete');
+        if (outcome.kind === 'complete') {
+          expect([...outcome.messages].reverse().find((m) => m.role === 'assistant')?.content).toContain(CANARY_TEXT);
+        }
+        await handle.shutdown();
+        expect(turnEndReqIds.filter((r) => r === reqId)).toHaveLength(1);
+        expect(segmentEndReqIds.filter((r) => r === reqId).length).toBeGreaterThanOrEqual(1);
+        expect(proxyOpens).toBe(2);
+      } finally {
+        await handle.shutdown();
+      }
+    },
+  );
 
   it(
     'TASK-100 canary: skills:propose gate — authored → active; non-authored → pending; a capabilities block is REJECTED (booted preset)',

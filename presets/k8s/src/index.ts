@@ -383,6 +383,8 @@ export interface K8sPresetConfig {
     maxTurnMinutes?: number;
     /** chat.maxIdleMinutes: the orchestrator clamps an agent's own idle time to it. */
     maxIdleMinutes?: number;
+    /** chat.maxServiceSandboxesPerAgent: live sandboxes with a service set one agent may hold. */
+    maxServiceSandboxesPerAgent?: number;
     oneShot?: boolean;
   };
   /**
@@ -1050,6 +1052,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   if (config.chat?.maxIdleMinutes !== undefined) {
     orchestratorCfg.maxIdleMinutes = config.chat.maxIdleMinutes;
   }
+  // Dev services on demand: this preset's sandbox backend runs service sets,
+  // so they are on; the chart's cap, when set, replaces the orchestrator's 10.
+  orchestratorCfg.onDemandServices = {
+    enabled: true,
+    ...(config.chat?.maxServiceSandboxesPerAgent !== undefined
+      ? { maxPerAgent: config.chat.maxServiceSandboxesPerAgent }
+      : {}),
+  };
   if (config.chat?.oneShot !== undefined) {
     orchestratorCfg.oneShot = config.chat.oneShot;
   }
@@ -1989,6 +1999,11 @@ export function loadK8sConfigFromEnv(
   if (maxTurnMinutes !== undefined) chat.maxTurnMinutes = maxTurnMinutes;
   const maxIdleMinutes = positiveInt('AX_CHAT_MAX_IDLE_MINUTES', env.AX_CHAT_MAX_IDLE_MINUTES);
   if (maxIdleMinutes !== undefined) chat.maxIdleMinutes = maxIdleMinutes;
+  const maxServiceSandboxes = positiveInt(
+    'AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT',
+    env.AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT,
+  );
+  if (maxServiceSandboxes !== undefined) chat.maxServiceSandboxesPerAgent = maxServiceSandboxes;
 
   // ---- agent workspace (the web interface) ----------------------------
   // Always on; there is no switch. `AX_AGENT_WORKSPACE` (and the older

@@ -511,6 +511,8 @@ spec:
               value: {{ .Values.chat.maxTurnMinutes | quote }}
             - name: AX_CHAT_MAX_IDLE_MINUTES
               value: {{ .Values.chat.maxIdleMinutes | quote }}
+            - name: AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT
+              value: {{ .Values.chat.maxServiceSandboxesPerAgent | quote }}
             - name: K8S_RUNNER_MAX_CPU_MILLIS
               value: {{ .Values.sandbox.runnerMax.cpuMillis | quote }}
             - name: K8S_RUNNER_MAX_MEMORY_MIB

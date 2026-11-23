@@ -130,6 +130,7 @@ async function run(): Promise<number> {
       await client.event('event.turn-end', {
         reason: 'user-message-wait',
         role: 'assistant',
+        ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
         ...(entry.usage !== undefined ? { usage: entry.usage } : {}),
       });
       continue;
