@@ -19,20 +19,14 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui
 import { Input } from '@/components/ui/input';
 import { getAdminAgent, patchAgent, type RunnerSize } from '@/lib/admin';
 
-const CAP_HINT = "If you go over your admin's limit, the agent runs at that limit instead.";
-
-interface Form {
-  turn: string;
-  idle: string;
-  cpuRequest: string;
-  cpuLimit: string;
-  memRequest: string;
-  memLimit: string;
-}
+type Key = 'turn' | 'idle' | 'cpu' | 'mem';
+type Form = Record<Key, string>;
 
 const show = (n: number | undefined, per: number): string =>
   n === undefined ? '' : String(Math.round((n / per) * 100) / 100);
 
+// One box per resource. A stored pair with request != limit shows its limit;
+// the pair is only rewritten if the person edits that box.
 function toForm(a: {
   turnLimitMinutes?: number | null;
   idleMinutes?: number | null;
@@ -42,10 +36,8 @@ function toForm(a: {
   return {
     turn: a.turnLimitMinutes == null ? '' : String(a.turnLimitMinutes),
     idle: a.idleMinutes == null ? '' : String(a.idleMinutes),
-    cpuRequest: show(s.cpuMillis?.request, 1000),
-    cpuLimit: show(s.cpuMillis?.limit, 1000),
-    memRequest: show(s.memoryMiB?.request, 1024),
-    memLimit: show(s.memoryMiB?.limit, 1024),
+    cpu: show(s.cpuMillis?.limit, 1000),
+    mem: show(s.memoryMiB?.limit, 1024),
   };
 }
 
@@ -60,28 +52,14 @@ function minutes(raw: string, label: string): Parsed<number | null> {
   return { ok: true, value: n };
 }
 
-function pair(
-  reqRaw: string,
-  limRaw: string,
-  per: number,
-  what: string,
-): Parsed<{ request: number; limit: number } | null> {
-  if (reqRaw.trim() === '' && limRaw.trim() === '') return { ok: true, value: null };
-  if (reqRaw.trim() === '' || limRaw.trim() === '') {
-    return { ok: false, error: `Fill in both ${what} boxes, or leave both empty.` };
-  }
-  const request = Math.round(Number(reqRaw) * per);
-  const limit = Math.round(Number(limRaw) * per);
-  if (!(request >= 1) || !(limit >= 1)) {
-    return { ok: false, error: `The ${what} boxes need a number above zero.` };
-  }
-  if (request > limit) {
-    return { ok: false, error: `For ${what}, the guaranteed amount can't be more than the most it can use.` };
-  }
-  return { ok: true, value: { request, limit } };
+function size(raw: string, per: number, what: string): Parsed<{ request: number; limit: number } | null> {
+  if (raw.trim() === '') return { ok: true, value: null };
+  const n = Math.round(Number(raw) * per);
+  if (!(n >= 1)) return { ok: false, error: `${what} needs a number above zero.` };
+  return { ok: true, value: { request: n, limit: n } };
 }
 
-export function AgentAdvancedLimits({ agentId }: { agentId: string }) {
+export function AgentAdvancedLimits({ agentId, agentName }: { agentId: string; agentName: string }) {
   return (
     <Collapsible className="mt-8 border-t border-border pt-4">
       <CollapsibleTrigger asChild>
@@ -95,14 +73,16 @@ export function AgentAdvancedLimits({ agentId }: { agentId: string }) {
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="pt-3">
-        <Limits agentId={agentId} />
+        <Limits agentId={agentId} agentName={agentName} />
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-function Limits({ agentId }: { agentId: string }) {
+function Limits({ agentId, agentName }: { agentId: string; agentName: string }) {
   const [form, setForm] = useState<Form | null>(null);
+  const [stored, setStored] = useState<RunnerSize | null>(null);
+  const [dirty, setDirty] = useState<ReadonlySet<Key>>(new Set());
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +91,11 @@ function Limits({ agentId }: { agentId: string }) {
   useEffect(() => {
     let live = true;
     getAdminAgent(agentId).then(
-      (a) => live && setForm(toForm(a)),
+      (a) => {
+        if (!live) return;
+        setForm(toForm(a));
+        setStored(a.runnerSize ?? null);
+      },
       () => live && setLoadFailed(true),
     );
     return () => {
@@ -128,62 +112,82 @@ function Limits({ agentId }: { agentId: string }) {
   }
   if (form === null) return <p className="text-[12.5px] text-muted-foreground">Loading…</p>;
 
-  const set = (k: keyof Form) => (e: React.ChangeEvent<HTMLInputElement>) => {
+  const set = (k: Key) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setSaved(false);
+    setDirty(new Set(dirty).add(k));
     setForm({ ...form, [k]: e.target.value });
   };
 
+  // Only what the person edited goes out, so an untouched value can't move
+  // (1000 MiB shows as 0.98 GB) and edits made elsewhere aren't overwritten.
   const save = async () => {
     setError(null);
     setSaved(false);
-    const turn = minutes(form.turn, 'The reply time');
-    const idle = minutes(form.idle, 'The ready time');
-    const cpu = pair(form.cpuRequest, form.cpuLimit, 1000, 'processor');
-    const mem = pair(form.memRequest, form.memLimit, 1024, 'memory');
-    const bad = [turn, idle, cpu, mem].find((p) => !p.ok);
-    if (bad && !bad.ok) return setError(bad.error);
-    if (!turn.ok || !idle.ok || !cpu.ok || !mem.ok) return;
-    const size: RunnerSize = {};
-    if (cpu.value) size.cpuMillis = cpu.value;
-    if (mem.value) size.memoryMiB = mem.value;
+    if (dirty.size === 0) return;
+    const patch: { turnLimitMinutes?: number | null; idleMinutes?: number | null; runnerSize?: RunnerSize | null } = {};
+    if (dirty.has('turn')) {
+      const r = minutes(form.turn, 'Reply time');
+      if (!r.ok) return setError(r.error);
+      patch.turnLimitMinutes = r.value;
+    }
+    if (dirty.has('idle')) {
+      const r = minutes(form.idle, 'Warm time');
+      if (!r.ok) return setError(r.error);
+      patch.idleMinutes = r.value;
+    }
+    if (dirty.has('cpu') || dirty.has('mem')) {
+      // runnerSize is replaced whole, so the half not edited keeps its stored value.
+      const next: RunnerSize = { ...(stored ?? {}) };
+      if (dirty.has('cpu')) {
+        const r = size(form.cpu, 1000, 'Processor');
+        if (!r.ok) return setError(r.error);
+        if (r.value) next.cpuMillis = r.value;
+        else delete next.cpuMillis;
+      }
+      if (dirty.has('mem')) {
+        const r = size(form.mem, 1024, 'Memory');
+        if (!r.ok) return setError(r.error);
+        if (r.value) next.memoryMiB = r.value;
+        else delete next.memoryMiB;
+      }
+      patch.runnerSize = Object.keys(next).length === 0 ? null : next;
+    }
     setBusy(true);
     try {
-      await patchAgent(agentId, {
-        turnLimitMinutes: turn.value,
-        idleMinutes: idle.value,
-        runnerSize: Object.keys(size).length === 0 ? null : size,
-      });
+      await patchAgent(agentId, patch);
+      if (patch.runnerSize !== undefined) setStored(patch.runnerSize);
+      setDirty(new Set());
       setSaved(true);
     } catch {
-      setError("We couldn't save that. You may not have permission to change this agent.");
+      setError("We couldn't save that. Check that you can edit this agent, then try again.");
     } finally {
       setBusy(false);
     }
   };
 
-  const num = (id: string, label: string, k: keyof Form, step?: string) => (
+  const num = (id: string, label: string, k: Key, description: string, extra: { min: number; step?: string }) => (
     <Field>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input id={id} type="number" min={0} step={step} inputMode="decimal" placeholder="Default" value={form[k]} onChange={set(k)} />
+      <Input id={id} type="number" min={extra.min} step={extra.step} inputMode="decimal" placeholder="Default" value={form[k]} onChange={set(k)} />
+      <FieldDescription>{description}</FieldDescription>
     </Field>
   );
 
   return (
     <FieldGroup>
       <p className="text-[12.5px] text-muted-foreground">
-        Leave a box empty to use the workspace default. {CAP_HINT}
+        Most agents never need these. Leave a box empty and we'll use the workspace default.
       </p>
-      {num('adv-turn', 'Longest a reply can take (minutes)', 'turn')}
-      {num('adv-idle', 'Stays ready after a reply (minutes)', 'idle')}
-      <FieldDescription>
-        Staying ready keeps files and running programs around for the next message.
-      </FieldDescription>
-      <div className="grid gap-4 sm:grid-cols-2">
-        {num('adv-cpu-req', 'Processor guaranteed (cores)', 'cpuRequest', '0.1')}
-        {num('adv-cpu-lim', 'Processor most it can use (cores)', 'cpuLimit', '0.1')}
-        {num('adv-mem-req', 'Memory guaranteed (GB)', 'memRequest', '0.5')}
-        {num('adv-mem-lim', 'Memory most it can use (GB)', 'memLimit', '0.5')}
-      </div>
+      {num('adv-turn', 'Longest one reply can run (minutes)', 'turn',
+        `Raise this if ${agentName} runs long tests and gets cut off. Your admin sets a ceiling. Go over it and we'll use the ceiling.`, { min: 1 })}
+      {num('adv-idle', 'Stays warm between messages (minutes)', 'idle',
+        "While it's warm, files and running programs are still there for the next message. A longer time uses more of the workspace's resources.", { min: 1 })}
+      <h3 className="mt-2 text-[13px] font-semibold">Workspace size</h3>
+      <p className="text-[12.5px] text-muted-foreground">
+        We can't show your admin's ceiling here. If you go over it, we'll use the ceiling.
+      </p>
+      {num('adv-cpu', 'Processor (cores)', 'cpu', 'More cores make builds and tests faster.', { min: 0, step: '0.1' })}
+      {num('adv-mem', 'Memory (GB)', 'mem', 'Raise this if tests crash with out-of-memory errors.', { min: 0, step: '0.5' })}
       {error !== null && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
@@ -191,7 +195,7 @@ function Limits({ agentId }: { agentId: string }) {
       )}
       <div className="flex items-center gap-3">
         <Button type="button" onClick={() => void save()} disabled={busy}>
-          Save limits
+          Save
         </Button>
         {saved && <span role="status" className="text-[12.5px] text-muted-foreground">Saved.</span>}
       </div>

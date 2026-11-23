@@ -8,7 +8,7 @@
  * claims anything about widths; the `compact` prop is the tree switch.
  */
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import {
@@ -263,57 +263,115 @@ it('opens the named section on a mobile direct link or reload', () => {
 
 
 describe('AgentSettings — Advanced limits', () => {
-  const stored = {
-    id: 'a-quill',
-    turnLimitMinutes: null,
-    idleMinutes: null,
-    runnerSize: { cpuMillis: { request: 2000, limit: 4000 }, memoryMiB: { request: 6144, limit: 8192 } },
+  const base = { id: 'a-quill', turnLimitMinutes: null, idleMinutes: null, runnerSize: null };
+  const sized = {
+    cpuMillis: { request: 2000, limit: 4000 },
+    memoryMiB: { request: 1000, limit: 1000 },
   };
 
-  async function openAdvanced() {
-    vi.mocked(getAdminAgent).mockResolvedValue(stored as never);
-    render(<Harness initial="model" />);
-    expect(screen.queryByLabelText('Longest a reply can take (minutes)')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
-    return screen.findByLabelText('Longest a reply can take (minutes)');
-  }
-
-  it('Advanced shows turn, idle and runner size', async () => {
-    await openAdvanced();
-    expect(screen.getByLabelText('Stays ready after a reply (minutes)')).toBeTruthy();
-    expect(screen.getByLabelText('Processor guaranteed (cores)')).toHaveValue(2);
-    expect(screen.getByLabelText('Processor most it can use (cores)')).toHaveValue(4);
-    expect(screen.getByLabelText('Memory guaranteed (GB)')).toHaveValue(6);
-    expect(screen.getByLabelText('Memory most it can use (GB)')).toHaveValue(8);
+  beforeEach(() => {
+    vi.mocked(getAdminAgent).mockReset();
+    vi.mocked(patchAgent).mockReset();
+    vi.mocked(patchAgent).mockResolvedValue(undefined);
   });
 
-  it('a value above the cap shows the cap hint', async () => {
+  async function openAdvanced(agent: Record<string, unknown> = base) {
+    vi.mocked(getAdminAgent).mockResolvedValue(agent as never);
+    render(<Harness initial="routines" />);
+    expect(screen.queryByLabelText('Longest one reply can run (minutes)')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    return screen.findByLabelText('Longest one reply can run (minutes)');
+  }
+  const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  it('lives under Housekeeping, not Model', () => {
+    render(<Harness initial="model" />);
+    expect(screen.queryByRole('button', { name: /Advanced/ })).toBeNull();
+  });
+
+  it('Advanced shows turn, idle and one box each for processor and memory', async () => {
+    const turn = await openAdvanced({ ...base, runnerSize: sized });
+    expect(turn).toHaveAttribute('min', '1');
+    expect(screen.getByLabelText('Stays warm between messages (minutes)')).toBeTruthy();
+    // Unequal pair shows its limit; 1000 MiB shows as 0.98 GB.
+    expect(screen.getByLabelText('Processor (cores)')).toHaveValue(4);
+    expect(screen.getByLabelText('Memory (GB)')).toHaveValue(0.98);
+  });
+
+  it('a value above the cap shows the ceiling note and saves anyway', async () => {
     const turn = await openAdvanced();
     fireEvent.change(turn, { target: { value: '9999' } });
-    expect(screen.getByText(/your admin's limit/i)).toBeTruthy();
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getAllByText(/we'll use the ceiling/i).length).toBeGreaterThan(0);
+    save();
+    await waitFor(() => expect(patchAgent).toHaveBeenCalledWith('a-quill', { turnLimitMinutes: 9999 }));
   });
 
-  it('saving sends the fields, converted, with empty meaning null', async () => {
-    const turn = await openAdvanced();
+  it('editing only the turn limit sends only the turn limit', async () => {
+    const turn = await openAdvanced({ ...base, runnerSize: sized });
     fireEvent.change(turn, { target: { value: '90' } });
-    fireEvent.change(screen.getByLabelText('Processor guaranteed (cores)'), { target: { value: '1.5' } });
-    fireEvent.change(screen.getByLabelText('Memory most it can use (GB)'), { target: { value: '' } });
-    fireEvent.change(screen.getByLabelText('Memory guaranteed (GB)'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
-    await waitFor(() => expect(patchAgent).toHaveBeenCalled());
-    expect(patchAgent).toHaveBeenCalledWith('a-quill', {
-      turnLimitMinutes: 90,
-      idleMinutes: null,
-      runnerSize: { cpuMillis: { request: 1500, limit: 4000 } },
-    });
+    save();
+    await waitFor(() => expect(patchAgent).toHaveBeenCalledTimes(1));
+    expect(patchAgent).toHaveBeenCalledWith('a-quill', { turnLimitMinutes: 90 });
   });
 
-  it('asks for both halves of a pair instead of sending half', async () => {
-    await openAdvanced();
-    fireEvent.change(screen.getByLabelText('Memory guaranteed (GB)'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
-    expect(await screen.findByText(/Fill in both memory boxes/)).toBeTruthy();
-    expect(patchAgent).not.toHaveBeenCalledWith('a-quill', expect.objectContaining({ idleMinutes: null }));
+  it('a save with no edits makes no call', async () => {
+    await openAdvanced({ ...base, runnerSize: sized });
+    save();
+    await Promise.resolve();
+    expect(patchAgent).not.toHaveBeenCalled();
+  });
+
+  it('1536 MiB round-trips and an edited box saves as request and limit', async () => {
+    await openAdvanced({ ...base, runnerSize: { memoryMiB: { request: 1536, limit: 1536 } } });
+    const mem = screen.getByLabelText('Memory (GB)');
+    expect(mem).toHaveValue(1.5);
+    fireEvent.change(mem, { target: { value: '2' } });
+    fireEvent.change(mem, { target: { value: '1.5' } });
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith('a-quill', {
+        runnerSize: { memoryMiB: { request: 1536, limit: 1536 } },
+      }),
+    );
+  });
+
+  it('editing processor keeps the stored memory pair and overwrites the cpu pair', async () => {
+    await openAdvanced({ ...base, runnerSize: sized });
+    fireEvent.change(screen.getByLabelText('Processor (cores)'), { target: { value: '1.5' } });
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith('a-quill', {
+        runnerSize: { cpuMillis: { request: 1500, limit: 1500 }, memoryMiB: sized.memoryMiB },
+      }),
+    );
+  });
+
+  it('clearing the only size box saves null', async () => {
+    await openAdvanced({ ...base, runnerSize: { memoryMiB: { request: 2048, limit: 2048 } } });
+    fireEvent.change(screen.getByLabelText('Memory (GB)'), { target: { value: '' } });
+    save();
+    await waitFor(() => expect(patchAgent).toHaveBeenCalledWith('a-quill', { runnerSize: null }));
+  });
+
+  it.each(['0', '1441', '1.5'])('blocks %s minutes', async (v) => {
+    const turn = await openAdvanced();
+    fireEvent.change(turn, { target: { value: v } });
+    save();
+    expect(await screen.findByText('Reply time needs a whole number of minutes, from 1 to 1440.')).toBeTruthy();
+    fireEvent.change(turn, { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Stays warm between messages (minutes)'), { target: { value: v } });
+    save();
+    expect(await screen.findByText('Warm time needs a whole number of minutes, from 1 to 1440.')).toBeTruthy();
+    expect(patchAgent).not.toHaveBeenCalled();
+  });
+
+  it('says so when the save fails', async () => {
+    vi.mocked(patchAgent).mockRejectedValue(new Error('patch agent: 403'));
+    const turn = await openAdvanced();
+    fireEvent.change(turn, { target: { value: '30' } });
+    save();
+    expect(
+      await screen.findByText("We couldn't save that. Check that you can edit this agent, then try again."),
+    ).toBeTruthy();
   });
 });
