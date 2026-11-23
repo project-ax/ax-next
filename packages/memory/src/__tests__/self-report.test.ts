@@ -655,8 +655,10 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['assistant', 'stated', 'No team standup time is on record for vinay, and the assistant has no calendar access'],
     ['assistant', 'stated_no_standup_time_on_file', 'for vinay'],
     ['assistant', 'stated', "I don't have your team standup time on file"],
-  ])('drops the memory miss %s | %s | %s as its own narration', (subject, predicate, object) => {
-    expect(classifyAgentFact({ subject, predicate, object })).toBe('own-narration');
+  ])('drops the memory miss %s | %s | %s (its own class: the cleanup keeps it)', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(classifyAgentFact(fact)).toBe('memory-miss');
+    expect(isAgentContextSelfReport(fact)).toBe(true);
   });
 
   it.each([
@@ -703,6 +705,13 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['assistant', 'offered_to_user', 'a 20% discount code SAVE20'],
     ['assistant', 'raised_administrator_concerns', 'school administrators may object to the schedule'],
     ['assistant', 'filed_request_template', 'Dear HR, I am requesting PTO from June 3 to June 10'],
+    // Review round 2: "it" that isn't the assistant, and a miss that doesn't open the object.
+    ['assistant', 'stated', 'If the IRS says it has no record of your payment, call them'],
+    ['assistant', 'stated', 'If the DMV says it does not have your address on file, update it online'],
+    ['assistant', 'stated', 'If no payment method is on file for your account, Netflix pauses it'],
+    ['assistant', 'stated', 'If no W-4 is on file for an employee, the employer withholds at the single rate'],
+    ['assistant', 'offered_to_sarah', 'a 15% discount on the renewal'],
+    ['assistant', 'offered_to_acme', 'three months free on the annual plan'],
     // Accepted residual: the agent by its own name, not "it" (1 of 5 replay trials).
     ['assistant', 'stated', "Fern had no record of vinay's favorite color and asked vinay to share it"],
   ])('keeps %s | %s | %s', (subject, predicate, object) => {
@@ -724,6 +733,7 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['user:u1', 'team_standup_time', "no team standup time is on record for vinay's team"],
     ['user:u1', 'has_no_standup_time_on_record', "no team standup time is saved anywhere in memory for vinay's team"],
     ['vinay_team_standup', 'has_no_recorded_time', "no standup time is on record for vinay's team"],
+    ['user:u1', 'team_standup_time', "no team standup time is on record for vinay's team."],
   ])('isTurnNarration drops %s | %s | %s', (subject, predicate, object) => {
     const fact = { subject, predicate, object };
     expect(isTurnNarration(fact)).toBe(true);
@@ -753,6 +763,9 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['user:u1', 'requested_exact_dates', 'June 3-10 for the Lisbon trip'],
     ['user:u1', 'requested_exact_quote', '$4,500 for the kitchen remodel'],
     ['user:u1', 'instructed_verbatim_quotes', 'always quote sources verbatim'],
+    ['user:u1', 'instructed_style', 'From now on, respond with exactly this format: a bullet list, then a summary'],
+    ['user:u1', 'instructed_style', 'Always answer with exactly the following structure: Summary, Risks, Next steps'],
+    ['user:u1', 'instructed_exact_response_format', 'a bullet list, then a one-line summary'],
     // Someone else's Slack id, or one not under a person key.
     ['bob', 'slack_user_id', 'U0BOB'],
     ['user:u1', 'manager_slack_id', 'U0MGR'],

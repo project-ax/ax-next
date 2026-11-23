@@ -50,7 +50,7 @@ const DIMENSIONS = 384;
 
 type Label =
   | 'D1' | 'D2' | 'D3' | 'D4' | 'D5' | 'D6' | 'D7'
-  | 'K1' | 'K2' | 'K3' | 'K4' | 'K5' | 'K6' | 'K7' | 'K8' | 'K9' | 'K10';
+  | 'K1' | 'K2' | 'K3' | 'K4' | 'K5' | 'K6' | 'K7' | 'K8' | 'K9' | 'K10' | 'K11';
 
 interface SeedRow {
   label: Label;
@@ -97,19 +97,27 @@ const SEED: readonly SeedRow[] = [
     value: 'no instructions from the seller about the counteroffer V-K9',
   },
   { label: 'K10', about: 'agent', relation: 'has_no_rules', value: 'about pets in the unit V-K10' },
+  // Kept although the observer drops it (TASK-1210): a memory miss, read from
+  // free text, so the delete-for-good leaves it alone.
+  {
+    label: 'K11',
+    about: 'assistant',
+    relation: 'stated_no_record',
+    value: 'Assistant told vinay it has no record of his favorite color V-K11',
+  },
 ];
 
 const DOOMED: readonly Label[] = ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'];
-const KEPT: readonly Label[] = ['K1', 'K2', 'K3', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10'];
+const KEPT: readonly Label[] = ['K1', 'K2', 'K3', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11'];
 
 /** The seed, counted the way the script counts it, in its output's key order. */
 const SEED_COUNTS = {
   // Every `extracted` row: all but K7 (agent) and K8 (human).
-  examined: 15,
+  examined: 16,
   delete: { context: 1, 'own-narration': 1, 'action-narration': 4, capability: 1 },
   // K5 and K6 aren't the agent, so they're counted in neither. K9 and K10
-  // are TASK-612's `agent` rows, kept on purpose.
-  keep: { identity: 2, other: 2, 'agent-context': 2 },
+  // are TASK-612's `agent` rows, kept on purpose; K11 a TASK-1210 memory miss.
+  keep: { identity: 2, other: 2, 'agent-context': 2, 'memory-miss': 1 },
   ftsRows: 7,
   vecRows: 7,
   keptClosedByDeleted: 0,
@@ -322,9 +330,9 @@ describe('the one-off narration cleanup (TASK-1151)', () => {
     expect(again.stdout).toBe(
       line({
         mode: 'apply',
-        examined: 8,
+        examined: 9,
         delete: { context: 0, 'own-narration': 0, 'action-narration': 0, capability: 0 },
-        keep: { identity: 2, other: 2, 'agent-context': 2 },
+        keep: { identity: 2, other: 2, 'agent-context': 2, 'memory-miss': 1 },
         ftsRows: 0,
         vecRows: 0,
         keptClosedByDeleted: 0,
