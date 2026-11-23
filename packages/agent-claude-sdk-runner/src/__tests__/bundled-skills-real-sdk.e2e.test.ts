@@ -139,6 +139,9 @@ function stubClient(): { client: IpcClient; calls: Array<{ action: string; paylo
     callBinary: async () => {
       throw new Error('callBinary not expected');
     },
+    callBinaryUpload: async () => {
+      throw new Error('callBinaryUpload not expected');
+    },
     event: async () => {
       throw new Error('event not expected');
     },
