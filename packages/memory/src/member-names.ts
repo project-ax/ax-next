@@ -7,6 +7,13 @@
  * when memory has no name to show. Never the raw id: it is an internal
  * identifier, it costs a model tokens, and a model may repeat it.
  *
+ * Names label `memory:recall`'s `aboutText` (the memory view, the evidence
+ * table, receipts), the injected block's Recent and Digest, and the `/memory`
+ * export's team Profile headings, user-journal headings and Recent lines
+ * (TASK-1213). The export is one file per agent, read by every session that
+ * mounts it. So it is labelled by the export pass's own ctx, with no `self`:
+ * nobody in it reads `you`, and the caller's name isn't counted.
+ *
  * ## Where a name comes from
  *
  * `auth:get-user`, which other plugins already ask to name a user by id. It
@@ -29,7 +36,9 @@
  * teammate", with no lookup. ("Doesn't know" means `'unrecognized'`, a stored
  * session source the session store and IPC couldn't place (TASK-1213), or a
  * context a host built with a source outside the type. See
- * `recallAudienceScope` step 2.)
+ * `recallAudienceScope` step 2.) An export pass goes by the turn that
+ * scheduled it, so a pass from such a turn writes "a teammate" for everyone,
+ * until the next pass from a turn that is told names.
  *
  * ## Whose names
  *
