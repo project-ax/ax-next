@@ -53,8 +53,20 @@ export interface AdminAgent {
    *  per-agent connector-attachment store, replacing TASK-98's mcpConfigIds
    *  stopgap). Written by the workspace rail's attach/detach (TASK-799). */
   connectorAttachments: string[];
+  /** Longest one turn may run, in minutes. `null` = the host default. */
+  turnLimitMinutes?: number | null;
+  /** How long a finished turn's sandbox waits for the next message. */
+  idleMinutes?: number | null;
+  /** The runner's size. `null` = the host default. */
+  runnerSize?: RunnerSize | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** CPU in millicores and memory in MiB, each a request and a limit. */
+export interface RunnerSize {
+  cpuMillis?: { request: number; limit: number };
+  memoryMiB?: { request: number; limit: number };
 }
 
 export interface AdminAgentInput {
@@ -64,6 +76,9 @@ export interface AdminAgentInput {
   model: string;
   visibility: 'personal' | 'team';
   teamId?: string;
+  turnLimitMinutes?: number | null;
+  idleMinutes?: number | null;
+  runnerSize?: RunnerSize | null;
 }
 
 /**

@@ -64,6 +64,7 @@ import {
 } from '@/lib/workspace-route';
 import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
+import { AgentAdvancedLimits } from './AgentAdvancedLimits';
 import { AgentApps } from './AgentApps';
 import { AgentSlack } from './AgentSlack';
 import { ConnectorsTab } from './ConnectorsTab';
@@ -328,11 +329,14 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
       );
     case 'model':
       return (
-        <SettingsEmpty
-          Icon={Cpu}
-          title="Using the workspace default"
-          description={`Picking a model just for ${agent.name} isn't here yet. Until it is, ${agent.name} uses whatever model your admin set for the whole workspace.`}
-        />
+        <>
+          <SettingsEmpty
+            Icon={Cpu}
+            title="Using the workspace default"
+            description={`Picking a model just for ${agent.name} isn't here yet. Until it is, ${agent.name} uses whatever model your admin set for the whole workspace.`}
+          />
+          <AgentAdvancedLimits key={agent.id} agentId={agent.id} />
+        </>
       );
     case 'skills':
       return <SkillsAppStore key={agent.id} isAdmin={isAdmin} agentId={agent.id} agentName={agent.name} />;

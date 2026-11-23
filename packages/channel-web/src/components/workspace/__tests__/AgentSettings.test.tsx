@@ -9,7 +9,7 @@
  */
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import {
   AGENT_SETTINGS_SECTIONS,
@@ -17,6 +17,13 @@ import {
 } from '@/lib/workspace-route';
 import { headingOutline } from '@/test-utils/heading-outline';
 import { AgentSettings } from '../AgentSettings';
+import { getAdminAgent, patchAgent } from '@/lib/admin';
+
+vi.mock('@/lib/admin', async (original) => ({
+  ...(await original<typeof import('@/lib/admin')>()),
+  getAdminAgent: vi.fn(),
+  patchAgent: vi.fn(async () => undefined),
+}));
 
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -252,4 +259,61 @@ it('opens the named section on a mobile direct link or reload', () => {
   render(<Harness compact initial="model" startOnList={false} />);
   expect(screen.getByRole('heading', { level: 1, name: 'Model' })).toBeTruthy();
   expect(screen.getByText('Using the workspace default')).toBeTruthy();
+});
+
+
+describe('AgentSettings — Advanced limits', () => {
+  const stored = {
+    id: 'a-quill',
+    turnLimitMinutes: null,
+    idleMinutes: null,
+    runnerSize: { cpuMillis: { request: 2000, limit: 4000 }, memoryMiB: { request: 6144, limit: 8192 } },
+  };
+
+  async function openAdvanced() {
+    vi.mocked(getAdminAgent).mockResolvedValue(stored as never);
+    render(<Harness initial="model" />);
+    expect(screen.queryByLabelText('Longest a reply can take (minutes)')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    return screen.findByLabelText('Longest a reply can take (minutes)');
+  }
+
+  it('Advanced shows turn, idle and runner size', async () => {
+    await openAdvanced();
+    expect(screen.getByLabelText('Stays ready after a reply (minutes)')).toBeTruthy();
+    expect(screen.getByLabelText('Processor guaranteed (cores)')).toHaveValue(2);
+    expect(screen.getByLabelText('Processor most it can use (cores)')).toHaveValue(4);
+    expect(screen.getByLabelText('Memory guaranteed (GB)')).toHaveValue(6);
+    expect(screen.getByLabelText('Memory most it can use (GB)')).toHaveValue(8);
+  });
+
+  it('a value above the cap shows the cap hint', async () => {
+    const turn = await openAdvanced();
+    fireEvent.change(turn, { target: { value: '9999' } });
+    expect(screen.getByText(/your admin's limit/i)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('saving sends the fields, converted, with empty meaning null', async () => {
+    const turn = await openAdvanced();
+    fireEvent.change(turn, { target: { value: '90' } });
+    fireEvent.change(screen.getByLabelText('Processor guaranteed (cores)'), { target: { value: '1.5' } });
+    fireEvent.change(screen.getByLabelText('Memory most it can use (GB)'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Memory guaranteed (GB)'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
+    await waitFor(() => expect(patchAgent).toHaveBeenCalled());
+    expect(patchAgent).toHaveBeenCalledWith('a-quill', {
+      turnLimitMinutes: 90,
+      idleMinutes: null,
+      runnerSize: { cpuMillis: { request: 1500, limit: 4000 } },
+    });
+  });
+
+  it('asks for both halves of a pair instead of sending half', async () => {
+    await openAdvanced();
+    fireEvent.change(screen.getByLabelText('Memory guaranteed (GB)'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
+    expect(await screen.findByText(/Fill in both memory boxes/)).toBeTruthy();
+    expect(patchAgent).not.toHaveBeenCalledWith('a-quill', expect.objectContaining({ idleMinutes: null }));
+  });
 });
