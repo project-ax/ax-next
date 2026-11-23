@@ -657,8 +657,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // freely — `.claude/skills/evil/SKILL.md` would be discovered directly,
           // bypassing the host projection and the quarantine scan entirely.
           //
-          // The `'user'` root (CLAUDE_CONFIG_DIR) is runner-private and outside
-          // the agent's home; the runner refuses to start otherwise (TASK-994).
+          // The `'user'` root (CLAUDE_CONFIG_DIR) is private to the session and
+          // outside the agent's home, but the agent's shell (same user) can write
+          // it; the runner refuses to start otherwise (TASK-994), and TASK-1217's
+          // boot guard, ConfigChange block and instruction-files floor keep that inert.
           //
           // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
           settingSources: ['user'],

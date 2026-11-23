@@ -26,9 +26,8 @@
 // The same standard sets the wording of the row a name DOES get. The scheduling
 // row says "Cannot schedule things with its built-in timer instead of a
 // routine", not "Cannot schedule work for later" or "Cannot set itself to run
-// again later". Bash `run_in_background` stays, and the task-notification it
-// sends when the command finishes wakes the model for another turn while the
-// runner is still warm; a shell `(sleep N; ...) &` and a connector's own API
+// again later". Background tasks are off (`buildBackgroundTasksEnv()`), so a
+// finished command no longer wakes the model; a shell `(sleep N; ...) &` and a connector's own API
 // can still start work that runs later too. What is gone is the CLI's built-in
 // scheduler: its tools (CronCreate, CronDelete, CronList, ScheduleWakeup,
 // RemoteTrigger) are off the allowlist, and its headless cron loop, which would
@@ -140,14 +139,15 @@ const OFF_RAIL = Object.freeze({
   },
   Monitor: {
     why:
-      'watches a background command; Bash run_in_background plus Read can still watch ' +
-      'one, so a Cannot row would understate reach (H4). Monitor is not the only thing ' +
-      'that wakes the model later either: a finished Bash run_in_background command ' +
-      'sends a task-notification that does too, so "Cannot be woken by a background ' +
-      'command" would be false as well',
+      'watches a background command; a shell `cmd &` plus Read can still watch one, ' +
+      'so a Cannot row would understate reach (H4)',
   },
-  TaskOutput: { why: "reads a background task's output; Read still can" },
-  TaskStop: { why: 'stops a background task; Bash still can' },
+  TaskOutput: {
+    why: "reads a background task's output; background tasks are off, and Read still reads any file",
+  },
+  TaskStop: {
+    why: 'stops a background task; background tasks are off, and Bash still stops processes',
+  },
   NotebookEdit: { why: 'edits notebook cells; Edit and Write still can' },
   EnterWorktree: {
     why:

@@ -52,7 +52,8 @@ export interface RunnerEnv {
    */
   userFilesReadOnly?: true;
   /**
-   * The runner-private directory the SDK loads as its own trusted configuration
+   * The per-session directory (outside the agent's home; the agent's shell can
+   * still write it, see `assertConfigDirFresh`) the SDK loads as its own trusted configuration
    * (`CLAUDE_CONFIG_DIR`): installed skills, connector `.mcp.json`, settings,
    * `.claude.json`, and its session state. k8s pins `/home/runner/.ax/session`;
    * subprocess uses `<per-session HOME>/.ax/session`. Required and absolute

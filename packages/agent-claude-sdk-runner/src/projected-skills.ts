@@ -15,8 +15,10 @@
 //
 //   - `readProjectedSkills` builds that allowlist ONCE, at boot: after
 //     runRunner materialized the projection, before the model has had a turn.
-//     The projection is locked 0555 when written and nothing rewrites it
-//     mid-session, so a snapshot is exact; a folder that appears later is not
+//     The projection is locked 0555 when written. The agent's shell can
+//     rewrite it (same user), but the CLI's reload is blocked
+//     (`config-change.ts`), and this snapshot of NAMES is what the allowlist
+//     trusts, so a snapshot is exact; a folder that appears later is not
 //     on it. Folder names only, with no frontmatter parsing: the CLI lists a
 //     user skill by its folder name (measured on CLI 2.1.119), and every AX
 //     source writes folder == `name:` (the skills store keys a skill by its
