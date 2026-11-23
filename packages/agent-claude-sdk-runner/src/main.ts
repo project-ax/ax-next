@@ -42,6 +42,7 @@ import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { loadProjectedMcpServers } from './projected-mcp-servers.js';
 import { readProjectedSkills } from './projected-skills.js';
+import { keepSlashAsText } from './slash-text.js';
 import {
   ALLOWED_SDK_BUILTINS,
   DENIED_SDK_BUILTINS,
@@ -273,7 +274,13 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // the SDK accepts content-block arrays at runtime (the SDK's outbound
             // schema permits both shapes; the type just hasn't been widened yet).
             // Phase 3 may upstream a proper type widening to the SDK pin.
-            message: { role: 'user', content: next.content } as never,
+            //
+            // TASK-1217: text that starts with `/` gets an invisible U+200B in
+            // front, so the CLI reads it as words and never runs it as one of
+            // its own commands (bundled-skill expansion outside tool.pre-call,
+            // `/clear` switching sessions). Only this copy changes; see
+            // slash-text.ts.
+            message: { role: 'user', content: keepSlashAsText(next.content) } as never,
           };
         }
       }

@@ -798,6 +798,69 @@ describe('main()', () => {
     );
   });
 
+  // TASK-1217: the CLI treats a user message that starts with `/` as one of its
+  // own commands (it expands a bundled skill with no `Skill` call, `/clear`
+  // switches it to a new session, an unknown word gets "Unknown command" and
+  // never reaches the model). The runner puts an invisible U+200B in front of
+  // such text, so the CLI reads it as words. Only the CLI's copy changes: what
+  // the person said stays exactly what they typed.
+  it("a turn's text that starts with / reaches the SDK as words, and the person's own words are unchanged (TASK-1217)", async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('/clear', 'req-1'), userEntry('hello', 'req-2'), cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        for (let turn = 0; turn < 2; turn += 1) {
+          const next = await it.next();
+          if (next.done === true) throw new Error('prompt closed early');
+          sdkUserMessages.push(next.value);
+          yield assistantText('ok');
+          yield resultSuccess();
+        }
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    expect(sdkUserMessages.map((m) => (m.message as { content: unknown }).content)).toEqual([
+      '​/clear',
+      'hello',
+    ]);
+    const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end')?.[1] as {
+      outcome: { messages: Array<{ role: string; content: string }> };
+    };
+    expect(chatEnd.outcome.messages.filter((m) => m.role === 'user')).toEqual([
+      { role: 'user', content: '/clear' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
   // TASK-708: a message that reaches the CLI mid-turn can be folded into the
   // running turn — one `result` answers both, so the second message's reqId
   // never gets a turn-end of its own. The CLI says so only when asked
@@ -4615,6 +4678,55 @@ describe('main()', () => {
     expect(sdkUserMessages).toHaveLength(1);
     expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
       { type: 'text', text: 'what is in this image?' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png.toString('base64'),
+        },
+      },
+    ]);
+  });
+
+  // TASK-1217: with an attachment the turn is a block array, and the CLI reads
+  // its LAST text block as a possible command, so every text block that
+  // starts with `/` is guarded, not just a plain-string turn.
+  it('a turn with an attachment reaches the SDK with its slash text guarded (TASK-1217)', async () => {
+    const png = Buffer.from('fake-png-bytes');
+    await hostWithUploadedImage(png);
+
+    const userMsg: InboxLoopEntry = {
+      type: 'user-message',
+      payload: {
+        role: 'user',
+        content: '/update-config x',
+        contentBlocks: [imageBlock(png)],
+      },
+      reqId: 'req-slash-att',
+    };
+    fakeInbox = buildFakeInbox([userMsg, cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
+      { type: 'text', text: '​/update-config x' },
       {
         type: 'image',
         source: {
