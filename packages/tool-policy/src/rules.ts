@@ -133,8 +133,8 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   },
   {
     // TASK-1207, from the TASK-1192 walk: an agent loaded the SDK's own
-    // CronCreate, made a schedule that skipped the routine hold and never
-    // ran, and said it was done. The runner keeps every scheduling
+    // CronCreate, made a schedule that skipped the routine hold, and said it
+    // was done. The runner keeps every scheduling
     // built-in out (TASK-1200). This row is the rail saying so, beside "Can
     // create routines — asks you first". CronDelete, CronList, ScheduleWakeup
     // and RemoteTrigger are denied too; the drift guard's `OFF_RAIL` records
@@ -145,7 +145,8 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // true only with both. The scheduling tools (CronCreate, CronDelete,
     // CronList, ScheduleWakeup, RemoteTrigger) are off the `tools` allowlist.
     // The CLI's headless cron loop is not a tool: unless
-    // CLAUDE_CODE_DISABLE_CRON is set (the runner sets 1), it reads
+    // the CLI reads CLAUDE_CODE_DISABLE_CRON as true (1, true, yes or on;
+    // the runner sets 1), it reads
     // `<cwd>/.claude/scheduled_tasks.json` from the agent's writable home and
     // fires unprompted turns with the
     // prompts it finds, so a planted file would schedule work with no tool call

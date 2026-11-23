@@ -253,8 +253,9 @@ function notAllowedReason(name: string): string {
   if (name === 'Agent') return `Agent (Task) ${DISABLED_BUILTIN_REASONS.Task.replace(/^Task /, '')}`;
   if (SCHEDULING_BUILTINS.includes(name)) {
     return (
-      `${name} is disabled: a schedule made with it would skip the approval ` +
-      'routines ask for. To schedule recurring work, create a routine instead.'
+      `${name} is disabled: it is part of Claude Code's own scheduler, and a ` +
+      'schedule made there would skip the approval routines ask for. To schedule ' +
+      'recurring work, create a routine instead.'
     );
   }
   return (
